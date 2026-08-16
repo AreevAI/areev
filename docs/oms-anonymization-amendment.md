@@ -1,6 +1,9 @@
 # OMS amendments — the anonymization batch
 
-**Status:** amendment proposal, written 2026-08-16. The spec-level half of
+**Status:** amendment proposal, written 2026-08-16 — and drafted into the
+unmerged OMS 1.6 / CAL 1.3 RFC (`release/oms-v1.6` in the OMS repo: OMS
+§10.5 Pseudonymized Egress, CAL §8.1.2/§8.2.1 `WITH anonymize`, CAL §8.17
+`REHYDRATE`, CAL-E127). The spec-level half of
 [anonymization-proposal.md](anonymization-proposal.md) (P5): everything that
 feature wants from CAL and the wire format, batched so conformance moves
 once. Nothing here ships until the OMS process accepts it — CAL syntax is a
