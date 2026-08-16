@@ -16,8 +16,13 @@
 // release-npm (the publish step skips packages already on the registry, so
 // only the newly-undeferred one goes out).
 //
-// `areev-win32-x64-msvc` was deferred here (403 on publish; support ticket
-// open) and unblocked 2026-07-17 — npm whitelisted the name.
+// History, corrected 2026-08-17: the 2026-07-17 whitelist was granted for
+// this package's FORMER name — `dejadb-win32-x64-msvc` (published at 1.2.0,
+// the frozen pre-rename release). `areev-win32-x64-msvc` has never been
+// whitelisted; the v1.1.0 publish 403 is a fresh spam-filter rejection of a
+// new name, not a regression. Exception request for the areev-* names is
+// user-tracked with npm support; the release-npm workflow skips this one
+// name loudly until it lands.
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 
 const DEFER = new Set();
