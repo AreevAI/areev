@@ -91,6 +91,11 @@ impl<'a> MemoryTool<'a> {
 
     fn write_version(&mut self, path: &str, content: &str, prev: Option<Hash>) -> Result<Hash> {
         use sha2::{Digest, Sha256};
+        // Ingress boundary (proposal §4.2): memory-file bodies are agent
+        // free text; transform before the version digest and the blob commit
+        // to it (D8).
+        let ingressed = self.m.ingress_transform_text(&self.ns.clone(), content)?;
+        let content: &str = ingressed.as_deref().unwrap_or(content);
         let digest = hex::encode(&Sha256::digest(content.as_bytes())[..6]);
         let mut f = Fact::new(path, MEMORY_FILE_RELATION, &format!("v:{digest}"));
         f.common.namespace = Some(self.ns.clone());
@@ -210,6 +215,8 @@ impl<'a> MemoryTool<'a> {
         // the provenance link preserves the connection.)
         let mut f = {
             use sha2::{Digest, Sha256};
+            let ingressed = self.m.ingress_transform_text(&self.ns.clone(), &content)?;
+            let content: String = ingressed.unwrap_or_else(|| content.clone());
             let digest = hex::encode(&Sha256::digest(content.as_bytes())[..6]);
             let mut f = Fact::new(new_path, MEMORY_FILE_RELATION, &format!("v:{digest}"));
             f.common.namespace = Some(self.ns.clone());

@@ -1607,13 +1607,21 @@ impl Areev {
             .map(blobcrypt::derive_blob_key);
         // The anon session key (keys `mapping_id`, D11): HKDF from the page
         // key on an encrypted file so it is stable per file+process, random
-        // per handle otherwise. Never persisted either way.
-        let anon_session_key: [u8; 32] = match explicit
-            .as_ref()
-            .and_then(|o| o.encryption_key.as_ref())
-        {
-            Some(page_key) => {
-                let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, page_key);
+        // per handle otherwise. The memory key (value-derived tokens for
+        // `memory` scope + ingress, D8) has no random fallback — those
+        // features need cross-handle stability, so a plaintext file simply
+        // has no memory key and refuses them at `set` time (Q5 resolved
+        // conservatively). Neither key is ever persisted.
+        let page_key = explicit.as_ref().and_then(|o| o.encryption_key.as_ref());
+        let anon_memory_key: Option<[u8; 32]> = page_key.map(|pk| {
+            let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
+            let mut out = [0u8; 32];
+            hk.expand(b"areev.anon.memory.v1", &mut out).expect("32-byte HKDF output");
+            out
+        });
+        let anon_session_key: [u8; 32] = match page_key {
+            Some(pk) => {
+                let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
                 let mut out = [0u8; 32];
                 hk.expand(b"areev.anon.session.v1", &mut out)
                     .expect("32-byte HKDF output");
@@ -1749,7 +1757,7 @@ impl Areev {
             blob_store,
             blob_key,
             telemetry,
-            anon: anon_gate::AnonGate::new(anon_session_key),
+            anon: anon_gate::AnonGate::new(anon_session_key, anon_memory_key),
             ambient_run_id: None,
             _file_guard: file_guard,
         };
@@ -2014,11 +2022,18 @@ impl Areev {
             ));
         }
         let policy = areev_core::anon::AnonPolicy::from_json(policy_json)?;
-        if matches!(policy.mode.as_str(), "ingress" | "both") {
+        // Value-derived pseudonyms (ingress modes, memory scope) need the
+        // token key HKDF-derived from the page key — a plaintext file has no
+        // key material, so those declarations refuse loudly here rather than
+        // failing at the first read (Q5, resolved conservatively).
+        let needs_memory_key =
+            matches!(policy.mode.as_str(), "ingress" | "both") || policy.scope == "memory";
+        if needs_memory_key && !self.anon.has_memory_key() {
             return Err(AreevError::Validation(format!(
-                "anonymization mode \"{}\" is declared in the proposal but not built \
-                 yet (ingress arrives with P2); declare \"egress\", \"audit\", or \"off\"",
-                policy.mode
+                "anonymization mode \"{}\" / scope \"{}\" needs an encrypted memory: \
+                 value-derived pseudonym tokens are keyed from the page key \
+                 (open with --passphrase-env / open_encrypted first)",
+                policy.mode, policy.scope
             )));
         }
         // Store the canonical re-serialization, so the row is byte-for-byte
@@ -2085,6 +2100,26 @@ impl Areev {
             }
         }
         Ok(())
+    }
+
+    /// Apply the namespace's ingress policy to free text (proposal §4.2):
+    /// `Ok(None)` when no ingress policy covers `ns`. Public because the
+    /// facade's structured write path and the memory-tool adapter run their
+    /// transforms through this same gate.
+    pub fn ingress_transform_text(&mut self, ns: &str, text: &str) -> Result<Option<String>> {
+        self.anon.ingress_text(ns, text)
+    }
+
+    /// Ingress transform for a structural identity value (a subject is a
+    /// `person` by construction). `Ok(None)` when no ingress policy covers.
+    pub fn ingress_transform_identity(&mut self, ns: &str, value: &str) -> Result<Option<String>> {
+        self.anon.ingress_identity(ns, value)
+    }
+
+    /// Whether an ingress policy covers `ns` — the cheap probe the facade's
+    /// structured write path uses before cloning a fields map.
+    pub fn ingress_active(&self, ns: &str) -> Result<bool> {
+        self.anon.ingress_active(ns)
     }
 
     /// Host cap (per-process, never persisted): force egress anonymization
@@ -3885,14 +3920,36 @@ impl Areev {
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(ErasureReport::default());
         };
-        self.erase_where(
+        let mut report = self.erase_where(
             ErasureSelector::Identity {
                 ns_id,
                 subject: subject.to_string(),
                 text_mentions: opts.text_mentions,
             },
             Some(subject.to_string()),
-        )
+        )?;
+        // REQ-ANON-7 (ingress stays erasable): under an ingress policy the
+        // stored subject is a value-derived pseudonym — recompute it from
+        // the real identity and erase under that name too, so
+        // pseudonymized-at-rest never means erasure-proof.
+        if let Some(alias) = self.anon.ingress_alias(ns, subject)? {
+            if let Some(ns_id) = self.term_lookup(ns)? {
+                let alias_report = self.erase_where(
+                    ErasureSelector::Identity {
+                        ns_id,
+                        subject: alias.clone(),
+                        text_mentions: opts.text_mentions,
+                    },
+                    Some(alias),
+                )?;
+                report.grains_erased += alias_report.grains_erased;
+                report.terms_removed += alias_report.terms_removed;
+                report.vocab_removed += alias_report.vocab_removed;
+                report.blobs_reclaimed += alias_report.blobs_reclaimed;
+                report.erased_hashes.extend(alias_report.erased_hashes);
+            }
+        }
+        Ok(report)
     }
 
     /// Shared preconditions for the subject selector — erasure AND the
@@ -3951,7 +4008,16 @@ impl Areev {
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(SubjectReport::default());
         };
-        let sel = self.select_identity(ns_id, subject, opts.text_mentions)?;
+        let mut sel = self.select_identity(ns_id, subject, opts.text_mentions)?;
+        // REQ-ANON-7 mirror: the DSAR must disclose ingress-pseudonymized
+        // grains too — same alias, same selector, so "show me" and "erase"
+        // keep covering the identical set (REQ-ERASE-9).
+        if let Some(alias) = self.anon.ingress_alias(ns, subject)? {
+            let alias_sel = self.select_identity(ns_id, &alias, opts.text_mentions)?;
+            sel.seqs.extend(alias_sel.seqs);
+            sel.identity_names.extend(alias_sel.identity_names);
+        }
+        let sel = sel;
         let mut seqs = sel.seqs;
         seqs.sort_unstable();
         seqs.dedup();
@@ -6063,6 +6129,12 @@ impl Areev {
     /// surface.
     pub fn capture(&mut self, ns: &str, content: &str, meta: &Capture<'_>) -> Result<Hash> {
         use areev_core::types::{Event, Role};
+        // Ingress boundary (proposal §4.2): this is the one place raw
+        // remembered text is written, so the transform happens BEFORE the
+        // Event is serialized — the content address commits to the
+        // transformed text (D8). One branch when no ingress policy declares.
+        let ingressed = self.anon.ingress_text(ns, content)?;
+        let content: &str = ingressed.as_deref().unwrap_or(content);
         let mut e = Event::new(content);
         e.common.namespace = Some(ns.to_string());
         e.session_id = meta.session_id.map(str::to_string);
@@ -6104,7 +6176,18 @@ impl Areev {
         let source_hex = source.to_hex();
         let mut facts = Vec::with_capacity(drafts.len());
         for draft in drafts {
-            let mut fact = areev_core::types::Fact::new(&draft.subject, &draft.relation, &draft.object);
+            // Ingress boundary: host-supplied drafts carry raw identities and
+            // values; subjects are `person` by construction, objects go
+            // through detection (proposal §4.2).
+            let subject = match self.anon.ingress_identity(ns, &draft.subject)? {
+                Some(t) => t,
+                None => draft.subject.clone(),
+            };
+            let object = match self.anon.ingress_text(ns, &draft.object)? {
+                Some(t) => t,
+                None => draft.object.clone(),
+            };
+            let mut fact = areev_core::types::Fact::new(&subject, &draft.relation, &object);
             fact.common.confidence = draft.confidence.clamp(0.0, 1.0);
             fact.common.namespace = Some(ns.to_string());
             fact.common.derived_from = Some(source_hex.clone());
@@ -6140,6 +6223,12 @@ impl Areev {
         observer: &str,
         extractor: Option<&dyn Fn(&str) -> Vec<FactDraft>>,
     ) -> Result<RememberResult> {
+        // Ingress boundary: transform BEFORE the extractor sees the content,
+        // so derived Fact drafts inherit the transform instead of leaking
+        // around it (proposal §4.2). `capture` re-checks and finds nothing
+        // new — already-tokenized text is settled.
+        let ingressed = self.anon.ingress_text(ns, content)?;
+        let content: &str = ingressed.as_deref().unwrap_or(content);
         let event = self.capture(ns, content, &Capture { observer: Some(observer), ..Default::default() })?;
         let drafts = extractor.map(|f| f(content)).unwrap_or_default();
         let facts = self.attach_facts(ns, &event, &drafts, &FactAttribution::default())?;

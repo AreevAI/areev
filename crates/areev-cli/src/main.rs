@@ -3866,7 +3866,21 @@ fn resolve_llm(
 /// proposer ≠ scorer rule the Areev Loop verifier follows. Facts the grounder does
 /// not support are dropped; survivors are stamped `"verified"`.
 fn run_remember(mut m: Areev, ns: &str, flags: &HashMap<String, String>) -> Result<(), String> {
-    let content = need(flags, "content")?;
+    let mut content = need(flags, "content")?;
+    // Anonymization boundaries (docs/anonymization-proposal.md §4.1–4.2):
+    // under an INGRESS policy, transform before the extractor OR the store
+    // sees the text — the CLI composes capture+attach itself, so it must not
+    // hand the raw text to the model first. Under an EGRESS policy the
+    // extraction request is additionally covered below by the
+    // PseudonymizingBackend wrap, so identities stay in-process even when
+    // the stored form is raw.
+    if let Some(t) = m.ingress_transform_text(ns, &content).map_err(|e| e.to_string())? {
+        content = t;
+    }
+    let egress_wrap = matches!(
+        m.anon_active_mode(ns).map_err(|e| e.to_string())?.as_deref(),
+        Some("egress")
+    );
     let observer = flag(flags, "observer").unwrap_or_else(|| "cli".to_string());
     let dry_run = flag(flags, "dry-run").is_some();
     let hint = flag(flags, "extract-hint");
@@ -3897,6 +3911,24 @@ fn run_remember(mut m: Areev, ns: &str, flags: &HashMap<String, String>) -> Resu
         Some(_) => resolve_llm(flags, "ground-cmd", "ground-model")?,
         None => None,
     };
+    // Under an egress policy, extraction requests leave the process
+    // pseudonymized and responses come back rehydrated (D5/D6). Fail-closed:
+    // the wrap itself erroring fails remember, it never falls back to raw.
+    let wrap = |b: Box<dyn areev_loop::LlmBackend>| -> Result<Box<dyn areev_loop::LlmBackend>, String> {
+        if egress_wrap {
+            let policy = areev_core::anon::AnonPolicy {
+                scope: "session".into(),
+                ..Default::default()
+            };
+            Ok(Box::new(
+                areev_llm::PseudonymizingBackend::new(b, policy).map_err(|e| e.to_string())?,
+            ))
+        } else {
+            Ok(b)
+        }
+    };
+    let llm = llm.map(wrap).transpose()?;
+    let grounder = grounder.map(wrap).transpose()?;
     let model = llm.as_ref().map(|l| l.model().to_string());
 
     // --dry-run: extract and print, write nothing. For iterating on

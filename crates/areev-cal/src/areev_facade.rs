@@ -32,6 +32,37 @@ use crate::templates::{PersistedTemplate, TemplateRegistry};
 const QRY_PREFIX: &str = "qry:";
 const TPL_PREFIX: &str = "tpl:";
 
+/// Recursive ingress transform over a JSON value's string leaves.
+fn ingress_value_tree(
+    m: &mut Areev,
+    ns: &str,
+    v: &mut serde_json::Value,
+) -> Result<()> {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(t) = m.ingress_transform_text(ns, s)? {
+                *s = t;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(a) => {
+            for item in a {
+                ingress_value_tree(m, ns, item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(o) => {
+            for (k, item) in o.iter_mut() {
+                if !matches!(k.as_str(), "namespace" | "session_id" | "run_id" | "parent") {
+                    ingress_value_tree(m, ns, item)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -345,6 +376,44 @@ impl AreevFacade {
         f(&mut guard)
     }
 
+    /// Ingress boundary for the structured write path (proposal §4.2):
+    /// identity fields whole-value as `person`, other string leaves through
+    /// detection. `Ok(None)` = no ingress policy covers the write namespace
+    /// (the overwhelmingly common case — one store probe). Runtime journal
+    /// writes (`record_tool_call`, `record_run_manifest`) are deliberately
+    /// exempt, the write-side mirror of the `run_grains` egress exemption.
+    fn ingress_fields(
+        &self,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        const IDENTITY: &[&str] = &["subject", "user_id", "observer"];
+        const SKIP: &[&str] = &[
+            "namespace", "session_id", "run_id", "node_id", "parent", "relation",
+            "derived_from", "supersedes", "author_did",
+        ];
+        let ns = self.write_ns(fields).to_string();
+        let mut guard = self.store.lock().unwrap();
+        if !guard.ingress_active(&ns)? {
+            return Ok(None);
+        }
+        let mut out = fields.clone();
+        for (k, v) in out.iter_mut() {
+            if SKIP.contains(&k.as_str()) {
+                continue;
+            }
+            if IDENTITY.contains(&k.as_str()) {
+                if let serde_json::Value::String(sv) = v {
+                    if let Some(t) = guard.ingress_transform_identity(&ns, sv)? {
+                        *sv = t;
+                    }
+                }
+                continue;
+            }
+            ingress_value_tree(&mut guard, &ns, v)?;
+        }
+        Ok(Some(out))
+    }
+
     // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------
     //
     // The explicit front door: pure text in, JSON out, no store access. From
@@ -441,6 +510,8 @@ impl AreevFacade {
         fields: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(Hash, bool)> {
         self.check_verb(Verb::Write, self.write_ns(fields))?;
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddIfNovelSink { m: &mut m })
     }
@@ -573,6 +644,8 @@ impl AreevFacade {
         // is written, then hand the whole set to the store as one batch.
         let mut built: Vec<Box<dyn areev_store::AddableDyn>> = Vec::with_capacity(entries.len());
         for (grain_type, fields) in entries {
+            let ingressed = self.ingress_fields(fields)?;
+            let fields = ingressed.as_ref().unwrap_or(fields);
             build_grain_from_json(grain_type, fields, CollectSink { out: &mut built })?;
         }
         let refs: Vec<&dyn areev_store::AddableDyn> = built.iter().map(|b| b.as_ref()).collect();
@@ -742,6 +815,8 @@ impl PrincipalSession<'_> {
             );
             &attributed
         };
+        let ingressed = self.facade.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.facade.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddSink { m: &mut m })
     }
@@ -1734,6 +1809,8 @@ impl CalStoreFacade for AreevFacade {
         fields: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Hash> {
         self.check_verb(Verb::Write, self.write_ns(fields))?;
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddSink { m: &mut m })
     }
@@ -1763,6 +1840,8 @@ impl CalStoreFacade for AreevFacade {
                 self.check_verb(Verb::Supersede, new_ns)?;
             }
         }
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(
             grain_type,

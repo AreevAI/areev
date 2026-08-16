@@ -166,15 +166,7 @@ impl AnonPolicy {
             }
         }
         match self.scope.as_str() {
-            "context" | "session" => {}
-            "memory" => {
-                return Err(AreevError::Validation(
-                    "invalid anonymization policy: scope \"memory\" is declared in \
-                     the proposal but not built yet (it arrives with the vault); \
-                     use \"context\" or \"session\""
-                        .into(),
-                ));
-            }
+            "context" | "session" | "memory" => {}
             other => {
                 return Err(AreevError::Validation(format!(
                     "invalid anonymization policy: unknown scope '{other}' (expected \
@@ -299,7 +291,18 @@ pub fn anonymize(
     known_identities: &[String],
     key: Option<&[u8]>,
 ) -> Result<AnonOutcome> {
-    let mut session = SessionAnonymizer::new(policy.clone())?;
+    let mut session = if policy.scope == "memory" {
+        let Some(k) = key else {
+            return Err(AreevError::Validation(
+                "anonymization scope \"memory\" needs a key (pass key_hex; \
+                 value-derived tokens are keyed by design)"
+                    .into(),
+            ));
+        };
+        SessionAnonymizer::new_keyed(policy.clone(), hmac_sha256(k, b"areev.anon.tokenkey.v1"))?
+    } else {
+        SessionAnonymizer::new(policy.clone())?
+    };
     let (out, replaced) = session.transform_text(text, known_identities)?;
     let mapping_id = session.mapping_id(key)?;
     Ok(AnonOutcome { text: out, mapping: session.into_mapping(), mapping_id, replaced })
@@ -319,19 +322,45 @@ pub struct SessionAnonymizer {
     counters: BTreeMap<String, u64>,
     mapping: BTreeMap<String, String>,
     reserved: std::collections::BTreeSet<String>,
+    /// When set, pseudonym token ids are value-derived HMAC fragments —
+    /// stable across handles and processes — instead of appearance-order
+    /// counters. Required for `memory` scope and for every ingress
+    /// transform (D8: the same raw text must always transform identically).
+    token_key: Option<[u8; 32]>,
 }
 
 impl SessionAnonymizer {
     pub fn new(policy: AnonPolicy) -> Result<Self> {
         policy.validate()?;
-        Ok(SessionAnonymizer {
+        if policy.scope == "memory" {
+            return Err(AreevError::Validation(
+                "anonymization scope \"memory\" needs a token key — use \
+                 SessionAnonymizer::new_keyed (the store derives it from the \
+                 file's encryption key)"
+                    .into(),
+            ));
+        }
+        Ok(Self::build(policy, None))
+    }
+
+    /// A session whose pseudonym ids derive from `key` — the `memory`-scope
+    /// and ingress form. The same (key, category, value) always yields the
+    /// same token, on any handle.
+    pub fn new_keyed(policy: AnonPolicy, key: [u8; 32]) -> Result<Self> {
+        policy.validate()?;
+        Ok(Self::build(policy, Some(key)))
+    }
+
+    fn build(policy: AnonPolicy, token_key: Option<[u8; 32]>) -> Self {
+        SessionAnonymizer {
             policy,
             by_value: BTreeMap::new(),
             order: std::collections::VecDeque::new(),
             counters: BTreeMap::new(),
             mapping: BTreeMap::new(),
             reserved: std::collections::BTreeSet::new(),
-        })
+            token_key,
+        }
     }
 
     pub fn policy(&self) -> &AnonPolicy {
@@ -439,13 +468,33 @@ impl SessionAnonymizer {
         if let Some(t) = self.by_value.get(&k) {
             return t.clone();
         }
-        let counter = self.counters.entry(category.to_string()).or_insert(0);
-        let token = mint_token(&self.policy.placeholder, category, counter, &self.reserved);
+        let token = match self.token_key {
+            Some(key) => derived_token(&self.policy.placeholder, &key, category, value),
+            None => {
+                let counter = self.counters.entry(category.to_string()).or_insert(0);
+                mint_token(&self.policy.placeholder, category, counter, &self.reserved)
+            }
+        };
         self.by_value.insert(k.clone(), token.clone());
         self.order.push_back(k);
         self.mapping.insert(token.clone(), value.to_string());
         token
     }
+}
+
+/// The value-derived pseudonym token: `{ID}` is an 8-hex HMAC fragment over
+/// (category, value) under `key`. Pure — erasure and DSAR reads use this to
+/// recompute an ingress-stored pseudonym from the real identity
+/// (REQ-ANON-7) without any session state.
+pub fn derived_token(template: &str, key: &[u8; 32], category: &str, value: &str) -> String {
+    let mut msg = Vec::with_capacity(category.len() + value.len() + 1);
+    msg.extend_from_slice(category.as_bytes());
+    msg.push(0x1e);
+    msg.extend_from_slice(value.as_bytes());
+    let digest = hmac_sha256(key, &msg);
+    template
+        .replace("{CATEGORY}", &category_upper(category))
+        .replace("{ID}", &hex::encode(&digest[..4]))
 }
 
 /// Replace exact placeholder tokens with their mapped originals. Tokens the
@@ -671,8 +720,13 @@ mod tests {
     fn policy_rejects_unknown_field_and_generalize_and_unbuilt_scope() {
         assert!(AnonPolicy::from_json(r#"{"surprise": 1}"#).is_err());
         assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:month"}}"#).is_err());
-        assert!(AnonPolicy::from_json(r#"{"scope": "memory"}"#).is_err());
         assert!(AnonPolicy::from_json(r#"{"scope": "session"}"#).is_ok()); // built in P1
+        assert!(AnonPolicy::from_json(r#"{"scope": "memory"}"#).is_ok()); // built in P2
+        // ...but memory scope is keyed by design: the unkeyed paths refuse it.
+        let memory = AnonPolicy::from_json(r#"{"scope": "memory"}"#).unwrap();
+        assert!(SessionAnonymizer::new(memory.clone()).is_err());
+        assert!(anonymize("x", &memory, &[], None).is_err());
+        assert!(anonymize("mail a@b.co", &memory, &[], Some(b"k")).is_ok());
         assert!(AnonPolicy::from_json("{}").is_ok());
     }
 

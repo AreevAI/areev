@@ -56,7 +56,7 @@ fn policy_errors_are_hard_val_errors() {
     // (D3: an unreadable policy must not silently mean "no policy").
     for bad in [
         r#"{"surprise": true}"#,
-        r#"{"scope": "memory"}"#,
+        r#"{"default_action": "shred"}"#,
         r#"{"categories": {"date": "generalize:month"}}"#,
     ] {
         let err = facade.scan_text("hello", Some(bad)).unwrap_err().to_string();
@@ -100,4 +100,29 @@ fn cal_payload_carries_the_egress_flag_and_transformed_fields() {
     // The in-process caller still holds the mapping for rehydration (D5).
     let mappings = facade.with_store(|m| m.anon_mappings()).unwrap();
     assert!(mappings.iter().any(|(_, _, map)| map.values().any(|v| v == "caller:john")));
+}
+
+#[test]
+fn structured_writes_pass_the_ingress_boundary() {
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open_encrypted(dir.path().join("e.db").to_str().unwrap(), [9u8; 32]).unwrap();
+    let facade = AreevFacade::with_session(m, Some("caller".to_string()), None);
+    facade
+        .with_store(|m| m.set_anon_policy("caller", r#"{"mode": "ingress"}"#))
+        .unwrap();
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), serde_json::json!("caller:john"));
+    fields.insert("relation".into(), serde_json::json!("prefers"));
+    fields.insert("object".into(), serde_json::json!("call me at +1 415 555 0142"));
+    fields.insert("namespace".into(), serde_json::json!("caller"));
+    let (hash, _) = facade.cal_add_if_novel("fact", &fields).unwrap();
+
+    // mode=ingress → reads are raw: what we read back IS what is stored.
+    let g = facade.with_store(|m| m.get(&hash)).unwrap();
+    let subject = g.fields["subject"].as_str().unwrap();
+    let object = g.fields["object"].as_str().unwrap();
+    assert!(subject.starts_with("[PERSON_"), "stored subject leaked: {subject}");
+    assert!(!object.contains("415 555"), "stored object leaked: {object}");
+    assert!(object.contains("[PHONE_"), "expected value-derived token: {object}");
 }

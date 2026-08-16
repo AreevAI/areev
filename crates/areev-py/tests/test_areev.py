@@ -1061,7 +1061,7 @@ def test_scan_respects_policy_and_fails_closed(tmp_path):
 
     # an unreadable policy is a hard VAL error, not a silent no-policy (D3)
     with pytest.raises(ValueError, match="VAL-E001"):
-        m.scan_text("x", json.dumps({"scope": "memory"}))
+        m.scan_text("x", json.dumps({"surprise": 1}))
     with pytest.raises(ValueError, match="VAL-E001"):
         m.rehydrate_text("x", '{"bad": 1}')
 

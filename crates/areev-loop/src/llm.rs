@@ -48,6 +48,17 @@ pub trait LlmBackend: Send + Sync {
     fn complete(&self, request: &str) -> Result<String>;
 }
 
+/// Boxed backends forward — lets decorators wrap `Box<dyn LlmBackend>`
+/// without knowing the concrete type.
+impl<T: LlmBackend + ?Sized> LlmBackend for Box<T> {
+    fn model(&self) -> &str {
+        (**self).model()
+    }
+    fn complete(&self, request: &str) -> Result<String> {
+        (**self).complete(request)
+    }
+}
+
 // ---- wire schema (request) -------------------------------------------------
 
 /// One deterministic finding, handed to DISCOVER as context (never as an

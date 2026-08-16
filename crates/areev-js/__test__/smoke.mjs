@@ -808,7 +808,7 @@ test('scanText respects policy and fails closed on a bad one', async () => {
   assert.deepEqual(allowed.detections, [])
 
   // an unreadable policy is a hard VAL error, not a silent no-policy (D3)
-  await assert.rejects(() => m.scanText('x', JSON.stringify({ scope: 'memory' })), /VAL-E001/)
+  await assert.rejects(() => m.scanText('x', JSON.stringify({ surprise: 1 })), /VAL-E001/)
   await assert.rejects(() => m.rehydrateText('x', '{"bad": 1}'), /VAL-E001/)
   await m.close()
 })

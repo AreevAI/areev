@@ -34,6 +34,12 @@ const IDENTITY_FIELDS: &[&str] = &["subject", "user_id", "observer"];
 const SKIP_FIELDS: &[&str] = &["namespace", "session_id", "run_id", "node_id", "parent"];
 
 pub(crate) struct AnonGate {
+    /// Keys value-derived (`memory`-scope and ingress) pseudonym tokens.
+    /// HKDF from the page key; `None` on a plaintext file, where those
+    /// features refuse at `set` time (Q5 resolved conservatively:
+    /// pseudonymized-at-rest composes with encryption, it does not replace
+    /// it).
+    memory_key: Option<[u8; 32]>,
     /// ns → parsed policy, rebuilt from `meta` on open and on set/clear.
     policies: HashMap<String, AnonPolicy>,
     /// Set when any `anon:` row failed to parse: reads fail closed with this
@@ -54,6 +60,9 @@ pub(crate) struct AnonGate {
     /// `audit`-mode counters: (ns, category) → detections seen. In-memory,
     /// process-lifetime; never the spans' plaintext.
     audit_counts: BTreeMap<(String, String), u64>,
+    /// Persistent per-ns pseudonymizers for ingress transforms — always
+    /// keyed (value-derived tokens, D8), independent of the egress scope.
+    ingress_sessions: HashMap<String, SessionAnonymizer>,
     /// Per-ns identity values accumulated from identity fields (proposal
     /// §5.1 known-identity propagation): a subject one grain declares makes
     /// the bare name detectable in another grain's prose. Bounded; values
@@ -65,8 +74,9 @@ pub(crate) struct AnonGate {
 const MAX_KNOWN_IDENTITIES: usize = 1024;
 
 impl AnonGate {
-    pub(crate) fn new(session_key: [u8; 32]) -> Self {
+    pub(crate) fn new(session_key: [u8; 32], memory_key: Option<[u8; 32]>) -> Self {
         AnonGate {
+            memory_key,
             policies: HashMap::new(),
             poisoned: None,
             floor: false,
@@ -74,7 +84,29 @@ impl AnonGate {
             last_context: None,
             session_key,
             audit_counts: BTreeMap::new(),
+            ingress_sessions: HashMap::new(),
             known: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn has_memory_key(&self) -> bool {
+        self.memory_key.is_some()
+    }
+
+    /// Build a pseudonymizer honoring the policy's scope: `memory` scope is
+    /// keyed (value-derived tokens) and therefore needs the memory key.
+    fn make_session(&self, policy: AnonPolicy) -> Result<SessionAnonymizer> {
+        if policy.scope == "memory" {
+            let key = self.memory_key.ok_or_else(|| {
+                AreevError::Validation(
+                    "anonymization scope \"memory\" needs an encrypted memory (the \
+                     value-derived token key is HKDF-derived from the page key)"
+                        .into(),
+                )
+            })?;
+            SessionAnonymizer::new_keyed(policy, key)
+        } else {
+            SessionAnonymizer::new(policy)
         }
     }
 
@@ -250,11 +282,22 @@ impl AnonGate {
                 }
                 continue;
             }
-            if policy.scope == "session" {
+            if policy.scope == "session" || policy.scope == "memory" {
                 let session = match self.sessions.entry(ns.clone()) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(SessionAnonymizer::new(policy.clone())?)
+                        let built = if policy.scope == "memory" {
+                            let key = self.memory_key.ok_or_else(|| {
+                                AreevError::Validation(
+                                    "anonymization scope \"memory\" needs an encrypted memory"
+                                        .into(),
+                                )
+                            })?;
+                            SessionAnonymizer::new_keyed(policy.clone(), key)?
+                        } else {
+                            SessionAnonymizer::new(policy.clone())?
+                        };
+                        e.insert(built)
                     }
                 };
                 transform_grain(session, g, known)?;
@@ -299,6 +342,101 @@ impl AnonGate {
         }
     }
 
+    /// The declared ingress policy for `ns` (mode `ingress` or `both`).
+    /// The floor never forces ingress — it is an egress-only cap.
+    fn ingress_policy(&self, ns: &str) -> Result<Option<AnonPolicy>> {
+        self.check_poisoned()?;
+        Ok(self
+            .policies
+            .get(ns)
+            .filter(|p| matches!(p.mode.as_str(), "ingress" | "both"))
+            .cloned())
+    }
+
+    #[inline]
+    pub(crate) fn ingress_idle(&self) -> bool {
+        (self.policies.is_empty() && self.poisoned.is_none())
+            || (self.poisoned.is_none()
+                && !self
+                    .policies
+                    .values()
+                    .any(|p| matches!(p.mode.as_str(), "ingress" | "both")))
+    }
+
+    fn ingress_session(&mut self, ns: &str, policy: &AnonPolicy) -> Result<&mut SessionAnonymizer> {
+        if !self.ingress_sessions.contains_key(ns) {
+            let key = self.memory_key.ok_or_else(|| {
+                AreevError::Validation(
+                    "anonymization mode \"ingress\" needs an encrypted memory (the \
+                     value-derived token key is HKDF-derived from the page key)"
+                        .into(),
+                )
+            })?;
+            // Ingress tokens are ALWAYS value-derived (D8), whatever the
+            // egress scope says — build keyed regardless.
+            let mut p = policy.clone();
+            p.scope = "memory".into();
+            self.ingress_sessions
+                .insert(ns.to_string(), SessionAnonymizer::new_keyed(p, key)?);
+        }
+        Ok(self.ingress_sessions.get_mut(ns).expect("just inserted"))
+    }
+
+    /// Whether an ingress policy covers `ns` (poison check included).
+    pub(crate) fn ingress_active(&self, ns: &str) -> Result<bool> {
+        if self.ingress_idle() {
+            return Ok(false);
+        }
+        Ok(self.ingress_policy(ns)?.is_some())
+    }
+
+    /// Ingress text transform: `Ok(None)` when no ingress policy covers the
+    /// namespace; `Ok(Some(text))` with the transformed text otherwise.
+    pub(crate) fn ingress_text(&mut self, ns: &str, text: &str) -> Result<Option<String>> {
+        if self.ingress_idle() {
+            return Ok(None);
+        }
+        let Some(policy) = self.ingress_policy(ns)? else { return Ok(None) };
+        let known = self.known.get(ns).cloned().unwrap_or_default();
+        let session = self.ingress_session(ns, &policy)?;
+        let (out, _) = session.transform_text(text, &known)?;
+        Ok(Some(out))
+    }
+
+    /// Ingress structural-identity transform (a subject is a `person`).
+    pub(crate) fn ingress_identity(&mut self, ns: &str, value: &str) -> Result<Option<String>> {
+        if self.ingress_idle() {
+            return Ok(None);
+        }
+        let Some(policy) = self.ingress_policy(ns)? else { return Ok(None) };
+        self.remember_identity(ns, value.to_string());
+        let session = self.ingress_session(ns, &policy)?;
+        Ok(Some(session.transform_value("person", value)))
+    }
+
+    /// Recompute the stored pseudonym for an identity WITHOUT touching
+    /// session state — pure derivation (REQ-ANON-7): `FORGET SUBJECT` and
+    /// `REPORT SUBJECT` select under both the real name and this alias.
+    /// `None` when no ingress policy covers `ns` or the person action is
+    /// not `pseudonym` (redacted/masked identities have no stable alias).
+    pub(crate) fn ingress_alias(&self, ns: &str, identity: &str) -> Result<Option<String>> {
+        if self.ingress_idle() {
+            return Ok(None);
+        }
+        let Some(policy) = self.ingress_policy(ns)? else { return Ok(None) };
+        let action = policy.categories.get("person").cloned().unwrap_or_else(|| policy.default_action.clone());
+        if action != "pseudonym" {
+            return Ok(None);
+        }
+        let Some(key) = self.memory_key else { return Ok(None) };
+        Ok(Some(areev_core::anon::derived_token(
+            &policy.placeholder,
+            &key,
+            "person",
+            identity,
+        )))
+    }
+
     /// Transform a list of bare strings (graph/history reads). `category`
     /// is `Some("person")` for lists that are identities by construction
     /// (`subjects_with_relation`, fork subjects); `None` runs detection.
@@ -326,12 +464,12 @@ impl AnonGate {
             }
             return Ok(());
         }
-        let persistent = policy.scope == "session";
+        let persistent = policy.scope == "session" || policy.scope == "memory";
         let mut session = if persistent {
-            self.sessions
-                .remove(ns)
-                .map(Ok)
-                .unwrap_or_else(|| SessionAnonymizer::new(policy.clone()))?
+            match self.sessions.remove(ns) {
+                Some(s) => s,
+                None => self.make_session(policy.clone())?,
+            }
         } else {
             SessionAnonymizer::new(policy.clone())?
         };

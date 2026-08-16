@@ -1297,7 +1297,7 @@ fn anonymize_scan_is_pure_text_and_fails_closed_on_bad_policy() {
     // An unreadable policy is a hard refusal (D3), not a silent no-policy.
     let dir = TempDir::new().unwrap();
     let policy = dir.path().join("bad.json");
-    std::fs::write(&policy, r#"{"scope": "memory"}"#).unwrap();
+    std::fs::write(&policy, r#"{"surprise": 1}"#).unwrap();
     let (ok, _out, err) = areev(&[
         "anonymize", "scan", "--text", "x", "--policy-file", policy.to_str().unwrap(),
     ]);

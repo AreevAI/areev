@@ -1,6 +1,17 @@
 # Anonymization — prompt-safe context, PII-aware storage
 
-**Status:** P0 + P1 BUILT (2026-08-16, branch `anonymization-p0`). P0: the
+**Status:** P0–P2 BUILT (2026-08-16, branch `anonymization-p0`). P2: ingress
+mode (value-derived pseudonyms at `capture`/`remember`/`attach_facts`, the
+facade's structured writes, and the memory-tool adapter — all before
+serialization, D8), `memory` scope (HKDF-keyed tokens stable across
+handles), REQ-ANON-7 (erasure and DSAR select under both the real name and
+the recomputed pseudonym), the encrypted-memory requirement for
+value-derived features (Q5 resolved conservatively), and the
+`PseudonymizingBackend` LLM decorator wired into `areev remember`'s
+extraction. Migrate importers stay exempt (historical data rides in raw;
+declare the policy before importing if imports must transform — their
+content-address dedup probe is incompatible with in-flight rewriting).
+P0: the
 `areev_core::anon` engine (Tier-0 chain, placeholder codec, keyed
 `mapping_id`), the explicit `scan_text`/`anonymize_text`/`rehydrate_text`
 APIs on the facade and both bindings, and `areev anonymize scan` — gated by

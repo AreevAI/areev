@@ -28,10 +28,12 @@
 //! reachable from the CLI and the bindings and not just from in-process Rust.
 
 pub mod extract;
+pub mod pseudonymize;
 pub mod toolcall;
 mod toolcall_stream;
 
 pub use extract::{extract_facts, extract_pipeline, ground_facts, ExtractedFact, Extraction};
+pub use pseudonymize::PseudonymizingBackend;
 pub use toolcall::{
     ChatMessage, StopReason, ToolCallError, ToolCallLlm, ToolCallOut, ToolCallRequest,
     ToolCallResponse, ToolChoice, Usage,
