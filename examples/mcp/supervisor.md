@@ -19,7 +19,7 @@ worker agent can propose but only a reviewer can approve.
 ```
 
 The worker captures tool calls (`areev_add` / a `record_tool_call` loop) and
-may run `areev_loop_adapter` to surface recommendations — but a `write`-scoped
+may run `areev_loop` to surface recommendations — but a `write`-scoped
 actor holds neither `review` nor `apply`.
 
 ### Reviewer — approves and applies

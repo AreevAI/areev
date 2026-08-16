@@ -1649,11 +1649,11 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 eprintln!("areev: namespace locked to '{lock}' (per-call namespace ignored)");
             }
             // Host loop policy (--policy FILE or $AREEV_LOOP_POLICY): the
-            // areev_loop_adapter tool honors the same grants as the CLI run. Host
+            // areev_loop tool honors the same grants as the CLI run. Host
             // config set at process start — never controllable by the client.
             if let Some(p) = load_policy(&flags)? {
                 server = server.with_loop_policy(p);
-                eprintln!("areev: loop host policy attached to areev_loop_adapter");
+                eprintln!("areev: loop host policy attached to areev_loop");
             }
             server.serve_stdio().map_err(|e| e.to_string())?;
         }

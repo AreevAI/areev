@@ -841,7 +841,7 @@ fn loop_cli_mcp_parity() {
         .map(|r| r["hash"].as_str().unwrap().to_string())
         .collect();
 
-    // MCP leg on a fresh import: the areev_loop_adapter tool runs the engine and
+    // MCP leg on a fresh import: the areev_loop tool runs the engine and
     // returns the pending queue.
     let g_mcp = import_loop_golden();
     let rpc = |id: u64, method: &str, params: serde_json::Value| {
@@ -872,7 +872,7 @@ fn loop_cli_mcp_parity() {
             stdin,
             "{}",
             rpc(2, "tools/call", serde_json::json!({
-                "name": "areev_loop_adapter", "arguments": {}}))
+                "name": "areev_loop", "arguments": {}}))
         )
         .unwrap();
     }

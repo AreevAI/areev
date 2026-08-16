@@ -238,7 +238,7 @@ to gate it off for both this tool and `areev_forget`.
 
 ---
 
-### `areev_loop_adapter`
+### `areev_loop`
 
 Runs one governed self-improvement pass and returns the run outcome plus the
 pending recommendation queue. The engine is the deterministic analyzer set;

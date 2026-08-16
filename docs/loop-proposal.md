@@ -351,8 +351,8 @@ the loop for history that predates Areev.
 
 ### 4.3 MCP-native and multi-agent
 
-`areev mcp` gains two tools: `areev_loop_adapter` and `areev_recommendations`.
-Docs ship a system-prompt line — *"At session start call areev_loop_adapter;
+`areev mcp` gains two tools: `areev_loop` and `areev_recommendations`.
+Docs ship a system-prompt line — *"At session start call areev_loop;
 review pending recommendations before acting"* — and the supervisor
 pattern: a reviewer agent holds `review`+`apply` scopes while worker agents
 hold `write`, so no agent can approve its own proposals (§6.1).
@@ -1260,7 +1260,7 @@ claim the mechanism.
 | **Python / Node** | `Areev(path, actor=…)`; `db.loop_run([min_new, min_new_errors, if_stale])` (ungated when bare); `db.recommendations(filter)`; `db.apply_recommendation(id, because=…)` (audited approve+apply); `db.dismiss_recommendation(id, why)`; **`db.record_tool_call(name, result, is_error, thread=…, input=input_json)`** | new methods, both bindings, existing scalars-in/JSON-out convention; governance semantics §6.6 |
 | **CLI** | the `areev loop` namespace (status, `run`, queue verbs, analyzer config) + `areev init` | new verbs |
 | **Claude Code** | 3-hook loop: UserPromptSubmit recall-hook (gains `--with-loop`), Stop capture-stop, SessionEnd `areev loop run --min-new 20 --min-new-errors 3 --quiet` | two hooks ship today; third is a new printed line |
-| **MCP** | `areev_loop_adapter`, `areev_recommendations` (+ the existing 6 tools); supervisor pattern (§4.3) | new tools |
+| **MCP** | `areev_loop`, `areev_recommendations` (+ the existing 6 tools); supervisor pattern (§4.3) | new tools |
 | **HTTP** | documented `/api/loop/*` + `/api/cal` (the console's own API; versioned, append-only JSON) — any stack can build its own surface | new routes |
 | **Importers** | 8 `areev migrate` sources + a **generic tool-log importer** (OpenAI-style tool-call JSONL) | migrate ships today; 1 new importer |
 | **Hub** | segment sync of the whole backend incl. recommendations + audit (they're grains) | hub ships today (library mode, no CLI verb yet); analysis stays local-per-file (loop-over-hub deferred) |

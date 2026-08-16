@@ -415,7 +415,7 @@ subject has been removed from model weights.
 - **It runs where you already run things — no daemon.** A cheap, idempotent
   command with watermark gates (`--min-new`, `--if-stale`): a Claude Code
   `SessionEnd` hook, cron, CI (`areev loop list --fail-on high` exits 2 —
-  a build gate), or the `areev_loop_adapter` MCP tool. And the loop closes *into*
+  a build gate), or the `areev_loop` MCP tool. And the loop closes *into*
   the agent: `areev recall-hook --with-loop` rides the pending queue into
   the context Claude Code injects, so the agent sees its own recommendations
   without polling. The console (`areev ui`) shows the queue, recall sessions,

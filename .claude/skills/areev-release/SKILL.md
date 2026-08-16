@@ -5,7 +5,7 @@ description: Runbook for cutting a Areev release — version bump, changelog, an
 
 # Areev release runbook
 
-Areev is a Rust workspace (9 crates) plus Python bindings and a JS binding.
+Areev is a Rust workspace (15 crates) plus Python bindings and a JS binding.
 Follow this order; the workspace has internal `path` dependencies, so crates
 must publish bottom-up.
 
@@ -60,17 +60,19 @@ are on crates.io:
 
 ```
 areev-core, areev-loop          (no internal deps)
+  → areev-run-core          (core)
   → areev-store             (core)
   → areev-cal               (core, store)
   → areev-context           (cal, core)
-  → areev-llm               (areev-loop)
-  → areev-loop-adapter            (cal, core, store, areev-loop)
-  → areev-mcp, areev-server, areev
+  → areev-llm               (areev-loop, core)
+  → areev-loop-adapter      (cal, core, store, areev-loop)
+  → areev-run               (core, store, cal, run-core, llm)
+  → areev-server, areev-mcp, areev
 ```
 
-**Ten publishable crates, not seven** — this list used to omit `areev-loop`,
-`areev-llm` and `areev-loop-adapter`, so following it failed at `areev-mcp`
-(which needs `areev-loop-adapter`). Recompute rather than trust it:
+**Twelve publishable crates** — this list has gone stale before (it once
+omitted the loop tier and failed at `areev-mcp`). Recompute rather than
+trust it:
 
 ```bash
 # topological order from the manifests
@@ -140,6 +142,14 @@ npm publish --access public
 
 ## Notes
 
-- All three registry names (`areev` on crates.io/PyPI/npm) are reserved.
+- Registry names: `areev` on crates.io and PyPI are ours. npm ships
+  **`@areev/areev`** — the unscoped `areev` name and `areev-win32-x64-msvc`
+  are blocked by npm's similarity/spam filters pending a support exception;
+  when granted, publish unscoped, deprecate the scoped one, and flip the
+  docs back to `npm install areev`.
+- crates.io rate-limits NEW crate names hard (burst ~5, slow refill, 429
+  with retry-after); existing-crate version publishes are much milder.
+  Retry on 429 AND on upload timeouts — a timed-out upload may still have
+  landed ("already exists on index" on retry means it did).
 - Keep `rust-version` (MSRV) in `[workspace.package]` accurate — CI has an MSRV job.
 - Never reuse or renumber error codes across releases (append-only).

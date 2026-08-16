@@ -266,7 +266,7 @@ argument.
 
 ### MCP — two tools
 
-`areev_loop_adapter` runs a pass and returns the pending queue (call it at session
+`areev_loop` runs a pass and returns the pending queue (call it at session
 start). `areev_recommendations` lists, or acts (`apply`/`approve`/`reject`
 with a mandatory `because`). Launch a reviewer process and worker processes
 with different `--scopes`/`--actor` so no agent can approve its own proposals.
@@ -379,7 +379,7 @@ pre-armed; it is host config and is never persisted in a memory file.
 `areev loop policy` prints the effective policy.
 
 The same policy file attaches to the other run surfaces — `areev ui --policy`
-(console-triggered runs) and `areev serve --mcp --policy` (the `areev_loop_adapter`
+(console-triggered runs) and `areev serve --mcp --policy` (the `areev_loop`
 tool) — so every surface honors one set of grants, set at process start and
 never controllable by a client.
 

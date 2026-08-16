@@ -63,7 +63,7 @@ pub struct McpServer {
     /// arguments are ignored and `areev_cal` queries are namespace-overridden,
     /// so an agent cannot read or write outside its partition.
     locked_ns: Option<String>,
-    /// Host loop policy (§6.2) for the `areev_loop_adapter` engine — the same
+    /// Host loop policy (§6.2) for the `areev_loop` engine — the same
     /// `loop-policy.json` the CLI takes (`areev serve --mcp --policy`).
     /// Absent → the closed default (nothing auto-applies). Host config, set at
     /// process start, never controllable by the MCP client.
@@ -90,7 +90,7 @@ impl McpServer {
         }
     }
 
-    /// Attach a host loop policy so an MCP-triggered `areev_loop_adapter` run
+    /// Attach a host loop policy so an MCP-triggered `areev_loop` run
     /// honors the same auto-apply grants, denies, and severity floors as
     /// `areev loop run --policy`.
     pub fn with_loop_policy(mut self, policy: areev_loop::Policy) -> Self {
@@ -749,7 +749,7 @@ impl McpServer {
                 let payload = res.payload_json().map_err(|e| e.to_string())?;
                 serde_json::to_string(&payload).map_err(|e| e.to_string())
             }
-            "areev_loop_adapter" => {
+            "areev_loop" => {
                 let opts = RunOptions {
                     min_new: args.get("min_new").and_then(Value::as_u64),
                     min_new_errors: args.get("min_new_errors").and_then(Value::as_u64),
@@ -1054,7 +1054,7 @@ fn tool_defs() -> Vec<Value> {
             }, "required": ["query"]}
         }),
         json!({
-            "name": "areev_loop_adapter",
+            "name": "areev_loop",
             "description": "Run one governed self-improvement pass (deterministic analyzers; auto-apply only under the host policy the server was started with; LLM reflection attaches on the CLI, not here) and return the run outcome plus the pending recommendation queue. Call at session start; review pending recommendations before acting.",
             "inputSchema": {"type": "object", "properties": {
                 "min_new": {"type": "integer", "description": "only run if at least this many new grains since the last run (optional)"},

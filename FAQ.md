@@ -316,7 +316,7 @@ contradiction, this tool keeps failing, this lesson is stale) with **no model
 calls** — the analyzers are deterministic. Every recommendation cites its
 evidence, every decision needs a written reason, every apply is audited and
 (unless it's a `FORGET`) undoable. Run it with `areev loop run`,
-`db.loop_run()`, or the `areev_loop_adapter` MCP tool.
+`db.loop_run()`, or the `areev_loop` MCP tool.
 
 ### Does Areev Loop edit my agent's memory or prompt on its own?
 

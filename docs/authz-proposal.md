@@ -97,7 +97,7 @@ table is the contract; a cross-surface test pins it (§10).
 | `supersede` | merge; CAL `SUPERSEDE`/`REVERT` — separated from `write` so an append-only logger principal cannot rewrite heads | `enable_writes` |
 | `delete` | single-grain tombstone: CAL `FORGET <hash>`, MCP `areev_forget`, memtool delete | `allow_destructive_ops` |
 | `erase` | bulk + crypto erasure: `forget_subject`, `forget_older_than` and (new, D1) CAL `FORGET SUBJECT` / `PURGE OLDER THAN` | host-only + `--yes` |
-| `loop.run` | trigger analysis (`loop run`/`reflect`, `areev_loop_adapter`, `/api/loop/run`) | none |
+| `loop.run` | trigger analysis (`loop run`/`reflect`, `areev_loop`, `/api/loop/run`) | none |
 | `loop.review` | approve/reject | `Scope::Review` |
 | `loop.apply` | apply/rollback (a destructive apply additionally requires `delete`) | `Scope::Apply` (+`Admin`) |
 | `admin` | `DEFINE/DROP TEMPLATE/QUERY`, reindex, analyzer config, `/api/loop/config`, hub segment admin | `Scope::Admin` / admin scope |

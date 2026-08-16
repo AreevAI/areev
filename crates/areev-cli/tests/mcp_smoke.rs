@@ -41,7 +41,7 @@ fn mcp_round_trip() {
             "query": "RECALL facts WHERE subject = \"alice\" | COUNT"}})),
         rpc(7, "tools/call", serde_json::json!({"name": "areev_cal", "arguments": {
             "query": "DELETE sha256:abc"}})),
-        rpc(8, "tools/call", serde_json::json!({"name": "areev_loop_adapter", "arguments": {}})),
+        rpc(8, "tools/call", serde_json::json!({"name": "areev_loop", "arguments": {}})),
         rpc(9, "ping", serde_json::json!({})),
         // The remembered turn must be readable back through the run join —
         // areev_remember had no run_id, so areev_run_trace could only ever
@@ -143,7 +143,7 @@ fn mcp_round_trip() {
     // destructive CAL is a tool error, not a crash
     assert_eq!(by_id(7)["result"]["isError"], true);
 
-    // areev_loop_adapter runs a pass and returns the run outcome + pending queue
+    // areev_loop runs a pass and returns the run outcome + pending queue
     assert_eq!(by_id(8)["result"]["isError"], false);
     let loop_text = by_id(8)["result"]["content"][0]["text"].as_str().unwrap();
     let loop_result: serde_json::Value = serde_json::from_str(loop_text).unwrap();

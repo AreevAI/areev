@@ -358,7 +358,7 @@ mode silently misclassifies new statements.
 
 **Surface-consolidation policy** (without it, confusion #6 only half-dies):
 after governance enters CAL, every loop action has two spellings on every
-surface (`/api/loop/approve` *and* `/api/cal` APPROVE; `areev_loop_adapter` *and*
+surface (`/api/loop/approve` *and* `/api/cal` APPROVE; `areev_loop` *and*
 `areev_cal`; `areev loop approve` *and* `areev cal`). The policy: **CAL is
 canonical; existing endpoints stay as documented sugar over it; no *new*
 bespoke endpoints for anything CAL can express.** Otherwise "all you need"

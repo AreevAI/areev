@@ -1,7 +1,7 @@
 # Areev
 
 Embedded memory engine for AI agents — reference implementation of OMS (Open
-Memory Spec). Rust workspace of 12 crates (plus `areev-js`, a standalone napi
+Memory Spec). Rust workspace of 15 crates (plus `areev-js`, a standalone napi
 package built outside the workspace, and `adapters/` — the pip packages
 `areev-langgraph` and `areev-crewai`, see `adapters/CLAUDE.md`). Memories
 are immutable content-addressed grains in per-file Turso databases, queried
@@ -9,7 +9,11 @@ with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
-`areev` on PyPI and npm (`areev-py` and `areev-bench` stay `publish = false`).
+`areev` on PyPI, and **`@areev/areev`** on npm (the unscoped `areev` npm name
+and `areev-win32-x64-msvc` are pending an npm similarity/spam-filter
+exception; when granted, publish unscoped and deprecate the scoped one).
+`areev-py`, `areev-bench`, and `areev-conformance` stay `publish = false`;
+`areev-js` ships to npm, not crates.io.
 The version lives in `[workspace.package]` in the root `Cargo.toml` (all crates
 inherit it) and `CHANGELOG.md` records each release — don't restate the number
 here (it goes stale). `ARCHITECTURE.md` is the design source of truth — the
@@ -19,7 +23,7 @@ exists; `crates/areev-bench/RESULTS.md` has the benchmark numbers.
 ## Commands
 
 ```bash
-cargo test --workspace            # full suite (~950 tests, fast)
+cargo test --workspace            # full suite (~1,800 tests, fast)
 cargo test -p areev-cal          # per-crate
 cargo run --release -p areev-store --example bench       # latency gates
 cargo run --release -p areev-store --example voice_loop  # 50ms-cadence gate
@@ -146,7 +150,7 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   the DSAR read `areev_subject_report`,
   the graph/time reads `areev_related/entity_at/step_actions`, the
   run<->memory join `areev_run_trace/runs_touching`, the §7.4 forensics
-  `areev_tool_provenance`, the loop pair `areev_loop_adapter/recommendations`,
+  `areev_tool_provenance`, the loop pair `areev_loop/recommendations`,
   and the runtime six `areev_run_start/resume/respond/cancel/verify/list`
   — host tools execute only via `$AREEV_RUN_TOOL_CMD`, respond REQUIRES a
   `responder` principal)
@@ -207,6 +211,8 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 ## Naming
 
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`. The OMS spec itself is external (CC0); OMS
-conformance is the
-compatibility mechanism with other implementations.
+"areevd", Python module `areev`, npm package `@areev/areev` (unscoped
+`areev` pending npm approval). Formerly published as DejaDB
+(github.com/AreevAI/dejadb, frozen at 1.2.0 and archived). The OMS spec
+itself is external (CC0); OMS conformance is the compatibility mechanism
+with other implementations.
