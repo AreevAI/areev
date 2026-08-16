@@ -1777,6 +1777,57 @@ impl Areev {
         serde_json::to_string(&cfg).map_err(err)
     }
 
+    /// Detect sensitive spans in free text with the built-in Tier-0 chain
+    /// (docs/anonymization-proposal.md P0). Pure text — touches no grains.
+    /// Returns JSON `{"text": <nfc text>, "detections": [...]}`; offsets are
+    /// UTF-8 bytes into the returned normalized text.
+    #[pyo3(signature = (text, policy_json = None))]
+    fn scan_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        policy_json: Option<String>,
+    ) -> PyResult<String> {
+        py.detach(|| self.facade.scan_text(&text, policy_json.as_deref()))
+            .map_err(err)
+    }
+
+    /// Pseudonymize free text: detected spans become typed placeholders
+    /// (`[PERSON_1]`) and the reversible spans' placeholder→value map is
+    /// returned to the caller. Returns JSON
+    /// `{"text", "mapping", "mapping_id", "replaced"}`. `key_hex` keys the
+    /// `mapping_id` derivation; without it, don't ship the id anywhere the
+    /// mapping doesn't also travel.
+    #[pyo3(signature = (text, policy_json = None, key_hex = None))]
+    fn anonymize_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        policy_json: Option<String>,
+        key_hex: Option<String>,
+    ) -> PyResult<String> {
+        py.detach(|| {
+            self.facade
+                .anonymize_text(&text, policy_json.as_deref(), key_hex.as_deref())
+        })
+        .map_err(err)
+    }
+
+    /// Restore originals in an LLM response: replaces exact placeholder
+    /// tokens using `mapping_json` (object of placeholder → value). Returns
+    /// JSON `{"text", "replaced", "unmatched"}` — unmatched tokens are left
+    /// intact and reported, never guessed.
+    #[pyo3(signature = (text, mapping_json))]
+    fn rehydrate_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        mapping_json: String,
+    ) -> PyResult<String> {
+        py.detach(|| self.facade.rehydrate_text(&text, &mapping_json))
+            .map_err(err)
+    }
+
     /// Reject a recommendation with a reason (the library-friendly name for
     /// `areev loop reject`).
     #[pyo3(signature = (hash, why, scopes = None))]

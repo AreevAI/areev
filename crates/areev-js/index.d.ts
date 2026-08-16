@@ -314,6 +314,29 @@ export declare class Areev {
    * the bindings. `paramsJson` is an optional JSON object of overrides.
    */
   setAnalyzerConfig(analyzerId: string, enabled?: boolean | undefined | null, paramsJson?: string | undefined | null): Promise<string>
+  /**
+   * Detect sensitive spans in free text with the built-in Tier-0 chain
+   * (docs/anonymization-proposal.md P0). Pure text — touches no grains.
+   * Returns JSON `{"text": <nfc text>, "detections": [...]}`; offsets are
+   * UTF-8 bytes into the returned normalized text.
+   */
+  scanText(text: string, policyJson?: string | undefined | null): Promise<string>
+  /**
+   * Pseudonymize free text: detected spans become typed placeholders
+   * (`[PERSON_1]`) and the reversible spans' placeholder→value map is
+   * returned to the caller. Returns JSON
+   * `{"text", "mapping", "mapping_id", "replaced"}`. `keyHex` keys the
+   * `mapping_id` derivation; without it, don't ship the id anywhere the
+   * mapping doesn't also travel.
+   */
+  anonymizeText(text: string, policyJson?: string | undefined | null, keyHex?: string | undefined | null): Promise<string>
+  /**
+   * Restore originals in an LLM response: replaces exact placeholder
+   * tokens using `mappingJson` (object of placeholder → value). Returns
+   * JSON `{"text", "replaced", "unmatched"}` — unmatched tokens are left
+   * intact and reported, never guessed.
+   */
+  rehydrateText(text: string, mappingJson: string): Promise<string>
   /** Reject a recommendation with a reason (library-friendly `reject`). */
   dismissRecommendation(hash: string, why: string, scopes?: string | undefined | null): Promise<string>
   /**

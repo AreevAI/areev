@@ -14,7 +14,8 @@ auth, what is and isn't encrypted), [`cal-reference.md`](cal-reference.md)
 §8 (the destruction model),
 [`oms-1.6-amendments.md`](oms-1.6-amendments.md) (the spec changes this work
 required). Design-stage: [consent cascade](consent-cascade-proposal.md),
-[per-subject crypto-erasure](crypto-erasure-proposal.md).
+[per-subject crypto-erasure](crypto-erasure-proposal.md),
+[prompt-safe pseudonymization](anonymization-proposal.md).
 
 ---
 

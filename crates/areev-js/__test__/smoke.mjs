@@ -780,3 +780,35 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.ok(BigInt(ops[0].hlc) >= 0n, 'string hlc round-trips through BigInt')
   await m.close()
 })
+
+test('anonymizeText round trip (proposal P0)', async () => {
+  const m = makeDb()
+  const out = JSON.parse(await m.anonymizeText('mail a@b.co, pin number is 1462'))
+  assert.equal(out.text, 'mail [EMAIL_1], pin number is [PIN_1]')
+  assert.deepEqual(out.mapping, { '[EMAIL_1]': 'a@b.co', '[PIN_1]': '1462' })
+  assert.equal(out.mapping_id.length, 16)
+
+  const back = JSON.parse(
+    await m.rehydrateText('sent to [EMAIL_1] after pin [PIN_1]', JSON.stringify(out.mapping)),
+  )
+  assert.equal(back.text, 'sent to a@b.co after pin 1462')
+  assert.equal(back.replaced, 2)
+  assert.deepEqual(back.unmatched, [])
+  await m.close()
+})
+
+test('scanText respects policy and fails closed on a bad one', async () => {
+  const m = makeDb()
+  const dets = JSON.parse(await m.scanText('host 10.0.0.1 down')).detections
+  assert.equal(dets[0].category, 'ipv4')
+
+  const allowed = JSON.parse(
+    await m.scanText('host 10.0.0.1 down', JSON.stringify({ categories: { ipv4: 'allow' } })),
+  )
+  assert.deepEqual(allowed.detections, [])
+
+  // an unreadable policy is a hard VAL error, not a silent no-policy (D3)
+  await assert.rejects(() => m.scanText('x', JSON.stringify({ scope: 'memory' })), /VAL-E001/)
+  await assert.rejects(() => m.rehydrateText('x', '{"bad": 1}'), /VAL-E001/)
+  await m.close()
+})

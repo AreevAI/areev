@@ -160,6 +160,12 @@ COMMANDS:
                                       them). --dry-run prints, stores nothing.
   hook     claude-code               print settings.json hook snippet
                                       (auto recall-before-prompt + capture-on-stop)
+  anonymize scan [--text T] [--policy-file F]
+                                      detect sensitive spans (Tier-0 chain:
+                                      structural, regex+checksum, secrets,
+                                      keyword cues, dictionary). Reads stdin
+                                      when --text is absent; prints JSON.
+                                      Pure text — needs no memory file.
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
   ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]  web console (default 127.0.0.1:7437)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
@@ -900,6 +906,41 @@ register the MCP server:
   claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
 
 Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
+        );
+        return Ok(());
+    }
+
+    // `anonymize` is pure text processing (docs/anonymization-proposal.md P0):
+    // it never opens the store, so it runs before the open like `hook`.
+    if cmd == "anonymize" {
+        let sub = positional.first().map(String::as_str).unwrap_or("");
+        if sub != "scan" {
+            return Err(format!(
+                "unknown anonymize subcommand '{sub}' (P0 ships `anonymize scan`; \
+                 apply/rehydrate arrive with the egress pipeline)"
+            ));
+        }
+        let text = match flag(&flags, "text") {
+            Some(t) => t,
+            None => {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .map_err(|e| format!("reading stdin: {e}"))?;
+                buf
+            }
+        };
+        let policy = match flag(&flags, "policy-file") {
+            Some(path) => {
+                let json = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--policy-file {path}: {e}"))?;
+                areev_core::anon::AnonPolicy::from_json(&json).map_err(|e| e.to_string())?
+            }
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let out = areev_core::anon::scan(&text, &policy, &[]).map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
         );
         return Ok(());
     }

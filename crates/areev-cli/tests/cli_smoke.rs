@@ -1257,3 +1257,50 @@ fn run_demo_end_to_end() {
     // Intents + results (Tool) and checkpoints (State) — the whole journal.
     assert!(out.contains("Tool") && out.contains("State"), "{out}");
 }
+
+#[test]
+fn anonymize_scan_is_pure_text_and_fails_closed_on_bad_policy() {
+    // `--text` mode: no --db, no store open, JSON out with the pin span.
+    let (ok, out, err) = areev(&[
+        "anonymize", "scan", "--text", "my user name is john, and pin number is 1462",
+    ]);
+    assert!(ok, "anonymize scan failed: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("scan prints JSON");
+    let cats: Vec<&str> = v["detections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["category"].as_str().unwrap())
+        .collect();
+    assert!(cats.contains(&"pin"), "expected a pin detection, got {cats:?}");
+
+    // stdin mode.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["anonymize", "scan"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn areev");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"reach me at a@b.co")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdin scan prints JSON");
+    assert_eq!(v["detections"][0]["category"], "email");
+
+    // An unreadable policy is a hard refusal (D3), not a silent no-policy.
+    let dir = TempDir::new().unwrap();
+    let policy = dir.path().join("bad.json");
+    std::fs::write(&policy, r#"{"scope": "memory"}"#).unwrap();
+    let (ok, _out, err) = areev(&[
+        "anonymize", "scan", "--text", "x", "--policy-file", policy.to_str().unwrap(),
+    ]);
+    assert!(!ok, "bad policy must refuse");
+    assert!(err.contains("VAL-E001"), "want VAL-E001 in: {err}");
+}

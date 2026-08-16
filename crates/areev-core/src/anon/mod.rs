@@ -1,0 +1,609 @@
+//! Text pseudonymization: the Tier-0 detection chain, the placeholder codec,
+//! and the keyed round-trip derivations (docs/anonymization-proposal.md, P0).
+//!
+//! Everything here is pure — no store access, no clock, no host config — so
+//! every surface (store boundary, facade, CLI, bindings, LLM decorator)
+//! shares one implementation. Offsets are UTF-8 byte positions over
+//! NFC-normalized text: the same normalization canonical serialization
+//! applies, so a span always slices exactly what would be stored or hashed
+//! (proposal §5).
+//!
+//! Vocabulary is deliberate: this module *pseudonymizes* (D10). Only
+//! `pseudonym` spans enter the mapping; `mask` and `redact` are one-way.
+
+mod detect;
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
+
+use crate::error::{AreevError, Result};
+
+pub use detect::KNOWN_CATEGORIES;
+
+/// One detected sensitive span. `start`/`end` are UTF-8 byte offsets into the
+/// NFC-normalized text returned alongside the detections.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Detection {
+    pub start: usize,
+    pub end: usize,
+    pub category: String,
+    pub confidence: f32,
+    pub detector: String,
+}
+
+/// What the policy does with a detected span. Ranked by severity for overlap
+/// resolution (proposal §5): a long low-severity span must never swallow a
+/// high-severity one into a weaker treatment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Allow,
+    Pseudonym,
+    Mask,
+    Redact,
+}
+
+impl Action {
+    fn severity(self) -> u8 {
+        match self {
+            Action::Allow => 0,
+            Action::Pseudonym => 1,
+            Action::Mask => 3,
+            Action::Redact => 4,
+        }
+    }
+
+    fn parse(s: &str) -> Result<Action> {
+        match s {
+            "allow" => Ok(Action::Allow),
+            "pseudonym" => Ok(Action::Pseudonym),
+            "mask" => Ok(Action::Mask),
+            "redact" => Ok(Action::Redact),
+            other if other == "generalize" || other.starts_with("generalize:") => {
+                Err(AreevError::Validation(format!(
+                    "anonymization action '{other}' is declared in the proposal but not \
+                     built yet (generalization lands in a later phase); use pseudonym, \
+                     mask, redact, or allow"
+                )))
+            }
+            other => Err(AreevError::Validation(format!(
+                "unknown anonymization action '{other}' (expected pseudonym, mask, \
+                 redact, or allow)"
+            ))),
+        }
+    }
+}
+
+fn default_mode() -> String {
+    "egress".into()
+}
+fn default_action() -> String {
+    "pseudonym".into()
+}
+fn default_scope() -> String {
+    "context".into()
+}
+fn default_placeholder() -> String {
+    "[{CATEGORY}_{ID}]".into()
+}
+fn default_min_confidence() -> f32 {
+    0.5
+}
+
+/// The declarative anonymization policy (proposal §8.1). Serialized as the
+/// JSON value of an `anon:<ns>` meta row from P1 on; in P0 it is supplied
+/// explicitly to the text APIs.
+///
+/// `deny_unknown_fields` is the fail-closed half of D3: a policy field this
+/// build does not understand could be the field that *strengthens* the
+/// policy, so refusing it loudly beats silently ignoring it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnonPolicy {
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// category → action ("pseudonym" | "mask" | "redact" | "allow").
+    #[serde(default)]
+    pub categories: BTreeMap<String, String>,
+    /// Action for categories a detector emits but the map omits — the chain
+    /// fails closed on categories it didn't anticipate, not open.
+    #[serde(default = "default_action")]
+    pub default_action: String,
+    /// User dictionary; matches become category `custom`.
+    #[serde(default)]
+    pub custom_terms: Vec<String>,
+    /// Pseudonym stability scope. P0 supports `context` only (per-call
+    /// numbering); `session`/`memory` arrive with the store boundary.
+    #[serde(default = "default_scope")]
+    pub scope: String,
+    /// Placeholder template; must contain `{CATEGORY}` and `{ID}`.
+    #[serde(default = "default_placeholder")]
+    pub placeholder: String,
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because: Option<String>,
+}
+
+impl Default for AnonPolicy {
+    fn default() -> Self {
+        AnonPolicy {
+            mode: default_mode(),
+            categories: BTreeMap::new(),
+            default_action: default_action(),
+            custom_terms: Vec::new(),
+            scope: default_scope(),
+            placeholder: default_placeholder(),
+            min_confidence: default_min_confidence(),
+            because: None,
+        }
+    }
+}
+
+impl AnonPolicy {
+    /// Parse and validate a policy from JSON. Parse or validation failure is a
+    /// hard `VAL` error (D3): a policy this build cannot read must not
+    /// silently mean "no policy".
+    pub fn from_json(json: &str) -> Result<AnonPolicy> {
+        let policy: AnonPolicy = serde_json::from_str(json).map_err(|e| {
+            AreevError::Validation(format!("invalid anonymization policy: {e}"))
+        })?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.mode.as_str() {
+            "off" | "egress" | "ingress" | "both" | "audit" => {}
+            other => {
+                return Err(AreevError::Validation(format!(
+                    "invalid anonymization policy: unknown mode '{other}' (expected \
+                     off, egress, ingress, both, or audit)"
+                )));
+            }
+        }
+        match self.scope.as_str() {
+            "context" => {}
+            "session" | "memory" => {
+                return Err(AreevError::Validation(format!(
+                    "invalid anonymization policy: scope '{}' is declared in the \
+                     proposal but not built yet; P0 supports scope \"context\"",
+                    self.scope
+                )));
+            }
+            other => {
+                return Err(AreevError::Validation(format!(
+                    "invalid anonymization policy: unknown scope '{other}' (expected \
+                     context, session, or memory)"
+                )));
+            }
+        }
+        if !(self.placeholder.contains("{CATEGORY}") && self.placeholder.contains("{ID}")) {
+            return Err(AreevError::Validation(
+                "invalid anonymization policy: placeholder template must contain \
+                 {CATEGORY} and {ID}"
+                    .into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.min_confidence) || !self.min_confidence.is_finite() {
+            return Err(AreevError::Validation(
+                "invalid anonymization policy: min_confidence must be within 0.0..=1.0"
+                    .into(),
+            ));
+        }
+        Action::parse(&self.default_action).map_err(|e| {
+            AreevError::Validation(format!("invalid anonymization policy default_action: {e}"))
+        })?;
+        for (cat, act) in &self.categories {
+            if cat.is_empty() {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: empty category name".into(),
+                ));
+            }
+            Action::parse(act).map_err(|e| {
+                AreevError::Validation(format!(
+                    "invalid anonymization policy for category '{cat}': {e}"
+                ))
+            })?;
+        }
+        for term in &self.custom_terms {
+            if term.trim().is_empty() {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: empty custom_terms entry".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn action_for(&self, category: &str) -> Action {
+        match self.categories.get(category) {
+            // Validated in `validate()`; unreachable fallback keeps this total.
+            Some(act) => Action::parse(act).unwrap_or(Action::Redact),
+            None => Action::parse(&self.default_action).unwrap_or(Action::Redact),
+        }
+    }
+}
+
+/// Scan outcome: the NFC-normalized text the offsets refer to, plus the
+/// surviving detections after overlap resolution (sorted by start).
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanOutcome {
+    pub text: String,
+    pub detections: Vec<Detection>,
+}
+
+/// Anonymize outcome. `mapping` holds pseudonym spans only — `mask` and
+/// `redact` are one-way by definition (proposal §6) — keyed by placeholder
+/// token. `mapping_id` is the keyed round-trip handle (D11).
+#[derive(Debug, Clone, Serialize)]
+pub struct AnonOutcome {
+    pub text: String,
+    pub mapping: BTreeMap<String, String>,
+    pub mapping_id: String,
+    /// Spans replaced (all actions except allow).
+    pub replaced: usize,
+}
+
+/// Rehydrate outcome. `unmatched` lists placeholder-shaped tokens left in the
+/// text that the mapping did not cover — reported, never guessed.
+#[derive(Debug, Clone, Serialize)]
+pub struct RehydrateOutcome {
+    pub text: String,
+    pub replaced: usize,
+    pub unmatched: Vec<String>,
+}
+
+/// NFC-normalize without allocating when the input already is.
+pub fn nfc(text: &str) -> Cow<'_, str> {
+    if unicode_normalization::is_nfc(text) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.nfc().collect())
+    }
+}
+
+/// Run the Tier-0 detector chain and resolve overlaps (proposal §5).
+///
+/// `known_identities` are identities the caller already holds (e.g. interned
+/// subjects like `caller:john`); each matches as category `person` — the
+/// schema-aware detector a text-only proxy cannot have. Detections below
+/// `min_confidence` are dropped; overlapping spans coalesce by action
+/// severity first, span length second, then (start, category) as the
+/// deterministic tiebreak; `allow` spans are resolved and then discarded.
+pub fn scan(text: &str, policy: &AnonPolicy, known_identities: &[String]) -> Result<ScanOutcome> {
+    policy.validate()?;
+    let text = nfc(text).into_owned();
+    let mut detections = detect::run_tier0(&text, &policy.custom_terms, known_identities)?;
+    detections.retain(|d| d.confidence >= policy.min_confidence);
+    let mut survivors = resolve_overlaps(detections, policy);
+    survivors.retain(|d| policy.action_for(&d.category) != Action::Allow);
+    Ok(ScanOutcome { text, detections: survivors })
+}
+
+/// Detect, then apply the policy's actions, producing prompt-safe text plus
+/// the mapping for the pseudonym spans.
+///
+/// `key` keys the `mapping_id` derivation (D11). Callers on trusted
+/// in-process surfaces may pass `None` (the id is then derived under an
+/// all-zero key and MUST NOT be shipped to untrusted surfaces without the
+/// mapping — from P1 on, the store boundary always supplies a real key).
+pub fn anonymize(
+    text: &str,
+    policy: &AnonPolicy,
+    known_identities: &[String],
+    key: Option<&[u8]>,
+) -> Result<AnonOutcome> {
+    let ScanOutcome { text, detections } = scan(text, policy, known_identities)?;
+
+    // Tokens already literally present in the source must not collide with
+    // tokens we mint (open question 2's resolution: renumber around them).
+    let reserved = template_shaped_tokens(&text, &policy.placeholder);
+
+    let mut mapping: BTreeMap<String, String> = BTreeMap::new();
+    let mut by_value: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut counters: BTreeMap<String, u64> = BTreeMap::new();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    let mut replaced = 0usize;
+
+    for d in &detections {
+        out.push_str(&text[cursor..d.start]);
+        let value = &text[d.start..d.end];
+        match policy.action_for(&d.category) {
+            Action::Allow => unreachable!("allow spans dropped in scan()"),
+            Action::Redact => {
+                out.push_str(&format!("[REDACTED:{}]", category_upper(&d.category)));
+                replaced += 1;
+            }
+            Action::Mask => {
+                out.push_str(&mask_value(value));
+                replaced += 1;
+            }
+            Action::Pseudonym => {
+                let token = by_value
+                    .entry((d.category.clone(), value.to_string()))
+                    .or_insert_with(|| {
+                        mint_token(
+                            &policy.placeholder,
+                            &d.category,
+                            counters.entry(d.category.clone()).or_insert(0),
+                            &reserved,
+                        )
+                    })
+                    .clone();
+                mapping.insert(token.clone(), value.to_string());
+                out.push_str(&token);
+                replaced += 1;
+            }
+        }
+        cursor = d.end;
+    }
+    out.push_str(&text[cursor..]);
+
+    let mapping_id = derive_mapping_id(key, policy, &mapping)?;
+    Ok(AnonOutcome { text: out, mapping, mapping_id, replaced })
+}
+
+/// Replace exact placeholder tokens with their mapped originals. Tokens the
+/// mapping does not cover are left intact and reported in `unmatched`; the
+/// codec never guesses (proposal §6).
+pub fn rehydrate(text: &str, mapping: &BTreeMap<String, String>) -> Result<RehydrateOutcome> {
+    let text = nfc(text).into_owned();
+    for k in mapping.keys() {
+        if k.is_empty() {
+            return Err(AreevError::Validation(
+                "invalid anonymization mapping: empty placeholder key".into(),
+            ));
+        }
+    }
+
+    // One left-to-right pass over the original text: collect every occurrence
+    // of every key, prefer the longest key at a position, and never rescan
+    // spliced-in values (a mapped value that happens to contain a
+    // placeholder-shaped string must come back verbatim, not recurse).
+    let mut hits: Vec<(usize, &str)> = Vec::new();
+    for key in mapping.keys() {
+        for (pos, _) in text.match_indices(key.as_str()) {
+            hits.push((pos, key.as_str()));
+        }
+    }
+    hits.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.len().cmp(&a.1.len())));
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    let mut replaced = 0usize;
+    for (pos, key) in hits {
+        if pos < cursor {
+            continue; // overlapped by an earlier (longer) key
+        }
+        out.push_str(&text[cursor..pos]);
+        out.push_str(&mapping[key]);
+        cursor = pos + key.len();
+        replaced += 1;
+    }
+    out.push_str(&text[cursor..]);
+
+    // Best-effort report of leftover tokens in the *default* shape; a custom
+    // template's leftovers are only recognized when they share the bracketed
+    // CATEGORY_ID silhouette.
+    let mut unmatched: Vec<String> = Vec::new();
+    for token in template_shaped_tokens(&out, &default_placeholder()) {
+        if !mapping.contains_key(&token) && !unmatched.contains(&token) {
+            unmatched.push(token);
+        }
+    }
+    unmatched.sort();
+    Ok(RehydrateOutcome { text: out, replaced, unmatched })
+}
+
+/// Parse a mapping serialized as a JSON object of placeholder → value.
+pub fn mapping_from_json(json: &str) -> Result<BTreeMap<String, String>> {
+    serde_json::from_str(json)
+        .map_err(|e| AreevError::Validation(format!("invalid anonymization mapping: {e}")))
+}
+
+// ---- internals -------------------------------------------------------------
+
+fn category_upper(category: &str) -> String {
+    category
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect()
+}
+
+fn mint_token(
+    template: &str,
+    category: &str,
+    counter: &mut u64,
+    reserved: &std::collections::BTreeSet<String>,
+) -> String {
+    loop {
+        *counter += 1;
+        let token = template
+            .replace("{CATEGORY}", &category_upper(category))
+            .replace("{ID}", &counter.to_string());
+        if !reserved.contains(&token) {
+            return token;
+        }
+    }
+}
+
+/// Every literal in `text` that matches the template's token silhouette.
+fn template_shaped_tokens(text: &str, template: &str) -> std::collections::BTreeSet<String> {
+    let mut pattern = String::new();
+    let mut rest = template;
+    while let Some(idx) = rest.find('{') {
+        pattern.push_str(&regex::escape(&rest[..idx]));
+        if rest[idx..].starts_with("{CATEGORY}") {
+            pattern.push_str("[A-Z][A-Z0-9_]*");
+            rest = &rest[idx + "{CATEGORY}".len()..];
+        } else if rest[idx..].starts_with("{ID}") {
+            pattern.push_str("[0-9A-Za-z]+");
+            rest = &rest[idx + "{ID}".len()..];
+        } else {
+            pattern.push_str(&regex::escape(&rest[idx..idx + 1]));
+            rest = &rest[idx + 1..];
+        }
+    }
+    pattern.push_str(&regex::escape(rest));
+    let mut out = std::collections::BTreeSet::new();
+    if let Ok(re) = regex::Regex::new(&pattern) {
+        for m in re.find_iter(text) {
+            out.insert(m.as_str().to_string());
+        }
+    }
+    out
+}
+
+fn mask_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut run_started = false;
+    for c in value.chars() {
+        if c.is_alphanumeric() {
+            if run_started {
+                out.push('*');
+            } else {
+                out.push(c);
+                run_started = true;
+            }
+        } else {
+            out.push(c);
+            run_started = false;
+        }
+    }
+    out
+}
+
+/// Overlap resolution (proposal §5): repeatedly take the best remaining span
+/// by (action severity, length, earliest start, category), evicting whatever
+/// it overlaps. O(n²) on the per-text detection count, which is small.
+fn resolve_overlaps(mut detections: Vec<Detection>, policy: &AnonPolicy) -> Vec<Detection> {
+    let mut survivors: Vec<Detection> = Vec::new();
+    while !detections.is_empty() {
+        let best = detections
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                let sa = policy.action_for(&a.category).severity();
+                let sb = policy.action_for(&b.category).severity();
+                sa.cmp(&sb)
+                    .then((a.end - a.start).cmp(&(b.end - b.start)))
+                    .then(b.start.cmp(&a.start))
+                    .then(b.category.cmp(&a.category))
+            })
+            .map(|(i, _)| i)
+            .expect("non-empty");
+        let winner = detections.swap_remove(best);
+        detections.retain(|d| d.end <= winner.start || d.start >= winner.end);
+        survivors.push(winner);
+    }
+    survivors.sort_by_key(|d| d.start);
+    survivors
+}
+
+/// The keyed round-trip handle (D11): truncated HMAC-SHA256 over the
+/// canonicalized policy, the scope, and the sorted placeholder→value pairs.
+/// Keyed, never a bare digest — an unkeyed hash over the values would hand
+/// the egress channel an offline-guessing oracle for low-entropy values.
+fn derive_mapping_id(
+    key: Option<&[u8]>,
+    policy: &AnonPolicy,
+    mapping: &BTreeMap<String, String>,
+) -> Result<String> {
+    let policy_json = serde_json::to_string(policy)
+        .map_err(|e| AreevError::Validation(format!("anonymization policy serialize: {e}")))?;
+    let mut msg = Vec::with_capacity(policy_json.len() + 64);
+    msg.extend_from_slice(policy_json.as_bytes());
+    msg.push(0x1f);
+    msg.extend_from_slice(policy.scope.as_bytes());
+    for (k, v) in mapping {
+        msg.push(0x1f);
+        msg.extend_from_slice(k.as_bytes());
+        msg.push(0x1e);
+        msg.extend_from_slice(v.as_bytes());
+    }
+    let zero_key = [0u8; 32];
+    let digest = hmac_sha256(key.unwrap_or(&zero_key), &msg);
+    Ok(hex::encode(&digest[..8]))
+}
+
+/// RFC 2104 HMAC-SHA256, hand-rolled over the sha2 dependency the crate
+/// already carries (dependency-light: no hmac crate for twenty lines).
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        key_block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Sha256::new();
+    let ipad: Vec<u8> = key_block.iter().map(|b| b ^ 0x36).collect();
+    inner.update(&ipad);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    let opad: Vec<u8> = key_block.iter().map(|b| b ^ 0x5c).collect();
+    outer.update(&opad);
+    outer.update(inner_digest);
+    outer.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_sha256_matches_rfc4231_case_2() {
+        // RFC 4231 test case 2: key "Jefe", data "what do ya want for nothing?"
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        assert_eq!(
+            hex::encode(mac),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn policy_rejects_unknown_field_and_generalize_and_wide_scope() {
+        assert!(AnonPolicy::from_json(r#"{"surprise": 1}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:month"}}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"scope": "memory"}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"scope": "session"}"#).is_err());
+        assert!(AnonPolicy::from_json("{}").is_ok());
+    }
+
+    #[test]
+    fn mask_keeps_shape() {
+        assert_eq!(mask_value("john.doe@example.com"), "j***.d**@e******.c**");
+        assert_eq!(mask_value("+1-555-0142"), "+1-5**-0***");
+    }
+
+    #[test]
+    fn collision_renumbers_around_literal_tokens() {
+        let policy = AnonPolicy::default();
+        let out = anonymize(
+            "already has [EMAIL_1] and a real x@y.io address",
+            &policy,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(out.text.contains("[EMAIL_1]")); // the literal survives
+        assert!(out.mapping.contains_key("[EMAIL_2]")); // we minted around it
+        assert_eq!(out.mapping["[EMAIL_2]"], "x@y.io");
+    }
+
+    #[test]
+    fn mapping_id_is_keyed() {
+        let policy = AnonPolicy::default();
+        let a = anonymize("mail me at a@b.co", &policy, &[], None).unwrap();
+        let b = anonymize("mail me at a@b.co", &policy, &[], Some(b"k1")).unwrap();
+        let c = anonymize("mail me at a@b.co", &policy, &[], Some(b"k1")).unwrap();
+        assert_ne!(a.mapping_id, b.mapping_id); // key changes the id
+        assert_eq!(b.mapping_id, c.mapping_id); // same inputs + key → same id
+    }
+}

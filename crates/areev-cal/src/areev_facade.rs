@@ -345,6 +345,63 @@ impl AreevFacade {
         f(&mut guard)
     }
 
+    // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------
+    //
+    // The explicit front door: pure text in, JSON out, no store access. From
+    // P1 on these same signatures grow policy-row lookup (`anon:<ns>`) and
+    // the session mapping table; the P0 caller supplies the policy explicitly
+    // and holds the mapping (D5 custody: an in-process caller already holds
+    // the raw file, so no gate applies here — the vaulted `reveal` path is
+    // the gated one).
+
+    /// Run the Tier-0 detector chain over `text`. Returns JSON
+    /// `{"text": <nfc text>, "detections": [{start, end, category,
+    /// confidence, detector}]}` — offsets are UTF-8 bytes into the returned
+    /// (NFC-normalized) text.
+    pub fn scan_text(&self, text: &str, policy_json: Option<&str>) -> Result<String> {
+        let policy = match policy_json {
+            Some(j) => areev_core::anon::AnonPolicy::from_json(j)?,
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let out = areev_core::anon::scan(text, &policy, &[])?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Pseudonymize `text` under the policy (default policy when `None`).
+    /// Returns JSON `{"text", "mapping", "mapping_id", "replaced"}`. Only
+    /// `pseudonym` spans enter the mapping — `mask`/`redact` are one-way.
+    /// `key_hex` keys the `mapping_id` derivation (D11); without it the id
+    /// must not be shipped anywhere the mapping doesn't also travel.
+    pub fn anonymize_text(
+        &self,
+        text: &str,
+        policy_json: Option<&str>,
+        key_hex: Option<&str>,
+    ) -> Result<String> {
+        let policy = match policy_json {
+            Some(j) => areev_core::anon::AnonPolicy::from_json(j)?,
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let key = match key_hex {
+            Some(h) => Some(hex::decode(h).map_err(|e| {
+                AreevError::Validation(format!("anonymize key must be hex: {e}"))
+            })?),
+            None => None,
+        };
+        let out = areev_core::anon::anonymize(text, &policy, &[], key.as_deref())?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Replace placeholder tokens in `text` with their originals from
+    /// `mapping_json` (a JSON object of placeholder → value). Returns JSON
+    /// `{"text", "replaced", "unmatched"}`; unmatched tokens are left intact
+    /// and reported, never guessed.
+    pub fn rehydrate_text(&self, text: &str, mapping_json: &str) -> Result<String> {
+        let mapping = areev_core::anon::mapping_from_json(mapping_json)?;
+        let out = areev_core::anon::rehydrate(text, &mapping)?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
     /// Preflight the governed-corpus registry write. Exporting reads the
     /// selected namespaces, but recording its immutable lineage additionally
     /// requires `write ON agent:harness`.
