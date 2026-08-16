@@ -116,6 +116,14 @@ pub struct BundleStats {
 pub struct ImportStats {
     pub applied: usize,
     pub skipped: usize,
+    /// Registry meta rows (saved queries, templates, retention policies)
+    /// applied from the bundle's meta segment. Counted separately from ops:
+    /// replaying the same bundle keeps `applied == 0` while the registry
+    /// merge stays idempotent on its own terms.
+    pub meta_applied: usize,
+    /// Registry meta rows skipped (already present and not older, or
+    /// unparseable against a present local row).
+    pub meta_skipped: usize,
 }
 
 /// Escape `\`, `%` and `_` for a `LIKE ?N ESCAPE '\'` pattern — the one
@@ -717,6 +725,23 @@ pub struct ForkGroup {
 }
 
 const BUNDLE_MAGIC: &[u8; 4] = b"MGB1";
+/// A v2 bundle carries a registry meta segment (saved queries, templates,
+/// retention policies) between the magic and the op records. Emitted ONLY
+/// when the source file has such rows, so registry-free bundles stay
+/// byte-identical to v1 and readable by older builds; an older build
+/// importing a v2 bundle refuses loudly at the magic check rather than
+/// silently dropping the registry.
+const BUNDLE_MAGIC_V2: &[u8; 4] = b"MGB2";
+
+/// Meta-row key prefixes that replicate in bundles: the file-carried
+/// registries (saved queries `qry:`, templates `tpl:`) and the declarative
+/// retention policies. Infrastructure file-truths (`text_index`,
+/// `entity_relations`, embedding provenance, `link_index`,
+/// `min_reader_version`) deliberately do NOT ride along — they describe the
+/// *source* file's indexing and host capabilities, which a replica may not
+/// share. Legal `hold:` rows stay file-local pending an erasure-docs
+/// decision on whether holds must survive restore.
+const REPLICABLE_META_PREFIXES: [&str; 4] = ["qry:", "tpl:", "retention:", "retention_floor:"];
 
 /// RRF fusion constant used by `recall_hybrid` (the standard k0 = 60).
 /// Exported so observability surfaces can report the effective value.
@@ -6497,14 +6522,59 @@ impl Areev {
 
     // ----- bundle: git-shaped incremental backup / fast-forward sync (§5.10) -----
 
+    /// The registry meta rows a bundle carries (full key → export value).
+    /// Usage stats (`last_run_at`) are stripped from `qry:`/`tpl:` values —
+    /// definitions replicate, run counters would ping-pong between replicas.
+    fn replicable_meta_rows(&self) -> Result<Vec<(String, String)>> {
+        let mut rows = Vec::new();
+        for prefix in REPLICABLE_META_PREFIXES {
+            for (suffix, value) in self.meta_scan(prefix)? {
+                let export_value = match serde_json::from_str::<serde_json::Value>(&value) {
+                    Ok(mut v) => {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.remove("last_run_at");
+                        }
+                        v.to_string()
+                    }
+                    // An unparseable row still travels verbatim: the reader's
+                    // unloadable-row contract (skip + warn) owns that case.
+                    Err(_) => value,
+                };
+                rows.push((format!("{prefix}{suffix}"), export_value));
+            }
+        }
+        rows.sort();
+        Ok(rows)
+    }
+
     /// Export all ops after `after_op_seq` to a bundle file.
     /// Record: op(u8) · hlc(i64 LE) · hash(32) · blob_len(u32 LE) · blob.
     /// Blobs of later-forgotten grains export as len 0 — the importer
     /// relies on the subsequent tombstone for net-equivalence.
+    ///
+    /// When the file carries registry meta rows (saved queries, templates,
+    /// retention policies), the bundle is v2: magic `MGB2`, then
+    /// `meta_len(u32 LE) · meta_json`, then the op records. The registry is
+    /// part of what makes the file self-describing, so a backup or sync that
+    /// silently dropped it would restore a lesser file.
     pub fn bundle_since(&mut self, after_op_seq: i64, path: &str) -> Result<BundleStats> {
         let ops = self.changes_since(after_op_seq, usize::MAX / 2)?;
+        let meta_rows = self.replicable_meta_rows()?;
         let mut out: Vec<u8> = Vec::with_capacity(64 * 1024);
-        out.extend_from_slice(BUNDLE_MAGIC);
+        if meta_rows.is_empty() {
+            out.extend_from_slice(BUNDLE_MAGIC);
+        } else {
+            out.extend_from_slice(BUNDLE_MAGIC_V2);
+            let meta_json = serde_json::to_string(
+                &meta_rows
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )
+            .map_err(|e| AreevError::Format(format!("bundle meta segment: {e}")))?;
+            out.extend_from_slice(&(meta_json.len() as u32).to_le_bytes());
+            out.extend_from_slice(meta_json.as_bytes());
+        }
         let mut last = after_op_seq;
         for rec in &ops {
             let blob: Option<Vec<u8>> = if rec.op == OP_FORGET {
@@ -6797,13 +6867,39 @@ impl Areev {
 
     /// Import, applying only ops with `hlc <= max_hlc` when set — the
     /// point-in-time restore primitive (§5.10b): replay history to T.
+    ///
+    /// A v2 bundle's registry meta segment is applied only on a **full**
+    /// import (`max_hlc` = None): meta rows carry no HLC, so a point-in-time
+    /// restore cannot place them on the timeline and skips them rather than
+    /// resurrecting definitions from after the cutoff.
     pub fn import_bundle_until(&mut self, path: &str, max_hlc: Option<i64>) -> Result<ImportStats> {
         let data = std::fs::read(path).map_err(db_err)?;
-        if data.len() < 4 || &data[..4] != BUNDLE_MAGIC {
-            return Err(AreevError::Format("not a MGB1 bundle".into()));
+        if data.len() < 4 {
+            return Err(AreevError::Format("not a MGB1/MGB2 bundle".into()));
         }
         let mut stats = ImportStats::default();
+        let mut meta_entries: Vec<(String, String)> = Vec::new();
         let mut i = 4usize;
+        match &data[..4] {
+            m if m == BUNDLE_MAGIC => {}
+            m if m == BUNDLE_MAGIC_V2 => {
+                if data.len() < 8 {
+                    return Err(AreevError::Format("truncated bundle meta segment".into()));
+                }
+                let meta_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+                i = 8;
+                if i.checked_add(meta_len).is_none_or(|end| end > data.len()) {
+                    return Err(AreevError::Format("truncated bundle meta segment".into()));
+                }
+                let meta_json: std::collections::BTreeMap<String, String> =
+                    serde_json::from_slice(&data[i..i + meta_len]).map_err(|e| {
+                        AreevError::Format(format!("malformed bundle meta segment: {e}"))
+                    })?;
+                meta_entries = meta_json.into_iter().collect();
+                i += meta_len;
+            }
+            _ => return Err(AreevError::Format("not a MGB1/MGB2 bundle".into())),
+        }
         while i < data.len() {
             if i + 1 + 8 + 32 + 4 > data.len() {
                 return Err(AreevError::Format("truncated bundle record".into()));
@@ -6894,7 +6990,71 @@ impl Areev {
                 _ => return Err(AreevError::Format(format!("unknown bundle op {op}"))),
             }
         }
+        if max_hlc.is_none() {
+            for (key, value) in &meta_entries {
+                if self.apply_bundle_meta_row(key, value)? {
+                    stats.meta_applied += 1;
+                } else {
+                    stats.meta_skipped += 1;
+                }
+            }
+        } else {
+            stats.meta_skipped += meta_entries.len();
+        }
         Ok(stats)
+    }
+
+    /// Merge one registry meta row from a bundle. Returns true when the
+    /// local row changed.
+    ///
+    /// - A key outside the replicable allowlist never applies — a crafted
+    ///   bundle must not overwrite `text_index` or `min_reader_version`.
+    /// - `qry:`/`tpl:` rows converge latest-wins on `updated_at` (absent =
+    ///   0; equal keeps local, which is what makes replays idempotent), and
+    ///   the local `last_run_at` — usage, not definition — survives an
+    ///   incoming update.
+    /// - Retention rows apply only when locally absent: a restore fills the
+    ///   gap, a sync never silently swaps a live policy.
+    fn apply_bundle_meta_row(&mut self, key: &str, incoming: &str) -> Result<bool> {
+        if !REPLICABLE_META_PREFIXES.iter().any(|p| key.starts_with(p)) {
+            return Ok(false);
+        }
+        let local = self.meta_get(key)?;
+        let registry_row = key.starts_with("qry:") || key.starts_with("tpl:");
+        match local {
+            None => {
+                self.meta_put(key, incoming)?;
+                Ok(true)
+            }
+            Some(_) if !registry_row => Ok(false),
+            Some(local_raw) => {
+                let updated_at = |raw: &str| {
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .ok()
+                        .and_then(|v| v.get("updated_at").and_then(serde_json::Value::as_u64))
+                        .unwrap_or(0)
+                };
+                let mut incoming_json = match serde_json::from_str::<serde_json::Value>(incoming) {
+                    Ok(v) => v,
+                    // An unparseable incoming row never replaces a present
+                    // local one; the exporter only ships it verbatim for the
+                    // locally-absent case.
+                    Err(_) => return Ok(false),
+                };
+                if updated_at(incoming) <= updated_at(&local_raw) {
+                    return Ok(false);
+                }
+                let local_last_run = serde_json::from_str::<serde_json::Value>(&local_raw)
+                    .ok()
+                    .and_then(|v| v.get("last_run_at").cloned())
+                    .filter(|v| !v.is_null());
+                if let (Some(obj), Some(lr)) = (incoming_json.as_object_mut(), local_last_run) {
+                    obj.insert("last_run_at".into(), lr);
+                }
+                self.meta_put(key, &incoming_json.to_string())?;
+                Ok(true)
+            }
+        }
     }
 }
 

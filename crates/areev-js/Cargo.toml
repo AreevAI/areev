@@ -27,7 +27,6 @@ areev-core = { path = "../areev-core", version = "1.0.2" }
 # `npm install @areev/areev`. The dependency-light default stays with the CLI/store.
 areev-store = { path = "../areev-store", version = "1.0.2", features = ["postgres"] }
 areev-cal = { path = "../areev-cal", version = "1.0.2" }
-areev-context = { path = "../areev-context", version = "1.0.2" }
 areev-loop = { path = "../areev-loop" }
 areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }

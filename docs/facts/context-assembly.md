@@ -1,6 +1,8 @@
 # Fact sheet — how CAL assembles context
 
-*Verified against the code on 2026-07-16 (branch `main`, near commit `002a0bc`).
+*Verified against the code on 2026-07-16 (branch `main`, near commit `002a0bc`);
+§1, §3 and §4 re-verified 2026-08-16 after the render unification changed
+what is true.
 Every claim below is anchored to a `file:line` you can open. This sheet backs the
 assembly claims in the (out-of-repo) `VIDEO_CONCEPT.md` and any marketing/UI copy
 about "assembling the prompt." If the code moves, fix the citations here first —
@@ -30,9 +32,12 @@ are joined from many grains, not typed by a human.**
   (`crates/areev-context/src/assembly.rs:51`, `:273`).
 
 **Honesty caveat:** the token count is an **estimate — `chars / 4`, not a provider
-tokenizer** (documented at `crates/areev-cal/src/assemble.rs:25`). Honest to say
-"one token-budgeted / token-accounted block"; **not** honest to imply exact
-GPT/Claude token counts on screen.
+tokenizer**. Since the render unification there is exactly ONE estimator —
+`areev_cal::render::estimate_tokens` — shared by `ASSEMBLE … BUDGET`
+(`assemble.rs::estimate_grain_tokens`) and the areev-context allocators, so a
+budget means the same thing on every path. Honest to say "one token-budgeted /
+token-accounted block"; **not** honest to imply exact GPT/Claude token counts
+on screen.
 
 ## 2. The streams → 11 grain types (unified Tool grain)
 
@@ -67,35 +72,46 @@ two grain types — 5 distinct types cover the 6 streams, + 6 named in the foote
   `crates/areev-context/src/policy.rs:13`.
 - `sml / markdown / toon / json` is a fair **representative subset** — do not claim
   it's the whole set.
+- Since the render unification, both enums dispatch into ONE per-grain
+  implementation — `areev_cal::render` — so `FORMAT sml` from CAL and
+  `recall --render sml` produce the same per-grain bytes (pinned by
+  `crates/areev-context/tests/render_parity.rs`). Honest to say "a grain
+  renders identically on every surface"; envelopes (grouping, sections,
+  budget) remain per-surface.
 
-## 4. Budget-aware assembly — NOT "progressive disclosure"
+## 4. Budget-aware assembly — progressive disclosure is now REAL (2026-08-16)
 
-This is the claim most likely to be overstated. What's real:
+This section previously documented the gap between the claim and the code.
+Phase 3 of the render unification closed it; what is true now:
 
-- Per-source `BUDGET` and `PRIORITY` are CAL keyword tokens
-  (`crates/areev-cal/src/lexer.rs:288`, `:291`); budget applied at
-  `assemble.rs:216`, priority (`PrioritySpec { label, weight }`) at `assemble.rs:658`.
-  `BUDGET <n> [tokens|grains]` is token- or grain-denominated (see `cal-reference.md`).
-- Allocation tiers exist: `enum Allocation { Full, Summary, Omit }` —
-  `crates/areev-context/src/budget.rs:19`.
-- The **70% "keep-full" threshold is real**: `let full_threshold = budget * 70 / 100;`
-  — `budget.rs:67`. Its own doc comment says the policy is "Allocate Full … until 70%
-  budget consumed. Remaining: **Omit**." (`budget.rs:42`).
+- Per-source `BUDGET` and `PRIORITY` are CAL keyword tokens; budget applied in
+  `assemble.rs` (`budget_prefix`), priority (`PrioritySpec { label, weight }`)
+  alongside. `BUDGET <n> [tokens|grains]` is token- or grain-denominated.
+- **The context allocators emit all three tiers.** `allocate()` and
+  `allocate_with_diversity()` (`crates/areev-context/src/budget.rs`) admit
+  Full while under **70%** of the budget, degrade to **Summary** while under
+  **95%**, then Omit — both thresholds are in the code now, and
+  `render_summary` renders through the shared per-type summaries
+  (`areev_cal::render::render_grain_summary`).
+- **Structured formats bypass the fade on purpose** —
+  `strip_summaries_for_structured_formats` (`assembly.rs`): a JSON array or a
+  TOON table gets whole entries or nothing, because a prose summary inside
+  either would corrupt the format. The fade applies to `sml` / `markdown` /
+  `plaintext`.
+- **CAL template renders are tier-driven**: `ASSEMBLE … BUDGET n tokens
+  FORMAT TEMPLATE x` computes the disclosure tier via
+  `templates::select_tier(budget, grain_count)` (`executor.rs::template_tier`),
+  so `ELEMENT_SUMMARY` fires when the budget squeezes and `ELEMENT_OMIT`
+  accounts for the grains the budget dropped — pinned by
+  `element_omit_renders_grains_the_budget_dropped`
+  (`crates/areev-cal/tests/cal_integration.rs`).
+- The `Assembled` payload's `progressive: false` field remains a legacy flag
+  of the OLD (pre-removal) mechanism and is still always false; disclosure
+  now lives in the render path, not the assembly payload.
 
-What is **false / must not be claimed**:
-
-- **No 95% threshold** exists anywhere in `budget.rs` / `assembly.rs`.
-- **The `Summary` tier is never emitted.** Both allocators — `allocate()`
-  (`budget.rs:49`) and `allocate_with_diversity()` (`budget.rs:100`) — only produce
-  `Full` or `Omit`. `render_summary` (`assembly.rs:1024`) is reachable but nothing
-  allocates `Summary` to reach it.
-- **The `ASSEMBLE` path removed progressive disclosure outright**: `progressive:
-  false` is hardcoded (`assemble.rs:262`) and the field is documented "Always false
-  (progressive_disclosure has been removed)" (`assemble.rs:87`; `executor.rs:181`).
-
-**Honest phrasing:** priority-ranked, token-budgeted assembly — lowest-priority
-grains are dropped **whole (full → omitted)**, never cut mid-token. Not a
-three-step full → summary → omitted fade.
+**Honest phrasing:** priority-ranked, token-budgeted assembly with progressive
+disclosure in prose renders — grains degrade full → summary → omitted rather
+than being cut mid-token; structured outputs (JSON/TOON) stay whole-entry.
 
 ## 5. Hybrid recall + RRF fusion
 

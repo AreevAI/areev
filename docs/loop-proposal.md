@@ -624,10 +624,10 @@ both render the same checklist:
   "your system prompt has git-grade history" moment.
 - **Saved-query editor**: CAL editor with the existing highlighter, EXPLAIN
   preview, DEFINE QUERY on save (token-gated; saved-query-body rules apply
-  — bodies stay read-only, no destructive ops). **Prerequisite fix**: wire
-  the QueryRegistry hooks into AreevFacade first — today `RUN` of builtin
-  saved queries fails with QueryNotFound on the embedded path (Appendix A);
-  that gap becomes user-visible the moment a query editor exists.
+  — bodies stay read-only, no destructive ops). The former prerequisite —
+  QueryRegistry hooks unwired in AreevFacade, builtin `RUN` failing with
+  QueryNotFound on the embedded path (Appendix A) — has since been fixed;
+  the registry round-trips through the file and replicates in bundles.
 - Explicit non-goal: the console creates and edits *backends*, not agents.
   No code generation, no framework project scaffolding beyond printed
   snippets.

@@ -22,8 +22,9 @@
 //!
 //! # Token counting
 //!
-//! Uses `chars / 4` as the token estimate, consistent with
-//! `src/context/budget.rs` and `GrainRenderer::token_estimate()`.
+//! Delegates to `crate::render::estimate_tokens` — the one `chars / 4`
+//! heuristic every budget consumer shares (this engine and the
+//! areev-context allocators).
 //!
 //! # Compliance conditions
 //!
@@ -623,12 +624,17 @@ fn default_weights(n: usize) -> Vec<f64> {
 // Token estimation
 // ---------------------------------------------------------------------------
 
-/// Estimate the token count for a single grain.
-///
-/// Uses `chars / 4` as the estimate, consistent with `src/context/budget.rs`.
+/// Estimate the token count for a single grain via the one shared estimator
+/// (`crate::render::estimate_tokens`), so a `BUDGET` means the same thing
+/// here as it does on the areev-context allocation path.
 pub fn estimate_grain_tokens(grain: &CalGrainResult) -> u32 {
-    let chars = grain.fields.to_string().len();
-    (chars / 4).max(1) as u32
+    let view = crate::render::GrainView {
+        grain_type: &grain.grain_type,
+        hash: &grain.hash,
+        fields: &grain.fields,
+        created_at_sec: crate::render::created_at_sec_from_fields(&grain.fields),
+    };
+    crate::render::estimate_tokens(&view, crate::render::MetadataDetail::None) as u32
 }
 
 // ---------------------------------------------------------------------------

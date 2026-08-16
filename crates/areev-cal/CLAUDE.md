@@ -80,9 +80,20 @@ the audit hash.
   store, so mounts are read-only by construction.
 - `assemble.rs` — `AssembleEngine`: multi-source ASSEMBLE, dedup, 2000-grain
   cap, per-source budget weights, chars/4 token estimate.
+- `render.rs` — THE per-grain renderer every surface shares: semantic
+  `sml`, the documented `markdown` assertion line, `text`, registry-driven
+  `toon`, the `json` envelope, per-type summaries, and the one `chars/4`
+  token estimator. The executor's `FORMAT` arms and `areev-context`'s
+  assembler both call it (parity pinned by areev-context's
+  `tests/render_parity.rs`) — never grow a second implementation of a
+  format name.
 - `templates.rs` — Mustache-subset engine (closed variable set, 10 filters,
-  F1–F7 security invariants, 1MB output cap). `queries.rs` — saved queries
-  (100/namespace, 8KB body cap).
+  F1–F7 security invariants, 1MB output cap). Builtins are exactly the three
+  §10.1 sectioned presets (`structured`/`readable`/`compact`); a builtin must
+  never take a `FORMAT` arm name (debug-asserted). Budgeted template renders
+  pick their `DisclosureTier` via `select_tier` (wired in the executor's
+  `template_tier`), which is what makes `ELEMENT_SUMMARY`/`ELEMENT_OMIT`
+  fire. `queries.rs` — saved queries (100/namespace, 8KB body cap).
 - `store_types.rs` — the areev-store contract: `RecallParams`, `SearchHit`,
   `AddOptions`, etc. Facade methods speak exclusively in these types.
 - `errors.rs` — `CalError` (thiserror); **CAL-Exxx codes live inside the

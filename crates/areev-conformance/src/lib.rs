@@ -177,6 +177,11 @@ macro_rules! for_each_conformance_case {
         $per_case!(forget_replicates_as_tombstone);
         $per_case!(changes_since_cursor_pages_in_order);
         $per_case!(pitr_max_hlc_cutoff_is_inclusive);
+        // registry meta segment (saved queries / templates / retention)
+        $per_case!(registry_rides_a_full_bundle);
+        $per_case!(registry_merge_is_latest_wins_and_keeps_local_last_run);
+        $per_case!(pitr_import_skips_the_registry);
+        $per_case!(retention_row_never_clobbers_local_policy);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(forget_reclaims_sole_referenced_blob);

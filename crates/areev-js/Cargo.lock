@@ -135,17 +135,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "areev-context"
-version = "1.0.2"
-dependencies = [
- "areev-cal",
- "areev-core",
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "areev-core"
 version = "1.0.2"
 dependencies = [
@@ -164,7 +153,6 @@ name = "areev-js"
 version = "1.0.2"
 dependencies = [
  "areev-cal",
- "areev-context",
  "areev-core",
  "areev-llm",
  "areev-loop",

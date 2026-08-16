@@ -1,10 +1,13 @@
 //! Token budget allocation.
 //!
-//! Given a budget and scored grains, decides which get full rendering
-//! and which are omitted entirely.
+//! Given a budget and scored grains, decides which get full rendering,
+//! which degrade to a compact summary, and which are omitted — progressive
+//! disclosure: Full while under ~70% of the budget, then Summary while
+//! under ~95%, then Omit. Degrading beats dropping: a grain that survives
+//! as one line still tells the model it exists.
 //!
 //! Two allocation strategies:
-//! - `allocate()` — pure priority-based allocation (70% threshold).
+//! - `allocate()` — pure priority-based allocation.
 //! - `allocate_with_diversity()` — reserves slots per grain type before
 //!   filling by priority, ensuring rare types are not crowded out.
 
@@ -39,8 +42,9 @@ pub struct ScoredEntry {
 ///
 /// Algorithm:
 /// 1. Sort entries by priority descending.
-/// 2. Allocate Full to highest-priority grains until 70% budget consumed.
-/// 3. Remaining: Omit.
+/// 2. Allocate Full to highest-priority grains until ~70% budget consumed.
+/// 3. Degrade to Summary while under ~95% of the budget.
+/// 4. Remaining: Omit.
 ///
 /// When token_budget is None, everything gets Full.
 ///
@@ -65,6 +69,7 @@ pub fn allocate(entries: &mut [ScoredEntry], token_budget: Option<usize>) -> Vec
     });
 
     let full_threshold = budget * 70 / 100;
+    let summary_threshold = budget * 95 / 100;
 
     // Allocate by sorted order, then scatter results back to original positions
     let mut result_by_original = vec![Allocation::Omit; n];
@@ -74,6 +79,9 @@ pub fn allocate(entries: &mut [ScoredEntry], token_budget: Option<usize>) -> Vec
         if used + entry.full_tokens <= full_threshold {
             result_by_original[entry.original_index] = Allocation::Full;
             used += entry.full_tokens;
+        } else if used + entry.summary_tokens <= summary_threshold {
+            result_by_original[entry.original_index] = Allocation::Summary;
+            used += entry.summary_tokens;
         }
         // else: stays Omit
     }
@@ -179,9 +187,11 @@ pub fn allocate_with_diversity(
         result[entries[i].original_index] = Allocation::Full;
     }
 
-    // Phase 5: Fill remaining budget by priority (70% threshold on remainder).
+    // Phase 5: Fill remaining budget by priority — Full under the ~70%
+    // threshold, degrading to Summary under ~95%, then Omit.
     let remaining_budget = budget.saturating_sub(reserved_used);
     let threshold = remaining_budget * 70 / 100;
+    let summary_threshold = remaining_budget * 95 / 100;
 
     // Collect non-reserved indices, sorted by priority descending.
     let mut non_reserved: Vec<usize> = (0..n).filter(|i| !reserved.contains(i)).collect();
@@ -197,6 +207,9 @@ pub fn allocate_with_diversity(
         if used + entries[idx].full_tokens <= threshold {
             result[entries[idx].original_index] = Allocation::Full;
             used += entries[idx].full_tokens;
+        } else if used + entries[idx].summary_tokens <= summary_threshold {
+            result[entries[idx].original_index] = Allocation::Summary;
+            used += entries[idx].summary_tokens;
         }
     }
 
@@ -249,51 +262,52 @@ mod tests {
     }
 
     #[test]
-    fn test_budget_overflow_omit() {
+    fn test_budget_overflow_degrades_then_omits() {
         let mut entries = vec![entry(0.9, 800, 200, 0), entry(0.5, 800, 200, 1)];
-        // Budget=1000, full_threshold=700. Only first fits (800 > 700, so neither fits as Full)
-        let allocs = allocate(&mut entries, Some(1000));
-        // 800 > 700 (70% of 1000), so even highest-priority doesn't fit as Full
-        assert_eq!(allocs[0], Allocation::Omit);
+        // Budget=300: full_threshold=210, summary_threshold=285.
+        // Entry 0: 800 > 210 -> summary 200 <= 285 -> Summary, used=200.
+        // Entry 1: full and summary both exceed what's left -> Omit.
+        let allocs = allocate(&mut entries, Some(300));
+        assert_eq!(allocs[0], Allocation::Summary);
         assert_eq!(allocs[1], Allocation::Omit);
     }
 
     #[test]
-    fn test_budget_full_then_omit() {
+    fn test_budget_full_then_summary() {
         let mut entries = vec![
             entry(0.9, 500, 150, 0),
             entry(0.7, 500, 150, 1),
             entry(0.3, 500, 150, 2),
         ];
-        // Budget=1000: full_threshold=700
+        // Budget=1000: full_threshold=700, summary_threshold=950.
         // Entry 0 (pri 0.9): 500 <= 700 -> Full, used=500
-        // Entry 1 (pri 0.7): 500+500=1000 > 700 -> Omit
-        // Entry 2 (pri 0.3): Omit
+        // Entry 1 (pri 0.7): full would blow 700; summary 500+150=650 <= 950 -> Summary
+        // Entry 2 (pri 0.3): summary 650+150=800 <= 950 -> Summary
         let allocs = allocate(&mut entries, Some(1000));
         assert_eq!(allocs[0], Allocation::Full);
-        assert_eq!(allocs[1], Allocation::Omit);
-        assert_eq!(allocs[2], Allocation::Omit);
+        assert_eq!(allocs[1], Allocation::Summary);
+        assert_eq!(allocs[2], Allocation::Summary);
     }
 
     #[test]
     fn test_priority_ordering_respected() {
         let mut entries = vec![entry(0.3, 100, 30, 0), entry(0.9, 100, 30, 1)];
         // Budget=200: full_threshold=140. Entry with pri 0.9 gets Full first (100 <= 140).
-        // Entry with pri 0.3: 100+100=200 > 140, omit
+        // Entry with pri 0.3: full would blow 140; summary 100+30=130 <= 190 -> Summary.
         let allocs = allocate(&mut entries, Some(200));
-        // original_index 1 (high pri) -> Full, original_index 0 (low pri) -> Omit
-        assert_eq!(allocs[0], Allocation::Omit);
+        // original_index 1 (high pri) -> Full, original_index 0 (low pri) degrades.
+        assert_eq!(allocs[0], Allocation::Summary);
         assert_eq!(allocs[1], Allocation::Full);
     }
 
     #[test]
-    fn test_exceeds_full_threshold_omitted() {
+    fn test_exceeds_full_threshold_degrades_to_summary() {
         let mut entries = vec![entry(0.9, 600, 100, 0), entry(0.5, 600, 100, 1)];
         // Budget=1000: full_threshold=700. Entry 0: 600 <= 700 -> Full.
-        // Entry 1: 600+600=1200 > 700 -> Omit
+        // Entry 1: full 600+600 blows 700; summary 600+100=700 <= 950 -> Summary.
         let allocs = allocate(&mut entries, Some(1000));
         assert_eq!(allocs[0], Allocation::Full);
-        assert_eq!(allocs[1], Allocation::Omit);
+        assert_eq!(allocs[1], Allocation::Summary);
     }
 
     // -----------------------------------------------------------------------

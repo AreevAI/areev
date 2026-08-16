@@ -2,6 +2,6 @@
 source: crates/areev-context/tests/snapshot_render.rs
 expression: annotate(&ctx)
 ---
-included=1 omitted=4 truncated=true estimated_tokens=45
+included=1 omitted=4 truncated=true estimated_tokens=36
 ---
-[{"context":{"label":"planning_phase"},"created_at":"2025-02-19","hash":"1111111111111111111111111111111111111111111111111111111111111111","label":"planning_phase","type":"state"}]
+[{"fields":{"context":{"label":"planning_phase"}},"grain_type":"state","hash":"1111111111111111111111111111111111111111111111111111111111111111"}]

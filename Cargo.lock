@@ -266,7 +266,6 @@ name = "areev-py"
 version = "1.0.2"
 dependencies = [
  "areev-cal",
- "areev-context",
  "areev-core",
  "areev-llm",
  "areev-loop",
@@ -307,7 +306,6 @@ name = "areev-server"
 version = "1.0.2"
 dependencies = [
  "areev-cal",
- "areev-context",
  "areev-core",
  "areev-loop",
  "areev-loop-adapter",

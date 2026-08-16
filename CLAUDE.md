@@ -57,8 +57,8 @@ runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
 | `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering | yes |
 | `areev-store` | The store: dictionary-encoded triples, hybrid recall, heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, advisory-locked single writer, pgvector) | yes |
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
-| `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts | yes |
-| `areev-context` | Budget-aware SML/TOON/Markdown/JSON rendering | yes |
+| `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
+| `areev-context` | Budget-aware orchestration over `areev_cal::render`: policies/presets, priority + diversity allocation with progressive disclosure (Full→Summary→Omit), timeline/census modes. Renders nothing itself — parity with CAL is test-pinned (`tests/render_parity.rs`) | yes |
 | `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 13 analyzers (incl. default-off `retention_sweep` and `run_outcome` over run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier, outcome measurement (no Areev deps) — `docs/loop.md` | — |
 | `areev-loop-adapter` | Areev substrate adapter for Areev Loop (`areev_loop::OmsSubstrate` over `AreevFacade`) + recall-telemetry sidecar | — |
 | `areev-llm` | Out-of-box LLM backends (OpenAI-compatible/Anthropic/Ollama over a small blocking HTTP client) for Areev Loop, the `remember()` free-text→Fact extraction (`extract.rs`), and the `ToolCallLlm` tool-calling seam (`toolcall.rs`) for the runtime | — |
@@ -121,7 +121,11 @@ runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
    self-describing: the `meta` table carries file-truths (`text_index`,
    `entity_relations`, embedding provenance) and CAL host metadata — saved
    queries and custom templates ride there as `qry:<name>`/`tpl:<name>` rows,
-   so they travel with the file rather than living in any one client. Bare `open()` honors them;
+   so they travel with the file rather than living in any one client, and
+   they **replicate**: bundles/segments carry the registry (+ retention
+   policies) in a v2 `MGB2` meta segment — latest-wins on import,
+   `last_run_at` stays local, PITR skips it (infrastructure truths like
+   `text_index` deliberately do not replicate). Bare `open()` honors them;
    `open_with()` deliberately re-stamps and reports changes via
    `open_warnings()`. Host config (embedder capability, executor limits) is
    per-process and never persisted in the file.

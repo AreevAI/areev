@@ -44,6 +44,15 @@ pub const MAX_TEMPLATES: usize = 50;
 /// Maximum rendered output size in bytes (1MB).
 pub const MAX_RENDER_OUTPUT_SIZE: usize = 1_048_576;
 
+/// `FORMAT` arm keywords a built-in template must never be named after —
+/// `FORMAT <name>` would hit the arm while `FORMAT TEMPLATE <name>` hit the
+/// template, two different outputs under one name. (The §10.1 presets
+/// `structured`/`readable`/`compact` are parser aliases, not arm keywords,
+/// and their dual role is spec'd.)
+const FORMAT_ARM_NAMES: &[&str] = &[
+    "json", "yaml", "text", "sml", "toon", "markdown", "csv", "table", "triples",
+];
+
 /// Closed set of allowed grain field names for runtime resolution.
 /// Defense-in-depth (F5): even if `grain.fields` contains extra keys,
 /// only these are accessible through templates.
@@ -2541,16 +2550,16 @@ impl TemplateRegistry {
         }
     }
 
-    /// Load the built-in templates.
-    ///
-    /// Two groups. The §10.1 semantic presets (`structured`, `readable`,
-    /// `compact`) are sectioned, exist so `EXTENDS` has something to inherit
-    /// from, and deliberately define only element-level sections — a template
-    /// extending them must supply its own HEADER/FOOTER, and `readable` being
-    /// the default parent must not silently wrap every template in one.
-    /// `data` is intentionally absent: §10.7 forbids extending it.
-    ///
-    /// The rest are Areev's own named templates and remain whole-result.
+    /// Load the built-in templates: the §10.1 semantic presets (`structured`,
+    /// `readable`, `compact`). They are sectioned, exist so `EXTENDS` has
+    /// something to inherit from, and deliberately define only element-level
+    /// sections — a template extending them must supply its own HEADER/FOOTER,
+    /// and `readable` being the default parent must not silently wrap every
+    /// template in one. `data` is intentionally absent: §10.7 forbids
+    /// extending it. A builtin must never take the name of a `FORMAT` arm
+    /// (`sml`, `toon`, …): `FORMAT <name>` would hit the arm while
+    /// `FORMAT TEMPLATE <name>` hit the template, two different outputs under
+    /// one name — `insert_builtin_sectioned` enforces this.
     fn load_builtins(&mut self) {
         self.insert_builtin_sectioned(
             "structured",
@@ -2585,124 +2594,16 @@ impl TemplateRegistry {
              }\n",
             "OMS §10.1 compact/text preset — minimal, token-efficient",
         );
-
-        // -- triples --
-        let triples_src = "{{#each grains}}{{subject}} {{relation | humanize}} {{object}}{{#if confidence}} ({{confidence | percent}}){{/if}}\n{{/each}}";
-        self.insert_builtin(
-            "triples",
-            triples_src,
-            "One-line triple per grain: subject relation object (confidence%)",
-        );
-
-        // -- progressive --
-        let progressive_src = concat!(
-            "{{! Progressive disclosure template -- tier selection happens at render time }}\n",
-            "{{#each grains}}",
-            "{{#grain_type \"fact\"}}{{subject}} {{relation | humanize}} {{object}}{{/grain_type}}",
-            "{{#grain_type \"event\"}}{{actor}} {{action}}{{#if created_at}} [{{created_at | relative}}]{{/if}}{{/grain_type}}",
-            "{{#grain_type \"state\"}}{{entity}}: {{state_value}}{{#if validity}} ({{validity}}){{/if}}{{/grain_type}}",
-            "{{#grain_type \"workflow\"}}{{name}} ({{node_count}} nodes, {{edge_count}} edges) — {{status}}{{/grain_type}}",
-            "{{#grain_type \"tool\"}}{{tool_name}}({{input | truncate 40}}) -> {{content | truncate 60}}{{#if is_error}} [ERROR]{{/if}}{{/grain_type}}",
-            "{{#grain_type \"observation\"}}{{observer}} observed {{observed}}: {{sensory_data | truncate 60}}{{/grain_type}}",
-            "{{#grain_type \"goal\"}}{{goal_state}} — {{assigned_to | default \"unassigned\"}} ({{priority | default \"normal\"}}){{/grain_type}}",
-            "{{#grain_type \"reasoning\"}}{{premises | truncate 60}} -> {{conclusion}}{{#if confidence}} ({{confidence | percent}}){{/if}}{{/grain_type}}",
-            "{{#grain_type \"consensus\"}}{{participants | join \", \"}}: {{agreement_level}}{{/grain_type}}",
-            "{{#grain_type \"consent\"}}{{consenter}}: {{scope}}{{#if expires_at}} [expires {{expires_at | relative}}]{{/if}}{{/grain_type}}\n",
-            "{{/each}}"
-        );
-        self.insert_builtin(
-            "progressive",
-            progressive_src,
-            "Per-grain-type rendering with progressive disclosure tiers",
-        );
-
-        // -- llm_system_prompt --
-        let llm_system_src = concat!(
-            "<context>\n<memories count=\"{{_count}}\">\n",
-            "{{#each grains}}<memory type=\"{{grain_type}}\" hash=\"{{hash}}\" confidence=\"{{confidence}}\">\n",
-            "{{#grain_type \"fact\"}}{{subject}} {{relation | humanize}} {{object}}{{/grain_type}}",
-            "{{#grain_type \"event\"}}{{actor}} {{action}} [{{created_at | relative}}]{{/grain_type}}",
-            "{{#grain_type \"state\"}}{{entity}}: {{state_value}}{{/grain_type}}",
-            "{{#grain_type \"workflow\"}}{{name}}: {{status}} ({{node_count}} nodes, {{edge_count}} edges){{/grain_type}}",
-            "{{#grain_type \"tool\"}}{{tool_name}}({{input | truncate 60}}) -> {{content | truncate 100}}{{/grain_type}}",
-            "{{#grain_type \"observation\"}}{{observer}}: {{sensory_data | truncate 80}}{{/grain_type}}",
-            "{{#grain_type \"goal\"}}[{{goal_state}}] {{title | default \"untitled\"}} ({{priority | default \"normal\"}}){{/grain_type}}",
-            "{{#grain_type \"reasoning\"}}{{premises | truncate 80}} => {{conclusion}}{{/grain_type}}",
-            "{{#grain_type \"consensus\"}}{{participants | join \", \"}} agreed: {{agreement_level}}{{/grain_type}}",
-            "{{#grain_type \"consent\"}}{{consenter}} granted: {{scope}}{{#if expires_at}} [until {{expires_at | date \"%Y-%m-%d\"}}]{{/if}}{{/grain_type}}\n",
-            "</memory>\n{{/each}}</memories>\n</context>"
-        );
-        self.insert_builtin(
-            "llm_system_prompt",
-            llm_system_src,
-            "SML-tagged context for LLM system prompts",
-        );
-
-        // -- llm_chat --
-        let llm_chat_src = concat!(
-            "**Relevant memories** ({{_count}} results):\n\n",
-            "{{#each grains}}- ",
-            "{{#grain_type \"fact\"}}**{{subject}}** {{relation | humanize}} {{object}}{{#if confidence}} _({{confidence | percent}})_{{/if}}{{/grain_type}}",
-            "{{#grain_type \"event\"}}**{{actor}}** {{action}} — _{{created_at | relative}}_{{/grain_type}}",
-            "{{#grain_type \"state\"}}**{{entity}}**: {{state_value}}{{/grain_type}}",
-            "{{#grain_type \"workflow\"}}**{{name}}** — {{status}} ({{node_count}} nodes, {{edge_count}} edges){{/grain_type}}",
-            "{{#grain_type \"tool\"}}**{{tool_name}}**({{input | truncate 40}}) -> `{{content | truncate 60}}`{{#if is_error}} [ERROR]{{/if}}{{/grain_type}}",
-            "{{#grain_type \"observation\"}}**{{observer}}** observed: {{sensory_data | truncate 60}}{{/grain_type}}",
-            "{{#grain_type \"goal\"}}**[{{goal_state}}]** {{title | default \"untitled\"}} _({{priority | default \"normal\"}})_{{/grain_type}}",
-            "{{#grain_type \"reasoning\"}}{{premises | truncate 60}} => **{{conclusion}}**{{/grain_type}}",
-            "{{#grain_type \"consensus\"}}**{{participants | join \", \"}}**: {{agreement_level}}{{/grain_type}}",
-            "{{#grain_type \"consent\"}}**{{consenter}}**: {{scope}}{{#if expires_at}} _expires {{expires_at | relative}}_{{/if}}{{/grain_type}}\n",
-            "{{/each}}"
-        );
-        self.insert_builtin(
-            "llm_chat",
-            llm_chat_src,
-            "Markdown-formatted context for LLM chat injection",
-        );
-
-        // -- weekly_standup --
-        let weekly_standup_src = concat!(
-            "# Weekly Activity Summary\n\n",
-            "{{#each grains}}",
-            "{{#grain_type \"tool\"}}- **{{tool_name}}**: {{content | truncate 80}}{{#if duration_ms}} ({{duration_ms}}ms){{/if}}{{#if is_error}} [FAILED]{{/if}} — _{{created_at | relative}}_\n{{/grain_type}}",
-            "{{#grain_type \"goal\"}}- **Goal [{{goal_state}}]**: {{title | default \"untitled\"}}{{#if assigned_to}} ({{assigned_to}}){{/if}}\n{{/grain_type}}",
-            "{{#grain_type \"workflow\"}}- **Workflow {{name}}**: {{status}} ({{node_count}} nodes, {{edge_count}} edges)\n{{/grain_type}}",
-            "{{#grain_type \"fact\"}}- {{subject}} {{relation | humanize}} {{object}}\n{{/grain_type}}",
-            "{{/each}}"
-        );
-        self.insert_builtin(
-            "weekly_standup",
-            weekly_standup_src,
-            "Tool/goal/workflow-focused summary for weekly standups",
-        );
-
-        // -- toon --
-        let toon_src = concat!(
-            "{{#each grains}}",
-            "{{grain_type}}: {{hash}}\n",
-            "{{#grain_type \"fact\"}}  subject: {{subject}}\n  relation: {{relation}}\n  object: {{object}}{{#if confidence}}\n  confidence: {{confidence | percent}}{{/if}}{{/grain_type}}",
-            "{{#grain_type \"event\"}}  actor: {{actor}}\n  action: {{action}}{{#if created_at}}\n  created_at: {{created_at | relative}}{{/if}}{{/grain_type}}",
-            "{{#grain_type \"state\"}}  entity: {{entity}}\n  state_value: {{state_value}}{{#if validity}}\n  validity: {{validity}}{{/if}}{{/grain_type}}",
-            "{{#grain_type \"workflow\"}}  name: {{name}}\n  status: {{status}}\n  nodes: {{node_count}}\n  edges: {{edge_count}}{{/grain_type}}",
-            "{{#grain_type \"tool\"}}  tool_name: {{tool_name}}\n  input: {{input | truncate 60}}\n  content: {{content | truncate 80}}{{#if is_error}}\n  error: true{{/if}}{{/grain_type}}",
-            "{{#grain_type \"observation\"}}  observer: {{observer}}\n  observed: {{observed}}\n  data: {{sensory_data | truncate 60}}{{/grain_type}}",
-            "{{#grain_type \"goal\"}}  goal_state: {{goal_state}}\n  title: {{title | default \"untitled\"}}\n  priority: {{priority | default \"normal\"}}{{#if assigned_to}}\n  assigned_to: {{assigned_to}}{{/if}}{{/grain_type}}",
-            "{{#grain_type \"reasoning\"}}  premises: {{premises | truncate 60}}\n  conclusion: {{conclusion}}{{#if confidence}}\n  confidence: {{confidence | percent}}{{/if}}{{/grain_type}}",
-            "{{#grain_type \"consensus\"}}  participants: {{participants | join \", \"}}\n  agreement: {{agreement_level}}{{/grain_type}}",
-            "{{#grain_type \"consent\"}}  consenter: {{consenter}}\n  scope: {{scope}}{{#if expires_at}}\n  expires_at: {{expires_at | relative}}{{/if}}{{/grain_type}}\n",
-            "{{/each}}"
-        );
-        self.insert_builtin(
-            "toon",
-            toon_src,
-            "Compact TOON format (Token-Oriented Object Notation) for LLM context",
-        );
     }
 
-    /// Insert a built-in template. Panics only in debug if the template is
-    /// malformed (they are compile-time constants and always valid).
     /// Register a §10.6 sectioned built-in from its canonical section text.
+    /// Panics only in debug if the template is malformed (they are
+    /// compile-time constants and always valid).
     fn insert_builtin_sectioned(&mut self, name: &str, source: &str, description: &str) {
+        debug_assert!(
+            !FORMAT_ARM_NAMES.contains(&name),
+            "built-in template \"{name}\" would shadow the FORMAT {name} arm"
+        );
         let template = match parse_template_any(source) {
             Ok(t) => t,
             Err(e) => {
@@ -2733,35 +2634,6 @@ impl TemplateRegistry {
         );
     }
 
-    fn insert_builtin(&mut self, name: &str, source: &str, description: &str) {
-        let template = match parse_template(source) {
-            Ok(t) => t,
-            Err(e) => {
-                // Built-in templates are compile-time constants; a parse failure
-                // here indicates a bug in the template string, not user error.
-                // In release builds, skip the broken builtin rather than panic.
-                #[cfg(debug_assertions)]
-                panic!("built-in template \"{}\" failed to parse: {}", name, e);
-                #[cfg(not(debug_assertions))]
-                {
-                    let _ = e;
-                    return;
-                }
-            }
-        };
-        self.templates.insert(
-            name.to_string(),
-            TemplateEntry {
-                template,
-                builtin: true,
-                parent: None,
-                description: description.to_string(),
-                grain_types: Vec::new(),
-                last_run_at: None,
-                updated_at: None,
-            },
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3904,13 +3776,17 @@ mod tests {
     #[test]
     fn test_registry_has_builtins() {
         let reg = TemplateRegistry::new();
-        assert!(reg.get("triples").is_some());
-        assert!(reg.get("progressive").is_some());
-        assert!(reg.get("llm_system_prompt").is_some());
-        assert!(reg.get("llm_chat").is_some());
-        assert!(reg.get("weekly_standup").is_some());
-        assert!(reg.get("toon").is_some());
-        assert!(reg.get("triples").unwrap().builtin);
+        // Exactly the §10.1 semantic presets — no other builtins, and never
+        // one named after a FORMAT arm (`toon`, `triples`, … once shadowed
+        // the arms with different output).
+        assert!(reg.get("structured").is_some());
+        assert!(reg.get("readable").is_some());
+        assert!(reg.get("compact").is_some());
+        assert!(reg.get("readable").unwrap().builtin);
+        assert_eq!(reg.list().len(), 3);
+        for name in super::FORMAT_ARM_NAMES {
+            assert!(reg.get(name).is_none(), "builtin shadows FORMAT {name}");
+        }
     }
 
     // ── OMS CAL §10.8 limits ──────────────────────────────────────────
@@ -4004,10 +3880,10 @@ mod tests {
     fn test_registry_builtin_count() {
         let reg = TemplateRegistry::new();
         let list = reg.list();
-        // 3 OMS §10.1 presets (structured/readable/compact) + 6 Areev
-        // named templates. `data` is deliberately absent — §10.7 forbids
-        // extending it, and it is a renderer, not a template.
-        assert_eq!(list.len(), 9);
+        // Exactly the 3 OMS §10.1 presets (structured/readable/compact).
+        // `data` is deliberately absent — §10.7 forbids extending it, and it
+        // is a renderer, not a template.
+        assert_eq!(list.len(), 3);
         assert!(list.iter().all(|e| e.builtin));
         for preset in ["structured", "readable", "compact"] {
             assert!(
@@ -4030,13 +3906,13 @@ mod tests {
         .unwrap();
         assert!(reg.get("my_template").is_some());
         assert!(!reg.get("my_template").unwrap().builtin);
-        assert_eq!(reg.list().len(), 10);
+        assert_eq!(reg.list().len(), 4);
     }
 
     #[test]
     fn test_registry_cannot_overwrite_builtin() {
         let mut reg = TemplateRegistry::new();
-        let result = reg.register("triples", "{{subject}}", "override", None);
+        let result = reg.register("readable", "{{subject}}", "override", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code(), "CAL-E046");
@@ -4070,7 +3946,7 @@ mod tests {
     #[test]
     fn test_registry_cannot_delete_builtin() {
         let mut reg = TemplateRegistry::new();
-        let result = reg.delete("triples");
+        let result = reg.delete("readable");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code(), "CAL-E046");
@@ -4178,112 +4054,20 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Built-in template rendering
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_builtin_triples_render() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("triples").unwrap();
-        let grains = vec![
-            make_fact("john", "mg:likes", "coffee", 0.94),
-            make_fact("bob", "mg:knows", "john", 0.87),
-        ];
-        let ctx = RenderContext {
-            now_secs: 1700000100,
-            tier: DisclosureTier::Full,
-            total_count: grains.len(),
-            user_vars: HashMap::new(),
-        };
-        let result = render(&entry.template, &grains, &ctx).unwrap();
-        assert!(result.contains("john likes coffee (94%)"));
-        assert!(result.contains("bob knows john (87%)"));
-    }
-
-    #[test]
-    fn test_builtin_llm_system_prompt_render() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("llm_system_prompt").unwrap();
-        let grains = vec![make_fact("john", "mg:likes", "coffee", 0.94)];
-        let ctx = RenderContext {
-            now_secs: 1700000100,
-            tier: DisclosureTier::Full,
-            total_count: grains.len(),
-            user_vars: HashMap::new(),
-        };
-        let result = render(&entry.template, &grains, &ctx).unwrap();
-        assert!(result.contains("<context>"));
-        assert!(result.contains("<memories count=\"1\">"));
-        assert!(result.contains("</memories>"));
-        assert!(result.contains("</context>"));
-        assert!(result.contains("john likes coffee"));
-    }
-
-    #[test]
-    fn test_builtin_llm_chat_render() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("llm_chat").unwrap();
-        let grains = vec![make_fact("john", "mg:likes", "coffee", 0.94)];
-        let ctx = RenderContext {
-            now_secs: 1700000100,
-            tier: DisclosureTier::Full,
-            total_count: grains.len(),
-            user_vars: HashMap::new(),
-        };
-        let result = render(&entry.template, &grains, &ctx).unwrap();
-        assert!(result.contains("**Relevant memories**"));
-        assert!(result.contains("**john**"));
-    }
-
-    #[test]
-    fn test_builtin_weekly_standup_render() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("weekly_standup").unwrap();
-        let grains = vec![
-            make_tool("search", "weather", "sunny", false),
-            make_goal("Complete onboarding", "active"),
-        ];
-        let ctx = RenderContext {
-            now_secs: 1700000100,
-            tier: DisclosureTier::Full,
-            total_count: grains.len(),
-            user_vars: HashMap::new(),
-        };
-        let result = render(&entry.template, &grains, &ctx).unwrap();
-        assert!(result.contains("# Weekly Activity Summary"));
-        assert!(result.contains("**search**"));
-        assert!(result.contains("**Goal [active]**"));
-    }
-
-    #[test]
-    fn test_builtin_progressive_render_mixed_types() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("progressive").unwrap();
-        let grains = vec![
-            make_fact("john", "mg:likes", "coffee", 0.94),
-            make_tool("search", "weather", "sunny", false),
-            make_event("john", "logged in"),
-        ];
-        let ctx = RenderContext {
-            now_secs: 1700000100,
-            tier: DisclosureTier::Full,
-            total_count: grains.len(),
-            user_vars: HashMap::new(),
-        };
-        let result = render(&entry.template, &grains, &ctx).unwrap();
-        assert!(result.contains("john likes coffee"));
-        assert!(result.contains("search(weather) -> sunny"));
-        assert!(result.contains("john logged in"));
-    }
-
-    // -----------------------------------------------------------------------
     // apply_format integration
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_apply_format() {
-        let reg = TemplateRegistry::new();
-        let entry = reg.get("triples").unwrap();
+        let mut reg = TemplateRegistry::new();
+        reg.register(
+            "one_line_triples",
+            "{{#each grains}}{{subject}} {{relation | humanize}} {{object}}\n{{/each}}",
+            "test",
+            None,
+        )
+        .unwrap();
+        let entry = reg.get("one_line_triples").unwrap();
         let grains = vec![make_fact("john", "mg:likes", "coffee", 0.94)];
         let ctx = RenderContext {
             now_secs: 1700000100,

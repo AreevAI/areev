@@ -1026,6 +1026,9 @@ fn element_omit_renders_grains_the_budget_dropped() {
          ELEMENT {\n\
          + {{grain.content}}\n\
          }\n\
+         ELEMENT_SUMMARY {\n\
+         ~ {{grain.subject}} {{grain.relation}}\n\
+         }\n\
          ELEMENT_OMIT {\n\
          - omitted {{grain.type}}\n\
          }",
@@ -1033,7 +1036,9 @@ fn element_omit_renders_grains_the_budget_dropped() {
     )
     .unwrap();
 
-    // A budget far too small for 8 grains forces most of them out.
+    // A budget far too small for 8 grains forces most of them out — and the
+    // few that survive render through ELEMENT_SUMMARY, because `select_tier`
+    // squeezes disclosure when tokens-per-grain is low (§10.5).
     let out = ex
         .execute(
             r#"ASSEMBLE b FOR "x" FROM f: (RECALL facts WHERE subject = "alice") BUDGET 20 tokens FORMAT TEMPLATE with_omit"#,
@@ -1045,10 +1050,37 @@ fn element_omit_renders_grains_the_budget_dropped() {
         other => panic!("expected Formatted, got: {other:?}"),
     };
 
-    let kept = text.lines().filter(|l| l.starts_with('+')).count();
+    let kept_full = text.lines().filter(|l| l.starts_with('+')).count();
+    let kept_summary = text.lines().filter(|l| l.starts_with('~')).count();
     let omitted = text.lines().filter(|l| l.starts_with("- omitted")).count();
     assert!(omitted > 0, "budget should have dropped grains:\n{text}");
-    assert_eq!(kept + omitted, 8, "every grain accounted for:\n{text}");
+    assert_eq!(kept_full, 0, "a squeezed budget renders summaries, not ELEMENT:\n{text}");
+    assert!(kept_summary > 0, "surviving grains render via ELEMENT_SUMMARY:\n{text}");
+    assert_eq!(
+        kept_summary + omitted,
+        8,
+        "every grain accounted for:\n{text}"
+    );
+
+    // A generous budget keeps every grain at full disclosure: ELEMENT fires,
+    // ELEMENT_SUMMARY and ELEMENT_OMIT stay silent.
+    let out = ex
+        .execute(
+            r#"ASSEMBLE b FOR "x" FROM f: (RECALL facts WHERE subject = "alice") BUDGET 5000 tokens FORMAT TEMPLATE with_omit"#,
+            &facade,
+        )
+        .unwrap();
+    let text = match out.result {
+        CalResultPayload::Formatted { text, .. } => text,
+        other => panic!("expected Formatted, got: {other:?}"),
+    };
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with('+')).count(),
+        8,
+        "a generous budget renders every grain via ELEMENT:\n{text}"
+    );
+    assert_eq!(text.lines().filter(|l| l.starts_with('~')).count(), 0, "{text}");
+    assert_eq!(text.lines().filter(|l| l.starts_with("- omitted")).count(), 0, "{text}");
 }
 
 /// §10.8 caps `{{#each}}` at 200. The cap is correct, but truncating quietly
