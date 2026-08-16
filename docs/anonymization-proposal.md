@@ -1,6 +1,13 @@
 # Anonymization — prompt-safe context, PII-aware storage
 
-**Status:** P0–P4 BUILT (2026-08-16, branch `anonymization-p0`). P4: the
+**Status:** P0–P4 BUILT, P5 DRAFTED (2026-08-16, branch `anonymization-p0`).
+P5: the spec-level half is written as
+[oms-anonymization-amendment.md](oms-anonymization-amendment.md) (B1–B3
+record what shipped: the `anon:` prefix, the reserved non-replicable
+`vault:` prefix, the `anonymized` payload report; B4–B6 propose `WITH
+anonymize` strengthen-only, the ASSEMBLE per-source override, and
+`REHYDRATE` with its classification obligations) — per D7 and invariant #4
+none of B4–B6 lands in code until the OMS process accepts them. P4: the
 generalization library (`generalize:month|year|decade`, unparseable values
 degrade to `[GENERALIZED:<CAT>]`, never the raw value), the Tier-2
 `LlmDetector` in areev-llm (grounded — the model proposes span texts,
@@ -665,8 +672,9 @@ v2 spec proposal — `WITH anonymize("strict")` as a recall-tier option,
 ASSEMBLE per-source overrides, an `anonymized` conformance assertion, and
 a rehydrate spelling (`REHYDRATE "<text>" WITH mapping("<id>")` or
 similar — a new statement, hence a `classify` decision and a spec-level
-one) — goes to OMS as an amendment in the `oms-1.6-amendments.md` mold
-once v1 has field mileage.
+one) — is now drafted as
+[oms-anonymization-amendment.md](oms-anonymization-amendment.md) (B4–B6),
+awaiting the spec process.
 
 ## 10. Where it lands (implementation inventory)
 
