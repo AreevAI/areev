@@ -9,6 +9,27 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-16
+
+### Fixed
+
+- **`verify` on canceled runs, at every cancel phase.** Replay fed
+  `CancelSeen` at a superstep's open whenever the coming checkpoint
+  carried the cancel — a phase the live driver only produces when the
+  marker predates the run, so a cancel landing during the first
+  superstep (before any checkpoint) failed verify on slow machines.
+  Replay now places the cancel by the journal's own evidence: with the
+  wave's resolutions when the closing checkpoint shows they ran, or by
+  rewinding the boundary and feeding it first when the journal shows
+  the live driver canceled before dispatching. A new phase-sweep test
+  exercises every placement on every machine.
+- **Windows `--tool-cmd` quoting.** The 1.0.1 `cmd /C` fix still routed
+  the command through `Command::arg`, whose MSVC quoting `cmd.exe` does
+  not parse; the command string now goes through `raw_arg`.
+- **RUSTSEC-2025-0134.** Replaced the unmaintained `rustls-pemfile`
+  with `rustls-pki-types`' PEM support (already in the tree via
+  rustls); the `tls` feature's surface is unchanged.
+
 ## [1.0.1] - 2026-08-16
 
 ### Fixed
@@ -110,6 +131,7 @@ plane), renamed on every surface.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/AreevAI/areev/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/AreevAI/areev/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/AreevAI/areev/releases/tag/v1.0.0
