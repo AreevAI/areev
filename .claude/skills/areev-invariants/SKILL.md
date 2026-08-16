@@ -74,6 +74,13 @@ non-flaky, and a **combination-coverage checklist** for finding bugs at feature
 interactions, see [[areev-testing]] — and add a regression test for every bug
 you fix.
 
+- **Docs sweep (the Docs contract).** If the change touches a public
+  surface, its canonical doc moves in the same commit — the mapping table
+  lives in the root `CLAUDE.md` ("Docs contract"). Minimum check: CLI help /
+  cookbook, `mcp-reference.md` (pinned tool count), `cal-reference.md`
+  (executable examples), `ERROR_CODES.md`, `security-model.md` for
+  auth/crypto/keys, the subsystem's reference doc, and an `ARCHITECTURE.md`
+  §10 named decision for anything architecture-level.
 - **Do NOT run blanket `cargo fmt`** — the tree is not uniformly rustfmt-clean by
   design. Format only the lines you touch; match the surrounding style.
 - If you changed anything under `areev-core/src/format/`, also confirm the OMS

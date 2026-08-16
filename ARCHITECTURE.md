@@ -788,6 +788,24 @@ run is a command a host triggers, so improvement never runs unattended. That is
 the difference between "an LLM edits your memory" and self-improvement you can
 put in production.
 
+### Anonymization is a store-boundary transform, gated by file policy
+
+Egress pseudonymization runs at the **store read boundary** — below even the
+facade — because the CLI and both bindings call store-level reads directly;
+any higher hook leaves shipped surfaces raw. One `anon:<ns>` policy row per
+namespace is the gate: a file-truth that replicates write-if-absent and
+fails reads **closed** when unreadable. Detectors are host capabilities
+(embedder-style seams: built-in Tier-0, `--anonymize-cmd` NER,
+`--anonymize-llm-cmd` grounded LLM), and a policy demanding an uninstalled
+detector fails closed too. The placeholder→value mapping never leaves the
+process — payloads carry mapping ids only; reverse lookup is admin-gated
+and fingerprint-audited. Value-derived tokens (ingress, `memory` scope, the
+sealed vault) key from the page cipher and refuse without one. Three reads
+are exempt with the reason stated in code: `subject_report` (the DSAR must
+disclose what is stored), `run_grains` (the runtime's machine replay), and
+the authz engine's grant recall (a pseudonymized principal would fail every
+check). The vocabulary is *pseudonymize* — no anonymity claim, anywhere.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

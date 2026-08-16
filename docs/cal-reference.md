@@ -610,6 +610,15 @@ something to report, so a clean query returns the shape it always had. The
 `DESCRIBE`'s `with_options` lists the options that actually change a `RECALL`
 result, so a client can introspect rather than guess.
 
+The payload may also carry an **`anonymized`** object (beside `warnings`,
+same present-only-when-relevant rule): when the file declares an egress
+anonymization policy (`anon:<ns>`) or the host installed the
+`--anonymize-egress` floor, grain fields arrive pseudonymized
+(`[PERSON_1]`) and `anonymized` reports the covered namespaces, the floor
+state, and per-namespace mapping **ids** — never the mappings themselves,
+which stay with the host process. This is not CAL syntax (the policy, not
+the query, is the gate); see cookbook recipe 16 for the feature.
+
 ---
 
 ## 6. Output formats

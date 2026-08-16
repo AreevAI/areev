@@ -54,7 +54,7 @@ runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
 
 | Crate | What | CLAUDE.md |
 |---|---|---|
-| `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering | yes |
+| `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering, the `anon` pseudonymization engine (Tier-0 detectors, policy, session tokens, keyed derivations) | yes |
 | `areev-store` | The store: dictionary-encoded triples, hybrid recall, heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, advisory-locked single writer, pgvector) | yes |
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
 | `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
@@ -133,6 +133,30 @@ runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
    framework (std `TcpListener`), no MCP SDK (hand-rolled JSON-RPC), no
    workspace-wide async runtime (store wraps a private tokio current-thread
    runtime behind a sync API). Think twice before adding a dependency.
+
+## Docs contract — specs update with the change, same commit
+
+Every public surface has a canonical doc, and a change to the surface is
+incomplete until that doc moved with it. This applies to every feature
+family (`areev run`, `areev loop`, `areev anonymize`, hub/console, …):
+
+| You changed… | You must also update… |
+|---|---|
+| A CLI verb or global flag | the in-binary `USAGE` help; `docs/cookbook.md` when it's a user-facing task |
+| An MCP tool (add/remove/shape) | `docs/mcp-reference.md` — including the **pinned tool count** in its prose/headings |
+| CAL behavior or the result payload | `docs/cal-reference.md` (its ```sql fences are **executable** — `docs_examples.rs` fails CI on a non-parsing example); new *syntax* additionally needs the OMS spec decision |
+| An error code | `ERROR_CODES.md` (append-only) |
+| Store semantics (recall/erasure/replication/meta) | the crate's `CLAUDE.md` **and** a `areev-conformance` case — both backends |
+| Auth, crypto, keys, bind, request parsing | `docs/security-model.md` |
+| A subsystem with its own reference doc | that doc (`docs/run.md`, `docs/loop.md`, `docs/erasure.md`, `docs/gdpr.md`, …) |
+| An architecture-level decision or new cross-cutting subsystem | `ARCHITECTURE.md` §10 as a **named** decision |
+| Python/Node binding methods | keep both in lockstep + regenerate `areev-js/index.d.ts` (napi build) |
+| A release | `CHANGELOG.md` (the release runbook owns this) |
+
+The failure mode this prevents is real: the anonymization feature shipped
+three phases before `security-model.md`, `ARCHITECTURE.md`, and
+`cal-reference.md` caught up. Sweep this table before every commit that
+touches a public surface (the `areev-invariants` gate includes it).
 
 ## Error codes
 
