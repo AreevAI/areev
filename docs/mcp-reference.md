@@ -236,6 +236,25 @@ to gate it off for both this tool and `areev_forget`.
   "arguments": { "query": "RECALL facts WHERE subject = \"john\" | COUNT" } }
 ```
 
+**Saved queries and templates ride this tool.** The memory file can carry
+named assembly logic (`qry:`/`tpl:` registry rows — they replicate with the
+file), and an agent should prefer a deployment-provided query over composing
+its own:
+
+```json
+{ "name": "areev_cal", "arguments": { "query": "DESCRIBE QUERIES" } }
+{ "name": "areev_cal",
+  "arguments": { "query": "RUN \"session_prompt\"($user = \"john\", $session = \"call-42\")" } }
+{ "name": "areev_cal",
+  "arguments": { "query": "RECALL facts WHERE subject = \"john\" FORMAT TEMPLATE brief" } }
+```
+
+Saved-query bodies are read-only by construction, so `RUN` never widens the
+session's authority. `DEFINE QUERY`/`DEFINE TEMPLATE` and `DROP` are
+governance: they need the `admin` verb on the session's principal, and `DROP`
+additionally sits under the destructive-ops cap. See cookbook recipe 15 for
+the end-to-end pattern.
+
 ---
 
 ### `areev_loop`
@@ -371,34 +390,6 @@ touched it — the full chain from code to approval to execution.
 
 ---
 
-## Wiring it into a client
-
-### Claude Code (one line)
-
-```bash
-claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
-```
-
-This registers a stdio MCP server named `areev` that Claude Code spawns on
-demand. The `--db` path is the memory file (created if absent); `--ns` scopes
-the session namespace.
-
-### Generic MCP client config
-
-Any MCP client that speaks stdio can launch the server with a command entry.
-The typical `mcpServers` config block:
-
-```json
-{
-  "mcpServers": {
-    "areev": {
-      "command": "areev",
-      "args": ["serve", "--mcp", "--db", "/path/to/memory.db", "--ns", "myagent"]
-    }
-  }
-}
-```
-
 ### `areev_record_tool_call`
 
 Record one tool invocation as a trajectory Tool grain, keeping JSON arguments
@@ -433,6 +424,36 @@ that spawns it (see the [security model](security-model.md)), run it under a
 parent you trust.
 
 ---
+
+---
+
+## Wiring it into a client
+
+### Claude Code (one line)
+
+```bash
+claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
+```
+
+This registers a stdio MCP server named `areev` that Claude Code spawns on
+demand. The `--db` path is the memory file (created if absent); `--ns` scopes
+the session namespace.
+
+### Generic MCP client config
+
+Any MCP client that speaks stdio can launch the server with a command entry.
+The typical `mcpServers` config block:
+
+```json
+{
+  "mcpServers": {
+    "areev": {
+      "command": "areev",
+      "args": ["serve", "--mcp", "--db", "/path/to/memory.db", "--ns", "myagent"]
+    }
+  }
+}
+```
 
 ## Example session
 

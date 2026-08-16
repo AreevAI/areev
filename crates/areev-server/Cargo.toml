@@ -16,7 +16,6 @@ categories = ["web-programming::http-server"]
 areev-core = { path = "../areev-core", version = "1.0.2" }
 areev-store = { path = "../areev-store", version = "1.0.2" }
 areev-cal = { path = "../areev-cal", version = "1.0.2" }
-areev-context = { path = "../areev-context", version = "1.0.2" }
 areev-loop = { path = "../areev-loop", version = "1.0.2" }
 areev-run = { path = "../areev-run", version = "1.0.2" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }

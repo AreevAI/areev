@@ -9,6 +9,70 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Changed
+
+- **One rendering stack.** Per-grain
+  rendering now has a single implementation — `areev_cal::render` — shared
+  by CAL's `FORMAT` arms and `areev-context`, with byte parity pinned by a
+  cross-surface golden. Output changes that follow:
+  - `FORMAT sml` emits semantic per-type elements
+    (`<fact confidence="0.95" date="2026-01-13">john prefers window
+    seat</fact>`) instead of generic `<grain type=…>` field dumps; event
+    elements carry the speaker as `role="…"`.
+  - `FORMAT markdown` gains dedicated arms for state / workflow / reasoning /
+    consensus / consent / recommendation grains (topology and labels instead
+    of a raw field-pair dump); fact/event/tool lines are byte-identical to
+    before.
+  - `recall --render` (markdown/json/toon/plain) converges on the CAL
+    shapes: markdown carries the documented `- ` bullet and the
+    confidence-below-1.0 rule, json is the `{hash, grain_type, fields}`
+    envelope, toon rows come from the registry columns.
+  - `FORMAT toon`'s `state` rows read the OMS §8.3 `context` key (previously
+    `context_data`, which never matched — rows always fell back to
+    `state,state`).
+  - One `chars/4` token estimator (`render::estimate_tokens`) serves
+    `ASSEMBLE … BUDGET` and the areev-context allocators, so a budget means
+    the same thing on every path.
+- **Progressive disclosure is real.** The context allocators emit
+  Full→Summary→Omit (70%/95% thresholds); budgeted `FORMAT TEMPLATE` renders
+  pick their disclosure tier from tokens-per-grain, so `ELEMENT_SUMMARY`
+  fires under pressure and `ELEMENT_OMIT` accounts for dropped grains —
+  behavior the reference already promised. JSON and TOON stay whole-entry
+  (a prose summary inside a structured dump would corrupt it).
+- **The registry replicates.** Bundles/segments carry saved queries,
+  templates and retention policies in a v2 `MGB2` meta segment (emitted only
+  when the file has registry rows — registry-free bundles stay MGB1 and
+  readable by older builds; older builds refuse an MGB2 bundle loudly).
+  Import merges latest-wins on `updated_at`; `last_run_at` never replicates
+  and survives locally; retention rows apply only when locally absent; a
+  point-in-time restore skips the segment. New conformance cases cover both
+  backends; `ImportStats` gains `meta_applied`/`meta_skipped`.
+
+### Removed
+
+- The six whole-result builtin templates (`triples`, `progressive`,
+  `llm_system_prompt`, `llm_chat`, `weekly_standup`, `toon`) — unused, and
+  `toon`/`triples` shadowed the same-named `FORMAT` arms with different
+  output. Builtins are now exactly the three §10.1 sectioned presets
+  (`structured`/`readable`/`compact`), and a builtin can never take a
+  `FORMAT` arm name. `FORMAT TEMPLATE toon` now returns `TemplateNotFound`
+  — use `FORMAT toon`.
+- The never-wired `CalExecutorConfig::max_cal_queries`/`max_cal_templates`
+  caps (no host set them, and their `Some(-1)` = unlimited convention was
+  implemented backwards). The registry-level limits (100 queries/namespace,
+  50 templates, body-size caps) remain the enforcement.
+- Dead `areev-context` dependency declarations in `areev-py`, `areev-js`,
+  and `areev-server`.
+
+### Docs
+
+- Saved queries and templates are now discoverable where agents look:
+  the `cal-for-llms.md` grammar card gains a SAVED block, the MCP reference
+  documents the `DESCRIBE QUERIES` → `RUN` pattern under `areev_cal`, and
+  cookbook recipe 15 walks the ship-assembly-logic-in-the-file pattern
+  (the Hermes provider's override). `llms.txt`'s MCP tool count corrected
+  (14 → 23); `docs/facts/context-assembly.md` re-verified.
+
 ## [1.0.2] - 2026-08-16
 
 ### Fixed

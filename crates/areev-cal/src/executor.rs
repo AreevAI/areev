@@ -96,13 +96,6 @@ pub struct CalExecutorConfig {
     /// When non-empty, the executor checks the required scope for each statement
     /// type before execution. Empty = no enforcement (CLI, tests).
     pub caller_scopes: Vec<String>,
-    /// Per-memory cap on user-defined saved CAL queries for the caller's tier.
-    /// `None` = no tier cap (only the engine-level hard ceiling applies).
-    /// `Some(-1)` = unlimited. `Some(N)` = enforce at most N user queries.
-    pub max_cal_queries: Option<i32>,
-    /// Per-memory cap on user-defined CAL templates for the caller's tier.
-    /// `None` = no tier cap. `Some(-1)` = unlimited. `Some(N)` = enforce at most N.
-    pub max_cal_templates: Option<i32>,
 }
 
 impl Default for CalExecutorConfig {
@@ -117,8 +110,6 @@ impl Default for CalExecutorConfig {
             redact_budget_metadata: false,
             assembly_manifest_sample_rate: 0.0,
             caller_scopes: vec![],
-            max_cal_queries: None,
-            max_cal_templates: None,
         }
     }
 }
@@ -1419,22 +1410,9 @@ impl CalExecutor {
                 }
             }
 
-            // Template management (FR-003).
+            // Template management (FR-003). The per-namespace ceiling
+            // (§10.8, CAL-E118) is enforced in the registry.
             CalStatement::DefineTemplate(def) => {
-                if let Some(cap) = self.config.max_cal_templates {
-                    let user_count = store
-                        .list_templates()
-                        .into_iter()
-                        .filter(|t| !t.builtin && t.name != def.name)
-                        .count();
-                    if (user_count as i64) >= (cap as i64) {
-                        return Err(CalError::LimitExceeded {
-                            value: (user_count + 1) as u64,
-                            max: cap.max(0) as u64,
-                            span: None,
-                        });
-                    }
-                }
                 store
                     .define_template(
                         &def.name,
@@ -1494,22 +1472,9 @@ impl CalExecutor {
                 }
             }
 
-            // Saved query management.
+            // Saved query management. The per-namespace ceiling is enforced
+            // in the registry.
             CalStatement::DefineQuery(def) => {
-                if let Some(cap) = self.config.max_cal_queries {
-                    let user_count = store
-                        .list_queries()
-                        .into_iter()
-                        .filter(|q| !q.builtin && q.name != def.name)
-                        .count();
-                    if (user_count as i64) >= (cap as i64) {
-                        return Err(CalError::LimitExceeded {
-                            value: (user_count + 1) as u64,
-                            max: cap.max(0) as u64,
-                            span: None,
-                        });
-                    }
-                }
                 store
                     .define_query(
                         &def.name,
@@ -5732,6 +5697,32 @@ fn apply_format_clause_to_grains(
 /// Returns a `CalResultPayload::Formatted` with the rendered text and format
 /// name. When `grouped_by` is `Some`, grains are assumed to already be in
 /// group order (from `| GROUP BY`) and renderers emit group headers.
+/// The shared-render view of a CAL result grain. `created_at` in result
+/// fields is epoch milliseconds; the view carries seconds.
+fn grain_view(grain: &CalGrainResult) -> crate::render::GrainView<'_> {
+    crate::render::GrainView {
+        grain_type: &grain.grain_type,
+        hash: &grain.hash,
+        fields: &grain.fields,
+        created_at_sec: crate::render::created_at_sec_from_fields(&grain.fields),
+    }
+}
+
+/// Disclosure tier for a template render (§10.5/§10.6): an ASSEMBLE token
+/// budget squeezes per-grain rendering from ELEMENT toward ELEMENT_SUMMARY
+/// via `select_tier`; a grain-unit budget or a plain RECALL renders Full.
+fn template_tier(
+    plan: &super::templates::RenderPlan<'_>,
+    grain_count: usize,
+) -> super::templates::DisclosureTier {
+    match plan.assembly {
+        Some(a) if a.budget_unit == "tokens" && a.budget_total > 0 => {
+            super::templates::select_tier(a.budget_total.min(u32::MAX as u64) as u32, grain_count)
+        }
+        _ => super::templates::DisclosureTier::Full,
+    }
+}
+
 fn format_grain_results(
     grains: &[CalGrainResult],
     format: &super::ast::FormatSpec,
@@ -5778,7 +5769,8 @@ fn format_grain_results(
                         }
                     ));
                     for grain in members {
-                        render_grain_markdown(&mut md, grain);
+                        md.push_str(&crate::render::render_grain_markdown(&grain_view(grain)));
+                        md.push('\n');
                     }
                 }
             } else {
@@ -5786,7 +5778,8 @@ fn format_grain_results(
                 // line is noise in a prompt, and the assertion already names
                 // what it is about.
                 for grain in grains {
-                    render_grain_markdown(&mut md, grain);
+                    md.push_str(&crate::render::render_grain_markdown(&grain_view(grain)));
+                    md.push('\n');
                 }
             }
             (md, "markdown")
@@ -5828,7 +5821,11 @@ fn format_grain_results(
                         }
                     ));
                     for (i, grain) in members.iter().enumerate() {
-                        render_grain_text_line(&mut text, grain, Some(i + 1));
+                        text.push_str(&crate::render::render_grain_text_line(
+                            &grain_view(grain),
+                            Some(i + 1),
+                        ));
+                        text.push('\n');
                     }
                     if idx + 1 < total_groups {
                         text.push('\n');
@@ -5836,69 +5833,49 @@ fn format_grain_results(
                 }
             } else {
                 for grain in grains {
-                    render_grain_text_line(&mut text, grain, None);
+                    text.push_str(&crate::render::render_grain_text_line(
+                        &grain_view(grain),
+                        None,
+                    ));
+                    text.push('\n');
                 }
             }
             (text, "text")
         }
         super::ast::FormatSpec::Sml => {
+            // Semantic per-type elements via the shared renderer; the
+            // `<grains>` / `<group>` envelope is this surface's own.
+            let level = crate::render::MetadataDetail::Minimal;
             let mut sml = String::from("<grains>\n");
             if let Some(field) = grouped_by {
                 let groups = collect_groups(grains, field);
                 for (key, members) in &groups {
-                    let escaped_key = sml_escape(key);
+                    let escaped_key = crate::render::sml_escape(key);
                     sml.push_str(&format!(
                         "  <group key=\"{}\" count=\"{}\">\n",
                         escaped_key,
                         members.len()
                     ));
                     for grain in members {
-                        render_grain_sml(&mut sml, grain, "    ");
+                        sml.push_str("    ");
+                        sml.push_str(&crate::render::render_grain_sml(&grain_view(grain), level));
+                        sml.push('\n');
                     }
                     sml.push_str("  </group>\n");
                 }
             } else {
                 for grain in grains {
-                    render_grain_sml(&mut sml, grain, "  ");
+                    sml.push_str("  ");
+                    sml.push_str(&crate::render::render_grain_sml(&grain_view(grain), level));
+                    sml.push('\n');
                 }
             }
             sml.push_str("</grains>");
             (sml, "sml")
         }
         super::ast::FormatSpec::Toon => {
-            // Group grains by type (BTreeMap for deterministic ordering).
-            let mut groups: std::collections::BTreeMap<&str, Vec<&CalGrainResult>> =
-                std::collections::BTreeMap::new();
-            for grain in grains {
-                groups
-                    .entry(grain.grain_type.as_str())
-                    .or_default()
-                    .push(grain);
-            }
-
-            let mut sections = Vec::new();
-            for (grain_type, group) in &groups {
-                let plural = toon_plural_name(grain_type);
-                let columns = toon_columns_for_type(grain_type);
-                let col_header = columns.join(",");
-
-                let mut rows = Vec::new();
-                for grain in group {
-                    let row = toon_row_from_fields(grain_type, &grain.fields);
-                    rows.push(row);
-                }
-
-                let header = format!("{}[{}]{{{}}}:", plural, group.len(), col_header);
-                let mut section = header;
-                for row in &rows {
-                    section.push('\n');
-                    section.push_str(row);
-                }
-                sections.push(section);
-            }
-
-            let toon = sections.join("\n\n");
-            (toon, "toon")
+            let views: Vec<crate::render::GrainView<'_>> = grains.iter().map(grain_view).collect();
+            (crate::render::render_toon(&views), "toon")
         }
         super::ast::FormatSpec::Triples => {
             let mut triples = String::new();
@@ -6005,7 +5982,7 @@ fn format_grain_results(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0),
-                tier: super::templates::DisclosureTier::Full,
+                tier: template_tier(plan, grains.len()),
                 total_count: grains.len(),
                 user_vars: user_vars_map,
             };
@@ -6059,7 +6036,7 @@ fn format_grain_results(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0),
-                tier: super::templates::DisclosureTier::Full,
+                tier: template_tier(plan, grains.len()),
                 total_count: grains.len(),
                 user_vars: user_vars_map,
             };
@@ -6090,7 +6067,7 @@ fn format_grain_results(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0),
-                tier: super::templates::DisclosureTier::Full,
+                tier: template_tier(plan, grains.len()),
                 total_count: grains.len(),
                 user_vars: user_vars_map,
             };
@@ -6194,560 +6171,6 @@ fn collect_groups<'a>(
         groups.push((key, vec![grain]));
     }
     groups
-}
-
-/// Render a single grain as SML at a given indent depth.
-fn render_grain_sml(out: &mut String, grain: &CalGrainResult, indent: &str) {
-    // Include relation as an attribute when present (carries speaker role).
-    let relation_attr = if let Some(rel) = grain
-        .fields
-        .as_object()
-        .and_then(|m| m.get("relation"))
-        .and_then(|v| v.as_str())
-    {
-        if !rel.is_empty() {
-            format!(" relation=\"{}\"", sml_escape(rel))
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-    out.push_str(&format!(
-        "{}<grain type=\"{}\"{}>\n",
-        indent, grain.grain_type, relation_attr
-    ));
-    if let serde_json::Value::Object(map) = &grain.fields {
-        for (k, v) in map {
-            let val_str = match v {
-                serde_json::Value::String(s) => s.clone(),
-                _ => v.to_string(),
-            };
-            let escaped = sml_escape(&val_str);
-            out.push_str(&format!("{}  <{}>{}</{}>\n", indent, k, escaped, k));
-        }
-    }
-    out.push_str(&format!("{}</grain>\n", indent));
-}
-
-/// Escape a string for SML attribute/text values.
-fn sml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-/// Render a single grain's fields as markdown bullet list items.
-///
-/// When a `relation` field is present (e.g. speaker role "user"/"assistant"),
-/// it is rendered as a bold prefix on the `content` line for clarity.
-/// Render a grain as an assertion a model can read, not a dump of its row.
-///
-/// The point of `FORMAT markdown` is that the output can be pasted straight
-/// into a prompt, so it says the thing the memory asserts and keeps only the
-/// metadata that changes how much weight to give it. Storage bookkeeping —
-/// namespace, type, raw epochs, the content address — is noise in a prompt and
-/// is left out. This matches the shape the golden renders already pin
-/// (`**john** likes jazz *(0.80, 2026-01-05)*`).
-fn render_grain_markdown(out: &mut String, grain: &CalGrainResult) {
-    let serde_json::Value::Object(map) = &grain.fields else {
-        out.push('\n');
-        return;
-    };
-    let get = |k: &str| map.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    let (subject, relation, object) = (get("subject"), get("relation"), get("object"));
-    let content = get("content");
-
-    // Each grain type keeps its text under a different key, so look for the
-    // strongest shape available rather than assuming one field.
-    let text = [content, get("body"), get("tool_content"), get("description")]
-        .into_iter()
-        .find(|t| !t.is_empty())
-        .unwrap_or_default();
-    let tool_name = get("tool_name");
-    let skill_name = get("name");
-
-    // The object must be present for this to be a triple. A grain with a
-    // subject and a relation but no object is a message whose relation is the
-    // speaker — matching on subject+relation alone silently dropped its text.
-    let line = if !subject.is_empty() && !relation.is_empty() && !object.is_empty() {
-        // A triple reads as a sentence: subject, then what is claimed of it.
-        format!("**{subject}** {relation} {object}")
-    } else if !content.is_empty() && !relation.is_empty() {
-        // A turn in a conversation: the relation names who said it.
-        format!("**{relation}**: {content}")
-    } else if !tool_name.is_empty() {
-        // Whether the call worked is the whole point of logging it.
-        let failed = map
-            .get("is_error")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let verb = if failed { "failed" } else { "returned" };
-        if text.is_empty() {
-            format!("**{tool_name}** {verb}")
-        } else {
-            format!("**{tool_name}** {verb}: {text}")
-        }
-    } else if !skill_name.is_empty() {
-        let mut line = format!("**{skill_name}**");
-        if !text.is_empty() {
-            line.push_str(&format!(" — {text}"));
-        }
-        if let Some(p) = map.get("proficiency").and_then(serde_json::Value::as_f64) {
-            let practised = map
-                .get("practice_count")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0);
-            line.push_str(&format!(" (proficiency {p:.2}, practised {practised}×)"));
-        }
-        line
-    } else if !subject.is_empty() && !text.is_empty() {
-        // Observations and goals: the subject is what it is about, the text is
-        // what was noticed or intended.
-        let mut line = format!("**{subject}**: {text}");
-        if let Some(state) = map.get("goal_state").and_then(|v| v.as_str()) {
-            let pct = map
-                .get("progress")
-                .and_then(serde_json::Value::as_f64)
-                .map(|p| format!(", {:.0}% done", p * 100.0))
-                .unwrap_or_default();
-            line.push_str(&format!(" ({state}{pct})"));
-        }
-        line
-    } else if !text.is_empty() {
-        // Free-text grains (events) carry the text; the relation is the
-        // speaker or role when there is one.
-        if relation.is_empty() {
-            text.to_string()
-        } else {
-            format!("**{relation}**: {text}")
-        }
-    } else if !subject.is_empty() {
-        format!("**{subject}**")
-    } else {
-        // Nothing triple-shaped and no text — fall back to the fields, so an
-        // unusual grain type still renders something truthful.
-        let mut pairs: Vec<String> = Vec::new();
-        for (k, v) in map {
-            if RENDER_SKIP.contains(&k.as_str()) {
-                continue;
-            }
-            match v {
-                serde_json::Value::String(sv) => pairs.push(format!("{k}: {sv}")),
-                other => pairs.push(format!("{k}: {other}")),
-            }
-        }
-        pairs.join(", ")
-    };
-
-    // Confidence earns its place only when it is not a plain assertion; a date
-    // is worth carrying because recency changes how a model should weigh it.
-    let mut notes: Vec<String> = Vec::new();
-    if let Some(c) = map.get("confidence").and_then(serde_json::Value::as_f64) {
-        if c < 1.0 {
-            notes.push(format!("{c:.2}"));
-        }
-    }
-    if let Some(day) = map
-        .get("created_at")
-        .and_then(serde_json::Value::as_i64)
-        .and_then(epoch_ms_to_date)
-    {
-        notes.push(day);
-    }
-    if map.get("superseded_by").is_some() {
-        notes.push("superseded".to_string());
-    }
-
-    out.push_str("- ");
-    out.push_str(&line);
-    if !notes.is_empty() {
-        out.push_str(&format!(" *({})*", notes.join(", ")));
-    }
-    out.push('\n');
-}
-
-/// Storage bookkeeping that never helps a model reason about the memory.
-const RENDER_SKIP: [&str; 8] = [
-    "type",
-    "namespace",
-    "created_at",
-    "confidence",
-    "derived_from",
-    "superseded_by",
-    "observer_id",
-    "observer_type",
-];
-
-/// `2026-01-05` from epoch millis — civil date from days since the epoch, so
-/// this needs no calendar crate and no local timezone.
-fn epoch_ms_to_date(ms: i64) -> Option<String> {
-    if ms <= 0 {
-        return None;
-    }
-    let days = ms.div_euclid(86_400_000);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    Some(format!("{y:04}-{m:02}-{d:02}"))
-}
-
-/// Render a single grain as a text line.
-///
-/// For triple-based grains (facts): `subject relation object`
-/// For content-based grains (events): `[relation] content` when relation is present
-fn render_grain_text_line(out: &mut String, grain: &CalGrainResult, line_num: Option<usize>) {
-    if let serde_json::Value::Object(map) = &grain.fields {
-        let subject = map.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-        let relation = map.get("relation").and_then(|v| v.as_str()).unwrap_or("");
-        let object = map.get("object").and_then(|v| v.as_str()).unwrap_or("");
-        let prefix = line_num.map_or(String::new(), |n| format!("[{}] ", n));
-        if !subject.is_empty() || !relation.is_empty() || !object.is_empty() {
-            out.push_str(&format!("{}{} {} {}\n", prefix, subject, relation, object));
-        } else if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
-            // Include relation as a role label when present (e.g. "user: ..." or "assistant: ...").
-            let role_prefix = map
-                .get("relation")
-                .and_then(|v| v.as_str())
-                .filter(|r| !r.is_empty())
-                .map_or(String::new(), |r| format!("{}: ", r));
-            out.push_str(&format!("{}{}{}\n", prefix, role_prefix, content));
-        } else {
-            out.push_str(&format!(
-                "{}[{}: {}]\n",
-                prefix,
-                grain.grain_type,
-                &grain.hash[..grain.hash.len().min(8)]
-            ));
-        }
-    }
-}
-
-/// Simple TOON value escaping for the CAL executor.
-fn toon_escape_simple(s: &str) -> String {
-    if s.is_empty() {
-        return "\"\"".to_string();
-    }
-    let needs_quoting = s != s.trim()
-        || matches!(s, "true" | "false" | "null")
-        || s.contains(':')
-        || s.contains('"')
-        || s.contains('\\')
-        || s.contains('[')
-        || s.contains(']')
-        || s.contains('{')
-        || s.contains('}')
-        || s.contains(',')
-        || s.contains('\n')
-        || s.contains('\r')
-        || s.contains('\t')
-        || s.starts_with('-');
-    if !needs_quoting {
-        // Check if it looks numeric
-        let stripped = s.strip_prefix('-').unwrap_or(s);
-        if !stripped.is_empty()
-            && stripped.parse::<f64>().is_ok()
-            && stripped.chars().all(|c| {
-                c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-'
-            })
-        {
-            // Numbers don't need quoting in TOON — they're valid as-is
-            return s.to_string();
-        }
-    }
-    if needs_quoting {
-        let escaped = s
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t");
-        format!("\"{}\"", escaped)
-    } else {
-        s.to_string()
-    }
-}
-
-/// Plural grain type name for TOON headers. Sourced from the registry (D1);
-/// unknown strings pass through unchanged.
-fn toon_plural_name(grain_type: &str) -> &str {
-    match areev_core::types::registry::from_str(grain_type) {
-        Some(ty) => areev_core::types::registry::meta(ty).plural,
-        None => grain_type,
-    }
-}
-
-/// TOON column names per grain type, per CAL spec Section 10.9.3. Sourced from
-/// the registry (D1); unknown types fall back to a single `content` column.
-fn toon_columns_for_type(grain_type: &str) -> &'static [&'static str] {
-    match areev_core::types::registry::from_str(grain_type) {
-        Some(ty) => areev_core::types::registry::meta(ty).toon_columns,
-        None => &["content"],
-    }
-}
-
-/// Build a CSV row from grain fields for a given grain type.
-fn toon_row_from_fields(grain_type: &str, fields: &serde_json::Value) -> String {
-    let get_str = |key: &str| -> String {
-        fields
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    let get_f64 = |key: &str| -> Option<f64> { fields.get(key).and_then(|v| v.as_f64()) };
-
-    let values: Vec<String> = match grain_type {
-        "fact" => {
-            let subject = get_str("subject");
-            let relation = get_str("relation");
-            let object = get_str("object");
-            let content = if !relation.is_empty() && !object.is_empty() {
-                format!("{relation} {object}")
-            } else if !object.is_empty() {
-                object
-            } else {
-                relation
-            };
-            let confidence = get_f64("confidence")
-                .map(toon_canonicalize)
-                .unwrap_or_default();
-            vec![
-                toon_escape_simple(&subject),
-                toon_escape_simple(&content),
-                confidence,
-            ]
-        }
-        "event" => {
-            let role = fields
-                .get("role")
-                .or(fields.get("speaker"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("user")
-                .to_string();
-            let time = fields
-                .get("created_at")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let content = get_str("content");
-            vec![
-                toon_escape_simple(&role),
-                toon_escape_simple(&time),
-                toon_escape_simple(&content),
-            ]
-        }
-        "goal" => {
-            let subject = fields
-                .get("subject")
-                .and_then(|v| v.as_str())
-                .or(fields.get("description").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            let content = get_str("description");
-            let state = fields
-                .get("goal_state")
-                .or(fields.get("state"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("active")
-                .to_string();
-            vec![
-                toon_escape_simple(&subject),
-                toon_escape_simple(&content),
-                toon_escape_simple(&state),
-            ]
-        }
-        "tool" => {
-            let tool = fields
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let is_error = fields
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let phase = if is_error { "fail" } else { "ok" };
-            let content = fields
-                .get("tool_content")
-                .or(fields.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            vec![
-                toon_escape_simple(&tool),
-                toon_escape_simple(phase),
-                toon_escape_simple(&content),
-            ]
-        }
-        "observation" => {
-            let observer = fields
-                .get("observer_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?")
-                .to_string();
-            let subject = get_str("subject");
-            let object = get_str("object");
-            let content = if !subject.is_empty() && !object.is_empty() {
-                format!("{subject}: {object}")
-            } else if !subject.is_empty() {
-                subject
-            } else {
-                object
-            };
-            vec![toon_escape_simple(&observer), toon_escape_simple(&content)]
-        }
-        "reasoning" => {
-            let type_val = get_str("inference_method");
-            let type_str = if type_val.is_empty() {
-                "reasoning".to_string()
-            } else {
-                type_val
-            };
-            let content = get_str("conclusion");
-            vec![toon_escape_simple(&type_str), toon_escape_simple(&content)]
-        }
-        "state" => {
-            let context = fields
-                .get("context_data")
-                .and_then(|v| v.get("label").or(v.get("description")).or(v.get("title")))
-                .and_then(|v| v.as_str())
-                .unwrap_or("state")
-                .to_string();
-            let content = context.clone();
-            vec![toon_escape_simple(&context), toon_escape_simple(&content)]
-        }
-        "workflow" => {
-            let trigger = get_str("trigger");
-            let node_count = fields
-                .get("nodes")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let edge_count = fields
-                .get("edges")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let content = format!("{node_count} nodes, {edge_count} edges");
-            vec![toon_escape_simple(&trigger), toon_escape_simple(&content)]
-        }
-        "consensus" => {
-            let threshold = get_str("threshold");
-            let threshold_str = if threshold.is_empty() {
-                "-".to_string()
-            } else {
-                threshold
-            };
-            let count = fields
-                .get("agreement_count")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let content = get_str("agreed_content");
-            vec![
-                toon_escape_simple(&threshold_str),
-                count.to_string(),
-                toon_escape_simple(&content),
-            ]
-        }
-        "consent" => {
-            let grantor = get_str("subject_did");
-            let grantee = get_str("grantee_did");
-            let is_withdrawal = fields
-                .get("is_withdrawal")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let action = if is_withdrawal { "withdraws" } else { "grants" };
-            let content = get_str("scope");
-            vec![
-                toon_escape_simple(&grantor),
-                toon_escape_simple(&grantee),
-                toon_escape_simple(action),
-                toon_escape_simple(&content),
-            ]
-        }
-        "skill" => {
-            // Columns: name, domain, proficiency (matches the registry's
-            // toon_columns for Skill).
-            let name = get_str("name");
-            let domain = get_str("domain");
-            let proficiency = get_f64("proficiency")
-                .map(toon_canonicalize)
-                .unwrap_or_default();
-            vec![
-                toon_escape_simple(&name),
-                toon_escape_simple(&domain),
-                toon_escape_simple(&proficiency),
-            ]
-        }
-        "recommendation" => {
-            // Columns: target_ref, severity, content (matches the registry).
-            let target = get_str("target_ref");
-            let severity = if get_str("severity").is_empty() {
-                "info".to_string()
-            } else {
-                get_str("severity")
-            };
-            let summary = fields
-                .get("summary")
-                .and_then(|s| s.get("args"))
-                .and_then(|a| a.as_object())
-                .map(|o| {
-                    let mut vs: Vec<String> = o
-                        .iter()
-                        .map(|(k, v)| match v {
-                            serde_json::Value::String(t) => format!("{k}={t}"),
-                            other => format!("{k}={other}"),
-                        })
-                        .collect();
-                    vs.sort();
-                    vs.join("; ")
-                })
-                .unwrap_or_default();
-            vec![
-                toon_escape_simple(&target),
-                toon_escape_simple(&severity),
-                toon_escape_simple(&summary),
-            ]
-        }
-        _ => {
-            // Fallback: emit all fields as content
-            if let Some(obj) = fields.as_object() {
-                let vals: Vec<String> = obj
-                    .values()
-                    .map(|v| {
-                        let s = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            _ => v.to_string(),
-                        };
-                        toon_escape_simple(&s)
-                    })
-                    .collect();
-                vals
-            } else {
-                vec![toon_escape_simple(&fields.to_string())]
-            }
-        }
-    };
-
-    values.join(",")
-}
-
-/// Canonicalize a number for TOON: no exponent, no trailing zeros, NaN/Inf -> "null".
-fn toon_canonicalize(n: f64) -> String {
-    if n.is_nan() || n.is_infinite() {
-        return "null".to_string();
-    }
-    format!("{n}")
 }
 
 // ---------------------------------------------------------------------------
@@ -8619,14 +8042,18 @@ mod tests {
                 assert!(info.get("templates").is_some());
                 let templates = info["templates"].as_array().unwrap();
                 assert!(!templates.is_empty(), "templates list should not be empty");
-                // Built-in templates: triples, progressive, llm_system_prompt,
-                // llm_chat, weekly_standup, toon
-                let has_triples = templates.iter().any(|t| t["name"] == "triples");
-                let has_toon = templates.iter().any(|t| t["name"] == "toon");
-                let has_llm = templates.iter().any(|t| t["name"] == "llm_system_prompt");
-                assert!(has_triples, "templates should include 'triples'");
-                assert!(has_toon, "templates should include 'toon'");
-                assert!(has_llm, "templates should include 'llm_system_prompt'");
+                // Built-ins are exactly the §10.1 presets; in particular no
+                // builtin may shadow a FORMAT arm name (toon, triples, …).
+                for name in ["structured", "readable", "compact"] {
+                    assert!(
+                        templates.iter().any(|t| t["name"] == name),
+                        "templates should include '{name}'"
+                    );
+                }
+                assert!(
+                    !templates.iter().any(|t| t["name"] == "toon"),
+                    "no builtin template may shadow the FORMAT toon arm"
+                );
             }
             other => panic!("expected Describe, got {:?}", other),
         }
@@ -11400,59 +10827,60 @@ mod tests {
         }
     }
 
+    /// Shared-renderer view of a test CalGrainResult.
+    fn view_of(grain: &CalGrainResult) -> crate::render::GrainView<'_> {
+        grain_view(grain)
+    }
+
     #[test]
-    fn test_render_sml_includes_relation_attribute() {
+    fn test_render_sml_event_carries_speaker_role() {
         let grain = make_event_grain_result("I am a hair stylist.", "user", "s000");
-        let mut out = String::new();
-        render_grain_sml(&mut out, &grain, "  ");
+        let out = crate::render::render_grain_sml(&view_of(&grain), crate::render::MetadataDetail::Minimal);
         assert!(
-            out.contains(r#"relation="user""#),
-            "SML should include relation attribute, got: {out}"
+            out.contains(r#"role="user""#),
+            "SML should carry the speaker as a role attribute, got: {out}"
         );
         assert!(
-            out.contains("<grain type=\"event\""),
-            "SML should have grain type, got: {out}"
+            out.starts_with("<event"),
+            "events render as semantic <event> elements, got: {out}"
         );
+        assert!(out.contains("I am a hair stylist."));
     }
 
     #[test]
-    fn test_render_sml_omits_relation_attribute_when_absent() {
+    fn test_render_sml_omits_role_attribute_when_absent() {
         let grain = make_event_grain_result_no_relation("Hello world", "s000");
-        let mut out = String::new();
-        render_grain_sml(&mut out, &grain, "  ");
+        let out = crate::render::render_grain_sml(&view_of(&grain), crate::render::MetadataDetail::Minimal);
         assert!(
-            !out.contains("relation="),
-            "SML should not have relation attribute when field is absent, got: {out}"
+            !out.contains("role="),
+            "SML should not have a role attribute when the field is absent, got: {out}"
         );
     }
 
     #[test]
-    fn test_render_sml_omits_relation_attribute_when_empty() {
+    fn test_render_sml_omits_role_attribute_when_empty() {
         let grain = make_event_grain_result("Hello world", "", "s000");
-        let mut out = String::new();
-        render_grain_sml(&mut out, &grain, "  ");
+        let out = crate::render::render_grain_sml(&view_of(&grain), crate::render::MetadataDetail::Minimal);
         assert!(
-            !out.contains("relation=\"\""),
-            "SML should not have empty relation attribute, got: {out}"
+            !out.contains("role=\"\""),
+            "SML should not have an empty role attribute, got: {out}"
         );
     }
 
     #[test]
-    fn test_render_sml_escapes_relation_attribute() {
+    fn test_render_sml_escapes_role_attribute() {
         let grain = make_event_grain_result("test", "user<script>", "s000");
-        let mut out = String::new();
-        render_grain_sml(&mut out, &grain, "  ");
+        let out = crate::render::render_grain_sml(&view_of(&grain), crate::render::MetadataDetail::Minimal);
         assert!(
-            out.contains("relation=\"user&lt;script&gt;\""),
-            "SML should escape relation attribute value, got: {out}"
+            out.contains("role=\"user&lt;script&gt;\""),
+            "SML should escape the role attribute value, got: {out}"
         );
     }
 
     #[test]
     fn test_render_markdown_prefixes_content_with_relation() {
         let grain = make_event_grain_result("I am a hair stylist.", "user", "s000");
-        let mut out = String::new();
-        render_grain_markdown(&mut out, &grain);
+        let out = crate::render::render_grain_markdown(&view_of(&grain));
         assert!(
             out.contains("- **user**: I am a hair stylist."),
             "Markdown should prefix content with relation, got: {out}"
@@ -11462,8 +10890,7 @@ mod tests {
     #[test]
     fn test_render_markdown_no_relation_names_the_subject() {
         let grain = make_event_grain_result_no_relation("Hello world", "s000");
-        let mut out = String::new();
-        render_grain_markdown(&mut out, &grain);
+        let out = crate::render::render_grain_markdown(&view_of(&grain));
         // With no speaker to name, lead with what the text is about. The old
         // output led with the literal field name (`**content**:`), which tells
         // a reader nothing they cannot see.
@@ -11479,8 +10906,8 @@ mod tests {
         let assistant = make_event_grain_result("I am a school teacher.", "assistant", "s000");
         let user = make_event_grain_result("I am a hair stylist.", "user", "s000");
         let mut out = String::new();
-        render_grain_markdown(&mut out, &assistant);
-        render_grain_markdown(&mut out, &user);
+        out.push_str(&crate::render::render_grain_markdown(&view_of(&assistant)));
+        out.push_str(&crate::render::render_grain_markdown(&view_of(&user)));
         assert!(
             out.contains("- **assistant**: I am a school teacher."),
             "Markdown should show assistant role, got: {out}"
@@ -11496,8 +10923,7 @@ mod tests {
         // Event grains with subject + relation take the triple path (subject relation object).
         // The relation (speaker role) IS visible via the triple rendering.
         let grain = make_event_grain_result("I am a hair stylist.", "user", "s000");
-        let mut out = String::new();
-        render_grain_text_line(&mut out, &grain, None);
+        let out = crate::render::render_grain_text_line(&view_of(&grain), None);
         assert!(
             out.contains("s000 user"),
             "Text should render subject + relation via triple path, got: {out}"
@@ -11508,8 +10934,7 @@ mod tests {
     fn test_render_text_content_only_no_relation() {
         // Grain with only content (no triple fields) renders content directly.
         let grain = make_event_grain_result_no_relation("Hello world", "");
-        let mut out = String::new();
-        render_grain_text_line(&mut out, &grain, None);
+        let out = crate::render::render_grain_text_line(&view_of(&grain), None);
         assert_eq!(
             out.trim(),
             "Hello world",
@@ -11523,8 +10948,8 @@ mod tests {
         let assistant = make_event_grain_result("I am a school teacher.", "assistant", "s000");
         let user = make_event_grain_result("I am a hair stylist.", "user", "s000");
         let mut out = String::new();
-        render_grain_text_line(&mut out, &assistant, Some(1));
-        render_grain_text_line(&mut out, &user, Some(2));
+        out.push_str(&crate::render::render_grain_text_line(&view_of(&assistant), Some(1)));
+        out.push_str(&crate::render::render_grain_text_line(&view_of(&user), Some(2)));
         assert!(
             out.contains("[1] s000 assistant"),
             "Text should show assistant relation in triple, got: {out}"
@@ -11536,8 +10961,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_sml_fact_includes_relation_attribute() {
-        // Fact grains already have relation (e.g. "likes") — verify it appears as attribute.
+    fn test_render_sml_fact_states_the_triple_inline() {
+        // Semantic SML says the assertion as a sentence, relation included.
         let (_, grain) = make_fact("john", "likes", "coffee");
         let cgr = CalGrainResult {
             hash: grain.hash.to_hex(),
@@ -11550,11 +10975,10 @@ mod tests {
             is_deterministic: false,
             contested_by: None,
         };
-        let mut out = String::new();
-        render_grain_sml(&mut out, &cgr, "");
+        let out = crate::render::render_grain_sml(&view_of(&cgr), crate::render::MetadataDetail::Minimal);
         assert!(
-            out.contains("relation=\"likes\""),
-            "SML should include relation attribute for facts, got: {out}"
+            out.starts_with("<fact") && out.contains("john likes coffee"),
+            "SML fact should state the triple inline, got: {out}"
         );
     }
 

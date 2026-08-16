@@ -2,10 +2,10 @@
 source: crates/areev-context/tests/snapshot_render.rs
 expression: annotate(&ctx)
 ---
-included=5 omitted=0 truncated=false estimated_tokens=234
+included=5 omitted=0 truncated=false estimated_tokens=218
 ---
-[{"context":{"label":"planning_phase"},"created_at":"2025-02-19","hash":"1111111111111111111111111111111111111111111111111111111111111111","label":"planning_phase","type":"state"},
-{"created_at":"2025-02-19","description":"Ship the OSS launch","goal_state":"active","hash":"2222222222222222222222222222222222222222222222222222222222222222","priority":"high","progress":0.4,"type":"goal"},
-{"confidence":0.95,"created_at":"2025-02-19","hash":"3333333333333333333333333333333333333333333333333333333333333333","object":"coffee","relation":"likes","subject":"john","type":"fact"},
-{"content":"12 results","created_at":"2025-02-19","duration_ms":340,"hash":"4444444444444444444444444444444444444444444444444444444444444444","status":"ok","tool_name":"search_api","type":"tool"},
-{"content":"User asked about pricing tiers.","created_at":"2025-02-19","hash":"5555555555555555555555555555555555555555555555555555555555555555","type":"event"}]
+[{"fields":{"context":{"label":"planning_phase"}},"grain_type":"state","hash":"1111111111111111111111111111111111111111111111111111111111111111"},
+{"fields":{"description":"Ship the OSS launch","goal_state":"active","priority":"high","progress":0.4},"grain_type":"goal","hash":"2222222222222222222222222222222222222222222222222222222222222222"},
+{"fields":{"confidence":0.95,"object":"coffee","relation":"likes","subject":"john"},"grain_type":"fact","hash":"3333333333333333333333333333333333333333333333333333333333333333"},
+{"fields":{"duration_ms":340,"is_error":false,"tool_content":"12 results","tool_name":"search_api"},"grain_type":"tool","hash":"4444444444444444444444444444444444444444444444444444444444444444"},
+{"fields":{"content":"User asked about pricing tiers."},"grain_type":"event","hash":"5555555555555555555555555555555555555555555555555555555555555555"}]

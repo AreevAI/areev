@@ -205,6 +205,19 @@ fn field_str(
 }
 
 /// Format a UNIX timestamp (seconds) as an ISO-8601 date string (YYYY-MM-DD).
+/// Progressive disclosure degrades a grain to a prose summary — which has no
+/// place inside a structured dump. JSON arrays and TOON tables get whole
+/// entries or nothing, so a Summary admission becomes Omit there.
+fn strip_summaries_for_structured_formats(allocations: &mut [Allocation], policy: &FormatPolicy) {
+    if matches!(policy.format, OutputFormat::Json | OutputFormat::Toon) {
+        for a in allocations.iter_mut() {
+            if *a == Allocation::Summary {
+                *a = Allocation::Omit;
+            }
+        }
+    }
+}
+
 fn format_timestamp(secs: u32) -> Option<String> {
     if secs == 0 {
         return None;
@@ -492,12 +505,13 @@ impl ContextAssembler {
             .collect();
 
         // Step 3: Allocate budget (diversity-aware when configured).
-        let allocations = match policy.grain_type_diversity {
+        let mut allocations = match policy.grain_type_diversity {
             Some(ref diversity) => {
                 budget::allocate_with_diversity(&mut scored, policy.token_budget, diversity)
             }
             None => budget::allocate(&mut scored, policy.token_budget),
         };
+        strip_summaries_for_structured_formats(&mut allocations, policy);
 
         // Step 4: Collect included entries with their allocation
         let included: Vec<(usize, Allocation)> = allocations
@@ -649,12 +663,13 @@ impl ContextAssembler {
             })
             .collect();
 
-        let allocations = match policy.grain_type_diversity {
+        let mut allocations = match policy.grain_type_diversity {
             Some(ref diversity) => {
                 budget::allocate_with_diversity(&mut scored, policy.token_budget, diversity)
             }
             None => budget::allocate(&mut scored, policy.token_budget),
         };
+        strip_summaries_for_structured_formats(&mut allocations, policy);
         let mut included: Vec<(usize, Allocation)> = allocations
             .iter()
             .enumerate()
@@ -2173,7 +2188,9 @@ mod tests {
         let ctx = assembler.format(&hits, &policy);
         assert!(ctx.text.starts_with('['));
         assert!(ctx.text.ends_with(']'));
-        assert!(ctx.text.contains("\"type\":\"fact\""));
+        // Per-grain JSON is the shared envelope: hash + grain_type + fields.
+        assert!(ctx.text.contains("\"grain_type\":\"fact\""));
+        assert!(ctx.text.contains("\"subject\":\"john\""));
     }
 
     #[test]

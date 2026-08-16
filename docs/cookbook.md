@@ -739,6 +739,57 @@ weights.
 
 ---
 
+## 15. Ship assembly logic in the file (saved queries + templates)
+
+Prompt-assembly logic can live in the memory file as a named, versioned saved
+query instead of in your agent's code — so operators re-tune what gets
+recalled without redeploying anything. Define it once:
+
+```bash
+areev cal --db agent.db 'DEFINE QUERY "session_prompt"($user, $session)
+  DESCRIPTION "standard session bootstrap"
+AS {
+  ASSEMBLE "session" FROM
+    profile: (RECALL facts  WHERE subject = $user),
+    recent:  (RECALL events WHERE session_id = $session RECENT 10)
+  BUDGET 1200 tokens FORMAT sml
+}'
+```
+
+Any surface can now run it — CLI, MCP (`areev_cal`), the console's SAVED
+list, or the bindings:
+
+```bash
+areev cal --db agent.db 'RUN "session_prompt"($user = "john", $session = "call-42")'
+areev cal --db agent.db 'DESCRIBE QUERIES'   # what this file provides
+```
+
+The agent-side pattern (from `examples/hermes/`): at startup, `DESCRIBE
+QUERIES` and prefer a deployment-provided query over composing your own —
+redefining `session_prompt` in the file changes the agent's context on the
+next call, no restart. Saved-query bodies are read-only by construction
+(no writes, no destruction, no recursion), so handing one to an agent
+never widens its authority.
+
+Custom render templates work the same way — defined in the file, applied
+with `FORMAT TEMPLATE <name>`, budget-aware out of the box (`ELEMENT`
+degrades to `ELEMENT_SUMMARY` as a token budget squeezes, and
+`ELEMENT_OMIT` accounts for what was dropped):
+
+```bash
+areev cal --db agent.db 'DEFINE TEMPLATE brief DESCRIPTION "one line each"
+  ELEMENT { - {{grain.subject}} {{grain.content}} }
+  ELEMENT_SUMMARY { ~ {{grain.subject}} }'
+areev cal --db agent.db 'RECALL facts WHERE subject = "john" FORMAT TEMPLATE brief'
+```
+
+Both registries are part of the file: they survive a copy, ride `areev
+bundle` / `stream` to every replica (usage timestamps stay local), and
+`DEFINE`/`DROP` sit behind the `admin` verb so only governing principals can
+change them.
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

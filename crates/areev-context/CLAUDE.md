@@ -1,8 +1,16 @@
 # areev-context
 
-Budget-aware, provider-optimal rendering of recall results into model-ready
-context. Input: `&[SearchHit]` (from areev-cal); output: `FormattedContext`
-text in SML / TOON / Markdown / PlainText / JSON.
+Budget-aware, provider-optimal **orchestration** of recall results into
+model-ready context. Input: `&[SearchHit]` (from areev-cal); output:
+`FormattedContext` text in SML / TOON / Markdown / PlainText / JSON.
+
+**This crate renders nothing itself.** Since the render unification, all
+per-grain rendering — formats,
+summaries, token estimation — lives in `areev_cal::render`, the one
+implementation CAL's `FORMAT` arms share; this crate decides *which* grains
+make the budget and *how the envelope is shaped*. Byte parity between the two
+surfaces is pinned by `tests/render_parity.rs` — never add a second
+implementation of a format here.
 
 ## Module map
 
@@ -14,16 +22,19 @@ text in SML / TOON / Markdown / PlainText / JSON.
   **Presets never set `token_budget`** — the caller owns that.
 - `budget.rs` — `Allocation{Full,Summary,Omit}` and two allocators:
   `allocate()` (pure priority order) and `allocate_with_diversity()`
-  (5-phase: group by grain type → reserve `min_per_type` → cap trim → Full →
-  fill remainder). Progressive disclosure: Full up to ~70% of budget, then
-  Summary, then Omit at ~95%.
-- `render.rs` — `GrainRenderer` trait (`render`, `render_summary`,
-  `token_estimate`, `context_priority`) + `RendererRegistry` with 13 per-type
-  renderers (12 grain types + default). `toon_columns()` defines the TOON
-  tabular columns per grain type.
+  (5-phase: group → reserve `min_per_type` → cap trim → Full → fill).
+  Progressive disclosure is REAL: Full up to ~70% of budget, degrade to
+  Summary up to ~95%, then Omit. `summary_tokens = full/3` heuristic.
+- `render.rs` — the `GrainRenderer` trait + `RendererRegistry` (the seam a
+  host can override via `ContextAssembler::with_renderer`), one
+  `SharedRenderer` per grain type delegating to `areev_cal::render`, and the
+  per-type `context_priority` table that feeds allocation (consent 0.95 >
+  state 0.9 > goal 0.8 > fact 0.7 > … ; failed tool calls boosted).
 - `assembly.rs` — `ContextAssembler` (`format()`, `format_with_hints()`),
   `RenderingHints`, `FormattedContext{text, estimated_tokens, included_count,
-  omitted_count, truncated}`.
+  omitted_count, truncated}`, and
+  `strip_summaries_for_structured_formats` — JSON/TOON get whole entries or
+  nothing (a prose summary inside a structured dump would corrupt it).
 
 ## Rendering modes
 
@@ -41,9 +52,15 @@ for small local models.
 
 ## Gotchas
 
-- **Token estimation is `chars / 4`** — a heuristic, no real tokenizer.
-  `estimated_tokens` is approximate; don't treat budgets as exact.
+- **Token estimation is `chars / 4`** — a heuristic, no real tokenizer, and
+  ONE implementation: `areev_cal::render::estimate_tokens` (the trait's
+  `token_estimate` delegates). `estimated_tokens` is approximate; don't
+  treat budgets as exact.
 - Budget pressure sets `truncated: true` and bumps `omitted_count` — check
   those instead of guessing from output length.
-- Tests are inline `#[cfg(test)]` per module; there is no `tests/` dir.
-  Run with `cargo test -p areev-context`.
+- Summary renders stay format-shaped: SML summaries keep the semantic tag
+  (`<goal>…</goal>`, no attrs), Markdown summaries keep the `- ` bullet.
+- Unit tests are inline `#[cfg(test)]` per module; `tests/` holds the insta
+  snapshots (`snapshot_render.rs`, bless with `INSTA_UPDATE=always`) and the
+  cross-surface parity golden (`render_parity.rs`). Run with
+  `cargo test -p areev-context`.

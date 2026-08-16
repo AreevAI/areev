@@ -481,6 +481,15 @@ and so travel with the `.db` — the same set is visible from the CLI, MCP and
 the web console. They are never grains, never content-addressed, and never
 appear in recall results.
 
+The registry also **replicates**: `areev bundle` / `stream` segments carry the
+saved queries, templates and retention policies alongside the op records (a
+v2 `MGB2` bundle; emitted only when the file has registry rows, so
+registry-free bundles stay readable by older builds). On import, definitions
+converge latest-wins on their update time; the local `last_run_at` — usage,
+not definition — never replicates and survives an incoming update. A
+point-in-time restore (`--until-hlc`) replays grain history only and skips
+the registry, visibly.
+
 An entry the file carries that the running build cannot load — a template
 written before a limit was tightened, a row from a newer version — is skipped
 rather than failing the open, and reported: on stderr from `areev cal` / `repl`
@@ -629,6 +638,25 @@ A `TEMPLATE` **name** follows the same rules as the name in
 (`recent`, `scope`, …) work in both places. A *quoted* argument is never a
 name — `FORMAT TEMPLATE "..."` is always an inline body.
 
+### What `sml` renders
+
+`FORMAT sml` produces one semantic element per grain — the tag is the grain
+type, the content states the assertion, and attributes carry only
+weight-relevant metadata (confidence, date):
+
+```text
+<grains>
+  <fact confidence="0.95" date="2026-01-13">john prefers window seat</fact>
+  <tool tool="search_api" status="ok">12 results (340ms)</tool>
+  <event role="user">what's the refund window?</event>
+</grains>
+```
+
+The same per-grain renderer serves every surface (`areev_cal::render`), so a
+grain's SML is byte-identical whether it came from CAL or from
+`recall --render sml`. A `GROUP BY` render wraps groups in
+`<group key="…" count="…">` elements.
+
 ### What `markdown` renders
 
 `FORMAT markdown` produces one line per grain, stating what the memory asserts:
@@ -675,9 +703,13 @@ RECALL facts WHERE subject = "john" FORMAT sml
 RECALL facts WHERE subject = "john" FORMAT [json AS data, markdown AS readable]
 ```
 
-Rendering is budget-aware and uses progressive disclosure — as a `BUDGET` fills,
-grains degrade from full form to summary to omitted rather than the block being
-cut mid-token.
+Template rendering is budget-aware: an `ASSEMBLE … BUDGET <n> tokens` sets the
+disclosure tier from tokens-per-grain (§10.5 `select_tier`), so as the budget
+squeezes, grains render through `ELEMENT_SUMMARY` instead of `ELEMENT`, and
+`ELEMENT_OMIT` accounts for the grains the budget dropped — grains degrade
+from full form to summary to omitted rather than the block being cut
+mid-token. A grain-denominated budget, or a render with no budget, stays at
+full disclosure.
 
 ---
 

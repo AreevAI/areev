@@ -2,6 +2,8 @@
 source: crates/areev-context/tests/snapshot_render.rs
 expression: annotate(&ctx)
 ---
-included=1 omitted=4 truncated=true estimated_tokens=11
+included=3 omitted=2 truncated=true estimated_tokens=31
 ---
 <state date="2025-02-19">planning_phase</state>
+<goal>[high/active] Ship the OSS launch</goal>
+<fact>john likes coffee</fact>

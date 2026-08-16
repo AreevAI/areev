@@ -466,19 +466,30 @@ of scope.
 
 ---
 
-## 7. Context rendering: budget-aware, provider-optimal
+## 7. Context rendering: budget-aware, provider-optimal, one renderer
 
 The last step in the recall path is turning grains into model-ready text under
 a token budget. The context layer renders to **SML, TOON, Markdown, and JSON**,
 with provider presets (e.g. SML for Claude-class, Markdown for GPT-class) and
 grain-type diversity floors so a budget doesn't collapse to a single type.
 
+There is exactly **one per-grain rendering implementation** —
+`areev_cal::render` — shared by CAL's `FORMAT` arms and `areev-context`'s
+assembler, so a grain renders to the same bytes on every surface (pinned by
+`crates/areev-context/tests/render_parity.rs`); envelopes (grouping,
+sections, budget modes) remain per-surface policy. The same module owns the
+one `chars/4` token estimator every budget consumer shares.
+
 Rendering uses **progressive disclosure**: as the budget fills, individual
-grains degrade from full form to summary to omitted (at tuned thresholds)
-rather than the whole block being truncated at a byte boundary. `ASSEMBLE`'s
-`BUDGET` clause drives this directly, and prompt-assembly logic can live in
-named, versioned saved CAL queries — hot-swappable without redeploying the
-agent.
+grains degrade from full form to summary (70% threshold) to omitted (95%)
+rather than the whole block being truncated at a byte boundary — in prose
+formats; JSON and TOON stay whole-entry, because a prose summary inside a
+structured dump would corrupt it. `ASSEMBLE`'s `BUDGET` clause drives this
+directly (template renders pick their disclosure tier from tokens-per-grain,
+so `ELEMENT_SUMMARY`/`ELEMENT_OMIT` fire under pressure), and
+prompt-assembly logic can live in named, versioned saved CAL queries —
+hot-swappable without redeploying the agent, and replicated with the file's
+bundles.
 
 ---
 

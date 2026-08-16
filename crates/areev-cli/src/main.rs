@@ -1451,11 +1451,30 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .collect();
             segs.sort();
             let mut applied = 0usize;
+            let mut meta_applied = 0usize;
+            let mut meta_skipped = 0usize;
             for s in &segs {
                 let st = m.import_bundle_until(s, until).map_err(|e| e.to_string())?;
                 applied += st.applied;
+                meta_applied += st.meta_applied;
+                meta_skipped += st.meta_skipped;
             }
-            println!("restored {} ops from {} segments (gen {gen_id})", applied, segs.len());
+            let registry = if meta_applied > 0 {
+                format!(", {meta_applied} registry entries")
+            } else {
+                String::new()
+            };
+            println!(
+                "restored {} ops from {} segments (gen {gen_id}){registry}",
+                applied,
+                segs.len()
+            );
+            if until.is_some() && meta_skipped > 0 {
+                eprintln!(
+                    "note: {meta_skipped} registry entries (saved queries/templates/retention) \
+                     skipped — a point-in-time restore replays grain history only"
+                );
+            }
         }
         "bundle" => {
             let out = need(&flags, "out")?;
@@ -1469,7 +1488,12 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         "import" => {
             let bundle = need(&flags, "bundle")?;
             let st = m.import_bundle(&bundle).map_err(|e| e.to_string())?;
-            println!("applied {} ops, skipped {}", st.applied, st.skipped);
+            let registry = if st.meta_applied > 0 {
+                format!(", {} registry entries", st.meta_applied)
+            } else {
+                String::new()
+            };
+            println!("applied {} ops, skipped {}{registry}", st.applied, st.skipped);
         }
         "migrate" => {
             let from = need(&flags, "from")?;

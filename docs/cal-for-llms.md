@@ -30,6 +30,14 @@ READ
   DESCRIBE CAPABILITIES                                -- what this host supports
   DESCRIBE facts | SCHEMA | FIELDS | STATS | INTEGRITY -- what is queryable / store health
 
+SAVED (assembly logic stored in the file — check before composing your own)
+  DESCRIBE QUERIES                                     -- what this deployment saved
+  RUN "session_prompt"($user = "john")                 -- run a saved query
+  RECALL facts WHERE subject = "j" FORMAT TEMPLATE brief -- render via a saved template
+  DESCRIBE TEMPLATES                                   -- available render templates
+  DEFINE QUERY / DEFINE TEMPLATE / DROP …              -- admin verb; DROP also
+                                                       --   needs destructive ops
+
 WRITE (append-only; REASON/BECAUSE is your provenance)
   REMEMBER "the caller asked about refunds"
       WITH session("s1"), role("user"), run("run-9")   -- capture an Event
@@ -80,6 +88,10 @@ Notes for the human wiring this up:
 - The card assumes the session is principal-bound (`with_principal` /
   `--as`); an unbound local session is the owner and every statement above
   is available.
+- Saved queries are how a deployment ships assembly logic as data: the agent
+  runs `DESCRIBE QUERIES` and prefers a provided query over composing its
+  own, so operators can re-tune context without redeploying the agent (the
+  Hermes pattern — `examples/hermes/`, cookbook recipe 15).
 - Give a read-mostly agent `read` (plus `write` if it should capture);
   keep `delete`/`erase`/`admin`/`loop.*` for the principals that govern.
   The agent can always *see* the queue and its own rights.

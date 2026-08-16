@@ -20,6 +20,7 @@ pub mod areev_facade;
 pub mod parser;
 pub mod queries;
 pub mod relations;
+pub mod render;
 pub mod store_types;
 pub mod templates;
 
