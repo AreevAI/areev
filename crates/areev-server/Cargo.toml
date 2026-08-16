@@ -13,14 +13,14 @@ keywords = ["memory", "server", "sync", "ai-agents", "http"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.0.2" }
-areev-store = { path = "../areev-store", version = "1.0.2" }
-areev-cal = { path = "../areev-cal", version = "1.0.2" }
-areev-loop = { path = "../areev-loop", version = "1.0.2" }
-areev-run = { path = "../areev-run", version = "1.0.2" }
+areev-core = { path = "../areev-core", version = "1.1.0" }
+areev-store = { path = "../areev-store", version = "1.1.0" }
+areev-cal = { path = "../areev-cal", version = "1.1.0" }
+areev-loop = { path = "../areev-loop", version = "1.1.0" }
+areev-run = { path = "../areev-run", version = "1.1.0" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-pki-types = { version = "1.15", features = ["std"], optional = true }
-areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.0.2" }
+areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.1.0" }
 serde_json = "1"
 
 [dev-dependencies]

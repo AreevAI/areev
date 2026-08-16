@@ -1,6 +1,6 @@
 [package]
 name = "areev-js"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]
@@ -21,12 +21,12 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.0.2" }
+areev-core = { path = "../areev-core", version = "1.1.0" }
 # The postgres backend ships ON in the binding: it is a server-side surface,
 # and `new Areev("postgres://…?schema=<name>")` must work from a stock
 # `npm install @areev/areev`. The dependency-light default stays with the CLI/store.
-areev-store = { path = "../areev-store", version = "1.0.2", features = ["postgres"] }
-areev-cal = { path = "../areev-cal", version = "1.0.2" }
+areev-store = { path = "../areev-store", version = "1.1.0", features = ["postgres"] }
+areev-cal = { path = "../areev-cal", version = "1.1.0" }
 areev-loop = { path = "../areev-loop" }
 areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }

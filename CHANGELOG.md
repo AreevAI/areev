@@ -9,6 +9,49 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-16
+
+### Added
+
+- **Anonymization: prompt-safe pseudonymization** (`areev anonymize`,
+  cookbook recipe 16). Declare one `anon:<ns>` policy — a file-truth that
+  replicates write-if-absent and fails reads closed when unreadable — and
+  every model-facing read (recall/search/CAL/MCP/graph reads) returns typed
+  placeholders (`[PERSON_1]`) instead of identities:
+  - **Detection** is layered: built-in Tier-0 (structural known-identity
+    propagation, regex + Luhn/mod-97 validators, secrets, keyword cues,
+    dictionaries), a pluggable NER command seam (`--anonymize-cmd`), and a
+    grounded LLM detector (`--anonymize-llm-cmd`) — a policy demanding an
+    uninstalled detector fails closed. Actions: `pseudonym`, `mask`,
+    `redact`, `generalize:month|year|decade`, `allow`.
+  - **The round trip**: mappings stay in process custody
+    (`anon_mappings()`, `rehydrate_text()`; payloads carry an `anonymized`
+    report with mapping *ids* only). `PseudonymizingBackend` wraps any
+    `LlmBackend` so extraction requests leave pseudonymized and responses
+    return rehydrated.
+  - **Ingress mode + `memory` scope** (encrypted memories): value-derived
+    tokens transform *before* the content address commits; `FORGET
+    SUBJECT`/`REPORT SUBJECT` recompute the stored pseudonym from the real
+    identity, so pseudonymized-at-rest never means erasure-proof.
+  - **The sealed vault** (`vault:` rows under an HKDF subkey of the page
+    key; never replicated; erased with the subject; TTL-swept): tokens
+    continue across processes, and `areev anonymize reveal` /
+    `reveal_tokens()` is admin-gated and Tier-2 audited by fingerprint.
+  - Surfaces: CLI verb family + `--anonymize-egress` host floor, Python and
+    Node methods in lockstep, the console's Anonymization card + per-grain
+    "Model view" (`GET /api/anon/preview`, `POST /api/anon/config`),
+    `/api/config` observability, conformance cases on both backends
+    (Postgres: egress/audit work; value-derived features refuse loudly —
+    no page cipher there).
+  - Explicit text APIs ship too: `scan_text` / `anonymize_text` /
+    `rehydrate_text` and the store-free `areev anonymize scan`.
+  - Honest scope, by design: this is **pseudonymization** of the egress
+    channel, not anonymity — see `docs/security-model.md` and
+    `ARCHITECTURE.md` §10 for the threat model and named decision.
+- **`min_reader_version` stamping on anonymization policies** so older
+  builds warn loudly at open; `anon:` joins the replicable meta prefixes,
+  `vault:` is reserved and never replicates.
+
 ### Changed
 
 - **One rendering stack.** Per-grain
@@ -195,7 +238,8 @@ plane), renamed on every surface.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/AreevAI/areev/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/AreevAI/areev/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/AreevAI/areev/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/AreevAI/areev/releases/tag/v1.0.0
