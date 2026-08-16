@@ -2298,6 +2298,16 @@ impl Areev {
         self.anon.installed_backends()
     }
 
+    /// "As the model sees it": the grain rendered as an egress boundary
+    /// would show it, whether or not a policy is active — the console's
+    /// per-grain preview. Idempotent over already-transformed reads
+    /// (settled tokens re-detect as nothing).
+    pub fn anon_preview(&mut self, hash: &Hash) -> Result<DeserializedGrain> {
+        let mut g = self.get(hash)?;
+        self.anon.preview_grain(&mut g)?;
+        Ok(g)
+    }
+
     /// Persist newly minted mapping rows for vault-enabled namespaces:
     /// AES-256-GCM under the vault subkey, row key as AAD, written-at
     /// timestamp for REQ-ANON-6. Called after every transform exit.

@@ -59,8 +59,23 @@ fn confidence_one() -> f32 {
 pub enum Action {
     Allow,
     Pseudonym,
+    Generalize(GenBucket),
     Mask,
     Redact,
+}
+
+/// Generalization buckets (proposal §6, quasi-identifier damping): coarsen
+/// a value instead of replacing it. Irreversible by design; a value the
+/// bucket cannot parse degrades to `[GENERALIZED:<CATEGORY>]` — coarsening
+/// must never fall back to leaking the original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenBucket {
+    /// Dates → `YYYY-MM`.
+    Month,
+    /// Dates → `YYYY`.
+    Year,
+    /// Integers (ages, years) → `N0s`.
+    Decade,
 }
 
 impl Action {
@@ -68,6 +83,7 @@ impl Action {
         match self {
             Action::Allow => 0,
             Action::Pseudonym => 1,
+            Action::Generalize(_) => 2,
             Action::Mask => 3,
             Action::Redact => 4,
         }
@@ -79,18 +95,60 @@ impl Action {
             "pseudonym" => Ok(Action::Pseudonym),
             "mask" => Ok(Action::Mask),
             "redact" => Ok(Action::Redact),
+            "generalize:month" => Ok(Action::Generalize(GenBucket::Month)),
+            "generalize:year" => Ok(Action::Generalize(GenBucket::Year)),
+            "generalize:decade" => Ok(Action::Generalize(GenBucket::Decade)),
             other if other == "generalize" || other.starts_with("generalize:") => {
                 Err(AreevError::Validation(format!(
-                    "anonymization action '{other}' is declared in the proposal but not \
-                     built yet (generalization lands in a later phase); use pseudonym, \
-                     mask, redact, or allow"
+                    "unknown generalization '{other}' (expected generalize:month, \
+                     generalize:year, or generalize:decade)"
                 )))
             }
             other => Err(AreevError::Validation(format!(
                 "unknown anonymization action '{other}' (expected pseudonym, mask, \
-                 redact, or allow)"
+                 redact, generalize:<bucket>, or allow)"
             ))),
         }
+    }
+}
+
+/// Coarsen one value into its bucket; unparseable values degrade to the
+/// redaction form rather than leaking.
+fn generalize_value(bucket: GenBucket, category: &str, value: &str) -> String {
+    let fallback = || format!("[GENERALIZED:{}]", category_upper(category));
+    match bucket {
+        GenBucket::Month | GenBucket::Year => {
+            // ISO first (YYYY-MM-DD), then D/M/Y-with-4-digit-year shapes.
+            let (year, month) = if value.len() >= 7
+                && value.as_bytes()[4] == b'-'
+                && value[..4].chars().all(|c| c.is_ascii_digit())
+            {
+                (value[..4].to_string(), value.get(5..7).unwrap_or("").to_string())
+            } else {
+                let parts: Vec<&str> = value.split(['/', '.']).collect();
+                match parts.as_slice() {
+                    [_, m, y] if y.len() == 4 => ((*y).to_string(), format!("{:0>2}", m)),
+                    _ => return fallback(),
+                }
+            };
+            if year.len() != 4 || !year.chars().all(|c| c.is_ascii_digit()) {
+                return fallback();
+            }
+            match bucket {
+                GenBucket::Year => year,
+                _ => {
+                    if month.len() == 2 && month.chars().all(|c| c.is_ascii_digit()) {
+                        format!("{year}-{month}")
+                    } else {
+                        fallback()
+                    }
+                }
+            }
+        }
+        GenBucket::Decade => match value.trim().parse::<i64>() {
+            Ok(n) if (0..=9999).contains(&n) => format!("{}0s", n / 10),
+            _ => fallback(),
+        },
     }
 }
 
@@ -552,6 +610,10 @@ impl SessionAnonymizer {
                     out.push_str(&mask_value(value));
                     replaced += 1;
                 }
+                Action::Generalize(bucket) => {
+                    out.push_str(&generalize_value(bucket, &d.category, value));
+                    replaced += 1;
+                }
                 Action::Pseudonym => {
                     let token = self.token_for(&d.category, value);
                     out.push_str(&token);
@@ -572,6 +634,7 @@ impl SessionAnonymizer {
             Action::Allow => value.to_string(),
             Action::Redact => format!("[REDACTED:{}]", category_upper(category)),
             Action::Mask => mask_value(value),
+            Action::Generalize(bucket) => generalize_value(bucket, category, value),
             Action::Pseudonym => self.token_for(category, value),
         }
     }
@@ -935,9 +998,10 @@ mod tests {
     }
 
     #[test]
-    fn policy_rejects_unknown_field_and_generalize_and_unbuilt_scope() {
+    fn policy_rejects_unknown_field_and_unknown_bucket_and_unbuilt_scope() {
         assert!(AnonPolicy::from_json(r#"{"surprise": 1}"#).is_err());
-        assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:month"}}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:month"}}"#).is_ok());
+        assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:eon"}}"#).is_err());
         assert!(AnonPolicy::from_json(r#"{"scope": "session"}"#).is_ok()); // built in P1
         assert!(AnonPolicy::from_json(r#"{"scope": "memory"}"#).is_ok()); // built in P2
         // ...but memory scope is keyed by design: the unkeyed paths refuse it.
@@ -964,6 +1028,23 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s.token_if_known("email", "a@b.co"), None); // oldest evicted
         assert_eq!(s.token_if_known("person", "caller:john"), Some("[PERSON_1]"));
+    }
+
+    #[test]
+    fn generalization_coarsens_and_never_leaks() {
+        assert_eq!(generalize_value(GenBucket::Month, "date", "2026-08-16"), "2026-08");
+        assert_eq!(generalize_value(GenBucket::Month, "date", "16/08/2026"), "2026-08");
+        assert_eq!(generalize_value(GenBucket::Year, "date", "2026-08-16"), "2026");
+        assert_eq!(generalize_value(GenBucket::Decade, "age", "47"), "40s");
+        // Unparseable values degrade to the redaction form, never the raw value.
+        assert_eq!(generalize_value(GenBucket::Month, "date", "someday"), "[GENERALIZED:DATE]");
+        assert_eq!(generalize_value(GenBucket::Decade, "age", "young"), "[GENERALIZED:AGE]");
+
+        let mut policy = AnonPolicy::default();
+        policy.categories.insert("date".into(), "generalize:month".into());
+        let out = anonymize("met on 2026-08-16 at noon", &policy, &[], None).unwrap();
+        assert_eq!(out.text, "met on 2026-08 at noon");
+        assert!(out.mapping.is_empty(), "generalization is one-way");
     }
 
     #[test]

@@ -438,6 +438,24 @@ impl AnonGate {
         n
     }
 
+    /// "As the model sees it" (proposal §8.3): transform one grain under
+    /// the namespace's declared policy — or the default egress policy when
+    /// none is declared — with a throwaway context-scope session. Pure
+    /// preview: no session state, no vault writes, no audit counts.
+    pub(crate) fn preview_grain(&mut self, g: &mut DeserializedGrain) -> Result<()> {
+        let ns = resolve_ns(None, g);
+        let mut policy = self.effective(&ns)?.unwrap_or_default();
+        policy.mode = "egress".into();
+        policy.scope = "context".into();
+        policy.vault = false;
+        policy.vault_ttl_days = None;
+        let known = self.known.get(&ns).cloned().unwrap_or_default();
+        let mut session = SessionAnonymizer::new(policy)?;
+        let backends: Vec<&dyn DetectorBackend> =
+            self.backends.values().map(|b| b.as_ref()).collect();
+        transform_grain(&mut session, g, &known, &backends)
+    }
+
     /// The declared ingress policy for `ns` (mode `ingress` or `both`).
     /// The floor never forces ingress — it is an egress-only cap.
     fn ingress_policy(&self, ns: &str) -> Result<Option<AnonPolicy>> {

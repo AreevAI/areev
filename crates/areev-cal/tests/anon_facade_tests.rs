@@ -58,7 +58,7 @@ fn policy_errors_are_hard_val_errors() {
     for bad in [
         r#"{"surprise": true}"#,
         r#"{"default_action": "shred"}"#,
-        r#"{"categories": {"date": "generalize:month"}}"#,
+        r#"{"categories": {"date": "generalize:eon"}}"#,
     ] {
         let err = facade.scan_text("hello", Some(bad)).unwrap_err().to_string();
         assert!(err.starts_with("VAL-E001"), "want VAL-E001, got: {err}");

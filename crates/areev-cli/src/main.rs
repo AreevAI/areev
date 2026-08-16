@@ -1044,6 +1044,15 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             areev_store::CommandAnonymize::new(&cmd_line).map_err(|e| e.to_string())?;
         m.set_anonymizer(Box::new(backend));
     }
+    // Tier-2 LLM detector: a host command wrapping a (local-first) model.
+    // Grounded — the model proposes span texts, never offsets, and anything
+    // not present verbatim in the source is discarded.
+    if let Some(cmd_line) = flag(&flags, "anonymize-llm-cmd") {
+        let model = flag(&flags, "anonymize-llm-model");
+        let llm = areev_loop::CommandLlm::new(&cmd_line, model.as_deref())
+            .map_err(|e| e.to_string())?;
+        m.set_anonymizer(Box::new(areev_llm::LlmDetector::new(llm)));
+    }
 
     // Optional host-supplied embedder: --embed-cmd 'CMD' spawns CMD per embed
     // (text on stdin, JSON array of numbers on stdout). Enables the vector

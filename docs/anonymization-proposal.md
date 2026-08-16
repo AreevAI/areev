@@ -1,6 +1,17 @@
 # Anonymization — prompt-safe context, PII-aware storage
 
-**Status:** P0–P3 BUILT (2026-08-16, branch `anonymization-p0`). P3: the
+**Status:** P0–P4 BUILT (2026-08-16, branch `anonymization-p0`). P4: the
+generalization library (`generalize:month|year|decade`, unparseable values
+degrade to `[GENERALIZED:<CAT>]`, never the raw value), the Tier-2
+`LlmDetector` in areev-llm (grounded — the model proposes span texts,
+never offsets; ungrounded entities are discarded; garbled responses fail
+closed; `--anonymize-llm-cmd`), the console's Anonymization card in
+Connect → Settings (declared policies in plain language, declare/clear
+form behind the write gate, dev-only audit counts) plus the per-grain
+"Model view" preview in the developer panel (`GET /api/anon/preview`,
+`POST /api/anon/config`). The console additions follow the established
+Console v2 visual language; syncing them back into the Paper design file
+remains open. P3: the
 Tier-1 detector seam (`DetectorBackend` in core, `CommandAnonymize` over
 the command protocol, `--anonymize-cmd` / `set_anonymizer_command`,
 fail-closed when a policy demands an uninstalled kind), the sealed vault
