@@ -8,6 +8,9 @@ Conventions used throughout:
 - Every command needs `--db <file>` (the memory file). It is created on first
   write.
 - `--ns <namespace>` partitions grains within a file; it defaults to `shared`.
+  On **reads** it also takes a prefix scope: `--ns 'org.*'` selects `org` plus
+  its `.`-descendants (`org.sales`, `org.sales.emea` — never `organization`).
+  Writes and destruction always take one exact namespace.
 - `-k <N>` caps result counts.
 
 If you are running from source instead of an installed binary, replace `areev`
@@ -75,6 +78,11 @@ areev cal 'RECALL facts WHERE subject = "john" | COUNT' --db john.db --ns caller
 # Recall with a filter
 areev cal 'RECALL facts WHERE subject = "john" AND relation = "prefers"' \
   --db john.db --ns caller
+
+# Scope a recall to a namespace subtree ("org" + every .-descendant), or an
+# explicit set — the same "org.*" convention works on --ns and in MCP
+areev cal 'RECALL facts WHERE namespace = "org.*" AND subject = "acme-hq"' --db org.db
+areev cal 'RECALL facts WHERE namespace IN ("org.sales", "personal") AND subject = "john"' --db org.db
 
 # Add through CAL (ADD requires a REASON/BECAUSE clause)
 areev cal 'ADD fact SET subject = "john" SET relation = "likes" SET object = "rust" REASON "session note"' \

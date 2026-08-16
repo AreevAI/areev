@@ -863,7 +863,7 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {
                 "subject": s("entity to recall about, e.g. 'caller:john'"),
                 "relation": s("optional relation filter, e.g. 'prefers'"),
-                "namespace": s("optional namespace (defaults to session namespace)"),
+                "namespace": s("optional namespace (defaults to session namespace). Accepts a prefix scope 'org.*' — the namespace 'org' plus every '.'-descendant (org.sales, org.sales.emea); 'organization' never matches. Writes never accept patterns."),
                 "k": {"type": "integer", "description": "max results (default 16)"},
                 "run_id": s("host trajectory id for recall telemetry")
             }, "required": ["subject"]}

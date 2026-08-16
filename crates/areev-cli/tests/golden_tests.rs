@@ -691,3 +691,160 @@ fn bless_golden_dataset() {
         manifest_path().display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Suite 10 — namespace prefix scoping ("org.*") against the ns-tree slice
+// ---------------------------------------------------------------------------
+// The dataset carries a four-namespace `.` hierarchy (org / org.sales /
+// org.sales.emea / org.ops) plus the lookalike traps (`organization`,
+// `orgs`, `org:x`) and a BM25 token planted both inside and outside the
+// tree. Every test here asserts EXACT hash sets from the manifest — a scope
+// that silently widens or narrows fails against the committed addresses.
+
+/// Manifest hash for the ns-tree entry with this description.
+fn tree_hash(m: &Manifest, desc: &str) -> String {
+    m.grains
+        .iter()
+        .find(|e| e.desc == desc)
+        .unwrap_or_else(|| panic!("manifest entry {desc:?} missing"))
+        .hash
+        .clone()
+}
+
+#[test]
+fn golden_ns_prefix_recall_exact_hashes_and_order() {
+    let g = import_golden();
+    let man = manifest();
+    let (ok, out, err) = areev(&["recall", "acme-hq", "--db", &g.db, "--ns", "org.*"]);
+    assert!(ok, "scoped recall failed: {err}");
+    let got: Vec<String> = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| v["hash"].as_str().unwrap().to_string())
+        .collect();
+    // Exactly the tree, newest-first by insertion (seq order across the set).
+    let expect: Vec<String> = [
+        "ns-tree: org.ops",
+        "ns-tree: org.sales.emea",
+        "ns-tree: org.sales",
+        "ns-tree: org root",
+    ]
+    .iter()
+    .map(|d| tree_hash(&man, d))
+    .collect();
+    assert_eq!(got, expect, "org.* must be the tree, in recency order");
+    // And the traps must be absent by address, not just by count.
+    for trap in ["ns-tree trap: organization", "ns-tree trap: orgs", "ns-tree trap: org:x"] {
+        assert!(!got.contains(&tree_hash(&man, trap)), "{trap} leaked into org.*");
+    }
+}
+
+#[test]
+fn golden_ns_prefix_cal_count() {
+    let g = import_golden();
+    // 4 unit_head facts + the in-tree scopenote = 5 grains inside org.*.
+    let payload = g.cal("shared", r#"RECALL facts WHERE namespace = "org.*" | COUNT"#);
+    assert_eq!(payload["count"].as_i64(), Some(5), "{payload}");
+    // The deeper scope narrows: org.sales + org.sales.emea + scopenote.
+    let payload = g.cal("shared", r#"RECALL facts WHERE namespace = "org.sales.*" | COUNT"#);
+    assert_eq!(payload["count"].as_i64(), Some(3), "{payload}");
+}
+
+#[test]
+fn golden_ns_in_set_queries_every_member() {
+    let g = import_golden();
+    let man = manifest();
+    let payload = g.cal(
+        "shared",
+        r#"RECALL facts WHERE namespace IN ("org.sales", "org.ops") AND subject = "acme-hq""#,
+    );
+    let got: BTreeSet<String> = grain_hashes(&payload).into_iter().collect();
+    let expect: BTreeSet<String> = ["ns-tree: org.sales", "ns-tree: org.ops"]
+        .iter()
+        .map(|d| tree_hash(&man, d))
+        .collect();
+    assert_eq!(got, expect, "IN must query every member (issue #19)");
+}
+
+#[test]
+fn golden_ns_prefix_text_scope_excludes_outside_token() {
+    let g = import_golden();
+    let man = manifest();
+    let payload = g.cal(
+        "shared",
+        r#"RECALL facts LIKE "golden-scope-token" WHERE namespace = "org.*""#,
+    );
+    let got: Vec<String> = grain_hashes(&payload);
+    assert_eq!(
+        got,
+        vec![tree_hash(&man, "ns-tree: BM25 token inside org.*")],
+        "the BM25 leg must stay inside the scope"
+    );
+    assert!(
+        !got.contains(&tree_hash(&man, "ns-tree trap: BM25 token outside org.*")),
+        "the outside token leaked through the text leg"
+    );
+}
+
+#[test]
+fn golden_ns_cli_mcp_parity_on_prefix_scope() {
+    use std::process::{Command, Stdio};
+
+    let g = import_golden();
+    let cli = g.cal(
+        "shared",
+        r#"RECALL facts WHERE namespace = "org.*" AND subject = "acme-hq""#,
+    );
+    let cli_hashes: BTreeSet<String> = grain_hashes(&cli).into_iter().collect();
+    assert_eq!(cli_hashes.len(), 4, "sanity: the tree answers on the CLI");
+
+    let rpc = |id: u64, method: &str, params: serde_json::Value| {
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+            .to_string()
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", &g.db, "--ns", "shared"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp server");
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            rpc(1, "initialize", serde_json::json!({
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "golden", "version": "0"}}))
+        )
+        .unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            rpc(2, "tools/call", serde_json::json!({
+                "name": "areev_recall",
+                "arguments": {"subject": "acme-hq", "namespace": "org.*", "k": 20}}))
+        )
+        .unwrap();
+    }
+    let out = child.wait_with_output().expect("mcp server exit");
+    assert!(out.status.success());
+    let resp = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["id"] == 2)
+        .expect("recall response");
+    assert_ne!(resp["result"]["isError"], true, "mcp scoped recall errored: {resp}");
+    let text = resp["result"]["content"][0]["text"].as_str().expect("content text");
+    let mcp_grains: serde_json::Value = serde_json::from_str(text).expect("mcp payload json");
+    let mcp_hashes: BTreeSet<String> = mcp_grains
+        .as_array()
+        .expect("mcp grain array")
+        .iter()
+        .map(|x| x["hash"].as_str().unwrap().to_string())
+        .collect();
+
+    assert_eq!(cli_hashes, mcp_hashes, "CLI and MCP disagree on the org.* scope");
+}

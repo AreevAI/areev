@@ -25,14 +25,14 @@ Two layers share the plumbing here:
 
 ```
 tests/
-├── golden_tests.rs         ← 33 memory-stack tests + 5 known-bug regressions + bless
+├── golden_tests.rs         ← 40 memory-stack tests (incl. Suite 10 ns scoping) + bless
 ├── golden_loop_tests.rs  ← 34 loop E2E tests + bless (suites W1–W15)
 └── golden/
     ├── mod.rs              ← paths, `areev`/`areev_at` runners, imports, assert_golden
     ├── generator.rs        ← memory-stack dataset (pinned epoch 2026-01-15)
     ├── loop_generator.rs ← loop dataset (same epoch; seed table in its docs)
     └── dataset/
-        ├── golden.bundle + manifest.json   ← memory stack (39 grains)
+        ├── golden.bundle + manifest.json   ← memory stack (48 grains)
         ├── renders/                        ← recall/ASSEMBLE golden text
         ├── loop.bundle + loop-manifest.json  ← areev-loop (21 grains incl. a fork)
         └── loop/                         ← areev-loop output goldens (runs, queue,
@@ -50,7 +50,7 @@ Each test imports its own copy of the bundle into a temp dir — Areev is
 single-writer-per-file and every `areev` call is its own process, so tests
 cannot share one memory file under parallel execution.
 
-## The dataset (39 grains, base epoch 2026-01-15 UTC)
+## The dataset (48 grains, base epoch 2026-01-15 UTC)
 
 | Slice | ns | Purpose |
 |---|---|---|
@@ -62,6 +62,7 @@ cannot share one memory file under parallel execution.
 | kim status ×3 (supersession chain) | personal | HISTORY, head-only recall |
 | dave/erin/fay drinks + acme industry | personal | WITH-option targets (dedup, graph hop) |
 | 1 forgotten grain | work | tombstone survives export/import |
+| 9 ns-tree grains | org / org.sales / org.sales.emea / org.ops (+ traps organization, orgs, org:x; token in/out) | prefix scoping (`"org.*"`): Suite 10 exact-hash sets, BM25 scope exclusion, CLI↔MCP parity |
 
 Every `created_at` is a fixed offset from the base epoch — no `now()`
 anywhere — so every content hash is reproducible on any machine.
@@ -70,7 +71,7 @@ anywhere — so every content hash is reproducible on any machine.
 
 - Recall ordering is **insertion recency (op_seq desc)**, not created_at.
 - A forgotten grain ships in the bundle as a zero-length blob and does
-  **not** materialize as a row on import (38 rows from 39 generated).
+  **not** materialize as a row on import (47 rows from 48 generated).
 - NFC: composed and decomposed spellings of the same text produce the
   **same** content address.
 - Clause order matters: `LIMIT` before `WITH`, `BUDGET` before `FORMAT`.

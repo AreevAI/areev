@@ -200,6 +200,12 @@ macro_rules! for_each_conformance_case {
         $per_case!(run_id_indexes_on_any_grain_type);
         $per_case!(run_grains_pages_completely);
         $per_case!(step_action_survives_supersession_only_by_restatement);
+        // namespace prefix scoping ("org.*") + the ns registry
+        $per_case!(ns_prefix_scope_selects_tree_exactly);
+        $per_case!(ns_registry_tracks_lifecycle);
+        $per_case!(ns_registry_replicates_via_bundles);
+        $per_case!(ns_scope_guards_hold);
+        $per_case!(ns_scoped_recall_spans_supersession_chains);
     };
 }
 

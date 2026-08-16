@@ -34,7 +34,11 @@ This document is the requirement record for them.
   grain type, suitable for a nightly sweep. Result:
   `Areev::forget_older_than(ns, cutoff_ms, grain_type)`, exposed as
   `forget_older_than` / `forgetOlderThan` and `areev purge-older-than <days>
-  … --yes`.
+  … --yes`. The namespace here — and on every erasure/DSAR surface — is
+  **exact**: a `"org.*"` prefix scope is a read convention only, and every
+  destructive form refuses it (`VAL-E001`), because a wildcard must never
+  widen destruction. Erasure also maintains the namespace registry: a
+  namespace it empties stops matching prefix scopes immediately.
 - **REQ-ERASE-3 (replication).** Bulk erasure MUST reach replicas. Each
   erased grain gets its own ordinary op-log tombstone, so a bulk erasure
   replays over the existing bundle/sync machinery exactly like individual

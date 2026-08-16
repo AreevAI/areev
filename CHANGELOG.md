@@ -9,6 +9,34 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Added
+
+- **Namespace prefix scoping (`"org.*"`)** — one convention on every read
+  surface (CAL `WHERE namespace` / `namespace IN (…)`, the MCP `namespace`
+  argument, `areev recall --ns`, ASSEMBLE sources, both bindings): a
+  namespace value ending in `*` selects the base namespace **plus its
+  descendants through the separator you wrote** (`"org.*"` = `org`,
+  `org.sales`, `org.sales.emea` — never `organization`, never `org:x`).
+  Malformed patterns (`org*`, bare `*`, mid-string `*`) refuse with
+  `VAL-E001` instead of silently matching nothing. Backed by a
+  count-maintained namespace registry (`ns_reg`, self-healed on open for
+  older files) and a namespace-set recall path through all three hybrid
+  legs; the single-exact-namespace hot path is untouched. Scopes widen
+  **reads only**: `*` is now reserved in namespace names (writes refuse it;
+  replication of pre-existing files still imports), and destruction,
+  grants, policy, and point reads keep taking exact namespaces. Under a
+  bound principal a prefix expansion **fails closed** — every covered
+  namespace must be granted, and the refusal names the pattern, never a
+  discovered namespace.
+
+### Fixed
+
+- `WHERE namespace IN (…)` now queries **every** member of the set (union,
+  deduped, newest-first across the set); previously only the first member
+  was consulted and the rest were silently dropped (#19). A
+  `namespace_override`-pinned session now also clears caller-supplied `IN`
+  sets, closing the corresponding pin-escape.
+
 ## [1.1.0] — 2026-08-16
 
 ### Added

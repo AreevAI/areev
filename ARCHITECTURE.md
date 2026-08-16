@@ -776,6 +776,34 @@ verb is a single-grain `FORGET` — with no bulk-erasure primitive to reach for,
 and a one-flag switch to make a session fully read-only for untrusted input — is
 a safety property you can rely on.
 
+### Namespace prefix scopes widen reads only, and fail closed
+
+Namespaces are opaque strings, but hosts name them hierarchically in practice
+(`org.sales.emea`, `agent:authz`). A **prefix scope** — a namespace value
+ending in `*`, e.g. `"org.*"` — makes that hierarchy queryable: it selects
+the base namespace plus every descendant through the separator the caller
+wrote (parent + descendants; `organization` never matches `org.*`, and the
+forms `org*` / bare `*` refuse rather than guessing). One convention on every
+read surface: CAL `WHERE namespace`, `namespace IN (…)` sets (whose members
+may themselves be patterns), the MCP `namespace` argument, `--ns`, and
+ASSEMBLE sources.
+
+The mechanics: a count-maintained **namespace registry** (`ns_reg`, one row
+per grain-bearing namespace, self-healed from `grains` on open via a meta
+stamp) makes expansion O(distinct namespaces), and the recall legs
+generalize to a namespace-id set — per-namespace probes merged on the
+file-global seq for the structural/recent legs, set-scoped postings and
+vector scans for the other two, one RRF fusion. The single-exact-namespace
+case — the voice hot path — keeps its cached statements untouched.
+
+Three deliberate boundaries: scopes are **read-only** (`*` is reserved, so
+writes refuse wildcard namespaces; destruction, grants, and policy take
+exact names — a wildcard must never widen a destructive surface); the
+expansion **fails closed** under a bound principal (every covered namespace
+must be granted, and the refusal names the pattern, never a discovered
+namespace); and one `RECALL`'s scope set cannot span mounts (that is
+ASSEMBLE's job).
+
 ### Self-improvement is governed, not autonomous
 
 Most agent-memory products treat self-improvement as an intelligence problem —

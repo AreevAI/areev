@@ -2178,7 +2178,13 @@ impl CalExecutor {
         // Namespace and user_id overrides from config (capability-scoped auth).
         if let Some(ref ns) = self.config.namespace_override {
             params.namespace = Some(ns.clone());
-        } else if params.namespace.is_none() {
+            // The pin wins over EVERY caller-supplied scope: a surviving
+            // `namespace IN (…)` set (or a prefix pattern inside one) would
+            // let a pinned session read outside its tenant.
+            params.namespaces = None;
+        } else if params.namespace.is_none() && params.namespaces.is_none() {
+            // The session default fills in only when the query named NO scope
+            // at all — an explicit `namespace IN (…)` set is already a scope.
             if let Some(ns) = store.default_namespace() {
                 params.namespace = Some(ns.to_string());
             }
@@ -2522,10 +2528,11 @@ impl CalExecutor {
                     "object" => params.object_in = Some(str_values),
                     "tags" => params.tags = Some(str_values),
                     "namespace" => {
-                        // Multi-namespace: set the first as primary, store all in namespaces.
-                        if let Some(first) = str_values.first() {
-                            params.namespace = Some(first.clone());
-                        }
+                        // Multi-namespace scope. The facade consumes the SET
+                        // (issue #19: setting only a "primary" first value
+                        // meant every other member was silently dropped);
+                        // `params.namespace` stays untouched so a session
+                        // default cannot shadow an explicit IN scope.
                         params.namespaces = Some(str_values);
                     }
                     _ => {
@@ -3075,9 +3082,10 @@ impl CalExecutor {
         // General case: recall with limit 1 to detect presence.
         params.limit = Some(1);
 
-        // Apply capability overrides.
+        // Apply capability overrides (the pin also clears any IN-set scope).
         if let Some(ref ns) = self.config.namespace_override {
             params.namespace = Some(ns.clone());
+            params.namespaces = None;
         }
         if let Some(ref uid) = self.config.user_id_override {
             params.user_id = Some(uid.clone());
@@ -3184,9 +3192,10 @@ impl CalExecutor {
                 let mut params = RecallParams::default();
                 self.apply_where_clause(&wc.condition, &mut params, exec_warnings, let_values)?;
 
-                // Apply capability overrides.
+                // Apply capability overrides (the pin also clears any IN-set scope).
                 if let Some(ref ns) = self.config.namespace_override {
                     params.namespace = Some(ns.clone());
+                    params.namespaces = None;
                 }
                 if let Some(ref uid) = self.config.user_id_override {
                     params.user_id = Some(uid.clone());

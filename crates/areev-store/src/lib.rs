@@ -22,6 +22,7 @@ use areev_core::authz;
 use areev_core::error::{Hash, AreevError, Result};
 use areev_core::format::deserialize::{deserialize_blob, DeserializedGrain};
 use areev_core::format::serialize::serialize_grain;
+use areev_core::ns::{require_exact_ns, NsScope};
 use areev_core::types::Grain;
 use areev_core::types::{
     step_action_node, step_action_relation, Observation, RelatedTo, STEP_ACTION_PREFIX,
@@ -946,6 +947,16 @@ const LINK_INDEX_KEY: &str = "link_index";
 /// files stamped with an earlier value.
 const LINK_INDEX_VERSION: &str = "2";
 
+/// `meta` stamp for the namespace registry (`ns_reg`) — same
+/// stamp-not-emptiness reasoning as [`LINK_INDEX_KEY`]: a file can
+/// legitimately be empty, so only the stamp says "maintained" vs "predates
+/// the registry". A missing or stale stamp triggers a one-statement rebuild
+/// from `grains` on open.
+const NS_REGISTRY_KEY: &str = "ns_registry";
+
+/// Bumped when the registry's shape or maintenance contract changes.
+const NS_REGISTRY_VERSION: &str = "1";
+
 /// Open options.
 pub struct AreevOptions {
     /// Relations whose objects are entities (get OSP reverse-index rows).
@@ -1047,6 +1058,16 @@ const SCHEMA: &[&str] = &[
     // that namespace becomes unbounded. The grain remains the source of truth;
     // this table is rebuilt from its canonical body on bundle import.
     "CREATE TABLE IF NOT EXISTS corpus_idx(seq INTEGER PRIMARY KEY)",
+    // Namespace registry: one row per namespace with at least one grains row,
+    // `n` = that row count. What makes prefix scoping (`"org.*"`) resolvable
+    // without scanning grains, and what lets the fail-closed authz check see
+    // exactly the namespaces a prefix covers. Count-maintained at every grain
+    // insert/delete choke point (insert_prepped, insert_blob, forget,
+    // erase_where) and DELETEd at zero so an emptied namespace stops matching
+    // — a dead namespace surviving here would make a prefix query refuse for
+    // want of a grant on nothing. Self-healed from `grains` on open when the
+    // `ns_registry` meta stamp is missing or stale.
+    "CREATE TABLE IF NOT EXISTS ns_reg(ns INTEGER PRIMARY KEY, n INTEGER NOT NULL)",
 ];
 
 fn pi(x: i64) -> Value {
@@ -1959,7 +1980,42 @@ impl Areev {
             }
         }
 
+        // Namespace registry (`ns_reg`): same stamp-gated heal. A file written
+        // before the registry existed answers every prefix-scoped recall
+        // (`"org.*"`) with silence — indistinguishable from an honest empty
+        // scope — so rebuild once from `grains` and stamp. One grouped scan,
+        // no blob deserialization; serialized against concurrent writers the
+        // same way rebuild_link_indexes is.
+        if meta.get(NS_REGISTRY_KEY).map(String::as_str) != Some(NS_REGISTRY_VERSION) {
+            store.rebuild_ns_registry()?;
+            if grain_count > 0 {
+                store.warnings.push(format!(
+                    "namespace registry rebuilt on open ({grain_count} grains): this file was \
+                     written before namespaces were registered for prefix scoping. One-time; \
+                     later opens skip it"
+                ));
+            }
+        }
+
         Ok(store)
+    }
+
+    /// Rebuild `ns_reg` from `grains` (one grouped scan) and stamp the file
+    /// current. Idempotent; also the self-heal target for count drift.
+    fn rebuild_ns_registry(&mut self) -> Result<()> {
+        let dbr = self.db.as_ref();
+        with_txn(dbr, || {
+            // Zero-id reservation serializes against concurrent writers on
+            // multi-writer backends, exactly like rebuild_link_indexes.
+            dbr.reserve_write(0, 0, 0, now_ms() << 16, 0)?;
+            dbr.execute("DELETE FROM ns_reg", vec![])?;
+            dbr.execute(
+                "INSERT INTO ns_reg(ns, n) SELECT ns, COUNT(*) FROM grains GROUP BY ns",
+                vec![],
+            )?;
+            Ok(())
+        })?;
+        self.meta_put(NS_REGISTRY_KEY, NS_REGISTRY_VERSION)
     }
 
     /// Install an embedding backend; subsequent adds embed their text
@@ -2151,6 +2207,7 @@ impl Areev {
                 "anonymization policy needs a namespace".into(),
             ));
         }
+        require_exact_ns("an anonymization policy", ns)?;
         let policy = areev_core::anon::AnonPolicy::from_json(policy_json)?;
         // Value-derived pseudonyms (ingress modes, memory scope) need the
         // token key HKDF-derived from the page key — a plaintext file has no
@@ -2503,6 +2560,7 @@ impl Areev {
                 "retention policy needs a namespace".into(),
             ));
         }
+        require_exact_ns("a retention policy", ns)?;
         // 0 is legal and means "no minimum age" — the same semantics as
         // `areev purge-older-than 0`. Negative or non-finite is a caller bug:
         // a cutoff in the future would erase grains that are not yet due.
@@ -2530,6 +2588,7 @@ impl Areev {
         if ns.trim().is_empty() {
             return Err(AreevError::Validation("retention floor needs a namespace".into()));
         }
+        require_exact_ns("a retention floor", ns)?;
         if min_days <= 0.0 || !min_days.is_finite() {
             return Err(AreevError::Validation(format!(
                 "retention floor min_days must be a positive, finite number, got {min_days}"
@@ -2572,6 +2631,7 @@ impl Areev {
         if ns.trim().is_empty() {
             return Err(AreevError::Validation("hold needs a namespace".into()));
         }
+        require_exact_ns("a legal hold", ns)?;
         if because.trim().is_empty() || placed_by.trim().is_empty() {
             return Err(AreevError::Validation(
                 "hold requires a non-empty because and placed_by".into(),
@@ -3107,9 +3167,16 @@ impl Areev {
     }
 
     /// Serialize-side preparation shared by `add_batch` and bundle import.
-    fn prep_from_blob(&mut self, blob: Vec<u8>, hash: Hash) -> Result<GrainPrep> {
+    /// `new_write` distinguishes a locally authored grain (add / supersede /
+    /// merge — where `*` in the namespace is refused, the character being
+    /// reserved for prefix scoping) from replication replay (`insert_blob`),
+    /// which must keep files written before the reservation importable.
+    fn prep_from_blob(&mut self, blob: Vec<u8>, hash: Hash, new_write: bool) -> Result<GrainPrep> {
         let view = deserialize_blob(&blob)?;
         let gv = extract_view(&view);
+        if new_write {
+            require_exact_ns("a grain write", &gv.ns)?;
+        }
         // Known-identity propagation (anon gate): a subject written now must
         // be detectable in prose the boundary transforms later, even if no
         // structural read has surfaced it yet. One map lookup when idle.
@@ -3248,7 +3315,7 @@ impl Areev {
                 prepped.push(None);
                 continue;
             }
-            prepped.push(Some(self.prep_from_blob(blob, hash)?));
+            prepped.push(Some(self.prep_from_blob(blob, hash, true)?));
         }
         let preps: Vec<GrainPrep> = prepped.into_iter().flatten().collect();
         if preps.is_empty() {
@@ -3299,7 +3366,7 @@ impl Areev {
         let mut preps = Vec::with_capacity(grains.len());
         for g in grains {
             let (blob, hash) = g.serialize_dyn()?;
-            preps.push(self.prep_from_blob(blob, hash)?);
+            preps.push(self.prep_from_blob(blob, hash, true)?);
         }
         Ok(self.reserve_for(preps))
     }
@@ -3517,6 +3584,7 @@ impl Areev {
     /// (OMS §8.2, Event). Pair with [`Self::run_yield`] for what the run
     /// *produced* downstream.
     pub fn run_trace(&mut self, ns: &str, run_id: &str, limit: usize) -> Result<Vec<DeserializedGrain>> {
+        require_exact_ns("run_trace", ns)?;
         let (Some(ns_id), Some(run)) = (self.term_lookup(ns)?, self.term_lookup(run_id)?) else {
             return Ok(Vec::new());
         };
@@ -3561,6 +3629,7 @@ impl Areev {
         after_seq: i64,
         limit: usize,
     ) -> Result<Vec<(i64, DeserializedGrain)>> {
+        require_exact_ns("run_grains", ns)?;
         let (Some(ns_id), Some(run)) = (self.term_lookup(ns)?, self.term_lookup(run_id)?) else {
             return Ok(Vec::new());
         };
@@ -3586,6 +3655,7 @@ impl Areev {
     /// history into semantic memory in one call. A transcript answers "what
     /// happened"; this answers "what did we keep".
     pub fn run_yield(&mut self, ns: &str, run_id: &str, limit: usize) -> Result<Vec<DeserializedGrain>> {
+        require_exact_ns("run_yield", ns)?;
         let trace = self.run_trace(ns, run_id, limit)?;
         let in_run: HashSet<Hash> = trace.iter().map(|g| g.hash).collect();
         let mut seen: HashSet<Hash> = in_run.clone();
@@ -3615,6 +3685,7 @@ impl Areev {
     /// that merely read it — a read leaves no grain, so nothing in an
     /// append-only store can attest to it.
     pub fn runs_touching(&mut self, ns: &str, hash: &Hash, depth: usize) -> Result<Vec<String>> {
+        require_exact_ns("runs_touching", ns)?;
         let depth = depth.min(8);
         let mut runs: Vec<String> = Vec::new();
         let mut seen_run: HashSet<String> = HashSet::new();
@@ -3660,10 +3731,70 @@ impl Areev {
         Ok(runs)
     }
 
+    // ----- namespace scoping (prefix recall) ---------------------------
+
+    /// Every namespace with at least one grain, as `(namespace, grain
+    /// count)`, sorted by name — the registry behind prefix scoping, exposed
+    /// for diagnostics and tests. Reads `ns_reg ⋈ terms`, so it is bounded by
+    /// distinct namespaces, not grain count.
+    pub fn namespaces(&mut self) -> Result<Vec<(String, i64)>> {
+        let mut out: Vec<(String, i64)> = self
+            .db
+            .query("SELECT t.term, r.n FROM ns_reg r JOIN terms t ON t.id = r.ns", vec![])?
+            .iter()
+            .filter_map(|row| Some((row.text(0)?.to_string(), row.i64(1)?)))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    /// The concrete namespaces a scope selects, sorted for determinism.
+    /// An exact scope resolves to itself without consulting the registry —
+    /// an unknown exact namespace stays in the answer and recalls as empty
+    /// downstream, the same contract as every other unknown term. A prefix
+    /// scope resolves against the registry, so only namespaces that hold at
+    /// least one grain come back (which is also what the fail-closed authz
+    /// sweep over an expansion checks).
+    pub fn namespaces_in_scope(&mut self, scope: &NsScope) -> Result<Vec<String>> {
+        if let NsScope::Exact(ns) = scope {
+            return Ok(vec![ns.clone()]);
+        }
+        let mut out: Vec<String> = self
+            .db
+            .query("SELECT t.term FROM ns_reg r JOIN terms t ON t.id = r.ns", vec![])?
+            .iter()
+            .filter_map(|row| row.text(0))
+            .filter(|term| scope.matches(term))
+            .map(str::to_string)
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    /// Resolve a namespace parameter — an exact name or a `"org.*"` pattern —
+    /// to dictionary ids. Unknown names contribute nothing (empty-result
+    /// contract); a malformed pattern errors rather than exact-matching
+    /// nothing silently.
+    fn ns_param_ids(&mut self, ns: &str) -> Result<Vec<i64>> {
+        if !NsScope::is_pattern(ns) {
+            return Ok(self.term_lookup(ns)?.into_iter().collect());
+        }
+        let scope = NsScope::parse(ns)?;
+        let names = self.namespaces_in_scope(&scope)?;
+        let mut ids = Vec::with_capacity(names.len());
+        for n in &names {
+            if let Some(id) = self.term_lookup(n)? {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
     /// Recent grains in a namespace, newest first, bounded by `limit`. With
     /// `gtype = None`, every type is returned. This is the "reflect over recent
     /// experience" read path — recent Events / Observations that have no
     /// subject or free-text anchor to hang a structural or BM25 leg on.
+    /// The namespace accepts a `"org.*"` prefix scope like every plural read.
     pub fn recent(
         &mut self,
         ns: &str,
@@ -3689,6 +3820,47 @@ impl Areev {
         self.recent_inner(ns, gtype, limit, true)
     }
 
+    /// `recent` over an already-resolved namespace list (the CAL facade's
+    /// path once it has expanded scopes and passed authorization per
+    /// namespace). Newest first across the whole set — seq is file-global, so
+    /// a per-namespace probe merged on seq IS insertion-recency order.
+    pub fn recent_scoped(
+        &mut self,
+        ns_list: &[String],
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+    ) -> Result<Vec<DeserializedGrain>> {
+        self.recent_scoped_inner(ns_list, gtype, limit, false)
+    }
+
+    /// [`recent_scoped`](Self::recent_scoped), restricted to live heads.
+    pub fn recent_live_scoped(
+        &mut self,
+        ns_list: &[String],
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+    ) -> Result<Vec<DeserializedGrain>> {
+        self.recent_scoped_inner(ns_list, gtype, limit, true)
+    }
+
+    fn recent_scoped_inner(
+        &mut self,
+        ns_list: &[String],
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let mut ids = Vec::with_capacity(ns_list.len());
+        for ns in ns_list {
+            require_exact_ns("a resolved recall scope element", ns)?;
+            if let Some(id) = self.term_lookup(ns)? {
+                ids.push(id);
+            }
+        }
+        let single = (ns_list.len() == 1).then(|| ns_list[0].as_str());
+        self.recent_ids(&ids, single, gtype, limit, live_only)
+    }
+
     fn recent_inner(
         &mut self,
         ns: &str,
@@ -3696,10 +3868,25 @@ impl Areev {
         limit: usize,
         live_only: bool,
     ) -> Result<Vec<DeserializedGrain>> {
-        let ns_id = match self.term_lookup(ns)? {
-            Some(x) => x,
-            None => return Ok(Vec::new()),
-        };
+        let ids = self.ns_param_ids(ns)?;
+        // A pattern's grains span namespaces with their own egress policies —
+        // per-grain resolution (hint = None). An exact namespace keeps the
+        // one-policy hint.
+        let hint = (!NsScope::is_pattern(ns)).then_some(ns);
+        self.recent_ids(&ids, hint, gtype, limit, live_only)
+    }
+
+    fn recent_ids(
+        &mut self,
+        ns_ids: &[i64],
+        egress_hint: Option<&str>,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<Vec<DeserializedGrain>> {
+        if ns_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let live = if live_only {
             " AND superseded_by IS NULL"
         } else {
@@ -3708,22 +3895,36 @@ impl Areev {
         // The `gtype` column stores the enum ordinal (see `extract_view`:
         // `view.grain_type as u8`), not the .mg header type-byte.
         let gt_ord = gtype.map(|g| g as u8 as i64);
-        let rows = match gt_ord {
-            Some(gt) => self.db.query(
-                &format!("SELECT blob FROM grains WHERE ns=?1 AND gtype=?2{live} ORDER BY seq DESC LIMIT ?3"),
-                vec![pi(ns_id), pi(gt), pi(limit as i64)],
-            )?,
-            None => self.db.query(
-                &format!("SELECT blob FROM grains WHERE ns=?1{live} ORDER BY seq DESC LIMIT ?2"),
-                vec![pi(ns_id), pi(limit as i64)],
-            )?,
-        };
-        let mut out: Vec<DeserializedGrain> = rows
+        // Per-namespace probes (each already newest-first), merged on the
+        // file-global seq. One namespace — the overwhelmingly common case —
+        // skips the merge entirely.
+        let mut merged: Vec<(i64, Vec<u8>)> = Vec::new();
+        for ns_id in ns_ids {
+            let rows = match gt_ord {
+                Some(gt) => self.db.query(
+                    &format!("SELECT seq, blob FROM grains WHERE ns=?1 AND gtype=?2{live} ORDER BY seq DESC LIMIT ?3"),
+                    vec![pi(*ns_id), pi(gt), pi(limit as i64)],
+                )?,
+                None => self.db.query(
+                    &format!("SELECT seq, blob FROM grains WHERE ns=?1{live} ORDER BY seq DESC LIMIT ?2"),
+                    vec![pi(*ns_id), pi(limit as i64)],
+                )?,
+            };
+            for row in &rows {
+                if let (Some(seq), Some(b)) = (row.i64(0), row.blob(1)) {
+                    merged.push((seq, b));
+                }
+            }
+        }
+        if ns_ids.len() > 1 {
+            merged.sort_unstable_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+            merged.truncate(limit);
+        }
+        let mut out: Vec<DeserializedGrain> = merged
             .iter()
-            .filter_map(|row| row.blob(0))
-            .map(|b| deserialize_blob(&b))
+            .map(|(_, b)| deserialize_blob(b))
             .collect::<Result<_>>()?;
-        self.egress_exit(Some(ns), &mut out)?;
+        self.egress_exit(egress_hint, &mut out)?;
         Ok(out)
     }
 
@@ -3758,7 +3959,9 @@ impl Areev {
     }
 
     /// Structural recall: current grains about `subject` (optionally filtered
-    /// by relation), newest first, k-bounded. The voice hot path.
+    /// by relation), newest first, k-bounded. The voice hot path. The
+    /// namespace accepts a `"org.*"` prefix scope (parent + descendants); an
+    /// exact name keeps the single-probe fast path untouched.
     pub fn recall(
         &mut self,
         ns: &str,
@@ -3766,8 +3969,77 @@ impl Areev {
         relation: Option<&str>,
         k: usize,
     ) -> Result<Vec<DeserializedGrain>> {
+        if NsScope::is_pattern(ns) {
+            let ids = self.ns_param_ids(ns)?;
+            return self.recall_multi_raw(ns, &ids, subject, relation, k);
+        }
         let mut out = self.recall_raw(ns, subject, relation, k)?;
         self.egress_exit(Some(ns), &mut out)?;
+        Ok(out)
+    }
+
+    /// The multi-namespace body of a scoped structural recall: one cached
+    /// probe per namespace (each already newest-first), merged on the
+    /// file-global seq — which IS insertion-recency order — then bounded.
+    /// `label` (the pattern as typed) is what telemetry records; egress
+    /// resolves each grain's own namespace policy, since one scope can span
+    /// namespaces with different anonymization modes.
+    fn recall_multi_raw(
+        &mut self,
+        label: &str,
+        ns_ids: &[i64],
+        subject: &str,
+        relation: Option<&str>,
+        k: usize,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let start = std::time::Instant::now();
+        let s_id = match self.term_lookup(subject)? {
+            Some(x) => x,
+            None => {
+                self.record_recall_event(label, Some(subject), relation, None, &[], start);
+                return Ok(Vec::new());
+            }
+        };
+        let p_id = match relation {
+            Some(r) => match self.term_lookup(r)? {
+                Some(x) => Some(x),
+                None => {
+                    self.record_recall_event(label, Some(subject), relation, None, &[], start);
+                    return Ok(Vec::new());
+                }
+            },
+            None => None,
+        };
+        let mut merged: Vec<(i64, Vec<u8>)> = Vec::new();
+        for ns_id in ns_ids {
+            let rows = match p_id {
+                Some(p) => self.db.query_hot(
+                    "SELECT t.seq, g.blob FROM triples t JOIN grains g ON g.seq = t.seq
+                      WHERE t.ns=?1 AND t.s=?2 AND t.p=?3 AND t.cur=1
+                      ORDER BY t.seq DESC LIMIT ?4",
+                    vec![pi(*ns_id), pi(s_id), pi(p), pi(k as i64)],
+                )?,
+                None => self.db.query_hot(
+                    "SELECT t.seq, g.blob FROM triples t JOIN grains g ON g.seq = t.seq
+                      WHERE t.ns=?1 AND t.s=?2 AND t.cur=1
+                      ORDER BY t.seq DESC LIMIT ?3",
+                    vec![pi(*ns_id), pi(s_id), pi(k as i64)],
+                )?,
+            };
+            for row in &rows {
+                if let (Some(seq), Some(b)) = (row.i64(0), row.blob(1)) {
+                    merged.push((seq, b));
+                }
+            }
+        }
+        merged.sort_unstable_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+        merged.truncate(k);
+        let mut out = Vec::with_capacity(merged.len());
+        for (_, b) in &merged {
+            out.push(deserialize_blob(b)?);
+        }
+        self.record_recall_event(label, Some(subject), relation, None, &out, start);
+        self.egress_exit(None, &mut out)?;
         Ok(out)
     }
 
@@ -3824,7 +4096,10 @@ impl Areev {
     }
 
     /// Current value head for (subject, relation) — the µs point read.
+    /// Takes an exact namespace: "the current value" across a prefix scope is
+    /// not a single head, so a pattern refuses rather than guessing.
     pub fn latest(&mut self, ns: &str, subject: &str, relation: &str) -> Result<Option<DeserializedGrain>> {
+        require_exact_ns("latest", ns)?;
         let (ns_id, s_id, p_id) = match (
             self.term_lookup(ns)?,
             self.term_lookup(subject)?,
@@ -3851,7 +4126,9 @@ impl Areev {
     }
 
     /// Last `n` events of a session, oldest→newest (transcript tail).
+    /// Exact namespace: a session lives in one namespace by construction.
     pub fn thread_tail(&mut self, ns: &str, session: &str, n: usize) -> Result<Vec<DeserializedGrain>> {
+        require_exact_ns("thread_tail", ns)?;
         let (ns_id, sess_id) = match (self.term_lookup(ns)?, self.term_lookup(session)?) {
             (Some(a), Some(b)) => (a, b),
             _ => return Ok(Vec::new()),
@@ -4105,6 +4382,12 @@ impl Areev {
             dbr.execute("DELETE FROM fts_post WHERE seq=?1", vec![pi(seq)])?;
             dbr.execute("DELETE FROM fts_doc WHERE seq=?1", vec![pi(seq)])?;
             dbr.execute("DELETE FROM grains WHERE seq=?1", vec![pi(seq)])?;
+            // Namespace registry: a tombstone that leaves its namespace
+            // matching prefix scopes (or demanding grants) is stale state
+            // like any other index row.
+            if let Some(ns) = ns {
+                drop_ns_registry(dbr, ns, 1)?;
+            }
             // Reconcile the head/entity_latest indexes for the cell.
             if let (Some(ns), Some(s), Some(p)) = (ns, s, p) {
                 // Forget must drop the grain's fork-tip row too — every other
@@ -4247,6 +4530,9 @@ impl Areev {
         subject: &str,
         opts: ErasureOptions,
     ) -> Result<ErasureReport> {
+        // Destruction takes an exact namespace — never a pattern (root
+        // invariant 3: a hash, an identity, or an age, never a predicate).
+        require_exact_ns("forget_subject", ns)?;
         self.check_subject_selector("forget_subject", subject, opts.text_mentions)?;
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(ErasureReport::default());
@@ -4342,6 +4628,9 @@ impl Areev {
         subject: &str,
         opts: ErasureOptions,
     ) -> Result<SubjectReport> {
+        // Exact namespace, refused identically to the erasure it mirrors —
+        // "show me" and "erase" must not drift apart (REQ-ERASE-9).
+        require_exact_ns("subject_report", ns)?;
         self.check_subject_selector("subject_report", subject, opts.text_mentions)?;
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(SubjectReport::default());
@@ -4387,6 +4676,7 @@ impl Areev {
         opts: ErasureOptions,
         path: &str,
     ) -> Result<BundleStats> {
+        require_exact_ns("subject_bundle", ns)?;
         self.check_subject_selector("subject_bundle", subject, opts.text_mentions)?;
         let mut out: Vec<u8> = Vec::with_capacity(16 * 1024);
         out.extend_from_slice(BUNDLE_MAGIC);
@@ -4462,6 +4752,11 @@ impl Areev {
     ) -> Result<ErasureReport> {
         if limit == Some(0) {
             return Ok(ErasureReport::default());
+        }
+        // Destruction takes an exact namespace, never a pattern (root
+        // invariant 3) — a wildcard sweep would be a predicate delete.
+        if let Some(n) = ns {
+            require_exact_ns("an age-based sweep", n)?;
         }
         // Floors and holds gate EVERY age-based destruction — this is the
         // one choke point CAL `PURGE`, `sweep_retention`, and the loop's
@@ -4783,6 +5078,20 @@ impl Areev {
                     ],
                 )?;
             }
+            // Namespace registry: subtract what this erasure removed, per
+            // namespace, dropping rows that reach zero — an identity erasure
+            // that empties a per-subject namespace must also stop that
+            // namespace matching prefix scopes.
+            let mut ns_counts: Vec<(i64, i64)> = Vec::new();
+            for t in &targets {
+                match ns_counts.iter_mut().find(|(ns, _)| *ns == t.ns) {
+                    Some((_, k)) => *k += 1,
+                    None => ns_counts.push((t.ns, 1)),
+                }
+            }
+            for (ns, k) in &ns_counts {
+                drop_ns_registry(self.db.as_ref(), *ns, *k)?;
+            }
             // Reconcile entity_latest per affected key: drop rows pointing at
             // erased grains, then re-elect from the surviving heads with the
             // SAME (created_at, hash) rule as everywhere else.
@@ -5073,6 +5382,7 @@ impl Areev {
         node_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, Hash)>> {
+        require_exact_ns("step_actions", ns)?;
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(Vec::new());
         };
@@ -5145,6 +5455,7 @@ impl Areev {
         after_seq: i64,
         limit: usize,
     ) -> Result<Vec<(i64, String, Hash)>> {
+        require_exact_ns("step_actions_page", ns)?;
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(Vec::new());
         };
@@ -5226,6 +5537,7 @@ impl Areev {
         object: &str,
         limit: usize,
     ) -> Result<Vec<DeserializedGrain>> {
+        require_exact_ns("grains_by_object", ns)?;
         let (Some(ns_id), Some(obj_id)) = (self.term_lookup(ns)?, self.term_lookup(object)?) else {
             return Ok(Vec::new());
         };
@@ -5258,6 +5570,7 @@ impl Areev {
         depth: usize,
         cap: usize,
     ) -> Result<Vec<String>> {
+        require_exact_ns("related", ns)?;
         let ns_id = match self.term_lookup(ns)? {
             Some(x) => x,
             None => return Ok(Vec::new()),
@@ -5348,6 +5661,7 @@ impl Areev {
         relations: &[&str],
         max_depth: usize,
     ) -> Result<Option<Vec<String>>> {
+        require_exact_ns("path", ns)?;
         let ns_id = match self.term_lookup(ns)? {
             Some(x) => x,
             None => return Ok(None),
@@ -5432,6 +5746,7 @@ impl Areev {
         t: i64,
         axis: Axis,
     ) -> Result<Option<DeserializedGrain>> {
+        require_exact_ns("entity_at", ns)?;
         match axis {
             Axis::Knowledge => {
                 // Walk the supersession chain backward from the head.
@@ -5521,8 +5836,11 @@ impl Areev {
     /// scored in memory, and only the top candidates are checked for
     /// liveness — so cost tracks the number of documents containing the query
     /// terms, not the size of the file.
+    /// BM25 leg. The namespace accepts a `"org.*"` prefix scope like every
+    /// plural read.
     pub fn search_text(&mut self, ns: &str, query: &str, k: usize) -> Result<Vec<i64>> {
-        self.search_text_inner(ns, query, k, false)
+        let ids = self.ns_param_ids(ns)?;
+        self.search_text_inner(&ids, query, k, false)
     }
 
     /// `search_text`, scoring the whole chain instead of the live heads.
@@ -5530,23 +5848,20 @@ impl Areev {
     /// state), so the historical text is still there to be found — the liveness
     /// filter is the only thing hiding it.
     pub fn search_text_all(&mut self, ns: &str, query: &str, k: usize) -> Result<Vec<i64>> {
-        self.search_text_inner(ns, query, k, true)
+        let ids = self.ns_param_ids(ns)?;
+        self.search_text_inner(&ids, query, k, true)
     }
 
     fn search_text_inner(
         &mut self,
-        ns: &str,
+        ns_ids: &[i64],
         query: &str,
         k: usize,
         include_superseded: bool,
     ) -> Result<Vec<i64>> {
-        if !self.index_text || k == 0 {
-            return Ok(Vec::new()); // BM25 leg disabled (edge profile)
+        if !self.index_text || k == 0 || ns_ids.is_empty() {
+            return Ok(Vec::new()); // BM25 leg disabled (edge profile) or empty scope
         }
-        let ns_id = match self.term_lookup(ns)? {
-            Some(x) => x,
-            None => return Ok(Vec::new()),
-        };
         let terms = tokenize(query);
         if terms.is_empty() {
             return Ok(Vec::new());
@@ -5579,8 +5894,10 @@ impl Areev {
             }
         }
         let mut by_term: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
-        if distinct.len() == 1 || !self.db.prefers_batched_reads() {
-            // In-process: one cached indexed probe per distinct token.
+        if (distinct.len() == 1 || !self.db.prefers_batched_reads()) && ns_ids.len() == 1 {
+            // In-process, single namespace (the common case): one cached
+            // indexed probe per distinct token — the prepared plan survives.
+            let ns_id = ns_ids[0];
             for t in &distinct {
                 for row in &self.db.query_hot(
                     "SELECT v.term, p.seq, p.tf, d.len FROM fts_post p
@@ -5597,18 +5914,23 @@ impl Areev {
                 }
             }
         } else {
-            // Networked backend: all tokens in one round trip.
+            // Networked backend, or a multi-namespace scope: all tokens in one
+            // round trip, the namespace ids inlined (they come from our own
+            // dictionary — same rationale as `live_seqs`). Postings key on the
+            // file-global seq, so accumulating across namespaces changes
+            // nothing downstream: df counts documents in the scope, which is
+            // exactly what idf should see.
             let placeholders: Vec<String> =
-                (2..distinct.len() + 2).map(|i| format!("?{i}")).collect();
+                (1..=distinct.len()).map(|i| format!("?{i}")).collect();
             let sql = format!(
                 "SELECT v.term, p.seq, p.tf, d.len FROM fts_post p
                   JOIN fts_vocab v ON v.id = p.term
                   JOIN fts_doc d ON d.seq = p.seq
-                 WHERE p.ns = ?1 AND v.term IN ({})",
+                 WHERE p.ns IN ({}) AND v.term IN ({})",
+                seq_csv(ns_ids),
                 placeholders.join(",")
             );
-            let mut params = vec![pi(ns_id)];
-            params.extend(distinct.iter().map(|t| pt(t)));
+            let params: Vec<Value> = distinct.iter().map(|t| pt(t)).collect();
             for row in &self.db.query(&sql, params)? {
                 if let (Some(t), Some(seq), Some(tf), Some(dl)) =
                     (row.text(0), row.i64(1), row.i64(2), row.i64(3))
@@ -5789,6 +6111,7 @@ impl Areev {
         vector: &[f32],
         k: usize,
     ) -> Result<Vec<(Hash, f32)>> {
+        require_exact_ns("nearest_vector", ns)?;
         self.check_embedding_dim(vector.len())?;
         let Some(ns_id) = self.term_lookup(ns)? else {
             return Ok(Vec::new());
@@ -5852,6 +6175,7 @@ impl Areev {
         text: &str,
         k: usize,
     ) -> Result<Vec<(Hash, f32)>> {
+        require_exact_ns("nearest_semantic", ns)?;
         if self.embedder.is_none() {
             // Surface-neutral on purpose. This used to name `--embed-cmd`, a
             // `areev` CLI flag that does not exist in Python or Node — and
@@ -5924,45 +6248,69 @@ impl Areev {
         Ok(out)
     }
 
+    /// Vector leg. The namespace accepts a `"org.*"` prefix scope like every
+    /// plural read.
     pub fn search_vector(&mut self, ns: &str, query: &str, k: usize) -> Result<Vec<i64>> {
-        self.search_vector_inner(ns, query, k, false)
+        let ids = self.ns_param_ids(ns)?;
+        self.search_vector_inner(&ids, query, k, false)
     }
 
     /// `search_vector` over the whole chain rather than the live heads —
     /// the vector half of `RecallTuning::include_superseded`.
     pub fn search_vector_all(&mut self, ns: &str, query: &str, k: usize) -> Result<Vec<i64>> {
-        self.search_vector_inner(ns, query, k, true)
+        let ids = self.ns_param_ids(ns)?;
+        self.search_vector_inner(&ids, query, k, true)
     }
 
     fn search_vector_inner(
         &mut self,
-        ns: &str,
+        ns_ids: &[i64],
         query: &str,
         k: usize,
         include_superseded: bool,
     ) -> Result<Vec<i64>> {
-        let Some(ns_id) = self.term_lookup(ns)? else {
+        if ns_ids.is_empty() {
             return Ok(Vec::new());
-        };
+        }
         let Some(embedder) = &self.embedder else {
             return Ok(Vec::new());
         };
         let qv = embedder.embed(query)?;
         let qjson = vec_to_json(&qv);
+        if let [ns_id] = ns_ids {
+            // Single namespace: the fixed literal keeps its cached plan.
+            return Ok(self
+                .db
+                .query(
+                    if include_superseded {
+                        "SELECT e.seq FROM embeddings e JOIN grains g ON g.seq = e.seq
+                         WHERE g.ns = ?1
+                         ORDER BY vector_distance_cos(e.vec, vector32(?2)) LIMIT ?3"
+                    } else {
+                        "SELECT e.seq FROM embeddings e JOIN grains g ON g.seq = e.seq
+                         WHERE g.ns = ?1 AND g.svt IS NULL
+                         ORDER BY vector_distance_cos(e.vec, vector32(?2)) LIMIT ?3"
+                    },
+                    vec![pi(*ns_id), pt(&qjson), pi(k as i64)],
+                )?
+                .iter()
+                .filter_map(|row| row.i64(0))
+                .collect());
+        }
+        // Multi-namespace scope: one brute-force scan with the namespace ids
+        // inlined (engine-internal dictionary ids, same rationale as
+        // `live_seqs`) — cosine distance is namespace-agnostic, so a single
+        // globally-ordered scan IS the merged answer.
+        let live = if include_superseded { "" } else { " AND g.svt IS NULL" };
+        let sql = format!(
+            "SELECT e.seq FROM embeddings e JOIN grains g ON g.seq = e.seq
+             WHERE g.ns IN ({}){live}
+             ORDER BY vector_distance_cos(e.vec, vector32(?1)) LIMIT ?2",
+            seq_csv(ns_ids)
+        );
         Ok(self
             .db
-            .query(
-                if include_superseded {
-                    "SELECT e.seq FROM embeddings e JOIN grains g ON g.seq = e.seq
-                     WHERE g.ns = ?1
-                     ORDER BY vector_distance_cos(e.vec, vector32(?2)) LIMIT ?3"
-                } else {
-                    "SELECT e.seq FROM embeddings e JOIN grains g ON g.seq = e.seq
-                     WHERE g.ns = ?1 AND g.svt IS NULL
-                     ORDER BY vector_distance_cos(e.vec, vector32(?2)) LIMIT ?3"
-                },
-                vec![pi(ns_id), pt(&qjson), pi(k as i64)],
-            )?
+            .query(&sql, vec![pt(&qjson), pi(k as i64)])?
             .iter()
             .filter_map(|row| row.i64(0))
             .collect())
@@ -5999,10 +6347,66 @@ impl Areev {
     /// Every stage is fail-open: past the deadline, or with its backend/data
     /// absent, it degrades to plain fusion order rather than erroring. All
     /// default off, so this is a strict superset of `recall_hybrid`.
+    ///
+    /// The namespace accepts a `"org.*"` prefix scope (parent + descendants);
+    /// an exact name keeps the single-namespace fast path untouched.
     #[allow(clippy::too_many_arguments)] // tuning knobs are intentionally explicit params
     pub fn recall_hybrid_tuned(
         &mut self,
         ns: &str,
+        subject: Option<&str>,
+        relation: Option<&str>,
+        query: Option<&str>,
+        k: usize,
+        deadline: Option<std::time::Duration>,
+        tuning: RecallTuning,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let ns_ids = self.ns_param_ids(ns)?;
+        // A pattern's grains span namespaces with their own egress policies —
+        // per-grain resolution. An exact namespace keeps the one-policy hint.
+        let hint = (!NsScope::is_pattern(ns)).then_some(ns);
+        self.recall_hybrid_ids(ns, &ns_ids, hint, subject, relation, query, k, deadline, tuning)
+    }
+
+    /// Hybrid recall over an already-resolved namespace LIST — the CAL
+    /// facade's path for `WHERE namespace IN (…)` and for expanded prefix
+    /// scopes it has authorization-checked per namespace. Same legs, fusion
+    /// and refinements as [`recall_hybrid_tuned`](Self::recall_hybrid_tuned);
+    /// every element must be an exact name (a pattern inside a resolved list
+    /// is a caller bug and refuses loudly).
+    #[allow(clippy::too_many_arguments)]
+    pub fn recall_hybrid_scoped(
+        &mut self,
+        ns_list: &[String],
+        subject: Option<&str>,
+        relation: Option<&str>,
+        query: Option<&str>,
+        k: usize,
+        deadline: Option<std::time::Duration>,
+        tuning: RecallTuning,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let mut ns_ids = Vec::with_capacity(ns_list.len());
+        for ns in ns_list {
+            require_exact_ns("a resolved recall scope element", ns)?;
+            if let Some(id) = self.term_lookup(ns)? {
+                ns_ids.push(id);
+            }
+        }
+        let label = ns_list.join(",");
+        let hint = (ns_list.len() == 1).then(|| ns_list[0].as_str());
+        self.recall_hybrid_ids(&label, &ns_ids, hint, subject, relation, query, k, deadline, tuning)
+    }
+
+    /// The one hybrid-recall body. `label` is what telemetry records (the
+    /// pattern or list as the caller spelled it); `egress_hint` is `Some(ns)`
+    /// only when the whole result set shares one namespace's anonymization
+    /// policy, else each grain resolves its own.
+    #[allow(clippy::too_many_arguments)]
+    fn recall_hybrid_ids(
+        &mut self,
+        label: &str,
+        ns_ids: &[i64],
+        egress_hint: Option<&str>,
         subject: Option<&str>,
         relation: Option<&str>,
         query: Option<&str>,
@@ -6027,7 +6431,7 @@ impl Areev {
 
         // leg 1: structural (the voice hot path — always runs first)
         let structural: Vec<i64> = match subject {
-            Some(s) => self.recall_seqs(ns, s, relation, leg_k, tuning.include_superseded)?,
+            Some(s) => self.recall_seqs(ns_ids, s, relation, leg_k, tuning.include_superseded)?,
             None => Vec::new(),
         };
         // leg 2: BM25 — plus Tier-1 query-expansion variant legs. Skipped when
@@ -6041,7 +6445,7 @@ impl Areev {
                 // exactly like a deadline-skipped one. recall_hybrid must never
                 // error — the structural/vector legs still answer.
                 fts_legs.push(
-                    self.search_text_inner(ns, q, leg_k, tuning.include_superseded)
+                    self.search_text_inner(ns_ids, q, leg_k, tuning.include_superseded)
                         .unwrap_or_default(),
                 );
                 if tuning.query_expansion && self.index_text {
@@ -6050,7 +6454,7 @@ impl Areev {
                             break;
                         }
                         let hits = self
-                            .search_text_inner(ns, &variant, leg_k, tuning.include_superseded)
+                            .search_text_inner(ns_ids, &variant, leg_k, tuning.include_superseded)
                             .unwrap_or_default();
                         if !hits.is_empty() {
                             fts_legs.push(hits);
@@ -6067,7 +6471,7 @@ impl Areev {
                 // file's stored vectors errors inside vector_distance_cos (the
                 // store permits a mismatched embedder with only a warning) —
                 // degrade the vector leg rather than failing the whole recall.
-                self.search_vector_inner(ns, q, leg_k, tuning.include_superseded)
+                self.search_vector_inner(ns_ids, q, leg_k, tuning.include_superseded)
                     .unwrap_or_default()
             }
             _ => Vec::new(),
@@ -6075,7 +6479,7 @@ impl Areev {
         if structural.is_empty() && fts_legs.iter().all(|l| l.is_empty()) && vecs.is_empty() {
             // Record the miss too: an empty-result query is the coverage-gap
             // signal, not a no-op.
-            self.record_recall_event(ns, subject, relation, query, &[], start);
+            self.record_recall_event(label, subject, relation, query, &[], start);
             return Ok(Vec::new());
         }
 
@@ -6151,8 +6555,8 @@ impl Areev {
         // push, and `Off` telemetry makes it a single branch. Recorded before
         // the egress pass on purpose: telemetry keys on hashes and counts,
         // which the transform preserves.
-        self.record_recall_event(ns, subject, relation, query, &out, start);
-        self.egress_exit(Some(ns), &mut out)?;
+        self.record_recall_event(label, subject, relation, query, &out, start);
+        self.egress_exit(egress_hint, &mut out)?;
         Ok(out)
     }
 
@@ -6355,19 +6759,23 @@ impl Areev {
 
     /// Structural leg. `all_versions` drops the `cur=1` predicate so the whole
     /// supersession chain comes back instead of the heads — the widened scan
-    /// behind `RecallTuning::include_superseded`. It gets its own pair of cached
-    /// statements so the heads-only hot path keeps its prepared plans.
+    /// behind `RecallTuning::include_superseded`. Takes the resolved namespace
+    /// id set: one cached probe per namespace (each already newest-first),
+    /// merged on the file-global seq — which IS recency order — then bounded.
     fn recall_seqs(
         &mut self,
-        ns: &str,
+        ns_ids: &[i64],
         subject: &str,
         relation: Option<&str>,
         k: usize,
         all_versions: bool,
     ) -> Result<Vec<i64>> {
-        let (ns_id, s_id) = match (self.term_lookup(ns)?, self.term_lookup(subject)?) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(Vec::new()),
+        if ns_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let s_id = match self.term_lookup(subject)? {
+            Some(x) => x,
+            None => return Ok(Vec::new()),
         };
         let p_id = match relation {
             Some(r) => match self.term_lookup(r)? {
@@ -6376,6 +6784,26 @@ impl Areev {
             },
             None => None,
         };
+        let mut all: Vec<i64> = Vec::new();
+        for ns_id in ns_ids {
+            all.extend(self.recall_seqs_probe(*ns_id, s_id, p_id, k, all_versions)?);
+        }
+        if ns_ids.len() > 1 {
+            all.sort_unstable_by(|a, b| b.cmp(a));
+            all.truncate(k);
+        }
+        Ok(all)
+    }
+
+    /// One namespace's structural probe.
+    fn recall_seqs_probe(
+        &mut self,
+        ns_id: i64,
+        s_id: i64,
+        p_id: Option<i64>,
+        k: usize,
+        all_versions: bool,
+    ) -> Result<Vec<i64>> {
         // Each probe variant is its own SQL literal, so each keeps its own
         // prepared-statement cache entry — the heads-only hot path never loses
         // its plan to the widened scan.
@@ -6638,6 +7066,7 @@ impl Areev {
     }
 
     pub fn heads(&mut self, ns: &str, subject: &str, relation: &str) -> Result<Vec<(Hash, i64)>> {
+        require_exact_ns("heads", ns)?;
         let (Some(ns_id), Some(s_id), Some(p_id)) = (
             self.term_lookup(ns)?,
             self.term_lookup(subject)?,
@@ -7332,7 +7761,7 @@ impl Areev {
 
     /// Insert one already-serialized grain (bundle import path).
     fn insert_blob(&mut self, blob: Vec<u8>, hash: Hash, op: i64, hlc_in: i64) -> Result<()> {
-        let pr = self.prep_from_blob(blob, hash)?;
+        let pr = self.prep_from_blob(blob, hash, false)?;
         let ram_seq = self.next_seq;
         self.next_seq += 1;
         let ram_op = self.next_op;
@@ -7347,6 +7776,7 @@ impl Areev {
                 Some(w) => (w.seq0, w.op0),
                 None => (ram_seq, ram_op),
             };
+            bump_ns_registry(dbr, pr.ns_id, 1)?;
             dbr.execute(
                 "INSERT INTO grains(seq,hash,ns,gtype,created_at,s,p,o,vf,vt,svf,svt,superseded_by,supersedes,text,blob)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,NULL,NULL,?12,?13)",
@@ -7808,6 +8238,26 @@ fn fts_delta(preps: &[GrainPrep]) -> (i64, i64) {
     (docs, preps.iter().map(|p| p.doc_len).sum())
 }
 
+/// Namespace-registry bump shared by every grain-row insert path: ensure the
+/// row exists, then add `k` to its count. Two cached statements per distinct
+/// namespace per batch — unconditional (no process-local cache to go stale
+/// under Postgres's multi-writer model; the write txns are serialized by
+/// `reserve_write`, so the read-modify-write is safe on both backends).
+fn bump_ns_registry(db: &dyn Db, ns_id: i64, k: i64) -> Result<()> {
+    db.execute_hot("INSERT OR IGNORE INTO ns_reg(ns, n) VALUES (?1, 0)", vec![pi(ns_id)])?;
+    db.execute_hot("UPDATE ns_reg SET n = n + ?2 WHERE ns = ?1", vec![pi(ns_id), pi(k)])?;
+    Ok(())
+}
+
+/// The delete-side twin: subtract `k`, and drop the row at zero so an emptied
+/// namespace stops matching prefix scopes (and stops tripping the fail-closed
+/// authz sweep over an expansion).
+fn drop_ns_registry(db: &dyn Db, ns_id: i64, k: i64) -> Result<()> {
+    db.execute_hot("UPDATE ns_reg SET n = n - ?2 WHERE ns = ?1", vec![pi(ns_id), pi(k)])?;
+    db.execute_hot("DELETE FROM ns_reg WHERE ns = ?1 AND n <= 0", vec![pi(ns_id)])?;
+    Ok(())
+}
+
 fn insert_prepped(
     db: &dyn Db,
     preps: &[GrainPrep],
@@ -7815,6 +8265,17 @@ fn insert_prepped(
     first_op: i64,
     hlc0: i64,
 ) -> Result<()> {
+    // Namespace registry first: one bump per distinct namespace in the batch.
+    let mut ns_counts: Vec<(i64, i64)> = Vec::new();
+    for pr in preps {
+        match ns_counts.iter_mut().find(|(ns, _)| *ns == pr.ns_id) {
+            Some((_, k)) => *k += 1,
+            None => ns_counts.push((pr.ns_id, 1)),
+        }
+    }
+    for (ns, k) in &ns_counts {
+        bump_ns_registry(db, *ns, *k)?;
+    }
     // Every statement here is a fixed literal on the write hot path — the
     // backend's `_hot` cache makes each a prepare-once (this used to re-prepare
     // eight statements per call).
@@ -8375,6 +8836,54 @@ mod tests {
             let c = db.term_id("z").unwrap();
             assert!(c > b);
             assert_eq!(db.term_str(c).unwrap().as_deref(), Some("z"));
+        }
+    }
+
+    #[test]
+    fn ns_registry_self_heals_when_stamp_is_missing_or_counts_drift() {
+        // Simulates a file written before the registry existed (or whose
+        // counts drifted): strip the stamp and corrupt the table, reopen,
+        // and the one-statement rebuild must restore truth from `grains`.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("heal.db");
+        let path = path.to_str().unwrap();
+        {
+            use areev_core::types::Fact;
+            let mut db = Areev::open(path).unwrap();
+            let mut f1 = Fact::new("john", "prefers", "window");
+            f1.common.namespace = Some("org.sales".into());
+            db.add(&f1).unwrap();
+            let mut f2 = Fact::new("john", "prefers", "aisle");
+            f2.common.namespace = Some("org.ops".into());
+            db.add(&f2).unwrap();
+            // Sabotage: drop the stamp and poison the registry.
+            db.db.execute("DELETE FROM meta WHERE k = ?1", vec![pt(NS_REGISTRY_KEY)]).unwrap();
+            db.db.execute("DELETE FROM ns_reg", vec![]).unwrap();
+            db.db.execute("INSERT INTO ns_reg(ns, n) VALUES (99999, 7)", vec![]).unwrap();
+        }
+        {
+            let mut db = Areev::open(path).unwrap();
+            assert!(
+                db.open_warnings().iter().any(|w| w.contains("namespace registry")),
+                "the heal must be reported: {:?}",
+                db.open_warnings()
+            );
+            assert_eq!(
+                db.namespaces().unwrap(),
+                vec![("org.ops".to_string(), 1), ("org.sales".to_string(), 1)],
+                "registry rebuilt from grains, phantom row gone"
+            );
+            // And a prefix recall over the healed registry answers.
+            assert_eq!(db.recall("org.*", "john", None, 8).unwrap().len(), 2);
+        }
+        // Third open: stamped current, no re-heal.
+        {
+            let db = Areev::open(path).unwrap();
+            assert!(
+                !db.open_warnings().iter().any(|w| w.contains("namespace registry")),
+                "a healed file must not re-heal: {:?}",
+                db.open_warnings()
+            );
         }
     }
 }

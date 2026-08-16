@@ -1099,3 +1099,29 @@ def test_anon_policy_egress_round_trip(tmp_path):
     m.set_anonymize_egress_floor(True)
     flat = json.dumps(json.loads(m.recall("caller:john")))
     assert "caller:john" not in flat, flat
+
+
+# --------------------------------------------------------------------------
+# namespace prefix scoping ("org.*")
+# --------------------------------------------------------------------------
+
+def test_recall_namespace_prefix_scope(tmp_path):
+    m = make_db(tmp_path)
+    m.add_fact("acme", "hq", "root-value", ns="org")
+    m.add_fact("acme", "hq", "sales-value", ns="org.sales")
+    m.add_fact("acme", "hq", "lookalike-value", ns="organization")
+
+    rows = json.loads(m.recall("acme", ns="org.*"))
+    objects = sorted(r["fields"]["object"] for r in rows)
+    # Parent + descendants — and the lookalike must be EXCLUDED.
+    assert objects == ["root-value", "sales-value"]
+
+
+def test_wildcard_namespace_refusals(tmp_path):
+    m = make_db(tmp_path)
+    # Writes never accept patterns ('*' is reserved for read scoping).
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.add_fact("s", "r", "o", ns="org.*")
+    # A malformed pattern errors instead of silently matching nothing.
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.recall("acme", ns="org*")
