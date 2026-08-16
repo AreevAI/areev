@@ -362,6 +362,17 @@ export declare class Areev {
    * namespace without a declared policy. Can never weaken a declared one.
    */
   setAnonymizeEgressFloor(on: boolean): Promise<void>
+  /**
+   * Install a Tier-1 NER detector over the command seam (probed at
+   * install; a broken command errors here, not at the first read).
+   */
+  setAnonymizerCommand(cmd: string): Promise<void>
+  /**
+   * Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+   * fingerprint). `tokensJson` is a JSON array of placeholder strings;
+   * returns JSON `{"revealed": {token: value | null}}`.
+   */
+  revealTokens(ns: string, tokensJson: string): Promise<string>
   /** Reject a recommendation with a reason (library-friendly `reject`). */
   dismissRecommendation(hash: string, why: string, scopes?: string | undefined | null): Promise<string>
   /**
