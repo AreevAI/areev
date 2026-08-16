@@ -115,7 +115,7 @@ grains newest-first.
 
 Returns a JSON array of `{ hash, type, fields }` objects. Under an active
 anonymization policy (`anon:<ns>` row or the host's `--anonymize-egress`
-floor — see docs/anonymization-proposal.md) the response becomes
+floor) the response becomes
 `{ "grains": [...], "anonymized": {...} }`: fields arrive pseudonymized
 (`[PERSON_1]`) and `anonymized` carries the namespaces, floor state, and
 mapping *ids* only — the placeholder→value mappings never ride an MCP

@@ -15,7 +15,9 @@ auth, what is and isn't encrypted), [`cal-reference.md`](cal-reference.md)
 [`oms-1.6-amendments.md`](oms-1.6-amendments.md) (the spec changes this work
 required). Design-stage: [consent cascade](consent-cascade-proposal.md),
 [per-subject crypto-erasure](crypto-erasure-proposal.md),
-[prompt-safe pseudonymization](anonymization-proposal.md).
+prompt-safe pseudonymization (design doc kept outside the repo; the shipped
+surface is `anon:<ns>` policies + the egress boundary — see
+`crates/areev-store/src/anon_gate.rs`).
 
 ---
 
