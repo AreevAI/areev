@@ -20,8 +20,8 @@
 > 以及加密增量同步 —— 全部内建于数据模型之中，因为 grain *本身就是*
 > 内容寻址的不可变对象。
 
-*状态：`1.1.0` —— `.mg` 格式与 CAL 已稳定并有完整文档（符合开放记忆规范
-Open Memory Spec，OMS）。已构建并测试；尚未发布到 crates.io / PyPI / npm。*
+*状态：`1.0.0` —— `.mg` 格式与 CAL 已稳定并有完整文档（符合开放记忆规范
+Open Memory Spec，OMS）。已发布到 crates.io / PyPI / npm。*
 
 ## 截图
 
@@ -80,7 +80,7 @@ Areev 是另一种形态：一个**由你嵌入的引擎**，从结构上让记�
 
 ## 安装
 
-Areev 尚处于预发布阶段，因此目前请从源码安装（需 Rust 1.90+）：
+从源码构建（需 Rust 1.90+）：
 
 ```bash
 git clone https://github.com/AreevAI/areev
@@ -96,7 +96,7 @@ Areev 已发布到三大注册表，按需安装：
 ```bash
 cargo install areev          # `areev` 命令行
 pip install areev            # Python 绑定
-npm install areev            # Node 绑定（macOS/Linux；Windows 原生二进制待发布）
+npm install @areev/areev     # Node 绑定（无 scope 的 `areev` 等待 npm 批准）
 ```
 
 在 Rust 项目中嵌入存储时，改为添加库 crate：`cargo add areev-store areev-core`。

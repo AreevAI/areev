@@ -24,7 +24,7 @@ crate-type = ["cdylib"]
 areev-core = { path = "../areev-core", version = "1.0.0" }
 # The postgres backend ships ON in the binding: it is a server-side surface,
 # and `new Areev("postgres://…?schema=<name>")` must work from a stock
-# `npm install areev`. The dependency-light default stays with the CLI/store.
+# `npm install @areev/areev`. The dependency-light default stays with the CLI/store.
 areev-store = { path = "../areev-store", version = "1.0.0", features = ["postgres"] }
 areev-cal = { path = "../areev-cal", version = "1.0.0" }
 areev-context = { path = "../areev-context", version = "1.0.0" }

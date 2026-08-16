@@ -137,7 +137,7 @@ Areev ships on all three registries — install the surface you need:
 ```bash
 cargo install areev          # the `areev` CLI
 pip install areev            # Python bindings
-npm install areev            # Node bindings
+npm install @areev/areev     # Node bindings (unscoped `areev` pending npm approval)
 ```
 
 No Rust toolchain? Every release also carries prebuilt `areev` binaries for

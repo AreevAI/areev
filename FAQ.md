@@ -179,7 +179,7 @@ areev repl --db john.db          # interactive CAL shell
 
 ### How do I use Areev from Python?
 
-`pip install areev` (Node: `npm install areev`), then:
+`pip install areev` (Node: `npm install @areev/areev`), then:
 
 ```python
 import areev, json

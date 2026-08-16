@@ -77,7 +77,7 @@ plane), renamed on every surface.
 - **MCP** — 23 tools over newline-delimited JSON-RPC 2.0 on stdio,
   protocol rev `2025-06-18`.
 - **Bindings** — Python (`pip install areev`, abi3, sync + async) and
-  Node (`npm install areev`, napi native addon), same facade, scalars in /
+  Node (`npm install @areev/areev`, napi native addon; the unscoped `areev` name is pending an npm similarity-filter exception), same facade, scalars in /
   JSON out.
 - **Adapters** — `areev-langgraph` (checkpointer, store, memory saver) and
   `areev-crewai` (storage backend, knowledge source, audit listener) on
