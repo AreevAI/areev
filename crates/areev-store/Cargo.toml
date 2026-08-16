@@ -36,7 +36,7 @@ sha2 = "0.10"
 # the sidecar on the exact primitive the database pages use. `hkdf` adds
 # itself over `hmac`, which argon2 already brings. Hand-rolling an AEAD or a
 # KDF is never the right call.
-hkdf = "0.12"
+hkdf = "0.13"
 aes-gcm = "0.10"
 hex = "0.4"
 serde_json = "1"
