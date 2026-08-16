@@ -29,7 +29,7 @@ semantics, millisecond-class recall.
 > merges, and encrypted incremental sync — built into the data model, because
 > grains *are* content-addressed immutable objects.
 
-*Status: `1.0.0` — the `.mg` format and CAL are stable and documented (conformant
+*Status: `1.0.1` — the `.mg` format and CAL are stable and documented (conformant
 with the Open Memory Spec, OMS).*
 
 ## Watch the 2½-minute overview
@@ -148,7 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/AreevAI/areev/main/scripts/install.
 ```
 
 It installs to `~/.local/bin` (`/usr/local/bin` as root; override with
-`AREEV_INSTALL`), pins with `AREEV_VERSION=v1.0.0`, and verifies the download
+`AREEV_INSTALL`), pins with `AREEV_VERSION=v1.0.1`, and verifies the download
 against the release's `SHA256SUMS`. Or grab an archive straight from the
 [Releases page](https://github.com/AreevAI/areev/releases) — handy in a
 notebook, where the wheel covers the memory and the loop but `areev ui` (the

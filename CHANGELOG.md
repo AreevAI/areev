@@ -9,6 +9,27 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-16
+
+### Fixed
+
+- **`areev run` wave determinism.** The driver fed effect completions to
+  the pure scheduler in racy arrival batches, each with its own clock
+  reading — scheduler state depended on thread timing (an unjournaled
+  decision), so two identical runs could checkpoint differently and
+  `areev run verify` could diverge from a live run under load. The driver
+  now drains every dispatch wave fully and feeds one close reading plus
+  all resolutions in dispatch order — exactly the cadence `verify`
+  replays. Journal-answered replays join the same wave rather than
+  resolving early.
+- **Windows `--tool-cmd`.** `/bin/sh` was hardcoded in the host tool
+  executor and the eval seam; both now use the platform shell
+  (`cmd /C` on Windows).
+- **`areev-run-core` purity gate.** Dropped the workspace's only `chrono`
+  use (a `created_at` fallback in canonical serialization, now
+  `std::time`), so the CI gate that keeps clock/rand/IO out of the pure
+  scheduler's dependency tree actually passes.
+
 ## [1.0.0] - 2026-08-16
 
 The first release under the Areev name — the complete engine formerly
@@ -89,5 +110,6 @@ plane), renamed on every surface.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/AreevAI/areev/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/AreevAI/areev/releases/tag/v1.0.0
