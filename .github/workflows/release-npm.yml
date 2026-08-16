@@ -163,7 +163,20 @@ jobs:
           for dir in "${DIRS[@]}"; do
             name=$(node -p "require('./$dir/package.json').name")
             ver=$(node -p "require('./$dir/package.json').version")
-            publish_if_absent "$name" "$ver" "$dir"
+            if ! publish_if_absent "$name" "$ver" "$dir"; then
+              # areev-win32-x64-msvc is blocked by npm's spam/similarity
+              # filter pending a support exception (see the release runbook
+              # and CLAUDE.md "Naming"). Its absence is the accepted 1.0.x
+              # posture — Windows users build from source — so the one
+              # blocked platform package must not abort the loop and leave
+              # the MAIN package unpublished (exactly how v1.1.0's first
+              # publish run failed). Any other failure still hard-fails.
+              if [ "$name" = "areev-win32-x64-msvc" ]; then
+                echo "::warning::$name@$ver rejected by npm spam filter (pending support exception) — continuing without the Windows prebuild"
+              else
+                exit 1
+              fi
+            fi
           done
           main_name=$(node -p "require('./package.json').name")
           main_ver=$(node -p "require('./package.json').version")
