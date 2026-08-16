@@ -1,0 +1,32 @@
+# The PURE scheduler core of `areev run` (governed-agents proposal §4).
+#
+# Sans-IO by construction: this crate exports a step function —
+# `step(plan, env, state, events) -> (commands, state)` — plus the pure types
+# around it, and depends on NOTHING that can observe the outside world. No
+# clock, no randomness, no filesystem, no network, no store. The driver crate
+# (`areev-run`) owns all of those and feeds this crate events.
+#
+# Enforcement is mechanical, not aspirational (proposal §4):
+#   - CI fails if `cargo tree -p areev-run-core -e normal` matches
+#     rand|getrandom|chrono|time|tokio|ureq|reqwest.
+#   - clippy.toml in this crate disallows SystemTime::now / Instant::now.
+#   - areev-core is permitted: it is the format+types crate (serde, msgpack,
+#     sha2, unicode normalization) — none of it can tell the time.
+[package]
+name = "areev-run-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Pure, deterministic scheduler core for the Areev agent runtime: graph walk with re-entry generations, journal keys, budgets, and the sans-IO step function. No clock, no randomness, no IO — the driver feeds events, this crate returns commands."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ai-agents", "workflow", "deterministic", "runtime", "areev"]
+categories = ["algorithms"]
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "areev"
+version = "1.0.0"
+description = "Python bindings for Areev, the embedded memory engine for AI agents."
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "MindGryd Software Private Limited" }]
+keywords = ["memory", "python", "ai-agents", "llm", "bindings"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/AreevAI/areev"
+Repository = "https://github.com/AreevAI/areev"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+# Mixed Rust/Python layout: the pure-Python package lives in python/areev
+# (the __init__ shim plus areev.helpers), and the Rust extension module is
+# placed inside it as `areev.areev` (`[lib] name` in Cargo.toml and the
+# `#[pymodule] fn areev` in src/lib.rs supply the final path segment).
+# abi3-py39 is enabled via the pyo3 feature in Cargo.toml, so a single wheel
+# works on CPython >= 3.9.
+[tool.maturin]
+module-name = "areev.areev"
+python-source = "python"
+# Ship both license texts in the sdist/wheel (MIT and Apache-2.0 each require
+# the notice travel with the distribution).
+include = ["LICENSE-MIT", "LICENSE-APACHE"]

@@ -1,0 +1,53 @@
+[package]
+name = "areev-cal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CAL (Context Assembly Language) lexer, parser, and executor for Areev."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["query-language", "parser", "memory", "cal", "ai-agents"]
+categories = ["parser-implementations", "database-implementations"]
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+areev-store = { path = "../areev-store", version = "1.0.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+logos = "0.14"
+thiserror = "2"
+parking_lot = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+unicode-normalization = "0.1"
+regex = "1"
+lru = "0.18"
+tracing = "0.1"
+
+[features]
+default = ["cal"]
+# Alias normalization and the DESCRIBE
+# capability list check for it. Always on in areev-cal.
+cal = []
+# Dormant capability gates: the code carries `#[cfg(feature = ...)]` hooks for
+# these but they are not wired up yet. Declared here so `unexpected_cfgs` stays
+# quiet; enabling them is future work.
+a2a = []
+app = []
+auth = []
+chat = []
+grpc = []
+http = []
+import = []
+llm-rerank = []
+mcp = []
+pii_ner = []
+rerank = []
+signing = []
+
+[dev-dependencies]
+tempfile = "3"

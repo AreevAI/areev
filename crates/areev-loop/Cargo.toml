@@ -1,0 +1,19 @@
+[package]
+name = "areev-loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Areev Loop: the governed self-improvement engine for AI-agent memory. Standalone engine over an OmsSubstrate (CAL + grains) — zero Areev dependencies."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ai-agents", "memory", "governance", "self-improvement", "oms"]
+categories = ["algorithms"]
+
+# The engine crate must never depend on an areev-* sibling (proposal §10).
+# serde only — dependency-light.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

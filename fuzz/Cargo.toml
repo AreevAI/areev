@@ -1,0 +1,48 @@
+[package]
+name = "areev-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Detached from the parent workspace on purpose: fuzz targets need a nightly
+# toolchain + a sanitizer, so they must not be pulled into the stable
+# `cargo build --workspace` / `cargo test --workspace` CI jobs. Run them with
+# `cargo +nightly fuzz run <target>` from this directory.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+areev-core = { path = "../crates/areev-core" }
+areev-cal = { path = "../crates/areev-cal" }
+serde_json = "1"
+
+[[bin]]
+name = "deserialize_blob"
+path = "fuzz_targets/deserialize_blob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cal_parse"
+path = "fuzz_targets/cal_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_schema_parse"
+path = "fuzz_targets/tool_schema_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_build_grain"
+path = "fuzz_targets/json_build_grain.rs"
+test = false
+doc = false
+bench = false

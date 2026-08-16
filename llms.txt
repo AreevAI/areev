@@ -1,0 +1,39 @@
+# Areev
+
+> An embedded memory engine for AI agents — memory that doesn't rot, stays current, and proves where every fact came from. Store memories as immutable, content-addressed grains in a per-memory file, query them with CAL, and render model-ready context in-process — no server in the recall path. The file format is documented and OMS-conformant, so your memory outlives the engine.
+
+Areev is a Rust workspace (with an `areev` CLI, an MCP server, and Python and
+Node bindings) built on Turso, a SQLite-compatible engine. Memories are immutable and
+content-addressed (SHA-256 over each `.mg` blob): every edit is a supersession
+and every removal a tombstone, giving git-like history, forks with explicit
+merges, and provenance. Recall is hybrid — structural, BM25, and optional vector
+legs fused with Reciprocal Rank Fusion — and CAL, the query language, is
+shaped so destruction takes a hash, an identity, or an age — never a predicate
+(`DELETE` is not a grammar token; the three destructive statements each need an
+authorization grant plus a recorded reason and write an audit record). Areev
+takes no LLM dependency: extraction and embeddings are supplied by the host.
+The `.mg` format, CAL syntax, and error codes are stable contracts.
+
+## Docs
+
+- [README](README.md): Project overview, quickstart (CLI, Python, MCP), benchmarks, and the crate map.
+- [Architecture](ARCHITECTURE.md): The workspace, the grain model, the store schema, hybrid recall, and the sync/forks design.
+- [CAL reference](docs/cal-reference.md): The Context Assembly Language — `RECALL`, `ASSEMBLE`, `EXISTS`, `HISTORY`, `ADD`, `SUPERSEDE`, `REPORT SUBJECT`, pipelines, and the shaped, authorization-gated destruction model.
+- [MCP reference](docs/mcp-reference.md): The 14 stdio MCP tools (`areev_recall/add/supersede/forget/remember/cal`, the DSAR read `areev_subject_report`, the graph/time reads, the run join, and the loop pair) and how to wire them into an MCP client.
+- [Migration guide](docs/migrate.md): `areev migrate` — importing from mem0 (with full edit history), Zep/Graphiti, Letta, LangMem/LangGraph, Basic Memory, or generic JSONL, with per-source export one-liners.
+- [Memory-tool backend](docs/memory-tool.md): Areev as the storage backend for Anthropic's client-side memory tool (`memory_20250818`) in Python, Node, and the CLI.
+- [FAQ](FAQ.md): Question-and-answer coverage of what Areev is, how it differs from vector DBs and RAG, grains, OMS, recall, encryption, and maturity.
+- [Cookbook](docs/cookbook.md): Copy-pasteable recipes — add/recall, CAL queries, running the MCP server, encryption at rest, backup/restore, streaming/sync, Python, the web console, and building a self-improving agent (experience log → distilled lessons → proficiency chain → rollback).
+
+## Operations & contributing
+
+- [GDPR](docs/gdpr.md): Obligations mapped to mechanisms for a DPIA — DSAR access/portability (`REPORT SUBJECT` / `subject-report`), erasure, audit export, archive retention, declared retention policy, and the deployment requirements and limits stated honestly.
+- [Security policy](SECURITY.md): The trust boundary, encryption-at-rest caveats, known limitations, disclosure process, and an operator hardening checklist.
+- [Contributing](CONTRIBUTING.md): DCO sign-off, the invariants you must not break, the "don't run blanket cargo fmt" rule, and the PR flow.
+- [Error codes](ERROR_CODES.md): The append-only `DOMAIN-Ennn` registry (`FMT/MEM/STO/CRY/VAL/CAL/SYS`).
+
+## Optional
+
+- [AGENTS.md](AGENTS.md): Orientation for an AI coding agent working inside the Areev repo itself (build/test, invariants, where things live).
+- [Changelog](CHANGELOG.md): What exists in the current release candidate.
+- [Open Memory Spec](https://github.com/openmemoryspec/oms): The external CC0 specification Areev implements.

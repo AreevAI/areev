@@ -1,0 +1,40 @@
+[package]
+name = "areev-js"
+version = "1.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["MindGryd Software Private Limited"]
+repository = "https://github.com/AreevAI/areev"
+homepage = "https://github.com/AreevAI/areev"
+description = "Node.js (napi-rs) bindings for Areev, the embedded memory engine for AI agents."
+readme = "README.md"
+publish = false
+
+# Detached from the parent workspace on purpose (exactly like fuzz/Cargo.toml):
+# napi cdylibs resolve Node-API symbols at *load* time (via macOS
+# `-undefined dynamic_lookup`), so they must not be pulled into the stable
+# `cargo build --workspace` / `cargo test --workspace` CI. Build this crate
+# from inside crates/areev-js with `napi build` (or a bare `cargo build`).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+# The postgres backend ships ON in the binding: it is a server-side surface,
+# and `new Areev("postgres://…?schema=<name>")` must work from a stock
+# `npm install areev`. The dependency-light default stays with the CLI/store.
+areev-store = { path = "../areev-store", version = "1.0.0", features = ["postgres"] }
+areev-cal = { path = "../areev-cal", version = "1.0.0" }
+areev-context = { path = "../areev-context", version = "1.0.0" }
+areev-loop = { path = "../areev-loop" }
+areev-loop-adapter = { path = "../areev-loop-adapter" }
+areev-llm = { path = "../areev-llm" }
+areev-run = { path = "../areev-run" }
+serde_json = "1"
+napi = { version = "3", features = ["napi9"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"

@@ -1,0 +1,10 @@
+[{"confidence":0.8,"created_at":"2026-01-05","hash":"73a5538a1331dabeaca79048e59809033e7f9d730b74161d28538309dc168f12","namespace":"personal","object":"jazz","relation":"likes","subject":"john","type":"fact"},
+{"confidence":1.0,"created_at":"2026-01-06","hash":"5e5a83ab3131672db713cf1354f4aa0f868097912f10ca9a2c2faeec9ab2e72a","namespace":"personal","object":"1990-03-15","relation":"birthday","subject":"john","type":"fact"},
+{"confidence":1.0,"created_at":"2026-01-07","hash":"12e31c38ddfa9f467f83ab8fad17b1b065d0b697abb40babdbe46d2187bc4d2e","namespace":"personal","object":"peanuts","relation":"allergic_to","subject":"john","type":"fact"},
+{"confidence":0.85,"created_at":"2026-01-08","hash":"c62716d4d20e6cfd72d0f2f6f5e50dbcbffb86b2b3f67ccc0b116cde4224fd40","namespace":"personal","object":"engineer","relation":"role","subject":"john","type":"fact"},
+{"confidence":1.0,"created_at":"2026-01-09","hash":"c36f3f70796099dd5a0b659f9f0d0af723f3147e5ecb49c82cd9d4d3356c2ba8","namespace":"personal","object":"acme","relation":"works_at","subject":"john","type":"fact"},
+{"confidence":0.9,"created_at":"2026-01-10","hash":"1b5afa3d5e7f828d1f05b8dfec1442feda67fabdaa5b292aafbd0417bb505fad","namespace":"personal","object":"english","relation":"speaks","subject":"john","type":"fact"},
+{"confidence":1.0,"created_at":"2026-01-11","hash":"6ea9a3f6e5b1acb32786a40f3c3c3f9e256373a638cf867a71dbf01b781d82bd","namespace":"personal","object":"german","relation":"speaks","subject":"john","type":"fact"},
+{"confidence":1.0,"created_at":"2026-01-12","hash":"a7856b394b30b5cfec06e9c3ae03c5e7a4ca13b940369e7e35eeb750239cec28","namespace":"personal","object":"berlin","relation":"lives_in","subject":"john","type":"fact"},
+{"confidence":0.95,"created_at":"2026-01-13","hash":"4451640fb53ad566cef276df246576f19a7c109a5747a74b66f2879ed515deb1","namespace":"personal","object":"window seat","relation":"prefers","subject":"john","type":"fact"},
+{"confidence":0.9,"created_at":"2026-01-14","hash":"c8013f4b9a8ea78a01dd0b5cd3c79941b9c45479e3603e3764bb0deacfad719c","namespace":"personal","object":"coffee","relation":"prefers","subject":"john","type":"fact"}]

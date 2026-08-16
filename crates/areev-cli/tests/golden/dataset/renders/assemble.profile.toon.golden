@@ -1,0 +1,4 @@
+facts[3]{subject,content,confidence}:
+john,prefers window seat,0.95
+john,prefers coffee,0.9
+bob,prefers tea,0.9

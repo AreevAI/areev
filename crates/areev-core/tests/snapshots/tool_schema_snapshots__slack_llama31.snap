@@ -1,0 +1,7 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_text(&t, ProviderKind::Llama31).unwrap()"
+---
+Tool: slack_post_message
+Description: Post a message to a Slack channel.
+Parameters: {"properties":{"channel":{"description":"Channel ID or name","type":"string"},"text":{"description":"Message body","type":"string"},"thread_ts":{"description":"Optional thread timestamp","type":"string"}},"required":["channel","text"],"type":"object"}

@@ -1,0 +1,25 @@
+// Areev brand tokens — lifted from the web console (dark theme) so the video
+// matches the product's design language.
+export const theme = {
+  bg: '#0E1015',
+  panel: '#141822',
+  well: '#10141C',
+  raise: '#1B2029',
+  line: '#252B37',
+  line2: '#39404F',
+  text: '#D5DAE4',
+  bright: '#F2F4F9',
+  dim: '#99A1B3',
+  dimmer: '#646C7E',
+  accent: '#8F7DF8',
+  accentSoft: '#26223E',
+  teal: '#58C7B9',
+  green: '#4FC963',
+  red: '#F27B72',
+  sky: '#82B5FF',
+  amber: '#E8C07A',
+  okBg: '#15251A',
+  errBg: '#2A181A',
+  mono: '"SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+  sans: '-apple-system, system-ui, "Segoe UI", Roboto, sans-serif',
+} as const;

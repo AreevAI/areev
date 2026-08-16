@@ -1,0 +1,11 @@
+facts[10]{subject,content,confidence}:
+john,likes jazz,0.8
+john,birthday 1990-03-15,1
+john,allergic_to peanuts,1
+john,role engineer,0.85
+john,works_at acme,1
+john,speaks english,0.9
+john,speaks german,1
+john,lives_in berlin,1
+john,prefers window seat,0.95
+john,prefers coffee,0.9

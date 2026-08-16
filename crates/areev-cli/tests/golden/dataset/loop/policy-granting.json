@@ -1,0 +1,15 @@
+{
+  "auto_apply_enabled": true,
+  "auto_apply": [
+    {
+      "analyzer": "loop.duplicate_sweep",
+      "targets": [
+        "memory"
+      ],
+      "max_severity": "low"
+    }
+  ],
+  "deny": [],
+  "severity_floors": {},
+  "telemetry": "aggregate"
+}

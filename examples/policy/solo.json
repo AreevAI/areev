@@ -1,0 +1,7 @@
+{
+  "auto_apply_enabled": false,
+  "auto_apply": [],
+  "deny": [],
+  "severity_floors": {},
+  "telemetry": "aggregate"
+}

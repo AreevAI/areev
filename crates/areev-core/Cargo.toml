@@ -1,0 +1,35 @@
+[package]
+name = "areev-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core .mg format, canonical serialization, content addressing, and grain types for Areev."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["memory", "serialization", "ai-agents", "oms", "content-address"]
+categories = ["data-structures", "encoding"]
+
+[features]
+# Dormant capability gates: the code carries `#[cfg(feature = ...)]` hooks for
+# these but they are not wired up yet. Declared here so `unexpected_cfgs` stays
+# quiet; enabling them is future work.
+http = []
+signing = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmpv = "1"
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sha2 = "0.10"
+hex = "0.4"
+regex = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+insta = { version = "1", features = ["json"] }

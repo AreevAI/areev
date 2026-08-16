@@ -1,0 +1,9 @@
+# Code owners for Areev.
+#
+# Lines are matched last-to-first: the last matching pattern takes precedence.
+# Listed owners are automatically requested for review on matching pull
+# requests.
+#
+# Maintainers team (has maintain access to this repo).
+
+* @AreevAI/maintainers

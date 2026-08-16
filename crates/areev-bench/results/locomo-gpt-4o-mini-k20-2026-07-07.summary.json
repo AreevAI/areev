@@ -1,0 +1,49 @@
+{
+  "benchmark": "LoCoMo (snap-research/locomo, data/locomo10.json)",
+  "date": "2026-07-07",
+  "config": {
+    "reader": "gpt-4o-mini",
+    "judge": "gpt-4o",
+    "embedder": "text-embedding-3-small@512, k=20",
+    "retrieval_top_k": 20,
+    "conv_limit": 10
+  },
+  "questions": 1982,
+  "answer_accuracy_pct": 54.2,
+  "answer_correct": 1075,
+  "retrieval": {
+    "hit@1": 33.1,
+    "hit@5": 64.9,
+    "hit@10": 74.5,
+    "hit@20": 81.6,
+    "MRR@10": 0.465
+  },
+  "by_category": {
+    "single-hop": {
+      "correct": 599,
+      "total": 841,
+      "accuracy_pct": 71.2
+    },
+    "adversarial": {
+      "correct": 105,
+      "total": 446,
+      "accuracy_pct": 23.5
+    },
+    "multi-hop": {
+      "correct": 111,
+      "total": 282,
+      "accuracy_pct": 39.4
+    },
+    "temporal": {
+      "correct": 218,
+      "total": 321,
+      "accuracy_pct": 67.9
+    },
+    "open-domain": {
+      "correct": 42,
+      "total": 92,
+      "accuracy_pct": 45.7
+    }
+  },
+  "notes": "Plain retrieve-then-read; session dates fed to the reader for temporal resolution. Number depends on reader/judge models + retrieval, not the store alone. LoCoMo answer key is ~6% wrong (dev.to/penfieldlabs)."
+}

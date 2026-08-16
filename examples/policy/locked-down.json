@@ -1,0 +1,10 @@
+{
+  "auto_apply_enabled": false,
+  "auto_apply": [],
+  "deny": ["loop.staleness"],
+  "severity_floors": {
+    "loop.contradiction_sweep": "high",
+    "loop.tool_failure": "medium"
+  },
+  "telemetry": "off"
+}

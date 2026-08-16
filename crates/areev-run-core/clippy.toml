@@ -1,0 +1,7 @@
+# Purity enforcement (governed-agents §4): the scheduler core may never read
+# the clock. One SystemTime::now() silently invalidates the replay claim.
+# CI additionally greps this crate for `allow(clippy::disallowed_methods)`.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "the scheduler core is sans-IO: clock readings arrive as EventIn::ClockReading, journaled by the driver" },
+    { path = "std::time::Instant::now", reason = "the scheduler core is sans-IO: no wall-clock, no monotonic clock" },
+]

@@ -1,0 +1,29 @@
+<grains>
+  <grain type="fact" relation="prefers">
+    <confidence>0.95</confidence>
+    <created_at>1768262400000</created_at>
+    <namespace>personal</namespace>
+    <object>window seat</object>
+    <relation>prefers</relation>
+    <subject>john</subject>
+    <type>fact</type>
+  </grain>
+  <grain type="fact" relation="prefers">
+    <confidence>0.9</confidence>
+    <created_at>1768348800000</created_at>
+    <namespace>personal</namespace>
+    <object>coffee</object>
+    <relation>prefers</relation>
+    <subject>john</subject>
+    <type>fact</type>
+  </grain>
+  <grain type="fact" relation="prefers">
+    <confidence>0.9</confidence>
+    <created_at>1768176000000</created_at>
+    <namespace>work</namespace>
+    <object>tea</object>
+    <relation>prefers</relation>
+    <subject>bob</subject>
+    <type>fact</type>
+  </grain>
+</grains>

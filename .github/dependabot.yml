@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # Rust workspace dependencies (Cargo).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+
+  # Node bindings (napi) — standalone package, not in the Cargo workspace.
+  - package-ecosystem: npm
+    directory: "/crates/areev-js"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+
+  # GitHub Actions workflow dependencies.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    ignore:
+      # dtolnay/rust-toolchain is versioned by TOOLCHAIN (e.g. @1.90.0), not by
+      # action release — Dependabot misreads it and proposes nonexistent bumps
+      # (e.g. 1.100.0) that would break the MSRV job. Bump it manually.
+      - dependency-name: "dtolnay/rust-toolchain"

@@ -1,0 +1,12 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_text(&t, ProviderKind::MarkdownTools).unwrap()"
+---
+## slack_post_message
+
+Post a message to a Slack channel.
+
+**Input schema:**
+```json
+{"properties":{"channel":{"description":"Channel ID or name","type":"string"},"text":{"description":"Message body","type":"string"},"thread_ts":{"description":"Optional thread timestamp","type":"string"}},"required":["channel","text"],"type":"object"}
+```

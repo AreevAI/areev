@@ -1,0 +1,173 @@
+# Publish the Node bindings (crates/areev-js) to npm as `areev`.
+#
+# napi-rs ships a native addon per platform. This builds the `.node` for each
+# target, then publishes one small platform package per target
+# (`areev-<platform>`) plus the thin main package that loads the right one at
+# runtime via optionalDependencies (the layout the review flagged as missing).
+#
+# Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
+# Prerequisite secret: `NPM_TOKEN` (an npm automation token for the `areev`
+# package / the account that owns it).
+#
+# NOTE: native cross-platform CI is finicky — watch the first release run and
+# adjust the target matrix / napi flags to your installed @napi-rs/cli (v3) if a
+# leg fails. The set of targets here must match `napi.targets` in package.json.
+name: release-npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: crates/areev-js
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: npx napi build --platform --release --target x86_64-apple-darwin
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build: npx napi build --platform --release --target aarch64-apple-darwin
+          # Both Linux legs build NATIVELY, INSIDE a Debian 11 container:
+          #   * in a container, because the *build host's* glibc becomes the
+          #     addon's runtime floor. Built straight on ubuntu-latest (24.04,
+          #     glibc 2.39) the addon installs fine on Debian 12 / Raspberry Pi
+          #     OS Bookworm and then dies at require() with napi's misleading
+          #     "Cannot find native binding … npm optional dependencies bug"
+          #     (the real error is `GLIBC_2.39 not found`). Bullseye's 2.31
+          #     floor covers Debian 11+/Ubuntu 20.04+/RPi OS Bullseye+. This is
+          #     the npm-side equivalent of release-pypi.yml's manylinux images.
+          #   * natively rather than cross-compiled, because turso's C deps
+          #     (mimalloc/zstd) don't build under an old cross-gcc — the free
+          #     arm64 runner removes the need to cross at all (same move as
+          #     release-pypi.yml).
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            container: node:20-bullseye
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            container: node:20-bullseye
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            build: npx napi build --platform --release --target x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        if: ${{ !matrix.settings.container }}
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.settings.container }}
+        with:
+          targets: ${{ matrix.settings.target }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !matrix.settings.container }}
+      - run: npm install
+        if: ${{ !matrix.settings.container }}
+      - name: Build
+        if: ${{ !matrix.settings.container }}
+        run: ${{ matrix.settings.build }}
+
+      # Linux: same build, run inside the old-glibc image. The non-slim node
+      # image is buildpack-deps-based, so node + gcc + curl are already there
+      # and nothing needs apt (Debian 11 leaves LTS in 2026 and its repos will
+      # move to archive.debian.org — an `apt-get update` here would rot).
+      # Root-owned outputs are fine; later steps only read them.
+      - name: Build in ${{ matrix.settings.container }}
+        if: ${{ matrix.settings.container }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker run --rm -v "$PWD":/build -w /build/crates/areev-js \
+            -e TARGET=${{ matrix.settings.target }} \
+            ${{ matrix.settings.container }} bash -c '
+              set -eux
+              curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+              . "$HOME/.cargo/env"
+              npm install
+              npx napi build --platform --release --target "$TARGET"
+            '
+
+      # A too-new glibc floor is invisible until a user require()s the addon on
+      # an older distro, and napi reports it as a missing binding. Fail here
+      # instead. Plain grep, so it works on a foreign-arch ELF too.
+      - name: Assert the glibc floor
+        if: ${{ matrix.settings.container }}
+        run: |
+          need=$(grep -aoh 'GLIBC_[0-9]\+\.[0-9]\+' *.node | sort -uV | tail -1)
+          echo "highest glibc symbol required: ${need:-none}"
+          if [ "$(printf '%s\nGLIBC_2.31\n' "${need:-GLIBC_2.0}" | sort -V | tail -1)" != "GLIBC_2.31" ]; then
+            echo "::error::addon requires $need, above the GLIBC_2.31 floor — it will fail to load on Debian 11/12 and Raspberry Pi OS"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: crates/areev-js/*.node
+          if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - uses: actions/download-artifact@v8
+        with:
+          path: crates/areev-js/artifacts
+      - name: Create platform package dirs
+        run: npx napi create-npm-dirs
+      - name: Collect per-platform binaries into npm/ dirs
+        run: npx napi artifacts
+      - name: Publish platform packages + main to npm
+        # We do NOT use `napi prepublish` here: it publishes every platform
+        # package in one shot and aborts the whole release if one fails —
+        # useful if any single platform name ever trips npm's spam filter
+        # (403 on publish) and needs to be deferred without taking the whole
+        # release down with it.
+        #
+        # Instead `prepare-npm.mjs` stamps versions, wires the main package's
+        # optionalDependencies to ALL platforms (incl. any deferred one, so a
+        # later same-version publish resolves for installs), and prints the dirs
+        # to publish now. We publish each, skipping anything already on the
+        # registry so re-runs are idempotent — including a later run that
+        # un-defers a package, which then publishes only the missing one.
+        run: |
+          set -euo pipefail
+          publish_if_absent() { # $1 = package name, $2 = version, $3 = dir
+            if [ "$(npm view "$1@$2" version 2>/dev/null || true)" = "$2" ]; then
+              echo "$1@$2 already on npm — skipping"
+            else
+              echo "Publishing $1@$2"
+              (cd "$3" && npm publish --access public)
+            fi
+          }
+          mapfile -t DIRS < <(node scripts/prepare-npm.mjs)
+          for dir in "${DIRS[@]}"; do
+            name=$(node -p "require('./$dir/package.json').name")
+            ver=$(node -p "require('./$dir/package.json').version")
+            publish_if_absent "$name" "$ver" "$dir"
+          done
+          main_name=$(node -p "require('./package.json').name")
+          main_ver=$(node -p "require('./package.json').version")
+          publish_if_absent "$main_name" "$main_ver" "."
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

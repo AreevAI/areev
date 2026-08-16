@@ -1,0 +1,319 @@
+{
+  "base_epoch_ms": 1768435200000,
+  "grains": [
+    {
+      "desc": "john prefers coffee",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "c8013f4b9a8ea78a01dd0b5cd3c79941b9c45479e3603e3764bb0deacfad719c",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john prefers window seat",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "4451640fb53ad566cef276df246576f19a7c109a5747a74b66f2879ed515deb1",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john lives_in berlin",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "a7856b394b30b5cfec06e9c3ae03c5e7a4ca13b940369e7e35eeb750239cec28",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john speaks german",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "6ea9a3f6e5b1acb32786a40f3c3c3f9e256373a638cf867a71dbf01b781d82bd",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john speaks english",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "1b5afa3d5e7f828d1f05b8dfec1442feda67fabdaa5b292aafbd0417bb505fad",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john works_at acme",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "c36f3f70796099dd5a0b659f9f0d0af723f3147e5ecb49c82cd9d4d3356c2ba8",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john role engineer",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "c62716d4d20e6cfd72d0f2f6f5e50dbcbffb86b2b3f67ccc0b116cde4224fd40",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john allergic_to peanuts",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "12e31c38ddfa9f467f83ab8fad17b1b065d0b697abb40babdbe46d2187bc4d2e",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john birthday 1990-03-15",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "5e5a83ab3131672db713cf1354f4aa0f868097912f10ca9a2c2faeec9ab2e72a",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "john likes jazz",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "73a5538a1331dabeaca79048e59809033e7f9d730b74161d28538309dc168f12",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "bob role manager",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "eeddabb16805a7df2b7373f73517d5d7da54c92d91bde6bd076b6a787103b825",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob works_at acme",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "df22a5dc258dfd98383fdc08edf13b8c7f6a8d3905debb093fa3109cfa71d5e0",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob prefers tea",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "32ba8886820a3dd1ff24ddd84521c61f4b8ec7ba384d3d606eba4c5c53a79828",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob lives_in munich",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "a9c28ba79b91d1c174a9868d303efc02bdd2d8fdafc460b53940825c5fb14858",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob reports_to carol",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "b6cd978e480a9cb3a622d9eda4a55cdaa5b0067be90f16fc9920b6cb244666e4",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob likes hiking",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "6616129614c6d631a19bd5ebda4ce3b4c15da57990624fbcb9aa80353f853ab8",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob drinks espresso",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "4aa53d41a00c2e1b55729e1c849f26e169f07723f39cfae9f1cf74827f661ab0",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "bob speaks english",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "d9bece019cb84fb121405f67bb8b20cb345f1a69904fdd2b51227adb95e432b8",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "unicode NFC anchor: rené prefers café münchen",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "1c001f7ffd031bed0eb4d97bb8eaf92d3bd5d6f158b78225f9dfd1c123466a47",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "event 0 call-001 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "59f9d212acf9af1821701e35a4739007e1e62fe21f2d7e49427e0c2c097e5093",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 1 call-001 (assistant)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "479a974af936947168b7ac8c6692a970d485349e2221752bf2908fbf3ef75244",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 2 call-001 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "3f442d424e62198231c54b8726e0c3c022f04bb3514e242ca861e84f075df33f",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 3 call-001 (assistant)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "155d84b7a9c50d10fee27688aee654f654e7080f6f472aafe97e20b86cbb2f61",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 4 call-001 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "918009f85ad6c12d77192202cd237e207aebc3f42c5803c72521c50c85b2b415",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 0 call-002 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "f6b51e43b381f6374b71e2d1af224a8074d951ef7a8ac2d4f73c6989830305d0",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 1 call-002 (assistant)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "925024b561a42a3a2b9e0d22cc29fd5f4de52cd019a7fcc2a87049f857effaf2",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 2 call-002 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "339398696bccc8d855100c4e303619f02e559ea17b8e67c3197b036bc4ded89c",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 3 call-002 (assistant)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "2b43724903537c6423f1820704da37bf816f6cfa142b24a2bcbe439d4dcd95d3",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "event 4 call-002 (user)",
+      "forgotten": false,
+      "gtype": "event",
+      "hash": "edb02e61aec3118c66d0b184e81499386f7e0c7ffac8d244c0125207365e0b65",
+      "ns": "shared",
+      "superseded": false
+    },
+    {
+      "desc": "goal: confirm flight booking",
+      "forgotten": false,
+      "gtype": "goal",
+      "hash": "dcf0f0d1bce494967bd6212071eda406411050e3dfd31e0801364bcd849566d5",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "goal: renew acme contract",
+      "forgotten": false,
+      "gtype": "goal",
+      "hash": "a46d850f418b02c8ba77223d66ed0e1e6108cc2c3af8dac9f4456f8155e9f5a7",
+      "ns": "work",
+      "superseded": false
+    },
+    {
+      "desc": "kim status v1 (intern)",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "47c28fa87f69f9bcf69038b8345b70a0f2df324512928749638bb639d54a5993",
+      "ns": "personal",
+      "superseded": true
+    },
+    {
+      "desc": "kim status v2 (junior)",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "40bfcb0629ba62a10b17c4c8f3ebc5b4f5e7ce5f8d871bfcc79c1741d1744778",
+      "ns": "personal",
+      "superseded": true
+    },
+    {
+      "desc": "kim status v3 (senior, head)",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "faeae3ffc718167c0906542eec1a61cd26311f0aefe310e708dae5c164704458",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "dedup target: dave drinks coffee",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "9a004d835e091898f718a4ec963bf38464c2fe91730607c663cc4cae8fa175f5",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "dedup target: erin drinks coffee (duplicate object)",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "f1726b2224de9961bca5bd0cba1902c49c18adf2bf7974e2b64848b81d916c1f",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "dedup survivor: fay drinks matcha",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "4dcd3419f0eb68bc056df67b1f77260a43ddd38f7b9c82165cbc3bf8ae913e73",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "entity-graph hop: acme industry software",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "508e9585f15eed336d2cc662255162f993a63d1a1fd68d5e45062731926c129d",
+      "ns": "personal",
+      "superseded": false
+    },
+    {
+      "desc": "forgotten grain (tombstoned before export)",
+      "forgotten": true,
+      "gtype": "fact",
+      "hash": "b2342f2b200d113b6ba8a34bd8f0230cb818861e34eac630ccf85de52c90257e",
+      "ns": "work",
+      "superseded": false
+    }
+  ],
+  "schema": 1,
+  "total_grains": 39
+}

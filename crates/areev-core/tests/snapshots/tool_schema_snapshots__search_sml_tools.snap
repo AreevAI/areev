@@ -1,0 +1,9 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_text(&t, ProviderKind::SmlTools).unwrap()"
+---
+<tool_use>
+  <tool_name>search_web</tool_name>
+  <description>Search the web and return ranked results.</description>
+  <parameters>{&quot;properties&quot;:{&quot;limit&quot;:{&quot;maximum&quot;:50,&quot;minimum&quot;:1,&quot;type&quot;:&quot;integer&quot;},&quot;query&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;safe_search&quot;:{&quot;enum&quot;:[&quot;off&quot;,&quot;moderate&quot;,&quot;strict&quot;],&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;query&quot;],&quot;type&quot;:&quot;object&quot;}</parameters>
+</tool_use>

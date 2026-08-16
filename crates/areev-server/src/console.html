@@ -1,0 +1,3636 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Areev</title>
+<style>
+  /* ── Console v2 · "cobalt" ────────────────────────────────────────────
+     Pure white surfaces, one saturated cobalt carrying every action.
+     Burnt orange = needs attention, red = destructive, teal = content
+     address. Monospace is reserved for developer mode. Light is
+     canonical; dark mirrors it token for token. Design source of truth
+     is the Paper file "Areev", page "Console v2 — Redesign". */
+  :root {
+    color-scheme: light;
+    --bg:#F6F7FB; --surface:#FFFFFF; --raise:#F1F3F8; --well:#F7F8FC;
+    --line:#E3E6ED; --line2:#D5DAE6; --hair:#EDEFF4;
+    --ink:#0B0D12; --text:#3E4657; --muted:#5A6072; --dim:#6E7686; --faint:#8B92A3; --ghost:#A8AEBC;
+    --accent:#1F3BE0; --accent-hover:#1730BC; --accent-soft:#E8ECFF; --accent-line:#C2CCEE;
+    --ok:#0F8A5F; --ok-soft:#E9F6F0; --ok-line:#CBE8DA;
+    --warn:#C2410C; --warn-soft:#FFF3EC; --warn-line:#FBDCC8;
+    --danger:#C81E1E; --danger-soft:#FDECEC; --danger-line:#F6CDCD;
+    --hash:#0E8F82;
+    --cat-person:#1F3BE0; --cat-org:#0E8F82; --cat-project:#7A3BE0;
+    --cat-thing:#B45309; --cat-note:#F2542D;
+    --sel:rgba(31,59,224,.20);
+    --shadow:0 10px 30px rgba(11,13,18,.10);
+    --card-shadow:0 1px 2px rgba(11,13,18,.04), 0 2px 6px rgba(11,13,18,.05);
+    --sans:'Inter',-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+    /* Layout measures. Widen with the viewport, but never past the point
+       where a line of prose becomes tiring to read. */
+    --col:880px; --wide:1500px;
+  }
+  @media (min-width:1500px) { :root { --col:1000px; --wide:1700px; } }
+  @media (min-width:1800px) { :root { --col:1100px; --wide:1900px; } }
+  @media (min-width:2200px) { :root { --col:1200px; --wide:2100px; } }
+  @media (prefers-color-scheme: dark) { :root { color-scheme: dark;
+    --bg:#0B0E14; --surface:#111621; --raise:#171D2A; --well:#0D121B;
+    --line:#222A38; --line2:#333C4D; --hair:#1C2431;
+    --ink:#F2F5FA; --text:#C9D1DE; --muted:#9AA4B7; --dim:#8B95A8; --faint:#79839A; --ghost:#5F6980;
+    --accent:#7C93F5; --accent-hover:#95A9F8; --accent-soft:#1A2340; --accent-line:#39477A;
+    --ok:#3DD68C; --ok-soft:#12251C; --ok-line:#255140;
+    --warn:#F59E5B; --warn-soft:#2A1A11; --warn-line:#5A3A22;
+    --danger:#F87171; --danger-soft:#2B1517; --danger-line:#5E2B2E;
+    --hash:#3FCFC0;
+    --cat-person:#7C93F5; --cat-org:#3FCFC0; --cat-project:#B39BFF;
+    --cat-thing:#E0A458; --cat-note:#FF8A66;
+    --sel:rgba(124,147,245,.32);
+    --shadow:0 10px 30px rgba(0,0,0,.45);
+    --card-shadow:0 1px 2px rgba(0,0,0,.30);
+  } }
+  :root[data-theme="light"] { color-scheme: light;
+    --bg:#F6F7FB; --surface:#FFFFFF; --raise:#F1F3F8; --well:#F7F8FC;
+    --line:#E3E6ED; --line2:#D5DAE6; --hair:#EDEFF4;
+    --ink:#0B0D12; --text:#3E4657; --muted:#5A6072; --dim:#6E7686; --faint:#8B92A3; --ghost:#A8AEBC;
+    --accent:#1F3BE0; --accent-hover:#1730BC; --accent-soft:#E8ECFF; --accent-line:#C2CCEE;
+    --ok:#0F8A5F; --ok-soft:#E9F6F0; --ok-line:#CBE8DA;
+    --warn:#C2410C; --warn-soft:#FFF3EC; --warn-line:#FBDCC8;
+    --danger:#C81E1E; --danger-soft:#FDECEC; --danger-line:#F6CDCD;
+    --hash:#0E8F82;
+    --cat-person:#1F3BE0; --cat-org:#0E8F82; --cat-project:#7A3BE0;
+    --cat-thing:#B45309; --cat-note:#F2542D;
+    --sel:rgba(31,59,224,.20);
+    --shadow:0 10px 30px rgba(11,13,18,.10);
+    --card-shadow:0 1px 2px rgba(11,13,18,.04), 0 2px 6px rgba(11,13,18,.05);
+  }
+  :root[data-theme="dark"] { color-scheme: dark;
+    --bg:#0B0E14; --surface:#111621; --raise:#171D2A; --well:#0D121B;
+    --line:#222A38; --line2:#333C4D; --hair:#1C2431;
+    --ink:#F2F5FA; --text:#C9D1DE; --muted:#9AA4B7; --dim:#8B95A8; --faint:#79839A; --ghost:#5F6980;
+    --accent:#7C93F5; --accent-hover:#95A9F8; --accent-soft:#1A2340; --accent-line:#39477A;
+    --ok:#3DD68C; --ok-soft:#12251C; --ok-line:#255140;
+    --warn:#F59E5B; --warn-soft:#2A1A11; --warn-line:#5A3A22;
+    --danger:#F87171; --danger-soft:#2B1517; --danger-line:#5E2B2E;
+    --hash:#3FCFC0;
+    --cat-person:#7C93F5; --cat-org:#3FCFC0; --cat-project:#B39BFF;
+    --cat-thing:#E0A458; --cat-note:#FF8A66;
+    --sel:rgba(124,147,245,.32);
+    --shadow:0 10px 30px rgba(0,0,0,.45);
+    --card-shadow:0 1px 2px rgba(0,0,0,.30);
+  }
+
+  * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; }
+  /* The reading surface is the brightest plane; nav and developer chrome sit
+     one step back on the tint. (The reverse reads as an unfinished page.) */
+  body { background:var(--surface); color:var(--text); font:15px/1.55 var(--sans); -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-decoration:none; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:var(--line2); border-radius:8px; border:3px solid transparent; background-clip:content-box; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+  /* Developer mode: hidden by default, revealed by html.dev. Explicit
+     display values (not `revert`, which would drop id-level flex rules). */
+  /* Belt and braces against stored values that have no wrap opportunities
+     (JSON, hashes, URLs): flex children must be allowed to shrink, and text
+     must be allowed to break mid-token. Nothing may scroll the page sideways. */
+  .mrow .say, .mrow .prov, .srow .t, .evi-row .t, .ev .say, .ans-text,
+  .kv .v, #ginspect .meta { min-width:0; overflow-wrap:anywhere; }
+  .mrow, .srow, .evi-row, .ev, .acts { min-width:0; }
+  .dev-only { display:none !important; }
+  html.dev .dev-only { display:block !important; }
+  html.dev .dev-flex { display:flex !important; }
+
+  /* ── shell ── */
+  #shell { display:flex; min-height:100vh; align-items:stretch; }
+  #rail { width:260px; flex-shrink:0; background:var(--bg); border-right:1px solid var(--line);
+          padding:26px 18px 20px 22px; display:flex; flex-direction:column; gap:26px; position:sticky; top:0; height:100vh; }
+  #main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .page { padding:44px 56px 56px 48px; display:flex; flex-direction:column; gap:24px; }
+  /* One reading column, centred in whatever space the rail leaves. A cap
+     keeps line length sane; auto margins stop it hugging the rail on a wide
+     monitor, where a left-pinned column just looks like a broken page. */
+  .col { width:100%; max-width:var(--col); margin-left:auto; margin-right:auto; }
+  .wide { width:100%; max-width:var(--wide); margin-left:auto; margin-right:auto; }
+  /* ── query workbench ── */
+  /* The composer is one surface holding the editor and everything you can do
+     to it, so Run reads as the act and the rest as afterthoughts. */
+  /* No overflow:hidden here — the Format menu is absolutely positioned inside
+     the action bar, and clipping the composer clips the menu. Round the
+     children instead. */
+  .composer { background:var(--surface); border:1px solid var(--line2); border-radius:12px;
+              box-shadow:var(--card-shadow); }
+  /* The editor is a transparent textarea over a highlighted mirror: the caret,
+     selection and IME stay native, the colour comes from the layer beneath. */
+  .qedit { position:relative; }
+  #qhl, #qtext { font-family:var(--mono); font-size:13px; line-height:21px;
+                 padding:16px 18px; white-space:pre-wrap; overflow-wrap:break-word;
+                 border:0; margin:0; }
+  #qhl { position:absolute; inset:0; pointer-events:none; overflow:hidden;
+         color:var(--text); border-radius:12px 12px 0 0; }
+  #qtext { position:relative; width:100%; display:block; resize:none; overflow-y:auto;
+           background:none; color:transparent; caret-color:var(--ink);
+           border-radius:12px 12px 0 0; min-height:88px; max-height:340px; }
+  #qtext::selection { background:var(--sel); }
+  #qtext:focus { outline:none; }
+  #qtext::placeholder { color:var(--faint); }
+  #qhl .k { color:var(--ink); font-weight:600; }   /* RECALL, WHERE, LIMIT … */
+  #qhl .s { color:var(--hash); }                   /* "quoted strings" */
+  #qhl .n { color:var(--warn); }                   /* numbers */
+  #qhl .c { color:var(--faint); }                  /* -- comments */
+  .composer .cbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap;
+                    padding:11px 14px; border-top:1px solid var(--line);
+                    background:var(--well); border-radius:0 0 12px 12px; }
+  .composer .kbd { font-size:11.5px; font-weight:500; opacity:.75; }
+  /* ── the on-ramp: what the page offers before you have run anything ── */
+  .onramp { display:flex; flex-direction:column; gap:12px; }
+  .qsec { display:flex; align-items:center; gap:11px; padding-top:10px; }
+  .qsec i { flex:1; height:1px; background:var(--line); }
+  /* Two across so the four questions read as a block, not a ragged row — and
+     sized to hold two even when the developer rail takes 330px off the width. */
+  .starters { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; }
+  .starter { text-align:left; background:var(--surface); border:1px solid var(--line);
+             border-radius:11px; padding:15px 16px; display:flex; flex-direction:column; gap:10px;
+             cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+  .starter:hover { border-color:var(--accent-line); box-shadow:var(--card-shadow); }
+  .starter b { font-size:15px; font-weight:600; color:var(--ink); line-height:21px; }
+  /* the CAL each question writes, shown so the answer teaches the language */
+  .starter code { font-family:var(--mono); font-size:11.5px; color:var(--muted); background:var(--bg);
+                  border:0; border-radius:6px; padding:8px 10px; display:block;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .vocab { display:grid; grid-template-columns:repeat(auto-fit, minmax(185px, 1fr)); gap:10px; }
+  .vc { text-align:left; background:var(--surface); border:1px solid var(--line); border-radius:10px;
+        padding:13px 14px; display:flex; flex-direction:column; gap:5px; cursor:pointer;
+        transition:border-color .12s; }
+  .vc:hover { border-color:var(--accent-line); }
+  .vc .top { display:flex; align-items:baseline; gap:8px; }
+  .vc .k { font-family:var(--mono); font-size:12.5px; color:var(--ink); flex:1; }
+  .vc .n { font-size:17px; font-weight:600; color:var(--ink); }
+  .vc small { font-size:12.5px; line-height:18px; color:var(--muted); }
+  /* minmax(0,·) or a long description sets the column's min-content width and
+     the two halves stop being halves. */
+  .recents { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px 26px; }
+  .rrow { display:flex; flex-direction:column; gap:3px; padding:9px 0; text-align:left;
+          background:none; border:0; border-bottom:1px solid var(--hair); cursor:pointer; width:100%; }
+  .rrow:hover .rq, .rrow:hover .rn { color:var(--accent); }
+  /* A recent run is code and reads as code; a saved query has a human name. */
+  .rrow .rq { font-family:var(--mono); font-size:11.5px; color:var(--text);
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rrow .rn { font-size:14px; color:var(--ink); font-weight:500;
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rrow .rm { font-size:12.5px; color:var(--faint);
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rempty { padding:9px 0; font-size:13px; color:var(--faint); }
+  /* Restate the query in plain words, so a non-technical reader can tell at a
+     glance whether the CAL asked what they meant. */
+  .qsum { display:flex; flex-direction:column; gap:3px; padding-bottom:13px; }
+  .qsum .h { font-size:19px; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
+  .qsum .h em { font-style:normal; font-weight:400; font-size:15px; color:var(--muted); }
+  #qbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+          padding:12px 0; border-bottom:1px solid var(--line); }
+  #qmore { padding:16px 0; }
+  #qerr { background:var(--danger-soft); border:1px solid var(--danger-line); border-radius:10px;
+          padding:12px 14px; font-size:13px; }
+  #qerr .code { font-family:var(--mono); font-size:11px; color:var(--danger);
+                border:1px solid var(--danger-line); border-radius:5px; padding:1px 6px; margin-right:8px; }
+  #qerr pre { margin-top:8px; font-family:var(--mono); font-size:12.5px; color:var(--muted); white-space:pre-wrap; }
+  #qerr .hint { margin-top:7px; color:var(--warn); }
+  code { font-family:var(--mono); font-size:.92em; background:var(--raise); border:1px solid var(--line);
+         border-radius:5px; padding:1px 5px; }
+  .menuwrap { position:relative; display:inline-block; }
+  /* A drawn chevron rather than the ▾ glyph, which renders thin and pale at
+     this size and disappears against a ghost button. */
+  .btn.hasmenu::after { content:''; width:6px; height:6px; flex-shrink:0; margin-left:2px;
+                        border-right:1.7px solid currentColor; border-bottom:1.7px solid currentColor;
+                        transform:translateY(-2px) rotate(45deg); }
+  /* JSON is the developer's view of the answer — colour it the way the rest of
+     this console colours values, so the meanings carry across. */
+  .jsonv { line-height:19px; }
+  .jsonv .jk { color:var(--ink); font-weight:600; }
+  .jsonv .js { color:var(--hash); }
+  .jsonv .jn { color:var(--warn); }
+  .jsonv .jb { color:var(--ok); font-weight:500; }
+  .jsonv .jz { color:var(--faint); }
+  .menu { position:absolute; z-index:30; top:calc(100% + 6px); right:0; background:var(--surface);
+          border:1px solid var(--line2); border-radius:11px; min-width:300px; max-width:460px;
+          max-height:340px; overflow-y:auto; box-shadow:var(--shadow); padding:5px; }
+  .menu .mi { padding:8px 11px; border-radius:8px; cursor:pointer; font-size:13px; color:var(--text); }
+  .menu .mi:hover { background:var(--raise); }
+  .menu .mi small { display:block; font-family:var(--mono); font-size:11px; color:var(--dim);
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .menu .sep { padding:8px 11px 4px; font-size:11px; font-weight:600; letter-spacing:.09em; color:var(--dim); }
+  /* order-preserving masonry: cards keep result order, heights vary with content */
+  #qcards { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));
+            grid-auto-rows:8px; gap:0 16px; }
+  .qcard { background:var(--surface); border:1px solid var(--line); border-radius:12px;
+           padding:14px 16px; display:flex; flex-direction:column; gap:8px;
+           box-shadow:var(--card-shadow); overflow:hidden; }
+  .qcard .hd { display:flex; align-items:center; gap:8px; }
+  .qcard .kind { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+  .qcard .say { font-size:15px; line-height:22px; color:var(--ink); overflow-wrap:anywhere; }
+  .qcard .kv { display:flex; gap:8px; font-size:12.5px; padding:3px 0; border-top:1px solid var(--hair); }
+  .qcard .kv b { flex-shrink:0; min-width:84px; color:var(--dim); font-weight:500; }
+  .qcard .kv span { color:var(--text); overflow-wrap:anywhere; min-width:0; }
+  #qtable { width:100%; border-collapse:collapse; font-size:13.5px; }
+  #qtable th { text-align:left; font-size:11px; font-weight:600; letter-spacing:.06em; color:var(--dim);
+               text-transform:uppercase; padding:8px 12px 8px 0; border-bottom:1px solid var(--line2); white-space:nowrap; }
+  #qtable td { padding:9px 12px 9px 0; border-bottom:1px solid var(--hair); vertical-align:top;
+               max-width:340px; overflow-wrap:anywhere; }
+  .seg.sm button { height:26px; padding:0 11px; font-size:12.5px; }
+  /* The graph is a canvas, not prose — let it use the width, within reason. */
+  #graphView { width:100%; max-width:var(--wide); margin-left:auto; margin-right:auto; }
+
+  /* ── rail ── */
+  .brand { display:flex; align-items:center; gap:9px; }
+  .brand b { font-size:17px; font-weight:700; color:var(--ink); letter-spacing:-.02em; }
+  .nav { display:flex; flex-direction:column; gap:2px; }
+  .nav-item { display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:9px;
+              cursor:pointer; color:var(--text); font-size:15px; font-weight:500; border:0; background:none;
+              width:100%; text-align:left; font-family:inherit; transition:background .12s; }
+  .nav-item:hover { background:var(--raise); }
+  .nav-item.on { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  .nav-item svg { flex-shrink:0; stroke:currentColor; }
+  .nav-item .grow { flex:1; }
+  .pill { display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:20px;
+          padding:0 6px; border-radius:10px; background:var(--warn); color:#fff; font-size:11px; font-weight:600; }
+  .sec-label { font-size:11.5px; font-weight:600; color:var(--dim); letter-spacing:.09em; }
+  #entities { display:flex; flex-direction:column; gap:1px; overflow-y:auto; min-height:0; }
+  .ent { display:flex; align-items:center; gap:10px; padding:7px 11px; border-radius:8px; cursor:pointer;
+         border:0; background:none; width:100%; text-align:left; font-family:inherit; transition:background .12s; }
+  .ent:hover { background:var(--raise); }
+  .ent.on { background:var(--accent-soft); }
+  .ent .av { display:flex; align-items:center; justify-content:center; width:22px; height:22px; flex-shrink:0;
+             border-radius:11px; background:var(--raise); color:var(--muted); font-size:10.5px; font-weight:600; }
+  .ent.on .av { background:var(--accent); color:#fff; }
+  .ent .nm { flex:1; font-size:14.5px; font-weight:500; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ent .ct { width:22px; flex-shrink:0; text-align:right; font-size:13px; color:var(--faint); font-variant-numeric:tabular-nums; }
+  .rail-foot { margin-top:auto; display:flex; flex-direction:column; gap:14px; padding:0 11px 2px; }
+  .health { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); cursor:pointer; }
+  .dot { width:7px; height:7px; border-radius:4px; background:var(--ghost); flex-shrink:0; }
+  .toggle-row { display:flex; align-items:center; gap:10px; padding-top:14px; border-top:1px solid var(--line); }
+  .toggle-row span { flex:1; font-size:13.5px; color:var(--dim); }
+  .sw { width:34px; height:20px; flex-shrink:0; border-radius:10px; background:var(--line2); padding:2px;
+        display:flex; align-items:center; cursor:pointer; border:0; transition:background .15s; }
+  .sw i { width:16px; height:16px; border-radius:8px; background:#fff; display:block; transition:transform .15s; }
+  .sw.on { background:var(--accent); }
+  .sw.on i { transform:translateX(14px); }
+
+  /* ── type ── */
+  h1 { font:700 31px/38px var(--sans); color:var(--ink); letter-spacing:-.025em; }
+  h2 { font:700 15px var(--sans); color:var(--ink); letter-spacing:-.01em; }
+  .sub { font-size:14.5px; line-height:22px; color:var(--muted); }
+  .meta { font-size:13px; color:var(--dim); }
+  .tiny { font-size:12.5px; color:var(--faint); }
+  .mono { font-family:var(--mono); font-size:11.5px; color:var(--hash); }
+
+  /* ── controls ── */
+  button { font-family:inherit; cursor:pointer; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; height:40px; padding:0 20px;
+         border-radius:10px; background:var(--accent); color:#fff; border:0; font-size:14.5px; font-weight:600;
+         transition:background .12s; white-space:nowrap; flex-shrink:0; }
+  .btn:hover { background:var(--accent-hover); }
+  .btn.sm { height:34px; padding:0 15px; font-size:13px; border-radius:9px; }
+  .btn.ghost { background:var(--surface); border:1px solid var(--line2); color:var(--text); font-weight:500; }
+  .btn.ghost:hover { background:var(--raise); }
+  .btn.danger { background:none; border:0; color:var(--danger); font-weight:600; padding:0; height:auto; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .chip { padding:6px 13px; border-radius:16px; border:1px solid var(--line); background:var(--surface);
+          font-size:13.5px; color:var(--text); cursor:pointer; transition:border-color .12s, color .12s; }
+  .chip:hover { border-color:var(--line2); }
+  .chip.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .seg { display:inline-flex; padding:3px; border-radius:10px; background:var(--raise); }
+  .seg button { height:30px; padding:0 15px; border-radius:8px; border:0; background:none; color:var(--muted);
+                font-size:13.5px; font-weight:500; }
+  .seg button.on { background:var(--surface); color:var(--accent); font-weight:600; box-shadow:0 1px 2px rgba(11,13,18,.06); }
+  .tabs { display:flex; align-items:flex-end; gap:26px; border-bottom:1px solid var(--line); }
+  .tabs button { padding:0 0 11px; border:0; background:none; font-size:14.5px; font-weight:500; color:var(--muted); }
+  .tabs button.on { color:var(--accent); font-weight:600; box-shadow:inset 0 -2px 0 var(--accent); }
+  input[type=text], textarea { font-family:inherit; background:var(--surface); border:1px solid var(--line2);
+    border-radius:10px; color:var(--ink); padding:9px 12px; font-size:14px; width:100%; }
+  input[type=text]:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+
+  /* ── ask ── */
+  .askbar { display:flex; align-items:center; gap:13px; height:56px; padding:0 14px 0 18px; background:var(--surface);
+            border:1px solid var(--line2); border-radius:13px; transition:border-color .12s, box-shadow .12s; }
+  .askbar:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .askbar input { border:0; background:none; padding:0; font-size:16px; flex:1; }
+  .askbar input:focus { outline:none; box-shadow:none; }
+  .askbar input::placeholder { color:var(--faint); }
+  .examples { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:0 2px; }
+  .examples .tiny { flex-shrink:0; }
+
+  /* ── cards & banners ── */
+  /* On a white page a card needs its own lift, not fill contrast. */
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--card-shadow); }
+  .banner { display:flex; align-items:center; gap:12px; padding:13px 16px; border-radius:11px;
+            background:var(--warn-soft); border:1px solid var(--warn-line); }
+  .banner .grow { flex:1; font-size:14.5px; color:var(--text); }
+  .banner b { color:var(--ink); font-weight:600; }
+  .banner .go { flex-shrink:0; font-size:14px; font-weight:600; color:var(--accent); cursor:pointer; }
+  .empty { padding:34px 0; text-align:center; color:var(--dim); font-size:14px; }
+  .planv { display:flex; flex-direction:column; padding-top:6px; }
+  .prow { display:flex; gap:14px; padding:10px 0; border-bottom:1px solid var(--hair); font-size:13.5px; }
+  .prow b { width:104px; flex-shrink:0; color:var(--dim); font-weight:500; }
+  .prow span { color:var(--text); font-family:var(--mono); font-size:12.5px; }
+  .pnote { margin-top:14px; padding:12px 14px; background:var(--warn-soft);
+           border:1px solid var(--warn-line); border-radius:9px; font-size:13px;
+           line-height:20px; color:var(--text); }
+  /* A query that matched nothing is a normal outcome, not an error — say what
+     was asked and offer the next thing to try, rather than a dead end. */
+  .nores { display:flex; flex-direction:column; align-items:flex-start; gap:9px;
+           padding:30px 26px; background:var(--surface); border:1px solid var(--line);
+           border-radius:12px; }
+  .nores .t { font-size:17px; font-weight:600; color:var(--ink); }
+  .nores .d { font-size:14px; line-height:21px; color:var(--muted); max-width:62ch; }
+  .nores .acts { display:flex; gap:9px; flex-wrap:wrap; padding-top:4px; }
+  /* Colour carries meaning here, never decoration: teal is a content address
+     everywhere in this console, burnt orange is "needs attention". */
+  .v-hash { color:var(--hash); font-family:var(--mono); font-size:11.5px; }
+  .v-time { color:var(--dim); }
+  .v-yes  { color:var(--ok); font-weight:500; }
+  .v-no   { color:var(--warn); font-weight:500; }
+  .v-num  { color:var(--ink); font-weight:500; font-variant-numeric:tabular-nums; }
+
+  /* ── memory list ── */
+  .grp-head { display:flex; align-items:baseline; gap:10px; padding:22px 0 10px; }
+  .grp-head:first-child { padding-top:6px; }
+  .mrow { display:flex; align-items:flex-start; gap:18px; padding:14px 8px 14px 0; border-top:1px solid var(--hair);
+          cursor:pointer; border-radius:8px; transition:background .1s; }
+  .mrow:hover { background:var(--raise); }
+  .mrow.sel { background:var(--accent-soft); }
+  .mrow .body { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .mrow .say { font-size:16.5px; line-height:25px; color:var(--ink); }
+  .mrow .prov { font-size:13px; line-height:20px; color:var(--dim); }
+  .mrow .when { width:96px; flex-shrink:0; text-align:right; font-size:13px; color:var(--dim); padding-top:4px; }
+  .mrow.gone .say { color:var(--ghost); text-decoration:line-through; }
+  .mrow.sup .say { color:var(--muted); }
+
+  /* ── answer ── */
+  #answer { display:flex; flex-direction:column; padding:28px 30px 0; }
+  .ans-label { font-size:11.5px; font-weight:600; color:var(--accent); letter-spacing:.09em; }
+  .ans-text { font-size:20px; line-height:31px; color:var(--ink); letter-spacing:-.01em; }
+  .srow { display:flex; align-items:center; gap:14px; padding:11px 0; border-bottom:1px solid var(--hair); cursor:pointer; }
+  .srow:last-child { border-bottom:0; }
+  .srow .t { flex:1; font-size:15px; color:var(--ink); }
+  .srow .w { width:96px; flex-shrink:0; text-align:right; font-size:13px; color:var(--dim); }
+  .disclose { display:flex; align-items:center; gap:10px; padding:15px 0 18px; border-top:1px solid var(--hair);
+              cursor:pointer; font-size:14px; color:var(--text); }
+  .disclose .grow { flex:1; }
+  .disclose .caret { transition:transform .15s; }
+  .disclose.open .caret { transform:rotate(90deg); }
+  pre.code { font-family:var(--mono); font-size:13px; line-height:21px; color:var(--ink); background:var(--well);
+             border:1px solid var(--hair); border-radius:10px; padding:14px 16px; overflow-x:auto; white-space:pre-wrap;
+             word-break:break-word; }
+
+  /* ── graph ── */
+  #gwrap { background:var(--well); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+  /* The query workbench draws its own result graph (#qstage/#qcanvas/#qzoom);
+     it shares this chrome so the two graphs read — and handle — the same. */
+  #gstage, #qstage { position:relative; }
+  #gcanvas { display:block; width:100%; height:560px; cursor:grab; }
+  #qcanvas { display:block; width:100%; height:460px; cursor:grab;
+             background:var(--well); border:1px solid var(--line); border-radius:14px; }
+  #gcanvas.grabbing, #qcanvas.grabbing { cursor:grabbing; }
+  .float { position:absolute; background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); }
+  #gtools { top:16px; left:16px; display:flex; align-items:center; gap:10px; background:none; border:0; box-shadow:none; }
+  #glegend { bottom:16px; left:16px; display:flex; align-items:center; gap:14px; height:34px; padding:0 14px; border-radius:17px; }
+  #glegend span { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text); white-space:nowrap; }
+  #gzoom { bottom:16px; right:16px; display:flex; align-items:center; height:34px; padding:0 4px; border-radius:17px; }
+  #qzoom { bottom:14px; right:14px; display:flex; align-items:center; height:34px; padding:0 4px; border-radius:17px; }
+  #gzoom button, #qzoom button { width:30px; height:28px; border:0; background:none; color:var(--text); font-size:16px; border-radius:14px; }
+  #gzoom button.lbl, #qzoom button.lbl { width:auto; padding:0 10px; font-size:12px; font-weight:600; color:var(--accent); }
+  #ginspect { top:16px; right:16px; width:288px; padding:18px; display:flex; flex-direction:column; gap:14px; }
+  #gscrub { display:flex; flex-direction:column; gap:11px; padding:16px 20px 18px; background:var(--surface); border-top:1px solid var(--line); }
+  #gscrub input[type=range] { width:100%; accent-color:var(--accent); }
+  .scrub-ticks { display:flex; justify-content:space-between; font-size:11.5px; color:var(--faint); }
+
+  /* ── suggestions ── */
+  /* Page-level stacks own the rhythm between blocks; `.stack` is an inner
+     group whose own rows carry their separators, so it takes no gap. */
+  #sugList, #conBody { display:flex; flex-direction:column; gap:16px; }
+  .stack { display:flex; flex-direction:column; }
+  .sug { display:flex; flex-direction:column; gap:16px; padding:24px 28px 22px; }
+  .tag { display:inline-flex; align-items:center; gap:7px; padding:4px 10px 4px 8px; border-radius:14px; font-size:12px; font-weight:600; }
+  .evi { display:flex; flex-direction:column; background:var(--well); border:1px solid var(--hair); border-radius:11px; padding:2px 16px; }
+  .evi-row { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--hair); }
+  .evi-row:last-child { border-bottom:0; }
+  .evi-row .t { flex:1; font-size:15px; color:var(--ink); }
+  .evi-row .w { width:140px; flex-shrink:0; text-align:right; font-size:13px; color:var(--dim); }
+  .acts { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .acts .note { flex:1; text-align:right; font-size:13.5px; color:var(--dim); }
+  /* The confirm step replaces the action row rather than sitting under it —
+     three live buttons at once is a guessing game. */
+  .reason { display:flex; flex-direction:column; gap:9px; padding:14px 16px;
+            background:var(--well); border:1px solid var(--line); border-radius:11px; }
+  .reason .line { display:flex; align-items:center; gap:10px; }
+
+  /* ── activity ── */
+  .ev { display:flex; align-items:flex-start; gap:16px; padding:14px 0; border-top:1px solid var(--hair); }
+  .ev .at { width:52px; flex-shrink:0; font-size:13px; color:var(--dim); padding-top:3px; }
+  .ev .ic { width:18px; flex-shrink:0; display:flex; justify-content:center; padding-top:5px; }
+  .ev .body { flex:1; display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .ev .say { font-size:15.5px; color:var(--ink); }
+
+  /* ── connect ── */
+  .apps { display:flex; gap:16px; }
+  .app { flex:1; display:flex; flex-direction:column; gap:8px; background:var(--well); border:1px solid var(--line);
+         border-radius:12px; padding:14px 16px; }
+  .app .hd { display:flex; align-items:center; gap:9px; }
+  .app .hd b { flex:1; font-size:14.5px; font-weight:600; color:var(--ink); }
+  .conns { display:flex; }
+  .conns div { flex:1; display:flex; justify-content:center; }
+  .conns i { width:2px; height:22px; background:var(--line2); display:block; border-radius:1px; }
+  .hubbar { display:flex; align-items:center; gap:14px; background:var(--accent-soft); border:1.5px solid var(--accent);
+            border-radius:12px; padding:16px 18px; }
+  .kv { display:flex; align-items:baseline; gap:12px; padding:9px 0; border-top:1px solid var(--hair); }
+  .kv .k { width:190px; flex-shrink:0; font-size:13.5px; color:var(--dim); }
+  .kv .v { flex:1; font-size:14px; color:var(--ink); word-break:break-word; }
+
+  /* ── panel ── */
+  #panelWrap { position:fixed; inset:0; z-index:40; }
+  #panelShade { position:absolute; inset:0; background:rgba(11,13,18,.35); backdrop-filter:blur(2px); }
+  #panel { position:absolute; top:0; right:0; bottom:0; width:min(430px,96vw); background:var(--surface);
+           border-left:1px solid var(--line2); box-shadow:var(--shadow); padding:28px 30px 32px; overflow-y:auto;
+           display:flex; flex-direction:column; gap:24px; }
+  .pgroup { display:flex; flex-direction:column; gap:14px; padding-top:20px; border-top:1px solid var(--hair); }
+  .step { display:flex; gap:14px; }
+  .step .rail { display:flex; flex-direction:column; align-items:center; width:10px; flex-shrink:0; gap:4px; }
+  .step .bul { width:10px; height:10px; border-radius:5px; background:var(--ok); flex-shrink:0; }
+  .step .bul.past { background:var(--surface); border:1.5px solid var(--line2); }
+  .step .ln { width:1px; flex:1; background:var(--line); }
+
+  /* ── dev sidebar ── */
+  #devbar { width:330px; flex-shrink:0; background:var(--bg); border-left:1px solid var(--line);
+            padding:26px 22px 28px; display:flex; flex-direction:column; gap:24px; position:sticky; top:0;
+            height:100vh; overflow-y:auto; }
+  .oprow { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--hair);
+           cursor:pointer; font-family:var(--mono); font-size:11.5px; }
+  .oprow .t { width:30px; flex-shrink:0; color:var(--ghost); }
+  .oprow .o { width:70px; flex-shrink:0; }
+  /* What the operation wrote, in words — the address is on hover. Sans, because
+     this is prose now; teal mono only when we fall back to a bare hash. */
+  .oprow .h { flex:1; min-width:0; font-family:var(--sans); font-size:12.5px; color:var(--text);
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .oprow .h.addr { font-family:var(--mono); font-size:11.5px; color:var(--hash); }
+  .oprow .h.sys { color:var(--faint); }   /* the engine talking to itself */
+
+  /* ── toast ── */
+  #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg);
+           border-radius:10px; padding:10px 20px; font-size:14px; z-index:99; box-shadow:var(--shadow); display:none; }
+
+  @media (max-width:1180px) { #devbar { display:none !important; } }
+  @media (max-width:900px) { #rail { display:none; } .page { padding:28px 22px 44px; } }
+
+  /* Last word: `hidden` must beat every id-level display rule above. */
+  [hidden] { display:none !important; }
+</style>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var t = q.get('theme') || localStorage.getItem('areev.theme');
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  var d = q.get('dev');
+  if (d === '1' || (d !== '0' && localStorage.getItem('areev.dev') === '1'))
+    document.documentElement.classList.add('dev');
+})();
+</script>
+
+<div id="shell">
+  <nav id="rail">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="7.5" y="2.5" width="14" height="14" rx="4.5" fill="none" stroke="var(--accent-line)" stroke-width="2"/><rect x="2.5" y="7.5" width="14" height="14" rx="4.5" fill="var(--accent)"/></svg>
+      <b>Areev</b>
+    </div>
+
+    <div class="nav" id="nav">
+      <button class="nav-item on" data-page="memory">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4.5A1.5 1.5 0 016.5 3H17a1.5 1.5 0 011.5 1.5V21l-6.5-3.4L5.5 21V4.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span class="grow">Memory</span>
+      </button>
+      <button class="nav-item" data-page="activity">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12.5h4.2l2.6-7 4.2 13 2.4-6h4.6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="grow">Activity</span>
+      </button>
+      <button class="nav-item" data-page="runs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4.5v15l13-7.5-13-7.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span class="grow">Runs</span>
+        <span class="pill" id="runPill" hidden>0</span>
+      </button>
+      <button class="nav-item" data-page="suggestions">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span class="grow">Suggestions</span>
+        <span class="pill" id="sugPill" hidden>0</span>
+      </button>
+      <button class="nav-item" data-page="connect">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9.5 14.5l5-5M8 12l-2 2a3.5 3.5 0 005 5l2-2M16 12l2-2a3.5 3.5 0 00-5-5l-2 2" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="grow">Connect</span>
+      </button>
+      <button class="nav-item" data-page="query">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4.5 6.5h15M4.5 12h9M4.5 17.5h12" stroke-width="1.7" stroke-linecap="round"/><path d="M16.5 15.5l2.2 2.2" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="14" r="2.6" stroke-width="1.7"/></svg>
+        <span class="grow">Query</span>
+      </button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:9px;min-height:0">
+      <span class="sec-label" style="padding:0 11px">PEOPLE &amp; TOPICS</span>
+      <div id="entities"><span class="tiny" style="padding:0 11px">loading…</span></div>
+    </div>
+
+    <div class="rail-foot">
+      <div class="health" id="health" title="check every stored memory against its content address">
+        <span class="dot" id="hdot"></span><span id="htext">checking…</span>
+      </div>
+      <div class="toggle-row" id="whorow" style="display:none">
+        <span id="whoami" title="the principal this session is bound to">…</span>
+        <button id="signbtn" style="background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0">Sign in</button>
+      </div>
+      <div class="toggle-row">
+        <span>Developer mode</span>
+        <button class="sw" id="devsw" aria-label="developer mode"><i></i></button>
+      </div>
+      <div class="toggle-row" style="border:0;padding-top:0">
+        <span>Dark mode</span>
+        <button class="sw" id="themesw" aria-label="dark mode"><i></i></button>
+      </div>
+      <span class="tiny" id="dblabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{DB}}</span>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- ── MEMORY ── -->
+    <section class="page" id="page-memory">
+      <div style="display:flex;align-items:flex-end;gap:16px" class="col">
+        <div style="flex:1;display:flex;flex-direction:column;gap:7px">
+          <h1 id="memTitle">What your agent remembers</h1>
+          <span class="sub" id="memSub">loading…</span>
+        </div>
+        <div class="seg" id="mview">
+          <button class="on" data-v="list">List</button>
+          <button data-v="graph">Graph</button>
+        </div>
+      </div>
+
+      <div id="listView" style="display:flex;flex-direction:column;gap:24px">
+        <div class="col" style="display:flex;flex-direction:column;gap:11px">
+          <div class="askbar">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><circle cx="11" cy="11" r="6.6" stroke="var(--accent)" stroke-width="1.8"/><path d="M16 16l4.2 4.2" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <input type="text" id="ask" placeholder="Search your memories — or ask a question and press Enter" autocomplete="off">
+            <button class="btn sm" id="askBtn">Ask</button>
+          </div>
+          <div class="examples" id="examples"></div>
+        </div>
+
+        <div class="banner col" id="sugBanner" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke="var(--warn)" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          <span class="grow" id="sugBannerText"></span>
+          <span class="go" id="sugBannerGo">Review →</span>
+        </div>
+
+        <div class="col" id="filterBar" hidden></div>
+        <div class="card col" id="answer" hidden></div>
+        <div class="col" id="memList"><div class="empty">loading…</div></div>
+      </div>
+
+      <div id="graphView" hidden>
+        <div id="gwrap">
+         <div id="gstage">
+          <canvas id="gcanvas"></canvas>
+          <div class="float" id="gtools">
+            <div style="display:flex;align-items:center;gap:9px;height:36px;width:250px;padding:0 12px;background:var(--surface);border:1px solid var(--line);border-radius:10px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><circle cx="11" cy="11" r="6.6" stroke="var(--dim)" stroke-width="1.9"/><path d="M16 16l4.2 4.2" stroke="var(--dim)" stroke-width="1.9" stroke-linecap="round"/></svg>
+              <input type="text" id="gjump" placeholder="Jump to anyone…" style="border:0;background:none;padding:0;font-size:13.5px">
+            </div>
+            <div class="seg" id="gdepth" style="background:var(--surface);border:1px solid var(--line)">
+              <button class="on" data-d="1">Direct</button><button data-d="2">2 steps</button>
+            </div>
+          </div>
+          <div class="float" id="glegend"></div>
+          <div class="float" id="gzoom">
+            <button id="gout" title="zoom out">−</button><button id="gin" title="zoom in">+</button><button class="lbl" id="gfit">Fit</button>
+          </div>
+          <div class="float" id="ginspect" hidden></div>
+         </div>
+          <div id="gscrub">
+            <div style="display:flex;align-items:center;gap:9px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><circle cx="12" cy="12" r="8.5" stroke="var(--muted)" stroke-width="1.8"/><path d="M12 7.5V12l3 2" stroke="var(--muted)" stroke-width="1.8" stroke-linecap="round"/></svg>
+              <b style="font-size:13.5px;color:var(--ink)">Rewind</b>
+              <span class="meta" style="flex:1">drag to see what your agent knew at any point — nothing is ever deleted from the history</span>
+              <span class="chip on" id="gnow" style="height:26px;padding:0 12px;display:inline-flex;align-items:center">now</span>
+            </div>
+            <input type="range" id="grange" min="0" max="100" value="100">
+            <div class="scrub-ticks" id="gticks"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── ACTIVITY ── -->
+    <section class="page" id="page-activity" hidden>
+      <div class="col" style="display:flex;flex-direction:column;gap:7px">
+        <h1>Activity</h1>
+        <span class="sub">Everything your agent learned, changed, or forgot — newest first.</span>
+      </div>
+      <div class="examples col" id="actFilters"></div>
+      <div class="col" id="actList"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ── SUGGESTIONS ── -->
+    <section class="page" id="page-suggestions" hidden>
+      <div class="col" style="display:flex;flex-direction:column;gap:7px">
+        <h1>Suggestions</h1>
+        <span class="sub">Ways to make this memory more reliable. Nothing is changed until you approve it, and every change can be undone.</span>
+      </div>
+      <div class="col" style="display:flex;align-items:center;gap:16px">
+        <div class="tabs" id="sugTabs" style="flex:1">
+          <button class="on" data-s="pending">Needs review</button>
+          <button data-s="applied">Applied</button>
+          <button data-s="rejected">Dismissed</button>
+        </div>
+        <button class="btn sm" id="runLoop">Run analysis</button>
+      </div>
+      <div class="col" id="sugList"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ── RUNS: the governed runtime viewer + HITL approval queue ── -->
+    <section class="page" id="page-runs" hidden>
+      <div class="col" style="display:flex;flex-direction:column;gap:7px">
+        <h1>Runs</h1>
+        <span class="sub">Governed workflow runs: journaled, checkpointed, pausable. A run waiting on a person shows its approval below — approving requires your own sign-in (a shared console token is refused: the approver's identity is the audit record).</span>
+      </div>
+      <div class="col" id="runList"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ── CONNECT ── -->
+    <section class="page" id="page-connect" hidden>
+      <div class="col" style="display:flex;flex-direction:column;gap:7px">
+        <h1>Connect</h1>
+        <span class="sub">Attach agents to this memory, and keep every app your customers reach you through remembering the same things.</span>
+      </div>
+      <div class="tabs col" id="conTabs">
+        <button class="on" data-c="agent">Your agent</button>
+        <button data-c="sync">Sync across apps</button>
+        <button data-c="settings">Settings</button>
+      </div>
+      <div class="col" id="conBody"></div>
+    </section>
+
+    <!-- ── QUERY ── -->
+    <section class="page" id="page-query" hidden>
+      <div class="col" style="display:flex;align-items:center;gap:16px">
+        <h1>Query</h1>
+        <div style="flex:1"></div>
+        <button class="btn ghost sm" id="qreset" hidden>New query</button>
+      </div>
+      <span class="col sub" id="qintro">Ask the memory a precise question. Every view in this console
+        runs the same language underneath — start from an example below and edit it.</span>
+
+      <div class="col composer">
+        <div class="qedit">
+          <div id="qhl" aria-hidden="true"></div>
+          <textarea id="qtext" spellcheck="false" rows="3"
+            placeholder='RECALL facts WHERE subject = "john" LIMIT 20'></textarea>
+        </div>
+        <div class="cbar">
+          <button class="btn sm" id="qrun">Run <span class="kbd">⌘⏎</span></button>
+          <button class="btn ghost sm" id="qexplain">Explain</button>
+          <button class="btn ghost sm" id="qsave">Save</button>
+          <div class="menuwrap"><button class="btn ghost sm hasmenu" id="fmtBtn">Format</button>
+            <div class="menu" id="fmtMenu" hidden></div></div>
+          <div style="flex:1"></div>
+          <span class="tiny" id="qnotice"></span>
+        </div>
+      </div>
+      <div class="col" id="qerr" hidden></div>
+
+      <div class="col onramp" id="qonramp">
+        <div class="qsec"><span class="sec-label">START FROM A QUESTION</span><i></i>
+          <span class="tiny">Each one writes real CAL into the editor — edit it from there</span></div>
+        <div class="starters" id="qstarters"></div>
+        <div class="qsec"><span class="sec-label">WHAT’S IN THIS MEMORY</span><i></i>
+          <span class="tiny">Swap any of these for <code>facts</code> in a query</span></div>
+        <div class="vocab" id="qvocab"></div>
+        <div class="qsec"><span class="sec-label">SAVED &amp; RECENT</span><i></i>
+          <div class="menuwrap"><button class="btn ghost sm hasmenu" id="savedBtn">All saved</button>
+            <div class="menu" id="savedMenu" hidden></div></div>
+          <div class="menuwrap"><button class="btn ghost sm hasmenu" id="histBtn">Full history</button>
+            <div class="menu" id="histMenu" hidden></div></div></div>
+        <div class="recents" id="qrecents"></div>
+      </div>
+
+      <div class="col" id="qresult" hidden>
+        <div id="qsummary"></div>
+        <div id="qbar"></div>
+        <div id="qbody"></div>
+        <div id="qmore" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="devbar" class="dev-only dev-flex">
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <span class="sec-label">STORE</span>
+      <div id="devStats"></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0">
+      <span class="sec-label" style="padding-bottom:12px">OP LOG</span>
+      <div id="devLog"></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;margin-top:auto">
+      <span class="sec-label">CAL</span>
+      <span class="tiny">Every view here runs CAL underneath. The full workbench —
+        history, saved queries, templates and every output format — lives on the Query page.</span>
+      <button class="btn ghost sm" id="devQuery">Open Query →</button>
+    </div>
+  </aside>
+</div>
+
+<div id="panelWrap" hidden><div id="panelShade"></div><aside id="panel"></aside></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls;
+  if (txt != null) n.textContent = txt; return n; };
+
+/* ══ api ══════════════════════════════════════════════════════════════ */
+let TOKEN = sessionStorage.getItem('areev.token') || '';
+async function api(url, opts) {
+  opts = Object.assign({}, opts);
+  if (TOKEN) opts.headers = Object.assign({}, opts.headers, { Authorization: 'Bearer ' + TOKEN });
+  let r;
+  try { r = await fetch(url, opts); } catch (e) { return { ok: false, error: 'network error' }; }
+  if (r.status === 401) {
+    const t = window.prompt('This console is protected. Paste its token:');
+    if (t) { TOKEN = t; sessionStorage.setItem('areev.token', t); return api(url, opts); }
+    return { ok: false, error: 'not authorised' };
+  }
+  try { return await r.json(); } catch (e) { return { ok: false, error: 'bad response' }; }
+}
+const cal = q => api('/api/cal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ query: q }) });
+
+/* Identity: in multi-principal mode (areev ui --auth) the rail shows who
+   this session is bound to; Sign in stores a bearer token, Sign out
+   drops back to the read-only anonymous session. */
+async function refreshWhoami() {
+  const w = await api('/api/whoami');
+  if (!w || !w.ok || w.mode !== 'credentials') return;
+  const row = $('whorow'); row.style.display = '';
+  $('whoami').textContent = w.owner ? 'Owner session' : w.principal;
+  $('signbtn').textContent = TOKEN ? 'Sign out' : 'Sign in';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = $('signbtn');
+  if (btn) btn.addEventListener('click', () => {
+    if (TOKEN) { TOKEN = ''; sessionStorage.removeItem('areev.token'); }
+    else {
+      const t = window.prompt('Paste your access token:');
+      if (!t) return;
+      TOKEN = t; sessionStorage.setItem('areev.token', t);
+    }
+    location.reload();
+  });
+  refreshWhoami();
+});
+
+/* ══ helpers ══════════════════════════════════════════════════════════ */
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast._h); toast._h = setTimeout(() => { t.style.display = 'none'; }, 2000);
+}
+function copyText(s, label) {
+  if (!navigator.clipboard) { toast('copy unavailable'); return; }
+  navigator.clipboard.writeText(s).then(() => toast((label || 'Copied') + ' ✓'), () => toast('Copy failed'));
+}
+function download(name, text, mime) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: mime || 'application/json' }));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+const hlcMs = h => Math.floor((h || 0) / 65536);
+const shortHash = h => h ? h.slice(0, 12) + '…' : '';
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+/* Capitalise names that read as words ("john" → "John"), but leave
+   identifiers alone — "Payment_gateway" and "Contract-9107" look wrong. */
+const titleize = s => /^[a-z]+( [a-z]+)*$/.test(String(s || '')) ? cap(s) : String(s || '');
+const lowerFirst = s => s ? s.charAt(0).toLowerCase() + s.slice(1) : '';
+function relTime(ms) {
+  if (!ms) return '';
+  const d = Date.now() - ms;
+  if (d < 45000) return 'just now';
+  const m = Math.floor(d / 60000); if (m < 60) return m + (m === 1 ? ' minute ago' : ' minutes ago');
+  const h = Math.floor(m / 60); if (h < 24) return h + (h === 1 ? ' hour ago' : ' hours ago');
+  const dd = Math.floor(h / 24); if (dd < 30) return dd + (dd === 1 ? ' day ago' : ' days ago');
+  const mo = Math.floor(dd / 30); return mo + (mo === 1 ? ' month ago' : ' months ago');
+}
+const shortWhen = ms => {
+  if (!ms) return '';
+  const d = Date.now() - ms;
+  if (d < 45000) return 'now';
+  const m = Math.floor(d / 60000); if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h';
+  const dd = Math.floor(h / 24); if (dd < 30) return dd + 'd';
+  return Math.floor(dd / 30) + 'mo';
+};
+const dayKey = ms => new Date(ms).toDateString();
+function dayLabel(ms) {
+  const k = dayKey(ms), today = new Date().toDateString();
+  const y = new Date(Date.now() - 86400000).toDateString();
+  if (k === today) return 'TODAY';
+  if (k === y) return 'YESTERDAY';
+  return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'long' }).toUpperCase();
+}
+const clock = ms => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+const isoTitle = ms => ms ? new Date(ms).toISOString() : '';
+/* created_at rides as epoch millis (a number) on stored grains, but an ISO
+   string on anything hand-written — accept both, never NaN. */
+function createdMs(f) {
+  const c = f && f.created_at;
+  if (typeof c === 'number') return c;
+  if (typeof c === 'string') { const p = Date.parse(c); return isNaN(p) ? 0 : p; }
+  return 0;
+}
+/* Some writers (areev remember, memory-tool imports) tuck the human text
+   inside `context` rather than a top-level field. Dig for it — a memory
+   that renders as an empty row is worse than no row at all. */
+function ctxText(f) {
+  const c = f && f.context;
+  if (!c || typeof c !== 'object') return '';
+  for (const k of ['content', 'text', 'message', 'summary', 'description']) {
+    if (typeof c[k] === 'string' && c[k].trim()) return c[k];
+  }
+  return '';
+}
+function preview(f) {
+  if (!f) return '';
+  const v = f.object != null ? f.object : f.content != null ? f.content
+    : f.description != null ? f.description : f.tool_content != null ? f.tool_content
+    : f.summary != null ? f.summary : f.title != null ? f.title
+    : ctxText(f) ? ctxText(f)
+    : f.data != null ? JSON.stringify(f.data) : '';
+  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  return s.length > 140 ? s.slice(0, 140) + '…' : s;
+}
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+/* ══ language: a triple, said out loud ════════════════════════════════ */
+const REL_PHRASE = {
+  prefers: 'Prefers {o}', likes: 'Likes {o}', dislikes: 'Dislikes {o}',
+  works_at: 'Works at {o}', employed_by: 'Works at {o}', member_of: 'Is a member of {o}',
+  lives_in: 'Lives in {o}', based_in: 'Is based in {o}', headquartered_in: 'Headquartered in {o}',
+  owns_project: 'Owns the {o} project', maintains: 'Maintains {o}', works_on: 'Works on {o}',
+  collaborates_with: 'Collaborates with {o}', knows: 'Knows {o}', reports_to: 'Reports to {o}',
+  asked_about: 'Asked about {o}', email: 'Email is {o}', phone: 'Phone number is {o}',
+  role: 'Role is {o}', title: 'Title is {o}', speaks: 'Speaks {o}', located_in: 'Is located in {o}',
+};
+/* No sentence is allowed to be a wall of text. A fact's object can be a
+   serialized record (the loop stores recommendations as Facts), and an
+   unbroken 1.5 KB of JSON has no wrap opportunities — it just blows the
+   column out sideways. */
+const MAX_SAY = 180;
+const clampText = s => s.length > MAX_SAY ? s.slice(0, MAX_SAY).trimEnd() + '…' : s;
+function predicate(g) {
+  const f = g.fields || {};
+  if (g.type === 'fact') {
+    const r = f.relation || '', o = f.object;
+    const os = clampText(typeof o === 'string' ? o : JSON.stringify(o == null ? '' : o));
+    const tpl = REL_PHRASE[r];
+    if (tpl) return tpl.replace('{o}', os);
+    if (!r) return os;
+    return cap(r.replace(/_/g, ' ')) + ' ' + os;
+  }
+  const fallback = 'A ' + (g.type || 'memory') + ' with no readable text';
+  if (g.type === 'tool') {
+    const name = f.tool_name || 'A tool';
+    const body = f.tool_content || ctxText(f) || '';
+    return name + (f.is_error ? ' failed' : ' ran') + (body ? ' — ' + clampText(body) : '');
+  }
+  if (g.type === 'observation') return f.content || f.object || ctxText(f) || fallback;
+  if (g.type === 'event') return f.content || f.description || preview(f) || fallback;
+  if (g.type === 'goal') return f.description || f.content || preview(f) || fallback;
+  return preview(f) || fallback;
+}
+function sentence(g) {
+  const f = g.fields || {}, p = predicate(g);
+  if (!f.subject) return p;
+  const s = String(f.subject);
+  /* Observations and events are free text that usually names the subject
+     already — prefixing it again gives "john john asked about…". */
+  if (p.toLowerCase().startsWith(s.toLowerCase())) return cap(p);
+  return titleize(s) + ' ' + lowerFirst(p);
+}
+/* Where did this come from, in words a human can check. Returned in parts so
+   callers that already show a timestamp can drop the "Learned …" one. */
+function provenanceParts(g) {
+  const f = g.fields || {}, bits = [];
+  const prevGrain = f.derived_from && BYHASH[f.derived_from];
+  const was = g._prevValue
+    || (prevGrain ? (typeof (prevGrain.fields || {}).object === 'string'
+        ? prevGrain.fields.object : preview(prevGrain.fields)) : null);
+  if (was) bits.push('Changed from ' + was);
+  const when = createdMs(f) || hlcMs(g.hlc);
+  if (!bits.length) bits.push('Learned ' + relTime(when));
+  if (g.type === 'observation') bits.push('noticed by your agent, not confirmed');
+  if (f.namespace && f.namespace !== 'shared') bits.push('in ' + f.namespace);
+  if (typeof f.confidence === 'number' && f.confidence < 0.75) bits.push('low confidence');
+  return bits;
+}
+const provenance = g => provenanceParts(g).join(' · ');
+
+/* ══ state ════════════════════════════════════════════════════════════ */
+let BROWSE = [], BYHASH = {}, STATS = {}, CONFIG = null, LOG = [], RECS = {}, TELEMETRY = null;
+let PAGE = 'memory', MVIEW = 'list', SUGTAB = 'pending', CONTAB = 'agent', ACTFILTER = 'all';
+let ENTITY = null, ANSWER = null, SEL = null, ACTIVE_ENTS = [];
+const isGone = g => !!(g.forgotten || g.missing || g.op === 'forget');
+const isCurrent = g => !isGone(g) && !g.superseded_by && !g._stale;
+/* Areev Loop keeps its own bookkeeping in the file (namespace "areev-loop",
+   subject "__loop_state__"). It is a real grain, but it is not something
+   the agent remembers *about anyone* — keep it out of the human views.
+   It stays reachable from the op-log and the CAL console. */
+const INTERNAL_NS = new Set(['areev-loop']);
+function isInternal(g) {
+  const f = g.fields || {};
+  if (INTERNAL_NS.has(f.namespace)) return true;
+  const s = f.subject;
+  return typeof s === 'string' && /^__.*__$/.test(s);
+}
+const currentGrains = () => BROWSE.filter(g => isCurrent(g) && !isInternal(g));
+
+/* The store keeps one head per (namespace, subject, relation) — a plain
+   re-ADD of the same pair replaces the old value without logging a
+   SUPERSEDE, so /api/browse cannot tell us which row is live. Resolve it
+   the same way the store does: within a key, the newest op wins. Without
+   this the list shows a replaced value as if it were current. */
+function headHashes(grains) {
+  const best = new Map();
+  for (const g of grains) {
+    if (isGone(g) || (g.type && g.type !== 'fact')) continue;
+    const f = g.fields || {};
+    if (!f.subject || !f.relation) continue;
+    const k = (f.namespace || '') + ' ' + f.subject + ' ' + f.relation;
+    const cur = best.get(k);
+    if (!cur || (g.op_seq || 0) > (cur.op_seq || 0)) best.set(k, g);
+  }
+  const out = new Set();
+  for (const g of best.values()) out.add(g.hash);
+  return out;
+}
+function markHeads() {
+  const heads = headHashes(BROWSE);
+  const byKey = new Map();
+  for (const g of BROWSE) {
+    g._stale = false; g._prevValue = null;
+    if (isGone(g) || (g.type && g.type !== 'fact')) continue;
+    const f = g.fields || {};
+    if (!f.subject || !f.relation) continue;
+    const k = (f.namespace || '') + ' ' + f.subject + ' ' + f.relation;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(g);
+  }
+  for (const list of byKey.values()) {
+    list.sort((a, b) => (a.op_seq || 0) - (b.op_seq || 0));
+    list.forEach((g, i) => {
+      g._stale = !heads.has(g.hash);
+      if (!g._stale && i > 0) {
+        const p = list[i - 1].fields || {};
+        g._prevValue = typeof p.object === 'string' ? p.object : null;
+      }
+    });
+  }
+}
+
+/* ══ entities ═════════════════════════════════════════════════════════ */
+const PERSONISH = new Set(['prefers','likes','dislikes','works_at','lives_in','employed_by','knows',
+  'collaborates_with','owns_project','reports_to','asked_about','email','phone','speaks','role','title']);
+const ORGISH = new Set(['works_at','employed_by','member_of','customer_of']);
+const PROJECTISH = new Set(['owns_project','maintains','works_on','assigned_to']);
+const PLACEISH = new Set(['lives_in','based_in','headquartered_in','located_in']);
+/* A tool call carries no subject, but it is plainly *about* the tool —
+   without this every tool call falls into one anonymous "Everything else"
+   heap. The graph opts out (a tool with no relations would be a lone dot). */
+const subjectOf = (g, withTools) => {
+  const f = g.fields || {};
+  return f.subject || (withTools !== false && g.type === 'tool' ? f.tool_name : null) || null;
+};
+function buildEntities(grains, opts) {
+  const withTools = !(opts && opts.tools === false);
+  const map = new Map();
+  const ensure = n => { if (!map.has(n)) map.set(n, { name: n, kind: 'thing', count: 0, deg: 0 }); return map.get(n); };
+  for (const g of grains) {
+    const f = g.fields || {};
+    const s = subjectOf(g, withTools);
+    if (s) ensure(s).count++;
+    if (g.type === 'fact' && typeof f.object === 'string' && f.object && f.object.length <= 64) ensure(f.object).deg++;
+  }
+  for (const g of grains) {
+    const f = g.fields || {}, r = f.relation || '';
+    if (f.subject && PERSONISH.has(r)) ensure(f.subject).kind = 'person';
+    if (g.type === 'fact' && typeof f.object === 'string' && map.has(f.object)) {
+      const e = map.get(f.object);
+      if (ORGISH.has(r)) e.kind = 'org';
+      else if (PROJECTISH.has(r)) e.kind = 'project';
+      else if (PLACEISH.has(r)) e.kind = 'org';
+    }
+  }
+  return [...map.values()].sort((a, b) => (b.count - a.count) || (b.deg - a.deg) || a.name.localeCompare(b.name));
+}
+const KIND_VAR = { person: '--cat-person', org: '--cat-org', project: '--cat-project',
+  thing: '--cat-thing', note: '--cat-note' };
+
+/* ══ boot ═════════════════════════════════════════════════════════════ */
+async function boot() {
+  /* The server hands us the full path; show the file name and keep the
+     path in the tooltip so the rail stays readable. */
+  const full = ($('dblabel').textContent || '').trim();
+  DB_PATH = full;
+  $('dblabel').textContent = full.split('/').pop() || full;
+  $('dblabel').title = full;
+  wireChrome();
+  applyHash();
+  await Promise.all([loadStats(), loadBrowse(), loadLog(), loadConfig(), loadCaps()]);
+  verify();
+  await loadRecs('pending');
+  if (PAGE === 'connect' && CONTAB === 'sync') await loadSegments();
+  if (PAGE === 'suggestions' && !RECS[SUGTAB]) await loadRecs(SUGTAB);
+  render();
+  if (PAGE === 'memory' && MVIEW === 'graph') Graph.mount();
+  addEventListener('hashchange', () => { if (applyHash()) { render(); if (MVIEW === 'graph') Graph.mount(); } });
+}
+let DB_PATH = '';
+async function loadStats() { STATS = await api('/api/stats') || {}; }
+async function loadConfig() { CONFIG = await api('/api/config'); }
+async function loadBrowse() {
+  const r = await api('/api/browse?limit=2000');
+  BROWSE = (r && r.ok && r.grains) ? r.grains : [];
+  BYHASH = {};
+  for (const g of BROWSE) BYHASH[g.hash] = g;
+  markHeads();
+}
+async function loadLog() { const r = await api('/api/log?limit=400'); LOG = Array.isArray(r) ? r : []; }
+/* "Needs review" also covers `approved` — a recommendation you approved but
+   whose apply did not land would otherwise belong to no tab at all. */
+const TAB_STATUS = { pending: ['pending', 'approved'], applied: ['applied'], rejected: ['rejected'] };
+async function loadRecs(tab) {
+  const out = [];
+  for (const s of (TAB_STATUS[tab] || [tab])) {
+    const r = await api('/api/loop/recommendations?status=' + encodeURIComponent(s));
+    if (r && r.ok && Array.isArray(r.recommendations)) out.push(...r.recommendations);
+  }
+  RECS[tab] = out;
+  if (tab === 'pending') {
+    const n = out.length;
+    $('sugPill').hidden = !n; $('sugPill').textContent = n;
+  }
+}
+async function verify() {
+  const v = await api('/api/verify');
+  const ok = v && v.integrity === 'ok';
+  $('hdot').style.background = ok ? 'var(--ok)' : 'var(--danger)';
+  $('htext').textContent = ok ? 'All memories verified' : 'Integrity problem — click';
+  $('health').title = v && v.integrity
+    ? 'integrity ' + v.integrity + ' · ' + v.grains + ' grains · ' + v.hash_mismatches + ' mismatches'
+    : 'verification unavailable';
+}
+async function refresh() {
+  await Promise.all([loadStats(), loadBrowse(), loadLog()]);
+  await loadRecs('pending');
+  render();
+}
+
+/* ══ chrome ═══════════════════════════════════════════════════════════ */
+function wireChrome() {
+  $('nav').querySelectorAll('.nav-item').forEach(b => { b.onclick = () => go(b.dataset.page); });
+  $('mview').querySelectorAll('button').forEach(b => {
+    b.onclick = () => { MVIEW = b.dataset.v; render(); if (MVIEW === 'graph') Graph.mount(); };
+  });
+  $('devsw').onclick = () => {
+    const on = document.documentElement.classList.toggle('dev');
+    localStorage.setItem('areev.dev', on ? '1' : '0');
+    $('devsw').classList.toggle('on', on);
+    render();
+  };
+  $('devsw').classList.toggle('on', document.documentElement.classList.contains('dev'));
+  $('themesw').onclick = () => {
+    const cur = document.documentElement.dataset.theme
+      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('areev.theme', next);
+    $('themesw').classList.toggle('on', next === 'dark');
+    Graph.recolor(); render();
+  };
+  $('themesw').classList.toggle('on',
+    (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark');
+  $('health').onclick = verify;
+
+  $('askBtn').onclick = () => runAsk($('ask').value);
+  $('ask').addEventListener('keydown', e => { if (e.key === 'Enter') runAsk($('ask').value); });
+  $('ask').addEventListener('input', () => { if (!$('ask').value) { ANSWER = null; }
+    renderExamples(); renderMemList(); });
+  $('sugBannerGo').onclick = () => go('suggestions');
+  $('sugTabs').querySelectorAll('button').forEach(b => {
+    b.onclick = async () => { SUGTAB = b.dataset.s; if (!RECS[SUGTAB]) await loadRecs(SUGTAB); render(); };
+  });
+  $('conTabs').querySelectorAll('button').forEach(b => { b.onclick = () => { CONTAB = b.dataset.c; render(); }; });
+  $('runLoop').onclick = runAnalysis;
+  /* the run button is a write too — gate it once config lands */
+  $('panelShade').onclick = closePanel;
+  $('qrun').onclick = () => runQuery();
+  $('qtext').addEventListener('input', () => { syncEditor(); queryNotice(); });
+  $('qtext').addEventListener('scroll', () => { $('qhl').scrollTop = $('qtext').scrollTop; });
+  $('qtext').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runQuery(); });
+  $('qexplain').onclick = () => { const t = $('qtext').value.trim();
+    if (t) runQuery(/^EXPLAIN\b/i.test(t) ? t : 'EXPLAIN ' + t); };
+  $('qsave').onclick = saveCurrentQuery;
+  $('qreset').onclick = resetQuery;
+  $('fmtBtn').onclick = () => openMenu('fmtMenu', buildFormatMenu);
+  $('histBtn').onclick = () => openMenu('histMenu', buildHistoryMenu);
+  $('savedBtn').onclick = () => openMenu('savedMenu', buildSavedMenu);
+  addEventListener('resize', () => { if (PAGE === 'query' && Q.view === 'cards') layoutMasonry(); });
+  $('devQuery').onclick = () => go('query');
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closePanel();
+    if (e.key === '/' && document.activeElement === document.body) { e.preventDefault(); $('ask').focus(); }
+  });
+  Graph.wire();
+}
+/* Deep links: #memory · #graph · #activity · #suggestions · #connect/sync */
+function applyHash() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  if (!raw) return false;
+  const [head, tail] = raw.split('/');
+  if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
+  if (['memory', 'activity', 'suggestions', 'connect', 'query'].includes(head)) {
+    PAGE = head;
+    if (head === 'memory') MVIEW = 'list';
+    if (head === 'connect' && ['agent', 'sync', 'settings'].includes(tail)) CONTAB = tail;
+    if (head === 'suggestions' && ['pending', 'applied', 'rejected'].includes(tail)) SUGTAB = tail;
+    return true;
+  }
+  return false;
+}
+function syncHash() {
+  const h = PAGE === 'memory' ? (MVIEW === 'graph' ? 'graph' : 'memory')
+    : PAGE === 'connect' ? 'connect/' + CONTAB
+    : PAGE === 'suggestions' ? 'suggestions/' + SUGTAB : PAGE;
+  if (location.hash.replace(/^#/, '') !== h) history.replaceState(null, '', '#' + h);
+}
+function go(page) {
+  PAGE = page;
+  if (page === 'suggestions' && !RECS[SUGTAB]) loadRecs(SUGTAB).then(render);
+  if (page === 'connect' && CONTAB === 'sync') loadSegments();
+  render();
+}
+
+/* ══ runs: the HITL queue ═════════════════════════════════════════════ */
+let RUNS = null;
+async function renderRuns() {
+  const box = $('runList');
+  if (RUNS === null) {
+    box.innerHTML = '<div class="empty">loading…</div>';
+    const r = await api('/api/run/list');
+    if (!r.ok) { box.innerHTML = '<div class="empty">' + esc(r.error || 'failed to load runs') + '</div>'; return; }
+    RUNS = r.runs || [];
+  }
+  const open = RUNS.filter(r => r.outcome === 'open');
+  const pill = $('runPill');
+  pill.hidden = open.length === 0; pill.textContent = open.length;
+  if (!RUNS.length) { box.innerHTML = '<div class="empty">No runs recorded in this memory yet. Start one with <code>areev run start</code>.</div>'; return; }
+  box.innerHTML = '';
+  for (const run of RUNS) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.padding = '16px 18px';
+    const color = run.outcome === 'completed' ? 'var(--ok)' : (run.outcome === 'open' ? 'var(--warn)' : 'var(--danger)');
+    card.innerHTML = '<div style="display:flex;align-items:center;gap:12px">'
+      + '<b style="flex:1">' + esc(run.run_id) + '</b>'
+      + '<span style="color:' + color + ';font-weight:600">' + esc(run.outcome) + '</span></div>'
+      + '<div class="run-detail tiny" style="margin-top:8px">…</div>';
+    box.appendChild(card);
+    inspectRun(run.run_id, card.querySelector('.run-detail'));
+  }
+}
+async function inspectRun(id, el) {
+  const d = await api('/api/run/inspect?run_id=' + encodeURIComponent(id));
+  if (!d.ok) { el.textContent = d.error || 'inspect failed'; return; }
+  const asks = d.pending_asks && typeof d.pending_asks === 'object' ? Object.values(d.pending_asks) : [];
+  let html = 'plan <code>' + esc(String(d.plan_hash).slice(0, 12)) + '…</code>'
+    + ' · started by ' + esc(d.principal)
+    + ' · ' + d.checkpoints + ' checkpoints · ' + d.journal_entries + ' journal entries';
+  for (const a of asks) {
+    const ask = a.ask || a;
+    html += '<div style="margin-top:10px;padding:12px;background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:10px">'
+      + '<b>Waiting on a person:</b> ' + esc(ask.node || '') + ' (' + esc(ask.tool_name || '') + ')'
+      + '<div style="display:flex;gap:14px;margin-top:8px;align-items:center">'
+      + '<button class="btn sm" data-run="' + esc(id) + '" data-ask="' + esc(ask.tool_call_id) + '" data-refuse="0">Approve</button>'
+      + '<button class="btn danger" data-run="' + esc(id) + '" data-ask="' + esc(ask.tool_call_id) + '" data-refuse="1">Refuse</button>'
+      + '</div></div>';
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('button[data-ask]').forEach(b => {
+    b.onclick = () => respondRun(b.dataset.run, b.dataset.ask, b.dataset.refuse === '1');
+  });
+}
+async function respondRun(id, ask, refuse) {
+  const r = await api('/api/run/respond', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      run_id: id, tool_call_id: ask,
+      result: refuse ? { refused: true } : { approved: true },
+      is_error: refuse,
+    }),
+  });
+  if (!r.ok) { toast(r.error || 'response refused'); return; }
+  toast('Recorded as ' + (r.responder || 'you') + ' — resume the run to continue.');
+  RUNS = null; renderRuns();
+}
+
+/* ══ render ═══════════════════════════════════════════════════════════ */
+function render() {
+  syncHash();
+  for (const p of ['memory', 'activity', 'runs', 'suggestions', 'connect', 'query']) $('page-' + p).hidden = PAGE !== p;
+  $('nav').querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === PAGE));
+  $('listView').hidden = MVIEW !== 'list';
+  $('graphView').hidden = MVIEW !== 'graph';
+  $('mview').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === MVIEW));
+  $('sugTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.s === SUGTAB));
+  $('conTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.c === CONTAB));
+  renderRail(); renderHeader(); renderExamples(); renderBanner(); renderFilterBar();
+  if (PAGE === 'memory') { renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild(); }
+  if (PAGE === 'activity') renderActivity();
+  if (PAGE === 'runs') renderRuns();
+  if (PAGE === 'suggestions') { renderSuggestions(); lock($('runLoop')); }
+  if (PAGE === 'connect') renderConnect();
+  if (PAGE === 'query') {
+    queryNotice(); syncEditor(); renderQueryResult(); renderOnramp();
+    const sv = $('qsave');
+    sv.disabled = !stmtSupported('DEFINE') || !canWrite();
+    sv.title = !stmtSupported('DEFINE')
+      ? 'This build has no saved-query registry (DEFINE is not a supported statement)'
+      : (!canWrite() ? READONLY_WHY : 'Save this query into the memory file');
+  }
+  if (document.documentElement.classList.contains('dev')) renderDevbar();
+}
+
+function renderRail() {
+  ACTIVE_ENTS = buildEntities(currentGrains()).filter(e => e.count > 0).slice(0, 40);
+  const host = $('entities'); host.textContent = '';
+  if (!ACTIVE_ENTS.length) { host.appendChild(el('span', 'tiny', 'nothing yet')); return; }
+  for (const e of ACTIVE_ENTS) {
+    const b = el('button', 'ent' + (ENTITY === e.name ? ' on' : ''));
+    const av = el('span', 'av', e.name.charAt(0).toUpperCase());
+    if (ENTITY !== e.name) av.style.color = 'var(' + (KIND_VAR[e.kind] || '--cat-thing') + ')';
+    b.appendChild(av);
+    b.appendChild(el('span', 'nm', e.name));
+    b.appendChild(el('span', 'ct', String(e.count)));
+    b.onclick = () => { ENTITY = ENTITY === e.name ? null : e.name; ANSWER = null; if (PAGE !== 'memory') go('memory'); else render(); };
+    host.appendChild(b);
+  }
+}
+function renderHeader() {
+  const n = currentGrains().length;
+  $('memTitle').textContent = ENTITY ? 'What your agent remembers about ' + ENTITY : 'What your agent remembers';
+  const db = ($('dblabel').textContent || '').trim();
+  $('memSub').innerHTML = n
+    ? esc(n + (n === 1 ? ' memory' : ' memories')) + ', kept in <b style="color:var(--text);font-weight:500">'
+      + esc(db) + '</b> — nothing here is ever overwritten, only added to.'
+    : 'Nothing stored yet. Connect an agent and what it learns will show up here.';
+}
+/* Only suggest questions the console can actually answer: a name it knows,
+   or the time-based one that reads the op-log. */
+function renderExamples() {
+  const host = $('examples'); host.textContent = '';
+  if (!currentGrains().length) return;
+  const typed = ($('ask').value || '').trim();
+  if (typed) {
+    host.appendChild(el('span', 'tiny', 'Filtering as you type — press Enter to ask “' +
+      (typed.length > 44 ? typed.slice(0, 44) + '…' : typed) + '”'));
+    return;
+  }
+  const qs = ACTIVE_ENTS.slice(0, 2).map(e => 'what do you know about ' + e.name + '?');
+  qs.push('what changed today?');
+  host.appendChild(el('span', 'tiny', 'Try'));
+  for (const q of qs.slice(0, 3)) {
+    const c = el('span', 'chip', q);
+    c.onclick = () => { $('ask').value = q; runAsk(q); };
+    host.appendChild(c);
+  }
+}
+/* When a filter is on, say so and give a way out — otherwise arriving from
+   the graph's "See all" looks like nothing happened. */
+function renderFilterBar() {
+  const host = $('filterBar');
+  host.textContent = '';
+  host.hidden = !ENTITY;
+  if (!ENTITY) return;
+  const chip = el('div');
+  chip.style.cssText = 'display:inline-flex;align-items:center;gap:10px;padding:7px 8px 7px 14px;'
+    + 'border-radius:18px;background:var(--accent-soft);border:1px solid var(--accent-line)';
+  const t = el('span', null, 'Showing only ' + ENTITY);
+  t.style.cssText = 'font-size:13.5px;font-weight:600;color:var(--accent)';
+  chip.appendChild(t);
+  const x = el('button', null, 'Show everything ✕');
+  x.style.cssText = 'border:0;background:var(--surface);color:var(--text);font-family:inherit;'
+    + 'font-size:12.5px;font-weight:500;padding:4px 11px;border-radius:14px';
+  x.onclick = () => { ENTITY = null; render(); };
+  chip.appendChild(x);
+  host.appendChild(chip);
+}
+function renderBanner() {
+  const n = (RECS.pending || []).length;
+  $('sugBanner').hidden = !n || PAGE !== 'memory';
+  if (n) {
+    const kinds = [...new Set((RECS.pending || []).map(r => analyzerWord(r.analyzer)))].slice(0, 3);
+    $('sugBannerText').innerHTML = '<b>' + n + (n === 1 ? ' suggestion</b>' : ' suggestions</b>')
+      + ' to make this memory more reliable' + (kinds.length ? ' — ' + esc(kinds.join(', ')) : '') + '.';
+  }
+}
+
+/* ── memory list ── */
+function visibleGrains() {
+  const needle = ($('ask').value || '').toLowerCase().trim();
+  let rows = currentGrains();
+  if (ENTITY) rows = rows.filter(g => {
+    const f = g.fields || {};
+    return subjectOf(g) === ENTITY || (typeof f.object === 'string' && f.object === ENTITY);
+  });
+  if (needle && !ANSWER) rows = rows.filter(g => sentence(g).toLowerCase().includes(needle));
+  return rows;
+}
+function renderMemList() {
+  const host = $('memList'); host.textContent = '';
+  const rows = visibleGrains();
+  const forgotten = BROWSE.filter(g => isGone(g) && !isInternal(g))
+    .filter(g => !ENTITY || ((g.fields || {}).subject === ENTITY));
+  if (!rows.length && !forgotten.length) {
+    const e = el('div', 'empty');
+    e.textContent = currentGrains().length
+      ? 'Nothing matches. Clear the box or pick a different name.'
+      : 'No memories yet — open Connect to attach an agent.';
+    host.appendChild(e); return;
+  }
+  const groups = new Map();
+  for (const g of rows) {
+    const k = subjectOf(g) || '—';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(g);
+  }
+  const order = [...groups.keys()].sort((a, b) => groups.get(b).length - groups.get(a).length || a.localeCompare(b));
+  for (const k of order) {
+    const list = groups.get(k).sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0));
+    const head = el('div', 'grp-head');
+    head.appendChild(el('h2', null, k === '—' ? 'Everything else' : titleize(k)));
+    head.appendChild(el('span', 'meta', list.length + (list.length === 1 ? ' memory' : ' memories')));
+    host.appendChild(head);
+    for (const g of list) host.appendChild(memRow(g));
+  }
+  if (forgotten.length) {
+    const head = el('div', 'grp-head');
+    head.appendChild(el('h2', null, 'Deleted'));
+    head.appendChild(el('span', 'meta', forgotten.length + ' removed for good'));
+    host.appendChild(head);
+    for (const g of forgotten.slice(0, 20)) host.appendChild(memRow(g));
+  }
+}
+function memRow(g) {
+  const gone = isGone(g);
+  const row = el('div', 'mrow' + (gone ? ' gone' : '') + (SEL === g.hash ? ' sel' : ''));
+  const body = el('div', 'body');
+  const say = el('div', 'say', gone ? (g.fields ? predicate(g) : 'A memory') : predicate(g));
+  body.appendChild(say);
+  body.appendChild(el('div', 'prov', gone
+    ? 'Deleted at your request — the content is gone for good'
+    : provenance(g)));
+  const dev = el('div', 'mono dev-only');
+  dev.textContent = (g.type || 'grain') + ' · ' + (g.hash || '').slice(0, 12)
+    + (g.superseded_by ? ' · superseded ' + g.superseded_by.slice(0, 12) : '');
+  body.appendChild(dev);
+  row.appendChild(body);
+  row.appendChild(el('div', 'when', relTime(hlcMs(g.hlc))));
+  row.onclick = () => openPanel(g.hash);
+  return row;
+}
+
+/* ── ask → answer ── */
+function relationFromQuestion(q) {
+  const low = ' ' + q.toLowerCase().replace(/[^a-z0-9_ ]/g, ' ') + ' ';
+  const rels = [...new Set(currentGrains().map(g => (g.fields || {}).relation).filter(Boolean))];
+  let best = null;
+  for (const r of rels) {
+    for (const w of r.split('_')) {
+      if (w.length < 4) continue;
+      const stem = w.replace(/s$/, '');
+      if (low.includes(' ' + stem)) { best = r; break; }
+    }
+    if (best) break;
+  }
+  return best;
+}
+function entityFromQuestion(q) {
+  const low = q.toLowerCase();
+  let best = null;
+  for (const e of buildEntities(currentGrains())) {
+    if (low.includes(e.name.toLowerCase()) && (!best || e.name.length > best.length)) best = e.name;
+  }
+  return best;
+}
+/* Free-text recall is a bag of words, so sending the whole question makes
+   "what", "does" and "today" compete with the words that matter. */
+const STOPWORDS = new Set(['what','whats','who','whos','when','where','why','how','is','are','was',
+  'were','do','does','did','has','have','the','a','an','of','for','to','in','on','about','me','my',
+  'you','your','i','it','its','tell','show','know','knows','list','find','any','anything',
+  'everything','please','can','could','would','there','that','this','and','or']);
+const contentWords = q => q.toLowerCase().replace(/[^a-z0-9\s_-]/g, ' ').split(/\s+/)
+  .filter(w => w.length > 1 && !STOPWORDS.has(w));
+/* Questions about time cannot be answered by recall at all — they are a
+   question about the op-log. Answer them from it instead of pretending. */
+const TEMPORAL = /\b(today|yesterday|this week|recently|lately|just now|changed|change[sd]?|new|newest|latest|happened|since)\b/i;
+function answerFromActivity(q) {
+  const since = Date.now() - 24 * 3600 * 1000;
+  const ops = LOG.filter(o => hlcMs(o.hlc) >= since)
+    .filter(o => { const g = BYHASH[o.hash]; return !(g && isInternal(g)); })
+    .sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0));
+  const n = k => ops.filter(o => o.op === k).length;
+  const text = ops.length
+    ? 'In the last 24 hours your agent learned ' + n('add') + ', changed ' + n('supersede')
+      + ' and deleted ' + n('forget') + '.'
+    : 'Nothing has changed in the last 24 hours.';
+  /* A supersede logs two ops for the same grain — show it once. And a
+     tombstoned grain has no fields left to make a sentence from, so say
+     what happened to it rather than "no readable text". */
+  const seen = new Set(), grains = [];
+  for (const o of ops) {
+    if (grains.length >= 6 || seen.has(o.hash)) continue;
+    seen.add(o.hash);
+    const g = BYHASH[o.hash];
+    const say = o.op === 'forget' || !g || isGone(g) ? 'A memory was deleted'
+      : (o.op === 'supersede' ? 'Updated: ' : '') + sentence(g);
+    grains.push({ hash: o.hash, hlc: o.hlc, _say: say, fields: (g || {}).fields, type: (g || {}).type });
+  }
+  return { q, query: null, kind: 'activity', subject: null, relation: null, grains, text, error: null };
+}
+async function runAsk(q) {
+  q = (q || '').trim();
+  if (!q) { ANSWER = null; render(); return; }
+  const subject = entityFromQuestion(q);
+  const relation = relationFromQuestion(q);
+  if (!subject && TEMPORAL.test(q)) {
+    ANSWER = answerFromActivity(q);
+    ENTITY = null;
+    if (PAGE !== 'memory') go('memory'); else render();
+    return;
+  }
+  const words = contentWords(q);
+  let query;
+  if (subject) {
+    query = 'RECALL facts WHERE subject = "' + subject.replace(/"/g, '') + '"'
+      + (relation ? ' AND relation = "' + relation + '"' : '') + ' LIMIT 50';
+  } else {
+    query = 'RECALL facts ABOUT "' + (words.join(' ') || q).replace(/"/g, '') + '" LIMIT 20';
+  }
+  let res = await cal(query);
+  if ((!res.ok || !((res.result || {}).grains || []).length) && !subject) {
+    const word = words[words.length - 1] || q;
+    query = 'RECALL facts LIKE "' + word.replace(/"/g, '') + '" LIMIT 20';
+    res = await cal(query);
+  }
+  const grains = (res.ok && res.result && res.result.type === 'grains') ? (res.result.grains || []) : [];
+  ANSWER = { q, query, subject, relation, grains, error: res.ok ? null : (res.error || 'query failed'),
+    code: res.code, elapsed: res.elapsed_ms };
+  ENTITY = null;
+  if (PAGE !== 'memory') go('memory'); else render();
+}
+/* A CAL result grain and a browse row differ in shape — normalise. */
+const rgType = g => g.grain_type || g.type;
+const rgFields = g => g.fields || {};
+function answerText(a) {
+  if (a.error) return null;
+  if (a.kind === 'activity') return a.text;
+  if (!a.grains.length) return 'Nothing matched that. Ask about one of the names on the left, '
+    + 'or try “what changed today?”.';
+  const subj = a.subject ? cap(a.subject) : null;
+  if (a.relation) {
+    /* The same value can be a head in more than one namespace — say it once. */
+    const objs = [...new Set(a.grains.filter(g => rgFields(g).relation === a.relation)
+      .map(g => rgFields(g).object).filter(o => typeof o === 'string'))];
+    if (objs.length) {
+      const phrase = (REL_PHRASE[a.relation] || cap(a.relation.replace(/_/g, ' ')) + ' {o}');
+      const said = phrase.replace('{o}', objs.slice(0, 3).join(', '));
+      return (subj ? subj + ' ' + lowerFirst(said) : said) + '.';
+    }
+  }
+  if (subj) return 'Here is everything your agent knows about ' + subj + ' — '
+    + a.grains.length + (a.grains.length === 1 ? ' memory' : ' memories') + '.';
+  return 'Found ' + a.grains.length + (a.grains.length === 1 ? ' memory' : ' memories') + ' that match.';
+}
+function renderAnswer() {
+  const host = $('answer');
+  host.hidden = !ANSWER; host.textContent = '';
+  if (!ANSWER) return;
+  const a = ANSWER;
+  const top = el('div'); top.style.cssText = 'display:flex;flex-direction:column;gap:10px;padding-bottom:24px';
+  top.appendChild(el('span', 'ans-label', a.error ? 'COULD NOT ANSWER' : 'ANSWER'));
+  const txt = el('span', 'ans-text', a.error ? a.error : answerText(a));
+  if (a.error) txt.style.color = 'var(--danger)';
+  top.appendChild(txt);
+  if (a.error && a.code) top.appendChild(el('span', 'meta', 'error code ' + a.code));
+  host.appendChild(top);
+
+  if (a.grains.length) {
+    const box = el('div'); box.style.cssText = 'display:flex;flex-direction:column;border-top:1px solid var(--hair)';
+    const lab = el('span', 'meta', 'Based on ' + a.grains.length + (a.grains.length === 1 ? ' memory' : ' memories'));
+    lab.style.cssText = 'padding:16px 0 4px'; box.appendChild(lab);
+    for (const g of a.grains.slice(0, 6)) {
+      const r = el('div', 'srow');
+      const dot = el('span'); dot.style.cssText = 'width:6px;height:6px;border-radius:3px;flex-shrink:0;background:var(--ok)';
+      r.appendChild(dot);
+      r.appendChild(el('span', 't', g._say || sentence({ type: rgType(g), fields: rgFields(g) })));
+      r.appendChild(el('span', 'w', relTime(hlcMs(g.hlc)) || ''));
+      if (g.hash) r.onclick = () => openPanel(g.hash);
+      box.appendChild(r);
+    }
+    host.appendChild(box);
+  }
+
+  if (a.kind === 'activity') {
+    const go2 = el('div', 'disclose');
+    go2.appendChild(el('span', 'grow', 'Every change, in order'));
+    const l = el('span', null, 'Open Activity →');
+    l.style.cssText = 'font-size:14px;font-weight:600;color:var(--accent)';
+    go2.appendChild(l);
+    go2.onclick = () => { ANSWER = null; go('activity'); };
+    host.appendChild(go2);
+    return;
+  }
+  const foot = el('div', 'disclose');
+  foot.innerHTML = '<svg class="caret" width="15" height="15" viewBox="0 0 24 24" fill="none">'
+    + '<path d="M9 5.5l7 6.5-7 6.5" stroke="var(--dim)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    + '<span class="grow">How this answer was found</span>';
+  const openq = el('span'); openq.style.cssText = 'font-size:14px;font-weight:600;color:var(--accent)';
+  openq.textContent = 'Open in Query';
+  openq.onclick = e => { e.stopPropagation(); $('qtext').value = a.query; go('query'); runQuery(); };
+  if (a.query) foot.appendChild(openq);
+  const copy = el('span'); copy.style.cssText = 'font-size:14px;font-weight:600;color:var(--accent)';
+  copy.textContent = 'Copy'; copy.onclick = e => { e.stopPropagation(); copyText(answerText(a) || a.error, 'Answer'); };
+  foot.appendChild(copy);
+  const detail = el('div');
+  detail.style.cssText = 'display:none;flex-direction:column;gap:8px;padding:0 0 20px';
+  const pre = el('pre', 'code', a.query); detail.appendChild(pre);
+  detail.appendChild(el('span', 'tiny', a.elapsed != null ? 'ran in ' + a.elapsed + ' ms' : ''));
+  foot.onclick = () => {
+    const open = detail.style.display === 'flex';
+    detail.style.display = open ? 'none' : 'flex';
+    foot.classList.toggle('open', !open);
+  };
+  host.appendChild(foot); host.appendChild(detail);
+}
+
+/* ══ detail panel ═════════════════════════════════════════════════════ */
+function closePanel() { $('panelWrap').hidden = true; SEL = null; renderMemList(); }
+async function openPanel(hash) {
+  if (!hash) return;
+  hash = hash.replace(/^sha256:/, '');
+  SEL = hash; renderMemList();
+  $('panelWrap').hidden = false;
+  const p = $('panel'); p.textContent = '';
+  p.appendChild(el('span', 'tiny', 'loading…'));
+  const known = BYHASH[hash];
+  const g = await api('/api/grain?hash=' + encodeURIComponent(hash));
+  p.textContent = '';
+
+  const head = el('div'); head.style.cssText = 'display:flex;align-items:flex-start;gap:12px';
+  const ht = el('div'); ht.style.cssText = 'display:flex;flex-direction:column;gap:9px;flex:1';
+  ht.appendChild(el('span', 'sec-label', 'MEMORY'));
+  const gone = g.ok === false;
+  const title = el('span', null, gone
+    ? (known ? sentence(known) : 'This memory was deleted')
+    : sentence({ type: g.type, fields: g.fields }));
+  title.style.cssText = 'font:600 22px/31px var(--sans);color:var(--ink);letter-spacing:-.02em';
+  ht.appendChild(title);
+  head.appendChild(ht);
+  const x = el('button', 'btn ghost sm', '✕');
+  x.style.cssText = 'width:34px;padding:0;flex-shrink:0'; x.onclick = closePanel;
+  head.appendChild(x);
+  p.appendChild(head);
+
+  if (gone) {
+    const w = el('div', 'pgroup');
+    w.appendChild(el('span', 'sub', 'The content is gone for good — only the record that it was removed remains. '
+      + 'That is what "forget" means here: a tombstone, not a hidden row.'));
+    const h = el('div', 'mono'); h.textContent = hash; h.style.wordBreak = 'break-all';
+    w.appendChild(h); p.appendChild(w); return;
+  }
+
+  const f = g.fields || {};
+  const when = createdMs(f) || hlcMs(known && known.hlc);
+  const prov = el('div', 'pgroup');
+  const kv = (k, v, title2) => { const r = el('div'); r.style.cssText = 'display:flex;align-items:baseline;gap:12px';
+    const kk = el('span', null, k); kk.style.cssText = 'width:96px;flex-shrink:0;font-size:13.5px;color:var(--dim)';
+    const vv = el('span', null, v); vv.style.cssText = 'flex:1;font-size:14.5px;color:var(--ink)';
+    if (title2) vv.title = title2;
+    r.appendChild(kk); r.appendChild(vv); return r; };
+  prov.appendChild(kv('Learned', relTime(when) + (when ? ' · ' + new Date(when).toLocaleDateString() : ''), isoTitle(when)));
+  prov.appendChild(kv('Kind', cap(g.type || 'fact') + (g.type === 'observation' ? ' — something it saw, not something it was told' : '')));
+  if (f.namespace) prov.appendChild(kv('Namespace', f.namespace));
+  if (f.session_id) prov.appendChild(kv('Session', f.session_id));
+  const used = TELEMETRY && (TELEMETRY.access || []).find(a => a.hash === hash);
+  if (used) prov.appendChild(kv('Used', used.recall_count + ' times · last ' + relTime(used.last_ms)));
+  p.appendChild(prov);
+
+  /* version history, in plain language */
+  if (g.type === 'fact' && f.subject && f.relation) {
+    const hist = await cal('HISTORY WHERE subject = "' + String(f.subject).replace(/"/g, '')
+      + '" AND relation = "' + String(f.relation).replace(/"/g, '') + '"');
+    const versions = (hist.ok && hist.result && hist.result.versions) || [];
+    if (versions.length > 1) {
+      const box = el('div', 'pgroup');
+      box.appendChild(el('span', 'sec-label', 'HOW THIS CHANGED'));
+      versions.forEach((v, i) => {
+        const step = el('div', 'step');
+        const rail = el('div', 'rail');
+        const bul = el('div', 'bul' + (i === 0 ? '' : ' past')); rail.appendChild(bul);
+        if (i < versions.length - 1) rail.appendChild(el('div', 'ln'));
+        step.appendChild(rail);
+        const bd = el('div'); bd.style.cssText = 'display:flex;flex-direction:column;gap:3px;flex:1;padding-bottom:18px';
+        const val = el('span', null, typeof v.fields === 'object' && v.fields ? (v.fields.object != null ? String(v.fields.object) : preview(v.fields)) : '');
+        val.style.cssText = 'font-size:15.5px;font-weight:500;color:' + (i === 0 ? 'var(--ink)' : 'var(--muted)');
+        bd.appendChild(val);
+        bd.appendChild(el('span', 'meta', i === 0
+          ? 'Added ' + relTime(hlcMs(v.hlc)) + ' · this is what your agent uses now'
+          : 'Added ' + relTime(hlcMs(v.hlc)) + ' · replaced, but kept so you can see the change'));
+        step.appendChild(bd);
+        box.appendChild(step);
+      });
+      p.appendChild(box);
+    }
+  }
+
+  /* actions */
+  const acts = el('div', 'pgroup');
+  const row = el('div'); row.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const correct = el('button', 'btn', 'Correct this memory'); correct.style.flex = '1';
+  const askAbout = el('button', 'btn ghost', 'Ask about it');
+  row.appendChild(lock(correct)); row.appendChild(askAbout);
+  acts.appendChild(row);
+  const form = el('div'); form.style.cssText = 'display:none;flex-direction:column;gap:9px';
+  const inp = document.createElement('input'); inp.type = 'text';
+  inp.value = typeof f.object === 'string' ? f.object : '';
+  inp.placeholder = 'What should it say instead?';
+  const why = document.createElement('input'); why.type = 'text'; why.placeholder = 'Why are you changing it?';
+  const save = el('button', 'btn sm', 'Save the correction');
+  form.appendChild(el('span', 'meta', 'The old version is kept — corrections are added on top, never written over.'));
+  form.appendChild(inp); form.appendChild(why); form.appendChild(save);
+  acts.appendChild(form);
+  correct.onclick = () => { form.style.display = form.style.display === 'flex' ? 'none' : 'flex'; inp.focus(); };
+  askAbout.onclick = () => { closePanel(); $('ask').value = 'what do you know about ' + (f.subject || '') + '?'; runAsk($('ask').value); };
+  save.onclick = async () => {
+    if (!inp.value.trim()) { toast('Type the new value first'); return; }
+    save.disabled = true;
+    let q = 'SUPERSEDE sha256:' + hash + ' SET object = "' + inp.value.replace(/"/g, '\\"') + '"';
+    if (why.value.trim()) q += ' BECAUSE "' + why.value.replace(/"/g, '\\"') + '"';
+    const r = await cal(q);
+    save.disabled = false;
+    if (r.ok) { toast('Corrected ✓'); closePanel(); await refresh(); }
+    else toast('Could not save: ' + (r.error || 'unknown') + (r.code ? ' [' + r.code + ']' : ''));
+  };
+
+  const del = el('div'); del.style.cssText = 'display:flex;align-items:center;gap:9px;padding-top:4px';
+  del.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">'
+    + '<path d="M4.5 6.5h15M9.5 6.5V4.8h5v1.7M6.7 6.5l.9 12.2h8.8l.9-12.2" stroke="var(--danger)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const forget = el('button', 'btn danger', 'Forget this memory');
+  del.appendChild(lock(forget));
+  del.appendChild(el('span', 'meta', '— cannot be undone'));
+  forget.onclick = async () => {
+    if (!confirm('Forget this memory?\n\n"' + sentence({ type: g.type, fields: f })
+      + '"\n\nThe content is erased for good. This cannot be undone.')) return;
+    const r = await cal('FORGET sha256:' + hash);
+    if (r.ok) { toast('Forgotten'); closePanel(); await refresh(); }
+    else toast('Could not forget: ' + (r.error || 'unknown'));
+  };
+  acts.appendChild(del);
+  p.appendChild(acts);
+
+  /* developer details */
+  const dev = el('div', 'pgroup dev-only dev-flex');
+  dev.appendChild(el('span', 'sec-label', 'DEVELOPER DETAILS'));
+  const hh = el('div', 'mono'); hh.textContent = g.hash || hash;
+  hh.style.cssText = 'word-break:break-all;cursor:pointer'; hh.title = 'click to copy';
+  hh.onclick = () => copyText(g.hash || hash, 'Content address');
+  dev.appendChild(hh);
+  dev.appendChild(el('pre', 'code', JSON.stringify(g.fields, null, 2)));
+  const cp = el('button', 'btn ghost sm', 'Copy grain JSON');
+  cp.onclick = () => copyText(JSON.stringify(g, null, 2), 'Grain JSON');
+  dev.appendChild(cp);
+  p.appendChild(dev);
+}
+
+/* ══ activity ═════════════════════════════════════════════════════════ */
+const ACT_KINDS = [['all', 'Everything'], ['add', 'Learned'], ['supersede', 'Changed'], ['forget', 'Deleted']];
+function renderActivity() {
+  const f = $('actFilters'); f.textContent = '';
+  for (const [k, label] of ACT_KINDS) {
+    const c = el('span', 'chip' + (ACTFILTER === k ? ' on' : ''), label);
+    c.onclick = () => { ACTFILTER = k; renderActivity(); };
+    f.appendChild(c);
+  }
+  const host = $('actList'); host.textContent = '';
+  let ops = LOG.slice().sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0))
+    .filter(o => { const g = BYHASH[o.hash]; return !(g && isInternal(g)); });
+  if (ACTFILTER !== 'all') ops = ops.filter(o => o.op === ACTFILTER);
+  if (!ops.length) { host.appendChild(el('div', 'empty', 'Nothing here yet.')); return; }
+  let day = null;
+  for (const o of ops.slice(0, 200)) {
+    const ms = hlcMs(o.hlc);
+    if (dayKey(ms) !== day) {
+      day = dayKey(ms);
+      const h = el('span', 'sec-label', dayLabel(ms));
+      h.style.cssText = 'display:block;padding:24px 0 12px;font-size:13px;letter-spacing:.06em';
+      host.appendChild(h);
+    }
+    const g = BYHASH[o.hash];
+    const ev = el('div', 'ev');
+    ev.appendChild(el('span', 'at', clock(ms)));
+    const ic = el('span', 'ic');
+    ic.innerHTML = o.op === 'add'
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="var(--ok)" stroke-width="2.4" stroke-linecap="round"/></svg>'
+      : o.op === 'forget'
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="var(--danger)" stroke-width="2.4" stroke-linecap="round"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 8h11l-3-3M20 16H9l3 3" stroke="var(--warn)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    ev.appendChild(ic);
+    const body = el('div', 'body');
+    const verb = o.op === 'add' ? 'Learned that ' : o.op === 'supersede' ? 'Updated: ' : 'Deleted ';
+    body.appendChild(el('div', 'say', g && g.fields
+      ? verb + lowerFirst(sentence(g))
+      : verb.trim() + ' a memory (' + shortHash(o.hash) + ')'));
+    /* The time is already in the left column — drop the "Learned …" part. */
+    const sub = o.op === 'forget'
+      ? 'You asked for this — the content was erased, not just hidden'
+      : o.op === 'supersede' ? 'The previous version is kept so you can see the change'
+      : (g ? provenanceParts(g).filter(p => !/^Learned /.test(p)).join(' · ') : '');
+    if (sub) body.appendChild(el('div', 'prov', sub));
+    const dev = el('div', 'mono dev-only');
+    dev.textContent = 'op ' + o.op_seq + ' · ' + o.op + ' · ' + (o.hash || '').slice(0, 12);
+    body.appendChild(dev);
+    ev.appendChild(body);
+    ev.style.cursor = 'pointer';
+    ev.onclick = () => openPanel(o.hash);
+    host.appendChild(ev);
+  }
+}
+
+/* ══ suggestions ══════════════════════════════════════════════════════ */
+/* "loop.contradiction_sweep/1" → "contradiction sweep" */
+const analyzerName = id => String(id || '').replace(/^loop\./, '').replace(/\/\d+$/, '').replace(/[._-]/g, ' ');
+function analyzerWord(id) {
+  const s = analyzerName(id);
+  if (/contradict|conflict/.test(s)) return 'a conflict';
+  if (/dup/.test(s)) return 'a duplicate';
+  if (/stale|decay/.test(s)) return 'something stale';
+  if (/gap|missing/.test(s)) return 'a gap';
+  return s || 'a finding';
+}
+function sevStyle(sev) {
+  if (sev === 'high') return ['var(--danger)', 'var(--danger-soft)'];
+  if (sev === 'medium') return ['var(--warn)', 'var(--warn-soft)'];
+  if (sev === 'low') return ['var(--cat-project)', 'var(--accent-soft)'];
+  return ['var(--muted)', 'var(--raise)'];
+}
+function renderSuggestions() {
+  const host = $('sugList'); host.textContent = '';
+  if (!canWrite()) host.appendChild(readOnlyNote());
+  const list = RECS[SUGTAB] || [];
+  if (!list.length) {
+    host.appendChild(el('div', 'empty', SUGTAB === 'pending'
+      ? 'Nothing needs your attention. Run an analysis to look again.'
+      : SUGTAB === 'applied' ? 'Nothing has been applied yet.' : 'Nothing dismissed.'));
+  }
+  for (const r of list) host.appendChild(sugCard(r));
+  if (SUGTAB === 'applied') renderOutcomes(host);
+}
+function sugCard(r) {
+  const [fg, bg] = sevStyle(r.severity);
+  const card = el('div', 'card sug');
+  const head = el('div'); head.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const tag = el('span', 'tag', null); tag.style.cssText = 'background:' + bg + ';color:' + fg;
+  const d = el('span'); d.style.cssText = 'width:6px;height:6px;border-radius:3px;background:' + fg;
+  tag.appendChild(d); tag.appendChild(el('span', null, cap(analyzerWord(r.analyzer).replace(/^an? /, ''))));
+  head.appendChild(tag);
+  head.appendChild(el('span', 'meta', 'Found by the ' + analyzerName(r.analyzer) + ' check'));
+  const sp = el('div'); sp.style.flex = '1'; head.appendChild(sp);
+  head.appendChild(el('span', 'meta', r.status || ''));
+  card.appendChild(head);
+
+  const body = el('div'); body.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+  const t = el('span', null, r.summary || 'A suggestion');
+  t.style.cssText = 'font:600 19px/27px var(--sans);color:var(--ink);letter-spacing:-.015em';
+  body.appendChild(t);
+  if (r.destructive) body.appendChild(el('span', 'sub',
+    'This one removes content for good. It cannot be undone once applied.'));
+  else body.appendChild(el('span', 'sub',
+    'Applying this changes what your agent reads next time. The old version stays in history.'));
+  card.appendChild(body);
+
+  const ev = evidenceRows(r.evidence);
+  if (ev) card.appendChild(ev);
+
+  const acts = el('div', 'acts');
+  const reason = el('div', 'reason'); reason.hidden = true;
+  const prompt = el('span', 'meta');
+  const line = el('div', 'line');
+  const why = document.createElement('input'); why.type = 'text';
+  const conf = el('button', 'btn sm', 'Confirm');
+  const cancel = el('button', 'btn ghost sm', 'Cancel');
+  line.appendChild(why); line.appendChild(conf); line.appendChild(cancel);
+  reason.appendChild(prompt); reason.appendChild(line);
+
+  if (r.status === 'applied') {
+    if (r.rollbackable) {
+      const undo = el('button', 'btn ghost', 'Undo');
+      undo.onclick = () => arm('rollback', 'Why are you undoing this?', 'Undo it');
+      acts.appendChild(lock(undo));
+    }
+    acts.appendChild(el('span', 'note', r.rollbackable ? 'Undoable · the previous state is kept' : 'Not undoable'));
+  } else if (r.status === 'rejected') {
+    /* Rejected is terminal in the engine's lifecycle — offering a button
+       here would only ever produce an error. */
+    acts.appendChild(el('span', 'note', 'Dismissed — it will not be applied.'));
+  } else if (r.status === 'approved') {
+    /* Approved but not yet applied: usually because an apply failed midway.
+       Surface it rather than letting it fall between the tabs. */
+    const go = el('button', 'btn', 'Finish applying');
+    go.onclick = () => arm('apply', 'Why are you applying this?', 'Apply it');
+    acts.appendChild(lock(go));
+    acts.appendChild(el('span', 'note', 'You approved this, but it has not been applied yet.'));
+  } else {
+    const ok = el('button', 'btn', r.destructive ? 'Apply — removes content' : 'Apply this fix');
+    ok.onclick = () => arm('approve_and_apply', 'Why are you applying this?', 'Apply it');
+    const no = el('button', 'btn ghost', 'Dismiss');
+    no.onclick = () => arm('reject', 'Why are you dismissing this?', 'Dismiss it');
+    acts.appendChild(lock(ok)); acts.appendChild(lock(no));
+    acts.appendChild(el('span', 'note', r.destructive
+      ? 'Cannot be undone' : r.rollbackable ? 'Undoable · the older memory stays in history' : ''));
+  }
+  card.appendChild(acts); card.appendChild(reason);
+
+  const dev = el('div', 'mono dev-only');
+  dev.textContent = (r.hash || '').slice(0, 16) + ' · ' + (r.analyzer || '') + ' · severity ' + (r.severity || '?')
+    + (r.target_ref ? ' · target ' + String(r.target_ref).slice(0, 12) : '');
+  card.appendChild(dev);
+
+  let armed = null;
+  function arm(action, promptText, confirmLabel) {
+    armed = action;
+    prompt.textContent = promptText + ' Your answer is recorded in the audit trail.';
+    conf.textContent = confirmLabel;
+    why.placeholder = 'e.g. confirmed with the customer on the call';
+    acts.hidden = true; reason.hidden = false;
+    why.focus();
+  }
+  cancel.onclick = () => { armed = null; why.value = ''; reason.hidden = true; acts.hidden = false; };
+  conf.onclick = async () => {
+    if (!why.value.trim()) { toast('A reason is required — it goes in the audit trail'); why.focus(); return; }
+    conf.disabled = true; cancel.disabled = true;
+    await loopAct(r.hash, armed, why.value.trim());
+    conf.disabled = false; cancel.disabled = false;
+  };
+  return card;
+}
+/* Areev Loop cites evidence as bare content addresses (Vec<String>). A hash is
+   not evidence to a human — resolve it to the sentence it stands for, and
+   say so plainly when the grain is not in the loaded window. */
+const HASH_RE = /^(sha256:)?[0-9a-f]{64}$/i;
+/* Areev Loop's own records are Facts too — cite them as what they are rather
+   than dumping the serialized recommendation into the card. */
+function internalLabel(g) {
+  const f = g.fields || {};
+  if (f.relation === 'loop_recommendation') {
+    let a = null;
+    try { a = JSON.parse(f.object).analyzer; } catch (e) { /* not JSON */ }
+    return a ? 'An earlier suggestion from the ' + analyzerName(a) + ' check'
+             : 'An earlier suggestion from this memory’s review queue';
+  }
+  if (f.relation === 'loop_audit') return 'An entry in the audit trail';
+  return 'An internal Areev record';
+}
+function describeRef(ref) {
+  const hash = String(ref).replace(/^sha256:/, '');
+  const g = BYHASH[hash];
+  if (!g) return { text: 'A memory outside the loaded window', when: '', hash };
+  const text = isInternal(g) ? internalLabel(g) : sentence(g);
+  return { text, when: relTime(hlcMs(g.hlc)), hash };
+}
+function evidenceRows(evidence) {
+  if (!evidence) return null;
+  let items = [];
+  if (Array.isArray(evidence)) items = evidence;
+  else if (typeof evidence === 'object') {
+    for (const k of ['items', 'grains', 'facts', 'rows']) if (Array.isArray(evidence[k])) { items = evidence[k]; break; }
+    if (!items.length) items = Object.entries(evidence).map(([k, v]) => ({ text: k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v) }));
+  }
+  if (!items.length) return null;
+  const box = el('div', 'evi');
+  for (const it of items.slice(0, 6)) {
+    const row = el('div', 'evi-row');
+    const mark = el('span'); mark.style.cssText = 'width:18px;flex-shrink:0;display:flex;justify-content:center';
+    mark.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 12h12" stroke="var(--ghost)" stroke-width="2.2" stroke-linecap="round"/></svg>';
+    row.appendChild(mark);
+    let text, when = '', hash = null;
+    if (typeof it === 'string') {
+      if (HASH_RE.test(it.trim())) ({ text, when, hash } = describeRef(it.trim()));
+      else text = it;
+    } else if (it && typeof it === 'object') {
+      const h = it.hash || it.grain || it.ref;
+      text = it.text || it.summary || it.label;
+      if (h) { const d = describeRef(h); hash = d.hash; when = d.when; if (!text) text = d.text; }
+      if (!text) text = JSON.stringify(it);
+    } else text = String(it);
+    row.appendChild(el('span', 't', text));
+    if (hash) {
+      const h = el('span', 'mono dev-only', hash.slice(0, 12));
+      h.style.cssText = 'flex-shrink:0;margin-right:10px';
+      row.appendChild(h);
+      row.onclick = () => openPanel(hash);
+      row.style.cursor = 'pointer';
+    }
+    row.appendChild(el('span', 'w', when));
+    box.appendChild(row);
+  }
+  /* Never truncate silently — a card citing 10 memories must not look like
+     it cites 6. */
+  if (items.length > 6) {
+    const more = el('div', 'evi-row');
+    const pad = el('span'); pad.style.cssText = 'width:18px;flex-shrink:0';
+    more.appendChild(pad);
+    more.appendChild(el('span', 't', '…and ' + (items.length - 6) + ' more'))
+      .style.color = 'var(--dim)';
+    box.appendChild(more);
+  }
+  return box;
+}
+async function renderOutcomes(parent) {
+  const r = await api('/api/loop/outcomes');
+  const list = (r && r.ok && r.outcomes) || [];
+  if (!list.length) return;
+  const host = el('div', 'stack');
+  parent.appendChild(host);
+  const head = el('div', 'grp-head'); head.appendChild(el('h2', null, 'Did it work?'));
+  head.appendChild(el('span', 'meta', 're-measured after each applied change'));
+  host.appendChild(head);
+  for (const o of list) {
+    const row = el('div', 'srow');
+    const good = o.verdict !== 'regressed';
+    const dot = el('span'); dot.style.cssText = 'width:6px;height:6px;border-radius:3px;flex-shrink:0;background:'
+      + (good ? 'var(--ok)' : 'var(--danger)');
+    row.appendChild(dot);
+    const hz = o.horizon_ms % 86400000 === 0 ? (o.horizon_ms / 86400000) + ' days' : (o.horizon_ms / 3600000) + ' hours';
+    row.appendChild(el('span', 't', cap(String(o.metric || '').replace(/_/g, ' '))
+      + ' went from ' + o.baseline + ' to ' + o.current + ' after ' + hz));
+    const v = el('span', 'w', o.verdict); v.style.color = good ? 'var(--ok)' : 'var(--danger)';
+    row.appendChild(v);
+    host.appendChild(row);
+  }
+}
+/* A console started without --token-env refuses every write. Say so up front
+   rather than letting someone type a reason and hit a wall. */
+const canWrite = () => !!(CONFIG && CONFIG.server && CONFIG.server.auth_required);
+const READONLY_WHY = 'This console is read-only — restart it with “areev ui --token-env VAR” to make changes.';
+function lock(btn) { if (!canWrite()) { btn.disabled = true; btn.title = READONLY_WHY; } return btn; }
+function readOnlyNote() {
+  const b = el('div', 'banner');
+  b.style.cssText = 'background:var(--accent-soft);border-color:var(--accent-line)';
+  b.appendChild(el('span', 'grow', 'Read-only. You can look at everything here, but approving, correcting '
+    + 'and forgetting need a console started with a token: areev ui --token-env VAR'));
+  return b;
+}
+const errText = res => ((res && res.error) || 'unknown error') + (res && res.code ? ' [' + res.code + ']' : '');
+/* The engine's lifecycle is Pending → Approved → Applied, so applying a
+   pending recommendation is two calls, not one — going straight to apply
+   fails with LOP-E020. One reason covers both: the user made one decision. */
+async function loopAct(hash, action, because) {
+  const post = (url, body) => api(url, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const done = async msg => { toast(msg); RECS = {}; await loadRecs(SUGTAB); await refresh(); };
+  let res;
+  if (action === 'approve_and_apply') {
+    res = await post('/api/loop/review', { hash, decision: 'approve', because });
+    if (!(res && res.ok)) return done('Could not approve: ' + errText(res));
+    res = await post('/api/loop/apply', { hash, because });
+    return done(res && res.ok ? 'Applied ✓'
+      : 'Approved, but applying failed: ' + errText(res) + ' — finish it from Needs review');
+  }
+  if (action === 'apply') res = await post('/api/loop/apply', { hash, because });
+  else if (action === 'rollback') res = await post('/api/loop/rollback', { hash, because });
+  else res = await post('/api/loop/review', { hash, decision: 'reject', because });
+  return done(res && res.ok
+    ? (action === 'reject' ? 'Dismissed' : action === 'rollback' ? 'Undone ✓' : 'Applied ✓')
+    : 'Could not ' + (action === 'reject' ? 'dismiss' : action) + ': ' + errText(res));
+}
+async function runAnalysis() {
+  const b = $('runLoop'); b.disabled = true; b.textContent = 'Analysing…';
+  const res = await api('/api/loop/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  b.disabled = false; b.textContent = 'Run analysis';
+  if (res && res.ok) {
+    const n = (res.run && res.run.stored) || 0;
+    toast(n ? 'Found ' + n + (n === 1 ? ' suggestion' : ' suggestions') : 'Nothing new found');
+  } else toast('Could not run: ' + ((res && res.error) || 'the console may be read-only'));
+  RECS = {}; SUGTAB = 'pending'; await loadRecs('pending'); render();
+}
+
+/* ══ connect ══════════════════════════════════════════════════════════ */
+/* null = we could not read the segment list (the /api/segment* surface is
+   token-gated even for reads), [] = readable and empty. */
+let SEGMENTS = null;
+async function loadSegments() {
+  const r = await api('/api/segments');
+  SEGMENTS = Array.isArray(r) ? r : null;
+  render();
+}
+/* Commands want the path the server actually opened, not the pretty label. */
+const DB_NAME = () => DB_PATH || ($('dblabel').textContent || 'memory.db').trim();
+function snippetFor(kind) {
+  const db = DB_NAME();
+  if (kind === 'claude') return 'claude mcp add areev -- areev serve --mcp --db ' + db;
+  if (kind === 'python') return 'import areev\ndb = areev.Areev("' + db + '", actor="user:me")\ndb.add_fact("john", "prefers", "green tea")\nprint(db.recall(subject="john"))';
+  if (kind === 'node') return 'import { Areev } from "areev";\nconst db = new Areev("' + db + '", "user:me");\ndb.addFact("john", "prefers", "green tea");\nconsole.log(db.recall("john"));';
+  return '{\n  "mcpServers": {\n    "areev": {\n      "command": "areev",\n      "args": ["serve", "--mcp", "--db", "' + db + '"]\n    }\n  }\n}';
+}
+function renderConnect() {
+  const host = $('conBody'); host.textContent = '';
+  if (CONTAB === 'agent') return renderConnectAgent(host);
+  if (CONTAB === 'sync') return renderConnectSync(host);
+  return renderConnectSettings(host);
+}
+let SNIPTAB = 'claude';
+function renderConnectAgent(host) {
+  const empty = !currentGrains().length;
+  const hero = el('div'); hero.style.cssText = 'display:flex;flex-direction:column;gap:12px;max-width:650px;padding-bottom:8px';
+  const h = el('span', null, empty ? 'Your agent’s memory is ready — and empty.' : 'Attach another agent to this memory.');
+  h.style.cssText = 'font:700 32px/40px var(--sans);color:var(--ink);letter-spacing:-.03em';
+  hero.appendChild(h);
+  hero.appendChild(el('span', 'sub', empty
+    ? 'Point an agent at this file. Everything it learns lands here as plain sentences you can read, correct, and delete.'
+    : 'Anything you connect reads and writes the same memory — they will all know what the others learned.'));
+  host.appendChild(hero);
+
+  const card = el('div', 'card');
+  const tabs = el('div', 'tabs'); tabs.style.cssText = 'padding:16px 24px 0;gap:24px';
+  for (const [k, label] of [['claude', 'Claude Code'], ['python', 'Python'], ['node', 'Node'], ['mcp', 'Any MCP client']]) {
+    const b = el('button', SNIPTAB === k ? 'on' : '', label);
+    b.onclick = () => { SNIPTAB = k; render(); };
+    tabs.appendChild(b);
+  }
+  card.appendChild(tabs);
+
+  const s1 = el('div'); s1.style.cssText = 'display:flex;flex-direction:column;gap:12px;padding:22px 24px 4px';
+  s1.appendChild(el('span', null, '1 · Attach the memory')).style.cssText = 'font-size:14px;font-weight:600;color:var(--ink)';
+  const codeRow = el('div');
+  codeRow.style.cssText = 'display:flex;align-items:flex-start;gap:16px;background:var(--well);border:1px solid var(--hair);border-radius:10px;padding:15px 14px 15px 18px';
+  const pre = el('pre', null, snippetFor(SNIPTAB));
+  pre.style.cssText = 'flex:1;font-family:var(--mono);font-size:13.5px;line-height:22px;color:var(--ink);white-space:pre-wrap;word-break:break-word;margin:0';
+  const cp = el('button', 'btn ghost sm', 'Copy');
+  cp.onclick = () => copyText(snippetFor(SNIPTAB), 'Command');
+  codeRow.appendChild(pre); codeRow.appendChild(cp);
+  s1.appendChild(codeRow);
+  card.appendChild(s1);
+
+  const s2 = el('div'); s2.style.cssText = 'display:flex;flex-direction:column;gap:12px;padding:20px 24px 22px';
+  s2.appendChild(el('span', null, '2 · Ask it to remember something')).style.cssText = 'font-size:14px;font-weight:600;color:var(--ink)';
+  const quote = el('div');
+  quote.style.cssText = 'border:1px dashed var(--line2);border-radius:10px;padding:15px 18px;font-size:15.5px;line-height:24px;color:var(--muted)';
+  quote.textContent = '“Remember that John Aldridge prefers green tea and works at Acme Corp.”';
+  s2.appendChild(quote);
+  card.appendChild(s2);
+
+  const strip = el('div');
+  strip.style.cssText = 'display:flex;align-items:center;gap:11px;padding:16px 24px;border-top:1px solid var(--line);'
+    + 'background:' + (empty ? 'var(--accent-soft)' : 'var(--ok-soft)');
+  const ring = el('span');
+  ring.style.cssText = 'width:16px;height:16px;flex-shrink:0;border-radius:8px;display:flex;align-items:center;justify-content:center;background:'
+    + (empty ? 'var(--accent-line)' : 'var(--ok-line)');
+  const core = el('span'); core.style.cssText = 'width:7px;height:7px;border-radius:4px;background:' + (empty ? 'var(--accent)' : 'var(--ok)');
+  ring.appendChild(core); strip.appendChild(ring);
+  const st = el('span', null, empty
+    ? 'Watching for the first memory — this page fills in on its own.'
+    : STATS.grains + ' memories stored. Reload after your agent writes to see new ones.');
+  st.style.cssText = 'flex:1;font-size:14px;color:' + (empty ? 'var(--accent)' : 'var(--ok)');
+  strip.appendChild(st);
+  const rl = el('button', 'btn ghost sm', 'Reload'); rl.onclick = refresh;
+  strip.appendChild(rl);
+  card.appendChild(strip);
+  host.appendChild(card);
+
+  const three = el('div'); three.style.cssText = 'display:flex;gap:44px;padding-top:16px';
+  const bit = (t, s) => { const c = el('div'); c.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:1';
+    const tt = el('span', null, t); tt.style.cssText = 'font-size:14.5px;font-weight:600;color:var(--ink)';
+    c.appendChild(tt); c.appendChild(el('span', 'meta', s)); return c; };
+  three.appendChild(bit('It writes, you read', 'Every fact your agent stores shows up here in plain language — no query needed.'));
+  three.appendChild(bit('Nothing is overwritten', 'Corrections are added on top, so you can always see what your agent used to believe.'));
+  three.appendChild(bit('It flags its own mistakes', 'Conflicts and duplicates arrive as suggestions you approve — never applied behind your back.'));
+  host.appendChild(three);
+}
+function renderConnectSync(host) {
+  const srv = (CONFIG && CONFIG.server) || {};
+  const on = !!srv.hub_mode;
+  if (!on) {
+    const card = el('div', 'card'); card.style.cssText = 'padding:26px 28px;display:flex;flex-direction:column;gap:14px';
+    const t = el('span', null, 'Sync is not turned on for this memory.');
+    t.style.cssText = 'font:600 19px/27px var(--sans);color:var(--ink);letter-spacing:-.015em';
+    card.appendChild(t);
+    card.appendChild(el('span', 'sub', 'Right now this console is the only thing reading this file. Start it as a hub and other '
+      + 'apps — a voice line, a WhatsApp bot, an email inbox — can push what they learn and pull what the others learned, '
+      + 'all against this one memory.'));
+    const codeRow = el('div');
+    codeRow.style.cssText = 'display:flex;align-items:center;gap:16px;background:var(--well);border:1px solid var(--hair);border-radius:10px;padding:15px 14px 15px 18px';
+    const cmd = 'AREEV_HUB_TOKEN=$(openssl rand -hex 16) areev hub --db ' + DB_NAME() + ' --dir ./segments --token-env AREEV_HUB_TOKEN';
+    const pre = el('pre', null, cmd);
+    pre.style.cssText = 'flex:1;font-family:var(--mono);font-size:13px;line-height:21px;color:var(--ink);white-space:pre-wrap;word-break:break-word;margin:0';
+    const cp = el('button', 'btn ghost sm', 'Copy'); cp.onclick = () => copyText(cmd, 'Command');
+    codeRow.appendChild(pre); codeRow.appendChild(cp);
+    card.appendChild(codeRow);
+    card.appendChild(el('span', 'meta', 'Pushing and pulling both need the key. Apps can only ever add — '
+      + 'nothing they send can erase what is already here.'));
+    host.appendChild(card);
+    return;
+  }
+
+  if (SEGMENTS === null) {
+    const lock = el('div', 'card');
+    lock.style.cssText = 'display:flex;align-items:center;gap:14px;padding:18px 20px;margin-bottom:16px';
+    const t = el('div'); t.style.cssText = 'display:flex;flex-direction:column;gap:4px;flex:1';
+    const t1 = el('span', null, 'Transfers are locked');
+    t1.style.cssText = 'font-size:14.5px;font-weight:600;color:var(--ink)';
+    t.appendChild(t1);
+    t.appendChild(el('span', 'meta', 'Listing what has been pushed and pulled needs the hub key — '
+      + 'the same one your apps use to write.'));
+    lock.appendChild(t);
+    const btn = el('button', 'btn sm', 'Enter the key');
+    btn.onclick = async () => {
+      const k = window.prompt('Paste the hub key (the value of the --token-env variable):');
+      if (!k) return;
+      TOKEN = k; sessionStorage.setItem('areev.token', k);
+      await loadSegments();
+    };
+    lock.appendChild(btn);
+    host.appendChild(lock);
+  }
+  const names = Array.isArray(SEGMENTS) ? SEGMENTS : [];
+  const apps = new Map();
+  for (const n of names) {
+    const app = String(n).replace(/\.mgb$/, '').split(/[-_.]/)[0] || 'app';
+    if (!apps.has(app)) apps.set(app, 0);
+    apps.set(app, apps.get(app) + 1);
+  }
+  const card = el('div', 'card'); card.style.cssText = 'padding:24px 26px 26px;display:flex;flex-direction:column';
+  const row = el('div', 'apps');
+  const entries = [...apps.entries()].slice(0, 3);
+  if (!entries.length) entries.push(['no apps yet', 0]);
+  for (const [name, n] of entries) {
+    const a = el('div', 'app');
+    const hd = el('div', 'hd');
+    const d = el('span', 'dot'); d.style.background = n ? 'var(--ok)' : 'var(--ghost)';
+    hd.appendChild(el('b', null, cap(name)));
+    hd.appendChild(d);
+    a.appendChild(hd);
+    a.appendChild(el('span', 'meta', n ? n + (n === 1 ? ' transfer' : ' transfers') : 'nothing received yet'));
+    row.appendChild(a);
+  }
+  card.appendChild(row);
+  const conns = el('div', 'conns');
+  for (let i = 0; i < entries.length; i++) { const c = el('div'); c.appendChild(el('i')); conns.appendChild(c); }
+  conns.style.cssText = 'padding:0';
+  const spacer = el('div'); spacer.style.height = '0'; card.appendChild(spacer);
+  card.appendChild(conns);
+  const bar = el('div', 'hubbar');
+  bar.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">'
+    + '<rect x="7.5" y="2.5" width="14" height="14" rx="4.5" fill="none" stroke="var(--accent-line)" stroke-width="2"/>'
+    + '<rect x="2.5" y="7.5" width="14" height="14" rx="4.5" fill="var(--accent)"/></svg>';
+  const bt = el('div'); bt.style.cssText = 'display:flex;flex-direction:column;gap:3px;flex:1';
+  const b1 = el('span', null, 'One shared memory — ' + DB_NAME());
+  b1.style.cssText = 'font-size:15.5px;font-weight:600;color:var(--ink)';
+  bt.appendChild(b1);
+  bt.appendChild(el('span', null, (STATS.current || 0) + ' memories. Whatever one app learns, the others can answer with.'))
+    .style.cssText = 'font-size:13px;color:var(--text)';
+  bar.appendChild(bt);
+  card.appendChild(bar);
+  host.appendChild(card);
+
+  const transfers = el('div', 'stack');
+  host.appendChild(transfers);
+  const th = el('div', 'grp-head');
+  th.appendChild(el('h2', null, 'Recent transfers'));
+  th.appendChild(el('span', 'meta', names.length + ' in ' + (srv.segment_dir || 'the segment folder')));
+  transfers.appendChild(th);
+  if (!names.length) transfers.appendChild(el('div', 'empty', 'Nothing has been pushed or pulled yet.'));
+  for (const n of names.slice(-12).reverse()) {
+    const r = el('div', 'srow');
+    const ic = el('span'); ic.style.cssText = 'width:18px;flex-shrink:0;display:flex;justify-content:center';
+    ic.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 4.5v14M6 13l6 6 6-6" stroke="var(--ok)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    r.appendChild(ic);
+    r.appendChild(el('span', 't', 'Received a bundle from ' + cap(String(n).replace(/\.mgb$/, '').split(/[-_.]/)[0])));
+    const w = el('span', 'w', n); w.style.cssText = 'width:auto;font-family:var(--mono);font-size:11.5px;color:var(--hash)';
+    r.appendChild(w);
+    transfers.appendChild(r);
+  }
+  const note = el('div', 'card');
+  note.style.cssText = 'display:flex;align-items:flex-start;gap:12px;padding:16px 18px';
+  note.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">'
+    + '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2" stroke="var(--text)" stroke-width="1.7"/>'
+    + '<path d="M8 10.5V7.8a4 4 0 018 0v2.7" stroke="var(--text)" stroke-width="1.7"/></svg>';
+  const nt = el('div'); nt.style.cssText = 'display:flex;flex-direction:column;gap:5px;flex:1';
+  const n1 = el('span', null, srv.auth_required
+    ? 'Syncing needs the key. Reading the memory itself does not.'
+    : 'This hub accepts writes with no key — anyone who can reach it can add memories.');
+  n1.style.cssText = 'font-size:14px;font-weight:600;color:var(--ink)';
+  nt.appendChild(n1);
+  nt.appendChild(el('span', 'meta', 'Pushing and pulling both require the key; anyone on your network can '
+    + 'still read what your agent knows. Apps can only ever add — nothing they send can erase what is already here.'));
+  note.appendChild(nt);
+  host.appendChild(note);
+}
+function renderConnectSettings(host) {
+  const c = CONFIG;
+  if (!c || c.ok === false) { host.appendChild(el('div', 'empty', 'Configuration unavailable.')); return; }
+  const warn = (c.warnings || []);
+  if (warn.length) {
+    const b = el('div', 'banner'); b.style.marginBottom = '8px';
+    b.appendChild(el('span', 'grow', warn.join(' · ')));
+    host.appendChild(b);
+  }
+  const box = el('div', 'card'); box.style.cssText = 'padding:8px 22px 18px';
+  const add = (k, v) => { const r = el('div', 'kv');
+    r.appendChild(el('span', 'k', k)); r.appendChild(el('span', 'v', v)); box.appendChild(r); };
+  add('Memory file', c.db || DB_NAME());
+  add('Full-text search', c.file && c.file.text_index ? 'on — your agent can search by words' : 'off');
+  add('Vector search', c.recall && c.recall.legs && c.recall.legs.vector
+    ? 'on' + (c.file && c.file.embedding ? ' — ' + c.file.embedding.model : '') : 'off — no embedding backend attached');
+  add('How recall ranks', 'structural' + (c.recall && c.recall.legs && c.recall.legs.bm25 ? ' + words' : '')
+    + (c.recall && c.recall.legs && c.recall.legs.vector ? ' + meaning' : '') + ', fused with RRF');
+  add('Namespace', (c.session && c.session.namespace) || 'shared');
+  add('Console access', c.server && c.server.auth_required
+    ? (c.server.auth_all ? 'protected — every request needs the token' : 'hub mode — writes need the token')
+    : 'open — anyone who can reach this port can read and change memory');
+  add('Result limit', ((c.executor && c.executor.default_limit) || '?') + ' default, '
+    + ((c.executor && c.executor.max_limit) || '?') + ' max');
+  host.appendChild(box);
+
+  const ah = el('div', 'grp-head');
+  ah.appendChild(el('h2', null, 'What it checks itself for'));
+  ah.appendChild(el('span', 'meta', 'analyzers that produce suggestions'));
+  host.appendChild(ah);
+  const alist = el('div'); host.appendChild(alist);
+  api('/api/loop/analyzers').then(r => {
+    const list = (r && r.ok && r.analyzers) || [];
+    if (!list.length) { alist.appendChild(el('div', 'empty', 'No analyzers reported.')); return; }
+    for (const a of list) {
+      const row = el('div', 'srow'); row.style.cursor = 'default'; row.style.alignItems = 'flex-start';
+      const d = el('span'); d.style.cssText = 'width:6px;height:6px;border-radius:3px;flex-shrink:0;margin-top:8px;background:'
+        + (a.enabled ? 'var(--ok)' : 'var(--ghost)');
+      row.appendChild(d);
+      /* Name over the analyzer's own one-line description: a toggle you cannot
+         read is a toggle nobody touches. */
+      const body = el('div', 't');
+      body.style.cssText = 'display:flex;flex-direction:column;gap:2px;min-width:0';
+      body.appendChild(el('span', null, a.title || analyzerName(a.id)));
+      if (a.description) {
+        const sub = el('span', 'tiny', a.description);
+        sub.style.lineHeight = '18px';
+        body.appendChild(sub);
+      }
+      row.appendChild(body);
+      const sw = el('button', 'btn ghost sm', a.enabled ? 'On' : 'Off');
+      sw.onclick = async () => {
+        sw.disabled = true;
+        const res = await api('/api/loop/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ analyzer_id: a.id, enabled: !a.enabled }) });
+        sw.disabled = false;
+        if (res && res.ok) { toast(a.enabled ? 'Turned off' : 'Turned on'); render(); }
+        else toast('Could not change it: ' + ((res && res.error) || 'the console may be read-only'));
+      };
+      row.appendChild(lock(sw));
+      const dev = el('span', 'mono dev-only'); dev.textContent = a.id + ' · ' + (a.tier || '');
+      dev.style.cssText = 'margin-left:10px';
+      row.appendChild(dev);
+      alist.appendChild(row);
+    }
+  });
+}
+
+/* ══ developer sidebar ════════════════════════════════════════════════ */
+function renderDevbar() {
+  const s = $('devStats'); s.textContent = '';
+  const kv = (k, v) => { const r = el('div'); r.style.cssText = 'display:flex;align-items:baseline;gap:10px';
+    const a = el('span', null, k); a.style.cssText = 'flex:1;font-size:13.5px;color:var(--text)';
+    const b = el('span', null, v); b.style.cssText = 'font-family:var(--mono);font-size:13px;color:var(--ink)';
+    r.appendChild(a); r.appendChild(b); s.appendChild(r); };
+  kv('grains / current', (STATS.grains != null ? STATS.grains : '?') + ' / ' + (STATS.current != null ? STATS.current : '?'));
+  kv('triples / terms', (STATS.triples != null ? STATS.triples : '?') + ' / ' + (STATS.terms != null ? STATS.terms : '?'));
+  const legs = CONFIG && CONFIG.recall && CONFIG.recall.legs;
+  kv('recall legs', legs ? ['struct', legs.bm25 && 'bm25', legs.vector && 'vec'].filter(Boolean).join(' · ') : '?');
+  kv('ops', STATS.ops != null ? String(STATS.ops) : '?');
+
+  const l = $('devLog'); l.textContent = '';
+  for (const o of LOG.slice().sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0)).slice(0, 14)) {
+    const r = el('div', 'oprow');
+    r.appendChild(el('span', 't', shortWhen(hlcMs(o.hlc))));
+    const op = el('span', 'o', o.op);
+    op.style.color = o.op === 'add' ? 'var(--ok)' : o.op === 'forget' ? 'var(--danger)' : 'var(--warn)';
+    r.appendChild(op);
+    /* A hash says an operation happened but not what it did. Resolve it to the
+       grain and show what was written; keep the address on hover, and fall back
+       to it when the grain is not in the loaded window (or was erased). */
+    const g = BYHASH[o.hash];
+    /* Bookkeeping the engine writes for itself (__loop_state__ and friends)
+       has no sentence worth reading — name the machinery instead. */
+    const said = !g ? shortHash(o.hash)
+      : isInternal(g) ? 'engine bookkeeping · ' + ((g.fields || {}).relation || rgType(g) || '')
+      : (rgType(g) || 'grain') + ' · ' + sentence(g);
+    const what = el('span', 'h', said);
+    if (!g) what.classList.add('addr');
+    else if (isInternal(g)) what.classList.add('sys');
+    what.title = (g ? said + '\n' : '') + o.hash;
+    r.appendChild(what);
+    r.onclick = () => openPanel(o.hash);
+    l.appendChild(r);
+  }
+}
+/* ══ graph ════════════════════════════════════════════════════════════ */
+const Graph = (() => {
+  let cv, ctx, W = 0, H = 0, dpr = 1;
+  let nodes = [], links = [], byId = new Map();
+  let focus = null, depth = 1, near = new Set();
+  let scale = 1, tx = 0, ty = 0, alpha = 0, raf = 0;
+  let drag = null, panning = null, hover = null, moved = false;
+  let cut = 1;          /* 0..1 over the op-log — the rewind position */
+  let colors = {};
+
+  function recolor() {
+    colors = { person: cssVar('--cat-person'), org: cssVar('--cat-org'), project: cssVar('--cat-project'),
+      thing: cssVar('--cat-thing'), note: cssVar('--cat-note'), line: cssVar('--line2'),
+      ink: cssVar('--ink'), dim: cssVar('--dim'), faint: cssVar('--faint'), accent: cssVar('--accent'),
+      surface: cssVar('--surface'), well: cssVar('--well') };
+  }
+  function maxSeq() { return BROWSE.reduce((m, g) => Math.max(m, g.op_seq || 0), 0); }
+  function cutSeq() { return Math.round(maxSeq() * cut); }
+
+  function build() {
+    const limit = cutSeq();
+    const upTo = BROWSE.filter(g => (g.op_seq || 0) <= limit)
+      .filter(g => !isGone(g) && !isInternal(g))
+      /* a supersede that happened after the cut has not happened yet */
+      .filter(g => !g.superseded_by || (BYHASH[g.superseded_by] && (BYHASH[g.superseded_by].op_seq || 0) > limit));
+    /* heads are resolved *as of the cut*, so rewinding shows the value that
+       was live then, not the one that is live now */
+    const heads = headHashes(upTo);
+    const grains = upTo.filter(g => (g.type && g.type !== 'fact') || heads.has(g.hash));
+    const ents = buildEntities(grains, { tools: false });
+    const keep = new Map();
+    for (const e of ents) if (e.count || e.deg) keep.set(e.name, e);
+    const prev = byId;
+    nodes = []; links = []; byId = new Map();
+    for (const e of keep.values()) {
+      const old = prev.get(e.name);
+      const n = { id: e.name, kind: e.kind, count: e.count, deg: e.deg,
+        x: old ? old.x : (Math.random() - .5) * 320, y: old ? old.y : (Math.random() - .5) * 320,
+        vx: 0, vy: 0, r: 0 };
+      n.r = Math.max(13, Math.min(34, 12 + (e.count + e.deg) * 3));
+      nodes.push(n); byId.set(n.id, n);
+    }
+    for (const g of grains) {
+      const f = g.fields || {};
+      if (g.type === 'fact' && f.subject && typeof f.object === 'string'
+          && byId.has(f.subject) && byId.has(f.object)) {
+        links.push({ a: f.subject, b: f.object, label: String(f.relation || '').replace(/_/g, ' '), hash: g.hash });
+      }
+    }
+    if (focus && !byId.has(focus)) focus = null;
+    if (!focus && nodes.length) focus = nodes.slice().sort((a, b) => (b.count + b.deg) - (a.count + a.deg))[0].id;
+    computeNear();
+    /* Settle before the first paint so fit() frames a finished layout
+       instead of chasing nodes that are still flying apart. */
+    alpha = 1;
+    for (let i = 0; i < 300; i++) tick();
+    alpha = 0.12;
+  }
+  function computeNear() {
+    near = new Set();
+    if (!focus) { for (const n of nodes) near.add(n.id); return; }
+    near.add(focus);
+    let frontier = [focus];
+    for (let d = 0; d < depth; d++) {
+      const next = [];
+      for (const l of links) {
+        if (frontier.includes(l.a) && !near.has(l.b)) { near.add(l.b); next.push(l.b); }
+        if (frontier.includes(l.b) && !near.has(l.a)) { near.add(l.a); next.push(l.a); }
+      }
+      frontier = next;
+    }
+  }
+  function tick() {
+    if (alpha < 0.005) return;
+    const k = alpha;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - .5; dy = Math.random() - .5; d2 = 1; }
+        if (d2 > 160000) continue;
+        const f = (4200 * k) / d2;
+        const d = Math.sqrt(d2);
+        a.vx -= (dx / d) * f; a.vy -= (dy / d) * f;
+        b.vx += (dx / d) * f; b.vy += (dy / d) * f;
+      }
+    }
+    for (const l of links) {
+      const a = byId.get(l.a), b = byId.get(l.b);
+      if (!a || !b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.max(1, Math.hypot(dx, dy));
+      const f = (d - 150) * 0.015 * k;
+      a.vx += (dx / d) * f; a.vy += (dy / d) * f;
+      b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
+    }
+    for (const n of nodes) {
+      const pull = n.id === focus ? 0.03 : 0.004;
+      n.vx += -n.x * pull * k; n.vy += -n.y * pull * k;
+      if (drag && drag.id === n.id) { n.vx = 0; n.vy = 0; continue; }
+      n.x += (n.vx *= 0.82); n.y += (n.vy *= 0.82);
+    }
+    alpha *= 0.985;
+  }
+  function draw() {
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(W / 2 + tx, H / 2 + ty);
+    ctx.scale(scale, scale);
+    /* links */
+    for (const l of links) {
+      const a = byId.get(l.a), b = byId.get(l.b);
+      if (!a || !b) continue;
+      const lit = focus && (l.a === focus || l.b === focus);
+      const on = near.has(l.a) && near.has(l.b);
+      ctx.strokeStyle = lit ? colors.accent : colors.line;
+      ctx.globalAlpha = lit ? 0.55 : on ? 0.5 : 0.16;
+      ctx.lineWidth = lit ? 2 : 1.4;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      /* Only label edges with room for it — on a short edge the text lands
+         on top of the node names at either end. */
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (lit && l.label && scale > 0.55 && len > 130) {
+        ctx.globalAlpha = 1;
+        const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;   /* perpendicular */
+        halo(l.label, (a.x + b.x) / 2 + nx * 11, (a.y + b.y) / 2 + ny * 11 + 4,
+          '12px ' + cssVar('--sans'), colors.dim);
+      }
+    }
+    /* nodes */
+    for (const n of nodes) {
+      const on = near.has(n.id);
+      const c = colors[n.kind] || colors.thing;
+      if (n.id === focus) {
+        ctx.globalAlpha = 0.09; ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 20, 0, 7); ctx.fill();
+        ctx.globalAlpha = 0.35; ctx.strokeStyle = c; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 7, 0, 7); ctx.stroke();
+      }
+      ctx.globalAlpha = on ? 1 : 0.22;
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 7); ctx.fill();
+      if (hover === n.id) { ctx.globalAlpha = 1; ctx.strokeStyle = colors.ink; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3, 0, 7); ctx.stroke(); }
+      ctx.globalAlpha = on ? 1 : 0.3;
+      if (n.id === focus && n.r > 24) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = colors.surface;
+        ctx.font = '700 14px ' + cssVar('--sans');
+        ctx.fillText(clip(n.id, 12), n.x, n.y + 5);
+      } else {
+        halo(clip(n.id, 22), n.x, n.y + n.r + 17,
+          (on ? '600 ' : '') + '13px ' + cssVar('--sans'), on ? colors.ink : colors.faint);
+      }
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  const clip = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+  /* Labels sit on top of edges; a surface-coloured outline keeps them
+     readable wherever the layout puts them. */
+  function halo(text, x, y, font, fill) {
+    ctx.textAlign = 'center';
+    ctx.font = font;
+    ctx.lineWidth = 3.5;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = colors.well;
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = fill;
+    ctx.fillText(text, x, y);
+  }
+  function loop() {
+    /* Only burn frames while the graph is actually on screen. */
+    if (PAGE === 'memory' && MVIEW === 'graph') { tick(); draw(); }
+    raf = requestAnimationFrame(loop);
+  }
+  function resize() {
+    if (!cv) return;
+    dpr = window.devicePixelRatio || 1;
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  function toWorld(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left - W / 2 - tx) / scale, y: (e.clientY - r.top - H / 2 - ty) / scale };
+  }
+  function hit(p) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      if (Math.hypot(n.x - p.x, n.y - p.y) <= n.r + 4) return n;
+    }
+    return null;
+  }
+  function fit() {
+    if (!nodes.length) { scale = 1; tx = ty = 0; return; }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of nodes) { x0 = Math.min(x0, n.x - n.r - 40); y0 = Math.min(y0, n.y - n.r - 30);
+      x1 = Math.max(x1, n.x + n.r + 40); y1 = Math.max(y1, n.y + n.r + 30); }
+    /* Keep the graph clear of the floating inspector and the toolbar. */
+    const padR = $('ginspect').hidden ? 24 : 312;
+    const padT = 64, padB = 60, padL = 24;
+    const availW = Math.max(160, W - padL - padR), availH = Math.max(160, H - padT - padB);
+    scale = Math.max(0.25, Math.min(1.4, Math.min(availW / (x1 - x0), availH / (y1 - y0))));
+    tx = (padL + availW / 2) - W / 2 - ((x0 + x1) / 2) * scale;
+    ty = (padT + availH / 2) - H / 2 - ((y0 + y1) / 2) * scale;
+  }
+  function inspect() {
+    const box = $('ginspect');
+    const n = focus && byId.get(focus);
+    if (!n) { box.hidden = true; return; }
+    box.hidden = false; box.textContent = '';
+    const head = el('div'); head.style.cssText = 'display:flex;align-items:center;gap:11px';
+    const av = el('span', null, n.id.charAt(0).toUpperCase());
+    av.style.cssText = 'display:flex;align-items:center;justify-content:center;width:34px;height:34px;flex-shrink:0;'
+      + 'border-radius:17px;color:#fff;font-size:14px;font-weight:600;background:' + (colors[n.kind] || colors.thing);
+    head.appendChild(av);
+    const ht = el('div'); ht.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;min-width:0';
+    const nm = el('span', null, n.id);
+    nm.style.cssText = 'font-size:15.5px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    ht.appendChild(nm);
+    const kindWord = { person: 'Person', org: 'Company or place', project: 'Project', thing: 'Thing', note: 'Note' }[n.kind] || 'Thing';
+    ht.appendChild(el('span', 'meta', kindWord + ' · ' + n.count + (n.count === 1 ? ' memory' : ' memories')
+      + ' · ' + links.filter(l => l.a === n.id || l.b === n.id).length + ' links'));
+    head.appendChild(ht);
+    box.appendChild(head);
+
+    const list = el('div'); list.style.cssText = 'display:flex;flex-direction:column;border-top:1px solid var(--hair)';
+    const mine = currentGrains().filter(g => (g.fields || {}).subject === n.id).slice(0, 3);
+    for (const g of mine) {
+      const r = el('div', null, predicate(g));
+      r.style.cssText = 'font-size:13.5px;color:var(--ink);padding:9px 0;border-bottom:1px solid var(--hair);cursor:pointer';
+      r.onclick = () => openPanel(g.hash);
+      list.appendChild(r);
+    }
+    if (!mine.length) list.appendChild(el('span', 'meta', 'Mentioned by other memories.')).style.padding = '9px 0';
+    box.appendChild(list);
+
+    const acts = el('div'); acts.style.cssText = 'display:flex;align-items:center;gap:8px';
+    const all = el('button', 'btn sm', 'See all ' + (n.count || links.filter(l => l.a === n.id || l.b === n.id).length));
+    all.style.flex = '1';
+    all.onclick = () => { ENTITY = n.id; MVIEW = 'list'; render(); };
+    const ex = el('button', 'btn ghost sm', depth === 1 ? 'Expand' : 'Collapse');
+    ex.onclick = () => setDepth(depth === 1 ? 2 : 1);
+    acts.appendChild(all); acts.appendChild(ex);
+    box.appendChild(acts);
+  }
+  function legend() {
+    const host = $('glegend'); host.textContent = '';
+    const items = [['person', 'People'], ['org', 'Companies & places'], ['project', 'Projects'],
+      ['thing', 'Things they like'], ['note', 'Things it noticed']];
+    const present = new Set(nodes.map(n => n.kind));
+    for (const [k, label] of items) {
+      if (!present.has(k)) continue;
+      const s = el('span');
+      const d = el('span'); d.style.cssText = 'width:8px;height:8px;border-radius:4px;background:' + (colors[k] || colors.thing);
+      s.appendChild(d); s.appendChild(el('span', null, label));
+      host.appendChild(s);
+    }
+    host.hidden = !host.childElementCount;
+  }
+  function ticks() {
+    const host = $('gticks'); host.textContent = '';
+    const ops = LOG.slice().sort((a, b) => (a.op_seq || 0) - (b.op_seq || 0));
+    if (!ops.length) return;
+    const first = hlcMs(ops[0].hlc), last = hlcMs(ops[ops.length - 1].hlc);
+    /* Everything from one session? Then dates all read the same — show clocks. */
+    const sameDay = (last - first) < 36 * 3600 * 1000;
+    const fmt = ms => sameDay ? clock(ms)
+      : new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    for (let i = 0; i < 4; i++) host.appendChild(el('span', null, fmt(first + (last - first) * (i / 4))));
+    const now = el('span', null, cut >= 1 ? 'now' : fmt(first + (last - first) * cut));
+    now.style.cssText = 'color:var(--accent);font-weight:600';
+    host.appendChild(now);
+  }
+  function setDepth(d) {
+    depth = d;
+    $('gdepth').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.d === d));
+    computeNear(); inspect();
+  }
+  return {
+    recolor,
+    wire() {
+      cv = $('gcanvas'); ctx = cv.getContext('2d'); recolor();
+      window.addEventListener('resize', () => { resize(); fit(); });
+      cv.addEventListener('mousedown', e => {
+        const p = toWorld(e); const n = hit(p); moved = false;
+        if (n) { drag = { id: n.id, dx: n.x - p.x, dy: n.y - p.y }; }
+        else { panning = { x: e.clientX - tx, y: e.clientY - ty }; cv.classList.add('grabbing'); }
+      });
+      window.addEventListener('mousemove', e => {
+        if (drag) { const p = toWorld(e); const n = byId.get(drag.id);
+          if (n) { n.x = p.x + drag.dx; n.y = p.y + drag.dy; alpha = Math.max(alpha, 0.25); } moved = true; return; }
+        if (panning) { tx = e.clientX - panning.x; ty = e.clientY - panning.y; moved = true; return; }
+        if (!cv) return;
+        const r = cv.getBoundingClientRect();
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { hover = null; return; }
+        const n = hit(toWorld(e));
+        hover = n ? n.id : null;
+        cv.style.cursor = n ? 'pointer' : 'grab';
+      });
+      window.addEventListener('mouseup', e => {
+        if (drag && !moved) { focus = drag.id; computeNear(); inspect(); alpha = Math.max(alpha, .4); }
+        drag = null; panning = null; cv.classList.remove('grabbing');
+      });
+      cv.addEventListener('wheel', e => {
+        e.preventDefault();
+        const f = e.deltaY < 0 ? 1.12 : 0.89;
+        scale = Math.max(0.2, Math.min(3, scale * f));
+      }, { passive: false });
+      cv.addEventListener('dblclick', () => fit());
+      $('gin').onclick = () => { scale = Math.min(3, scale * 1.2); };
+      $('gout').onclick = () => { scale = Math.max(0.2, scale / 1.2); };
+      $('gfit').onclick = () => fit();
+      $('gdepth').querySelectorAll('button').forEach(b => { b.onclick = () => setDepth(+b.dataset.d); });
+      $('gjump').addEventListener('input', () => {
+        const v = $('gjump').value.trim().toLowerCase();
+        if (!v) return;
+        const n = nodes.find(x => x.id.toLowerCase().includes(v));
+        if (n) { focus = n.id; computeNear(); inspect(); alpha = Math.max(alpha, .5); }
+      });
+      $('grange').addEventListener('input', () => {
+        cut = (+$('grange').value) / 100;
+        $('gnow').textContent = cut >= 1 ? 'now' : 'rewound';
+        $('gnow').classList.toggle('on', cut >= 1);
+        build(); ticks(); inspect(); legend();
+      });
+    },
+    mount() { resize(); build(); fit(); legend(); ticks(); inspect(); if (!raf) loop(); },
+    rebuild() { if (!cv || !cv.clientWidth) return; resize(); build(); legend(); ticks(); inspect(); if (!raf) loop(); },
+  };
+})();
+
+/* ══ query workbench ══════════════════════════════════════════════════
+   Everything goes through /api/cal. Saved queries and templates are CAL
+   statements (DEFINE / RUN / DESCRIBE / DROP), not console-local state, so
+   they live in the .db file and work from the CLI and MCP too. Only the
+   history is browser-local — that is personal and ephemeral. */
+const READ_ONLY_STMTS = new Set(['RECALL','ASSEMBLE','EXPLAIN','HISTORY','EXISTS','DESCRIBE','COUNT']);
+const WRITEY = new Set(['ADD','SUPERSEDE','ACCUMULATE','FORGET','DEFINE','DROP','BATCH','RUN']);
+const leadKeyword = q => (String(q || '').trim().split(/[^A-Za-z0-9]/)[0] || '').toUpperCase();
+const QUERY_NAME_RE = /^[a-zA-Z][a-zA-Z0-9 _-]{0,63}$/;
+const Q = { res: null, view: null, text: '', fmtTab: null };
+/* The engine reports what it can actually execute. DEFINE/RUN parse but are
+   not in `supported_statements` on this build — the facade has no query or
+   template registry — so gate the UI on the engine rather than on the docs. */
+let CAPS = null;
+const stmtSupported = kw => !CAPS || (CAPS.supported_statements || []).includes(kw);
+async function loadCaps() {
+  const r = await cal('DESCRIBE CAPABILITIES');
+  CAPS = (r.ok && r.result && r.result.info) || null;
+}
+
+/* ── history: this browser, this file ── */
+const histKey = () => 'areev.hist.' + (String(DB_PATH).split('/').pop() || 'db');
+function histLoad() { try { return JSON.parse(localStorage.getItem(histKey()) || '[]'); } catch (e) { return []; } }
+function histPush(q, summary) {
+  const h = histLoad().filter(x => x.q !== q);
+  h.unshift({ q, at: Date.now(), s: summary });
+  try { localStorage.setItem(histKey(), JSON.stringify(h.slice(0, 100))); } catch (e) { /* quota */ }
+}
+
+/* ── the on-ramp ───────────────────────────────────────────────────────
+   A blank editor is a wall for anyone who does not already know CAL. These
+   questions write real statements into that same editor, so the first answer
+   also teaches the language that produced it. Keep the CAL current — bare `|`
+   is deprecated since CAL 1.1 (CAL-W007). */
+const STARTERS = [
+  ['What do we know about a person or account?', 'RECALL facts WHERE subject = "john"'],
+  ['Search the whole memory in plain words', 'RECALL facts ABOUT "invoices in euros"'],
+  ['How much does it know about one thing?', 'RECALL facts WHERE subject = "acme-corp" COUNT'],
+  ['Build a context brief to paste into a model',
+    'ASSEMBLE "brief me on john" FROM notes: (RECALL facts WHERE subject = "john") BUDGET 300 tokens FORMAT markdown'],
+];
+/* Grain types worth offering as a starting vocabulary, in the order a person
+   meets them. Counts come from the file itself, so this reads as *your* data. */
+const VOCAB = [
+  ['facts', 'Things it holds as true'],
+  ['observations', 'Things it noticed, unconfirmed'],
+  ['tools', 'Every tool call it made'],
+  ['events', 'Things that happened, in order'],
+];
+function renderStarters() {
+  const box = $('qstarters'); box.textContent = '';
+  for (const [question, stmt] of STARTERS) {
+    const b = el('button', 'starter');
+    b.appendChild(el('b', '', question));
+    b.appendChild(el('code', '', stmt));
+    b.onclick = () => { setQueryText(stmt); runQuery(stmt); };
+    box.appendChild(b);
+  }
+}
+/* Counts are a nicety, not a promise: if COUNT fails on a build the card still
+   renders with its name and gloss, just without a number. */
+async function renderVocab() {
+  const box = $('qvocab'); box.textContent = '';
+  const cards = VOCAB.map(([kind, gloss]) => {
+    const b = el('button', 'vc');
+    const top = el('div', 'top');
+    top.appendChild(el('span', 'k', kind));
+    const n = el('span', 'n', ''); top.appendChild(n);
+    b.appendChild(top);
+    b.appendChild(el('small', '', gloss));
+    b.onclick = () => { const s = 'RECALL ' + kind + ' LIMIT 20';
+      setQueryText(s); runQuery(s); };
+    box.appendChild(b);
+    return [kind, n];
+  });
+  for (const [kind, n] of cards) {
+    const r = await cal('RECALL ' + kind + ' COUNT');
+    if (r.ok && r.result && typeof r.result.count === 'number') n.textContent = r.result.count;
+  }
+}
+/* Saved queries live in the file; history is this browser. Both were behind ▾
+   menus, which is where the two most useful things on the page went to hide. */
+async function renderRecents() {
+  const box = $('qrecents'); box.textContent = '';
+  const savedCol = el('div'), recentCol = el('div');
+  savedCol.appendChild(el('div', 'sec-label', 'SAVED'));
+  recentCol.appendChild(el('div', 'sec-label', 'RECENT'));
+  box.appendChild(savedCol); box.appendChild(recentCol);
+
+  const h = histLoad().slice(0, 5);
+  if (!h.length) recentCol.appendChild(el('div', 'rempty', 'Nothing run yet in this browser'));
+  for (const it of h) {
+    const b = el('button', 'rrow');
+    b.appendChild(el('div', 'rq', it.q));
+    b.appendChild(el('div', 'rm', relTime(it.at) + (it.s ? ' · ' + it.s : '')));
+    b.onclick = () => runQuery(it.q);
+    recentCol.appendChild(b);
+  }
+  const qs = await cal('DESCRIBE QUERIES');
+  const list = qs.ok ? pickList((qs.result || {}).info) : [];
+  if (!list.length) savedCol.appendChild(el('div', 'rempty',
+    stmtSupported('DEFINE') ? 'None saved yet — run something, then Save'
+      : 'This build has no registry for saved queries yet'));
+  for (const it of list.slice(0, 5)) {
+    const name = itemName(it);
+    const b = el('button', 'rrow');
+    b.appendChild(el('div', 'rn', name));
+    b.appendChild(el('div', 'rm', itemDesc(it) || 'RUN "' + name + '"'));
+    b.onclick = () => runQuery('RUN "' + name + '"');
+    savedCol.appendChild(b);
+  }
+}
+function renderOnramp() { renderStarters(); renderVocab(); renderRecents(); }
+
+/* ── the editor ────────────────────────────────────────────────────────
+   A textarea cannot hold colour, so the caret stays in a transparent one and
+   a mirror underneath carries the highlighting. Keep the two in lockstep:
+   same font, same padding, same wrapping, or the colours drift off the text.
+   The keyword list is additive on purpose — a word CAL gains before this list
+   does simply renders unstyled, which is the harmless failure. */
+const CAL_KEYWORDS = new Set(['RECALL', 'ASSEMBLE', 'EXPLAIN', 'HISTORY', 'EXISTS', 'DESCRIBE',
+  'COUNT', 'ADD', 'SUPERSEDE', 'ACCUMULATE', 'FORGET', 'DEFINE', 'DROP', 'BATCH', 'RUN', 'LET',
+  'WHERE', 'LIMIT', 'ABOUT', 'LIKE', 'FROM', 'BUDGET', 'TOKENS', 'FORMAT', 'PRESET', 'TEMPLATE',
+  'ORDER', 'BY', 'ASC', 'DESC', 'AND', 'OR', 'NOT', 'AS', 'SET', 'WITH', 'SINCE', 'UNTIL', 'OF',
+  'PRIORITY', 'QUERY', 'QUERIES', 'TEMPLATES', 'CAPABILITIES', 'ELEMENT', 'SECTION', 'PROGRESSIVE',
+  'IN', 'TRUE', 'FALSE', 'NULL']);
+function highlightCal(src) {
+  const s = String(src); let out = '', i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') j += (s[j] === '\\' ? 2 : 1);
+      out += '<span class="s">' + esc(s.slice(i, Math.min(j + 1, s.length))) + '</span>';
+      i = j + 1; continue;
+    }
+    if (ch === '-' && s[i + 1] === '-') {
+      let j = s.indexOf('\n', i); if (j < 0) j = s.length;
+      out += '<span class="c">' + esc(s.slice(i, j)) + '</span>'; i = j; continue;
+    }
+    if (/[0-9]/.test(ch) && !/[A-Za-z0-9_]/.test(s[i - 1] || '')) {
+      let j = i; while (j < s.length && /[0-9._]/.test(s[j])) j++;
+      out += '<span class="n">' + esc(s.slice(i, j)) + '</span>'; i = j; continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i; while (j < s.length && /[A-Za-z0-9_]/.test(s[j])) j++;
+      const w = s.slice(i, j);
+      out += CAL_KEYWORDS.has(w.toUpperCase()) ? '<span class="k">' + esc(w) + '</span>' : esc(w);
+      i = j; continue;
+    }
+    out += esc(ch); i++;
+  }
+  return out;
+}
+/* Grow with the statement rather than making people drag a corner, but stop
+   at max-height so a long ASSEMBLE cannot push the results off the screen. */
+function syncEditor() {
+  const ta = $('qtext'), hl = $('qhl');
+  hl.innerHTML = highlightCal(ta.value) + '\n';   /* spacer: a trailing newline has no box */
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 340) + 'px';
+  hl.scrollTop = ta.scrollTop;
+}
+function setQueryText(s) { $('qtext').value = s; syncEditor(); queryNotice(); }
+
+/* ── result shape helpers ── */
+const rType = r => (r && r.type) || 'unknown';
+const rGrains = r => (r && r.grains) || [];
+function isHomogeneous(gs) {
+  if (gs.length < 2) return true;
+  const key = g => (rgType(g) || '') + '|' + Object.keys(rgFields(g)).sort().join(',');
+  const k0 = key(gs[0]);
+  return gs.every(g => key(g) === k0);
+}
+function defaultQView(r) {
+  const t = rType(r);
+  if (t === 'explain') return 'plan';
+  if (t === 'multi_formatted') { const n = Object.keys(r.formats || {})[0]; return n ? 'fmt:' + n : 'raw'; }
+  if (t === 'formatted') return 'format';
+  if (t === 'grains' || t === 'assembled') return isHomogeneous(rGrains(r)) ? 'table' : 'cards';
+  if (t === 'history') return 'history';
+  return 'raw';
+}
+function viewsFor(r) {
+  const t = rType(r), v = [];
+  if (t === 'grains' || t === 'assembled') {
+    v.push(['cards', 'Cards'], ['table', 'Table']);
+    if (rGrains(r).some(g => rgFields(g).subject && typeof rgFields(g).object === 'string')) v.push(['graph', 'Graph']);
+  }
+  if (t === 'formatted') v.push(['format', r.format || 'Rendered']);
+  if (t === 'multi_formatted') for (const n of Object.keys(r.formats || {})) v.push(['fmt:' + n, n]);
+  if (t === 'history') v.push(['history', 'Timeline']);
+  if (t === 'explain') v.push(['plan', 'Plan']);
+  v.push(['raw', 'Raw']);
+  return v;
+}
+function summarise(res) {
+  const r = res.result || {}, t = rType(r);
+  if (t === 'grains' || t === 'assembled') return rGrains(r).length + ' grains';
+  if (t === 'count') return r.count + ' count';
+  if (t === 'history') return (r.versions || []).length + ' versions';
+  if (t === 'multi_formatted') return Object.keys(r.formats || {}).length + ' formats';
+  return t;
+}
+
+/* ── running ── */
+async function runQuery(text) {
+  const t = (text != null ? text : $('qtext').value).trim();
+  if (!t) return;
+  if (text != null) setQueryText(t);
+  Q.text = t;
+  $('qerr').hidden = true;
+  $('qrun').disabled = true;
+  const res = await cal(t);
+  $('qrun').disabled = false;
+  if (!res.ok) { Q.res = null; showQueryError(t, res); $('qresult').hidden = true; return; }
+  Q.res = res; Q.view = defaultQView(res.result); Q.fmtTab = null;
+  histPush(t, summarise(res));
+  renderQueryResult();
+  if (WRITEY.has(leadKeyword(t))) refresh();
+}
+function showQueryError(q, res) {
+  const box = $('qerr');
+  let html = '<span class="code">' + esc(res.code || 'CAL') + '</span>' + esc(res.error || 'error');
+  if (res.span && res.span.line) {
+    const line = q.split('\n')[res.span.line - 1] || '';
+    const col = Math.max(1, res.span.col || 1);
+    const width = Math.max(1, (res.span.end || 0) - (res.span.start || 0));
+    html += '<pre>' + esc(line) + '\n' + ' '.repeat(col - 1)
+      + '^'.repeat(Math.min(width, Math.max(1, line.length - col + 1))) + '</pre>';
+  }
+  if (res.suggestion) html += '<div class="hint">hint: ' + esc(res.suggestion) + '</div>';
+  box.innerHTML = html; box.hidden = false;
+}
+/* Classification is by leading keyword, so a read-only query that opens with
+   LET is refused on a token-less console. Say so before they press Run. */
+function queryNotice() {
+  const kw = leadKeyword($('qtext').value);
+  const n = $('qnotice');
+  if (!kw || canWrite() || READ_ONLY_STMTS.has(kw)) { n.textContent = ''; return; }
+  n.textContent = kw + ' needs a console started with --token-env';
+  n.style.color = 'var(--warn)';
+}
+
+/* ── the result viewer ── */
+const GRAIN_VAR = { fact: '--cat-person', observation: '--cat-note', event: '--cat-thing',
+  goal: '--cat-project', tool: '--cat-org', skill: '--cat-project', state: '--cat-thing' };
+const FMT_META = { markdown: ['md', 'text/markdown'], table: ['md', 'text/markdown'],
+  json: ['json', 'application/json'], yaml: ['yaml', 'text/yaml'], csv: ['csv', 'text/csv'],
+  sml: ['sml', 'text/plain'], toon: ['toon', 'text/plain'], text: ['txt', 'text/plain'],
+  triples: ['txt', 'text/plain'] };
+/* Restate the statement in plain words. Derived from the CAL that was run —
+   never guessed from the result — so a non-technical reader can check the
+   query asked what they meant before trusting the rows. */
+function describeQuery(text) {
+  const t = String(text || ''), kw = leadKeyword(t);
+  if (kw === 'ASSEMBLE') return 'a context brief, budgeted for a model';
+  if (kw === 'EXPLAIN') return 'how the engine would run this — nothing was read';
+  if (kw === 'HISTORY') return 'every version of it, newest first';
+  const kind = (t.match(/\b(?:RECALL|EXISTS)\s+([a-z_]+)/i) || [])[1];
+  const subj = (t.match(/subject\s*=\s*"([^"]+)"/i) || [])[1];
+  const about = (t.match(/\bABOUT\s+"([^"]+)"/i) || [])[1];
+  const bits = [];
+  if (kind && kind.toLowerCase() !== 'facts') bits.push('from ' + kind);
+  if (subj) bits.push('about ' + subj);
+  if (about) bits.push('matching “' + about + '”');
+  bits.push('newest first');
+  return bits.join(', ');
+}
+function renderQuerySummary() {
+  const box = $('qsummary'); box.textContent = '';
+  const res = Q.res; if (!res) return;
+  const r = res.result || {}, t = rType(r), gs = rGrains(r);
+  let head;
+  if (t === 'count') head = r.count + (r.count === 1 ? ' match' : ' matches');
+  else if (t === 'grains' || t === 'assembled') head = gs.length + (gs.length === 1 ? ' memory' : ' memories');
+  else if (t === 'history') head = (r.versions || []).length + ' versions';
+  else if (t === 'explain') head = 'Query plan';
+  /* A FORMAT result counts renderings, not answers — say how many memories
+     went in, so "2 formats" cannot be misread as two results. */
+  else if (t === 'formatted' || t === 'multi_formatted') {
+    const n = r.grain_count;
+    head = n != null ? n + (n === 1 ? ' memory' : ' memories') : 'Rendered';
+  }
+  else head = summarise(res);
+  const h = el('div', 'h', head + ' ');
+  h.appendChild(el('em', '', describeQuery(Q.text)));
+  box.appendChild(h);
+  const sup = gs.filter(g => g.superseded_by || rgFields(g).superseded_by).length;
+  if (sup) box.appendChild(el('div', 'tiny', sup + (sup === 1 ? ' has' : ' have')
+    + ' been superseded since it was written — the older wording is kept so the change stays auditable'));
+  else if (res.elapsed_ms != null) box.appendChild(el('div', 'tiny', 'Ran in ' + res.elapsed_ms + ' ms'
+    + (r.total_available != null && r.total_available > gs.length
+      ? ' · ' + r.total_available + ' match in total' : '')));
+}
+/* Back to the on-ramp without reloading — the editor keeps its text so the
+   last query is still there to edit. */
+function resetQuery() {
+  Q.res = null; Q.view = null;
+  $('qresult').hidden = true; $('qerr').hidden = true;
+  $('qonramp').hidden = false; $('qintro').hidden = false; $('qreset').hidden = true;
+  renderOnramp(); $('qtext').focus();
+}
+function renderQueryResult() {
+  const res = Q.res;
+  $('qresult').hidden = !res;
+  $('qonramp').hidden = !!res;
+  $('qintro').hidden = !!res;
+  $('qreset').hidden = !res;
+  if (!res) return;
+  renderQuerySummary();
+  const r = res.result || {}, t = rType(r);
+  /* The view can survive a re-render (page switch) into a result that has no
+     such view — fall back rather than render an empty pane. */
+  const available = viewsFor(r).map(v => v[0]);
+  if (!available.includes(Q.view)) Q.view = defaultQView(r);
+  const bar = $('qbar'); bar.textContent = '';
+  const gs = rGrains(r);
+  const total = r.total_available;
+  const seg = el('div', 'seg sm');
+  for (const [v, name] of viewsFor(r)) {
+    const b = el('button', Q.view === v ? 'on' : '', name);
+    b.onclick = () => { Q.view = v; renderQueryResult(); };
+    seg.appendChild(b);
+  }
+  bar.appendChild(seg);
+  const sp = el('div'); sp.style.flex = '1'; bar.appendChild(sp);
+  bar.appendChild(resultMenu('Copy', m => {
+    /* Ordered by where results actually go: a doc or ticket, a spreadsheet,
+       then code. `text` only exists on a FORMAT result — offer it first when
+       it does, because that is the thing the person asked to be rendered. */
+    if (r.text) mi(m, 'Copy as shown', 'the rendered ' + (r.format || 'output'),
+      () => copyText(r.text, 'Result'));
+    if (t === 'grains' || t === 'assembled') {
+      mi(m, 'Copy as Markdown', 'a table you can paste into a doc',
+        () => copyText(grainsMarkdown(gs), 'Markdown table'));
+      mi(m, 'Copy as CSV', 'for a spreadsheet', () => copyText(grainsCsv(gs), 'CSV'));
+    }
+    mi(m, 'Copy as JSON', 'the raw result', () => copyText(JSON.stringify(r, null, 2), 'Result JSON'));
+  }));
+  bar.appendChild(resultMenu('Download', m => {
+    mi(m, 'JSON', 'areev-result.json', () => download('areev-result.json', JSON.stringify(r, null, 2)));
+    if (t === 'grains' || t === 'assembled') {
+      mi(m, 'CSV', 'areev-result.csv', () => download('areev-result.csv', grainsCsv(gs), 'text/csv'));
+    }
+  }));
+
+  const body = $('qbody'); body.textContent = '';
+  if (t === 'assembled') body.appendChild(assembledSources(r));
+  if (Q.view === 'cards') body.appendChild(qCards(gs));
+  else if (Q.view === 'table') body.appendChild(qTable(gs));
+  else if (Q.view === 'graph') body.appendChild(qGraphNote(gs));
+  else if (Q.view === 'format' || String(Q.view).startsWith('fmt:')) body.appendChild(qFormats(r));
+  else if (Q.view === 'history') body.appendChild(qHistory(r));
+  else if (Q.view === 'plan') body.appendChild(qPlan(r));
+  else body.appendChild(jsonBlock(r));
+  /* Lay out immediately (reading scrollHeight forces the reflow we need),
+     then once more on the next frame in case web fonts shift the metrics. */
+  if (Q.view === 'cards') { layoutMasonry(); requestAnimationFrame(layoutMasonry); }
+
+  /* Honest paging: the engine tells us the true total, so never imply the
+     page is the whole answer. Re-runs with a larger LIMIT (CAL is bounded,
+     there is no stream to scroll). */
+  const more = $('qmore'); more.textContent = ''; more.hidden = true;
+  if ((t === 'grains' || t === 'assembled') && total != null && total > gs.length) {
+    more.hidden = false;
+    const b = el('button', 'btn ghost', 'Load 20 more (' + (total - gs.length) + ' not shown)');
+    b.onclick = () => runQuery(growLimit(Q.text, 20));
+    more.appendChild(b);
+  }
+}
+function growLimit(text, by) {
+  const m = /\bLIMIT\s+(\d+)/i.exec(text);
+  if (m) return text.replace(/\bLIMIT\s+\d+/i, 'LIMIT ' + (parseInt(m[1], 10) + by));
+  /* FORMAT closes the statement, so a LIMIT appended after it would not
+     parse — insert before the clause instead of at the end. */
+  const f = /\sFORMAT\s/i.exec(text);
+  if (f) return text.slice(0, f.index) + ' LIMIT ' + (20 + by) + text.slice(f.index);
+  return text.trim() + ' LIMIT ' + (20 + by);
+}
+/* A dropdown built where the bar is rebuilt each render. It carries the same
+   classes as the static menus, so the document-level click handler closes it. */
+function resultMenu(label, build) {
+  const wrap = el('div', 'menuwrap');
+  const btn = el('button', 'btn ghost sm hasmenu', label);
+  const menu = el('div', 'menu'); menu.hidden = true;
+  btn.onclick = () => {
+    const wasOpen = !menu.hidden;
+    for (const x of document.querySelectorAll('.menu')) x.hidden = true;
+    if (wasOpen) return;
+    menu.textContent = ''; build(menu); menu.hidden = false;
+  };
+  wrap.appendChild(btn); wrap.appendChild(menu);
+  return wrap;
+}
+/* Markdown, because a result usually ends up in a ticket or a doc. Pipes in a
+   value would break the table, so escape them rather than dropping them. */
+function grainsMarkdown(gs) {
+  const keys = new Set(); for (const g of gs) for (const k of Object.keys(rgFields(g))) keys.add(k);
+  const cols = ['kind', ...keys];
+  const cell = v => (v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v)))
+    .replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  return ['| ' + cols.join(' | ') + ' |', '| ' + cols.map(() => '---').join(' | ') + ' |']
+    .concat(gs.map(g => '| ' + cols.map(c =>
+      cell(c === 'kind' ? rgType(g) : rgFields(g)[c])).join(' | ') + ' |')).join('\n');
+}
+/* Colour JSON the same way values are coloured elsewhere in the console. The
+   regex runs before quote-escaping — escaping `"` first would hide the very
+   delimiter it matches on — so only &, < and > are escaped up front. */
+function highlightJson(text) {
+  const safe = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return safe.replace(
+    /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false)\b|\b(null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+    (m, str, colon, bool, nul, num) => {
+      if (str) return '<span class="' + (colon ? 'jk' : 'js') + '">' + str + '</span>' + (colon || '');
+      if (bool) return '<span class="jb">' + bool + '</span>';
+      if (nul) return '<span class="jz">' + nul + '</span>';
+      if (num) return '<span class="jn">' + num + '</span>';
+      return m;
+    });
+}
+function jsonBlock(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const pre = el('pre', 'code jsonv');
+  pre.innerHTML = highlightJson(text);
+  return pre;
+}
+function grainsCsv(gs) {
+  const keys = new Set(); for (const g of gs) for (const k of Object.keys(rgFields(g))) keys.add(k);
+  const cols = ['hash', ...keys];
+  const cell = v => { const s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  return [cols.join(',')].concat(gs.map(g => cols.map(c =>
+    cell(c === 'hash' ? g.hash : rgFields(g)[c])).join(','))).join('\n');
+}
+const CARD_SKIP = new Set(['subject','relation','object','type','content','tool_content','description']);
+/* Stored values are machine-shaped — epoch millis and raw JSON. Render them
+   the way a person reads them, but never lie about the value. */
+function fmtValue(key, val) {
+  if (val == null) return '';
+  if (typeof val === 'number' && /(^|_)(at|ms)$/.test(key) && val > 1e11) {
+    return new Date(val).toLocaleString();
+  }
+  if (typeof val === 'number' && !Number.isInteger(val)) return String(Math.round(val * 1e4) / 1e4);
+  if (typeof val === 'object') return clampText(JSON.stringify(val));
+  return clampText(String(val));
+}
+/* Classify a value so colour can mean something. Hashes are teal wherever they
+   appear in this console; a failing flag is the one thing worth flagging. */
+function valueClass(key, val) {
+  const k = String(key).toLowerCase();
+  if (typeof val === 'boolean') return val ? (/error|fail|stale|gone/.test(k) ? 'v-no' : 'v-yes') : 'v-time';
+  if (typeof val === 'number') return /(^|_)(at|ms)$/.test(k) && val > 1e11 ? 'v-time' : 'v-num';
+  const s = String(val);
+  if (/hash|^id$|_by$|derived_from|^svt$/.test(k) && /^[0-9a-f]{12,}$/i.test(s)) return 'v-hash';
+  if (/^[0-9a-f]{40,}$/i.test(s)) return 'v-hash';
+  return '';
+}
+/* Nothing matched is a result, not a failure. Restate the question, then hand
+   over the two moves that usually find it: search the words instead of the
+   key, or drop the filter. */
+function qNoResults() {
+  const box = el('div', 'nores');
+  box.appendChild(el('div', 't', 'Nothing matched'));
+  box.appendChild(el('div', 'd', 'The query ran without error — this memory simply holds nothing '
+    + (describeQuery(Q.text) || 'matching it') + '. Memories are only ever added, so an empty '
+    + 'answer means it was never written, not that it was removed.'));
+  const acts = el('div', 'acts');
+  const about = (Q.text.match(/subject\s*=\s*"([^"]+)"/i) || [])[1];
+  if (about) {
+    const b = el('button', 'btn ghost sm', 'Search the words instead');
+    b.onclick = () => { const s = 'RECALL facts ABOUT "' + about + '"'; setQueryText(s); runQuery(s); };
+    acts.appendChild(b);
+  }
+  if (/\bWHERE\b/i.test(Q.text)) {
+    const b = el('button', 'btn ghost sm', 'Drop the filter');
+    b.onclick = () => { const s = Q.text.replace(/\s+WHERE\b[\s\S]*?(?=\s+(?:LIMIT|ORDER|FORMAT|COUNT)\b|$)/i, '');
+      setQueryText(s.trim()); runQuery(s.trim()); };
+    acts.appendChild(b);
+  }
+  const b = el('button', 'btn ghost sm', 'Start over');
+  b.onclick = resetQuery; acts.appendChild(b);
+  box.appendChild(acts);
+  return box;
+}
+/* EXPLAIN answers "how would you run this", so render the plan rather than
+   dropping the reader into raw JSON. The engine ignores FORMAT here — it has
+   no rows to render — which is worth saying out loud, because asking for
+   `EXPLAIN … FORMAT markdown` and getting no markdown tab looks like a bug. */
+const PLAN_LABEL = { query_routing: 'routing', index_usage: 'index', estimated_cost: 'cost',
+  grain_type: 'reads', statement_type: 'statement', pipeline: 'pipeline', filters: 'filters' };
+function qPlan(r) {
+  const plan = r.plan || {};
+  const wrap = el('div', 'planv');
+  const order = ['statement_type', 'query_routing', 'index_usage', 'estimated_cost',
+    'filters', 'pipeline', 'grain_type'];
+  const keys = order.filter(k => k in plan).concat(Object.keys(plan).filter(k => !order.includes(k)));
+  for (const k of keys) {
+    const v = plan[k];
+    const row = el('div', 'prow');
+    row.appendChild(el('b', null, PLAN_LABEL[k] || k.replace(/_/g, ' ')));
+    row.appendChild(el('span', null, Array.isArray(v) ? v.join(' · ') : String(v)));
+    wrap.appendChild(row);
+  }
+  if (/\bFORMAT\b/i.test(Q.text)) {
+    const n = el('div', 'pnote', 'FORMAT is ignored by EXPLAIN — a plan has no rows to render, '
+      + 'so no rendered tab appears. Run the same query without EXPLAIN to see it formatted.');
+    wrap.appendChild(n);
+  }
+  return wrap;
+}
+function qCards(gs) {
+  const host = el('div'); host.id = 'qcards';
+  if (!gs.length) return qNoResults();
+  for (const g of gs) {
+    const f = rgFields(g), t = rgType(g);
+    const c = el('div', 'qcard');
+    const hd = el('div', 'hd');
+    const k = el('span', 'kind', t || 'grain');
+    k.style.color = 'var(' + (GRAIN_VAR[t] || '--cat-thing') + ')';
+    hd.appendChild(k);
+    const sp = el('div'); sp.style.flex = '1'; hd.appendChild(sp);
+    if (g.hlc) hd.appendChild(el('span', 'tiny', relTime(hlcMs(g.hlc))));
+    c.appendChild(hd);
+    c.appendChild(el('div', 'say', sentence({ type: t, fields: f })));
+    for (const [key, val] of Object.entries(f)) {
+      if (CARD_SKIP.has(key)) continue;
+      const row = el('div', 'kv');
+      row.appendChild(el('b', null, key.replace(/_/g, ' ')));
+      row.appendChild(el('span', valueClass(key, val), fmtValue(key, val)));
+      c.appendChild(row);
+    }
+    if (g.hash) {
+      const h = el('div', 'mono dev-only', g.hash.slice(0, 20));
+      c.appendChild(h);
+      c.style.cursor = 'pointer';
+      c.onclick = () => openPanel(g.hash);
+    }
+    host.appendChild(c);
+  }
+  return host;
+}
+/* Measure the *content*, not the box. Once a card is placed it is already
+   constrained to its grid rows, so reading the rendered height feeds the
+   previous answer back in — collapse to one row first, then measure
+   scrollHeight (overflow is hidden, so that is the natural height). */
+function layoutMasonry() {
+  const grid = $('qcards'); if (!grid) return;
+  const rowH = 8, gutter = 16;
+  for (const c of grid.children) c.style.gridRowEnd = 'span 1';
+  void grid.offsetHeight;
+  for (const c of grid.children) {
+    c.style.gridRowEnd = 'span ' + Math.ceil((c.scrollHeight + gutter) / rowH);
+  }
+}
+function qTable(gs) {
+  if (!gs.length) return qNoResults();
+  const freq = new Map();
+  for (const g of gs) for (const k of Object.keys(rgFields(g))) freq.set(k, (freq.get(k) || 0) + 1);
+  /* A memory reads subject → relation → object; sorting columns by how often
+     a field appears put object before subject and inverted the sentence. Pin
+     the triple in reading order, then the rest by frequency. */
+  const LEAD = ['subject', 'relation', 'object'];
+  const rest = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0])
+    .filter(k => k !== 'type' && !LEAD.includes(k));
+  const cols = LEAD.filter(k => freq.has(k)).concat(rest).slice(0, 8);
+  const wrap = el('div'); wrap.style.overflowX = 'auto';
+  const tb = document.createElement('table'); tb.id = 'qtable';
+  const thead = document.createElement('thead'); const hr = document.createElement('tr');
+  hr.appendChild(el('th', null, 'kind'));
+  for (const c of cols) hr.appendChild(el('th', null, c.replace(/_/g, ' ')));
+  thead.appendChild(hr); tb.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const g of gs) {
+    const tr = document.createElement('tr');
+    tr.style.cursor = g.hash ? 'pointer' : 'default';
+    if (g.hash) tr.onclick = () => openPanel(g.hash);
+    const kd = el('td', null, rgType(g) || '');
+    kd.style.color = 'var(' + (GRAIN_VAR[rgType(g)] || '--cat-thing') + ')';
+    tr.appendChild(kd);
+    for (const c of cols) {
+      const v = rgFields(g)[c];
+      tr.appendChild(el('td', valueClass(c, v), fmtValue(c, v)));
+    }
+    tbody.appendChild(tr);
+  }
+  tb.appendChild(tbody); wrap.appendChild(tb);
+  return wrap;
+}
+function qFormats(r) {
+  const map = rType(r) === 'multi_formatted' ? (r.formats || {}) : { [r.format || 'text']: r.text || '' };
+  const names = Object.keys(map);
+  const wrap = el('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:12px;padding-top:14px';
+  /* Which format to show now lives in Q.view. Test for the key, not the text:
+     a renderer that produced "" is still a format you asked for, and treating
+     it as missing made an empty tab impossible to select. */
+  const want = String(Q.view).startsWith('fmt:') ? String(Q.view).slice(4) : null;
+  Q.fmtTab = (want != null && want in map) ? want : names[0];
+  const text = map[Q.fmtTab] != null ? map[Q.fmtTab] : '';
+  if (!text) wrap.appendChild(el('div', 'pnote', 'The ' + Q.fmtTab + ' renderer returned nothing — '
+    + 'there were no grains to render. The query ran fine; it simply matched nothing.'));
+  else wrap.appendChild(Q.fmtTab === 'json' ? jsonBlock(text) : el('pre', 'code', text));
+  const row = el('div'); row.style.cssText = 'display:flex;gap:9px';
+  const cp = el('button', 'btn ghost sm', 'Copy');
+  cp.onclick = () => copyText(text, Q.fmtTab);
+  const meta = FMT_META[Q.fmtTab] || ['txt', 'text/plain'];
+  const dl = el('button', 'btn ghost sm', 'Download .' + meta[0]);
+  dl.onclick = () => download('areev-result.' + meta[0], text, meta[1]);
+  row.appendChild(cp); row.appendChild(dl);
+  wrap.appendChild(row);
+  return wrap;
+}
+function qHistory(r) {
+  const wrap = el('div'); wrap.style.paddingTop = '10px';
+  for (const v of (r.versions || [])) {
+    const row = el('div', 'srow');
+    const f = v.fields || {};
+    row.appendChild(el('span', 't', typeof f.object === 'string' ? f.object : preview(f)));
+    row.appendChild(el('span', 'w', relTime(hlcMs(v.hlc))));
+    if (v.hash) { row.style.cursor = 'pointer'; row.onclick = () => openPanel(v.hash); }
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+function qGraphNote(gs) {
+  const wrap = el('div'); wrap.style.paddingTop = '14px';
+  wrap.appendChild(el('div', 'meta', 'Showing these ' + gs.length + ' results as a graph — '
+    + 'scroll to zoom, drag the background to pan, drag a node to move it, click one to explore it.'));
+  const stage = el('div'); stage.id = 'qstage'; stage.style.marginTop = '10px';
+  const cv = document.createElement('canvas');
+  cv.id = 'qcanvas';
+  stage.appendChild(cv);
+  const zoom = el('div', 'float'); zoom.id = 'qzoom';
+  const btn = (txt, title, cls) => { const b = el('button', cls, txt); b.title = title; return b; };
+  const bOut = btn('−', 'zoom out'), bIn = btn('+', 'zoom in'), bFit = btn('Fit', 'fit to view', 'lbl');
+  zoom.append(bOut, bIn, bFit);
+  stage.appendChild(zoom);
+  wrap.appendChild(stage);
+  /* The canvas has no layout size until it is in the document. */
+  requestAnimationFrame(() => drawResultGraph(cv, gs, { zin: bIn, zout: bOut, fit: bFit }));
+  return wrap;
+}
+/* Assembly is Areev's differentiator — show where the budget went. */
+function assembledSources(r) {
+  const wrap = el('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:14px 0';
+  const cap = r.budget_limit || r.total_tokens || 1;
+  wrap.appendChild(el('span', 'sec-label', 'ASSEMBLY BUDGET · ' + (r.total_tokens || 0)
+    + (r.budget_limit ? ' of ' + r.budget_limit : '') + ' tokens'));
+  for (const s of (r.sources || [])) {
+    const row = el('div'); row.style.cssText = 'display:flex;align-items:center;gap:12px';
+    const n = el('span', null, s.name || s.label || 'source');
+    n.style.cssText = 'width:150px;flex-shrink:0;font-size:13.5px;color:var(--ink)';
+    row.appendChild(n);
+    const track = el('div'); track.style.cssText = 'flex:1;height:8px;border-radius:4px;background:var(--raise)';
+    const fill = el('div');
+    const pct = Math.max(2, Math.round(100 * (s.tokens || 0) / cap));
+    fill.style.cssText = 'height:8px;border-radius:4px;background:var(--accent);width:' + pct + '%';
+    track.appendChild(fill); row.appendChild(track);
+    row.appendChild(el('span', 'tiny', (s.tokens || 0) + ' tok · ' + (s.grain_count != null ? s.grain_count + ' grains' : '')));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+/* A compact, self-contained layout for result graphs. Deliberately separate
+   from the memory graph: that one owns rewind, depth and focus state, and
+   entangling the two would make both harder to reason about. */
+function drawResultGraph(cv, gs, ctrls) {
+  const ctx = cv.getContext('2d');
+  const nodes = new Map(), links = [];
+  const add = n => { if (!nodes.has(n)) nodes.set(n, { id: n, x: (Math.random() - .5) * 260,
+    y: (Math.random() - .5) * 260, vx: 0, vy: 0, deg: 0 }); return nodes.get(n); };
+  for (const g of gs) {
+    const f = rgFields(g);
+    if (!f.subject || typeof f.object !== 'string' || !f.object) continue;
+    const a = add(f.subject), b = add(f.object);
+    a.deg++; b.deg++;
+    links.push({ a: f.subject, b: f.object, label: String(f.relation || '').replace(/_/g, ' ') });
+  }
+  const list = [...nodes.values()];
+  if (!list.length) { ctx.clearRect(0, 0, cv.width, cv.height); return; }
+  /* Settle once, up front: the layout is the answer's shape, and a graph that
+     keeps drifting under the cursor is harder to read than one that holds
+     still. Everything after this is view state — the node positions only move
+     when a person drags them. */
+  for (let step = 0; step < 320; step++) {
+    const k = Math.max(0.05, 1 - step / 320);
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+      const a = list[i], b = list[j];
+      let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+      if (d2 < 1) { dx = Math.random(); dy = Math.random(); d2 = 1; }
+      if (d2 > 160000) continue;
+      const d = Math.sqrt(d2), f = (4200 * k) / d2;
+      a.vx -= dx / d * f; a.vy -= dy / d * f; b.vx += dx / d * f; b.vy += dy / d * f;
+    }
+    for (const l of links) {
+      const a = nodes.get(l.a), b = nodes.get(l.b);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy));
+      const f = (d - 150) * 0.015 * k;
+      a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
+    }
+    for (const n of list) { n.vx += -n.x * 0.005 * k; n.vy += -n.y * 0.005 * k;
+      n.x += (n.vx *= 0.82); n.y += (n.vy *= 0.82); }
+  }
+  /* ── view state: one pan/zoom transform over settled world coordinates ── */
+  let scale = 1, tx = 0, ty = 0, W = 0, H = 0, hover = null, touched = false;
+  const radius = n => 12 + Math.min(16, n.deg * 3);
+  const MIN_SCALE = 0.2, MAX_SCALE = 4;
+  function fit() {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of list) { const r = radius(n);
+      x0 = Math.min(x0, n.x - r - 50); x1 = Math.max(x1, n.x + r + 50);
+      y0 = Math.min(y0, n.y - r - 26); y1 = Math.max(y1, n.y + r + 26); }
+    scale = Math.max(0.25, Math.min(1.3, Math.min(W / (x1 - x0), H / (y1 - y0))));
+    tx = W / 2 - (x0 + x1) / 2 * scale;
+    ty = H / 2 - (y0 + y1) / 2 * scale;
+  }
+  const toWorld = e => { const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left - tx) / scale, y: (e.clientY - r.top - ty) / scale }; };
+  /* Topmost first, so the node you see on top is the one you grab. */
+  const hit = p => { for (let i = list.length - 1; i >= 0; i--) { const n = list[i];
+    if (Math.hypot(n.x - p.x, n.y - p.y) <= radius(n) + 4) return n; } return null; };
+  function resize() {
+    W = cv.clientWidth; H = cv.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  /* Coalesce to one paint per frame — a trackpad emits wheel events far faster
+     than the display refreshes. */
+  let queued = false;
+  const redraw = () => { if (queued) return; queued = true;
+    requestAnimationFrame(() => { queued = false; draw(); }); };
+  /* Zoom about a point in canvas space, so the thing under the cursor (or the
+     middle, for the buttons) stays put. */
+  function zoomAt(px, py, factor) {
+    const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
+    if (next === scale) return;
+    tx = px - (px - tx) * (next / scale);
+    ty = py - (py - ty) * (next / scale);
+    scale = next; touched = true; redraw();
+  }
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const ink = cssVar('--ink'), line = cssVar('--line2'), accent = cssVar('--accent'),
+          well = cssVar('--well'), dim = cssVar('--dim');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(tx, ty); ctx.scale(scale, scale);
+    ctx.strokeStyle = line; ctx.lineWidth = 1.5;
+    for (const l of links) { const a = nodes.get(l.a), b = nodes.get(l.b);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+    const halo = (t, x, y, font, fill) => { ctx.font = font; ctx.textAlign = 'center';
+      ctx.lineWidth = 3.5; ctx.lineJoin = 'round'; ctx.strokeStyle = well; ctx.strokeText(t, x, y);
+      ctx.fillStyle = fill; ctx.fillText(t, x, y); };
+    if (scale > 0.5) for (const l of links) {
+      const a = nodes.get(l.a), b = nodes.get(l.b);
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!l.label || len < 130) continue;
+      const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+      halo(l.label, (a.x + b.x) / 2 + nx * 11, (a.y + b.y) / 2 + ny * 11 + 4, '12px ' + cssVar('--sans'), dim);
+    }
+    for (const n of list) {
+      const r = radius(n);
+      if (n.id === hover) { ctx.strokeStyle = accent; ctx.lineWidth = 2 / scale;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r + 4, 0, 7); ctx.stroke(); }
+      ctx.fillStyle = accent; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 7); ctx.fill();
+      ctx.globalAlpha = 1;
+      halo(n.id.length > 22 ? n.id.slice(0, 21) + '…' : n.id, n.x, n.y + r + 16,
+        '600 13px ' + cssVar('--sans'), ink);
+    }
+    ctx.restore();
+  }
+
+  /* ── interaction ──
+     Drag listeners live on the window only while a gesture is running, so a
+     result graph that gets replaced (every re-render builds a new canvas)
+     leaves nothing behind. */
+  cv.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const p = toWorld(e), n = hit(p);
+    let moved = false;
+    const drag = n ? { id: n.id, dx: n.x - p.x, dy: n.y - p.y } : null;
+    const pan = n ? null : { x: e.clientX - tx, y: e.clientY - ty };
+    if (pan) cv.classList.add('grabbing');
+    const move = ev => {
+      moved = moved || Math.abs(ev.clientX - e.clientX) + Math.abs(ev.clientY - e.clientY) > 3;
+      if (drag) { const q = toWorld(ev); const t = nodes.get(drag.id);
+        if (t) { t.x = q.x + drag.dx; t.y = q.y + drag.dy; } }
+      else { tx = ev.clientX - pan.x; ty = ev.clientY - pan.y; }
+      touched = true; redraw();
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      cv.classList.remove('grabbing');
+      /* A click that never moved is a click, not a gesture. */
+      if (n && !moved) runQuery('RECALL facts WHERE subject = "' + n.id.replace(/"/g, '') + '" LIMIT 50');
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+  cv.addEventListener('mousemove', e => {
+    const n = hit(toWorld(e));
+    const id = n ? n.id : null;
+    cv.style.cursor = n ? 'pointer' : 'grab';
+    if (id !== hover) { hover = id; redraw(); }
+  });
+  cv.addEventListener('mouseleave', () => { if (hover) { hover = null; redraw(); } });
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    /* macOS trackpad pinch arrives as ctrl+wheel — finer steps, or it snaps. */
+    const f = e.ctrlKey ? Math.exp(-e.deltaY * 0.01) : (e.deltaY < 0 ? 1.12 : 0.89);
+    zoomAt(e.clientX - r.left, e.clientY - r.top, f);
+  }, { passive: false });
+  cv.addEventListener('dblclick', () => { touched = false; fit(); redraw(); });
+  if (ctrls) {
+    ctrls.zin.onclick = () => zoomAt(W / 2, H / 2, 1.2);
+    ctrls.zout.onclick = () => zoomAt(W / 2, H / 2, 1 / 1.2);
+    ctrls.fit.onclick = () => { touched = false; fit(); redraw(); };
+  }
+  /* Re-fit on resize only while the view is untouched: once someone has zoomed
+     somewhere deliberately, yanking them back to the whole graph is worse. */
+  const ro = new ResizeObserver(() => {
+    if (!cv.isConnected) { ro.disconnect(); return; }
+    if (!cv.clientWidth) return;
+    resize(); if (!touched) fit(); redraw();
+  });
+  ro.observe(cv);
+
+  resize(); fit(); draw();
+}
+
+/* ── menus: saved queries, templates, history, formats ── */
+function openMenu(id, build) {
+  const m = $(id);
+  const wasOpen = !m.hidden;
+  for (const x of document.querySelectorAll('.menu')) x.hidden = true;
+  if (wasOpen) return;
+  m.textContent = '';
+  build(m);
+  m.hidden = false;
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.menuwrap')) for (const x of document.querySelectorAll('.menu')) x.hidden = true;
+});
+function mi(parent, label, sub, fn) {
+  const d = el('div', 'mi');
+  d.appendChild(document.createTextNode(label));
+  if (sub) d.appendChild(el('small', null, sub));
+  d.onclick = fn;
+  parent.appendChild(d);
+  return d;
+}
+const FORMATS = ['sml', 'toon', 'markdown', 'json', 'yaml', 'csv', 'table', 'triples'];
+function setFormat(spec) {
+  let t = $('qtext').value.trim().replace(/\s+FORMAT\s+(\[[^\]]*\]|preset\s+"[^"]*"|template\s+"[^"]*"|\w+)\s*$/i, '');
+  $('qtext').value = t + ' FORMAT ' + spec;
+  runQuery();
+}
+function buildFormatMenu(m) {
+  m.appendChild(el('div', 'sep', 'RENDER AS'));
+  for (const f of FORMATS) mi(m, f, null, () => setFormat(f));
+  m.appendChild(el('div', 'sep', 'SEVERAL AT ONCE'));
+  mi(m, 'json + markdown', 'FORMAT [json AS data, markdown AS readable]',
+    () => setFormat('[json AS data, markdown AS readable]'));
+  mi(m, 'sml + markdown', 'FORMAT [sml AS compact, markdown AS readable]',
+    () => setFormat('[sml AS compact, markdown AS readable]'));
+}
+function buildHistoryMenu(m) {
+  const h = histLoad();
+  if (!h.length) { m.appendChild(el('div', 'sep', 'NOTHING YET')); return; }
+  m.appendChild(el('div', 'sep', 'THIS BROWSER ONLY · ' + h.length));
+  for (const it of h.slice(0, 40)) {
+    mi(m, (it.s || 'ran') + ' · ' + relTime(it.at), it.q, () => runQuery(it.q));
+  }
+  const c = mi(m, 'Clear history', null, () => {
+    localStorage.removeItem(histKey()); toast('History cleared'); openMenu('histMenu', buildHistoryMenu);
+  });
+  c.style.color = 'var(--danger)';
+}
+/* DESCRIBE returns a free-form `info` blob; find the list wherever it is. */
+function pickList(info) {
+  if (Array.isArray(info)) return info;
+  if (info && typeof info === 'object') {
+    for (const k of ['queries', 'templates', 'items', 'names', 'list']) if (Array.isArray(info[k])) return info[k];
+    for (const v of Object.values(info)) if (Array.isArray(v)) return v;
+  }
+  return [];
+}
+const itemName = it => typeof it === 'string' ? it : (it.name || it.id || JSON.stringify(it).slice(0, 40));
+const itemDesc = it => typeof it === 'string' ? '' : (it.description || it.desc || '');
+async function buildSavedMenu(m) {
+  if (!stmtSupported('DEFINE')) {
+    const n = el('div', 'mi', 'This build cannot save queries or templates — the memory file '
+      + 'has no registry for them yet. DESCRIBE QUERIES still lists any that exist.');
+    n.style.cssText = 'color:var(--warn);white-space:normal;cursor:default';
+    m.appendChild(n);
+  }
+  m.appendChild(el('div', 'sep', 'SAVED QUERIES'));
+  const loading = el('div', 'mi', 'loading…'); m.appendChild(loading);
+  const [qs, ts] = await Promise.all([cal('DESCRIBE QUERIES'), cal('DESCRIBE TEMPLATES')]);
+  loading.remove();
+  const qlist = qs.ok ? pickList((qs.result || {}).info) : [];
+  if (!qlist.length) m.appendChild(el('div', 'mi', qs.ok ? 'none saved yet' : 'could not list'));
+  for (const it of qlist) {
+    const n = itemName(it);
+    mi(m, n, itemDesc(it) || 'RUN "' + n + '"', () => runQuery('RUN "' + n + '"'));
+  }
+  m.appendChild(el('div', 'sep', 'TEMPLATES'));
+  const tlist = ts.ok ? pickList((ts.result || {}).info) : [];
+  if (!tlist.length) m.appendChild(el('div', 'mi', ts.ok ? 'none defined yet' : 'could not list'));
+  for (const it of tlist) {
+    const n = itemName(it);
+    mi(m, n, 'FORMAT preset "' + n + '"', () => setFormat('preset "' + n + '"'));
+  }
+}
+async function saveCurrentQuery() {
+  const body = $('qtext').value.trim();
+  if (!body) { toast('Nothing to save'); return; }
+  if (!stmtSupported('DEFINE')) {
+    toast('This build cannot save queries — DEFINE is not in the engine’s supported statements');
+    return;
+  }
+  if (!canWrite()) { toast('Saving needs a console started with --token-env'); return; }
+  const name = window.prompt('Name this query (letters, numbers, spaces, _ and -):');
+  if (!name) return;
+  if (!QUERY_NAME_RE.test(name)) { toast('That name will not be accepted — start with a letter, max 64 chars'); return; }
+  const desc = window.prompt('Describe it (optional):') || '';
+  const stmt = 'DEFINE QUERY "' + name + '"'
+    + (desc ? ' DESCRIPTION "' + desc.replace(/"/g, "'") + '"' : '')
+    + ' AS { ' + body + ' }';
+  const res = await cal(stmt);
+  if (res.ok) toast('Saved — it lives in the memory file, not this browser');
+  else toast('Could not save: ' + (res.error || 'unknown') + (res.code ? ' [' + res.code + ']' : ''));
+}
+
+boot();
+</script>

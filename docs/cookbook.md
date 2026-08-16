@@ -1,0 +1,749 @@
+# Areev Cookbook
+
+Task-oriented recipes with copy-pasteable commands. Every command below is
+verified against the `areev` CLI. Run `areev help` for the full usage summary.
+
+Conventions used throughout:
+
+- Every command needs `--db <file>` (the memory file). It is created on first
+  write.
+- `--ns <namespace>` partitions grains within a file; it defaults to `shared`.
+- `-k <N>` caps result counts.
+
+If you are running from source instead of an installed binary, replace `areev`
+with `cargo run -p areev --`.
+
+---
+
+## 1. Add and recall a memory (CLI)
+
+Store a fact (subject–relation–object), then read it back:
+
+```bash
+# Add a fact (confidence defaults to 0.9)
+areev add --db john.db --ns caller \
+  --subject john --relation prefers --object "window seat" --confidence 0.95
+
+# Recall everything about a subject, newest-first (JSON lines)
+areev recall --db john.db --ns caller --subject john
+
+# Narrow to one relation, cap results
+areev recall --db john.db --ns caller --subject john --relation prefers -k 5
+```
+
+`add` prints the new grain's content address (64-hex). Fetch any grain by hash:
+
+```bash
+areev get <hash> --db john.db
+```
+
+### Render model-ready context
+
+Instead of raw JSON, render recall results into context for a model, under an
+optional token budget:
+
+```bash
+areev recall --db john.db --ns caller --subject john --render sml
+areev recall --db john.db --ns caller --subject john --render markdown --budget 300
+```
+
+`--render` accepts `sml`, `toon`, `markdown`, `plain`, or `json`. A one-line
+summary (grain count, estimated tokens, whether it was truncated) is printed to
+stderr.
+
+### Hybrid text search
+
+`search` runs hybrid recall (structural + BM25, fused with RRF):
+
+```bash
+areev search --db john.db --ns caller --query "seat preference" -k 10
+```
+
+---
+
+## 2. Run a CAL query
+
+CAL (Context Assembly Language) is Areev's query language. It has no bulk
+destruction — `DELETE`/`DROP` are not tokens in the grammar; the only
+destructive statement is `FORGET <hash>` (a single-grain tombstone, gated —
+disable with `--no-destructive-ops`).
+
+```bash
+# Count matching facts
+areev cal 'RECALL facts WHERE subject = "john" | COUNT' --db john.db --ns caller
+
+# Recall with a filter
+areev cal 'RECALL facts WHERE subject = "john" AND relation = "prefers"' \
+  --db john.db --ns caller
+
+# Add through CAL (ADD requires a REASON/BECAUSE clause)
+areev cal 'ADD fact SET subject = "john" SET relation = "likes" SET object = "rust" REASON "session note"' \
+  --db john.db --ns caller
+
+# Assemble one prompt from several sources in a single statement
+areev cal 'ASSEMBLE "prompt" FROM
+  policies: (RECALL facts WHERE namespace = "org.policies" AND subject = "refunds"),
+  profile:  (RECALL facts WHERE subject = "john")' --db john.db
+
+# Ask whether a specific grain exists, or view a subject's history
+areev cal 'EXISTS sha256:<64-hex>' --db john.db
+areev cal 'HISTORY WHERE subject = "john" AND relation = "prefers"' --db john.db --ns caller
+```
+
+For an interactive shell (with `.stats`, `.log`, `.verify`, `.help`, `.quit`
+dot-commands):
+
+```bash
+areev repl --db john.db --ns caller
+```
+
+See [`cal-reference.md`](cal-reference.md) for the full language.
+
+---
+
+## 3. Run the MCP server for Claude Code
+
+Areev ships a built-in MCP server on stdio. Register it with Claude Code in one
+line:
+
+```bash
+claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
+```
+
+This exposes 6 tools to the model: `areev_recall`, `areev_add`,
+`areev_supersede`, `areev_forget`, `areev_remember`, and `areev_cal`.
+
+Any MCP client can launch the same server directly:
+
+```bash
+areev serve --mcp --db ~/.areev/code.db --ns claude-code
+```
+
+### Auto-capture each Claude Code turn (optional)
+
+Print a ready-made hook snippet for `~/.claude/settings.json` (it only *prints* —
+it never edits your config):
+
+```bash
+areev hook claude-code --db ~/.areev/code.db --ns claude-code
+```
+
+The snippet wires the `Stop` hook to `areev capture-stop`, which reads Claude
+Code's hook JSON on stdin and stores the last exchange as thread-indexed Event
+grains.
+
+See [`mcp-reference.md`](mcp-reference.md) for the tool schemas.
+
+---
+
+## 4. Use encryption at rest
+
+Add `--passphrase-env <VAR>` to **any** command to encrypt the database at rest.
+Areev derives an AES-256 key (Argon2id) from the passphrase held in the named
+environment variable; the non-secret salt is kept in a `<db>.kdf` sidecar.
+
+```bash
+# Keep the passphrase in the environment, never on the command line
+export AREEV_PASS='correct horse battery staple'
+
+areev add    --db secret.db --passphrase-env AREEV_PASS \
+  --ns caller --subject john --relation prefers --object tea
+areev recall --db secret.db --passphrase-env AREEV_PASS --ns caller --subject john
+```
+
+Back up the `secret.db.kdf` sidecar alongside `secret.db` — without it the key
+cannot be re-derived.
+
+> Caveats: the `.blobs` sidecar (large binary payloads) is **not** encrypted, and
+> encryption-at-rest uses the storage engine's AES-256-GCM, an experimental
+> Turso feature. Treat it as defense-in-depth, not a substitute for
+> full-disk encryption. Read [`../SECURITY.md`](../SECURITY.md) first.
+
+---
+
+## 5. Back up with a bundle, then restore
+
+A **bundle** is a portable, incremental, git-shaped backup of the op-log.
+
+```bash
+# Write a full backup
+areev bundle --db john.db --out john-backup.mgb
+
+# Apply it to another file (fast-forward, idempotent)
+areev import --db restored.db --bundle john-backup.mgb
+```
+
+For incremental backups, `bundle` prints the cursor for the next run — pass it
+back as `--since`:
+
+```bash
+areev bundle --db john.db --out inc-01.mgb                 # prints: next --since <N>
+areev bundle --db john.db --out inc-02.mgb --since <N>     # only new ops
+```
+
+Inspect the change feed at any time:
+
+```bash
+areev log   --db john.db --limit 20
+areev verify --db john.db      # integrity + full content-address recheck
+areev stats  --db john.db
+```
+
+---
+
+## 6. Stream / sync between two files
+
+`stream` continuously ships op-log segments (with generations, Litestream-shaped)
+to a directory — a local path, an NFS mount, or an object-store mount. `follow`
+subscribes and applies new segments; `restore` rebuilds from scratch, including
+point-in-time restore.
+
+```bash
+# Producer: keep shipping changes to a shared directory
+areev stream --db john.db --to ./sync-dir --interval-ms 500
+
+# Consumer: subscribe and apply new segments as they appear
+areev follow --db replica.db --from ./sync-dir --interval-ms 1000
+
+# One-shot variants for scripts/cron
+areev stream --db john.db     --to ./sync-dir --once
+areev follow --db replica.db  --from ./sync-dir --once
+
+# Rebuild a fresh file from a stream dir, optionally to a point in time
+areev restore --db new.db --from ./sync-dir
+areev restore --db new.db --from ./sync-dir --until-hlc <HLC>
+```
+
+Because grains are content-addressed and imports are idempotent, concurrent edits
+that arrive out of order become **branches (heads)** with a deterministic
+provisional head rather than lost writes.
+
+---
+
+## 7. Use the Python bindings
+
+Install the published package:
+
+```bash
+pip install areev
+```
+
+Or build from a local checkout with [maturin](https://github.com/PyO3/maturin):
+
+```bash
+pip install maturin
+maturin develop -m crates/areev-py/Cargo.toml    # into the active virtualenv
+```
+
+Then:
+
+```python
+import areev, json
+
+m = areev.Areev("john.db", ns="caller")
+
+# Add facts (returns the 64-hex content address)
+h = m.add_fact("john", "prefers", "window seat", confidence=0.95)
+
+# Structural recall and CAL both return JSON strings
+print(m.recall("john"))
+print(m.cal('RECALL facts WHERE subject = "john" | COUNT'))
+
+# Current head for a (subject, relation); evolve it with supersede
+head = m.latest("john", "prefers")
+m.supersede(h, "fact", json.dumps({
+    "subject": "john", "relation": "prefers", "object": "aisle seat"
+}))
+
+# Full history, portable backup, integrity check
+print(m.history("john", "prefers"))
+m.bundle("john-backup.mgb", 0)
+print(m.verify())
+
+# Anthropic memory-tool backend, scalars in / JSON string out
+print(m.memory_tool(json.dumps({"command": "view", "path": "/memories"})))
+```
+
+The bindings follow **scalars in, JSON strings out**; errors raise
+`ValueError`. Encryption at rest is available from both bindings, not just the
+CLI — pass a `passphrase` to the constructor
+(`areev.Areev("john.db", ns="caller", passphrase=os.environ["AREEV_PASS"])` in
+Python, `new Areev("john.db", "caller", pass)` in Node). It derives an
+AES-256 key with Argon2id exactly as the CLI's `--passphrase-env` does; the key
+is host-supplied and never stored in the file, and the `.blobs` CAS sidecar is
+**not** covered (see `open_warnings()`).
+
+---
+
+## 8. Open the web console
+
+`ui` serves a local, browser-based console (memories, graph, and query tabs;
+light + dark themes; grain inspector):
+
+```bash
+areev ui --db john.db
+# → areev console → http://127.0.0.1:7437
+```
+
+The console binds loopback (`127.0.0.1:7437`) with **no authentication** by
+design. It refuses to bind a non-loopback address unless you pass
+`--allow-remote` — and even then serves an unauthenticated, writable console over
+plaintext HTTP, so only do that behind a TLS-terminating reverse proxy with its
+own auth:
+
+```bash
+# Choose a different loopback port
+areev ui --db john.db --addr 127.0.0.1:8080
+
+# Override the loopback guard (NOT recommended — front it with a TLS proxy + auth)
+areev ui --db john.db --addr 0.0.0.0:8080 --allow-remote
+```
+
+See [`../SECURITY.md`](../SECURITY.md) for the trust model and the operator
+hardening checklist.
+
+---
+
+## 9. Ingest raw conversation, then distill facts
+
+`remember` stores raw content as an **Event** grain (it prints the hash) and
+attaches the facts distilled from it. You supply those facts, or you let a model
+extract them.
+
+Every surface that captures raw text writes the same grain through the same
+path — `areev remember`, the Python and Node bindings, the MCP `areev_remember`
+tool, and the `capture-stop` hook. Pass `--session-id` and `--role` to record a
+turn as part of its conversation (`RECALL events WHERE session_id = "..."`).
+
+**Host-supplied** — you already ran your own extractor, so no model is called:
+
+```bash
+areev remember --db john.db --ns caller \
+  --content "I always want a window seat, and I'm vegetarian." \
+  --observer voice-agent \
+  --facts '[{"subject":"john","relation":"prefers","object":"window seat","confidence":0.9},
+            {"subject":"john","relation":"diet","object":"vegetarian","confidence":0.95}]'
+```
+
+**Model-extracted** — `--model provider:name` uses a built-in backend (key read
+from the environment: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or `ollama:` for
+a local model, never on the command line). `--llm-cmd 'CMD'` is the
+zero-dependency escape hatch: your command gets the request JSON on stdin and
+prints the response.
+
+```bash
+areev remember --db john.db --ns caller \
+  --content "I always want a window seat, and I'm vegetarian." \
+  --observer voice-agent \
+  --model openai:gpt-4o-mini
+```
+
+```json
+{"event":"a1b2…","facts":["c3d4…","e5f6…"],"model":"gpt-4o-mini",
+ "verification_status":"unverified","proposed":2,"dropped":0}
+```
+
+Extraction is the point where a model can write its own hallucinations into
+memory, so the write is shaped to stay honest about that:
+
+- **The raw text lands first.** The Event is written *before* the model is
+  called. A failed or garbage extraction costs you the facts, never the source —
+  the hash is still printed, and you can retry the extraction against it.
+- **Extracted facts are marked, not trusted.** Each one carries `derived_from`
+  (the event), `source_type=derived`, `extractor_model` (which model wrote
+  it), and `verification_status="unverified"`. That last one is CAL-filterable,
+  so the extraction queue is reviewable:
+
+  ```bash
+  areev cal 'RECALL facts WHERE verification_status = "unverified"' --db john.db --ns caller
+  ```
+
+- **Grounding is opt-in.** `--ground-model` / `--ground-cmd` runs a *separate*
+  call that checks each proposed fact against the source text — proposer ≠
+  scorer, the same rule the Areev Loop verifier follows. Facts the grounder does not
+  support are dropped; survivors are stamped `"verified"`.
+- **Nothing is dropped silently.** `proposed` vs `dropped` in the output account
+  for everything the confidence floor (`--min-confidence`) and the grounder
+  removed.
+
+Use `--dry-run` to see what a model would extract without writing anything —
+useful for iterating on `--extract-hint`, which steers extraction toward your
+domain ("only travel preferences; ignore scheduling chatter").
+
+The same knobs exist on the bindings (`model=`, `llm_cmd=`, `ground_cmd=`,
+`extract_hint=`, `min_confidence=` in Python; the camelCase equivalents in
+Node). MCP's `areev_remember` deliberately has none of this — there the client
+*is* a model, so it stores the exchange as an Event and distills with
+`areev_add`.
+
+The Anthropic memory-tool backend maps a `/memories/...` file space onto
+supersession chains of Fact grains (full wiring guide:
+[`memory-tool.md`](memory-tool.md)):
+
+```bash
+areev memtool '{"command":"view","path":"/memories"}' --db john.db --ns caller
+areev memtool '{"command":"create","path":"/memories/notes.md","file_text":"prefers window seat"}' \
+  --db john.db --ns caller
+```
+
+## 10. Build an agent that learns (and can unlearn) — by hand
+
+> This section builds the loop **manually** — you drive reflection and the
+> writes. For the same loop **governed** — deterministic analyzers that find
+> duplicates, contradictions, recurring tool failures, and stale lessons, each
+> as a reviewable, undoable, audited recommendation — see
+> [§12 Self-improve with Areev Loop](#12-self-improve-with-loop-governed-deterministic)
+> and [docs/loop.md](loop.md). Areev Loop sits on exactly the substrate below.
+
+A self-improvement loop is: **act → log experience → reflect → distill lessons
+→ recall them next time**. Areev is the substrate for that loop, not the loop
+itself: reflection (deriving lessons from experience) is a model call your host
+makes, like all LLM work. What the store guarantees is that learning cannot rot
+the memory it feeds on *silently* — revised lessons replace instead of
+co-ranking (supersession), every lesson links to the experience that taught it
+(`derived_from` + `REASON`), replayed or re-synced writes are idempotent
+(content addressing), and a bad learning episode can be rolled back
+(point-in-time restore). One honest limit: a **paraphrased re-learning is new
+bytes and therefore a new grain** — content addressing alone cannot know it's a
+duplicate. For that, `areev novelty` gives an *advise-mode* check (below): the
+harness looks up the nearest existing lesson before writing and supersedes it
+instead of adding a paraphrase. In a learning loop these properties are not
+hygiene: rot compounds, because the agent keeps learning from its own mistakes.
+
+Log experience as it happens — `remember` stores each entry as an Event grain
+and prints its hash (keep it: the lesson below links back to it). Without
+`--model` no model is called, so this stays a pure write — log everything:
+
+```bash
+areev remember --db agent.db --ns agent --observer executor \
+  --content "Task: fix flaky test. Attempt 1: reran without isolation - FAILED."
+areev remember --db agent.db --ns agent --observer executor \
+  --content "Task: fix flaky test. Attempt 2: isolated the shared tempdir per test - PASSED."
+```
+
+Read experience back for reflection with `areev log --db agent.db` (op-log,
+newest ops last) and `areev get <hash>` per grain. Write-cost note: the
+microsecond write path assumes the text index is off or deferred — a live FTS
+index costs ~140ms/write (`RESULTS.md` finding #1). For high-volume experience
+logging, open with `--index-text false` and `areev reindex` before
+recall-heavy phases, or keep raw experience and lessons in separate files.
+
+After an episode, reflect (your model call) over the recent experience and
+store each distilled lesson as a fact keyed to the skill it belongs to.
+`derived_from` links the lesson to the observation that taught it —
+structural provenance, not just a comment — and `REASON` records why:
+
+```bash
+areev cal 'ADD fact SET subject = "fix_flaky_tests" SET relation = "lesson"
+  SET object = "Flaky tests sharing a tempdir need per-test isolation; rerunning alone never fixes them."
+  SET confidence = 0.7 SET derived_from = "<observation-hash>"
+  REASON "distilled from session flaky-01"' --db agent.db --ns agent
+```
+
+Track proficiency as its own supersession chain — `ADD` once, then `SUPERSEDE`
+the tip after each success (both print the hash you supersede next time):
+
+```bash
+areev cal 'ADD fact SET subject = "fix_flaky_tests" SET relation = "proficiency"
+  SET object = "0.30" REASON "first successful fix"' --db agent.db --ns agent
+
+areev cal 'SUPERSEDE sha256:<tip-hash> SET object = "0.55"
+  BECAUSE "second successful fix, different repo"' --db agent.db --ns agent
+```
+
+Recall surfaces only the current value — no stale value co-ranks with a
+revised one. (That guarantee holds *within* a supersession chain: two
+independently `ADD`ed facts on the same subject both surface as current, so
+revise, don't re-add.) The full learning curve — every level and the reason it
+changed — is one query; per-version wall-clock rides the op-log (`areev log`),
+since supersession carries the original `created_at` forward:
+
+```bash
+areev cal 'HISTORY WHERE subject = "fix_flaky_tests" AND relation = "proficiency"' \
+  --db agent.db --ns agent
+```
+
+At act time, pull the lessons back into the model's context:
+
+```bash
+areev search --db agent.db --ns agent --query "flaky test" -k 5
+areev recall --db agent.db --ns agent --subject fix_flaky_tests --render sml --budget 300
+```
+
+**Unlearning** is what makes the loop safe to run unattended. A single bad
+lesson is superseded (revised) or forgotten (tombstoned) by hash.
+
+For an **episode-scoped** unlearn — undo everything the agent distilled from one
+bad session without losing the good writes around it — link each lesson to its
+source experience with `SET derived_from = "<observation-hash>"` (shown above),
+then walk it back with `areev provenance`:
+
+```bash
+# Which lessons came from this observation/session? (reverse provenance)
+areev provenance <observation-hash> --db agent.db --ns agent
+# Revise or tombstone each returned hash — e.g. forget them all:
+areev provenance <observation-hash> --db agent.db --ns agent \
+  | python3 -c 'import json,sys; [print(json.loads(l)["hash"]) for l in sys.stdin]' \
+  | while read h; do areev cal "FORGET sha256:$h" --db agent.db --ns agent; done
+```
+
+`areev provenance` is precise (only grains derived from that source) and keeps
+the surrounding good writes intact — the credit-assignment tool for a learning
+loop. When you instead need to roll the *whole file* back to a point in time,
+checkpoint before risky learning and rewind (this also discards good writes in
+the window, and produces a new file you swap in):
+
+```bash
+areev stream --db agent.db --to ./checkpoints --once   # checkpoint: ship the op-log
+# ... a bad reflection episode writes junk lessons ...
+areev log    --db agent.db                             # note the HLC of the last good op
+areev stream --db agent.db --to ./checkpoints --once   # ship the rest, then rewind:
+areev restore --db rewound.db --from ./checkpoints --until-hlc <HLC>
+```
+
+For a typed capability record there is also the OMS **Skill** grain:
+
+```bash
+areev cal 'ADD skill SET name = "fix_flaky_tests" SET description = "Diagnose and fix flaky tests"
+  SET when_to_use = "test passes alone but fails in suite" SET confidence = 0.3
+  REASON "first successful fix"' --db agent.db --ns agent
+```
+
+A Skill's `confidence` **is** its proficiency (OMS aliases them), and it
+carries definition fields like `instructions` and `when_to_use`. Evolve it with
+`SUPERSEDE sha256:<hash> SET confidence = 0.55 BECAUSE "..."` — unchanged
+fields carry forward — and fetch any version with `areev get <hash>`. Skill
+grains are hash-addressed records today; keep the *queryable* index in facts,
+as above.
+
+### Closing the loop automatically (Claude Code)
+
+The steps above are the mechanics; two hooks make the loop run without you
+thinking about it. `areev hook claude-code` prints a `settings.json` snippet
+that wires both directions:
+
+```bash
+areev hook claude-code --db ~/.areev/code.db --ns claude-code   # prints, never writes
+```
+
+- **`UserPromptSubmit` → `areev recall-hook`** reads each prompt, hybrid-searches
+  memory, and prints matching lessons to stdout — which Claude Code injects as
+  context. Retrieval stops depending on the model *choosing* to call a tool.
+- **`Stop` → `areev capture-stop`** stores the turn's last exchange as Events,
+  including tool calls and their outcomes (a failing `tool_result` is captured
+  and flagged), which is the raw signal reflection distills from.
+
+`recall-hook` reads the hook JSON on stdin (`{"prompt": "..."}`), so it also
+works from any tool that can run a command per prompt; it stays silent when
+there is no prompt or no match, so it never adds noise.
+
+### The reflection harness (your model call)
+
+The *reflect* step — turning captured experience into lessons — is a model
+call. Areev will make it for you if you point it at a model (`areev remember
+--model` for extraction, §9; `areev loop run --model` for governed
+reflection), but nothing runs one by default, and the harness below keeps the
+call entirely in your hands. The shape of a nightly (or on-`SessionEnd`)
+harness:
+
+```bash
+# 1. Pull recent experience (now that the experience log is recallable):
+areev cal 'RECALL events RECENT 100' --db agent.db --ns agent --render plain > episode.txt
+
+# 2. Distill lessons with YOUR model (any stdin→stdout command), e.g.:
+#    claude -p "Read this session. Emit each durable lesson as one line:
+#               subject | relation | object | derived_from=<observation-hash>"
+cat episode.txt | claude -p "$(cat reflect-prompt.txt)" > lessons.tsv
+
+# 3. Write each lesson back. --idempotent collapses an exact repeat; for
+#    paraphrases, ask `areev novelty` for the nearest existing lesson first and
+#    supersede it past a similarity threshold instead of adding a near-dup:
+while IFS='|' read -r s r o df; do
+  near=$(areev novelty --text "$o" --subject "$s" --relation "$r" \
+           --db agent.db --ns agent --embed-cmd 'my-embedder' -k 1)
+  sim=$(printf '%s' "$near" | python3 -c 'import json,sys; l=sys.stdin.read().strip(); print(json.loads(l)["similarity"] if l else 0)')
+  if awk "BEGIN{exit !($sim > 0.9)}"; then
+    hash=$(printf '%s' "$near" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["hash"])')
+    areev cal "SUPERSEDE sha256:$hash SET object = \"$o\" BECAUSE \"refined lesson\"" --db agent.db --ns agent
+  else
+    areev add --db agent.db --ns agent --subject "$s" --relation "$r" --object "$o" --idempotent
+  fi
+done < lessons.tsv
+```
+
+`areev novelty` is *advise-only* — it never drops or writes; the harness decides
+supersede-vs-add (the exact failure mode of stores that silently deduped and
+lost updates). `--idempotent` handles exact repeats, `SET derived_from` on
+lessons lets `areev provenance` walk them back. The engine gives you the safe
+substrate; the harness is the one piece you own.
+
+---
+
+## 11. Migrate from mem0, Zep, Letta, LangMem, or Basic Memory
+
+Dump your existing memories to a file (per-source one-liners in
+[`migrate.md`](migrate.md)), then:
+
+```bash
+areev migrate --from mem0 --file export.json --history history.json --db mine.db
+areev migrate --from basic-memory --file ~/basic-memory --db mine.db   # notes → /memories/*
+areev migrate --from jsonl --file memories.jsonl --db mine.db          # pgvector/Chroma/homegrown
+```
+
+mem0 history becomes real supersession chains with original timestamps;
+re-running an import skips what's already there. Check the result:
+
+```bash
+areev stats  --db mine.db
+areev search --query "anything you remember" --db mine.db
+areev memtool '{"command":"view","path":"/memories"}' --db mine.db
+```
+
+To embed while importing (vector recall), add
+`--embed-cmd 'python3 my_embedder.py'` — the command reads text on stdin and
+prints a JSON array of floats.
+
+---
+
+## 12. Self-improve with Areev Loop (governed, deterministic)
+
+[§10](#10-build-an-agent-that-learns-and-can-unlearn--by-hand) builds the loop
+by hand. **Areev Loop** governs it: it turns your agent's history into
+recommendations — evidence-cited, reviewable, undoable, measured — with **no
+model calls**. The 60-second proof needs no agent:
+
+```python
+import areev, json
+db = areev.Areev("proof.db", actor="user:me")
+for _ in range(5): db.record_tool_call("stripe_refund", '{"error":"rate_limited"}', is_error=True)
+for _ in range(2): db.record_tool_call("stripe_refund", '{"ok":true}', is_error=False)
+db.add_fact("acme", "deploy_target", "us-east-1", 0.9)
+db.add_fact("acme", "deploy_target", "eu-west-1", 0.9)     # a contradiction
+
+db.loop_run()                                            # deterministic; bare = never gated
+pending = json.loads(db.recommendations('{"status":"pending"}'))
+for r in pending: print(r["severity"], r["summary"])
+
+# model judgment — apply one with a reason, dismiss one with a reason
+db.apply_recommendation(pending[0]["hash"], because="retries belong in the client")
+db.dismiss_recommendation(pending[1]["hash"], "kept the newer region intentionally")
+```
+
+From the CLI, the same loop against a seeded demo backend:
+
+```bash
+areev init --db demo.db --template demo --ns caller     # plants dupes, a contradiction, a stale grain
+areev loop run  --db demo.db --ns caller
+areev loop list --db demo.db --ns caller              # the queue
+areev loop approve <hash> --db demo.db --ns caller --because "confirmed"
+areev loop apply   <hash> --db demo.db --ns caller --because "consolidating"
+areev ui --db demo.db --token-env AREEV_TOKEN            # the Areev Loop tab (token-less = read-only)
+```
+
+Ops without a daemon — a run is a cheap idempotent command hosts trigger
+however they already do (hook, cron, CI):
+
+```bash
+areev loop run  --db agent.db --min-new 20 --min-new-errors 3 --if-stale 6h --quiet   # cheap no-op off a watermark
+areev loop list --db agent.db --fail-on high --format json                            # CI gate: exit 2 on match
+```
+
+Import history that predates Areev, auto-apply structural curation via a
+policy file, and the multi-agent supervisor pattern each have a runnable
+example under [`../examples/`](../examples/). Auto-apply is off unless a host
+`loop-policy.json` grants it, and even then it is limited to non-destructive
+structural curation with no model- or tool-derived free text. Full guide:
+[docs/loop.md](loop.md).
+
+---
+
+## 13. Answer a data-subject request (access, portability, erasure)
+
+The access request and the erasure run **one selector**, so what you disclose
+is exactly what you delete. Three commands, one audit trail:
+
+```bash
+# 1. Art. 15 access + Art. 20 portability — nothing is modified.
+areev subject-report "pat" --db memory.db --ns caller \
+     --out pat.jsonl --bundle pat.mgb
+
+# 2. Art. 17 erasure — history, partition keys (pat#visit1), dictionary
+#    entries, and sole-referenced attachments, replicating as tombstones.
+areev forget-subject "pat" --db memory.db --ns caller --yes \
+     --because "Art. 17 request #42"
+
+# 3. Art. 5(2)/30 evidence — who erased what, when, and why.
+areev audit export --db memory.db --out evidence.jsonl
+```
+
+Add `--text-mentions` to both the report and the erasure to reach grains
+whose *indexed text* mentions the identity (needs the text index on and fully
+built; it errors rather than answering partially). The `.mgb` is a portable
+bundle any OMS store can import — that is the portability deliverable, not a
+screenshot.
+
+The audit record names a **fingerprint** of the identity, not the identity:
+
+```bash
+areev audit export --db memory.db | head -1
+# {"trail":"destruction","verb":"erase","target":"subject:68d753f055b1a15b ns:caller",
+#  "subject_ref":"sha256-64/hex","because":"Art. 17 request #42","grains_erased":2,...}
+
+# Verify a record refers to "pat" by recomputing the digest:
+python3 -c 'import hashlib; print(hashlib.sha256(b"pat").hexdigest()[:16])'
+# 68d753f055b1a15b
+```
+
+That is deliberate: an audit grain is immutable, replicates, and lands in
+archives, so writing the identifier there would undo the erasure it records.
+The fingerprint is verifiable from a candidate identity but not enumerable.
+
+To make the erasure reach your archives too, run streaming with a retention
+window — each checkpoint snapshots the already-erased store, and generations
+older than the window are dropped whole:
+
+```bash
+areev stream --db memory.db --to /var/lib/areev/archive --checkpoint --retain 30d
+```
+
+Full obligation map, deployment requirements, and honest limits:
+[`gdpr.md`](gdpr.md).
+
+---
+
+## 14. Capture a reproducible run and export a governed corpus
+
+Bind the host configuration and recall telemetry to one run id, then export
+only the transcript selected by read-only CAL:
+
+```bash
+areev run-manifest --db agent.db --run-id eval-42 \
+  --config '{"model":{"base":"model:v1"},"policy":{"version":"p3"},"seed":7}'
+
+# Use --run-id eval-42 on recall/search/CAL invocations whose full telemetry
+# rows should join to this trajectory.
+areev corpus --db agent.db --ns caller \
+  --select 'RECALL events WHERE session_id = "session-42"' \
+  --out train.jsonl --recipient trainer:model-v2
+```
+
+The JSONL row uses OpenAI chat messages and a top-level `tools` list. Areev
+also emits step quality/loss weights, observation elisions, and the binding to
+source hashes, model/policy versions, trace, and data-subject fingerprints.
+The export receipt is an immutable grain in `agent:harness` (and therefore
+requires `write ON agent:harness` in addition to the selector's read grant); its
+`mg:corpus_source` links make every input reverse-traversable and let later
+subject or retention erasure identify stale corpus files. Those files must be
+retired or re-derived—the receipt is not an unlearning claim about model
+weights.
+
+---
+
+## See also
+
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
+- [`cal-reference.md`](cal-reference.md) — the CAL query language
+- [`mcp-reference.md`](mcp-reference.md) — the MCP tools
+- [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)
+- [`../FAQ.md`](../FAQ.md) — concepts and comparisons
+- [`../SECURITY.md`](../SECURITY.md) — trust model and hardening

@@ -1,0 +1,128 @@
+# Attach prebuilt `areev` binaries to the GitHub Release.
+#
+# Until this existed, the only way to get the CLI was `cargo install areev` —
+# a full Rust build. That put the web console (`areev ui`, including the Areev Loop
+# review queue) out of reach of anywhere without a toolchain: notebooks, Colab,
+# a scratch container, an ops box evaluating the tool.
+#
+# Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch
+# (which builds and uploads artifacts but attaches nothing, so it is safe to
+# use as a dry run).
+#
+# No secrets. `GITHUB_TOKEN` with `contents: write` is enough to upload assets.
+name: release-cli
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build aarch64-linux NATIVELY on a free arm64 runner. Cross-gcc
+          # cannot compile turso's mimalloc/zstd C deps ("no option
+          # -Wdate-time"); a native arm64 gcc has no such issue. Same reason
+          # release-pypi.yml uses this runner — keep the two in step.
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "" }
+          # macOS runners are arm64; x86_64 cross-compiles cleanly there
+          # because Apple ships both SDKs.
+          - { runner: macos-latest,     target: x86_64-apple-darwin,       ext: "" }
+          - { runner: macos-latest,     target: aarch64-apple-darwin,      ext: "" }
+          - { runner: windows-latest,   target: x86_64-pc-windows-msvc,    ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update stable && rustup target add ${{ matrix.target }}
+
+      - name: Build areev
+        run: cargo build --release --locked -p areev --bin areev --target ${{ matrix.target }}
+
+      # Fail here rather than shipping a binary that cannot start. A release
+      # asset nobody ran is worth less than no asset at all.
+      #
+      # Skipped only for the one cross-compiled target: the macOS runners are
+      # arm64, so the x86_64 build cannot be relied on to execute there
+      # (Rosetta may or may not be present). Every other target is native.
+      - name: Smoke-test the binary
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/areev${{ matrix.ext }}"
+          "$BIN" --version
+          "$BIN" add --db "$RUNNER_TEMP/smoke.db" --ns caller john prefers tea
+          "$BIN" recall --db "$RUNNER_TEMP/smoke.db" --ns caller --subject john | grep -q tea
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # workflow_dispatch has no tag to read a version from.
+          [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
+          NAME="areev-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/areev${{ matrix.ext }}" "dist/$NAME/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$NAME/"
+          cd dist
+          if [ "${{ matrix.ext }}" = ".exe" ]; then
+            7z a "${NAME}.zip" "$NAME" >/dev/null
+            ASSET="${NAME}.zip"
+          else
+            tar czf "${NAME}.tar.gz" "$NAME"
+            ASSET="${NAME}.tar.gz"
+          fi
+          # Per-asset checksum; the job that publishes concatenates them, since
+          # each target is built on a different machine.
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: attach to the release
+    needs: build
+    # Only a real release has something to attach to; a manual run stops after
+    # build, which makes `workflow_dispatch` a usable dry run.
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: dist
+      - name: Collect checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          rm -f ./*.sha256
+          cat SHA256SUMS
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"

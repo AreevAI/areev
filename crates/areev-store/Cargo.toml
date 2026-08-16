@@ -1,0 +1,54 @@
+[package]
+name = "areev-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Content-addressed embedded store with hybrid recall (Turso/SQLite) for Areev."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["memory", "database", "embedded", "recall", "ai-agents"]
+categories = ["database-implementations", "caching"]
+
+[features]
+# Server-tier storage backend: the same Areev store logic over a PostgreSQL
+# schema (one memory = one schema). Non-default so edge builds stay
+# dependency-light; see docs/postgres-backend-plan.md.
+postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time"]
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+# Pinned exactly: encryption-at-rest rides turso's experimental AES-256-GCM,
+# so the audited version is fixed until a deliberate, tested bump.
+turso = "=0.7.2"
+tokio = { version = "1", features = ["rt", "sync"] }
+tokio-postgres = { version = "0.7", optional = true }
+# Passphrase key derivation (Argon2id) + zeroization of key material.
+argon2 = "0.5"
+zeroize = "1"
+getrandom = "0.2"
+sha2 = "0.10"
+# CAS sidecar encryption (dependency-light policy, justified):
+# `aes-gcm` is ALREADY in this crate's graph — turso_core pulls the same
+# 0.10.x for the page cipher — so naming it directly adds no crate and keeps
+# the sidecar on the exact primitive the database pages use. `hkdf` adds
+# itself over `hmac`, which argon2 already brings. Hand-rolling an AEAD or a
+# KDF is never the right call.
+hkdf = "0.12"
+aes-gcm = "0.10"
+hex = "0.4"
+serde_json = "1"
+# Derive only — serde is already in the graph beneath serde_json, so this
+# adds no transitive weight; it spares the retention policy a hand-rolled
+# JSON codec.
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,0 +1,25 @@
+[package]
+name = "areev-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Backend-parameterized conformance suite for the Areev store (not published)."
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+postgres = ["areev-store/postgres"]
+
+[dependencies]
+areev-core = { path = "../areev-core" }
+areev-store = { path = "../areev-store" }
+tempfile = "3"
+serde_json = "1"
+
+[dev-dependencies]
+# The CAL-over-backend smoke drives the full stack (executor -> facade ->
+# store) against each backend.
+areev-cal = { path = "../areev-cal" }

@@ -1,0 +1,214 @@
+# Areev Security Model & Threat Model
+
+This document describes Areev's trust boundaries, what its defenses do and do
+not protect against, and how to deploy it safely. It complements
+[SECURITY.md](../SECURITY.md) (which covers vulnerability reporting).
+
+> This model is written to be **honest about current
+> limitations** rather than aspirational. Where a protection is partial or
+> planned, it says so.
+
+## What we are protecting
+
+The asset is **agent memory** — often personal, long-lived, and sensitive
+(conversations, facts about people, decisions, credentials an agent was told).
+The primary goals are **confidentiality** (at rest and in transit) and
+**integrity** (a grain cannot be silently altered).
+
+## Trust model at a glance
+
+Areev is an **embedded** engine, like SQLite. Its baseline trust boundary is
+**the local process and the user who runs it**. Everything below is layered on
+top of that.
+
+| Surface | Transport | Trust boundary | Auth |
+|---|---|---|---|
+| Library (`areev-*` crates) | in-process | the host program | n/a |
+| CLI (`areev`) | local process | the invoking user | filesystem perms |
+| MCP server (`serve --mcp`) | stdio | the parent process that spawned it | inherited |
+| Web console (`areev ui`) | HTTP/1.1 | **loopback only by default** | none, or `--token-env` (Basic/Bearer on every request) |
+| Sync hub (`areevd`) | HTTP/1.1 | networked peers | bearer token (writes + sync) |
+
+## Data at rest
+
+- **Encryption at rest** is optional and off by default. When enabled, the
+  memory database (grains, indexes, op-log, and WAL) is encrypted with
+  **AES-256-GCM** via the underlying storage engine's page cipher.
+- **Key derivation.** The CLI derives the 32-byte key from a passphrase using
+  **Argon2id** (OWASP-recommended parameters: 19 MiB memory, 2 iterations).
+  The non-secret salt and parameters live in a `<db>.kdf` sidecar created on
+  first use. Applications embedding the library may instead supply a raw
+  32-byte key directly.
+- **Key handling.** Passphrases and derived keys are wrapped in `Zeroizing`
+  buffers and wiped from Areev's memory after use. (The passphrase is read
+  from an environment variable via `--passphrase-env`, never a command-line
+  argument, so it does not leak into shell history or the process table.)
+- **Crypto-erasure.** Because the key is never written to the file, destroying
+  the passphrase (and the derived key) renders the data unrecoverable — a fast,
+  durable delete of an entire encrypted memory.
+
+### Known limitations at rest
+
+- **The `.blobs` CAS sidecar is encrypted** when the memory is: AES-256-GCM
+  under a key HKDF-derived from the page-cipher key (domain-separated, so a
+  leaked blob key does not open the database), with the content address bound
+  in as associated data. The `cas://sha256:` address stays the digest of the
+  **plaintext** so addresses are stable across encrypted and plaintext stores
+  — the documented cost is that a blob filename is a content-equality oracle
+  (someone holding a candidate file can tell whether this memory stores it).
+  ⚠️ Attachments written by a build from before this landed stay plaintext
+  until migrated: run `areev blobs encrypt` and check `open_warnings()`.
+- ⚠️ **The encryption feature depends on the storage engine's *experimental*
+  AES-GCM implementation** (a pinned Turso dependency). Treat encryption at
+  rest as **defense-in-depth**, not a replacement for full-disk encryption on
+  the host.
+- ⚠️ **Losing the `.kdf` sidecar** means the passphrase can no longer re-derive
+  the key. Back the sidecar up alongside the database.
+
+## Data in transit (sync & hub)
+
+- Sync ships **bundles/segments** (`.mgb`) of immutable grains between files and
+  peers. Applied grains are re-hashed on import; a grain whose content does not
+  match its content address (SHA-256) is rejected.
+- The **hub** (`areevd`, started with `areev hub --dir DIR --token-env VAR`)
+  requires a **bearer token** on all mutating and segment endpoints — including
+  `GET /api/segment*`, so listing and pulling bundles are gated too, not just
+  pushes. The token is compared in **constant time**. Segment names are
+  sanitized to a single path component (no directory traversal). `--token-env`
+  is **mandatory** for `areev hub`: unlike the console there is no
+  trusted-local-operator default, because a hub exists to be written to by other
+  machines. A pushed segment is an **op-log replay**: it adds grains and
+  applies tombstones — including erasure tombstones, which is how a subject's
+  erasure reaches the hub's store (a tombstone deletes only the exact grain
+  hash it names, and its sole-referenced CAS attachments; it can never delete
+  by predicate).
+- The **web console** (`areev ui`) is unauthenticated by default (loopback,
+  trusted local operator). Pass `--token-env <VAR>` to require a shared secret
+  on **every** request — the console page, all reads, and all writes. Browsers
+  authenticate through the native HTTP **Basic** prompt (any username; password
+  = the token); scripts may send `Authorization: Bearer <token>`. The token is
+  compared in constant time, and a `401` carries `WWW-Authenticate: Basic` so
+  browsers prompt. Naming an env var (not a flag) keeps the secret out of argv
+  and shell history.
+- **Multi-principal console** (`areev ui --auth areev-auth.json`): the credential
+  map resolves a token to a *principal name*; the rights come from the memory
+  file's own grant grains, and unauthenticated requests run as `anonymous`
+  (read-only unless the file grants more). It changes **who** a request is, not
+  **whether** a secret is required: pass `--token-env` alongside it and every
+  request must still carry a recognized credential — either a map token (binds
+  that principal) or the shared secret (the implied admin). A credential whose
+  `env` variable is unset or **empty** authenticates nobody; an empty
+  `Authorization: Bearer ` never resolves.
+- Import is **DoS-hardened**: an untrusted `.mg` blob is size-capped and its
+  msgpack framing is validated iteratively before decoding, so a hostile grain
+  cannot cause a stack overflow (deep nesting) or a giant pre-allocation (a
+  short header claiming a huge length).
+- The HTTP server bounds per-connection bytes, caps header size/count, and sets
+  read/write timeouts (slowloris mitigation).
+
+### Known limitations in transit
+
+- ⚠️ **No TLS.** All HTTP is plaintext. For any non-loopback deployment, front
+  the console/hub with a **TLS-terminating reverse proxy**. Both `areev ui` and
+  `areev hub` refuse to bind a non-loopback address unless you pass
+  `--allow-remote` (and even then warn loudly). `--token-env` authentication
+  is **not** a substitute for TLS: the token and all memory still cross the
+  wire in the clear, so `--token-env` guards against unauthorized clients but
+  not against a network eavesdropper — use it *with* a TLS proxy off-loopback.
+- ⚠️ **Integrity, not authenticity.** Content addressing detects corruption and
+  tampering, but does **not** verify *who* authored a grain. There is dormant
+  scaffolding for COSE signing, but signature verification is not yet enforced
+  on import. **Only sync with peers you trust.**
+- ⚠️ **`verify` detects modification, not removal.** `areev verify` re-hashes
+  every grain it can read, so an in-place edit of stored bytes is caught. But
+  whole-file tampering that corrupts the WAL makes the storage engine roll the
+  file back to its last consistent state — grains written since then silently
+  vanish, and `verify` reports `ok` on the smaller, self-consistent survivor
+  set. Truncation of a consistent store is indistinguishable from
+  "never written" using the file alone; to detect it, compare against an
+  **external anchor** — the op high-water mark of an `areev stream` segment
+  directory, a bundle, or a hub replica.
+
+## Input handling
+
+- **CAL** (the query language) destroys only in **shaped** forms — by hash
+  (`FORGET <hash>`), by identity (`FORGET SUBJECT "<id>"`), or by age
+  (`PURGE OLDER THAN <n>d`) — **never by predicate**. Each is authorized by
+  the session's `delete`/`erase` grant, requires a recorded BECAUSE (the
+  bulk forms mandatorily), and writes a Tier-2 audit Observation naming a
+  subject **fingerprint**, not the identity. The executor's
+  `allow_destructive_ops` switch (default on; `--no-destructive-ops`) is a
+  process-wide restrictive **cap** over any grant — use it for a read-only
+  session, e.g. when serving untrusted input over MCP.
+  `DELETE`/`ERASE`/`TRUNCATE`/… are not grammar tokens, `FORGET USER/SCOPE`
+  are refused from text, and the server path requires the `admin` scope.
+  `REPORT SUBJECT` — the read-only DSAR mirror — classifies as a read and is
+  gated by `read`, deliberately not by the destructive cap. CAL is otherwise
+  hardened against abuse (max query length, nesting depth, LET-binding and
+  result-size caps, Unicode bidi-override rejection, NFC normalization).
+- The store issues **parameterized SQL** exclusively; user strings are
+  dictionary-encoded to integer term-ids before reaching the triple queries, so
+  there is no SQL-injection surface.
+- The **web console** escapes grain-controlled data before rendering it, so a
+  synced grain carrying HTML/JS markup is inert in the UI.
+
+## Threats in scope (please report)
+
+- Memory-safety, panics, or resource exhaustion reachable from untrusted `.mg`
+  blobs, bundles, or imported segments.
+- Injection, path traversal, or auth bypass in CAL, the store, the MCP server,
+  or the console/hub.
+- Cryptographic weaknesses in the encryption or crypto-erasure paths.
+- Secret or data leakage in error messages, logs, or `Debug` output.
+
+## Threats out of scope
+
+- An already-compromised host, physical access, or a malicious local process
+  running with the same privileges as Areev.
+- Whether a memory stores a *specific known* attachment: blob filenames are
+  plaintext content addresses (see the sidecar note above).
+- Network confidentiality without an operator-provided TLS proxy (by design).
+- Forged grain provenance when syncing with an untrusted peer (integrity is
+  guaranteed; authenticity is not, until signing lands).
+
+## Areev Loop (self-improvement) trust boundary
+
+Areev Loop lets an agent change its own memory, so its governance *is* a security
+boundary. See [`loop.md`](loop.md) for the surfaces; the invariants:
+
+- **Read-only token-less console (breaking change).** Token-less `areev ui` is
+  read-only. Every write — any loop mutation, or an `ADD`/`SUPERSEDE`/
+  `FORGET` CAL batch — returns 401 without `--token-env VAR`. This closes the
+  bypass where a local process could execute a proposal's CAL directly and
+  skip the review queue, which would void the whole governance story. The
+  server classifies a POST `/api/cal` by its leading keyword and fails closed.
+- **The trust floor is not configurable.** These fields do not exist in any
+  file or policy schema (unknown keys are rejected at load), so a hostile or
+  synced file can never arrive pre-armed: auto-apply never touches free text,
+  destruction, prompts, or LLM-drafted content; analyzers execute read-only;
+  no payload amplifies scopes; no file raises a host-set cap.
+- **The laundering threat.** The deterministic path can carry attacker text:
+  tool-failure clustering derives a signature from attacker-controlled tool
+  output. So auto-apply is restricted to SUPERSEDE-only structural curation
+  with **zero** attacker-influenced free text (an `ADD` disqualifies), and any
+  recommendation introducing evidence-derived text is always approval-required
+  with the untrusted prose shown as a literal, escaped diff.
+- **Auto-apply is default-off and host-granted only.** It requires host opt-in
+  plus a matching grant in the optional `loop-policy.json`, a built-in
+  analyzer, a memory/query target, non-destructive payload, and an engine-side
+  per-draft shape check. The policy file is host config, never persisted in a
+  memory file, and rejects unknown keys — a stolen or committed policy file is
+  inert (it cannot register an executable).
+- **Separation of duties + accountable audit.** `write` grants neither
+  `review` nor `apply`; self-approval is blocked against the creating actor;
+  every transition writes an immutable, hash-chained audit Observation with a
+  mandatory reason. Audit grains live and die with the file they govern —
+  erasing a subject's file erases its audit (correct GDPR-shaped behavior).
+
+## Roadmap
+
+- Enforced grain signing / authenticity verification on import (COSE).
+- First-class TLS for the hub.
+
+If you find something that contradicts this document, that is itself worth
+reporting — see [SECURITY.md](../SECURITY.md).

@@ -1,0 +1,10 @@
+{
+  "auto_apply_enabled": true,
+  "auto_apply": [
+    { "analyzer": "loop.duplicate_sweep", "targets": ["memory"], "max_severity": "low" },
+    { "analyzer": "loop.fork_surfacing", "targets": ["memory"], "max_severity": "medium" }
+  ],
+  "deny": [],
+  "severity_floors": {},
+  "telemetry": "aggregate"
+}

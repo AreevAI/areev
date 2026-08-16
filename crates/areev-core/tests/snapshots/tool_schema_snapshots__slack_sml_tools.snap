@@ -1,0 +1,9 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_text(&t, ProviderKind::SmlTools).unwrap()"
+---
+<tool_use>
+  <tool_name>slack_post_message</tool_name>
+  <description>Post a message to a Slack channel.</description>
+  <parameters>{&quot;properties&quot;:{&quot;channel&quot;:{&quot;description&quot;:&quot;Channel ID or name&quot;,&quot;type&quot;:&quot;string&quot;},&quot;text&quot;:{&quot;description&quot;:&quot;Message body&quot;,&quot;type&quot;:&quot;string&quot;},&quot;thread_ts&quot;:{&quot;description&quot;:&quot;Optional thread timestamp&quot;,&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;channel&quot;,&quot;text&quot;],&quot;type&quot;:&quot;object&quot;}</parameters>
+</tool_use>

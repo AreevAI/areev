@@ -1,0 +1,32 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_json(&t, ProviderKind::AnthropicTools).unwrap()"
+---
+{
+  "description": "Search the web and return ranked results.",
+  "input_schema": {
+    "properties": {
+      "limit": {
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "type": "string"
+      },
+      "safe_search": {
+        "enum": [
+          "off",
+          "moderate",
+          "strict"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "name": "search_web"
+}

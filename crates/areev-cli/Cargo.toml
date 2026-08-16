@@ -1,0 +1,49 @@
+[package]
+name = "areev"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for Areev, the embedded memory engine for AI agents."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["memory", "cli", "ai-agents", "llm", "database"]
+categories = ["command-line-utilities", "database-implementations"]
+
+[[bin]]
+name = "areev"
+path = "src/main.rs"
+
+[features]
+# `areev --db postgres://…?schema=<name>` — the server-tier backend. Non-
+# default: the published edge binary stays dependency-light.
+postgres = ["areev-store/postgres"]
+# Native TLS for `areev ui` / `areev hub` (rustls; the recorded dependency
+# exception). Non-default: the proxy pattern stays the documented default.
+tls = ["areev-server/tls"]
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+areev-store = { path = "../areev-store", version = "1.0.0" }
+areev-cal = { path = "../areev-cal", version = "1.0.0" }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+zeroize = "1"
+# Already in the lockfile via areev-core; adds no new package. Used to parse
+# ISO-8601 transcript timestamps so capture-stop can pin created_at.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+areev-mcp = { path = "../areev-mcp", version = "1.0.0" }
+areev-context = { path = "../areev-context", version = "1.0.0" }
+areev-server = { path = "../areev-server", version = "1.0.0" }
+areev-loop = { path = "../areev-loop", version = "1.0.0" }
+areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.0.0" }
+areev-llm = { path = "../areev-llm", version = "1.0.0" }
+areev-run = { path = "../areev-run", version = "1.0.0" }
+areev-run-core = { path = "../areev-run-core", version = "1.0.0" }
+
+[dev-dependencies]
+tempfile = "3"

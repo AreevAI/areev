@@ -1,0 +1,88 @@
+# Publish the Python bindings (crates/areev-py) to PyPI as `areev`.
+#
+# Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
+# Builds abi3 wheels (one per platform, works on CPython >= 3.9) for
+# linux/macOS/windows + an sdist, then uploads.
+#
+# Prerequisite secret: `PYPI_API_TOKEN` (a PyPI API token scoped to the
+# `areev` project). Alternatively switch to Trusted Publishing (OIDC): remove
+# the token env below and configure the publisher on PyPI — the `id-token`
+# permission is already granted.
+name: release-pypi
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: wheels (${{ matrix.platform.runner }} ${{ matrix.platform.target }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # Build aarch64-linux NATIVELY on a free arm64 runner — cross-gcc
+          # (any manylinux image) can't compile turso's mimalloc/zstd C deps
+          # ("no option -Wdate-time"); a native arm64 gcc has no such issue.
+          - { runner: ubuntu-latest,    target: x86_64,  manylinux: auto }
+          - { runner: ubuntu-24.04-arm, target: aarch64, manylinux: auto }
+          - { runner: macos-latest,     target: x86_64,  manylinux: auto }
+          - { runner: macos-latest,     target: aarch64, manylinux: auto }
+          - { runner: windows-latest,   target: x64,     manylinux: auto }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          # abi3-py39 is set in Cargo.toml, so one wheel covers CPython >= 3.9.
+          args: --release --out dist -m crates/areev-py/Cargo.toml
+          manylinux: ${{ matrix.platform.manylinux }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist -m crates/areev-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  publish:
+    name: publish to PyPI
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    # For Trusted Publishing, tie this to a `pypi` environment on the repo.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Publish to PyPI
+        uses: PyO3/maturin-action@v1
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*

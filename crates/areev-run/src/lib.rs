@@ -1,0 +1,96 @@
+//! # areev-run — the `areev run` driver
+//!
+//! A host over Areev (governed-agents §4), peer of `areev-mcp`: executes
+//! OMS Workflow grains through the pure scheduler (`areev-run-core`),
+//! journaling every effect as content-addressed grains — intent before
+//! dispatch, result as a supersession re-stating identity and links — with
+//! checkpoints per superstep, resume from the file alone, HITL respond with
+//! separation of duties, budgets, cancel, and journal-consistent `verify`.
+//!
+//! The replay contract (§5, stated honestly): the **journal** is
+//! exactly-once — a result-journaled effect is never re-executed or
+//! double-counted, across interrupts and across crashes. The **external
+//! effect** is at-most-once per attempt in normal operation and
+//! at-least-once across the dispatch-to-result crash window: a dangling
+//! intent re-delivers under the same idempotency key and the redelivery is
+//! journaled as an Observation — recorded, never silent.
+
+pub mod clock;
+pub mod executor;
+pub mod journal;
+pub mod manifest;
+pub mod otel;
+pub mod reducers;
+pub mod runner;
+pub mod stream;
+
+pub use clock::{Clock, ScriptedClock, SystemClock};
+pub use executor::{CommandExecutor, ExecResult, ExecutorRegistry, HostToolExecutor};
+pub use manifest::{BudgetsSpec, ForkBase, PinnedTool, RunManifest};
+pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
+pub use otel::OtelObserver;
+pub use stream::{RunEvent, RunObserver};
+// Downstream hosts (MCP, bindings) speak the run vocabulary without a
+// direct run-core dependency.
+pub use areev_run_core::{FailCause, RunError as CoreRunError, RunOutcome as CoreRunOutcome};
+
+use areev_core::error::AreevError;
+use areev_run_core::{RunError, RunOutcome};
+
+/// Map a store failure into the RUN domain (the underlying `DOMAIN-Ennn`
+/// message survives in the detail).
+pub fn err_run(e: AreevError) -> RunError {
+    RunError::Storage { detail: e.to_string() }
+}
+
+/// What a drive returned to its caller.
+#[derive(Debug, Clone)]
+pub enum RunSession {
+    Finished { outcome: RunOutcome, run_id: String },
+    /// Parked on Client asks; the envelope is the §6.6 `requires_action`
+    /// shape, addressed by `tool_call_id`.
+    Parked { envelope: serde_json::Value, run_id: String },
+}
+
+/// One verify finding (§5.5 tiers, labeled output).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VerifyStep {
+    pub superstep: u64,
+    pub verdict: String,
+    pub ok: bool,
+}
+
+/// The verify report: journal-consistency per checkpoint, honest about what
+/// was NOT verifiable (missing results, parks).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct VerifyReport {
+    pub verified: bool,
+    pub steps: Vec<VerifyStep>,
+}
+
+/// One run's row in a shadow evaluation (§8 Wave 4): replayed entirely from
+/// its journal — zero effect dispatches by construction (the shadow path
+/// holds no executor, no pool, and no LLM; there is nothing to dispatch TO).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShadowRun {
+    pub run_id: String,
+    /// Journal-consistent under replay?
+    pub consistent: bool,
+    /// Effects answered FROM THE JOURNAL during the replay.
+    pub effects_replayed: u64,
+    /// Per-step verdicts (the verify report's rows).
+    pub steps: Vec<VerifyStep>,
+}
+
+/// A shadow evaluation over N journaled runs — the §7.4 pre-apply check for
+/// Tier-B code ("shadow replay of N recent journaled runs, zero effect
+/// dispatches, before Apply").
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ShadowReport {
+    pub runs: Vec<ShadowRun>,
+    /// Every run journal-consistent?
+    pub all_consistent: bool,
+    /// Always 0 — stated in the report so the gate's claim is explicit in
+    /// the artifact, not implied by the code.
+    pub effect_dispatches: u64,
+}

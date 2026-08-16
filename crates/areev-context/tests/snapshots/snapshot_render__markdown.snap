@@ -1,0 +1,11 @@
+---
+source: crates/areev-context/tests/snapshot_render.rs
+expression: annotate(&ctx)
+---
+included=5 omitted=0 truncated=false estimated_tokens=59
+---
+**State**: planning_phase *(2025-02-19)*
+[high/active] Ship the OSS launch (40%) *(2025-02-19)*
+**john** likes coffee *(0.95, 2025-02-19)*
+`search_api` [OK] (340ms): 12 results *(2025-02-19)*
+User asked about pricing tiers. *(2025-02-19)*

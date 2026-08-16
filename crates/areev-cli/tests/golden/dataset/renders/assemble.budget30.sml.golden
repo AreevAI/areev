@@ -1,0 +1,11 @@
+<grains>
+  <grain type="fact" relation="likes">
+    <confidence>0.8</confidence>
+    <created_at>1767571200000</created_at>
+    <namespace>personal</namespace>
+    <object>jazz</object>
+    <relation>likes</relation>
+    <subject>john</subject>
+    <type>fact</type>
+  </grain>
+</grains>

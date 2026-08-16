@@ -1,0 +1,7 @@
+name: areev
+version: 0.1.0
+description: "Areev — one-file immutable memory. Budgeted context assembly per turn, non-lossy supersession instead of overwrite, and a full audit trail of the agent's own memory edits."
+hooks:
+  - on_memory_write
+  - on_session_end
+  - on_pre_compress

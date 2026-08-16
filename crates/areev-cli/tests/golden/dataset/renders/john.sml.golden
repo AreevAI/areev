@@ -1,0 +1,12 @@
+<facts>
+<fact confidence="0.80" date="2026-01-05">john likes jazz</fact>
+<fact confidence="1.00" date="2026-01-06">john birthday 1990-03-15</fact>
+<fact confidence="1.00" date="2026-01-07">john allergic_to peanuts</fact>
+<fact confidence="0.85" date="2026-01-08">john role engineer</fact>
+<fact confidence="1.00" date="2026-01-09">john works_at acme</fact>
+<fact confidence="0.90" date="2026-01-10">john speaks english</fact>
+<fact confidence="1.00" date="2026-01-11">john speaks german</fact>
+<fact confidence="1.00" date="2026-01-12">john lives_in berlin</fact>
+<fact confidence="0.95" date="2026-01-13">john prefers window seat</fact>
+<fact confidence="0.90" date="2026-01-14">john prefers coffee</fact>
+</facts>

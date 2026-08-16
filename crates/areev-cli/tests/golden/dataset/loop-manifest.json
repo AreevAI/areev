@@ -1,0 +1,175 @@
+{
+  "base_epoch_ms": 1768435200000,
+  "grains": [
+    {
+      "desc": "dup target 1: acme tier Enterprise",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "d0bd4509a86504ac52da9fd148d654461db1fff8b7145046a60eac80a7008f72",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "dup target 2: acme tier enterprise",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "dup target 3: acme tier Enterprise",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "near-dup observation 1",
+      "forgotten": false,
+      "gtype": "observation",
+      "hash": "78f3e5d1c401a5472840a3ef702021439c941c1ba86d59d2a3fe685cbffc4adf",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "near-dup observation 2",
+      "forgotten": false,
+      "gtype": "observation",
+      "hash": "2b929078418b4e9c0c475bc23f7923c72a5ac41fdd7f156555842176d1d01cd6",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "contradiction older: sam lives_in berlin",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "contradiction newer: sam lives_in tokyo",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "fa55e3371f90f631987b70e18325b242ddb2087552d67d91e85b97268b487ba2",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stale 100d: promo-black-friday",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stale 10d: promo-spring",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 1 (error)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "a8849ae77cdb1fac0d172a86a3f813e7e1d59e39bd27cd44e5dcbe8abf0b4282",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 2 (error)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "9ee0f66fc7cfb9a7845daad0ba18c25a0eeabbdf78b9b902017bd73343f4bbc5",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 3 (error)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "12b5f2c680f4d2c389267a91b03137097aeefdbb429521f3843b112e7bb1cfe8",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 4 (error)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "49680fe34a403f600b09516d9edb7d2b29214d4425cd2e631ad161c3c80593d0",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 5 (error)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "b5a548354c4c292926eef57d9e373360a38d5e2686445535d3b7ea4f602762fd",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stripe_refund call 6 (ok)",
+      "forgotten": false,
+      "gtype": "tool",
+      "hash": "e7b24dea0aec5a2873d28799b1b0fcdfb7e54ec85f4abf1b3c78a7d4754b3380",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stalled skill: parse_invoices",
+      "forgotten": false,
+      "gtype": "skill",
+      "hash": "d6a5a0b6486d4eb0c41aea619345bc5dc231bf59d22a45a1d09946578d6a164b",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "stalled goal seed: ship-v2 (analyzer default-off)",
+      "forgotten": false,
+      "gtype": "goal",
+      "hash": "401cd5376a27a50744425a9bec0874ac630ac8704a437e8b2e29da74620a8c56",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "healthy contrast: kai prefers dark-mode",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "9093ad3f671c3c4f9e23e7dade0fe9f0d321696a73318de78c79285ca6c13b4c",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "fork base: deploy region us-east-1",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "ccd54951e675da3b9320a8085c660beb0ab8c1b0c5bdc9f0b0698c047acdc003",
+      "ns": "agent",
+      "superseded": true
+    },
+    {
+      "desc": "fork head A: deploy region eu-west-1",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109",
+      "ns": "agent",
+      "superseded": false
+    },
+    {
+      "desc": "fork head B: deploy region ap-south-1 (imported)",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "294da91a90e018ac3e37a75f9aa5e4c31ddbc1a0e67f02e1b32a12b29fd2a0df",
+      "ns": "agent",
+      "superseded": false
+    }
+  ],
+  "schema": 1,
+  "total_grains": 21
+}

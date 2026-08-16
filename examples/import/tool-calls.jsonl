@@ -1,0 +1,7 @@
+{"tool_name": "stripe_refund", "content": "429 rate_limited: too many requests", "is_error": true}
+{"tool_name": "stripe_refund", "content": "429 rate_limited: too many requests", "is_error": true}
+{"tool_name": "stripe_refund", "content": "429 rate_limited: too many requests", "is_error": true}
+{"tool_name": "stripe_refund", "content": "refund rf_88 succeeded", "is_error": false}
+{"role": "tool", "name": "search_docs", "content": "3 results", "is_error": false}
+{"role": "assistant", "tool_calls": [{"function": {"name": "search_docs", "arguments": "{\"q\":\"refund policy\"}"}}]}
+{"tool_name": "send_email", "content": "smtp timeout after 30s", "is_error": true}

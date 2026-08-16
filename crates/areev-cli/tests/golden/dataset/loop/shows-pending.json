@@ -1,0 +1,287 @@
+{
+  "analyzer": "loop.tool_failure/1",
+  "cal": "ADD fact {\"confidence\":0.8333333333333334,\"namespace\":\"agent\",\"object\":\"rate limited # retry later\",\"relation\":\"fails_with\",\"subject\":\"stripe_refund\"}",
+  "confidence": 0.8333333333333334,
+  "dedup_key": "loop.tool_failure\u001fentity:lessons/stripe_refund\u001fcluster_failure",
+  "destructive": false,
+  "evidence": [
+    "12b5f2c680f4d2c389267a91b03137097aeefdbb429521f3843b112e7bb1cfe8",
+    "49680fe34a403f600b09516d9edb7d2b29214d4425cd2e631ad161c3c80593d0",
+    "9ee0f66fc7cfb9a7845daad0ba18c25a0eeabbdf78b9b902017bd73343f4bbc5",
+    "a8849ae77cdb1fac0d172a86a3f813e7e1d59e39bd27cd44e5dcbe8abf0b4282",
+    "b5a548354c4c292926eef57d9e373360a38d5e2686445535d3b7ea4f602762fd"
+  ],
+  "hash": "e6a247d2d0e50f7ad51c7480eacedd4cb04ee297139a30088bbab82d755213d2",
+  "metric": {
+    "baseline": 0.0,
+    "horizons_ms": [
+      86400000,
+      604800000,
+      2592000000
+    ],
+    "metric": "tool_error_recurrence",
+    "n": 6,
+    "query": "RECALL tools WHERE tool_name = \"stripe_refund\" AND is_error AND signature = \"rate limited # retry later\" SINCE <applied_at> | COUNT",
+    "relation": "rate limited # retry later",
+    "review_after_ms": 86400000,
+    "subject": "stripe_refund",
+    "unit": "count",
+    "window": "30d"
+  },
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "high",
+  "status": "pending",
+  "summary": "Tool \"stripe_refund\" failed 5 times (83% of calls): rate limited # retry later",
+  "target_ref": "entity:lessons/stripe_refund"
+}
+{
+  "analyzer": "loop.contradiction_sweep/1",
+  "cal": "SUPERSEDE 55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109 WITH fact {\"namespace\":\"agent\",\"object\":\"ap-south-1\",\"relation\":\"region\",\"subject\":\"deploy\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.contradiction_sweep\u001fentity:agent/deploy\u001fflag_contradiction",
+  "destructive": false,
+  "evidence": [
+    "55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109",
+    "294da91a90e018ac3e37a75f9aa5e4c31ddbc1a0e67f02e1b32a12b29fd2a0df"
+  ],
+  "hash": "05b36525f669d6b6bd393c73cc7a1a48260aef38e35d28da86c453aebce7e186",
+  "metric": {
+    "baseline": 0.0,
+    "horizons_ms": [
+      86400000,
+      604800000,
+      2592000000
+    ],
+    "metric": "contradiction_recurrence",
+    "n": 2,
+    "namespace": "agent",
+    "query": "RECALL facts WHERE subject = \"deploy\" AND relation = \"region\" | COUNT DISTINCT object > 1",
+    "relation": "region",
+    "review_after_ms": 86400000,
+    "subject": "deploy",
+    "unit": "count",
+    "window": "live"
+  },
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "\"deploy\" holds 2 live values for functional relation \"region\"",
+  "target_ref": "entity:agent/deploy"
+}
+{
+  "analyzer": "loop.contradiction_sweep/1",
+  "cal": "SUPERSEDE 2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f WITH fact {\"namespace\":\"agent\",\"object\":\"tokyo\",\"relation\":\"lives_in\",\"subject\":\"sam\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.contradiction_sweep\u001fentity:agent/sam\u001fflag_contradiction",
+  "destructive": false,
+  "evidence": [
+    "2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f",
+    "fa55e3371f90f631987b70e18325b242ddb2087552d67d91e85b97268b487ba2"
+  ],
+  "hash": "e85c9b01850e97336c320e5038e7f4b4b3c862040f3eea7fc32e73f2f89669ac",
+  "metric": {
+    "baseline": 0.0,
+    "horizons_ms": [
+      86400000,
+      604800000,
+      2592000000
+    ],
+    "metric": "contradiction_recurrence",
+    "n": 2,
+    "namespace": "agent",
+    "query": "RECALL facts WHERE subject = \"sam\" AND relation = \"lives_in\" | COUNT DISTINCT object > 1",
+    "relation": "lives_in",
+    "review_after_ms": 86400000,
+    "subject": "sam",
+    "unit": "count",
+    "window": "live"
+  },
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "\"sam\" holds 2 live values for functional relation \"lives_in\"",
+  "target_ref": "entity:agent/sam"
+}
+{
+  "analyzer": "loop.fork_surfacing/1",
+  "cal": "SUPERSEDE 75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058 WITH state {\"merge_into\":\"2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063\"}\nSUPERSEDE d0bd4509a86504ac52da9fd148d654461db1fff8b7145046a60eac80a7008f72 WITH state {\"merge_into\":\"2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.fork_surfacing\u001fentity:acme/tier\u001fmerge_heads",
+  "destructive": false,
+  "evidence": [
+    "2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063",
+    "75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058",
+    "d0bd4509a86504ac52da9fd148d654461db1fff8b7145046a60eac80a7008f72"
+  ],
+  "hash": "42706660479c6b0e4130935483e4e4bc5618a5d1957856e6f84eae7c6cd14dc7",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "Entity \"acme/tier\" has 3 competing heads",
+  "target_ref": "entity:acme/tier"
+}
+{
+  "analyzer": "loop.fork_surfacing/1",
+  "cal": "SUPERSEDE 55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109 WITH state {\"merge_into\":\"294da91a90e018ac3e37a75f9aa5e4c31ddbc1a0e67f02e1b32a12b29fd2a0df\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.fork_surfacing\u001fentity:deploy/region\u001fmerge_heads",
+  "destructive": false,
+  "evidence": [
+    "294da91a90e018ac3e37a75f9aa5e4c31ddbc1a0e67f02e1b32a12b29fd2a0df",
+    "55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109"
+  ],
+  "hash": "c87f2d366565f018a41183828d0b4eb5aa1281a2971708b55e44fd41a0a8f373",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "Entity \"deploy/region\" has 2 competing heads",
+  "target_ref": "entity:deploy/region"
+}
+{
+  "analyzer": "loop.fork_surfacing/1",
+  "cal": "SUPERSEDE fa55e3371f90f631987b70e18325b242ddb2087552d67d91e85b97268b487ba2 WITH state {\"merge_into\":\"2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.fork_surfacing\u001fentity:sam/lives_in\u001fmerge_heads",
+  "destructive": false,
+  "evidence": [
+    "2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f",
+    "fa55e3371f90f631987b70e18325b242ddb2087552d67d91e85b97268b487ba2"
+  ],
+  "hash": "55b8dc9eb8393f9baf4439a2a341854ba7d0c48a04269a6d06b71c4756ef2281",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "Entity \"sam/lives_in\" has 2 competing heads",
+  "target_ref": "entity:sam/lives_in"
+}
+{
+  "analyzer": "loop.skill_stall/1",
+  "confidence": 0.8,
+  "data": {
+    "practice_count": 12,
+    "proficiency": 0.25,
+    "skill": "parse_invoices"
+  },
+  "dedup_key": "loop.skill_stall\u001fentity:skills/parse_invoices\u001fflag",
+  "destructive": false,
+  "evidence": [
+    "d6a5a0b6486d4eb0c41aea619345bc5dc231bf59d22a45a1d09946578d6a164b"
+  ],
+  "hash": "cf3559347bb5723472ea8bbd28280b29c865a6d556b1cc206623eff7991e43ff",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "data",
+  "rollbackable": false,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "Skill \"parse_invoices\" isn't improving: practiced 12× but proficiency is still 0.25",
+  "target_ref": "entity:skills/parse_invoices"
+}
+{
+  "analyzer": "loop.staleness/1",
+  "cal": "FORGET f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011",
+  "confidence": 0.8,
+  "dedup_key": "loop.staleness\u001fgrain:f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011\u001fexpire",
+  "destructive": true,
+  "evidence": [
+    "f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011"
+  ],
+  "hash": "805db47848772f98de279834992f7f8b962311793e57d0830a8167ca4590dc53",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": false,
+  "severity": "medium",
+  "status": "pending",
+  "summary": "Expire \"promo-black-friday\": past its declared valid_to (100d ago)",
+  "target_ref": "grain:f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011"
+}
+{
+  "analyzer": "loop.duplicate_sweep/1",
+  "cal": "SUPERSEDE 75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058 WITH fact {\"namespace\":\"agent\",\"object\":\"Enterprise\",\"relation\":\"tier\",\"subject\":\"acme\"}\nSUPERSEDE 2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063 WITH fact {\"namespace\":\"agent\",\"object\":\"Enterprise\",\"relation\":\"tier\",\"subject\":\"acme\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.duplicate_sweep\u001fentity:agent/acme\u001fconsolidate",
+  "destructive": false,
+  "evidence": [
+    "d0bd4509a86504ac52da9fd148d654461db1fff8b7145046a60eac80a7008f72",
+    "75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058",
+    "2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063"
+  ],
+  "hash": "e9b44c86b736adeaa0cb25b37f65703e81172ca82fdedd3102f3895b322ea356",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "low",
+  "status": "pending",
+  "summary": "Consolidate 3 exact-duplicate grains for \"acme\"",
+  "target_ref": "entity:agent/acme"
+}
+{
+  "analyzer": "loop.staleness/1",
+  "cal": "FORGET 4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc",
+  "confidence": 0.8,
+  "dedup_key": "loop.staleness\u001fgrain:4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc\u001fexpire",
+  "destructive": true,
+  "evidence": [
+    "4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc"
+  ],
+  "hash": "a2e7f3c297ea81b439a8bd9426080672d2dceeff92ffb53fd3b033ca21969b29",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": false,
+  "severity": "low",
+  "status": "pending",
+  "summary": "Expire \"promo-spring\": past its declared valid_to (10d ago)",
+  "target_ref": "grain:4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc"
+}
+{
+  "analyzer": "loop.duplicate_sweep/1",
+  "cal": "SUPERSEDE 2b929078418b4e9c0c475bc23f7923c72a5ac41fdd7f156555842176d1d01cd6 WITH observation {\"body\":\"user asked about pricing tiers refunds billing invoices during onboarding call\",\"namespace\":\"agent\"}",
+  "confidence": 0.8,
+  "dedup_key": "loop.duplicate_sweep\u001fgrain:78f3e5d1c401a5472840a3ef702021439c941c1ba86d59d2a3fe685cbffc4adf\u001fconsolidate",
+  "destructive": false,
+  "evidence": [
+    "78f3e5d1c401a5472840a3ef702021439c941c1ba86d59d2a3fe685cbffc4adf",
+    "2b929078418b4e9c0c475bc23f7923c72a5ac41fdd7f156555842176d1d01cd6"
+  ],
+  "hash": "0a3a7f4ddf4b5eb17fa6ffc80f94568ad70ee234cfedf2121c6e9613f0edf47c",
+  "origin": {
+    "kind": "builtin"
+  },
+  "proposal": "cal",
+  "rollbackable": true,
+  "severity": "info",
+  "status": "pending",
+  "summary": "Consolidate 2 near-duplicate observations (similarity ≥ 0.9)",
+  "target_ref": "grain:78f3e5d1c401a5472840a3ef702021439c941c1ba86d59d2a3fe685cbffc4adf"
+}

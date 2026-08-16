@@ -1,0 +1,45 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_json(&t, ProviderKind::McpTools).unwrap()"
+---
+{
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "readOnlyHint": false
+  },
+  "description": "Post a message to a Slack channel.",
+  "inputSchema": {
+    "properties": {
+      "channel": {
+        "description": "Channel ID or name",
+        "type": "string"
+      },
+      "text": {
+        "description": "Message body",
+        "type": "string"
+      },
+      "thread_ts": {
+        "description": "Optional thread timestamp",
+        "type": "string"
+      }
+    },
+    "required": [
+      "channel",
+      "text"
+    ],
+    "type": "object"
+  },
+  "name": "slack_post_message",
+  "outputSchema": {
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "ts": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+}

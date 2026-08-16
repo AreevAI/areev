@@ -1,0 +1,37 @@
+{
+  "name": "areev",
+  "version": "1.0.0",
+  "description": "Node.js bindings for Areev, the embedded memory engine for AI agents.",
+  "license": "MIT OR Apache-2.0",
+  "author": "MindGryd Software Private Limited",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AreevAI/areev.git"
+  },
+  "homepage": "https://github.com/AreevAI/areev",
+  "keywords": ["memory", "ai-agents", "llm", "napi-rs", "bindings"],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts", "LICENSE-MIT", "LICENSE-APACHE"],
+  "engines": {
+    "node": ">= 18"
+  },
+  "napi": {
+    "binaryName": "areev",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node --test __test__/*.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3"
+  }
+}

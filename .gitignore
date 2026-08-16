@@ -1,0 +1,28 @@
+target/
+m0-data/
+*.db
+*.db-wal
+*.db-shm
+*.tshm
+*.blobs/
+m0-data/
+demo*.db*
+name-reservation/
+
+# python bytecode
+__pycache__/
+*.pyc
+
+# cargo-mutants output
+mutants.out/
+mutants.out.old/
+
+# scratch/draft lineage (kept local, not for the repo)
+docs/tmp/
+
+# macOS Finder cruft
+.DS_Store
+
+# Python adapter build artifacts
+adapters/**/*.egg-info/
+adapters/**/__pycache__/

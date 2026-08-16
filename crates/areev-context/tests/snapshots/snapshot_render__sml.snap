@@ -1,0 +1,11 @@
+---
+source: crates/areev-context/tests/snapshot_render.rs
+expression: annotate(&ctx)
+---
+included=5 omitted=0 truncated=false estimated_tokens=85
+---
+<state date="2025-02-19">planning_phase</state>
+<goal state="active" priority="high" date="2025-02-19">Ship the OSS launch</goal>
+<fact confidence="0.95" date="2025-02-19">john likes coffee</fact>
+<tool tool="search_api" status="ok" date="2025-02-19">12 results (340ms)</tool>
+<event date="2025-02-19">User asked about pricing tiers.</event>

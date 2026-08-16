@@ -1,0 +1,31 @@
+[package]
+name = "areev-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Budget-aware context rendering (SML/TOON/Markdown/JSON) for Areev."
+readme = "README.md"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["context", "llm", "rendering", "tokens", "ai-agents"]
+categories = ["text-processing"]
+
+[features]
+# Dormant capability gates: the code carries `#[cfg(feature = ...)]` hooks for
+# these but they are not wired up yet. Declared here so `unexpected_cfgs` stays
+# quiet; enabling them is future work.
+llm-rerank = []
+rerank = []
+
+[dependencies]
+areev-core = { path = "../areev-core", version = "1.0.0" }
+areev-cal = { path = "../areev-cal", version = "1.0.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tempfile = "3"
+insta = "1"

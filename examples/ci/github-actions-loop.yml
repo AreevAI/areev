@@ -1,0 +1,29 @@
+# Fail the build (or surface a review) when the agent backend has pending
+# high-severity recommendations. Memory files are runtime state, so this runs
+# on a schedule or against a synced/checked-out backend — not at commit time.
+#
+# Copy into .github/workflows/ and point --db at your backend file.
+name: loop-gate
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+jobs:
+  review-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install areev
+        run: cargo install areev # or: pip install areev && ln -s "$(python -c 'import areev,os;print(os.path.dirname(areev.__file__))')" .
+
+      - name: Analyze the backend
+        run: areev loop run --db agent.db --ns caller --format json
+
+      - name: Gate on pending high-severity recommendations
+        run: |
+          # exit 0 = none match, 2 = a pending high-severity recommendation
+          # exists (build-blocking), 1 = error.
+          areev loop list --db agent.db --ns caller --fail-on high --format json

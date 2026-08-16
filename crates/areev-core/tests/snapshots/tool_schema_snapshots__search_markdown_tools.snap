@@ -1,0 +1,12 @@
+---
+source: crates/areev-core/tests/tool_schema_snapshots.rs
+expression: "render_text(&t, ProviderKind::MarkdownTools).unwrap()"
+---
+## search_web
+
+Search the web and return ranked results.
+
+**Input schema:**
+```json
+{"properties":{"limit":{"maximum":50,"minimum":1,"type":"integer"},"query":{"type":"string"},"safe_search":{"enum":["off","moderate","strict"],"type":"string"}},"required":["query"],"type":"object"}
+```

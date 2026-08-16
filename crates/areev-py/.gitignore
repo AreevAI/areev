@@ -1,0 +1,12 @@
+# Python build artifacts / caches (never commit these)
+*.so
+*.pyd
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local virtualenvs (build/test only)
+.venv/
+venv/
+env/

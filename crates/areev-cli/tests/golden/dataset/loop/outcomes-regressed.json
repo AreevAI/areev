@@ -1,0 +1,1 @@
+[{"rec_hash":"e85c9b01850e97336c320e5038e7f4b4b3c862040f3eea7fc32e73f2f89669ac","metric":"contradiction_recurrence","baseline":0.0,"current":1.0,"verdict":"regressed","horizon_ms":86400000,"measured_at_ms":1768521600000}]

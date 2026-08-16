@@ -1,0 +1,29 @@
+# Normalize line endings: auto-detect text, check out/in with LF.
+* text=auto eol=lf
+
+# Explicitly mark known text file types.
+*.rs   text
+*.toml text
+*.md   text
+*.py   text
+*.js   text
+*.ts   text
+*.json text
+*.yml  text
+*.yaml text
+
+# Binary / non-diffable assets.
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ico  binary
+*.wasm binary
+
+# .mg grains are canonical binary blobs — never diff or line-normalize them.
+*.mg   binary
+
+# Generated snapshots should not skew language stats or diffs.
+*.snap linguist-generated
+
+# Keep Cargo.lock in language stats and diffs (it is meaningful for a binary).
+Cargo.lock linguist-generated=false
