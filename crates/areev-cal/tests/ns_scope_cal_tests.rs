@@ -487,20 +487,19 @@ fn assemble_sources_cannot_escape_a_pinned_session() {
            FORMAT json"#,
         &f,
     );
-    match out.map(|r| serde_json::to_value(r.payload_json().unwrap()).unwrap()) {
-        Ok(v) => {
-            let objs: Vec<String> = v["grains"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .map(|g| g["fields"]["object"].as_str().unwrap_or("").to_string())
-                .collect();
-            assert!(
-                !objs.contains(&"b-value".to_string()),
-                "a pinned session escaped via an ASSEMBLE source: {objs:?}"
-            );
-        }
-        Err(_) => {} // a refusal is equally safe
+    // An Err(_) outcome — a refusal — is equally safe; only a payload that
+    // carries tenant_b data is an escape.
+    if let Ok(v) = out.map(|r| serde_json::to_value(r.payload_json().unwrap()).unwrap()) {
+        let objs: Vec<String> = v["grains"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|g| g["fields"]["object"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            !objs.contains(&"b-value".to_string()),
+            "a pinned session escaped via an ASSEMBLE source: {objs:?}"
+        );
     }
 }

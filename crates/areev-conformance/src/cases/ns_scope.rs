@@ -107,13 +107,13 @@ pub fn ns_registry_replicates_via_bundles(b: &dyn Backend) {
     let bundle = bundle.to_str().unwrap();
     let h;
     {
-        let mut a = b.open_named("ns-src");
+        let mut a = b.open_named("ns_src");
         h = a.add(&fact("org.sales", "john", "prefers", "window")).unwrap();
         a.add(&fact("org.ops", "john", "prefers", "aisle")).unwrap();
         a.bundle_since(0, bundle).unwrap();
     }
     {
-        let mut r = b.open_named("ns-replica");
+        let mut r = b.open_named("ns_replica");
         r.import_bundle(bundle).unwrap();
         assert_eq!(
             r.namespaces().unwrap(),
@@ -126,12 +126,12 @@ pub fn ns_registry_replicates_via_bundles(b: &dyn Backend) {
     // A forget at the source replays as a tombstone and updates the
     // replica's registry too.
     {
-        let mut a = b.open_named("ns-src");
+        let mut a = b.open_named("ns_src");
         a.forget(&h).unwrap();
         a.bundle_since(0, bundle).unwrap();
     }
     {
-        let mut r = b.open_named("ns-replica");
+        let mut r = b.open_named("ns_replica");
         r.import_bundle(bundle).unwrap();
         assert_eq!(
             r.namespaces().unwrap(),
