@@ -19,7 +19,7 @@ categories = ["database-implementations", "caching"]
 postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.0.2" }
+areev-core = { path = "../areev-core", version = "1.1.0" }
 # Pinned exactly: encryption-at-rest rides turso's experimental AES-256-GCM,
 # so the audited version is fixed until a deliberate, tested bump.
 turso = "=0.7.2"

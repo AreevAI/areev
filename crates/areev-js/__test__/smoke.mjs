@@ -780,3 +780,68 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.ok(BigInt(ops[0].hlc) >= 0n, 'string hlc round-trips through BigInt')
   await m.close()
 })
+
+test('anonymizeText round trip (proposal P0)', async () => {
+  const m = makeDb()
+  const out = JSON.parse(await m.anonymizeText('mail a@b.co, pin number is 1462'))
+  assert.equal(out.text, 'mail [EMAIL_1], pin number is [PIN_1]')
+  assert.deepEqual(out.mapping, { '[EMAIL_1]': 'a@b.co', '[PIN_1]': '1462' })
+  assert.equal(out.mapping_id.length, 16)
+
+  const back = JSON.parse(
+    await m.rehydrateText('sent to [EMAIL_1] after pin [PIN_1]', JSON.stringify(out.mapping)),
+  )
+  assert.equal(back.text, 'sent to a@b.co after pin 1462')
+  assert.equal(back.replaced, 2)
+  assert.deepEqual(back.unmatched, [])
+  await m.close()
+})
+
+test('scanText respects policy and fails closed on a bad one', async () => {
+  const m = makeDb()
+  const dets = JSON.parse(await m.scanText('host 10.0.0.1 down')).detections
+  assert.equal(dets[0].category, 'ipv4')
+
+  const allowed = JSON.parse(
+    await m.scanText('host 10.0.0.1 down', JSON.stringify({ categories: { ipv4: 'allow' } })),
+  )
+  assert.deepEqual(allowed.detections, [])
+
+  // an unreadable policy is a hard VAL error, not a silent no-policy (D3)
+  await assert.rejects(() => m.scanText('x', JSON.stringify({ surprise: 1 })), /VAL-E001/)
+  await assert.rejects(() => m.rehydrateText('x', '{"bad": 1}'), /VAL-E001/)
+  await m.close()
+})
+
+test('anon policy egress round trip (proposal P1)', async () => {
+  const m = makeDb()
+  await m.add('fact', JSON.stringify({
+    subject: 'caller:john', relation: 'prefers', object: 'call me at +1 415 555 0142',
+  }))
+
+  await m.setAnonPolicy('caller', JSON.stringify({ mode: 'egress' }))
+  const policies = JSON.parse(await m.anonPolicies())
+  assert.equal(policies[0].ns, 'caller')
+  assert.equal(policies[0].policy.mode, 'egress')
+
+  const flat = await m.recall('caller:john')
+  assert.ok(!flat.includes('caller:john') && !flat.includes('415 555'), flat)
+  assert.ok(flat.includes('[PERSON_1]'), flat)
+
+  // In-process custody: the mapping is available for rehydration.
+  const mappings = JSON.parse(await m.anonMappings())
+  assert.ok(mappings.some((row) => Object.values(row.mapping).includes('caller:john')))
+  const back = JSON.parse(
+    await m.rehydrateText('ok [PERSON_1]', JSON.stringify(mappings[0].mapping)),
+  )
+  assert.equal(back.text, 'ok caller:john')
+
+  await m.clearAnonPolicy('caller')
+  assert.deepEqual(JSON.parse(await m.anonPolicies()), [])
+  assert.ok((await m.recall('caller:john')).includes('caller:john'))
+
+  // The floor is a host cap, no declared policy needed.
+  await m.setAnonymizeEgressFloor(true)
+  assert.ok(!(await m.recall('caller:john')).includes('caller:john'))
+  await m.close()
+})

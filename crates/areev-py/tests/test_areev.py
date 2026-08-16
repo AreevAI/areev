@@ -1026,3 +1026,76 @@ def test_subject_report_mirrors_erasure(tmp_path):
     erased = json.loads(m.forget_subject("pat"))
     assert erased["grains_erased"] == len(report["grains"])
     assert json.loads(m.subject_report("pat"))["grains"] == []
+
+
+# --------------------------------------------------------------------------
+# text anonymization (docs/anonymization-proposal.md P0)
+# --------------------------------------------------------------------------
+
+def test_anonymize_round_trip(tmp_path):
+    m = make_db(tmp_path)
+    out = json.loads(m.anonymize_text("mail a@b.co, pin number is 1462"))
+    assert out["text"] == "mail [EMAIL_1], pin number is [PIN_1]"
+    assert out["mapping"] == {"[EMAIL_1]": "a@b.co", "[PIN_1]": "1462"}
+    assert len(out["mapping_id"]) == 16
+    assert out["replaced"] == 2
+
+    back = json.loads(
+        m.rehydrate_text(
+            "sent to [EMAIL_1] after pin [PIN_1]", json.dumps(out["mapping"])
+        )
+    )
+    assert back["text"] == "sent to a@b.co after pin 1462"
+    assert back["replaced"] == 2
+    assert back["unmatched"] == []
+
+
+def test_scan_respects_policy_and_fails_closed(tmp_path):
+    m = make_db(tmp_path)
+    dets = json.loads(m.scan_text("host 10.0.0.1 down"))["detections"]
+    assert dets[0]["category"] == "ipv4"
+
+    # allow-listed category drops out of the scan results
+    policy = json.dumps({"categories": {"ipv4": "allow"}})
+    assert json.loads(m.scan_text("host 10.0.0.1 down", policy))["detections"] == []
+
+    # an unreadable policy is a hard VAL error, not a silent no-policy (D3)
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.scan_text("x", json.dumps({"surprise": 1}))
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.rehydrate_text("x", '{"bad": 1}')
+
+
+def test_anon_policy_egress_round_trip(tmp_path):
+    m = make_db(tmp_path)
+    m.add("fact", json.dumps({
+        "subject": "caller:john", "relation": "prefers",
+        "object": "call me at +1 415 555 0142",
+    }))
+
+    m.set_anon_policy("caller", json.dumps({"mode": "egress"}))
+    policies = json.loads(m.anon_policies())
+    assert policies[0]["ns"] == "caller"
+    assert policies[0]["policy"]["mode"] == "egress"
+
+    hits = json.loads(m.recall("caller:john"))
+    flat = json.dumps(hits)
+    assert "caller:john" not in flat and "415 555" not in flat, flat
+    assert "[PERSON_1]" in flat, flat
+
+    # In-process custody: the mapping is available for rehydration.
+    mappings = json.loads(m.anon_mappings())
+    assert any("caller:john" in row["mapping"].values() for row in mappings)
+    mapping = mappings[0]["mapping"]
+    back = json.loads(m.rehydrate_text("ok [PERSON_1]", json.dumps(mapping)))
+    assert back["text"] == "ok caller:john"
+
+    m.clear_anon_policy("caller")
+    assert json.loads(m.anon_policies()) == []
+    flat = json.dumps(json.loads(m.recall("caller:john")))
+    assert "caller:john" in flat, "cleared policy must restore raw reads"
+
+    # The floor is a host cap, no declared policy needed.
+    m.set_anonymize_egress_floor(True)
+    flat = json.dumps(json.loads(m.recall("caller:john")))
+    assert "caller:john" not in flat, flat

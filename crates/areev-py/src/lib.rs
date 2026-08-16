@@ -1777,6 +1777,134 @@ impl Areev {
         serde_json::to_string(&cfg).map_err(err)
     }
 
+    /// Detect sensitive spans in free text with the built-in Tier-0 chain
+    /// (docs/anonymization-proposal.md P0). Pure text — touches no grains.
+    /// Returns JSON `{"text": <nfc text>, "detections": [...]}`; offsets are
+    /// UTF-8 bytes into the returned normalized text.
+    #[pyo3(signature = (text, policy_json = None))]
+    fn scan_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        policy_json: Option<String>,
+    ) -> PyResult<String> {
+        py.detach(|| self.facade.scan_text(&text, policy_json.as_deref()))
+            .map_err(err)
+    }
+
+    /// Pseudonymize free text: detected spans become typed placeholders
+    /// (`[PERSON_1]`) and the reversible spans' placeholder→value map is
+    /// returned to the caller. Returns JSON
+    /// `{"text", "mapping", "mapping_id", "replaced"}`. `key_hex` keys the
+    /// `mapping_id` derivation; without it, don't ship the id anywhere the
+    /// mapping doesn't also travel.
+    #[pyo3(signature = (text, policy_json = None, key_hex = None))]
+    fn anonymize_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        policy_json: Option<String>,
+        key_hex: Option<String>,
+    ) -> PyResult<String> {
+        py.detach(|| {
+            self.facade
+                .anonymize_text(&text, policy_json.as_deref(), key_hex.as_deref())
+        })
+        .map_err(err)
+    }
+
+    /// Restore originals in an LLM response: replaces exact placeholder
+    /// tokens using `mapping_json` (object of placeholder → value). Returns
+    /// JSON `{"text", "replaced", "unmatched"}` — unmatched tokens are left
+    /// intact and reported, never guessed.
+    #[pyo3(signature = (text, mapping_json))]
+    fn rehydrate_text(
+        &self,
+        py: Python<'_>,
+        text: String,
+        mapping_json: String,
+    ) -> PyResult<String> {
+        py.detach(|| self.facade.rehydrate_text(&text, &mapping_json))
+            .map_err(err)
+    }
+
+    /// Declare (or replace) one namespace's anonymization policy — an
+    /// `anon:<ns>` file-truth that replicates write-if-absent and stamps
+    /// min_reader_version. Egress reads of that namespace are pseudonymized
+    /// from now on.
+    #[pyo3(signature = (ns, policy_json))]
+    fn set_anon_policy(&self, py: Python<'_>, ns: String, policy_json: String) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)))
+            .map_err(err)
+    }
+
+    /// Remove one namespace's anonymization policy (missing is not an error).
+    #[pyo3(signature = (ns))]
+    fn clear_anon_policy(&self, py: Python<'_>, ns: String) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.clear_anon_policy(&ns)))
+            .map_err(err)
+    }
+
+    /// All declared anonymization policies as JSON `[{ns, policy}]`. An
+    /// unreadable row is a hard error, not a skip (fail-closed, D3).
+    fn anon_policies(&self, py: Python<'_>) -> PyResult<String> {
+        let policies = py
+            .detach(|| self.facade.with_store(|m| m.anon_policies()))
+            .map_err(err)?;
+        let rows: Vec<serde_json::Value> = policies
+            .into_iter()
+            .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
+            .collect();
+        serde_json::to_string(&rows).map_err(err)
+    }
+
+    /// This process's live pseudonym mappings as JSON
+    /// `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+    /// (D5); mappings never ride MCP/server payloads.
+    fn anon_mappings(&self, py: Python<'_>) -> PyResult<String> {
+        let maps = py
+            .detach(|| self.facade.with_store(|m| m.anon_mappings()))
+            .map_err(err)?;
+        let rows: Vec<serde_json::Value> = maps
+            .into_iter()
+            .map(|(ns, id, mapping)| {
+                serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+            })
+            .collect();
+        serde_json::to_string(&rows).map_err(err)
+    }
+
+    /// Host cap (never persisted): force egress anonymization on for every
+    /// namespace without a declared policy. Can never weaken a declared one.
+    #[pyo3(signature = (on))]
+    fn set_anonymize_egress_floor(&self, py: Python<'_>, on: bool) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.set_anonymize_egress_floor(on)));
+        Ok(())
+    }
+
+    /// Install a Tier-1 NER detector over the command seam (probed at
+    /// install; a broken command errors here, not at the first read).
+    #[pyo3(signature = (cmd))]
+    fn set_anonymizer_command(&self, py: Python<'_>, cmd: String) -> PyResult<()> {
+        py.detach(|| {
+            let backend = areev_store::CommandAnonymize::new(&cmd)?;
+            self.facade.with_store(|m| {
+                m.set_anonymizer(Box::new(backend));
+            });
+            Ok::<(), areev_core::error::AreevError>(())
+        })
+        .map_err(err)
+    }
+
+    /// Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+    /// fingerprint). `tokens_json` is a JSON array of placeholder strings;
+    /// returns JSON `{"revealed": {token: value | null}}`.
+    #[pyo3(signature = (ns, tokens_json))]
+    fn reveal_tokens(&self, py: Python<'_>, ns: String, tokens_json: String) -> PyResult<String> {
+        let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+        py.detach(|| self.facade.reveal_tokens(&ns, &tokens)).map_err(err)
+    }
+
     /// Reject a recommendation with a reason (the library-friendly name for
     /// `areev loop reject`).
     #[pyo3(signature = (hash, why, scopes = None))]

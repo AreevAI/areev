@@ -137,3 +137,96 @@ pub fn retention_row_never_clobbers_local_policy(b: &dyn Backend) {
     let policies = dst.retention_policies().unwrap();
     assert_eq!(policies[0].1.days, 90.0, "local retention policy kept");
 }
+
+/// `anon:<ns>` policy rows replicate write-if-absent like retention rows
+/// (docs/anonymization-proposal.md P1): a full import carries the policy to
+/// a replica that has none — and takes effect on the live handle — while a
+/// replica's own declared policy is never silently swapped by sync.
+pub fn anon_policy_replicates_write_if_absent(b: &dyn Backend) {
+    let mut src = b.open_named("anon_src");
+    src.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    src.set_anon_policy("ns", r#"{"mode": "egress"}"#).unwrap();
+    let bundle = b.scratch().join("anon.mgb");
+    src.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+
+    let mut dst = b.open_named("anon_dst");
+    let stats = dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert!(stats.meta_applied >= 1, "the anon policy rides the bundle: {stats:?}");
+    assert_eq!(
+        dst.anon_active_mode("ns").unwrap().as_deref(),
+        Some("egress"),
+        "a replicated policy takes effect on the live handle"
+    );
+    let got = dst.recall("ns", "caller:john", None, 4).unwrap();
+    assert_eq!(
+        got[0].fields["subject"], "[PERSON_1]",
+        "the replica's egress boundary engages without a reopen"
+    );
+
+    let mut third = b.open_named("anon_third");
+    third.set_anon_policy("ns", r#"{"mode": "audit"}"#).unwrap();
+    third.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert_eq!(
+        third.anon_active_mode("ns").unwrap().as_deref(),
+        Some("audit"),
+        "a live local anon policy is never swapped by sync"
+    );
+}
+
+/// REQ-ANON-2: the sealed vault (the re-identification table) never rides a
+/// bundle — export omits `vault:` rows, and the importer's allowlist refuses
+/// them even from a crafted bundle.
+pub fn vault_rows_never_replicate(b: &dyn Backend) {
+    // The vault needs a page cipher, so the fixture source is always an
+    // embedded encrypted file; what's backend-parameterized is the property
+    // under test — the IMPORTER refusing vault rows.
+    let src_path = b.scratch().join("vault_src.db");
+    let mut src =
+        areev_store::Areev::open_encrypted(src_path.to_str().unwrap(), [5u8; 32]).unwrap();
+    src.set_anon_policy("ns", r#"{"mode": "egress", "scope": "session", "vault": true}"#)
+        .unwrap();
+    src.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let _ = src.recall("ns", "caller:john", None, 4).unwrap(); // mints + persists a vault row
+    assert!(!src.meta_scan("vault:ns:").unwrap().is_empty(), "precondition: vault row exists");
+
+    let bundle = b.scratch().join("vault.mgb");
+    src.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+    let bytes = std::fs::read(&bundle).unwrap();
+    assert!(
+        !bytes.windows(6).any(|w| w == b"vault:"),
+        "the bundle must not carry vault rows"
+    );
+
+    let mut dst = b.open_named("vault_dst");
+    dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert!(
+        dst.meta_scan("vault:").unwrap().is_empty(),
+        "no vault row may exist on the replica"
+    );
+}
+
+/// Value-derived pseudonym features (ingress modes, memory scope, the vault)
+/// are keyed from the page cipher. A memory with no page key — an
+/// unencrypted file, or ANY Postgres schema (the page cipher is
+/// file-backend-only) — must refuse those declarations loudly at `set`,
+/// never degrade to unkeyed derivation. Plain egress stays available.
+pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
+    let mut m = b.open_named("anon_nokey");
+    for policy in [
+        r#"{"mode": "ingress"}"#,
+        r#"{"mode": "both"}"#,
+        r#"{"mode": "egress", "scope": "memory"}"#,
+        r#"{"mode": "egress", "scope": "session", "vault": true}"#,
+    ] {
+        let err = m.set_anon_policy("ns", policy).unwrap_err().to_string();
+        assert!(
+            err.contains("encrypted"),
+            "expected an encrypted-memory refusal for {policy}, got: {err}"
+        );
+    }
+    // The keyless-safe modes still work end to end.
+    m.set_anon_policy("ns", r#"{"mode": "egress", "scope": "session"}"#).unwrap();
+    m.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let got = m.recall("ns", "caller:john", None, 4).unwrap();
+    assert_eq!(got[0].fields["subject"], "[PERSON_1]", "egress must work keyless");
+}

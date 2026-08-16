@@ -1724,6 +1724,24 @@ async function openPanel(hash) {
   const cp = el('button', 'btn ghost sm', 'Copy grain JSON');
   cp.onclick = () => copyText(JSON.stringify(g, null, 2), 'Grain JSON');
   dev.appendChild(cp);
+  /* "As the model sees it" (docs/anonymization-proposal.md §8.3): the same
+     grain through the egress boundary — pseudonymized fields, whether or
+     not a policy is declared yet. The single most persuasive view this
+     feature has. */
+  const mv = el('button', 'btn ghost sm', 'Model view');
+  mv.style.marginLeft = '8px';
+  mv.onclick = async () => {
+    mv.disabled = true;
+    const pv = await api('/api/anon/preview?hash=' + encodeURIComponent(g.hash || hash));
+    mv.disabled = false;
+    if (!pv || pv.ok === false) { toast('Preview unavailable: ' + ((pv && pv.error) || '')); return; }
+    const pre = el('pre', 'code', JSON.stringify(pv.fields, null, 2));
+    pre.style.borderLeft = '2px solid var(--warn)';
+    dev.appendChild(el('span', 'sec-label', 'AS THE MODEL SEES IT'));
+    dev.appendChild(pre);
+    mv.remove();
+  };
+  dev.appendChild(mv);
   p.appendChild(dev);
 }
 
@@ -2316,6 +2334,79 @@ function renderConnectSettings(host) {
       alist.appendChild(row);
     }
   });
+
+  /* Anonymization (docs/anonymization-proposal.md §8.3): declared per-
+     namespace policies, the host floor, and a plain-language declare/clear
+     form. Modes only — the placeholder→value mappings never reach the
+     browser (D5 custody). */
+  const anh = el('div', 'grp-head');
+  anh.appendChild(el('h2', null, 'Anonymization'));
+  anh.appendChild(el('span', 'meta', 'what leaves for the model, pseudonymized'));
+  host.appendChild(anh);
+  const abox = el('div', 'card'); abox.style.cssText = 'padding:12px 22px 16px';
+  const anon = (c.anonymization || { policies: [], floor: false, audit_counts: [] });
+  if (anon.floor) {
+    const fr = el('div', 'kv');
+    fr.appendChild(el('span', 'k', 'Host floor'));
+    fr.appendChild(el('span', 'v', 'on — every namespace is pseudonymized on the way out'));
+    abox.appendChild(fr);
+  }
+  if (!anon.policies.length) {
+    abox.appendChild(el('div', 'empty', anon.floor
+      ? 'No per-namespace policies declared.'
+      : 'No policies declared — memories leave for the model as-is.'));
+  } else {
+    for (const p of anon.policies) {
+      const r = el('div', 'kv');
+      r.appendChild(el('span', 'k', p.ns));
+      r.appendChild(el('span', 'v', p.mode === 'egress'
+        ? 'pseudonymized on the way to the model'
+        : p.mode === 'audit' ? 'counting what would be hidden (audit)'
+        : p.mode));
+      abox.appendChild(r);
+    }
+  }
+  const form = el('div');
+  form.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap';
+  const nsIn = el('input'); nsIn.className = 'qin'; nsIn.placeholder = 'namespace';
+  nsIn.style.cssText = 'flex:0 1 160px;min-width:120px';
+  const modeSel = document.createElement('select'); modeSel.className = 'qin';
+  for (const [v, label] of [['egress', 'Pseudonymize for the model'], ['audit', 'Audit only'], ['off', 'Off']]) {
+    const o = document.createElement('option'); o.value = v; o.textContent = label; modeSel.appendChild(o);
+  }
+  const declare = el('button', 'btn sm', 'Declare');
+  declare.onclick = async () => {
+    const ns = nsIn.value.trim();
+    if (!ns) { toast('Name the namespace first'); return; }
+    declare.disabled = true;
+    const res = await api('/api/anon/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ns, policy: { mode: modeSel.value } }) });
+    declare.disabled = false;
+    if (res && res.ok) { toast('Policy declared — it travels with the file'); loadConfig().then(render); }
+    else toast('Could not declare it: ' + ((res && res.error) || 'the console may be read-only'));
+  };
+  const clear = el('button', 'btn ghost sm', 'Clear');
+  clear.onclick = async () => {
+    const ns = nsIn.value.trim();
+    if (!ns) { toast('Name the namespace first'); return; }
+    clear.disabled = true;
+    const res = await api('/api/anon/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ns, clear: true }) });
+    clear.disabled = false;
+    if (res && res.ok) { toast('Policy cleared'); loadConfig().then(render); }
+    else toast('Could not clear it: ' + ((res && res.error) || 'the console may be read-only'));
+  };
+  form.appendChild(nsIn); form.appendChild(modeSel);
+  form.appendChild(lock(declare)); form.appendChild(lock(clear));
+  abox.appendChild(form);
+  const auditRows = anon.audit_counts || [];
+  if (auditRows.length) {
+    const ad = el('div', 'mono dev-only');
+    ad.style.cssText = 'margin-top:8px';
+    ad.textContent = 'audit: ' + auditRows.map(r => r.ns + '/' + r.category + '=' + r.count).join(' · ');
+    abox.appendChild(ad);
+  }
+  host.appendChild(abox);
 }
 
 /* ══ developer sidebar ════════════════════════════════════════════════ */

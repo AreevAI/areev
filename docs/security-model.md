@@ -47,6 +47,33 @@ top of that.
   the passphrase (and the derived key) renders the data unrecoverable — a fast,
   durable delete of an entire encrypted memory.
 
+### Anonymization keys and the sealed vault
+
+- **Three subkeys derive from the page-cipher key** via HKDF with distinct
+  domain-separation strings: `areev.blobs.v1` (the CAS sidecar, above),
+  `areev.anon.memory.v1` (value-derived pseudonym tokens — ingress mode and
+  `memory` scope), and `areev.vault.v1` (the sealed placeholder→value vault:
+  AES-256-GCM per row, the `vault:<ns>:<placeholder>` row key bound in as
+  associated data). Destroying the page key destroys all three —
+  **crypto-erasure reaches the vault by construction**.
+- **No page key, no value-derived features.** On a plaintext file — or any
+  Postgres schema, where the page cipher does not exist — ingress modes,
+  `memory` scope, and the vault refuse loudly at policy `set` rather than
+  degrade to unkeyed derivation (conformance-pinned on both backends). The
+  egress session's `mapping_id` key falls back to a per-handle random key
+  held only in memory.
+- **The vault never replicates.** `vault:` rows are excluded from bundle
+  export, and the import allowlist refuses them from a crafted bundle — the
+  re-identification table must not travel.
+- **Erasure reaches the vault.** `FORGET SUBJECT` decrypt-and-compares the
+  vault rows and scrubs every live in-process mapping naming the erased
+  identity; a failure there is an error, never best-effort.
+- **Reveal is a privileged act.** Reverse lookup requires the `admin` verb
+  and writes a Tier-2 audit Observation carrying value *fingerprints*,
+  never identities. Pseudonym mappings otherwise stay in process custody:
+  bounded in memory, returned only to in-process callers, and carried on
+  MCP/server payloads as mapping **ids** only.
+
 ### Known limitations at rest
 
 - **The `.blobs` CAS sidecar is encrypted** when the memory is: AES-256-GCM

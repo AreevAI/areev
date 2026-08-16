@@ -797,10 +797,32 @@ impl UiServer {
                 // cannot load. Same class of thing as an open warning — the
                 // file and the host disagree — so it belongs in the same list.
                 warnings.extend(self.facade.meta_warnings());
+                // Anonymization observability (REQ-ANON-5: no policy is
+                // loud): declared per-ns modes, the host floor, and the
+                // audit counters. Modes only — never mappings or values.
+                let (anon_declared, anon_floor, anon_audit) = self.facade.with_store(|m| {
+                    (
+                        m.anon_declared(),
+                        m.anonymize_egress_floor(),
+                        m.anon_audit_counts(),
+                    )
+                });
+                let anonymization = json!({
+                    "policies": anon_declared
+                        .iter()
+                        .map(|(ns, mode)| json!({"ns": ns, "mode": mode}))
+                        .collect::<Vec<_>>(),
+                    "floor": anon_floor,
+                    "audit_counts": anon_audit
+                        .iter()
+                        .map(|(ns, cat, n)| json!({"ns": ns, "category": cat, "count": n}))
+                        .collect::<Vec<_>>(),
+                });
                 ok_json(json!({
                     "ok": true,
                     "db": self.db_label,
                     "warnings": warnings,
+                    "anonymization": anonymization,
                     "file": {
                         "text_index": index_text,
                         "embedding": declared_embed.map(|(m, d)| json!({"model": m, "dim": d})),
@@ -943,6 +965,21 @@ impl UiServer {
                 let hash = q("hash").unwrap_or_default();
                 match areev_core::error::Hash::from_hex(&hash)
                     .and_then(|h| self.facade.get(&h))
+                {
+                    Ok(g) => ok_json(json!({
+                        "hash": g.hash.to_hex(),
+                        "type": format!("{:?}", g.grain_type).to_lowercase(),
+                        "fields": g.fields,
+                    })),
+                    Err(e) => ok_json(json!({"ok": false, "error": e.to_string()})),
+                }
+            }
+            ("GET", "/api/anon/preview") => {
+                // "As the model sees it" (proposal §8.3): the grain rendered
+                // the way an egress boundary would show it, policy or not.
+                let hash = q("hash").unwrap_or_default();
+                match areev_core::error::Hash::from_hex(&hash)
+                    .and_then(|h| self.facade.with_store(|m| m.anon_preview(&h)))
                 {
                     Ok(g) => ok_json(json!({
                         "hash": g.hash.to_hex(),
@@ -1242,6 +1279,7 @@ impl UiServer {
             ("POST", "/api/loop/apply") => self.loop_apply(body),
             ("POST", "/api/loop/rollback") => self.loop_rollback(body),
             ("POST", "/api/loop/config") => self.loop_config(body),
+            ("POST", "/api/anon/config") => self.anon_config(body),
             _ => (
                 "404 Not Found",
                 "application/json",
@@ -1342,6 +1380,46 @@ impl UiServer {
         match self.engine().set_analyzer_config(&mut sub, &id, update, &areev_loop_adapter::scopes_for(&self.facade.authz())) {
             Ok(cfg) => ok_json(json!({"ok": true, "config": cfg})),
             Err(e) => ok_json(json!({"ok": false, "error": e.to_string(), "code": e.code()})),
+        }
+    }
+}
+
+impl UiServer {
+    /// Declare or clear a per-namespace anonymization policy from the
+    /// console (Connect → Settings). Rides the same write gate as every
+    /// console POST (auth + Origin + body cap upstream); the policy itself
+    /// validates fail-closed in the store.
+    fn anon_config(&self, body: &[u8]) -> (&'static str, &'static str, Vec<u8>) {
+        let v: Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return ok_json(json!({"ok": false, "error": e.to_string()})),
+        };
+        let Some(ns) = v.get("ns").and_then(Value::as_str).filter(|n| !n.trim().is_empty())
+        else {
+            return ok_json(json!({"ok": false, "error": "ns is required"}));
+        };
+        let result = if v.get("clear").and_then(Value::as_bool) == Some(true) {
+            self.facade.with_store(|m| m.clear_anon_policy(ns))
+        } else {
+            match v.get("policy") {
+                Some(policy) => {
+                    let policy_json = policy.to_string();
+                    self.facade.with_store(|m| m.set_anon_policy(ns, &policy_json))
+                }
+                None => {
+                    return ok_json(json!({"ok": false, "error": "policy (object) or clear: true is required"}));
+                }
+            }
+        };
+        match result {
+            Ok(()) => {
+                let declared = self.facade.with_store(|m| m.anon_declared());
+                ok_json(json!({"ok": true, "policies": declared
+                    .iter()
+                    .map(|(ns, mode)| json!({"ns": ns, "mode": mode}))
+                    .collect::<Vec<_>>()}))
+            }
+            Err(e) => ok_json(json!({"ok": false, "error": e.to_string()})),
         }
     }
 }

@@ -198,13 +198,13 @@ these same calls — there is no separate segment abstraction in this crate.
 
 **Registry meta segment (`MGB2`)**: when the file carries replicable meta
 rows (`REPLICABLE_META_PREFIXES` = `qry:`/`tpl:`/`retention:`/
-`retention_floor:`), the bundle is v2 — magic `MGB2`, then
+`retention_floor:`/`anon:`), the bundle is v2 — magic `MGB2`, then
 `meta_len(u32)·meta_json`, then the op records; registry-free bundles stay
 byte-identical MGB1 (older builds refuse MGB2 loudly at the magic check).
 Export strips `last_run_at` (usage never replicates); import merges
 latest-wins on `updated_at` for `qry:`/`tpl:` (preserving local
-`last_run_at`), write-if-absent for retention rows (sync never swaps a live
-policy), applies nothing outside the allowlist (a crafted bundle cannot
+`last_run_at`), write-if-absent for retention and anon rows (sync never swaps a live
+policy; an applied `anon:` row re-arms the live handle's egress gate), applies nothing outside the allowlist (a crafted bundle cannot
 touch `text_index`/`min_reader_version`), and skips the segment entirely on
 a PITR import (meta rows have no HLC). Counted in
 `ImportStats::meta_applied/meta_skipped`. Conformance:

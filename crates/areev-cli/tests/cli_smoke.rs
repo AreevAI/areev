@@ -1257,3 +1257,134 @@ fn run_demo_end_to_end() {
     // Intents + results (Tool) and checkpoints (State) — the whole journal.
     assert!(out.contains("Tool") && out.contains("State"), "{out}");
 }
+
+#[test]
+fn anonymize_scan_is_pure_text_and_fails_closed_on_bad_policy() {
+    // `--text` mode: no --db, no store open, JSON out with the pin span.
+    let (ok, out, err) = areev(&[
+        "anonymize", "scan", "--text", "my user name is john, and pin number is 1462",
+    ]);
+    assert!(ok, "anonymize scan failed: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("scan prints JSON");
+    let cats: Vec<&str> = v["detections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["category"].as_str().unwrap())
+        .collect();
+    assert!(cats.contains(&"pin"), "expected a pin detection, got {cats:?}");
+
+    // stdin mode.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["anonymize", "scan"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn areev");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"reach me at a@b.co")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdin scan prints JSON");
+    assert_eq!(v["detections"][0]["category"], "email");
+
+    // An unreadable policy is a hard refusal (D3), not a silent no-policy.
+    let dir = TempDir::new().unwrap();
+    let policy = dir.path().join("bad.json");
+    std::fs::write(&policy, r#"{"surprise": 1}"#).unwrap();
+    let (ok, _out, err) = areev(&[
+        "anonymize", "scan", "--text", "x", "--policy-file", policy.to_str().unwrap(),
+    ]);
+    assert!(!ok, "bad policy must refuse");
+    assert!(err.contains("VAL-E001"), "want VAL-E001 in: {err}");
+}
+
+#[test]
+fn anonymize_policy_verbs_and_floor_cover_recall() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("anon.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _out, err) = areev(&[
+        "add", "--db", db, "--ns", "caller", "--subject", "caller:john", "--relation",
+        "prefers", "--object", "call me at +1 415 555 0142",
+    ]);
+    assert!(ok, "add failed: {err}");
+
+    // Declare: recall output is pseudonymized from now on.
+    let (ok, _out, err) = areev(&[
+        "anonymize", "set", "--db", db, "--ns", "caller", "--policy", r#"{"mode": "egress"}"#,
+    ]);
+    assert!(ok, "anonymize set failed: {err}");
+    let (ok, out, _err) = areev(&["recall", "--db", db, "--ns", "caller", "--subject", "caller:john"]);
+    assert!(ok);
+    assert!(!out.contains("caller:john") && !out.contains("415 555"), "leaked: {out}");
+    assert!(out.contains("[PERSON_1]"), "expected pseudonym: {out}");
+
+    // list / clear
+    let (ok, out, _err) = areev(&["anonymize", "list", "--db", db]);
+    assert!(ok && out.contains("\"egress\""), "list: {out}");
+    let (ok, _out, err) = areev(&["anonymize", "clear", "--db", db, "--ns", "caller"]);
+    assert!(ok, "clear failed: {err}");
+    let (ok, out, _err) = areev(&["recall", "--db", db, "--ns", "caller", "--subject", "caller:john"]);
+    assert!(ok && out.contains("caller:john"), "cleared policy must restore raw reads: {out}");
+
+    // The floor is a per-invocation host cap, no declared policy needed.
+    let (ok, out, _err) = areev(&[
+        "recall", "--db", db, "--ns", "caller", "--subject", "caller:john", "--anonymize-egress",
+    ]);
+    assert!(ok);
+    assert!(!out.contains("caller:john"), "floor must transform: {out}");
+}
+
+#[test]
+fn anonymize_vault_reveal_through_the_binary() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("vault.db");
+    let db = db.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(args)
+            .env("SMOKE_PASS", "correct horse battery staple")
+            .output()
+            .expect("spawn areev");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+
+    let (ok, _out, err) = run(&[
+        "add", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--subject", "caller:john", "--relation", "prefers", "--object", "tea",
+    ]);
+    assert!(ok, "add failed: {err}");
+    let (ok, _out, err) = run(&[
+        "anonymize", "set", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--policy", r#"{"mode": "egress", "scope": "session", "vault": true}"#,
+    ]);
+    assert!(ok, "set failed: {err}");
+
+    // A recall mints + persists the vault row; this process exits after.
+    let (ok, out, err) = run(&[
+        "recall", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--subject", "caller:john",
+    ]);
+    assert!(ok, "recall failed: {err}");
+    assert!(out.contains("[PERSON_1]") && !out.contains("caller:john"), "{out}");
+
+    // A LATER process reverse-looks the token up from the sealed vault.
+    let (ok, out, err) = run(&[
+        "anonymize", "reveal", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--token", "[PERSON_1]",
+    ]);
+    assert!(ok, "reveal failed: {err}");
+    assert!(out.contains("caller:john"), "reveal must recover the identity: {out}");
+}

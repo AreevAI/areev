@@ -314,6 +314,65 @@ export declare class Areev {
    * the bindings. `paramsJson` is an optional JSON object of overrides.
    */
   setAnalyzerConfig(analyzerId: string, enabled?: boolean | undefined | null, paramsJson?: string | undefined | null): Promise<string>
+  /**
+   * Detect sensitive spans in free text with the built-in Tier-0 chain
+   * (docs/anonymization-proposal.md P0). Pure text — touches no grains.
+   * Returns JSON `{"text": <nfc text>, "detections": [...]}`; offsets are
+   * UTF-8 bytes into the returned normalized text.
+   */
+  scanText(text: string, policyJson?: string | undefined | null): Promise<string>
+  /**
+   * Pseudonymize free text: detected spans become typed placeholders
+   * (`[PERSON_1]`) and the reversible spans' placeholder→value map is
+   * returned to the caller. Returns JSON
+   * `{"text", "mapping", "mapping_id", "replaced"}`. `keyHex` keys the
+   * `mapping_id` derivation; without it, don't ship the id anywhere the
+   * mapping doesn't also travel.
+   */
+  anonymizeText(text: string, policyJson?: string | undefined | null, keyHex?: string | undefined | null): Promise<string>
+  /**
+   * Restore originals in an LLM response: replaces exact placeholder
+   * tokens using `mappingJson` (object of placeholder → value). Returns
+   * JSON `{"text", "replaced", "unmatched"}` — unmatched tokens are left
+   * intact and reported, never guessed.
+   */
+  rehydrateText(text: string, mappingJson: string): Promise<string>
+  /**
+   * Declare (or replace) one namespace's anonymization policy — an
+   * `anon:<ns>` file-truth that replicates write-if-absent and stamps
+   * min_reader_version. Egress reads of that namespace are pseudonymized
+   * from now on.
+   */
+  setAnonPolicy(ns: string, policyJson: string): Promise<void>
+  /** Remove one namespace's anonymization policy (missing is not an error). */
+  clearAnonPolicy(ns: string): Promise<void>
+  /**
+   * All declared anonymization policies as JSON `[{ns, policy}]`. An
+   * unreadable row is a hard error, not a skip (fail-closed, D3).
+   */
+  anonPolicies(): Promise<string>
+  /**
+   * This process's live pseudonym mappings as JSON
+   * `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+   * (D5); mappings never ride MCP/server payloads.
+   */
+  anonMappings(): Promise<string>
+  /**
+   * Host cap (never persisted): force egress anonymization on for every
+   * namespace without a declared policy. Can never weaken a declared one.
+   */
+  setAnonymizeEgressFloor(on: boolean): Promise<void>
+  /**
+   * Install a Tier-1 NER detector over the command seam (probed at
+   * install; a broken command errors here, not at the first read).
+   */
+  setAnonymizerCommand(cmd: string): Promise<void>
+  /**
+   * Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+   * fingerprint). `tokensJson` is a JSON array of placeholder strings;
+   * returns JSON `{"revealed": {token: value | null}}`.
+   */
+  revealTokens(ns: string, tokensJson: string): Promise<string>
   /** Reject a recommendation with a reason (library-friendly `reject`). */
   dismissRecommendation(hash: string, why: string, scopes?: string | undefined | null): Promise<string>
   /**

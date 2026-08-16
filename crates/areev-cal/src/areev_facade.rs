@@ -32,6 +32,37 @@ use crate::templates::{PersistedTemplate, TemplateRegistry};
 const QRY_PREFIX: &str = "qry:";
 const TPL_PREFIX: &str = "tpl:";
 
+/// Recursive ingress transform over a JSON value's string leaves.
+fn ingress_value_tree(
+    m: &mut Areev,
+    ns: &str,
+    v: &mut serde_json::Value,
+) -> Result<()> {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(t) = m.ingress_transform_text(ns, s)? {
+                *s = t;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(a) => {
+            for item in a {
+                ingress_value_tree(m, ns, item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(o) => {
+            for (k, item) in o.iter_mut() {
+                if !matches!(k.as_str(), "namespace" | "session_id" | "run_id" | "parent") {
+                    ingress_value_tree(m, ns, item)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -345,6 +376,145 @@ impl AreevFacade {
         f(&mut guard)
     }
 
+    /// Ingress boundary for the structured write path (proposal §4.2):
+    /// identity fields whole-value as `person`, other string leaves through
+    /// detection. `Ok(None)` = no ingress policy covers the write namespace
+    /// (the overwhelmingly common case — one store probe). Runtime journal
+    /// writes (`record_tool_call`, `record_run_manifest`) are deliberately
+    /// exempt, the write-side mirror of the `run_grains` egress exemption.
+    fn ingress_fields(
+        &self,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        const IDENTITY: &[&str] = &["subject", "user_id", "observer"];
+        const SKIP: &[&str] = &[
+            "namespace", "session_id", "run_id", "node_id", "parent", "relation",
+            "derived_from", "supersedes", "author_did",
+        ];
+        let ns = self.write_ns(fields).to_string();
+        let mut guard = self.store.lock().unwrap();
+        if !guard.ingress_active(&ns)? {
+            return Ok(None);
+        }
+        let mut out = fields.clone();
+        for (k, v) in out.iter_mut() {
+            if SKIP.contains(&k.as_str()) {
+                continue;
+            }
+            if IDENTITY.contains(&k.as_str()) {
+                if let serde_json::Value::String(sv) = v {
+                    if let Some(t) = guard.ingress_transform_identity(&ns, sv)? {
+                        *sv = t;
+                    }
+                }
+                continue;
+            }
+            ingress_value_tree(&mut guard, &ns, v)?;
+        }
+        Ok(Some(out))
+    }
+
+    /// Reverse-lookup placeholder tokens (proposal D9, REQ-ANON-3): the
+    /// privileged, audited act. Requires the `admin` verb on `ns`; every
+    /// execution writes a Tier-2 Observation in `agent:authz` carrying the
+    /// revealed values' *fingerprints*, never the identities. Returns JSON
+    /// `{"revealed": {token: value | null}}`.
+    pub fn reveal_tokens(&self, ns: &str, tokens: &[String]) -> Result<String> {
+        self.check_verb(Verb::Admin, ns)?;
+        let mut revealed = serde_json::Map::new();
+        let mut fingerprints: Vec<String> = Vec::new();
+        self.with_store(|m| -> Result<()> {
+            for token in tokens {
+                match m.anon_reveal(ns, token)? {
+                    Some(value) => {
+                        fingerprints.push(areev_core::authz::subject_fingerprint(&value));
+                        revealed.insert(token.clone(), serde_json::json!(value));
+                    }
+                    None => {
+                        revealed.insert(token.clone(), serde_json::Value::Null);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        // Tier-2 audit: the reveal IS the record — fingerprints only, so the
+        // immutable, replicating audit grain cannot re-identify by itself.
+        let mut obs = areev_core::authz::audit_observation(
+            &self.session_principal(),
+            "reveal",
+            ns,
+            None,
+            fingerprints.len(),
+            now_ms(),
+        );
+        if !fingerprints.is_empty() {
+            let ctx = obs.common.context.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(o) = ctx.as_object_mut() {
+                o.insert("revealed_fingerprints".into(), serde_json::json!(fingerprints));
+            }
+        }
+        self.with_store(|m| m.add(&obs))?;
+        serde_json::to_string(&serde_json::json!({"revealed": revealed}))
+            .map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------
+    //
+    // The explicit front door: pure text in, JSON out, no store access. From
+    // P1 on these same signatures grow policy-row lookup (`anon:<ns>`) and
+    // the session mapping table; the P0 caller supplies the policy explicitly
+    // and holds the mapping (D5 custody: an in-process caller already holds
+    // the raw file, so no gate applies here — the vaulted `reveal` path is
+    // the gated one).
+
+    /// Run the Tier-0 detector chain over `text`. Returns JSON
+    /// `{"text": <nfc text>, "detections": [{start, end, category,
+    /// confidence, detector}]}` — offsets are UTF-8 bytes into the returned
+    /// (NFC-normalized) text.
+    pub fn scan_text(&self, text: &str, policy_json: Option<&str>) -> Result<String> {
+        let policy = match policy_json {
+            Some(j) => areev_core::anon::AnonPolicy::from_json(j)?,
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let out = areev_core::anon::scan(text, &policy, &[])?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Pseudonymize `text` under the policy (default policy when `None`).
+    /// Returns JSON `{"text", "mapping", "mapping_id", "replaced"}`. Only
+    /// `pseudonym` spans enter the mapping — `mask`/`redact` are one-way.
+    /// `key_hex` keys the `mapping_id` derivation (D11); without it the id
+    /// must not be shipped anywhere the mapping doesn't also travel.
+    pub fn anonymize_text(
+        &self,
+        text: &str,
+        policy_json: Option<&str>,
+        key_hex: Option<&str>,
+    ) -> Result<String> {
+        let policy = match policy_json {
+            Some(j) => areev_core::anon::AnonPolicy::from_json(j)?,
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let key = match key_hex {
+            Some(h) => Some(hex::decode(h).map_err(|e| {
+                AreevError::Validation(format!("anonymize key must be hex: {e}"))
+            })?),
+            None => None,
+        };
+        let out = areev_core::anon::anonymize(text, &policy, &[], key.as_deref())?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Replace placeholder tokens in `text` with their originals from
+    /// `mapping_json` (a JSON object of placeholder → value). Returns JSON
+    /// `{"text", "replaced", "unmatched"}`; unmatched tokens are left intact
+    /// and reported, never guessed.
+    pub fn rehydrate_text(&self, text: &str, mapping_json: &str) -> Result<String> {
+        let mapping = areev_core::anon::mapping_from_json(mapping_json)?;
+        let out = areev_core::anon::rehydrate(text, &mapping)?;
+        serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
     /// Preflight the governed-corpus registry write. Exporting reads the
     /// selected namespaces, but recording its immutable lineage additionally
     /// requires `write ON agent:harness`.
@@ -384,6 +554,8 @@ impl AreevFacade {
         fields: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(Hash, bool)> {
         self.check_verb(Verb::Write, self.write_ns(fields))?;
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddIfNovelSink { m: &mut m })
     }
@@ -516,6 +688,8 @@ impl AreevFacade {
         // is written, then hand the whole set to the store as one batch.
         let mut built: Vec<Box<dyn areev_store::AddableDyn>> = Vec::with_capacity(entries.len());
         for (grain_type, fields) in entries {
+            let ingressed = self.ingress_fields(fields)?;
+            let fields = ingressed.as_ref().unwrap_or(fields);
             build_grain_from_json(grain_type, fields, CollectSink { out: &mut built })?;
         }
         let refs: Vec<&dyn areev_store::AddableDyn> = built.iter().map(|b| b.as_ref()).collect();
@@ -685,6 +859,8 @@ impl PrincipalSession<'_> {
             );
             &attributed
         };
+        let ingressed = self.facade.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.facade.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddSink { m: &mut m })
     }
@@ -899,6 +1075,35 @@ impl CalStoreFacade for AreevFacade {
     /// `budget_pressure` analyzer). Best-effort: telemetry never fails a query.
     fn note_assembly_budget(&self, overflow: bool) {
         let _ = self.with_store(|m| m.telemetry_note_budget(overflow));
+    }
+
+    /// The egress payload flag (proposal §4.1): active when any namespace
+    /// declares an egress policy or the host installed the floor. Carries
+    /// mapping *ids* only — the mapping itself stays in process (D5).
+    fn anon_egress_report(&self) -> Option<serde_json::Value> {
+        self.with_store(|m| {
+            let declared = m.anon_declared();
+            let floor = m.anonymize_egress_floor();
+            let egress_ns: Vec<String> = declared
+                .iter()
+                .filter(|(_, mode)| mode == "egress")
+                .map(|(ns, _)| ns.clone())
+                .collect();
+            if egress_ns.is_empty() && !floor {
+                return None;
+            }
+            let mappings: Vec<serde_json::Value> = m
+                .anon_mappings()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(ns, id, _)| serde_json::json!({"ns": ns, "mapping_id": id}))
+                .collect();
+            Some(serde_json::json!({
+                "namespaces": egress_ns,
+                "floor": floor,
+                "mappings": mappings,
+            }))
+        })
     }
 
     fn note_assembly_manifest(&self, manifest: &AssemblyManifest) {
@@ -1648,6 +1853,8 @@ impl CalStoreFacade for AreevFacade {
         fields: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Hash> {
         self.check_verb(Verb::Write, self.write_ns(fields))?;
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(grain_type, fields, AddSink { m: &mut m })
     }
@@ -1677,6 +1884,8 @@ impl CalStoreFacade for AreevFacade {
                 self.check_verb(Verb::Supersede, new_ns)?;
             }
         }
+        let ingressed = self.ingress_fields(fields)?;
+        let fields = ingressed.as_ref().unwrap_or(fields);
         let mut m = self.store.lock().unwrap();
         build_grain_from_json(
             grain_type,

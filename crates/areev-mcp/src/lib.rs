@@ -333,6 +333,13 @@ impl McpServer {
                         })
                     })
                     .collect();
+                // Egress flag (proposal §4.1): tell the model harness these
+                // results are pseudonymized, with mapping *ids* only — the
+                // mapping itself never rides an MCP payload (D5 custody).
+                let out = match self.facade.anon_egress_report() {
+                    Some(report) => json!({"grains": out, "anonymized": report}),
+                    None => json!(out),
+                };
                 Ok(serde_json::to_string(&out).unwrap_or_default())
             }
             "areev_add" => {
@@ -852,7 +859,7 @@ fn tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "areev_recall",
-            "description": "Recall current memories about a subject (structural, µs-class). Returns grains newest-first.",
+            "description": "Recall current memories about a subject (structural, µs-class). Returns grains newest-first. Under an active anonymization policy the response is {grains, anonymized}: fields are pseudonymized and `anonymized` carries mapping ids (never the mappings).",
             "inputSchema": {"type": "object", "properties": {
                 "subject": s("entity to recall about, e.g. 'caller:john'"),
                 "relation": s("optional relation filter, e.g. 'prefers'"),

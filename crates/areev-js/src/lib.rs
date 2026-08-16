@@ -1804,6 +1804,174 @@ impl Areev {
         })
     }
 
+    /// Detect sensitive spans in free text with the built-in Tier-0 chain
+    /// (docs/anonymization-proposal.md P0). Pure text — touches no grains.
+    /// Returns JSON `{"text": <nfc text>, "detections": [...]}`; offsets are
+    /// UTF-8 bytes into the returned normalized text.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn scan_text(
+        &self,
+        text: String,
+        policy_json: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.scan_text(&text, policy_json.as_deref()).map_err(err)
+        })
+    }
+
+    /// Pseudonymize free text: detected spans become typed placeholders
+    /// (`[PERSON_1]`) and the reversible spans' placeholder→value map is
+    /// returned to the caller. Returns JSON
+    /// `{"text", "mapping", "mapping_id", "replaced"}`. `keyHex` keys the
+    /// `mapping_id` derivation; without it, don't ship the id anywhere the
+    /// mapping doesn't also travel.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn anonymize_text(
+        &self,
+        text: String,
+        policy_json: Option<String>,
+        key_hex: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade
+                .anonymize_text(&text, policy_json.as_deref(), key_hex.as_deref())
+                .map_err(err)
+        })
+    }
+
+    /// Restore originals in an LLM response: replaces exact placeholder
+    /// tokens using `mappingJson` (object of placeholder → value). Returns
+    /// JSON `{"text", "replaced", "unmatched"}` — unmatched tokens are left
+    /// intact and reported, never guessed.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn rehydrate_text(
+        &self,
+        text: String,
+        mapping_json: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.rehydrate_text(&text, &mapping_json).map_err(err)
+        })
+    }
+
+    /// Declare (or replace) one namespace's anonymization policy — an
+    /// `anon:<ns>` file-truth that replicates write-if-absent and stamps
+    /// min_reader_version. Egress reads of that namespace are pseudonymized
+    /// from now on.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anon_policy(
+        &self,
+        ns: String,
+        policy_json: String,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)).map_err(err)
+        })
+    }
+
+    /// Remove one namespace's anonymization policy (missing is not an error).
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn clear_anon_policy(&self, ns: String) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.clear_anon_policy(&ns)).map_err(err)
+        })
+    }
+
+    /// All declared anonymization policies as JSON `[{ns, policy}]`. An
+    /// unreadable row is a hard error, not a skip (fail-closed, D3).
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn anon_policies(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let policies = facade.with_store(|m| m.anon_policies()).map_err(err)?;
+            let rows: Vec<serde_json::Value> = policies
+                .into_iter()
+                .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
+                .collect();
+            serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// This process's live pseudonym mappings as JSON
+    /// `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+    /// (D5); mappings never ride MCP/server payloads.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn anon_mappings(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let maps = facade.with_store(|m| m.anon_mappings()).map_err(err)?;
+            let rows: Vec<serde_json::Value> = maps
+                .into_iter()
+                .map(|(ns, id, mapping)| {
+                    serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+                })
+                .collect();
+            serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// Host cap (never persisted): force egress anonymization on for every
+    /// namespace without a declared policy. Can never weaken a declared one.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anonymize_egress_floor(
+        &self,
+        on: bool,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.set_anonymize_egress_floor(on));
+            Ok(())
+        })
+    }
+
+    /// Install a Tier-1 NER detector over the command seam (probed at
+    /// install; a broken command errors here, not at the first read).
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anonymizer_command(
+        &self,
+        cmd: String,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let backend = areev_store::CommandAnonymize::new(&cmd).map_err(err)?;
+            facade.with_store(|m| {
+                m.set_anonymizer(Box::new(backend));
+            });
+            Ok(())
+        })
+    }
+
+    /// Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+    /// fingerprint). `tokensJson` is a JSON array of placeholder strings;
+    /// returns JSON `{"revealed": {token: value | null}}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn reveal_tokens(
+        &self,
+        ns: String,
+        tokens_json: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+            facade.reveal_tokens(&ns, &tokens).map_err(err)
+        })
+    }
+
     /// Reject a recommendation with a reason (library-friendly `reject`).
     #[napi(ts_return_type = "Promise<string>")]
     pub fn dismiss_recommendation(

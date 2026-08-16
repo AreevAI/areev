@@ -790,6 +790,109 @@ change them.
 
 ---
 
+## 16. Pseudonymize what leaves for the model (anonymization)
+
+Declare a per-namespace policy once and every model-facing read — recall,
+search, CAL, MCP, the graph reads — returns typed placeholders
+(`[PERSON_1]`, `[PHONE_1]`) instead of identities. The placeholder→value
+mapping stays in your process; the model's reply is rehydrated by exact
+token replacement. This is pseudonymization, not anonymity — the honest
+scope is the egress channel (provider logs, prompt retention).
+
+Try the detector chain with no memory file at all:
+
+```bash
+areev anonymize scan --text "reach me at j.doe@acme.io, pin number is 1462"
+# → detections: email + pin (Tier-0: regex + checksum + keyword cues)
+```
+
+Declare a policy; it travels with the file and replicates to synced copies:
+
+```bash
+areev add --db support.db --ns caller \
+  --subject caller:john --relation prefers --object "call me at +1 415 555 0142"
+
+areev anonymize set --db support.db --ns caller --policy '{"mode": "egress"}'
+
+areev recall --db support.db --ns caller --subject caller:john
+# → subject "[PERSON_1]", object "call me at [PHONE_1]"
+# Bare "john" in prose is caught too: the store knows its interned subjects.
+
+areev anonymize list --db support.db        # what is declared
+areev anonymize clear --db support.db --ns caller   # back to raw reads
+```
+
+The round trip in an app (Python; Node is the same surface, camelCased):
+
+```python
+m = areev.Areev("support.db", ns="caller")
+m.set_anon_policy("caller", json.dumps({"mode": "egress", "scope": "session"}))
+
+hits = json.loads(m.recall("caller:john"))          # already pseudonymized
+reply = llm(prompt_with(hits))                       # model sees tokens only
+mapping = json.loads(m.anon_mappings())[0]["mapping"]
+final = json.loads(m.rehydrate_text(reply, json.dumps(mapping)))["text"]
+```
+
+`scope: "session"` keeps tokens stable across calls in one process. MCP and
+CAL payloads carry an `anonymized` report with mapping **ids** only — the
+mapping itself never rides a payload; the host process rehydrates.
+
+Cross-process reconstruction needs the sealed vault (encrypted memory):
+
+```bash
+export MEMPASS="correct horse battery staple"
+areev anonymize set --db support.db --passphrase-env MEMPASS --ns caller \
+  --policy '{"mode": "egress", "scope": "session", "vault": true}'
+areev recall --db support.db --passphrase-env MEMPASS --ns caller --subject caller:john
+# …later, any process — admin-gated, audited by fingerprint:
+areev anonymize reveal --db support.db --passphrase-env MEMPASS \
+  --ns caller --token "[PERSON_1]"
+```
+
+Store less instead: `{"mode": "ingress"}` (encrypted memory required)
+transforms **before** the hash commits — `remember`'s extractor LLM never
+sees the raw text, the stored blob holds value-derived tokens, and
+`forget-subject`/`subject-report` by the real name still work (the pseudonym
+is recomputed from the identity).
+
+Roll out and harden:
+
+```bash
+# Measure first: counts per category, no transform (visible in /api/config)
+areev anonymize set --db support.db --ns caller --policy '{"mode": "audit"}'
+
+# Per-category actions + a custom dictionary
+areev anonymize set --db support.db --ns caller --policy '{
+  "mode": "egress",
+  "categories": {"credit_card": "redact", "secret": "redact",
+                 "phone": "mask", "date": "generalize:month"},
+  "custom_terms": ["Project Nightingale"],
+  "because": "prompts leave the boundary via provider X"
+}'
+
+# Host floor (any verb): force egress on without a declared policy
+areev recall --db support.db --ns caller --subject caller:john --anonymize-egress
+
+# Beyond Tier-0: a local NER command and/or a grounded LLM detector
+areev recall --db support.db --ns caller --subject caller:john \
+  --anonymize-cmd './presidio-bridge.py' --anonymize-llm-cmd 'ollama run llama3'
+```
+
+A policy that demands `"detectors": ["tier0","ner"]` with no backend
+installed fails the read closed — never a silent downgrade. In the console,
+**Connect → Settings** has the declare/clear form and any grain's developer
+panel has **Model view** (what the model would see).
+
+**Backends.** Everything above except the value-derived features works on
+both backends (conformance-pinned): on **Postgres** there is no page cipher,
+so ingress, `memory` scope, and the vault refuse loudly at `set` — use
+`egress` with `context`/`session` scope there, and note session tokens are
+per-process (each writer holds its own mapping). Cross-process-stable
+tokens and the vault are file-backend + encryption features by design.
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

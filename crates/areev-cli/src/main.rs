@@ -160,6 +160,26 @@ COMMANDS:
                                       them). --dry-run prints, stores nothing.
   hook     claude-code               print settings.json hook snippet
                                       (auto recall-before-prompt + capture-on-stop)
+  anonymize scan [--text T] [--policy-file F]
+                                      detect sensitive spans (Tier-0 chain:
+                                      structural, regex+checksum, secrets,
+                                      keyword cues, dictionary). Reads stdin
+                                      when --text is absent; prints JSON.
+                                      Pure text — needs no memory file.
+  anonymize set --ns NS (--policy-file F | --policy JSON)
+                                      declare a per-namespace egress/audit
+                                      policy (travels with the file; stamps
+                                      min_reader_version). `list` shows the
+                                      declared policies, `clear --ns NS`
+                                      removes one, `mappings` prints this
+                                      process's live pseudonym mappings, and
+                                      `reveal --ns NS --token T` reverse-looks
+                                      one up (admin verb; Tier-2 audited by
+                                      fingerprint). Add --anonymize-egress to
+                                      any verb to force egress on as a host
+                                      floor, and --anonymize-cmd 'CMD' to
+                                      install a Tier-1 NER detector (JSON
+                                      probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
   ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]  web console (default 127.0.0.1:7437)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
@@ -904,6 +924,35 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         return Ok(());
     }
 
+    // `anonymize scan` is pure text processing: it never opens the store,
+    // so it runs before the open like `hook`. The policy verbs
+    // (set/list/clear/mappings) are store-backed and dispatch below.
+    if cmd == "anonymize" && positional.first().map(String::as_str) == Some("scan") {
+        let text = match flag(&flags, "text") {
+            Some(t) => t,
+            None => {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .map_err(|e| format!("reading stdin: {e}"))?;
+                buf
+            }
+        };
+        let policy = match flag(&flags, "policy-file") {
+            Some(path) => {
+                let json = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--policy-file {path}: {e}"))?;
+                areev_core::anon::AnonPolicy::from_json(&json).map_err(|e| e.to_string())?
+            }
+            None => areev_core::anon::AnonPolicy::default(),
+        };
+        let out = areev_core::anon::scan(&text, &policy, &[]).map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
     // Optional encryption: when --passphrase-env <VAR> is given, derive an
     // AES-256 key from the passphrase held in that environment variable
     // (Argon2id; salt in a <db>.kdf sidecar). The passphrase and the derived
@@ -981,6 +1030,29 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // also consumed by run-manifest/run-trace commands; it is not a file
     // declaration.
     m.set_run_id(flag(&flags, "run-id").as_deref());
+
+    // Host cap (per-process, never persisted): --anonymize-egress forces
+    // egress anonymization on every namespace without a declared policy and
+    // upgrades a declared "off". It can never weaken a declared policy.
+    if flags.contains_key("anonymize-egress") {
+        m.set_anonymize_egress_floor(true);
+    }
+    // Tier-1 NER detector over the command seam (probed here, so a broken
+    // command fails at startup instead of failing every covered read closed).
+    if let Some(cmd_line) = flag(&flags, "anonymize-cmd") {
+        let backend =
+            areev_store::CommandAnonymize::new(&cmd_line).map_err(|e| e.to_string())?;
+        m.set_anonymizer(Box::new(backend));
+    }
+    // Tier-2 LLM detector: a host command wrapping a (local-first) model.
+    // Grounded — the model proposes span texts, never offsets, and anything
+    // not present verbatim in the source is discarded.
+    if let Some(cmd_line) = flag(&flags, "anonymize-llm-cmd") {
+        let model = flag(&flags, "anonymize-llm-model");
+        let llm = areev_loop::CommandLlm::new(&cmd_line, model.as_deref())
+            .map_err(|e| e.to_string())?;
+        m.set_anonymizer(Box::new(areev_llm::LlmDetector::new(llm)));
+    }
 
     // Optional host-supplied embedder: --embed-cmd 'CMD' spawns CMD per embed
     // (text on stdin, JSON array of numbers on stdout). Enables the vector
@@ -2440,6 +2512,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         "audit" => {
             run_audit(&mut m, &flags, &positional)?;
         }
+        "anonymize" => run_anonymize(m, &flags, &positional)?,
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;
         }
@@ -2492,6 +2565,77 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
 /// every other bulk erasure. The governed alternative is the loop's
 /// `retention_sweep` analyzer, which proposes the same purge through review
 /// and audit instead of performing it.
+/// `areev anonymize <set|list|clear|mappings>` — the per-namespace policy
+/// surface (docs/anonymization-proposal.md P1). `scan` is handled pre-open.
+fn run_anonymize(
+    mut m: Areev,
+    flags: &HashMap<String, String>,
+    positional: &[String],
+) -> Result<(), String> {
+    let sub = positional.first().map(String::as_str).unwrap_or("");
+    match sub {
+        "set" => {
+            let ns = flag(flags, "ns").ok_or("anonymize set requires --ns")?;
+            let policy = match (flag(flags, "policy"), flag(flags, "policy-file")) {
+                (Some(j), _) => j,
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--policy-file {path}: {e}"))?,
+                (None, None) => return Err("anonymize set requires --policy or --policy-file".into()),
+            };
+            m.set_anon_policy(&ns, &policy).map_err(|e| e.to_string())?;
+            println!("anonymization policy declared for namespace '{ns}' — egress reads are transformed from now on; older builds opening this file will warn");
+            Ok(())
+        }
+        "list" => {
+            let policies = m.anon_policies().map_err(|e| e.to_string())?;
+            if policies.is_empty() {
+                println!("no anonymization policies declared");
+                return Ok(());
+            }
+            for (ns, p) in policies {
+                println!(
+                    "{}",
+                    serde_json::json!({"ns": ns, "policy": p})
+                );
+            }
+            Ok(())
+        }
+        "clear" => {
+            let ns = flag(flags, "ns").ok_or("anonymize clear requires --ns")?;
+            m.clear_anon_policy(&ns).map_err(|e| e.to_string())?;
+            println!("anonymization policy cleared for namespace '{ns}'");
+            Ok(())
+        }
+        "reveal" => {
+            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns")?;
+            let token = flag(flags, "token").ok_or("anonymize reveal requires --token")?;
+            // Facade path: admin-gated + Tier-2 audited (fingerprints only).
+            let facade =
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None);
+            let out = facade
+                .reveal_tokens(&ns, &[token])
+                .map_err(|e| e.to_string())?;
+            println!("{out}");
+            Ok(())
+        }
+        "mappings" => {
+            // In-process custody (D5): the operator running this process may
+            // see the live placeholder->value mappings for rehydration.
+            let maps = m.anon_mappings().map_err(|e| e.to_string())?;
+            for (ns, id, mapping) in maps {
+                println!(
+                    "{}",
+                    serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+                );
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "unknown anonymize subcommand '{other}' (expected scan, set, list, clear, or mappings)"
+        )),
+    }
+}
+
 fn run_retention(
     m: &mut Areev,
     ns: &str,
@@ -3755,7 +3899,21 @@ fn resolve_llm(
 /// proposer ≠ scorer rule the Areev Loop verifier follows. Facts the grounder does
 /// not support are dropped; survivors are stamped `"verified"`.
 fn run_remember(mut m: Areev, ns: &str, flags: &HashMap<String, String>) -> Result<(), String> {
-    let content = need(flags, "content")?;
+    let mut content = need(flags, "content")?;
+    // Anonymization boundaries (docs/anonymization-proposal.md §4.1–4.2):
+    // under an INGRESS policy, transform before the extractor OR the store
+    // sees the text — the CLI composes capture+attach itself, so it must not
+    // hand the raw text to the model first. Under an EGRESS policy the
+    // extraction request is additionally covered below by the
+    // PseudonymizingBackend wrap, so identities stay in-process even when
+    // the stored form is raw.
+    if let Some(t) = m.ingress_transform_text(ns, &content).map_err(|e| e.to_string())? {
+        content = t;
+    }
+    let egress_wrap = matches!(
+        m.anon_active_mode(ns).map_err(|e| e.to_string())?.as_deref(),
+        Some("egress")
+    );
     let observer = flag(flags, "observer").unwrap_or_else(|| "cli".to_string());
     let dry_run = flag(flags, "dry-run").is_some();
     let hint = flag(flags, "extract-hint");
@@ -3786,6 +3944,24 @@ fn run_remember(mut m: Areev, ns: &str, flags: &HashMap<String, String>) -> Resu
         Some(_) => resolve_llm(flags, "ground-cmd", "ground-model")?,
         None => None,
     };
+    // Under an egress policy, extraction requests leave the process
+    // pseudonymized and responses come back rehydrated (D5/D6). Fail-closed:
+    // the wrap itself erroring fails remember, it never falls back to raw.
+    let wrap = |b: Box<dyn areev_loop::LlmBackend>| -> Result<Box<dyn areev_loop::LlmBackend>, String> {
+        if egress_wrap {
+            let policy = areev_core::anon::AnonPolicy {
+                scope: "session".into(),
+                ..Default::default()
+            };
+            Ok(Box::new(
+                areev_llm::PseudonymizingBackend::new(b, policy).map_err(|e| e.to_string())?,
+            ))
+        } else {
+            Ok(b)
+        }
+    };
+    let llm = llm.map(wrap).transpose()?;
+    let grounder = grounder.map(wrap).transpose()?;
     let model = llm.as_ref().map(|l| l.model().to_string());
 
     // --dry-run: extract and print, write nothing. For iterating on

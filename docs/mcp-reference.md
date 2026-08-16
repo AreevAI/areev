@@ -113,7 +113,13 @@ grains newest-first.
 | `k` | integer | no | Max results (default 16) |
 | `run_id` | string | no | Ambient trajectory run id recorded on recall telemetry |
 
-Returns a JSON array of `{ hash, type, fields }` objects.
+Returns a JSON array of `{ hash, type, fields }` objects. Under an active
+anonymization policy (`anon:<ns>` row or the host's `--anonymize-egress`
+floor) the response becomes
+`{ "grains": [...], "anonymized": {...} }`: fields arrive pseudonymized
+(`[PERSON_1]`) and `anonymized` carries the namespaces, floor state, and
+mapping *ids* only — the placeholder→value mappings never ride an MCP
+payload; the host process rehydrates via `anon_mappings()`.
 
 ```json
 { "name": "areev_recall",

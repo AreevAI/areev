@@ -182,6 +182,14 @@ pub trait CalStoreFacade: Send + Sync {
     /// budget? Default no-op — only a telemetry-backed store overrides it.
     fn note_assembly_budget(&self, _overflow: bool) {}
 
+    /// Anonymization egress report for payload flags (proposal §4.1):
+    /// `Some({"namespaces": [...], "floor": bool, "mappings": [{ns,
+    /// mapping_id}]})` when an egress policy or floor is active on the
+    /// backing store. Ids only — the mapping itself stays in process (D5).
+    fn anon_egress_report(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Persist one sampled assembly manifest. Best-effort by contract: an
     /// observability write must never turn a successful read into an error.
     fn note_assembly_manifest(&self, _manifest: &AssemblyManifest) {}

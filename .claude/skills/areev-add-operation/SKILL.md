@@ -47,6 +47,17 @@ first, then touch each surface in dependency order.
    NOTE: `areev-js` is a *standalone* napi package, **not** a workspace member —
    `cargo test --workspace` does not build it; CI's `node` job does.
 
+6. **Docs — same commit, not a follow-up.** Sweep the Docs contract table
+   in the root `CLAUDE.md`: CLI help + `docs/cookbook.md` for a new verb;
+   `docs/mcp-reference.md` (incl. the pinned tool count) for an MCP tool;
+   `docs/cal-reference.md` for payload/behavior changes (its ```sql fences
+   are executable — CI runs them); `ERROR_CODES.md` for codes;
+   `docs/security-model.md` for anything touching auth/crypto/keys; the
+   subsystem's own reference doc (`docs/run.md`, `docs/loop.md`, …); and an
+   `ARCHITECTURE.md` §10 named decision when the operation introduces one.
+   An operation that reached all six code surfaces but zero docs is not
+   done.
+
 ## Verify
 
 ```bash
