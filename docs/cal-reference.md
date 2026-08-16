@@ -526,6 +526,51 @@ usually scope a recall to a tenant, a session, or a user:
 without the `sha256:` prefix, and `hash IN (...)`), even though a grain's
 content address lives on the envelope rather than among its fields.
 
+#### Namespace scoping: exact, sets, and `"org.*"` prefixes
+
+`namespace` takes three shapes, and they are the *same convention* on every
+surface (CAL, the MCP `namespace` argument, `areev recall --ns`, ASSEMBLE
+sources):
+
+```sql
+RECALL facts WHERE namespace = "org.sales" AND subject = "john"
+RECALL facts WHERE namespace IN ("org.sales", "personal") AND subject = "john"
+RECALL facts WHERE namespace = "org.*" AND subject = "john"
+```
+
+- **Exact** — one namespace, matched exactly.
+- **Set** — `namespace IN (…)` queries *every* member (union, deduped by
+  content address, newest-first across the set). Members may themselves be
+  prefix patterns.
+- **Prefix scope** — a value ending in `*` selects the base namespace **plus
+  its descendants through the separator you wrote**: `"org.*"` matches `org`,
+  `org.sales`, `org.sales.emea` — never `organization` (no separator), and
+  never `org:x` (a different hierarchy; spell that `"org:*"`). The `*` must
+  be the trailing character and must follow a non-alphanumeric separator:
+  `org*`, bare `*`, and a mid-string `*` are refused (`VAL-E001`) rather than
+  silently matching nothing.
+
+Because `*` carries this meaning on the read side, it is **reserved in
+namespace names**: `ADD … SET namespace = "org.*"` (and every other write)
+refuses. Scopes select **reads only** — `FORGET SUBJECT`, `PURGE OLDER THAN …
+IN`, grants (`GRANT … ON` takes exact names or `*` alone), retention/anon
+policy, and the point reads (`HISTORY`-style graph/time reads) all take exact
+namespaces and refuse patterns loudly: a wildcard must never widen a
+destructive or policy surface.
+
+Scoping details worth knowing:
+
+- Under a bound principal the expansion **fails closed**: every namespace the
+  prefix covers must be within the session's read grants, or the whole query
+  refuses — naming the *pattern you typed*, never a discovered namespace (in
+  a multi-tenant file that name would itself be a disclosure).
+- A scope set cannot span mounted memories in one `RECALL` (`"orgrep.a"` +
+  a session namespace); the refusal points at `ASSEMBLE`, which exists for
+  exactly that. A pattern *inside* one mount works: `"orgrep.policies.*"`.
+- A session pinned with `namespace_override` cannot escape via `IN` sets or
+  patterns — the pin clears any caller-supplied scope.
+- A prefix that matches no grain-bearing namespace answers empty, honestly.
+
 ---
 
 ## 4. The pipeline

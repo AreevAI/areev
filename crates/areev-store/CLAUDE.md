@@ -96,6 +96,16 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   the stamp is. **`forget` must delete from `prov_idx`/`run_idx` like every
   other index** — `seq` is re-derived as `MAX(seq)+1` on open, so a surviving
   row gets inherited by the next write.
+- `ns_reg(ns, n)` — the **namespace registry**: one row per namespace with at
+  least one `grains` row, `n` = that count. What makes prefix scoping
+  (`"org.*"`) resolvable without scanning grains, and what the fail-closed
+  authz sweep over an expansion enumerates. Count-maintained at every
+  grain-row insert/delete choke point (`insert_prepped`, `insert_blob`,
+  `forget`, `erase_where` — replication therefore maintains it by
+  construction) and DELETEd at zero, so an emptied namespace stops matching
+  scopes and stops demanding grants. Self-healed from `grains` on open when
+  the `ns_registry` meta stamp is missing/stale (the `link_index` pattern).
+  Read via `namespaces()` / `namespaces_in_scope(&NsScope)`.
 - `meta(k, v)` — **file-carried declarations**:
   `text_index` ("1"/"0"), `entity_relations` (sorted JSON array),
   `embedding_model`/`embedding_dim` (provenance, stamped by the first
@@ -130,6 +140,31 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   node. `heads()` orders provisional-first.
 - `merge_heads` requires ≥2 tips, records all `merge_parents` in `context`
   (inside the blob, so it replicates), supersedes every open tip.
+
+## Namespace scoping (`"org.*"`)
+
+Every **plural read** (`recall`, `recall_hybrid*`, `search_text*`,
+`search_vector*`, `recent*`) accepts a prefix scope in its namespace
+parameter: `"org.*"` = `org` + its `.`-descendants (`org.sales`, never
+`organization`; parse rules in `areev_core::ns::NsScope`). Expansion resolves
+against `ns_reg`; the legs then run over a namespace-id **set** — per-ns
+probes merged on the file-global seq (which IS recency order) for the
+structural/recent legs, `ns IN (…)`-scoped postings/vector scans for the
+others, one RRF fusion (`recall_hybrid_ids`). A single exact namespace keeps
+every cached statement untouched — the voice path never pays for this.
+`recall_hybrid_scoped`/`recent_scoped` take an already-resolved LIST (the CAL
+facade's path after per-namespace authz). Under a multi-namespace scope the
+egress hint is `None`, so each grain resolves its own anon policy, and
+telemetry records the pattern as typed.
+
+Everything else **refuses patterns** via `require_exact_ns` (VAL-E001):
+writes (`prep_from_blob(new_write=true)` — `insert_blob` stays permissive so
+pre-reservation files import), point reads (`latest`, `thread_tail`, `heads`),
+graph/run reads, destruction (`forget_subject`, `forget_older_than`,
+`subject_report`/`subject_bundle` — the DSAR pair refuses identically to the
+erasure it mirrors), and the policy setters (retention/floor/hold/anon).
+Conformance: `cases/ns_scope.rs`, both backends; store tests:
+`tests/ns_scope_tests.rs`.
 
 ## Hybrid recall
 

@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use areev_core::authz::Verb;
 use areev_core::error::{Hash, AreevError, Result};
+use areev_core::ns::NsScope;
 use areev_core::format::deserialize::DeserializedGrain;
 use areev_core::format::serialize::serialize_grain;
 use areev_core::types::{Fact, Grain, Observation, RelatedTo, State};
@@ -1395,25 +1396,101 @@ impl CalStoreFacade for AreevFacade {
             }
         }
 
-        // mount routing: "alias.inner" namespaces hit mounted replicas
-        let requested = params.namespace.as_deref().or(self.namespace.as_deref());
-        // The read gate. A session with no namespace scope reads everything,
-        // so it needs a grant covering `*`; owner sessions pass untouched.
-        self.check_verb(Verb::Read, requested.unwrap_or("*"))?;
-        let (mount_alias, ns_owned) = match requested {
-            Some(full) => match full.split_once('.') {
-                Some((alias, inner)) if self.mounts.contains_key(alias) => {
-                    (Some(alias.to_string()), inner.to_string())
-                }
-                _ => (None, full.to_string()),
+        // ---- namespace scope resolution --------------------------------
+        // The requested scope terms: an explicit `namespace IN (…)` set wins,
+        // else the single namespace filter, else the session default. Each
+        // term may be an exact name, a `"org.*"` prefix pattern (parent +
+        // descendants), or mount-routed `alias.inner` (the inner part may
+        // itself be a pattern).
+        let requested_terms: Vec<String> = match &params.namespaces {
+            Some(set) => set.clone(),
+            None => match params.namespace.as_deref().or(self.namespace.as_deref()) {
+                Some(one) => vec![one.to_string()],
+                None => Vec::new(),
             },
-            None => (None, "shared".to_string()),
         };
-        let ns = ns_owned.as_str();
+        // A session with no namespace scope keeps the historical contract:
+        // the read gate checks `*`, the recall runs in the store default.
+        if requested_terms.is_empty() {
+            self.check_verb(Verb::Read, "*")?;
+        }
+        // Mount-route every term; one RECALL reads one store, so a set that
+        // spans mounts (or mixes a mount with the session store) refuses with
+        // a pointer at ASSEMBLE, which exists for exactly that.
+        let mut mount_alias: Option<String> = None;
+        let mut inner_scopes: Vec<(String, NsScope)> = Vec::with_capacity(requested_terms.len());
+        for (i, full) in requested_terms.iter().enumerate() {
+            let (alias, inner) = match full.split_once('.') {
+                Some((a, rest)) if self.mounts.contains_key(a) => {
+                    (Some(a.to_string()), rest.to_string())
+                }
+                _ => (None, full.clone()),
+            };
+            if i == 0 {
+                mount_alias = alias;
+            } else if mount_alias != alias {
+                return Err(AreevError::Validation(
+                    "a namespace set cannot span mounted memories in one RECALL — query each \
+                     store separately, or ASSEMBLE with one source per store"
+                        .into(),
+                ));
+            }
+            inner_scopes.push((inner.clone(), NsScope::parse(&inner)?));
+        }
+        // Exact terms pass the read gate as themselves — the caller named
+        // them, so the refusal may too. (Unknown names stay in the scope and
+        // recall as empty; existence is not checked here.)
+        for (term, scope) in &inner_scopes {
+            if matches!(scope, NsScope::Exact(_)) {
+                self.check_verb(Verb::Read, term)?;
+            }
+        }
         let mut m = match &mount_alias {
             Some(a) => self.mounts.get(a).unwrap().lock().unwrap(),
             None => self.store.lock().unwrap(),
         };
+        // Resolve prefix scopes against the target store's namespace
+        // registry, gating each DISCOVERED namespace on the session's read
+        // grants — fail closed, and without naming what the caller could not
+        // already know: in a multi-tenant file, a refusal that names a
+        // sibling tenant's namespace would itself be a disclosure, so it
+        // names the pattern the caller typed instead.
+        let owner = self.session_is_owner();
+        let mut ns_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (term, scope) in &inner_scopes {
+            match scope {
+                NsScope::Exact(e) => {
+                    ns_set.insert(e.clone());
+                }
+                NsScope::Prefix { .. } => {
+                    for cand in m.namespaces_in_scope(scope)? {
+                        if !owner && self.check_verb(Verb::Read, &cand).is_err() {
+                            return Err(AreevError::AuthzDenied(format!(
+                                "principal {} lacks read on part of scope {term:?} — the \
+                                 prefix covers a namespace outside this session's grants",
+                                self.session_principal()
+                            )));
+                        }
+                        ns_set.insert(cand);
+                    }
+                }
+            }
+        }
+        // A scope of nothing selects nothing: all-pattern terms that matched
+        // no namespace answer empty, honestly — but only when the caller
+        // actually named a scope (the no-scope session default is below).
+        if ns_set.is_empty() && !requested_terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ns_set.is_empty() {
+            ns_set.insert("shared".to_string()); // the no-scope store default
+        }
+        let ns_list: Vec<String> = ns_set.into_iter().collect();
+        // `scoped` = the result set can span namespaces; the single exact
+        // namespace — the common case and the voice path — keeps every
+        // single-namespace fast path below.
+        let scoped = ns_list.len() > 1;
+        let ns = ns_list[0].as_str();
         let k = params.limit.unwrap_or(16).min(1000);
 
         // M4: hybrid recall — structural leg + BM25 leg fused with RRF.
@@ -1457,16 +1534,28 @@ impl CalStoreFacade for AreevFacade {
                 // alongside the head that replaced it and recall reported both
                 // as current. Supersession is index-layer state, so the
                 // distinction has to be made in the query, not after it.
-                Some(_) if !include_superseded => m.recent_live(
-                    ns,
-                    params.grain_type,
-                    k.saturating_mul(Self::RECALL_OVERFETCH),
-                )?,
-                Some(_) => m.recent(
-                    ns,
-                    params.grain_type,
-                    k.saturating_mul(Self::RECALL_OVERFETCH),
-                )?,
+                Some(_) if !include_superseded => {
+                    if scoped {
+                        m.recent_live_scoped(
+                            &ns_list,
+                            params.grain_type,
+                            k.saturating_mul(Self::RECALL_OVERFETCH),
+                        )?
+                    } else {
+                        m.recent_live(ns, params.grain_type, k.saturating_mul(Self::RECALL_OVERFETCH))?
+                    }
+                }
+                Some(_) => {
+                    if scoped {
+                        m.recent_scoped(
+                            &ns_list,
+                            params.grain_type,
+                            k.saturating_mul(Self::RECALL_OVERFETCH),
+                        )?
+                    } else {
+                        m.recent(ns, params.grain_type, k.saturating_mul(Self::RECALL_OVERFETCH))?
+                    }
+                }
                 None => {
                     return Err(AreevError::Validation(
                         "RECALL needs a subject filter, a free-text (LIKE) query, \
@@ -1492,8 +1581,19 @@ impl CalStoreFacade for AreevFacade {
             let budget = k.saturating_mul(Self::RECALL_OVERFETCH);
             match anchors.len() {
                 // The common case, and the voice hot path: one anchored leg.
-                0 | 1 => m.recall_hybrid_tuned(
+                0 | 1 if !scoped => m.recall_hybrid_tuned(
                     ns,
+                    anchors.first().map(String::as_str),
+                    params.relation.as_deref(),
+                    params.query.as_deref(),
+                    budget,
+                    None,
+                    tuning,
+                )?,
+                // Same leg over a resolved namespace set (`IN` / a prefix
+                // scope that expanded to more than one namespace).
+                0 | 1 => m.recall_hybrid_scoped(
+                    &ns_list,
                     anchors.first().map(String::as_str),
                     params.relation.as_deref(),
                     params.query.as_deref(),
@@ -1510,15 +1610,28 @@ impl CalStoreFacade for AreevFacade {
                     let mut seen: HashSet<Hash> = HashSet::new();
                     let mut union = Vec::new();
                     for anchor in &anchors {
-                        for g in m.recall_hybrid_tuned(
-                            ns,
-                            Some(anchor.as_str()),
-                            params.relation.as_deref(),
-                            params.query.as_deref(),
-                            budget,
-                            None,
-                            tuning,
-                        )? {
+                        let leg = if scoped {
+                            m.recall_hybrid_scoped(
+                                &ns_list,
+                                Some(anchor.as_str()),
+                                params.relation.as_deref(),
+                                params.query.as_deref(),
+                                budget,
+                                None,
+                                tuning,
+                            )?
+                        } else {
+                            m.recall_hybrid_tuned(
+                                ns,
+                                Some(anchor.as_str()),
+                                params.relation.as_deref(),
+                                params.query.as_deref(),
+                                budget,
+                                None,
+                                tuning,
+                            )?
+                        };
+                        for g in leg {
                             if seen.insert(g.hash) {
                                 union.push(g);
                             }
@@ -1583,8 +1696,22 @@ impl CalStoreFacade for AreevFacade {
                     if raw.len() >= budget {
                         break 'hops;
                     }
-                    let forward = m
-                        .recall_hybrid(
+                    // Hops stay inside the resolved scope: a graph walk must
+                    // not escape the namespaces the query (and its authz
+                    // sweep) selected.
+                    let forward = if scoped {
+                        m.recall_hybrid_scoped(
+                            &ns_list,
+                            Some(&entity),
+                            None,
+                            params.query.as_deref(),
+                            Self::MULTI_HOP_FANOUT,
+                            None,
+                            areev_store::RecallTuning::default(),
+                        )
+                        .unwrap_or_default()
+                    } else {
+                        m.recall_hybrid(
                             ns,
                             Some(&entity),
                             None,
@@ -1592,10 +1719,15 @@ impl CalStoreFacade for AreevFacade {
                             Self::MULTI_HOP_FANOUT,
                             None,
                         )
-                        .unwrap_or_default();
-                    let reverse = m
-                        .grains_by_object(ns, &entity, Self::MULTI_HOP_FANOUT)
-                        .unwrap_or_default();
+                        .unwrap_or_default()
+                    };
+                    let reverse: Vec<DeserializedGrain> = ns_list
+                        .iter()
+                        .flat_map(|hop_ns| {
+                            m.grains_by_object(hop_ns, &entity, Self::MULTI_HOP_FANOUT)
+                                .unwrap_or_default()
+                        })
+                        .collect();
                     for g in forward.into_iter().chain(reverse) {
                         if seen.insert(g.hash) {
                             push_entities(&g, &mut visited, &mut next);
@@ -1611,8 +1743,16 @@ impl CalStoreFacade for AreevFacade {
         }
         drop(m);
 
+        // Defense in depth for scoped recalls: every leg is already
+        // namespace-bounded in SQL, but a future leg that forgets the bound
+        // would silently WIDEN a result set — the worst failure shape here —
+        // so membership is re-asserted per grain when the scope is a set.
+        let ns_filter: HashSet<&str> = ns_list.iter().map(String::as_str).collect();
         let mut hits: Vec<SearchHit> = raw
             .into_iter()
+            .filter(|g| {
+                !scoped || ns_filter.contains(g.get_str("namespace").unwrap_or("shared"))
+            })
             // `relation` reaches the anchored leg as a store-side predicate,
             // but `recent` takes no predicates at all — so on that path the
             // filter was simply dropped and `RECALL facts WHERE relation = "x"`
@@ -2370,6 +2510,16 @@ fn parse_grant_parts(
     for n in &namespaces {
         if n.trim().is_empty() {
             return Err(AreevError::Validation("empty namespace".into()));
+        }
+        // Grants match namespaces EXACTLY (or `*` for all) — a prefix
+        // pattern here would silently grant nothing today and a family
+        // tomorrow, so `"org.*"` refuses with the rule spelled out rather
+        // than becoming a grant on a namespace literally named "org.*".
+        if n != "*" && NsScope::is_pattern(n) {
+            return Err(AreevError::Validation(format!(
+                "grants take exact namespaces or `*` (got {n:?}): prefix patterns are a \
+                 recall scope, not a grant scope — grant each namespace, or `*`"
+            )));
         }
     }
     Ok(areev_core::authz::Grant { verbs: parsed, namespaces })

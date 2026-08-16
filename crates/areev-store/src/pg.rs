@@ -99,6 +99,10 @@ pub(crate) const PG_SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS run_idx(ns bigint, run bigint, seq bigint)",
     "CREATE INDEX IF NOT EXISTS idx_run ON run_idx(ns, run, seq)",
     "CREATE TABLE IF NOT EXISTS corpus_idx(seq bigint PRIMARY KEY)",
+    // Namespace registry (prefix scoping) — see the embedded SCHEMA's ns_reg
+    // comment. Same count-maintained contract; the serialized write txns
+    // (reserve_write's row lock) make the read-modify-write bumps safe here.
+    "CREATE TABLE IF NOT EXISTS ns_reg(ns bigint PRIMARY KEY, n bigint NOT NULL)",
     // Replaces the `.blobs` filesystem sidecar: same CAS semantics, rows
     // keyed by the raw 32-byte content hash.
     "CREATE TABLE IF NOT EXISTS blobs(hash bytea PRIMARY KEY, body bytea NOT NULL)",
@@ -841,6 +845,20 @@ mod tests {
         assert_eq!(
             translate("SELECT COALESCE(SUM(len),0) FROM fts_doc").unwrap(),
             "SELECT COALESCE(SUM(len),0)::bigint FROM fts_doc"
+        );
+        // The namespace-registry statements ride the generic paths — pinned
+        // here so a future per-table tightening cannot silently strand them.
+        assert_eq!(
+            translate("INSERT OR IGNORE INTO ns_reg(ns, n) VALUES (?1, 0)").unwrap(),
+            "INSERT INTO ns_reg(ns, n) VALUES ($1, 0) ON CONFLICT DO NOTHING"
+        );
+        assert_eq!(
+            translate("UPDATE ns_reg SET n = n + ?2 WHERE ns = ?1").unwrap(),
+            "UPDATE ns_reg SET n = n + $2 WHERE ns = $1"
+        );
+        assert_eq!(
+            translate("DELETE FROM ns_reg WHERE ns = ?1 AND n <= 0").unwrap(),
+            "DELETE FROM ns_reg WHERE ns = $1 AND n <= 0"
         );
     }
 

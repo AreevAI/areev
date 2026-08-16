@@ -1388,3 +1388,44 @@ fn anonymize_vault_reveal_through_the_binary() {
     assert!(ok, "reveal failed: {err}");
     assert!(out.contains("caller:john"), "reveal must recover the identity: {out}");
 }
+
+#[test]
+fn ns_pattern_guards_through_the_binary() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("scope.db");
+    let db = db.to_str().unwrap();
+
+    // Seed a small tree.
+    for ns in ["org", "org.sales", "personal"] {
+        let (ok, _, err) = areev(&[
+            "add", "--db", db, "--ns", ns, "--subject", "acme", "--relation", "hq",
+            "--object", &format!("value-{ns}"),
+        ]);
+        assert!(ok, "seed add failed: {err}");
+    }
+
+    // A prefix scope answers exactly the tree.
+    let (ok, out, err) = areev(&["recall", "acme", "--db", db, "--ns", "org.*"]);
+    assert!(ok, "scoped recall failed: {err}");
+    assert_eq!(out.lines().count(), 2, "org + org.sales only: {out}");
+    assert!(!out.contains("value-personal"), "personal leaked: {out}");
+
+    // A write into a pattern namespace refuses with the VAL code.
+    let (ok, _, err) = areev(&[
+        "add", "--db", db, "--ns", "org.*", "--subject", "s", "--relation", "r", "--object", "o",
+    ]);
+    assert!(!ok, "a wildcard write must fail");
+    assert!(err.contains("VAL-E001"), "refusal must carry the code: {err}");
+
+    // A malformed pattern errors loudly instead of matching nothing.
+    let (ok, _, err) = areev(&["recall", "acme", "--db", db, "--ns", "org*"]);
+    assert!(!ok, "org* must refuse");
+    assert!(err.contains("VAL-E001"), "{err}");
+
+    // Destruction never takes a pattern.
+    let (ok, _, err) = areev(&[
+        "purge-older-than", "0", "--db", db, "--ns", "org.*", "--yes",
+    ]);
+    assert!(!ok, "a wildcard purge must fail");
+    assert!(err.contains("VAL-E001") || err.contains("exact namespace"), "{err}");
+}

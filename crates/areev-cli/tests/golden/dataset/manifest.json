@@ -312,8 +312,80 @@
       "hash": "b2342f2b200d113b6ba8a34bd8f0230cb818861e34eac630ccf85de52c90257e",
       "ns": "work",
       "superseded": false
+    },
+    {
+      "desc": "ns-tree: org root",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "0429f1cde5c44e5c7c2c39765ea9147a987449c448b4a6f7a86f29001ffaf33a",
+      "ns": "org",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree: org.sales",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "48cdd2779dd8ed619c1fa5158cde0c562c6288ed5e75c835177ac95435b8e4f0",
+      "ns": "org.sales",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree: org.sales.emea",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "cdffebcae1ecac4287612f42c1ed162974ceaadb2a6bde879f28e65310a97915",
+      "ns": "org.sales.emea",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree: org.ops",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "36e7a5a46b587f1e8771b1f39ee999b6bfce82133e48b864fe8f4789d13eb51d",
+      "ns": "org.ops",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree trap: organization",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "2ec178aac3b1f02d396156ba4e47dc6fc8930d9cc1468911636a4d69f70f36fd",
+      "ns": "organization",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree trap: orgs",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "b21aa72d19f7bb6f860dcf1f7c3f15515cf18b38d011302320248a2aa8951c65",
+      "ns": "orgs",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree trap: org:x",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "c56528f9488ca3c0da9ab18353fdc9519162b963a67e0fc52e7a812057226daa",
+      "ns": "org:x",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree: BM25 token inside org.*",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "a8a7af511e7ef4572666082c6d1b8437c44aded30364fff7cfe26deae265bcbf",
+      "ns": "org.sales",
+      "superseded": false
+    },
+    {
+      "desc": "ns-tree trap: BM25 token outside org.*",
+      "forgotten": false,
+      "gtype": "fact",
+      "hash": "619a43c0e271b47f1d8b2df2e02ef9ec46bd82bf54b9375525c123385ce61709",
+      "ns": "personal",
+      "superseded": false
     }
   ],
   "schema": 1,
-  "total_grains": 39
+  "total_grains": 48
 }

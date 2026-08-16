@@ -173,6 +173,17 @@ top of that.
   gated by `read`, deliberately not by the destructive cap. CAL is otherwise
   hardened against abuse (max query length, nesting depth, LET-binding and
   result-size caps, Unicode bidi-override rejection, NFC normalization).
+- **Namespace prefix scopes** (`"org.*"`) widen **reads only**, and fail
+  closed under a bound principal: the scope expands against the file's
+  namespace registry and every covered namespace must be within the session's
+  read grants, or the whole query refuses. The refusal names the *pattern the
+  caller typed*, never a discovered namespace — in a multi-tenant file, a
+  refusal that named a sibling tenant's namespace would itself be a
+  disclosure. `*` is reserved: writes refuse wildcard namespaces, grants take
+  exact names or `*` alone (never a prefix), destruction and policy
+  (`FORGET SUBJECT`, `PURGE … IN`, retention/anon/holds) take exact
+  namespaces, and a `namespace_override`-pinned session cannot escape its pin
+  via `IN` sets or patterns (the pin clears any caller-supplied scope).
 - The store issues **parameterized SQL** exclusively; user strings are
   dictionary-encoded to integer term-ids before reaching the triple queries, so
   there is no SQL-injection surface.

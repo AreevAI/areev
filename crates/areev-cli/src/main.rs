@@ -49,6 +49,8 @@ COMMANDS:
            configuration and its run link in agent:harness
   recall   <subject> | --subject S   [--relation R] [--ns NS] [-k N]
            [--render sml|toon|markdown|plain|json] [--budget TOKENS]
+           --ns accepts a prefix scope 'org.*' (= org + its .-descendants);
+           writes and destruction never accept patterns
   cal      <QUERY> [--ns NS]          execute a CAL statement
   corpus   --select '<READ CAL>' [--out FILE] [--recipient ID]
                                       stream governed OpenAI chat

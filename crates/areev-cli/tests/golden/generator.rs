@@ -257,6 +257,35 @@ pub fn generate(work_dir: &Path, bundle_path: &Path) -> Manifest {
     m.forget(&doomed).expect("forget");
     grains.last_mut().unwrap().forgotten = true;
 
+    // -- 9 namespace-tree grains: prefix scoping (`"org.*"`) targets ---------
+    // A four-namespace `.` hierarchy plus the three lookalike traps a raw
+    // prefix match would wrongly include (`organization`, `orgs`, `org:x`).
+    // One shared subject (`acme-hq`) so an anchored scoped recall exercises
+    // the structural leg; `golden-scope-token` appears inside AND outside the
+    // tree so the BM25 leg's scoping is testable as an exclusion.
+    let tree: [(&str, &str, i64, &str); 7] = [
+        ("org", "root-lead", BASE_EPOCH_MS - 18 * DAY_MS, "ns-tree: org root"),
+        ("org.sales", "sales-lead", BASE_EPOCH_MS - 18 * DAY_MS + MIN_MS, "ns-tree: org.sales"),
+        ("org.sales.emea", "emea-lead", BASE_EPOCH_MS - 18 * DAY_MS + 2 * MIN_MS, "ns-tree: org.sales.emea"),
+        ("org.ops", "ops-lead", BASE_EPOCH_MS - 18 * DAY_MS + 3 * MIN_MS, "ns-tree: org.ops"),
+        ("organization", "lookalike-lead", BASE_EPOCH_MS - 18 * DAY_MS + 4 * MIN_MS, "ns-tree trap: organization"),
+        ("orgs", "plural-lead", BASE_EPOCH_MS - 18 * DAY_MS + 5 * MIN_MS, "ns-tree trap: orgs"),
+        ("org:x", "colon-lead", BASE_EPOCH_MS - 18 * DAY_MS + 6 * MIN_MS, "ns-tree trap: org:x"),
+    ];
+    for (ns, o, ts, desc) in tree {
+        fact(&mut m, &mut grains, ns, "acme-hq", "unit_head", o, 1.0, ts, desc);
+    }
+    fact(
+        &mut m, &mut grains, "org.sales", "scopenote-in", "notes",
+        "golden-scope-token inside the tree", 1.0,
+        BASE_EPOCH_MS - 18 * DAY_MS + 7 * MIN_MS, "ns-tree: BM25 token inside org.*",
+    );
+    fact(
+        &mut m, &mut grains, "personal", "scopenote-out", "notes",
+        "golden-scope-token outside the tree", 1.0,
+        BASE_EPOCH_MS - 18 * DAY_MS + 8 * MIN_MS, "ns-tree trap: BM25 token outside org.*",
+    );
+
     // -- export ---------------------------------------------------------------
     m.bundle_since(0, bundle_path.to_str().unwrap()).expect("bundle export");
 

@@ -78,6 +78,17 @@ the audit hash.
   **Read-only mounts**: `mount(alias, store)`; `recall` routes
   `"alias.inner"` namespaces to the mount — writes only ever hit the session
   store, so mounts are read-only by construction.
+  **Namespace scope resolution** lives at the top of `recall`: the scope
+  terms are `params.namespaces` (the `IN` set — every member queried, issue
+  #19) else `params.namespace` else the session default; each term may be
+  exact, a `"org.*"` prefix (expanded via the store's namespace registry), or
+  mount-routed (pattern allowed in the inner part). A set spanning mounts
+  refuses with a pointer at ASSEMBLE. Under a bound principal the expansion
+  fails closed per covered namespace, and the refusal names the pattern —
+  never a discovered namespace. A `namespace_override` pin clears any
+  caller-supplied scope (all three executor application sites). Grants refuse
+  `*`-bearing namespaces except `*` itself (`parse_grant_parts`). E2E:
+  `tests/ns_scope_cal_tests.rs`.
 - `assemble.rs` — `AssembleEngine`: multi-source ASSEMBLE, dedup, 2000-grain
   cap, per-source budget weights, chars/4 token estimate.
 - `render.rs` — THE per-grain renderer every surface shares: semantic

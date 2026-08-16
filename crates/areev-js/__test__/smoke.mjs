@@ -845,3 +845,24 @@ test('anon policy egress round trip (proposal P1)', async () => {
   assert.ok(!(await m.recall('caller:john')).includes('caller:john'))
   await m.close()
 })
+
+test('recall accepts an "org.*" namespace prefix scope and excludes lookalikes', async () => {
+  const m = makeDb()
+  await m.addFact('acme', 'hq', 'root-value', 1.0, 'org')
+  await m.addFact('acme', 'hq', 'sales-value', 1.0, 'org.sales')
+  await m.addFact('acme', 'hq', 'lookalike-value', 1.0, 'organization')
+
+  const rows = JSON.parse(await m.recall('acme', undefined, 16, 'org.*'))
+  const objects = rows.map((r) => r.fields.object).sort()
+  assert.deepEqual(objects, ['root-value', 'sales-value'])
+  m.close()
+})
+
+test('wildcard namespaces refuse on writes and malformed patterns', async () => {
+  const m = makeDb()
+  // '*' is reserved for read scoping — a write must refuse with the VAL code.
+  await assert.rejects(() => m.addFact('s', 'r', 'o', 1.0, 'org.*'), /VAL-E001/)
+  // A malformed pattern errors instead of silently matching nothing.
+  await assert.rejects(() => m.recall('acme', undefined, 16, 'org*'), /VAL-E001/)
+  m.close()
+})

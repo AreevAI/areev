@@ -5,6 +5,7 @@ pub mod anon;
 pub mod authz;
 pub mod error;
 pub mod format;
+pub mod ns;
 pub mod types;
 
 pub use error::{Hash, AreevError, Result};

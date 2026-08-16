@@ -851,12 +851,16 @@ pub struct RecallParams {
     pub relation_in: Option<Vec<String>>,
     /// Multi-value object filter (CAL `IN` operator). Union of hexastore lookups.
     pub object_in: Option<Vec<String>>,
-    /// Filter by namespace.
+    /// Filter by namespace — an exact name or a `"org.*"` prefix scope
+    /// (parent + descendants; see `areev_core::ns::NsScope`).
     pub namespace: Option<String>,
     /// Scoped memory: scope path for hierarchical recall (e.g., "acme/prod/bot1").
     /// When set, expands to ancestor namespaces and applies precedence rules.
     pub scope_path: Option<String>,
-    /// Scoped memory: expanded namespace set (internal, set by scope expansion).
+    /// The `namespace IN (…)` set. Consumed by `AreevFacade::recall` as the
+    /// scope-term list (each element may itself be a `"org.*"` pattern);
+    /// takes precedence over `namespace` when set. A pinned session
+    /// (`namespace_override`) clears it.
     pub(crate) namespaces: Option<Vec<String>>,
     /// Scoped memory: include sibling namespaces at the same depth.
     pub include_siblings: Option<bool>,
