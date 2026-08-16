@@ -180,7 +180,20 @@ jobs:
           done
           main_name=$(node -p "require('./package.json').name")
           main_ver=$(node -p "require('./package.json').version")
-          publish_if_absent "$main_name" "$main_ver" "."
+          if ! publish_if_absent "$main_name" "$main_ver" "."; then
+            # The unscoped main name is still behind npm's similarity filter
+            # ("too similar to existing package argv"; support exception
+            # pending — see CLAUDE.md "Naming"). Ship the scoped package
+            # instead: the shape every release since 1.0.0 actually has on
+            # the registry. The day npm unblocks the unscoped name, the
+            # publish above simply succeeds and this fallback stops firing.
+            # Safe to rename here: prepare-npm.mjs already wired the version
+            # and optionalDependencies, and binary loading keys on
+            # napi.binaryName, not the registry name.
+            echo "::warning::unscoped $main_name@$main_ver rejected by npm similarity filter — publishing @areev/areev instead"
+            node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.name='@areev/areev';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+            publish_if_absent "@areev/areev" "$main_ver" "."
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
