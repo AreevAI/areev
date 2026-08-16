@@ -337,6 +337,31 @@ export declare class Areev {
    * intact and reported, never guessed.
    */
   rehydrateText(text: string, mappingJson: string): Promise<string>
+  /**
+   * Declare (or replace) one namespace's anonymization policy — an
+   * `anon:<ns>` file-truth that replicates write-if-absent and stamps
+   * min_reader_version. Egress reads of that namespace are pseudonymized
+   * from now on.
+   */
+  setAnonPolicy(ns: string, policyJson: string): Promise<void>
+  /** Remove one namespace's anonymization policy (missing is not an error). */
+  clearAnonPolicy(ns: string): Promise<void>
+  /**
+   * All declared anonymization policies as JSON `[{ns, policy}]`. An
+   * unreadable row is a hard error, not a skip (fail-closed, D3).
+   */
+  anonPolicies(): Promise<string>
+  /**
+   * This process's live pseudonym mappings as JSON
+   * `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+   * (D5); mappings never ride MCP/server payloads.
+   */
+  anonMappings(): Promise<string>
+  /**
+   * Host cap (never persisted): force egress anonymization on for every
+   * namespace without a declared policy. Can never weaken a declared one.
+   */
+  setAnonymizeEgressFloor(on: boolean): Promise<void>
   /** Reject a recommendation with a reason (library-friendly `reject`). */
   dismissRecommendation(hash: string, why: string, scopes?: string | undefined | null): Promise<string>
   /**

@@ -797,10 +797,32 @@ impl UiServer {
                 // cannot load. Same class of thing as an open warning — the
                 // file and the host disagree — so it belongs in the same list.
                 warnings.extend(self.facade.meta_warnings());
+                // Anonymization observability (REQ-ANON-5: no policy is
+                // loud): declared per-ns modes, the host floor, and the
+                // audit counters. Modes only — never mappings or values.
+                let (anon_declared, anon_floor, anon_audit) = self.facade.with_store(|m| {
+                    (
+                        m.anon_declared(),
+                        m.anonymize_egress_floor(),
+                        m.anon_audit_counts(),
+                    )
+                });
+                let anonymization = json!({
+                    "policies": anon_declared
+                        .iter()
+                        .map(|(ns, mode)| json!({"ns": ns, "mode": mode}))
+                        .collect::<Vec<_>>(),
+                    "floor": anon_floor,
+                    "audit_counts": anon_audit
+                        .iter()
+                        .map(|(ns, cat, n)| json!({"ns": ns, "category": cat, "count": n}))
+                        .collect::<Vec<_>>(),
+                });
                 ok_json(json!({
                     "ok": true,
                     "db": self.db_label,
                     "warnings": warnings,
+                    "anonymization": anonymization,
                     "file": {
                         "text_index": index_text,
                         "embedding": declared_embed.map(|(m, d)| json!({"model": m, "dim": d})),

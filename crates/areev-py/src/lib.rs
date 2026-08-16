@@ -1828,6 +1828,60 @@ impl Areev {
             .map_err(err)
     }
 
+    /// Declare (or replace) one namespace's anonymization policy — an
+    /// `anon:<ns>` file-truth that replicates write-if-absent and stamps
+    /// min_reader_version. Egress reads of that namespace are pseudonymized
+    /// from now on.
+    #[pyo3(signature = (ns, policy_json))]
+    fn set_anon_policy(&self, py: Python<'_>, ns: String, policy_json: String) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)))
+            .map_err(err)
+    }
+
+    /// Remove one namespace's anonymization policy (missing is not an error).
+    #[pyo3(signature = (ns))]
+    fn clear_anon_policy(&self, py: Python<'_>, ns: String) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.clear_anon_policy(&ns)))
+            .map_err(err)
+    }
+
+    /// All declared anonymization policies as JSON `[{ns, policy}]`. An
+    /// unreadable row is a hard error, not a skip (fail-closed, D3).
+    fn anon_policies(&self, py: Python<'_>) -> PyResult<String> {
+        let policies = py
+            .detach(|| self.facade.with_store(|m| m.anon_policies()))
+            .map_err(err)?;
+        let rows: Vec<serde_json::Value> = policies
+            .into_iter()
+            .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
+            .collect();
+        serde_json::to_string(&rows).map_err(err)
+    }
+
+    /// This process's live pseudonym mappings as JSON
+    /// `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+    /// (D5); mappings never ride MCP/server payloads.
+    fn anon_mappings(&self, py: Python<'_>) -> PyResult<String> {
+        let maps = py
+            .detach(|| self.facade.with_store(|m| m.anon_mappings()))
+            .map_err(err)?;
+        let rows: Vec<serde_json::Value> = maps
+            .into_iter()
+            .map(|(ns, id, mapping)| {
+                serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+            })
+            .collect();
+        serde_json::to_string(&rows).map_err(err)
+    }
+
+    /// Host cap (never persisted): force egress anonymization on for every
+    /// namespace without a declared policy. Can never weaken a declared one.
+    #[pyo3(signature = (on))]
+    fn set_anonymize_egress_floor(&self, py: Python<'_>, on: bool) -> PyResult<()> {
+        py.detach(|| self.facade.with_store(|m| m.set_anonymize_egress_floor(on)));
+        Ok(())
+    }
+
     /// Reject a recommendation with a reason (the library-friendly name for
     /// `areev loop reject`).
     #[pyo3(signature = (hash, why, scopes = None))]

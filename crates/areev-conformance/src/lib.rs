@@ -182,6 +182,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(registry_merge_is_latest_wins_and_keeps_local_last_run);
         $per_case!(pitr_import_skips_the_registry);
         $per_case!(retention_row_never_clobbers_local_policy);
+        $per_case!(anon_policy_replicates_write_if_absent);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(forget_reclaims_sole_referenced_blob);

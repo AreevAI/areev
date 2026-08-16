@@ -1304,3 +1304,41 @@ fn anonymize_scan_is_pure_text_and_fails_closed_on_bad_policy() {
     assert!(!ok, "bad policy must refuse");
     assert!(err.contains("VAL-E001"), "want VAL-E001 in: {err}");
 }
+
+#[test]
+fn anonymize_policy_verbs_and_floor_cover_recall() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("anon.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _out, err) = areev(&[
+        "add", "--db", db, "--ns", "caller", "--subject", "caller:john", "--relation",
+        "prefers", "--object", "call me at +1 415 555 0142",
+    ]);
+    assert!(ok, "add failed: {err}");
+
+    // Declare: recall output is pseudonymized from now on.
+    let (ok, _out, err) = areev(&[
+        "anonymize", "set", "--db", db, "--ns", "caller", "--policy", r#"{"mode": "egress"}"#,
+    ]);
+    assert!(ok, "anonymize set failed: {err}");
+    let (ok, out, _err) = areev(&["recall", "--db", db, "--ns", "caller", "--subject", "caller:john"]);
+    assert!(ok);
+    assert!(!out.contains("caller:john") && !out.contains("415 555"), "leaked: {out}");
+    assert!(out.contains("[PERSON_1]"), "expected pseudonym: {out}");
+
+    // list / clear
+    let (ok, out, _err) = areev(&["anonymize", "list", "--db", db]);
+    assert!(ok && out.contains("\"egress\""), "list: {out}");
+    let (ok, _out, err) = areev(&["anonymize", "clear", "--db", db, "--ns", "caller"]);
+    assert!(ok, "clear failed: {err}");
+    let (ok, out, _err) = areev(&["recall", "--db", db, "--ns", "caller", "--subject", "caller:john"]);
+    assert!(ok && out.contains("caller:john"), "cleared policy must restore raw reads: {out}");
+
+    // The floor is a per-invocation host cap, no declared policy needed.
+    let (ok, out, _err) = areev(&[
+        "recall", "--db", db, "--ns", "caller", "--subject", "caller:john", "--anonymize-egress",
+    ]);
+    assert!(ok);
+    assert!(!out.contains("caller:john"), "floor must transform: {out}");
+}

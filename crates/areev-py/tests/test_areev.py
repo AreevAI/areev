@@ -1064,3 +1064,38 @@ def test_scan_respects_policy_and_fails_closed(tmp_path):
         m.scan_text("x", json.dumps({"scope": "memory"}))
     with pytest.raises(ValueError, match="VAL-E001"):
         m.rehydrate_text("x", '{"bad": 1}')
+
+
+def test_anon_policy_egress_round_trip(tmp_path):
+    m = make_db(tmp_path)
+    m.add("fact", json.dumps({
+        "subject": "caller:john", "relation": "prefers",
+        "object": "call me at +1 415 555 0142",
+    }))
+
+    m.set_anon_policy("caller", json.dumps({"mode": "egress"}))
+    policies = json.loads(m.anon_policies())
+    assert policies[0]["ns"] == "caller"
+    assert policies[0]["policy"]["mode"] == "egress"
+
+    hits = json.loads(m.recall("caller:john"))
+    flat = json.dumps(hits)
+    assert "caller:john" not in flat and "415 555" not in flat, flat
+    assert "[PERSON_1]" in flat, flat
+
+    # In-process custody: the mapping is available for rehydration.
+    mappings = json.loads(m.anon_mappings())
+    assert any("caller:john" in row["mapping"].values() for row in mappings)
+    mapping = mappings[0]["mapping"]
+    back = json.loads(m.rehydrate_text("ok [PERSON_1]", json.dumps(mapping)))
+    assert back["text"] == "ok caller:john"
+
+    m.clear_anon_policy("caller")
+    assert json.loads(m.anon_policies()) == []
+    flat = json.dumps(json.loads(m.recall("caller:john")))
+    assert "caller:john" in flat, "cleared policy must restore raw reads"
+
+    # The floor is a host cap, no declared policy needed.
+    m.set_anonymize_egress_floor(True)
+    flat = json.dumps(json.loads(m.recall("caller:john")))
+    assert "caller:john" not in flat, flat

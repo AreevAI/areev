@@ -132,6 +132,10 @@ pub struct CalExecResult {
     pub result: CalResultPayload,
     /// Non-fatal warnings emitted during parsing or execution.
     pub warnings: Vec<String>,
+    /// Anonymization egress report (proposal §4.1): present when the store
+    /// has an egress policy active, carrying mode/floor and mapping *ids*
+    /// only — the mapping itself never rides a payload (D5 custody).
+    pub anonymized: Option<serde_json::Value>,
     /// Execution metadata.
     pub metadata: CalMetadata,
 }
@@ -153,6 +157,11 @@ impl CalExecResult {
     /// payload.
     pub fn payload_json(&self) -> serde_json::Result<serde_json::Value> {
         let mut v = serde_json::to_value(&self.result)?;
+        if let Some(a) = &self.anonymized {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("anonymized".into(), a.clone());
+            }
+        }
         if !self.warnings.is_empty() {
             // `CalResultPayload` is internally tagged, so it always serializes
             // to an object — but degrade to the bare payload rather than panic
@@ -746,6 +755,7 @@ impl CalExecutor {
             query_hash,
             result: payload,
             warnings,
+            anonymized: store.anon_egress_report(),
             metadata: CalMetadata {
                 version: query.version.0,
                 statement_type: stmt_type,
@@ -824,6 +834,7 @@ impl CalExecutor {
             query_hash,
             result: payload,
             warnings,
+            anonymized: store.anon_egress_report(),
             metadata: CalMetadata {
                 version: query.version.0,
                 statement_type: stmt_type,

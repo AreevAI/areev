@@ -166,13 +166,14 @@ impl AnonPolicy {
             }
         }
         match self.scope.as_str() {
-            "context" => {}
-            "session" | "memory" => {
-                return Err(AreevError::Validation(format!(
-                    "invalid anonymization policy: scope '{}' is declared in the \
-                     proposal but not built yet; P0 supports scope \"context\"",
-                    self.scope
-                )));
+            "context" | "session" => {}
+            "memory" => {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: scope \"memory\" is declared in \
+                     the proposal but not built yet (it arrives with the vault); \
+                     use \"context\" or \"session\""
+                        .into(),
+                ));
             }
             other => {
                 return Err(AreevError::Validation(format!(
@@ -285,7 +286,8 @@ pub fn scan(text: &str, policy: &AnonPolicy, known_identities: &[String]) -> Res
 }
 
 /// Detect, then apply the policy's actions, producing prompt-safe text plus
-/// the mapping for the pseudonym spans.
+/// the mapping for the pseudonym spans. One-shot (`context`-scope) form of
+/// [`SessionAnonymizer`]: numbering and mapping start fresh per call.
 ///
 /// `key` keys the `mapping_id` derivation (D11). Callers on trusted
 /// in-process surfaces may pass `None` (the id is then derived under an
@@ -297,55 +299,153 @@ pub fn anonymize(
     known_identities: &[String],
     key: Option<&[u8]>,
 ) -> Result<AnonOutcome> {
-    let ScanOutcome { text, detections } = scan(text, policy, known_identities)?;
+    let mut session = SessionAnonymizer::new(policy.clone())?;
+    let (out, replaced) = session.transform_text(text, known_identities)?;
+    let mapping_id = session.mapping_id(key)?;
+    Ok(AnonOutcome { text: out, mapping: session.into_mapping(), mapping_id, replaced })
+}
 
-    // Tokens already literally present in the source must not collide with
-    // tokens we mint (open question 2's resolution: renumber around them).
-    let reserved = template_shaped_tokens(&text, &policy.placeholder);
+/// Stateful pseudonym assignment shared across texts: the same
+/// (category, value) pair yields the same token for the lifetime of the
+/// session, which is what keeps tokens consistent across the grains of one
+/// recall and across the calls of one process session (`session` scope).
+/// Long-lived holders bound it with [`SessionAnonymizer::evict_to`] — an
+/// unbounded in-process re-identification table is exactly what D5 forbids.
+#[derive(Debug, Clone)]
+pub struct SessionAnonymizer {
+    policy: AnonPolicy,
+    by_value: BTreeMap<(String, String), String>,
+    order: std::collections::VecDeque<(String, String)>,
+    counters: BTreeMap<String, u64>,
+    mapping: BTreeMap<String, String>,
+    reserved: std::collections::BTreeSet<String>,
+}
 
-    let mut mapping: BTreeMap<String, String> = BTreeMap::new();
-    let mut by_value: BTreeMap<(String, String), String> = BTreeMap::new();
-    let mut counters: BTreeMap<String, u64> = BTreeMap::new();
-    let mut out = String::with_capacity(text.len());
-    let mut cursor = 0usize;
-    let mut replaced = 0usize;
+impl SessionAnonymizer {
+    pub fn new(policy: AnonPolicy) -> Result<Self> {
+        policy.validate()?;
+        Ok(SessionAnonymizer {
+            policy,
+            by_value: BTreeMap::new(),
+            order: std::collections::VecDeque::new(),
+            counters: BTreeMap::new(),
+            mapping: BTreeMap::new(),
+            reserved: std::collections::BTreeSet::new(),
+        })
+    }
 
-    for d in &detections {
-        out.push_str(&text[cursor..d.start]);
-        let value = &text[d.start..d.end];
-        match policy.action_for(&d.category) {
-            Action::Allow => unreachable!("allow spans dropped in scan()"),
-            Action::Redact => {
-                out.push_str(&format!("[REDACTED:{}]", category_upper(&d.category)));
-                replaced += 1;
+    pub fn policy(&self) -> &AnonPolicy {
+        &self.policy
+    }
+
+    /// The accumulated placeholder → value map (pseudonym spans only).
+    pub fn mapping(&self) -> &BTreeMap<String, String> {
+        &self.mapping
+    }
+
+    pub fn into_mapping(self) -> BTreeMap<String, String> {
+        self.mapping
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_value.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_value.is_empty()
+    }
+
+    /// The keyed round-trip handle over the current mapping state (D11).
+    pub fn mapping_id(&self, key: Option<&[u8]>) -> Result<String> {
+        derive_mapping_id(key, &self.policy, &self.mapping)
+    }
+
+    /// Detect + apply actions over one text; returns (transformed, spans
+    /// replaced). Tokens already literally present in the text are reserved
+    /// so minted tokens renumber around them.
+    pub fn transform_text(
+        &mut self,
+        text: &str,
+        known_identities: &[String],
+    ) -> Result<(String, usize)> {
+        let ScanOutcome { text, detections } = scan(text, &self.policy, known_identities)?;
+        for t in template_shaped_tokens(&text, &self.policy.placeholder) {
+            self.reserved.insert(t);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0usize;
+        let mut replaced = 0usize;
+        for d in &detections {
+            out.push_str(&text[cursor..d.start]);
+            let value = &text[d.start..d.end];
+            match self.policy.action_for(&d.category) {
+                Action::Allow => unreachable!("allow spans dropped in scan()"),
+                Action::Redact => {
+                    out.push_str(&format!("[REDACTED:{}]", category_upper(&d.category)));
+                    replaced += 1;
+                }
+                Action::Mask => {
+                    out.push_str(&mask_value(value));
+                    replaced += 1;
+                }
+                Action::Pseudonym => {
+                    let token = self.token_for(&d.category, value);
+                    out.push_str(&token);
+                    replaced += 1;
+                }
             }
-            Action::Mask => {
-                out.push_str(&mask_value(value));
-                replaced += 1;
-            }
-            Action::Pseudonym => {
-                let token = by_value
-                    .entry((d.category.clone(), value.to_string()))
-                    .or_insert_with(|| {
-                        mint_token(
-                            &policy.placeholder,
-                            &d.category,
-                            counters.entry(d.category.clone()).or_insert(0),
-                            &reserved,
-                        )
-                    })
-                    .clone();
-                mapping.insert(token.clone(), value.to_string());
-                out.push_str(&token);
-                replaced += 1;
+            cursor = d.end;
+        }
+        out.push_str(&text[cursor..]);
+        Ok((out, replaced))
+    }
+
+    /// Structural single-value transform: a whole field value whose category
+    /// the schema already knows (a `subject` is a `person` by construction).
+    /// Applies the category's action to the entire value.
+    pub fn transform_value(&mut self, category: &str, value: &str) -> String {
+        match self.policy.action_for(category) {
+            Action::Allow => value.to_string(),
+            Action::Redact => format!("[REDACTED:{}]", category_upper(category)),
+            Action::Mask => mask_value(value),
+            Action::Pseudonym => self.token_for(category, value),
+        }
+    }
+
+    /// The token already assigned to `(category, value)`, if any — exact
+    /// lookup, no detection. Lets callers keep bare entity-term lists
+    /// (graph reads) consistent with values pseudonymized elsewhere.
+    pub fn token_if_known(&self, category: &str, value: &str) -> Option<&str> {
+        self.by_value
+            .get(&(category.to_string(), value.to_string()))
+            .map(String::as_str)
+    }
+
+    /// Bound the session table, evicting oldest-first. An evicted value
+    /// loses its stable token (and its mapping entry — old responses citing
+    /// it stop rehydrating); the next sighting mints a fresh one. That is
+    /// the deliberate cost of bounding a long-lived re-identification table.
+    pub fn evict_to(&mut self, max_entries: usize) {
+        while self.by_value.len() > max_entries {
+            let Some(oldest) = self.order.pop_front() else { break };
+            if let Some(token) = self.by_value.remove(&oldest) {
+                self.mapping.remove(&token);
             }
         }
-        cursor = d.end;
     }
-    out.push_str(&text[cursor..]);
 
-    let mapping_id = derive_mapping_id(key, policy, &mapping)?;
-    Ok(AnonOutcome { text: out, mapping, mapping_id, replaced })
+    fn token_for(&mut self, category: &str, value: &str) -> String {
+        let k = (category.to_string(), value.to_string());
+        if let Some(t) = self.by_value.get(&k) {
+            return t.clone();
+        }
+        let counter = self.counters.entry(category.to_string()).or_insert(0);
+        let token = mint_token(&self.policy.placeholder, category, counter, &self.reserved);
+        self.by_value.insert(k.clone(), token.clone());
+        self.order.push_back(k);
+        self.mapping.insert(token.clone(), value.to_string());
+        token
+    }
 }
 
 /// Replace exact placeholder tokens with their mapped originals. Tokens the
@@ -568,12 +668,30 @@ mod tests {
     }
 
     #[test]
-    fn policy_rejects_unknown_field_and_generalize_and_wide_scope() {
+    fn policy_rejects_unknown_field_and_generalize_and_unbuilt_scope() {
         assert!(AnonPolicy::from_json(r#"{"surprise": 1}"#).is_err());
         assert!(AnonPolicy::from_json(r#"{"categories": {"date": "generalize:month"}}"#).is_err());
         assert!(AnonPolicy::from_json(r#"{"scope": "memory"}"#).is_err());
-        assert!(AnonPolicy::from_json(r#"{"scope": "session"}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"scope": "session"}"#).is_ok()); // built in P1
         assert!(AnonPolicy::from_json("{}").is_ok());
+    }
+
+    #[test]
+    fn session_anonymizer_is_stable_across_texts_and_evicts_oldest() {
+        let mut s = SessionAnonymizer::new(AnonPolicy::default()).unwrap();
+        let (a, _) = s.transform_text("mail a@b.co", &[]).unwrap();
+        let (b, _) = s.transform_text("again a@b.co and new c@d.io", &[]).unwrap();
+        assert_eq!(a, "mail [EMAIL_1]");
+        assert_eq!(b, "again [EMAIL_1] and new [EMAIL_2]"); // stable across texts
+        assert_eq!(s.transform_value("person", "caller:john"), "[PERSON_1]");
+        assert_eq!(s.transform_value("person", "caller:john"), "[PERSON_1]");
+        assert_eq!(s.token_if_known("person", "caller:john"), Some("[PERSON_1]"));
+        assert_eq!(s.len(), 3);
+
+        s.evict_to(1);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.token_if_known("email", "a@b.co"), None); // oldest evicted
+        assert_eq!(s.token_if_known("person", "caller:john"), Some("[PERSON_1]"));
     }
 
     #[test]

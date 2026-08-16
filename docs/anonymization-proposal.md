@@ -1,15 +1,24 @@
 # Anonymization — prompt-safe context, PII-aware storage
 
-**Status:** P0 BUILT (2026-08-16, branch `anonymization-p0`) — the
+**Status:** P0 + P1 BUILT (2026-08-16, branch `anonymization-p0`). P0: the
 `areev_core::anon` engine (Tier-0 chain, placeholder codec, keyed
 `mapping_id`), the explicit `scan_text`/`anonymize_text`/`rehydrate_text`
-APIs on the facade and both bindings, and `areev anonymize scan`; gated by
-the golden detector corpus and the round-trip property test. §11's P1–P5
-remain proposal. Pre-existing primitives this touches:
-`areev_core::authz::subject_fingerprint` (the audit-side pseudonym) and
-the `detect_pii` stub in `areev-core/src/types/json_schema_subset.rs`
-(CR-F1's write-path PII scan — still a no-op until the P0 module is wired
-into it).
+APIs on the facade and both bindings, and `areev anonymize scan` — gated by
+the golden detector corpus and the round-trip property test. P1: the
+`anon:<ns>` policy rows (replicating write-if-absent, conformance-pinned),
+the store read boundary over every grain-returning read (with the
+documented exemptions below), gate-level known-identity propagation
+(seeded from the file's subjects + fed by the write path),
+`context`/`session` scopes with in-process mapping custody, the
+fail-closed poisoned-row contract, the `--anonymize-egress` floor, `audit`
+mode, payload flags on CAL/MCP, the `/api/config` block, `areev anonymize
+set|list|clear|mappings`, and policy/mapping methods on both bindings —
+latency gates re-run green. §11's P2–P5 remain proposal. Three
+implementation truths recorded below where they diverge from the first
+draft: `min_reader_version` warns loudly at open (it has never been a hard
+refusal), P1 `audit` counters are in-memory on the handle (the sidecar
+route comes later), and the DSAR/replay/authz reads are exempt until P3's
+reveal grants exist.
 
 Companions: [gdpr.md](gdpr.md) (esp. "Content addressing is not
 anonymization"), [erasure.md](erasure.md) (REQ-ERASE-*),
@@ -157,6 +166,13 @@ facts found in the audits for this proposal:
 ASSEMBLE inherits the hook — its recalls funnel through the same store
 reads — and nothing substitutes twice: results carry the anonymized
 marker, and the substituter treats already-tokenized text as settled.
+Three read families are deliberately exempt, each stated in code at the
+exempt method: `subject_report` (the DSAR disclosure must stay faithful —
+REQ-ERASE-9 — until P3's reveal grants gate it), `run_grains` (the
+machine replay read the runtime reconstructs state from; the model-facing
+`run_trace`/`run_yield` views ARE covered), and the authz engine's
+internal grant recall (a pseudonymized principal would fail every check;
+it reads through a private raw variant that no public surface exposes).
 
 Anonymized results are marked (`anonymized: true` plus the `mapping_id`
 of §6 on the CAL result payload and MCP tool results — the mapping itself
@@ -523,22 +539,24 @@ clear triple, mandatory-ish `because`, declared-vs-enforced separation):
 ```
 
 `audit` mode detects and *reports* (counts + categories, never the spans'
-plaintext, into the telemetry sidecar) without transforming — the
-measurement mode §3.4 calls for, and the recommended first step of any
-rollout. It needs the sidecar: with telemetry off — or on the Postgres
-backend, which has none — `audit` refuses at `set` time with a pointer,
-instead of counting nothing. Merge on sync is `retention:`'s conservative
+plaintext) without transforming — the measurement mode §3.4 calls for, and
+the recommended first step of any rollout. As built in P1 the counters are
+in-memory on the handle (`anon_audit_counts`, surfaced by `/api/config`),
+which needs no sidecar and works on every backend; durable sidecar
+persistence is a later refinement. Merge on sync is `retention:`'s conservative
 rule: write-if-absent, never silently swap a live policy. Parse failure is
 a hard `VAL` error (D3). Enforcement mismatch is loud: a policy that
 demands `ner` in a process with no `--anonymize-cmd` installed fails
 egress closed (D6) and shows up in `open_warnings()`/`/api/config`
 warnings, exactly like the "vector leg dormant" warning does today.
 
-Version skew fails closed where we control it and is named where we
-don't. Setting any `anon:` policy stamps `min_reader_version`, so an
-older build refuses to *open* the file rather than serving it raw without
-the policy it cannot read (note the file's bundles also start exporting
-as MGB2 once replicable rows exist). What stamping cannot fix is an old
+Version skew fails loudly where we control it and is named where we
+don't. Setting any `anon:` policy stamps `min_reader_version`; the shipped
+semantic of that stamp is a **loud open warning** (never a hard refusal —
+correcting this proposal's first draft), so an older build opening the
+file is told it cannot honor everything the file declares before it serves
+a single read (note the file's bundles also start exporting as MGB2 once
+replicable rows exist). What stamping cannot fix is an old
 *replica*: an anonymization-unaware build importing a bundle drops the
 unknown `anon:` row silently, because the importer filters on its own
 allowlist — so a fleet upgrades its readers before relying on replicated

@@ -137,3 +137,38 @@ pub fn retention_row_never_clobbers_local_policy(b: &dyn Backend) {
     let policies = dst.retention_policies().unwrap();
     assert_eq!(policies[0].1.days, 90.0, "local retention policy kept");
 }
+
+/// `anon:<ns>` policy rows replicate write-if-absent like retention rows
+/// (docs/anonymization-proposal.md P1): a full import carries the policy to
+/// a replica that has none — and takes effect on the live handle — while a
+/// replica's own declared policy is never silently swapped by sync.
+pub fn anon_policy_replicates_write_if_absent(b: &dyn Backend) {
+    let mut src = b.open_named("anon_src");
+    src.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    src.set_anon_policy("ns", r#"{"mode": "egress"}"#).unwrap();
+    let bundle = b.scratch().join("anon.mgb");
+    src.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+
+    let mut dst = b.open_named("anon_dst");
+    let stats = dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert!(stats.meta_applied >= 1, "the anon policy rides the bundle: {stats:?}");
+    assert_eq!(
+        dst.anon_active_mode("ns").unwrap().as_deref(),
+        Some("egress"),
+        "a replicated policy takes effect on the live handle"
+    );
+    let got = dst.recall("ns", "caller:john", None, 4).unwrap();
+    assert_eq!(
+        got[0].fields["subject"], "[PERSON_1]",
+        "the replica's egress boundary engages without a reopen"
+    );
+
+    let mut third = b.open_named("anon_third");
+    third.set_anon_policy("ns", r#"{"mode": "audit"}"#).unwrap();
+    third.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert_eq!(
+        third.anon_active_mode("ns").unwrap().as_deref(),
+        Some("audit"),
+        "a live local anon policy is never swapped by sync"
+    );
+}

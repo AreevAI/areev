@@ -166,6 +166,15 @@ COMMANDS:
                                       keyword cues, dictionary). Reads stdin
                                       when --text is absent; prints JSON.
                                       Pure text — needs no memory file.
+  anonymize set --ns NS (--policy-file F | --policy JSON)
+                                      declare a per-namespace egress/audit
+                                      policy (travels with the file; stamps
+                                      min_reader_version). `list` shows the
+                                      declared policies, `clear --ns NS`
+                                      removes one, `mappings` prints this
+                                      process's live pseudonym mappings.
+                                      Add --anonymize-egress to any verb to
+                                      force egress on as a host floor.
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
   ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]  web console (default 127.0.0.1:7437)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
@@ -910,16 +919,10 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         return Ok(());
     }
 
-    // `anonymize` is pure text processing (docs/anonymization-proposal.md P0):
-    // it never opens the store, so it runs before the open like `hook`.
-    if cmd == "anonymize" {
-        let sub = positional.first().map(String::as_str).unwrap_or("");
-        if sub != "scan" {
-            return Err(format!(
-                "unknown anonymize subcommand '{sub}' (P0 ships `anonymize scan`; \
-                 apply/rehydrate arrive with the egress pipeline)"
-            ));
-        }
+    // `anonymize scan` is pure text processing: it never opens the store,
+    // so it runs before the open like `hook`. The policy verbs
+    // (set/list/clear/mappings) are store-backed and dispatch below.
+    if cmd == "anonymize" && positional.first().map(String::as_str) == Some("scan") {
         let text = match flag(&flags, "text") {
             Some(t) => t,
             None => {
@@ -1022,6 +1025,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // also consumed by run-manifest/run-trace commands; it is not a file
     // declaration.
     m.set_run_id(flag(&flags, "run-id").as_deref());
+
+    // Host cap (per-process, never persisted): --anonymize-egress forces
+    // egress anonymization on every namespace without a declared policy and
+    // upgrades a declared "off". It can never weaken a declared policy.
+    if flags.contains_key("anonymize-egress") {
+        m.set_anonymize_egress_floor(true);
+    }
 
     // Optional host-supplied embedder: --embed-cmd 'CMD' spawns CMD per embed
     // (text on stdin, JSON array of numbers on stdout). Enables the vector
@@ -2481,6 +2491,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         "audit" => {
             run_audit(&mut m, &flags, &positional)?;
         }
+        "anonymize" => run_anonymize(m, &flags, &positional)?,
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;
         }
@@ -2533,6 +2544,65 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
 /// every other bulk erasure. The governed alternative is the loop's
 /// `retention_sweep` analyzer, which proposes the same purge through review
 /// and audit instead of performing it.
+/// `areev anonymize <set|list|clear|mappings>` — the per-namespace policy
+/// surface (docs/anonymization-proposal.md P1). `scan` is handled pre-open.
+fn run_anonymize(
+    mut m: Areev,
+    flags: &HashMap<String, String>,
+    positional: &[String],
+) -> Result<(), String> {
+    let sub = positional.first().map(String::as_str).unwrap_or("");
+    match sub {
+        "set" => {
+            let ns = flag(flags, "ns").ok_or("anonymize set requires --ns")?;
+            let policy = match (flag(flags, "policy"), flag(flags, "policy-file")) {
+                (Some(j), _) => j,
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--policy-file {path}: {e}"))?,
+                (None, None) => return Err("anonymize set requires --policy or --policy-file".into()),
+            };
+            m.set_anon_policy(&ns, &policy).map_err(|e| e.to_string())?;
+            println!("anonymization policy declared for namespace '{ns}' — egress reads are transformed from now on; older builds opening this file will warn");
+            Ok(())
+        }
+        "list" => {
+            let policies = m.anon_policies().map_err(|e| e.to_string())?;
+            if policies.is_empty() {
+                println!("no anonymization policies declared");
+                return Ok(());
+            }
+            for (ns, p) in policies {
+                println!(
+                    "{}",
+                    serde_json::json!({"ns": ns, "policy": p})
+                );
+            }
+            Ok(())
+        }
+        "clear" => {
+            let ns = flag(flags, "ns").ok_or("anonymize clear requires --ns")?;
+            m.clear_anon_policy(&ns).map_err(|e| e.to_string())?;
+            println!("anonymization policy cleared for namespace '{ns}'");
+            Ok(())
+        }
+        "mappings" => {
+            // In-process custody (D5): the operator running this process may
+            // see the live placeholder->value mappings for rehydration.
+            let maps = m.anon_mappings().map_err(|e| e.to_string())?;
+            for (ns, id, mapping) in maps {
+                println!(
+                    "{}",
+                    serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+                );
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "unknown anonymize subcommand '{other}' (expected scan, set, list, clear, or mappings)"
+        )),
+    }
+}
+
 fn run_retention(
     m: &mut Areev,
     ns: &str,

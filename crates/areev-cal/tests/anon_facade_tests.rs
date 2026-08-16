@@ -68,3 +68,36 @@ fn policy_errors_are_hard_val_errors() {
         .to_string();
     assert!(err.starts_with("VAL-E001"), "want VAL-E001, got: {err}");
 }
+
+#[test]
+fn cal_payload_carries_the_egress_flag_and_transformed_fields() {
+    use areev_cal::{CalExecutor, CalExecutorConfig};
+
+    let (facade, _d) = setup();
+    facade
+        .with_store(|m| m.set_anon_policy("caller", r#"{"mode": "egress"}"#))
+        .unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    ex.execute(
+        r#"ADD fact SET subject = "caller:john" SET relation = "prefers" SET object = "call me at +1 415 555 0142" SET namespace = "caller" REASON "test""#,
+        &facade,
+    )
+    .unwrap();
+
+    let res = ex
+        .execute(r#"RECALL facts WHERE subject = "caller:john""#, &facade)
+        .unwrap();
+    let payload = res.payload_json().unwrap();
+
+    // The flag rides the payload with mapping ids only — never the mapping.
+    assert_eq!(payload["anonymized"]["namespaces"][0], "caller");
+    let flat = payload.to_string();
+    assert!(!flat.contains("caller:john"), "raw identity leaked: {flat}");
+    assert!(!flat.contains("415 555"), "raw phone leaked: {flat}");
+    assert!(flat.contains("[PERSON_1]"), "expected pseudonym: {flat}");
+    assert!(!flat.contains("\"mapping\":"), "the mapping must never ride a payload");
+
+    // The in-process caller still holds the mapping for rehydration (D5).
+    let mappings = facade.with_store(|m| m.anon_mappings()).unwrap();
+    assert!(mappings.iter().any(|(_, _, map)| map.values().any(|v| v == "caller:john")));
+}

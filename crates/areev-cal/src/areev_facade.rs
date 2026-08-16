@@ -958,6 +958,35 @@ impl CalStoreFacade for AreevFacade {
         let _ = self.with_store(|m| m.telemetry_note_budget(overflow));
     }
 
+    /// The egress payload flag (proposal §4.1): active when any namespace
+    /// declares an egress policy or the host installed the floor. Carries
+    /// mapping *ids* only — the mapping itself stays in process (D5).
+    fn anon_egress_report(&self) -> Option<serde_json::Value> {
+        self.with_store(|m| {
+            let declared = m.anon_declared();
+            let floor = m.anonymize_egress_floor();
+            let egress_ns: Vec<String> = declared
+                .iter()
+                .filter(|(_, mode)| mode == "egress")
+                .map(|(ns, _)| ns.clone())
+                .collect();
+            if egress_ns.is_empty() && !floor {
+                return None;
+            }
+            let mappings: Vec<serde_json::Value> = m
+                .anon_mappings()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(ns, id, _)| serde_json::json!({"ns": ns, "mapping_id": id}))
+                .collect();
+            Some(serde_json::json!({
+                "namespaces": egress_ns,
+                "floor": floor,
+                "mappings": mappings,
+            }))
+        })
+    }
+
     fn note_assembly_manifest(&self, manifest: &AssemblyManifest) {
         // A read-only principal must not acquire a write through telemetry.
         if !self

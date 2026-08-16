@@ -1,0 +1,458 @@
+//! The egress boundary (docs/anonymization-proposal.md, P1): per-namespace
+//! `anon:<ns>` policies, the session pseudonymizer state, and the field
+//! transform every model-facing read exit routes through.
+//!
+//! Policy rows are file-truths (they replicate write-if-absent, like
+//! `retention:`); the gate state here is per-handle. Fail-closed contract
+//! (D3/D6): an `anon:` row this build cannot parse poisons the gate — reads
+//! that would consult it error instead of serving raw, while policy writes
+//! (`set`/`clear`) keep working so the row can be repaired.
+//!
+//! Cost when idle: every read exit pays one [`AnonGate::is_idle`] check —
+//! a bool and a map-emptiness test — so the µs-class recall/latest gates
+//! (`examples/bench.rs`) are unaffected until a policy is declared.
+
+use std::collections::{BTreeMap, HashMap};
+
+use areev_core::anon::{AnonPolicy, SessionAnonymizer};
+use areev_core::error::{AreevError, Result};
+use areev_core::format::deserialize::DeserializedGrain;
+
+/// `meta` key prefix for per-namespace anonymization policies.
+pub(crate) const ANON_PREFIX: &str = "anon:";
+
+/// Bound on each namespace's session pseudonym table (D5: never an unbounded
+/// re-identification table on a long-lived handle). Oldest-first eviction.
+const MAX_SESSION_ENTRIES: usize = 4096;
+
+/// Grain fields that ARE identities by construction (proposal §5.1): the
+/// whole value is category `person`, no detection needed.
+const IDENTITY_FIELDS: &[&str] = &["subject", "user_id", "observer"];
+
+/// Fields the transform never touches: `namespace` routes policy lookup and
+/// mounts; run/session ids are operational join keys the runtime replays on.
+const SKIP_FIELDS: &[&str] = &["namespace", "session_id", "run_id", "node_id", "parent"];
+
+pub(crate) struct AnonGate {
+    /// ns → parsed policy, rebuilt from `meta` on open and on set/clear.
+    policies: HashMap<String, AnonPolicy>,
+    /// Set when any `anon:` row failed to parse: reads fail closed with this
+    /// message until the row is repaired.
+    poisoned: Option<String>,
+    /// Host-installed restrictive cap: forces egress on for namespaces with
+    /// no declared policy (default policy). Can never switch a declared
+    /// policy off.
+    floor: bool,
+    /// Persistent per-ns pseudonymizers for `session`-scope policies.
+    sessions: HashMap<String, SessionAnonymizer>,
+    /// Latest `context`-scope pseudonymizer (one per read call), kept so the
+    /// in-process caller can still fetch the mapping (D5 custody).
+    last_context: Option<(String, SessionAnonymizer)>,
+    /// Keys `mapping_id` (D11). HKDF from the page key on encrypted files,
+    /// random per handle otherwise — either way never persisted.
+    session_key: [u8; 32],
+    /// `audit`-mode counters: (ns, category) → detections seen. In-memory,
+    /// process-lifetime; never the spans' plaintext.
+    audit_counts: BTreeMap<(String, String), u64>,
+    /// Per-ns identity values accumulated from identity fields (proposal
+    /// §5.1 known-identity propagation): a subject one grain declares makes
+    /// the bare name detectable in another grain's prose. Bounded; values
+    /// only ever feed detection, never leave the process.
+    known: HashMap<String, Vec<String>>,
+}
+
+/// Bound on the per-ns accumulated identity list.
+const MAX_KNOWN_IDENTITIES: usize = 1024;
+
+impl AnonGate {
+    pub(crate) fn new(session_key: [u8; 32]) -> Self {
+        AnonGate {
+            policies: HashMap::new(),
+            poisoned: None,
+            floor: false,
+            sessions: HashMap::new(),
+            last_context: None,
+            session_key,
+            audit_counts: BTreeMap::new(),
+            known: HashMap::new(),
+        }
+    }
+
+    /// The one branch every read exit pays when the feature is unused.
+    #[inline]
+    pub(crate) fn is_idle(&self) -> bool {
+        self.policies.is_empty() && !self.floor && self.poisoned.is_none()
+    }
+
+    pub(crate) fn set_floor(&mut self, on: bool) {
+        self.floor = on;
+    }
+
+    pub(crate) fn floor(&self) -> bool {
+        self.floor
+    }
+
+    /// Rebuild the cache from the file's `anon:` rows. Unreadable rows
+    /// poison the gate rather than silently meaning "no policy" (D3).
+    pub(crate) fn reload(&mut self, rows: &[(String, String)]) {
+        self.policies.clear();
+        self.poisoned = None;
+        for (ns, json) in rows {
+            match AnonPolicy::from_json(json) {
+                Ok(p) => {
+                    self.policies.insert(ns.clone(), p);
+                }
+                Err(e) => {
+                    self.poisoned = Some(format!(
+                        "anon:{ns} policy row is unreadable ({e}) — egress reads fail closed \
+                         until it is repaired with `anonymize set/clear`"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_poisoned(&self) -> Result<()> {
+        match &self.poisoned {
+            Some(msg) => Err(AreevError::Validation(msg.clone())),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn poison_warning(&self) -> Option<&str> {
+        self.poisoned.as_deref()
+    }
+
+    /// Effective policy for a namespace: the declared one, or the default
+    /// policy under the floor. `None` = no anonymization for this ns.
+    fn effective(&self, ns: &str) -> Result<Option<AnonPolicy>> {
+        self.check_poisoned()?;
+        if let Some(p) = self.policies.get(ns) {
+            if p.mode == "off" {
+                // The floor may not weaken a declared policy, but a declared
+                // "off" is itself a declaration the floor overrides upward.
+                if self.floor {
+                    let mut forced = p.clone();
+                    forced.mode = "egress".into();
+                    return Ok(Some(forced));
+                }
+                return Ok(None);
+            }
+            return Ok(Some(p.clone()));
+        }
+        if self.floor {
+            return Ok(Some(AnonPolicy::default())); // default mode is egress
+        }
+        Ok(None)
+    }
+
+    /// The effective mode for observability surfaces: `None` when this ns is
+    /// untouched, else `off|egress|audit`.
+    pub(crate) fn active_mode(&self, ns: &str) -> Result<Option<String>> {
+        Ok(self.effective(ns)?.map(|p| p.mode))
+    }
+
+    pub(crate) fn declared(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> =
+            self.policies.iter().map(|(ns, p)| (ns.clone(), p.mode.clone())).collect();
+        v.sort();
+        v
+    }
+
+    pub(crate) fn audit_counts(&self) -> &BTreeMap<(String, String), u64> {
+        &self.audit_counts
+    }
+
+    /// Every live session mapping the in-process caller may rehydrate with:
+    /// `(ns, mapping_id, mapping)`, persistent `session`-scope tables first,
+    /// then the latest `context`-scope call's table.
+    pub(crate) fn mappings(&self) -> Result<Vec<crate::AnonMappingRow>> {
+        let mut out = Vec::new();
+        let mut nss: Vec<&String> = self.sessions.keys().collect();
+        nss.sort();
+        for ns in nss {
+            let s = &self.sessions[ns];
+            if !s.is_empty() {
+                out.push((ns.clone(), s.mapping_id(Some(&self.session_key))?, s.mapping().clone()));
+            }
+        }
+        if let Some((ns, s)) = &self.last_context {
+            if !s.is_empty() {
+                out.push((ns.clone(), s.mapping_id(Some(&self.session_key))?, s.mapping().clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `mapping_id` for the namespace's most recent egress state, for the
+    /// payload flags surfaces attach (`anonymized: true, mapping_id`).
+    pub(crate) fn last_mapping_id(&self, ns: &str) -> Result<Option<String>> {
+        if let Some(s) = self.sessions.get(ns) {
+            if !s.is_empty() {
+                return Ok(Some(s.mapping_id(Some(&self.session_key))?));
+            }
+        }
+        if let Some((cns, s)) = &self.last_context {
+            if cns == ns && !s.is_empty() {
+                return Ok(Some(s.mapping_id(Some(&self.session_key))?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Transform a batch of grains bound for a caller. `ns_hint` is the
+    /// read's namespace parameter; reads without one (`get`,
+    /// `grains_derived_from`, `open_forks`) resolve each grain's own
+    /// `fields["namespace"]`, defaulting to "shared" like `extract_view`.
+    pub(crate) fn egress_grains(
+        &mut self,
+        ns_hint: Option<&str>,
+        grains: &mut [DeserializedGrain],
+    ) -> Result<()> {
+        if self.is_idle() {
+            return Ok(());
+        }
+        self.check_poisoned()?;
+        // Phase 1: resolve each grain's effective ns/policy and accumulate
+        // identity values, so prose in one grain can name an identity that
+        // only another grain (or an earlier call) declares structurally.
+        let mut plan: Vec<Option<(String, AnonPolicy)>> = Vec::with_capacity(grains.len());
+        for g in grains.iter() {
+            let ns = resolve_ns(ns_hint, g);
+            match self.effective(&ns)? {
+                Some(policy) => {
+                    for id in collect_identities(g) {
+                        self.remember_identity(&ns, id);
+                    }
+                    plan.push(Some((ns, policy)));
+                }
+                None => plan.push(None),
+            }
+        }
+        // Snapshot the per-ns identity lists once (bounded), so the borrow
+        // of `self.sessions` below stays clean.
+        let mut known_by_ns: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in plan.iter().flatten() {
+            if !known_by_ns.contains_key(&entry.0) {
+                known_by_ns
+                    .insert(entry.0.clone(), self.known.get(&entry.0).cloned().unwrap_or_default());
+            }
+        }
+        // Phase 2: transform. One context-scope session per (call, ns).
+        let mut per_call: HashMap<String, SessionAnonymizer> = HashMap::new();
+        for (g, entry) in grains.iter_mut().zip(plan) {
+            let Some((ns, policy)) = entry else { continue };
+            let known = known_by_ns.get(&ns).map(Vec::as_slice).unwrap_or(&[]);
+            if policy.mode == "audit" {
+                let counts = audit_grain(&ns, &policy, g, known)?;
+                for (k, n) in counts {
+                    *self.audit_counts.entry(k).or_insert(0) += n;
+                }
+                continue;
+            }
+            if policy.scope == "session" {
+                let session = match self.sessions.entry(ns.clone()) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(SessionAnonymizer::new(policy.clone())?)
+                    }
+                };
+                transform_grain(session, g, known)?;
+                session.evict_to(MAX_SESSION_ENTRIES);
+            } else {
+                let session = match per_call.entry(ns.clone()) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(SessionAnonymizer::new(policy.clone())?)
+                    }
+                };
+                transform_grain(session, g, known)?;
+            }
+        }
+        // Keep the latest context-scope table reachable for rehydration.
+        if let Some((ns, session)) = per_call.into_iter().find(|(_, s)| !s.is_empty()) {
+            self.last_context = Some((ns, session));
+        }
+        Ok(())
+    }
+
+    fn remember_identity(&mut self, ns: &str, id: String) {
+        let list = self.known.entry(ns.to_string()).or_default();
+        if !list.contains(&id) && list.len() < MAX_KNOWN_IDENTITIES {
+            list.push(id);
+        }
+    }
+
+    /// Seed the per-ns identity list (from the file's subject terms, at
+    /// policy load) so prose-only grains are covered from the first read.
+    pub(crate) fn seed_known(&mut self, ns: &str, ids: Vec<String>) {
+        for id in ids {
+            self.remember_identity(ns, id);
+        }
+    }
+
+    /// Write-path feed: a subject written under a covered namespace joins
+    /// the identity list immediately.
+    pub(crate) fn note_written_identity(&mut self, ns: &str, id: &str) {
+        if self.policies.contains_key(ns) || self.floor {
+            self.remember_identity(ns, id.to_string());
+        }
+    }
+
+    /// Transform a list of bare strings (graph/history reads). `category`
+    /// is `Some("person")` for lists that are identities by construction
+    /// (`subjects_with_relation`, fork subjects); `None` runs detection.
+    pub(crate) fn egress_strings(
+        &mut self,
+        ns: &str,
+        category: Option<&str>,
+        values: &mut [String],
+    ) -> Result<()> {
+        if self.is_idle() {
+            return Ok(());
+        }
+        self.check_poisoned()?;
+        let Some(policy) = self.effective(ns)? else { return Ok(()) };
+        if policy.mode == "audit" {
+            let known = self.known.get(ns).cloned().unwrap_or_default();
+            for v in values.iter() {
+                let outcome = areev_core::anon::scan(v, &policy, &known)?;
+                for d in &outcome.detections {
+                    *self
+                        .audit_counts
+                        .entry((ns.to_string(), d.category.clone()))
+                        .or_insert(0) += 1;
+                }
+            }
+            return Ok(());
+        }
+        let persistent = policy.scope == "session";
+        let mut session = if persistent {
+            self.sessions
+                .remove(ns)
+                .map(Ok)
+                .unwrap_or_else(|| SessionAnonymizer::new(policy.clone()))?
+        } else {
+            SessionAnonymizer::new(policy.clone())?
+        };
+        let known = self.known.get(ns).cloned().unwrap_or_default();
+        for v in values.iter_mut() {
+            *v = match category {
+                Some(cat) => session.transform_value(cat, v),
+                None => session.transform_text(v, &known)?.0,
+            };
+        }
+        if persistent {
+            session.evict_to(MAX_SESSION_ENTRIES);
+            self.sessions.insert(ns.to_string(), session);
+        } else if !session.is_empty() {
+            self.last_context = Some((ns.to_string(), session));
+        }
+        Ok(())
+    }
+
+}
+
+/// Scan one grain in `audit` mode: counts per (ns, category), no transform,
+/// never the spans' plaintext.
+fn audit_grain(
+    ns: &str,
+    policy: &AnonPolicy,
+    g: &DeserializedGrain,
+    known: &[String],
+) -> Result<Vec<((String, String), u64)>> {
+    let mut counts: BTreeMap<(String, String), u64> = BTreeMap::new();
+    for (k, v) in &g.fields {
+        if SKIP_FIELDS.contains(&k.as_str()) {
+            continue;
+        }
+        for s in string_leaves(v) {
+            let outcome = areev_core::anon::scan(s, policy, known)?;
+            for d in &outcome.detections {
+                *counts.entry((ns.to_string(), d.category.clone())).or_insert(0) += 1;
+            }
+        }
+    }
+    Ok(counts.into_iter().collect())
+}
+
+fn resolve_ns(ns_hint: Option<&str>, g: &DeserializedGrain) -> String {
+    ns_hint
+        .map(str::to_string)
+        .or_else(|| g.fields.get("namespace").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_else(|| "shared".to_string())
+}
+
+fn collect_identities(g: &DeserializedGrain) -> Vec<String> {
+    IDENTITY_FIELDS
+        .iter()
+        .filter_map(|f| g.fields.get(*f).and_then(|v| v.as_str()).map(String::from))
+        .collect()
+}
+
+fn string_leaves(v: &serde_json::Value) -> Vec<&str> {
+    match v {
+        serde_json::Value::String(s) => vec![s.as_str()],
+        serde_json::Value::Array(a) => a.iter().flat_map(string_leaves).collect(),
+        serde_json::Value::Object(o) => o.values().flat_map(string_leaves).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Transform one grain's fields in place: identity fields whole-value as
+/// `person`, every other string leaf through detection with the accumulated
+/// known-identity list (which already includes this grain's own identities —
+/// phase 1 of `egress_grains` fed them in).
+fn transform_grain(
+    session: &mut SessionAnonymizer,
+    g: &mut DeserializedGrain,
+    identities: &[String],
+) -> Result<()> {
+    for f in IDENTITY_FIELDS {
+        if let Some(serde_json::Value::String(s)) = g.fields.get_mut(*f) {
+            *s = session.transform_value("person", &s.clone());
+        }
+    }
+    let keys: Vec<String> = g
+        .fields
+        .keys()
+        .filter(|k| !SKIP_FIELDS.contains(&k.as_str()) && !IDENTITY_FIELDS.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    for k in keys {
+        let Some(v) = g.fields.get_mut(&k) else { continue };
+        transform_value_tree(session, v, identities)?;
+    }
+    Ok(())
+}
+
+fn transform_value_tree(
+    session: &mut SessionAnonymizer,
+    v: &mut serde_json::Value,
+    identities: &[String],
+) -> Result<()> {
+    match v {
+        serde_json::Value::String(s) => {
+            let (out, replaced) = session.transform_text(s, identities)?;
+            if replaced > 0 {
+                *s = out;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(a) => {
+            for item in a {
+                transform_value_tree(session, item, identities)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(o) => {
+            for (k, item) in o.iter_mut() {
+                if !SKIP_FIELDS.contains(&k.as_str()) {
+                    transform_value_tree(session, item, identities)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}

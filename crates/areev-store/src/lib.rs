@@ -741,7 +741,11 @@ const BUNDLE_MAGIC_V2: &[u8; 4] = b"MGB2";
 /// *source* file's indexing and host capabilities, which a replica may not
 /// share. Legal `hold:` rows stay file-local pending an erasure-docs
 /// decision on whether holds must survive restore.
-const REPLICABLE_META_PREFIXES: [&str; 4] = ["qry:", "tpl:", "retention:", "retention_floor:"];
+/// One live pseudonym mapping: `(namespace, mapping_id, placeholder → value)`.
+pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, String>);
+
+const REPLICABLE_META_PREFIXES: [&str; 5] =
+    ["qry:", "tpl:", "retention:", "retention_floor:", "anon:"];
 
 /// RRF fusion constant used by `recall_hybrid` (the standard k0 = 60).
 /// Exported so observability surfaces can report the effective value.
@@ -1418,6 +1422,9 @@ pub struct Areev {
     /// Recall-telemetry sidecar (`<file>.telemetry.db`). `None` when the host
     /// left telemetry `Off` — the recall path then does nothing extra.
     telemetry: Option<Telemetry>,
+    /// The egress boundary: `anon:<ns>` policy cache + session pseudonymizer
+    /// state (docs/anonymization-proposal.md P1). Idle = one branch per read.
+    anon: anon_gate::AnonGate,
     /// Host-scoped trajectory identifier copied into full recall telemetry.
     /// It is never persisted as a file truth and never changes rollup keys.
     ambient_run_id: Option<String>,
@@ -1598,6 +1605,28 @@ impl Areev {
             .as_ref()
             .and_then(|o| o.encryption_key.as_ref())
             .map(blobcrypt::derive_blob_key);
+        // The anon session key (keys `mapping_id`, D11): HKDF from the page
+        // key on an encrypted file so it is stable per file+process, random
+        // per handle otherwise. Never persisted either way.
+        let anon_session_key: [u8; 32] = match explicit
+            .as_ref()
+            .and_then(|o| o.encryption_key.as_ref())
+        {
+            Some(page_key) => {
+                let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, page_key);
+                let mut out = [0u8; 32];
+                hk.expand(b"areev.anon.session.v1", &mut out)
+                    .expect("32-byte HKDF output");
+                out
+            }
+            None => {
+                let mut out = [0u8; 32];
+                getrandom::getrandom(&mut out).map_err(|e| {
+                    AreevError::CryptoError(format!("anon session key: {e}"))
+                })?;
+                out
+            }
+        };
         // ---- file-carried declarations (meta k/v) --------------------
         let meta: HashMap<String, String> = {
             let mut m = HashMap::new();
@@ -1720,9 +1749,19 @@ impl Areev {
             blob_store,
             blob_key,
             telemetry,
+            anon: anon_gate::AnonGate::new(anon_session_key),
             ambient_run_id: None,
             _file_guard: file_guard,
         };
+
+        // Load the file's anonymization policies (+ seed known-identity
+        // propagation from existing subjects). An unreadable row poisons the
+        // gate (reads fail closed, D3) and is surfaced as an open warning so
+        // the operator sees it before the first refused read.
+        store.reload_anon_policies()?;
+        if let Some(w) = store.anon.poison_warning() {
+            store.warnings.push(w.to_string());
+        }
 
         // The file may declare that it needs a newer reader than this build (a
         // grain type added after this binary was compiled). Say so at open
@@ -1959,6 +1998,141 @@ impl Areev {
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
+    }
+
+    // ---- anonymization policies (docs/anonymization-proposal.md P1) -------
+
+    /// Declare (or replace) the anonymization policy for one namespace, as
+    /// the JSON value of an `anon:<ns>` meta row — a file-truth that
+    /// replicates write-if-absent, like `retention:<ns>`. Also stamps
+    /// `min_reader_version`, so an older build opening this file warns
+    /// loudly instead of silently serving it without the policy.
+    pub fn set_anon_policy(&mut self, ns: &str, policy_json: &str) -> Result<()> {
+        if ns.trim().is_empty() {
+            return Err(AreevError::Validation(
+                "anonymization policy needs a namespace".into(),
+            ));
+        }
+        let policy = areev_core::anon::AnonPolicy::from_json(policy_json)?;
+        if matches!(policy.mode.as_str(), "ingress" | "both") {
+            return Err(AreevError::Validation(format!(
+                "anonymization mode \"{}\" is declared in the proposal but not built \
+                 yet (ingress arrives with P2); declare \"egress\", \"audit\", or \"off\"",
+                policy.mode
+            )));
+        }
+        // Store the canonical re-serialization, so the row is byte-for-byte
+        // what this build validated.
+        let json = serde_json::to_string(&policy).map_err(db_err)?;
+        self.meta_put(&format!("{}{ns}", anon_gate::ANON_PREFIX), &json)?;
+        let current = env!("CARGO_PKG_VERSION");
+        let needs_stamp = match self.meta_get(MIN_READER_VERSION_KEY)? {
+            Some(existing) => version_lt(&existing, current),
+            None => true,
+        };
+        if needs_stamp {
+            self.meta_put(MIN_READER_VERSION_KEY, current)?;
+            self.needs_min_reader_stamp = false;
+        }
+        self.reload_anon_policies()
+    }
+
+    /// Remove one namespace's anonymization policy. Missing is not an error.
+    pub fn clear_anon_policy(&mut self, ns: &str) -> Result<()> {
+        self.meta_delete(&format!("{}{ns}", anon_gate::ANON_PREFIX))?;
+        self.reload_anon_policies()
+    }
+
+    /// All declared anonymization policies, re-read from the file. An
+    /// unreadable row is a hard `VAL` error, not a skip — same fail-closed
+    /// contract as `retention_policies()`.
+    pub fn anon_policies(&self) -> Result<Vec<(String, areev_core::anon::AnonPolicy)>> {
+        let mut out = Vec::new();
+        for (ns, json) in self.meta_scan(anon_gate::ANON_PREFIX)? {
+            let p = areev_core::anon::AnonPolicy::from_json(&json).map_err(|e| {
+                AreevError::Validation(format!("anon:{ns} policy row is unreadable: {e}"))
+            })?;
+            out.push((ns, p));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    fn reload_anon_policies(&mut self) -> Result<()> {
+        let rows = self.meta_scan(anon_gate::ANON_PREFIX)?;
+        self.anon.reload(&rows);
+        // Seed known-identity propagation from the file's existing subjects,
+        // so prose-only grains are covered from the very first read (the
+        // write path keeps the list current from here on). Bounded per ns.
+        for (ns, _) in &rows {
+            if let Some(ns_id) = self.term_lookup(ns)? {
+                let ids: Vec<i64> = self
+                    .db
+                    .query(
+                        "SELECT DISTINCT s FROM triples WHERE ns=?1 LIMIT 1024",
+                        vec![pi(ns_id)],
+                    )?
+                    .iter()
+                    .filter_map(|row| row.i64(0))
+                    .collect();
+                let mut subjects = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(t) = self.term_str(id)? {
+                        subjects.push(t);
+                    }
+                }
+                self.anon.seed_known(ns, subjects);
+            }
+        }
+        Ok(())
+    }
+
+    /// Host cap (per-process, never persisted): force egress anonymization
+    /// on for namespaces with no declared policy, and upgrade a declared
+    /// "off" to egress. It can never weaken a declared policy.
+    pub fn set_anonymize_egress_floor(&mut self, on: bool) {
+        self.anon.set_floor(on);
+    }
+
+    pub fn anonymize_egress_floor(&self) -> bool {
+        self.anon.floor()
+    }
+
+    /// Effective anonymization mode for one namespace (`None` = untouched),
+    /// considering both declared policy and the floor. Errors when the gate
+    /// is poisoned by an unreadable row.
+    pub fn anon_active_mode(&self, ns: &str) -> Result<Option<String>> {
+        self.anon.active_mode(ns)
+    }
+
+    /// Declared policies as `(ns, mode)` pairs, from the handle's cache —
+    /// cheap observability for config surfaces.
+    pub fn anon_declared(&self) -> Vec<(String, String)> {
+        self.anon.declared()
+    }
+
+    /// Live session mappings the in-process caller may rehydrate with:
+    /// `(ns, mapping_id, placeholder → value)`. This is D5 custody — the
+    /// mapping is available here, in process, and never rides MCP/server
+    /// payloads.
+    pub fn anon_mappings(&self) -> Result<Vec<AnonMappingRow>> {
+        self.anon.mappings()
+    }
+
+    /// The `mapping_id` of the namespace's most recent egress state, for
+    /// the `anonymized: true` payload flags surfaces attach.
+    pub fn anon_last_mapping_id(&self, ns: &str) -> Result<Option<String>> {
+        self.anon.last_mapping_id(ns)
+    }
+
+    /// `audit`-mode counters: `(ns, category, detections)`. In-memory,
+    /// process-lifetime, never the spans' plaintext.
+    pub fn anon_audit_counts(&self) -> Vec<(String, String, u64)> {
+        self.anon
+            .audit_counts()
+            .iter()
+            .map(|((ns, cat), n)| (ns.clone(), cat.clone(), *n))
+            .collect()
     }
 
     /// Declare (or replace) the retention policy for one namespace.
@@ -2571,6 +2745,14 @@ impl Areev {
     fn prep_from_blob(&mut self, blob: Vec<u8>, hash: Hash) -> Result<GrainPrep> {
         let view = deserialize_blob(&blob)?;
         let gv = extract_view(&view);
+        // Known-identity propagation (anon gate): a subject written now must
+        // be detectable in prose the boundary transforms later, even if no
+        // structural read has surfaced it yet. One map lookup when idle.
+        if !self.anon.is_idle() {
+            if let Some(subject) = &gv.subject {
+                self.anon.note_written_identity(&gv.ns, subject);
+            }
+        }
         let ns_id = self.term_id(&gv.ns)?;
         let (mut s, mut p, mut o, mut osp) = (None, None, None, false);
         if let (Some(sj), Some(rl), Some(ob)) = (&gv.subject, &gv.relation, &gv.object) {
@@ -2946,7 +3128,8 @@ impl Areev {
     /// whole corpus. Files written before that index existed need `reindex`.
     pub fn grains_derived_from(&mut self, parent: &Hash) -> Result<Vec<DeserializedGrain>> {
         let key = parent.as_bytes().to_vec();
-        self.db
+        let mut out: Vec<DeserializedGrain> = self
+            .db
             .query(
                 "SELECT g.blob FROM prov_idx p JOIN grains g ON g.seq = p.seq
                  WHERE p.parent = ?1 ORDER BY p.seq DESC",
@@ -2955,7 +3138,11 @@ impl Areev {
             .iter()
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
-            .collect()
+            .collect::<Result<_>>()?;
+        // Egress boundary; ns per grain (no ns parameter here). run_yield
+        // inherits coverage through this and run_trace.
+        self.anon.egress_grains(None, &mut out)?;
+        Ok(out)
     }
 
     /// Every grain recorded during `run_id`, newest first — the run's own
@@ -2969,7 +3156,8 @@ impl Areev {
             return Ok(Vec::new());
         };
         let limit = limit.min(1024) as i64;
-        self.db
+        let mut out: Vec<DeserializedGrain> = self
+            .db
             .query(
                 "SELECT g.blob FROM run_idx r JOIN grains g ON g.seq = r.seq
                  WHERE r.ns = ?1 AND r.run = ?2 ORDER BY r.seq DESC LIMIT ?3",
@@ -2978,7 +3166,9 @@ impl Areev {
             .iter()
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
-            .collect()
+            .collect::<Result<_>>()?;
+        self.anon.egress_grains(Some(ns), &mut out)?;
+        Ok(out)
     }
 
     /// One page of a run's grains, **oldest first**, from an exclusive
@@ -2993,6 +3183,12 @@ impl Areev {
     /// it can no longer see. This is the complete read. Ascending order is
     /// deliberate: a resume scans oldest→newest; canonical *presentation*
     /// order is the runtime's job (proposal §5.2), not the store's.
+    ///
+    /// Deliberately EXEMPT from the egress boundary: this is the machine
+    /// replay read — the runtime reconstructs run state from these exact
+    /// field values, and a pseudonymized journal would corrupt every resume.
+    /// The model-facing views of the same data (`run_trace`, `run_yield`)
+    /// are covered.
     pub fn run_grains(
         &mut self,
         ns: &str,
@@ -3157,10 +3353,13 @@ impl Areev {
                 vec![pi(ns_id), pi(limit as i64)],
             )?,
         };
-        rows.iter()
+        let mut out: Vec<DeserializedGrain> = rows
+            .iter()
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
-            .collect()
+            .collect::<Result<_>>()?;
+        self.anon.egress_grains(Some(ns), &mut out)?;
+        Ok(out)
     }
 
     /// Fetch a grain by content address.
@@ -3175,12 +3374,42 @@ impl Areev {
                 .ok_or_else(|| AreevError::Storage("blob column not a blob".into()))?,
             None => return Err(AreevError::NotFound(*hash)),
         };
-        deserialize_blob(&blob)
+        let mut g = deserialize_blob(&blob)?;
+        // Egress boundary: ns resolved from the grain itself (`get` has no
+        // ns parameter). `latest` and the memory-tool `view` inherit this.
+        self.egress_one(None, &mut g)?;
+        Ok(g)
+    }
+
+    /// Apply the egress boundary to one grain (docs/anonymization-proposal.md
+    /// P1). One `is_idle` branch when the feature is unused.
+    #[inline]
+    fn egress_one(&mut self, ns_hint: Option<&str>, g: &mut DeserializedGrain) -> Result<()> {
+        if self.anon.is_idle() {
+            return Ok(());
+        }
+        self.anon.egress_grains(ns_hint, std::slice::from_mut(g))
     }
 
     /// Structural recall: current grains about `subject` (optionally filtered
     /// by relation), newest first, k-bounded. The voice hot path.
     pub fn recall(
+        &mut self,
+        ns: &str,
+        subject: &str,
+        relation: Option<&str>,
+        k: usize,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let mut out = self.recall_raw(ns, subject, relation, k)?;
+        self.anon.egress_grains(Some(ns), &mut out)?;
+        Ok(out)
+    }
+
+    /// `recall` without the egress boundary — for internal machinery whose
+    /// correctness depends on raw field values (the authz engine reads
+    /// `mg:permits` grants through here; a pseudonymized principal would
+    /// fail every grant check). Never expose this on a public surface.
+    fn recall_raw(
         &mut self,
         ns: &str,
         subject: &str,
@@ -3272,6 +3501,7 @@ impl Areev {
                 out.push(deserialize_blob(&b)?);
             }
         }
+        self.anon.egress_grains(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -3415,7 +3645,11 @@ impl Areev {
     /// failure. Zero grants = the principal can do nothing (callers build a
     /// fail-closed `AuthzSet::restricted` from this).
     pub fn authz_grants(&mut self, principal: &str) -> Result<Vec<authz::Grant>> {
-        let grains = self.recall(
+        // recall_raw, not recall: the authz engine must see the real grant
+        // object strings — an egress policy on agent:authz would otherwise
+        // pseudonymize every principal and fail every check (fail-closed in
+        // the wrong place).
+        let grains = self.recall_raw(
             authz::AUTHZ_NS,
             principal,
             Some(authz::REL_PERMITS),
@@ -3702,6 +3936,11 @@ impl Areev {
     /// `text_mentions` extends the selection to indexed-text mentions with
     /// the same hard preconditions as erasure (never a silent partial
     /// answer).
+    /// Deliberately EXEMPT from the egress boundary: the DSAR read must
+    /// disclose what is actually stored (REQ-ERASE-9 — the report and the
+    /// erasure share one selector), and a pseudonymized disclosure would
+    /// misstate it. The reveal-grant gating of this read arrives with the
+    /// vault phase (proposal D9/P3).
     pub fn subject_report_with(
         &mut self,
         ns: &str,
@@ -4587,7 +4826,8 @@ impl Areev {
             return Ok(Vec::new());
         };
         let limit = limit.min(1024) as i64;
-        self.db
+        let mut out: Vec<DeserializedGrain> = self
+            .db
             .query(
                 "SELECT g.blob FROM osp o JOIN grains g ON g.seq = o.seq
                  WHERE o.ns = ?1 AND o.o = ?2 AND o.cur = 1 ORDER BY o.seq DESC LIMIT ?3",
@@ -4596,7 +4836,9 @@ impl Areev {
             .iter()
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
-            .collect()
+            .collect::<Result<_>>()?;
+        self.anon.egress_grains(Some(ns), &mut out)?;
+        Ok(out)
     }
 
     /// Bounded k-hop traversal over the given relations.
@@ -4687,6 +4929,9 @@ impl Areev {
                 out.push(t);
             }
         }
+        // Egress boundary: reached entity terms are subject/object strings —
+        // detection-based (an object like "tea" is not an identity).
+        self.anon.egress_strings(ns, None, &mut out)?;
         Ok(out)
     }
 
@@ -4770,6 +5015,7 @@ impl Areev {
                 out.push(t);
             }
         }
+        self.anon.egress_strings(ns, None, &mut out)?;
         Ok(Some(out))
     }
 
@@ -4800,7 +5046,9 @@ impl Areev {
                         None => return Ok(None),
                     };
                     if svf.unwrap_or(i64::MIN) <= t {
-                        return Ok(Some(deserialize_blob(&blob.unwrap_or_default())?));
+                        let mut g = deserialize_blob(&blob.unwrap_or_default())?;
+                        self.egress_one(Some(ns), &mut g)?;
+                        return Ok(Some(g));
                     }
                     match sup {
                         Some(prev) => cur = Hash::try_from_bytes(&prev)?,
@@ -4832,7 +5080,11 @@ impl Areev {
                     .first()
                     .and_then(|row| row.blob(0));
                 match blob {
-                    Some(b) => Ok(Some(deserialize_blob(&b)?)),
+                    Some(b) => {
+                        let mut g = deserialize_blob(&b)?;
+                        self.egress_one(Some(ns), &mut g)?;
+                        Ok(Some(g))
+                    }
                     None => Ok(None),
                 }
             }
@@ -5492,8 +5744,11 @@ impl Areev {
 
         // Telemetry: capture the recall (buffered, non-blocking). See
         // `record_recall_event` — the only recall-path work is an in-memory
-        // push, and `Off` telemetry makes it a single branch.
+        // push, and `Off` telemetry makes it a single branch. Recorded before
+        // the egress pass on purpose: telemetry keys on hashes and counts,
+        // which the transform preserves.
         self.record_recall_event(ns, subject, relation, query, &out, start);
+        self.anon.egress_grains(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -5791,6 +6046,8 @@ impl Areev {
             }
         }
         subjects.sort();
+        // Egress boundary: subjects ARE identities by construction.
+        self.anon.egress_strings(ns, Some("person"), &mut subjects)?;
         Ok(subjects)
     }
 
@@ -5941,6 +6198,15 @@ impl Areev {
                 heads,
             });
         }
+        // Egress boundary: a fork's subject IS an identity by construction.
+        if !self.anon.is_idle() {
+            for f in forks.iter_mut() {
+                let mut s = vec![std::mem::take(&mut f.subject)];
+                let ns = f.namespace.clone();
+                self.anon.egress_strings(&ns, Some("person"), &mut s)?;
+                f.subject = s.pop().unwrap_or_default();
+            }
+        }
         Ok(forks)
     }
 
@@ -6080,6 +6346,15 @@ impl Areev {
                 break; // chain-length safety cap
             }
         }
+        // Egress boundary on the value projections (`object` carries grain
+        // content even though no full grain is returned).
+        if !self.anon.is_idle() {
+            let mut objects: Vec<String> = out.iter().map(|e| e.object.clone()).collect();
+            self.anon.egress_strings(ns, None, &mut objects)?;
+            for (e, o) in out.iter_mut().zip(objects) {
+                e.object = o;
+            }
+        }
         Ok(out)
     }
 
@@ -6203,6 +6478,9 @@ impl Areev {
 
     /// Reconstruct the export registry from grains. This deliberately reads no
     /// `meta` rows: registry entries must replicate in ordinary bundles.
+    /// EXEMPT from the egress boundary: the export registry is an operator
+    /// compliance read (destinations, recipients, subject *fingerprints* —
+    /// already non-identifying by construction).
     pub fn corpus_exports(&mut self) -> Result<Vec<CorpusExportRegistry>> {
         let mut exports = Vec::new();
         let rows = self.db.query(
@@ -6991,12 +7269,19 @@ impl Areev {
             }
         }
         if max_hlc.is_none() {
+            let mut anon_changed = false;
             for (key, value) in &meta_entries {
                 if self.apply_bundle_meta_row(key, value)? {
                     stats.meta_applied += 1;
+                    anon_changed |= key.starts_with(anon_gate::ANON_PREFIX);
                 } else {
                     stats.meta_skipped += 1;
                 }
+            }
+            // A replicated anon policy takes effect on this handle now, not
+            // at the next open — the gate cache mirrors the meta rows.
+            if anon_changed {
+                self.reload_anon_policies()?;
             }
         } else {
             stats.meta_skipped += meta_entries.len();
@@ -7067,6 +7352,7 @@ impl Drop for Areev {
     }
 }
 
+mod anon_gate;
 mod blobcrypt;
 pub mod asyncdb;
 pub mod memory_tool;

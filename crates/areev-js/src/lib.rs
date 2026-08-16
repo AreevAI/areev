@@ -1860,6 +1860,83 @@ impl Areev {
         })
     }
 
+    /// Declare (or replace) one namespace's anonymization policy — an
+    /// `anon:<ns>` file-truth that replicates write-if-absent and stamps
+    /// min_reader_version. Egress reads of that namespace are pseudonymized
+    /// from now on.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anon_policy(
+        &self,
+        ns: String,
+        policy_json: String,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)).map_err(err)
+        })
+    }
+
+    /// Remove one namespace's anonymization policy (missing is not an error).
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn clear_anon_policy(&self, ns: String) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.clear_anon_policy(&ns)).map_err(err)
+        })
+    }
+
+    /// All declared anonymization policies as JSON `[{ns, policy}]`. An
+    /// unreadable row is a hard error, not a skip (fail-closed, D3).
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn anon_policies(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let policies = facade.with_store(|m| m.anon_policies()).map_err(err)?;
+            let rows: Vec<serde_json::Value> = policies
+                .into_iter()
+                .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
+                .collect();
+            serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// This process's live pseudonym mappings as JSON
+    /// `[{ns, mapping_id, mapping}]` — the in-process rehydration custody
+    /// (D5); mappings never ride MCP/server payloads.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn anon_mappings(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let maps = facade.with_store(|m| m.anon_mappings()).map_err(err)?;
+            let rows: Vec<serde_json::Value> = maps
+                .into_iter()
+                .map(|(ns, id, mapping)| {
+                    serde_json::json!({"ns": ns, "mapping_id": id, "mapping": mapping})
+                })
+                .collect();
+            serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// Host cap (never persisted): force egress anonymization on for every
+    /// namespace without a declared policy. Can never weaken a declared one.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anonymize_egress_floor(
+        &self,
+        on: bool,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.set_anonymize_egress_floor(on));
+            Ok(())
+        })
+    }
+
     /// Reject a recommendation with a reason (library-friendly `reject`).
     #[napi(ts_return_type = "Promise<string>")]
     pub fn dismiss_recommendation(
