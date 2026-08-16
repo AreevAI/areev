@@ -1937,6 +1937,41 @@ impl Areev {
         })
     }
 
+    /// Install a Tier-1 NER detector over the command seam (probed at
+    /// install; a broken command errors here, not at the first read).
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn set_anonymizer_command(
+        &self,
+        cmd: String,
+    ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
+        let slot = self.facade.clone();
+        UnitJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let backend = areev_store::CommandAnonymize::new(&cmd).map_err(err)?;
+            facade.with_store(|m| {
+                m.set_anonymizer(Box::new(backend));
+            });
+            Ok(())
+        })
+    }
+
+    /// Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+    /// fingerprint). `tokensJson` is a JSON array of placeholder strings;
+    /// returns JSON `{"revealed": {token: value | null}}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn reveal_tokens(
+        &self,
+        ns: String,
+        tokens_json: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+            facade.reveal_tokens(&ns, &tokens).map_err(err)
+        })
+    }
+
     /// Reject a recommendation with a reason (library-friendly `reject`).
     #[napi(ts_return_type = "Promise<string>")]
     pub fn dismiss_recommendation(

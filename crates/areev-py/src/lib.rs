@@ -1882,6 +1882,29 @@ impl Areev {
         Ok(())
     }
 
+    /// Install a Tier-1 NER detector over the command seam (probed at
+    /// install; a broken command errors here, not at the first read).
+    #[pyo3(signature = (cmd))]
+    fn set_anonymizer_command(&self, py: Python<'_>, cmd: String) -> PyResult<()> {
+        py.detach(|| {
+            let backend = areev_store::CommandAnonymize::new(&cmd)?;
+            self.facade.with_store(|m| {
+                m.set_anonymizer(Box::new(backend));
+            });
+            Ok::<(), areev_core::error::AreevError>(())
+        })
+        .map_err(err)
+    }
+
+    /// Reverse-lookup placeholder tokens (admin-gated, Tier-2 audited by
+    /// fingerprint). `tokens_json` is a JSON array of placeholder strings;
+    /// returns JSON `{"revealed": {token: value | null}}`.
+    #[pyo3(signature = (ns, tokens_json))]
+    fn reveal_tokens(&self, py: Python<'_>, ns: String, tokens_json: String) -> PyResult<String> {
+        let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+        py.detach(|| self.facade.reveal_tokens(&ns, &tokens)).map_err(err)
+    }
+
     /// Reject a recommendation with a reason (the library-friendly name for
     /// `areev loop reject`).
     #[pyo3(signature = (hash, why, scopes = None))]

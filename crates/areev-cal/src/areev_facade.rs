@@ -414,6 +414,50 @@ impl AreevFacade {
         Ok(Some(out))
     }
 
+    /// Reverse-lookup placeholder tokens (proposal D9, REQ-ANON-3): the
+    /// privileged, audited act. Requires the `admin` verb on `ns`; every
+    /// execution writes a Tier-2 Observation in `agent:authz` carrying the
+    /// revealed values' *fingerprints*, never the identities. Returns JSON
+    /// `{"revealed": {token: value | null}}`.
+    pub fn reveal_tokens(&self, ns: &str, tokens: &[String]) -> Result<String> {
+        self.check_verb(Verb::Admin, ns)?;
+        let mut revealed = serde_json::Map::new();
+        let mut fingerprints: Vec<String> = Vec::new();
+        self.with_store(|m| -> Result<()> {
+            for token in tokens {
+                match m.anon_reveal(ns, token)? {
+                    Some(value) => {
+                        fingerprints.push(areev_core::authz::subject_fingerprint(&value));
+                        revealed.insert(token.clone(), serde_json::json!(value));
+                    }
+                    None => {
+                        revealed.insert(token.clone(), serde_json::Value::Null);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        // Tier-2 audit: the reveal IS the record — fingerprints only, so the
+        // immutable, replicating audit grain cannot re-identify by itself.
+        let mut obs = areev_core::authz::audit_observation(
+            &self.session_principal(),
+            "reveal",
+            ns,
+            None,
+            fingerprints.len(),
+            now_ms(),
+        );
+        if !fingerprints.is_empty() {
+            let ctx = obs.common.context.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(o) = ctx.as_object_mut() {
+                o.insert("revealed_fingerprints".into(), serde_json::json!(fingerprints));
+            }
+        }
+        self.with_store(|m| m.add(&obs))?;
+        serde_json::to_string(&serde_json::json!({"revealed": revealed}))
+            .map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
     // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------
     //
     // The explicit front door: pure text in, JSON out, no store access. From

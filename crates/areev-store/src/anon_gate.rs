@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use areev_core::anon::{AnonPolicy, SessionAnonymizer};
+use areev_core::anon::{AnonPolicy, DetectorBackend, SessionAnonymizer};
 use areev_core::error::{AreevError, Result};
 use areev_core::format::deserialize::DeserializedGrain;
 
@@ -60,6 +60,15 @@ pub(crate) struct AnonGate {
     /// `audit`-mode counters: (ns, category) → detections seen. In-memory,
     /// process-lifetime; never the spans' plaintext.
     audit_counts: BTreeMap<(String, String), u64>,
+    /// Host-installed detector backends by kind ("ner"/"llm") — per-process
+    /// capabilities, never persisted, embedder-style (proposal §5.2–5.3).
+    backends: HashMap<String, Box<dyn DetectorBackend>>,
+    /// Keys the sealed vault rows (`HKDF(page_key, areev.vault.v1)`);
+    /// `None` on a plaintext file, where vault persistence refuses at set.
+    vault_key: Option<[u8; 32]>,
+    /// Unsealed vault rows per ns, loaded at policy reload; consumed to
+    /// seed the first session so tokens continue across process restarts.
+    vault_seed: HashMap<String, Vec<(String, String)>>,
     /// Persistent per-ns pseudonymizers for ingress transforms — always
     /// keyed (value-derived tokens, D8), independent of the egress scope.
     ingress_sessions: HashMap<String, SessionAnonymizer>,
@@ -74,9 +83,16 @@ pub(crate) struct AnonGate {
 const MAX_KNOWN_IDENTITIES: usize = 1024;
 
 impl AnonGate {
-    pub(crate) fn new(session_key: [u8; 32], memory_key: Option<[u8; 32]>) -> Self {
+    pub(crate) fn new(
+        session_key: [u8; 32],
+        memory_key: Option<[u8; 32]>,
+        vault_key: Option<[u8; 32]>,
+    ) -> Self {
         AnonGate {
             memory_key,
+            backends: HashMap::new(),
+            vault_key,
+            vault_seed: HashMap::new(),
             policies: HashMap::new(),
             poisoned: None,
             floor: false,
@@ -271,12 +287,17 @@ impl AnonGate {
             }
         }
         // Phase 2: transform. One context-scope session per (call, ns).
+        // Backends are collected as direct field refs AFTER the last
+        // &mut-self method call, so the borrows stay field-disjoint below.
+        let memory_key = self.memory_key;
         let mut per_call: HashMap<String, SessionAnonymizer> = HashMap::new();
+        let backends: Vec<&dyn DetectorBackend> =
+            self.backends.values().map(|b| b.as_ref()).collect();
         for (g, entry) in grains.iter_mut().zip(plan) {
             let Some((ns, policy)) = entry else { continue };
             let known = known_by_ns.get(&ns).map(Vec::as_slice).unwrap_or(&[]);
             if policy.mode == "audit" {
-                let counts = audit_grain(&ns, &policy, g, known)?;
+                let counts = audit_grain(&ns, &policy, g, known, &backends)?;
                 for (k, n) in counts {
                     *self.audit_counts.entry(k).or_insert(0) += n;
                 }
@@ -286,8 +307,8 @@ impl AnonGate {
                 let session = match self.sessions.entry(ns.clone()) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let built = if policy.scope == "memory" {
-                            let key = self.memory_key.ok_or_else(|| {
+                        let mut built = if policy.scope == "memory" {
+                            let key = memory_key.ok_or_else(|| {
                                 AreevError::Validation(
                                     "anonymization scope \"memory\" needs an encrypted memory"
                                         .into(),
@@ -297,10 +318,13 @@ impl AnonGate {
                         } else {
                             SessionAnonymizer::new(policy.clone())?
                         };
+                        if let Some(seed) = self.vault_seed.remove(&ns) {
+                            built.seed(seed);
+                        }
                         e.insert(built)
                     }
                 };
-                transform_grain(session, g, known)?;
+                transform_grain(session, g, known, &backends)?;
                 session.evict_to(MAX_SESSION_ENTRIES);
             } else {
                 let session = match per_call.entry(ns.clone()) {
@@ -309,7 +333,7 @@ impl AnonGate {
                         e.insert(SessionAnonymizer::new(policy.clone())?)
                     }
                 };
-                transform_grain(session, g, known)?;
+                transform_grain(session, g, known, &backends)?;
             }
         }
         // Keep the latest context-scope table reachable for rehydration.
@@ -342,6 +366,78 @@ impl AnonGate {
         }
     }
 
+    pub(crate) fn install_backend(&mut self, backend: Box<dyn DetectorBackend>) {
+        self.backends.insert(backend.kind().to_string(), backend);
+    }
+
+    pub(crate) fn installed_backends(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> =
+            self.backends.values().map(|b| (b.kind().to_string(), b.id().to_string())).collect();
+        v.sort();
+        v
+    }
+
+    pub(crate) fn vault_key(&self) -> Option<[u8; 32]> {
+        self.vault_key
+    }
+
+    pub(crate) fn set_vault_seed(&mut self, ns: &str, entries: Vec<(String, String)>) {
+        self.vault_seed.insert(ns.to_string(), entries);
+    }
+
+    /// Namespaces whose policy persists mappings to the vault.
+    pub(crate) fn vault_namespaces(&self) -> Vec<(String, AnonPolicy)> {
+        let mut v: Vec<(String, AnonPolicy)> = self
+            .policies
+            .iter()
+            .filter(|(_, p)| p.vault)
+            .map(|(ns, p)| (ns.clone(), p.clone()))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Drain newly minted (ns, token, value) rows for vault-enabled
+    /// namespaces — the write-behind queue the store flushes to meta.
+    pub(crate) fn take_vault_pending(&mut self) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for (ns, policy) in
+            self.policies.iter().filter(|(_, p)| p.vault).map(|(n, p)| (n.clone(), p.clone()))
+        {
+            let _ = policy;
+            if let Some(sess) = self.sessions.get_mut(&ns) {
+                for (t, v) in sess.take_pending() {
+                    out.push((ns.clone(), t, v));
+                }
+            }
+            if let Some(sess) = self.ingress_sessions.get_mut(&ns) {
+                for (t, v) in sess.take_pending() {
+                    out.push((ns.clone(), t, v));
+                }
+            }
+        }
+        out
+    }
+
+    /// In-memory half of REQ-ANON-1: drop every live mapping entry (and
+    /// pending row) whose value names an erased identity.
+    pub(crate) fn scrub_identities(&mut self, names: &[String]) -> usize {
+        let mut n = 0;
+        for sess in self.sessions.values_mut() {
+            n += sess.scrub_values(names);
+        }
+        for sess in self.ingress_sessions.values_mut() {
+            n += sess.scrub_values(names);
+        }
+        if let Some((_, sess)) = self.last_context.as_mut() {
+            n += sess.scrub_values(names);
+        }
+        for entries in self.vault_seed.values_mut() {
+            entries.retain(|(_, v)| !names.iter().any(|i| i == v));
+        }
+        n
+    }
+
     /// The declared ingress policy for `ns` (mode `ingress` or `both`).
     /// The floor never forces ingress — it is an egress-only cap.
     fn ingress_policy(&self, ns: &str) -> Result<Option<AnonPolicy>> {
@@ -363,7 +459,7 @@ impl AnonGate {
                     .any(|p| matches!(p.mode.as_str(), "ingress" | "both")))
     }
 
-    fn ingress_session(&mut self, ns: &str, policy: &AnonPolicy) -> Result<&mut SessionAnonymizer> {
+    fn ensure_ingress_session(&mut self, ns: &str, policy: &AnonPolicy) -> Result<()> {
         if !self.ingress_sessions.contains_key(ns) {
             let key = self.memory_key.ok_or_else(|| {
                 AreevError::Validation(
@@ -376,10 +472,13 @@ impl AnonGate {
             // egress scope says — build keyed regardless.
             let mut p = policy.clone();
             p.scope = "memory".into();
-            self.ingress_sessions
-                .insert(ns.to_string(), SessionAnonymizer::new_keyed(p, key)?);
+            let mut sess = SessionAnonymizer::new_keyed(p, key)?;
+            if let Some(seed) = self.vault_seed.remove(ns) {
+                sess.seed(seed);
+            }
+            self.ingress_sessions.insert(ns.to_string(), sess);
         }
-        Ok(self.ingress_sessions.get_mut(ns).expect("just inserted"))
+        Ok(())
     }
 
     /// Whether an ingress policy covers `ns` (poison check included).
@@ -398,8 +497,11 @@ impl AnonGate {
         }
         let Some(policy) = self.ingress_policy(ns)? else { return Ok(None) };
         let known = self.known.get(ns).cloned().unwrap_or_default();
-        let session = self.ingress_session(ns, &policy)?;
-        let (out, _) = session.transform_text(text, &known)?;
+        self.ensure_ingress_session(ns, &policy)?;
+        let backends: Vec<&dyn DetectorBackend> =
+            self.backends.values().map(|b| b.as_ref()).collect();
+        let session = self.ingress_sessions.get_mut(ns).expect("ensured above");
+        let (out, _) = session.transform_text_with(text, &known, &backends)?;
         Ok(Some(out))
     }
 
@@ -410,7 +512,8 @@ impl AnonGate {
         }
         let Some(policy) = self.ingress_policy(ns)? else { return Ok(None) };
         self.remember_identity(ns, value.to_string());
-        let session = self.ingress_session(ns, &policy)?;
+        self.ensure_ingress_session(ns, &policy)?;
+        let session = self.ingress_sessions.get_mut(ns).expect("ensured above");
         Ok(Some(session.transform_value("person", value)))
     }
 
@@ -451,20 +554,24 @@ impl AnonGate {
         }
         self.check_poisoned()?;
         let Some(policy) = self.effective(ns)? else { return Ok(()) };
+        let known = self.known.get(ns).cloned().unwrap_or_default();
+        let persistent = policy.scope == "session" || policy.scope == "memory";
         if policy.mode == "audit" {
-            let known = self.known.get(ns).cloned().unwrap_or_default();
+            let backends: Vec<&dyn DetectorBackend> =
+                self.backends.values().map(|b| b.as_ref()).collect();
+            let mut counts: Vec<(String, String)> = Vec::new();
             for v in values.iter() {
-                let outcome = areev_core::anon::scan(v, &policy, &known)?;
+                let outcome = areev_core::anon::scan_with(v, &policy, &known, &backends)?;
                 for d in &outcome.detections {
-                    *self
-                        .audit_counts
-                        .entry((ns.to_string(), d.category.clone()))
-                        .or_insert(0) += 1;
+                    counts.push((ns.to_string(), d.category.clone()));
                 }
+            }
+            drop(backends);
+            for k in counts {
+                *self.audit_counts.entry(k).or_insert(0) += 1;
             }
             return Ok(());
         }
-        let persistent = policy.scope == "session" || policy.scope == "memory";
         let mut session = if persistent {
             match self.sessions.remove(ns) {
                 Some(s) => s,
@@ -473,12 +580,18 @@ impl AnonGate {
         } else {
             SessionAnonymizer::new(policy.clone())?
         };
-        let known = self.known.get(ns).cloned().unwrap_or_default();
-        for v in values.iter_mut() {
-            *v = match category {
-                Some(cat) => session.transform_value(cat, v),
-                None => session.transform_text(v, &known)?.0,
-            };
+        if let Some(seed) = self.vault_seed.remove(ns) {
+            session.seed(seed);
+        }
+        {
+            let backends: Vec<&dyn DetectorBackend> =
+                self.backends.values().map(|b| b.as_ref()).collect();
+            for v in values.iter_mut() {
+                *v = match category {
+                    Some(cat) => session.transform_value(cat, v),
+                    None => session.transform_text_with(v, &known, &backends)?.0,
+                };
+            }
         }
         if persistent {
             session.evict_to(MAX_SESSION_ENTRIES);
@@ -498,6 +611,7 @@ fn audit_grain(
     policy: &AnonPolicy,
     g: &DeserializedGrain,
     known: &[String],
+    backends: &[&dyn DetectorBackend],
 ) -> Result<Vec<((String, String), u64)>> {
     let mut counts: BTreeMap<(String, String), u64> = BTreeMap::new();
     for (k, v) in &g.fields {
@@ -505,7 +619,7 @@ fn audit_grain(
             continue;
         }
         for s in string_leaves(v) {
-            let outcome = areev_core::anon::scan(s, policy, known)?;
+            let outcome = areev_core::anon::scan_with(s, policy, known, backends)?;
             for d in &outcome.detections {
                 *counts.entry((ns.to_string(), d.category.clone())).or_insert(0) += 1;
             }
@@ -545,6 +659,7 @@ fn transform_grain(
     session: &mut SessionAnonymizer,
     g: &mut DeserializedGrain,
     identities: &[String],
+    backends: &[&dyn DetectorBackend],
 ) -> Result<()> {
     for f in IDENTITY_FIELDS {
         if let Some(serde_json::Value::String(s)) = g.fields.get_mut(*f) {
@@ -559,7 +674,7 @@ fn transform_grain(
         .collect();
     for k in keys {
         let Some(v) = g.fields.get_mut(&k) else { continue };
-        transform_value_tree(session, v, identities)?;
+        transform_value_tree(session, v, identities, backends)?;
     }
     Ok(())
 }
@@ -568,10 +683,11 @@ fn transform_value_tree(
     session: &mut SessionAnonymizer,
     v: &mut serde_json::Value,
     identities: &[String],
+    backends: &[&dyn DetectorBackend],
 ) -> Result<()> {
     match v {
         serde_json::Value::String(s) => {
-            let (out, replaced) = session.transform_text(s, identities)?;
+            let (out, replaced) = session.transform_text_with(s, identities, backends)?;
             if replaced > 0 {
                 *s = out;
             }
@@ -579,14 +695,14 @@ fn transform_value_tree(
         }
         serde_json::Value::Array(a) => {
             for item in a {
-                transform_value_tree(session, item, identities)?;
+                transform_value_tree(session, item, identities, backends)?;
             }
             Ok(())
         }
         serde_json::Value::Object(o) => {
             for (k, item) in o.iter_mut() {
                 if !SKIP_FIELDS.contains(&k.as_str()) {
-                    transform_value_tree(session, item, identities)?;
+                    transform_value_tree(session, item, identities, backends)?;
                 }
             }
             Ok(())

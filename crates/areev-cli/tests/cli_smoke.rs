@@ -1342,3 +1342,49 @@ fn anonymize_policy_verbs_and_floor_cover_recall() {
     assert!(ok);
     assert!(!out.contains("caller:john"), "floor must transform: {out}");
 }
+
+#[test]
+fn anonymize_vault_reveal_through_the_binary() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("vault.db");
+    let db = db.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(args)
+            .env("SMOKE_PASS", "correct horse battery staple")
+            .output()
+            .expect("spawn areev");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+
+    let (ok, _out, err) = run(&[
+        "add", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--subject", "caller:john", "--relation", "prefers", "--object", "tea",
+    ]);
+    assert!(ok, "add failed: {err}");
+    let (ok, _out, err) = run(&[
+        "anonymize", "set", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--policy", r#"{"mode": "egress", "scope": "session", "vault": true}"#,
+    ]);
+    assert!(ok, "set failed: {err}");
+
+    // A recall mints + persists the vault row; this process exits after.
+    let (ok, out, err) = run(&[
+        "recall", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--subject", "caller:john",
+    ]);
+    assert!(ok, "recall failed: {err}");
+    assert!(out.contains("[PERSON_1]") && !out.contains("caller:john"), "{out}");
+
+    // A LATER process reverse-looks the token up from the sealed vault.
+    let (ok, out, err) = run(&[
+        "anonymize", "reveal", "--db", db, "--passphrase-env", "SMOKE_PASS", "--ns", "caller",
+        "--token", "[PERSON_1]",
+    ]);
+    assert!(ok, "reveal failed: {err}");
+    assert!(out.contains("caller:john"), "reveal must recover the identity: {out}");
+}

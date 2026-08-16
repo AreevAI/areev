@@ -24,6 +24,17 @@ use crate::error::{AreevError, Result};
 
 pub use detect::KNOWN_CATEGORIES;
 
+/// A pluggable detector (proposal §5.2–5.3): Tier-1 NER over a command
+/// seam, Tier-2 LLM — installed by the host, never shipped as a dependency.
+/// Object-safe; spans use the same UTF-8-bytes-over-NFC contract as Tier 0.
+pub trait DetectorBackend: Send + Sync {
+    /// Which policy `detectors` entry this backend serves: "ner" or "llm".
+    fn kind(&self) -> &str;
+    /// Provenance id stamped on detections (e.g. "presidio/2.2").
+    fn id(&self) -> &str;
+    fn detect(&self, text: &str) -> Result<Vec<Detection>>;
+}
+
 /// One detected sensitive span. `start`/`end` are UTF-8 byte offsets into the
 /// NFC-normalized text returned alongside the detections.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,8 +42,14 @@ pub struct Detection {
     pub start: usize,
     pub end: usize,
     pub category: String,
+    #[serde(default = "confidence_one")]
     pub confidence: f32,
+    #[serde(default)]
     pub detector: String,
+}
+
+fn confidence_one() -> f32 {
+    1.0
 }
 
 /// What the policy does with a detected span. Ranked by severity for overlap
@@ -124,8 +141,24 @@ pub struct AnonPolicy {
     pub placeholder: String,
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f32,
+    /// Which chain links this policy demands (proposal §5.4): "tier0" runs
+    /// in-tree; "ner"/"llm" require a host-installed [`DetectorBackend`] of
+    /// that kind and FAIL CLOSED without one (D6).
+    #[serde(default = "default_detectors")]
+    pub detectors: Vec<String>,
+    /// Persist the pseudonym mapping to the file's sealed vault (proposal
+    /// §7). Requires scope `session`/`memory` and an encrypted memory.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vault: bool,
+    /// Storage limitation for vault rows (REQ-ANON-6), in days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_ttl_days: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub because: Option<String>,
+}
+
+fn default_detectors() -> Vec<String> {
+    vec!["tier0".to_string()]
 }
 
 impl Default for AnonPolicy {
@@ -138,6 +171,9 @@ impl Default for AnonPolicy {
             scope: default_scope(),
             placeholder: default_placeholder(),
             min_confidence: default_min_confidence(),
+            detectors: default_detectors(),
+            vault: false,
+            vault_ttl_days: None,
             because: None,
         }
     }
@@ -201,6 +237,44 @@ impl AnonPolicy {
                     "invalid anonymization policy for category '{cat}': {e}"
                 ))
             })?;
+        }
+        if self.detectors.is_empty() {
+            return Err(AreevError::Validation(
+                "invalid anonymization policy: detectors must not be empty (use \
+                 [\"tier0\"])"
+                    .into(),
+            ));
+        }
+        for d in &self.detectors {
+            if !matches!(d.as_str(), "tier0" | "ner" | "llm") {
+                return Err(AreevError::Validation(format!(
+                    "invalid anonymization policy: unknown detector '{d}' (expected \
+                     tier0, ner, or llm)"
+                )));
+            }
+        }
+        if self.vault && self.scope == "context" {
+            return Err(AreevError::Validation(
+                "invalid anonymization policy: vault persistence needs scope \
+                 \"session\" or \"memory\" — context-scope mappings are ephemeral \
+                 by definition"
+                    .into(),
+            ));
+        }
+        if let Some(ttl) = self.vault_ttl_days {
+            if !self.vault {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: vault_ttl_days needs vault: true"
+                        .into(),
+                ));
+            }
+            if ttl < 0.0 || !ttl.is_finite() {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: vault_ttl_days must be a \
+                     non-negative, finite number"
+                        .into(),
+                ));
+            }
         }
         for term in &self.custom_terms {
             if term.trim().is_empty() {
@@ -268,9 +342,54 @@ pub fn nfc(text: &str) -> Cow<'_, str> {
 /// severity first, span length second, then (start, category) as the
 /// deterministic tiebreak; `allow` spans are resolved and then discarded.
 pub fn scan(text: &str, policy: &AnonPolicy, known_identities: &[String]) -> Result<ScanOutcome> {
+    scan_with(text, policy, known_identities, &[])
+}
+
+/// [`scan`] with host-installed detector backends. Fail-closed (D6): a
+/// policy demanding "ner"/"llm" with no matching backend installed errors —
+/// it never silently degrades to Tier 0 alone. Backend spans are validated
+/// (in-bounds, on char boundaries) and garbage is an error, not a skip.
+pub fn scan_with(
+    text: &str,
+    policy: &AnonPolicy,
+    known_identities: &[String],
+    backends: &[&dyn DetectorBackend],
+) -> Result<ScanOutcome> {
     policy.validate()?;
     let text = nfc(text).into_owned();
-    let mut detections = detect::run_tier0(&text, &policy.custom_terms, known_identities)?;
+    let mut detections = if policy.detectors.iter().any(|d| d == "tier0") {
+        detect::run_tier0(&text, &policy.custom_terms, known_identities)?
+    } else {
+        Vec::new()
+    };
+    for kind in policy.detectors.iter().filter(|d| *d != "tier0") {
+        let backend = backends
+            .iter()
+            .find(|b| b.kind() == kind)
+            .ok_or_else(|| {
+                AreevError::Validation(format!(
+                    "anonymization policy demands detector \"{kind}\" but no such \
+                     backend is installed on this host — egress fails closed (D6); \
+                     install one (e.g. --anonymize-cmd) or drop it from the policy"
+                ))
+            })?;
+        for d in backend.detect(&text)? {
+            let in_bounds = d.start < d.end
+                && d.end <= text.len()
+                && text.is_char_boundary(d.start)
+                && text.is_char_boundary(d.end);
+            if !in_bounds || d.category.is_empty() {
+                return Err(AreevError::Validation(format!(
+                    "detector {} returned an invalid span {}..{} — refusing the \
+                     whole result (D6): a mis-sliced span is a silent leak",
+                    backend.id(),
+                    d.start,
+                    d.end
+                )));
+            }
+            detections.push(d);
+        }
+    }
     detections.retain(|d| d.confidence >= policy.min_confidence);
     let mut survivors = resolve_overlaps(detections, policy);
     survivors.retain(|d| policy.action_for(&d.category) != Action::Allow);
@@ -322,6 +441,9 @@ pub struct SessionAnonymizer {
     counters: BTreeMap<String, u64>,
     mapping: BTreeMap<String, String>,
     reserved: std::collections::BTreeSet<String>,
+    /// (token, value) pairs minted since the last [`Self::take_pending`]
+    /// drain — the vault write-behind queue.
+    pending: Vec<(String, String)>,
     /// When set, pseudonym token ids are value-derived HMAC fragments —
     /// stable across handles and processes — instead of appearance-order
     /// counters. Required for `memory` scope and for every ingress
@@ -359,6 +481,7 @@ impl SessionAnonymizer {
             counters: BTreeMap::new(),
             mapping: BTreeMap::new(),
             reserved: std::collections::BTreeSet::new(),
+            pending: Vec::new(),
             token_key,
         }
     }
@@ -397,7 +520,19 @@ impl SessionAnonymizer {
         text: &str,
         known_identities: &[String],
     ) -> Result<(String, usize)> {
-        let ScanOutcome { text, detections } = scan(text, &self.policy, known_identities)?;
+        self.transform_text_with(text, known_identities, &[])
+    }
+
+    /// [`Self::transform_text`] with host detector backends (fail-closed on
+    /// a demanded-but-missing kind — see [`scan_with`]).
+    pub fn transform_text_with(
+        &mut self,
+        text: &str,
+        known_identities: &[String],
+        backends: &[&dyn DetectorBackend],
+    ) -> Result<(String, usize)> {
+        let ScanOutcome { text, detections } =
+            scan_with(text, &self.policy, known_identities, backends)?;
         for t in template_shaped_tokens(&text, &self.policy.placeholder) {
             self.reserved.insert(t);
         }
@@ -463,6 +598,39 @@ impl SessionAnonymizer {
         }
     }
 
+    /// New (token, value) pairs minted since the last drain — the vault
+    /// write-behind hook (proposal §7). Seeded entries never appear here.
+    pub fn take_pending(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Seed the session from persisted vault rows so tokens continue across
+    /// process restarts instead of colliding. Counter-based sessions bump
+    /// their counters past every seeded numeric id.
+    pub fn seed(&mut self, entries: Vec<(String, String)>) {
+        for (token, value) in entries {
+            for (cat_upper, id_part) in parse_token_parts(&self.policy.placeholder, &token) {
+                if let Ok(n) = id_part.parse::<u64>() {
+                    let cat_key = cat_upper.to_ascii_lowercase();
+                    let c = self.counters.entry(cat_key).or_insert(0);
+                    if *c < n {
+                        *c = n;
+                    }
+                }
+            }
+            // Category is recoverable from the token for bookkeeping; use
+            // the uppercase form lowercased as the by_value key's category.
+            let cat = parse_token_parts(&self.policy.placeholder, &token)
+                .first()
+                .map(|(c, _)| c.to_ascii_lowercase())
+                .unwrap_or_else(|| "custom".into());
+            self.reserved.insert(token.clone());
+            self.by_value.insert((cat.clone(), value.clone()), token.clone());
+            self.order.push_back((cat, value.clone()));
+            self.mapping.insert(token, value);
+        }
+    }
+
     fn token_for(&mut self, category: &str, value: &str) -> String {
         let k = (category.to_string(), value.to_string());
         if let Some(t) = self.by_value.get(&k) {
@@ -478,7 +646,57 @@ impl SessionAnonymizer {
         self.by_value.insert(k.clone(), token.clone());
         self.order.push_back(k);
         self.mapping.insert(token.clone(), value.to_string());
+        self.pending.push((token.clone(), value.to_string()));
         token
+    }
+
+    /// Drop every entry whose value matches one of `identities` — the
+    /// in-memory half of REQ-ANON-1 (an erased subject must not survive in
+    /// any live mapping).
+    pub fn scrub_values(&mut self, identities: &[String]) -> usize {
+        let doomed: Vec<(String, String)> = self
+            .by_value
+            .iter()
+            .filter(|((_, v), _)| identities.iter().any(|i| i == v))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let n = doomed.len();
+        for k in doomed {
+            if let Some(token) = self.by_value.remove(&k) {
+                self.mapping.remove(&token);
+            }
+            self.order.retain(|o| *o != k);
+        }
+        self.pending.retain(|(_, v)| !identities.iter().any(|i| i == v));
+        n
+    }
+}
+
+/// Parse `(CATEGORY, ID)` pairs a token exposes under `template` — used by
+/// vault seeding to restore counters and category bookkeeping.
+fn parse_token_parts(template: &str, token: &str) -> Vec<(String, String)> {
+    let mut pattern = String::from("^");
+    let mut rest = template;
+    while let Some(idx) = rest.find('{') {
+        pattern.push_str(&regex::escape(&rest[..idx]));
+        if rest[idx..].starts_with("{CATEGORY}") {
+            pattern.push_str("([A-Z][A-Z0-9_]*)");
+            rest = &rest[idx + "{CATEGORY}".len()..];
+        } else if rest[idx..].starts_with("{ID}") {
+            pattern.push_str("([0-9A-Za-z]+)");
+            rest = &rest[idx + "{ID}".len()..];
+        } else {
+            pattern.push_str(&regex::escape(&rest[idx..idx + 1]));
+            rest = &rest[idx + 1..];
+        }
+    }
+    pattern.push_str(&regex::escape(rest));
+    pattern.push('$');
+    let Ok(re) = regex::Regex::new(&pattern) else { return Vec::new() };
+    let Some(c) = re.captures(token) else { return Vec::new() };
+    match (c.get(1), c.get(2)) {
+        (Some(cat), Some(id)) => vec![(cat.as_str().to_string(), id.as_str().to_string())],
+        _ => Vec::new(),
     }
 }
 

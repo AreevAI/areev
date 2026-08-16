@@ -172,3 +172,35 @@ pub fn anon_policy_replicates_write_if_absent(b: &dyn Backend) {
         "a live local anon policy is never swapped by sync"
     );
 }
+
+/// REQ-ANON-2: the sealed vault (the re-identification table) never rides a
+/// bundle — export omits `vault:` rows, and the importer's allowlist refuses
+/// them even from a crafted bundle.
+pub fn vault_rows_never_replicate(b: &dyn Backend) {
+    // The vault needs a page cipher, so the fixture source is always an
+    // embedded encrypted file; what's backend-parameterized is the property
+    // under test — the IMPORTER refusing vault rows.
+    let src_path = b.scratch().join("vault_src.db");
+    let mut src =
+        areev_store::Areev::open_encrypted(src_path.to_str().unwrap(), [5u8; 32]).unwrap();
+    src.set_anon_policy("ns", r#"{"mode": "egress", "scope": "session", "vault": true}"#)
+        .unwrap();
+    src.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let _ = src.recall("ns", "caller:john", None, 4).unwrap(); // mints + persists a vault row
+    assert!(!src.meta_scan("vault:ns:").unwrap().is_empty(), "precondition: vault row exists");
+
+    let bundle = b.scratch().join("vault.mgb");
+    src.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+    let bytes = std::fs::read(&bundle).unwrap();
+    assert!(
+        !bytes.windows(6).any(|w| w == b"vault:"),
+        "the bundle must not carry vault rows"
+    );
+
+    let mut dst = b.open_named("vault_dst");
+    dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert!(
+        dst.meta_scan("vault:").unwrap().is_empty(),
+        "no vault row may exist on the replica"
+    );
+}

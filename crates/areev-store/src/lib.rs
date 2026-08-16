@@ -306,6 +306,122 @@ pub trait EmbedBackend: Send + Sync {
     }
 }
 
+/// Tier-1 NER detector over the command seam (proposal §5.2): whitespace-
+/// split argv, never a shell; probed at construction so a broken command
+/// fails loudly at setup, not at the first covered read. Protocol (JSON on
+/// stdin, JSON on stdout, one spawn per call):
+///
+/// ```text
+/// probe:  {"areev_anonymize":1,"op":"probe"}
+///      -> {"id":"presidio/2.2","kind":"ner"}            (fields optional)
+/// detect: {"areev_anonymize":1,"op":"detect","text":"..."}
+///      -> {"detections":[{"start":10,"end":18,"category":"person",
+///                         "confidence":0.92}]}
+/// ```
+///
+/// Offsets are UTF-8 byte positions over the NFC-normalized input. Unlike
+/// `CommandAnalyzer`'s skip-on-failure posture, every failure here is an
+/// error — this backend sits behind the fail-closed egress gate (D6).
+pub struct CommandAnonymize {
+    argv: Vec<String>,
+    id: String,
+    kind: String,
+}
+
+impl CommandAnonymize {
+    pub fn new(cmd: &str) -> Result<Self> {
+        let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        if argv.is_empty() {
+            return Err(AreevError::Validation("empty anonymizer command".into()));
+        }
+        let mut backend = CommandAnonymize {
+            argv,
+            id: cmd.split_whitespace().next().unwrap_or("anonymizer").to_string(),
+            kind: "ner".to_string(),
+        };
+        let probe = backend.run(&serde_json::json!({"areev_anonymize": 1, "op": "probe"}))?;
+        let v: serde_json::Value = serde_json::from_str(&probe).map_err(|e| {
+            AreevError::Validation(format!(
+                "anonymizer probe returned invalid JSON ({e}) — refusing the backend \
+                 at setup rather than failing closed on every covered read"
+            ))
+        })?;
+        if let Some(id) = v["id"].as_str() {
+            backend.id = id.to_string();
+        }
+        if let Some(kind) = v["kind"].as_str() {
+            if !matches!(kind, "ner" | "llm") {
+                return Err(AreevError::Validation(format!(
+                    "anonymizer probe declared unknown kind {kind:?} (expected ner or llm)"
+                )));
+            }
+            backend.kind = kind.to_string();
+        }
+        Ok(backend)
+    }
+
+    fn run(&self, payload: &serde_json::Value) -> Result<String> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(&self.argv[0])
+            .args(&self.argv[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| AreevError::Storage(format!("spawn anonymizer {}: {e}", self.argv[0])))?;
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(payload.to_string().as_bytes())
+            .map_err(|e| AreevError::Storage(format!("anonymizer stdin: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| AreevError::Storage(format!("anonymizer wait: {e}")))?;
+        if !out.status.success() {
+            return Err(AreevError::Storage(format!(
+                "anonymizer {} exited with {}",
+                self.argv[0], out.status
+            )));
+        }
+        String::from_utf8(out.stdout)
+            .map_err(|e| AreevError::Storage(format!("anonymizer stdout not UTF-8: {e}")))
+    }
+}
+
+impl areev_core::anon::DetectorBackend for CommandAnonymize {
+    fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn detect(&self, text: &str) -> Result<Vec<areev_core::anon::Detection>> {
+        let out = self.run(&serde_json::json!({
+            "areev_anonymize": 1, "op": "detect", "text": text
+        }))?;
+        let v: serde_json::Value = serde_json::from_str(&out).map_err(|e| {
+            AreevError::Validation(format!("anonymizer {} returned invalid JSON: {e}", self.id))
+        })?;
+        let mut detections: Vec<areev_core::anon::Detection> =
+            serde_json::from_value(v["detections"].clone()).map_err(|e| {
+                AreevError::Validation(format!(
+                    "anonymizer {} detections malformed: {e}",
+                    self.id
+                ))
+            })?;
+        for d in &mut detections {
+            if d.detector.is_empty() {
+                d.detector = self.id.clone();
+            }
+        }
+        Ok(detections)
+    }
+}
+
 /// [`EmbedBackend`] that shells out to a host-supplied command per call: the
 /// text goes to the child's stdin, stdout must be a JSON array of numbers.
 /// This is the dependency-free way to give every surface (CLI `--embed-cmd`,
@@ -743,6 +859,11 @@ const BUNDLE_MAGIC_V2: &[u8; 4] = b"MGB2";
 /// decision on whether holds must survive restore.
 /// One live pseudonym mapping: `(namespace, mapping_id, placeholder → value)`.
 pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, String>);
+
+/// `meta` key prefix for sealed vault rows (`vault:<ns>:<placeholder>`).
+/// Deliberately OUTSIDE `REPLICABLE_META_PREFIXES` — the re-identification
+/// table never rides a bundle (REQ-ANON-2).
+const VAULT_PREFIX: &str = "vault:";
 
 const REPLICABLE_META_PREFIXES: [&str; 5] =
     ["qry:", "tpl:", "retention:", "retention_floor:", "anon:"];
@@ -1619,6 +1740,15 @@ impl Areev {
             hk.expand(b"areev.anon.memory.v1", &mut out).expect("32-byte HKDF output");
             out
         });
+        // The vault subkey (proposal §7): destroying the page key destroys
+        // the sealed mapping rows with it — crypto-erasure reaches the vault
+        // by construction. Its own domain-separation string, like blobcrypt.
+        let anon_vault_key: Option<[u8; 32]> = page_key.map(|pk| {
+            let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
+            let mut out = [0u8; 32];
+            hk.expand(b"areev.vault.v1", &mut out).expect("32-byte HKDF output");
+            out
+        });
         let anon_session_key: [u8; 32] = match page_key {
             Some(pk) => {
                 let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
@@ -1757,7 +1887,7 @@ impl Areev {
             blob_store,
             blob_key,
             telemetry,
-            anon: anon_gate::AnonGate::new(anon_session_key, anon_memory_key),
+            anon: anon_gate::AnonGate::new(anon_session_key, anon_memory_key, anon_vault_key),
             ambient_run_id: None,
             _file_guard: file_guard,
         };
@@ -2026,8 +2156,9 @@ impl Areev {
         // token key HKDF-derived from the page key — a plaintext file has no
         // key material, so those declarations refuse loudly here rather than
         // failing at the first read (Q5, resolved conservatively).
-        let needs_memory_key =
-            matches!(policy.mode.as_str(), "ingress" | "both") || policy.scope == "memory";
+        let needs_memory_key = matches!(policy.mode.as_str(), "ingress" | "both")
+            || policy.scope == "memory"
+            || policy.vault;
         if needs_memory_key && !self.anon.has_memory_key() {
             return Err(AreevError::Validation(format!(
                 "anonymization mode \"{}\" / scope \"{}\" needs an encrypted memory: \
@@ -2076,6 +2207,31 @@ impl Areev {
     fn reload_anon_policies(&mut self) -> Result<()> {
         let rows = self.meta_scan(anon_gate::ANON_PREFIX)?;
         self.anon.reload(&rows);
+        // Load + unseal each vault-enabled namespace's persisted mapping so
+        // its first session continues yesterday's tokens (proposal §7). An
+        // unreadable/tamperable row is a hard error — a vault this build
+        // cannot decrypt must not silently mean "fresh vault".
+        for (ns, policy) in self.anon.vault_namespaces() {
+            let _ = policy;
+            let Some(key) = self.anon.vault_key() else { continue };
+            let prefix = format!("{VAULT_PREFIX}{ns}:");
+            let mut entries = Vec::new();
+            for (token, row) in self.meta_scan(&prefix)? {
+                let v: serde_json::Value = serde_json::from_str(&row).map_err(|e| {
+                    AreevError::Validation(format!("vault row {prefix}{token} unreadable: {e}"))
+                })?;
+                let sealed = hex::decode(v["v"].as_str().unwrap_or_default()).map_err(|e| {
+                    AreevError::Validation(format!("vault row {prefix}{token} not hex: {e}"))
+                })?;
+                let row_key = format!("{prefix}{token}");
+                let value = blobcrypt::open(&key, &row_key, &sealed)?;
+                let value = String::from_utf8(value).map_err(|e| {
+                    AreevError::Validation(format!("vault row {row_key} not UTF-8: {e}"))
+                })?;
+                entries.push((token, value));
+            }
+            self.anon.set_vault_seed(&ns, entries);
+        }
         // Seed known-identity propagation from the file's existing subjects,
         // so prose-only grains are covered from the very first read (the
         // write path keeps the list current from here on). Bounded per ns.
@@ -2107,19 +2263,179 @@ impl Areev {
     /// facade's structured write path and the memory-tool adapter run their
     /// transforms through this same gate.
     pub fn ingress_transform_text(&mut self, ns: &str, text: &str) -> Result<Option<String>> {
-        self.anon.ingress_text(ns, text)
+        let out = self.anon.ingress_text(ns, text)?;
+        if out.is_some() {
+            self.flush_anon_vault()?;
+        }
+        Ok(out)
     }
 
     /// Ingress transform for a structural identity value (a subject is a
     /// `person` by construction). `Ok(None)` when no ingress policy covers.
     pub fn ingress_transform_identity(&mut self, ns: &str, value: &str) -> Result<Option<String>> {
-        self.anon.ingress_identity(ns, value)
+        let out = self.anon.ingress_identity(ns, value)?;
+        if out.is_some() {
+            self.flush_anon_vault()?;
+        }
+        Ok(out)
     }
 
     /// Whether an ingress policy covers `ns` — the cheap probe the facade's
     /// structured write path uses before cloning a fields map.
     pub fn ingress_active(&self, ns: &str) -> Result<bool> {
         self.anon.ingress_active(ns)
+    }
+
+    /// Install a detector backend (proposal §5.2–5.3): "ner" (e.g.
+    /// [`CommandAnonymize`]) or "llm". Per-process host capability,
+    /// embedder-style — never persisted. One backend per kind.
+    pub fn set_anonymizer(&mut self, backend: Box<dyn areev_core::anon::DetectorBackend>) {
+        self.anon.install_backend(backend);
+    }
+
+    /// Installed detector backends as (kind, id) — observability.
+    pub fn anon_backends(&self) -> Vec<(String, String)> {
+        self.anon.installed_backends()
+    }
+
+    /// Persist newly minted mapping rows for vault-enabled namespaces:
+    /// AES-256-GCM under the vault subkey, row key as AAD, written-at
+    /// timestamp for REQ-ANON-6. Called after every transform exit.
+    fn flush_anon_vault(&mut self) -> Result<()> {
+        let pending = self.anon.take_vault_pending();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let Some(key) = self.anon.vault_key() else {
+            return Err(AreevError::CryptoError(
+                "vault-enabled policy on a handle with no vault key".into(),
+            ));
+        };
+        let at = now_ms();
+        for (ns, token, value) in pending {
+            let row_key = format!("{VAULT_PREFIX}{ns}:{token}");
+            let sealed = blobcrypt::seal(&key, &row_key, value.as_bytes())?;
+            let row = serde_json::json!({"v": hex::encode(sealed), "at": at});
+            self.meta_put(&row_key, &row.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Egress exit wrapper: transform + vault write-behind.
+    fn egress_exit(
+        &mut self,
+        ns_hint: Option<&str>,
+        grains: &mut [DeserializedGrain],
+    ) -> Result<()> {
+        if self.anon.is_idle() {
+            return Ok(());
+        }
+        self.anon.egress_grains(ns_hint, grains)?;
+        self.flush_anon_vault()
+    }
+
+    fn egress_strings_exit(
+        &mut self,
+        ns: &str,
+        category: Option<&str>,
+        values: &mut [String],
+    ) -> Result<()> {
+        if self.anon.is_idle() {
+            return Ok(());
+        }
+        self.anon.egress_strings(ns, category, values)?;
+        self.flush_anon_vault()
+    }
+
+    /// Reverse-lookup one placeholder token (proposal D9, REQ-ANON-3):
+    /// live sessions first, then the sealed vault. NO authorization here —
+    /// the facade gates and audits; direct store callers already hold the
+    /// raw file.
+    pub fn anon_reveal(&mut self, ns: &str, token: &str) -> Result<Option<String>> {
+        for (m_ns, _, mapping) in self.anon.mappings()? {
+            if m_ns == ns {
+                if let Some(v) = mapping.get(token) {
+                    return Ok(Some(v.clone()));
+                }
+            }
+        }
+        let row_key = format!("{VAULT_PREFIX}{ns}:{token}");
+        let Some(row) = self.meta_get(&row_key)? else { return Ok(None) };
+        let Some(key) = self.anon.vault_key() else {
+            return Err(AreevError::CryptoError(
+                "vault row present but this handle has no vault key".into(),
+            ));
+        };
+        let v: serde_json::Value = serde_json::from_str(&row)
+            .map_err(|e| AreevError::Validation(format!("vault row {row_key}: {e}")))?;
+        let sealed = hex::decode(v["v"].as_str().unwrap_or_default())
+            .map_err(|e| AreevError::Validation(format!("vault row {row_key}: {e}")))?;
+        let value = blobcrypt::open(&key, &row_key, &sealed)?;
+        Ok(Some(String::from_utf8(value).map_err(|e| {
+            AreevError::Validation(format!("vault row {row_key} not UTF-8: {e}"))
+        })?))
+    }
+
+    /// REQ-ANON-1's store half: purge every live mapping entry AND sealed
+    /// vault row whose plaintext names one of `identities`. Runs
+    /// decrypt-and-compare over the (small, file-local) vault; a failure is
+    /// a hard error, never best-effort — a surviving row re-identifies a
+    /// subject the store believes erased.
+    fn scrub_anon_identities(&mut self, ns: &str, identities: &[String]) -> Result<usize> {
+        if self.anon.is_idle() {
+            return Ok(0);
+        }
+        let mut removed = self.anon.scrub_identities(identities);
+        if let Some(key) = self.anon.vault_key() {
+            let prefix = format!("{VAULT_PREFIX}{ns}:");
+            let mut doomed = Vec::new();
+            for (token, row) in self.meta_scan(&prefix)? {
+                let row_key = format!("{prefix}{token}");
+                let v: serde_json::Value = serde_json::from_str(&row)
+                    .map_err(|e| AreevError::Validation(format!("vault row {row_key}: {e}")))?;
+                let sealed = hex::decode(v["v"].as_str().unwrap_or_default())
+                    .map_err(|e| AreevError::Validation(format!("vault row {row_key}: {e}")))?;
+                let value = blobcrypt::open(&key, &row_key, &sealed)?;
+                if identities.iter().any(|i| i.as_bytes() == value.as_slice()) {
+                    doomed.push(row_key);
+                }
+            }
+            for row_key in doomed {
+                self.meta_delete(&row_key)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// REQ-ANON-6: remove vault rows older than each vault-enabled policy's
+    /// `vault_ttl_days`. Returns per-namespace removal counts; also invoked
+    /// by [`Self::sweep_retention`] so the declared sweep covers the vault.
+    pub fn sweep_anon_vault(&mut self, now_ms: i64) -> Result<Vec<(String, usize)>> {
+        let mut out = Vec::new();
+        for (ns, policy) in self.anon.vault_namespaces() {
+            let Some(ttl) = policy.vault_ttl_days else { continue };
+            let cutoff = now_ms - (ttl * 86_400_000.0) as i64;
+            let prefix = format!("{VAULT_PREFIX}{ns}:");
+            let mut doomed = Vec::new();
+            for (token, row) in self.meta_scan(&prefix)? {
+                let at = serde_json::from_str::<serde_json::Value>(&row)
+                    .ok()
+                    .and_then(|v| v["at"].as_i64())
+                    .unwrap_or(0);
+                if at < cutoff {
+                    doomed.push(format!("{prefix}{token}"));
+                }
+            }
+            let n = doomed.len();
+            for row_key in doomed {
+                self.meta_delete(&row_key)?;
+            }
+            if n > 0 {
+                out.push((ns, n));
+            }
+        }
+        Ok(out)
     }
 
     /// Host cap (per-process, never persisted): force egress anonymization
@@ -2333,6 +2649,10 @@ impl Areev {
     /// exclusive cutoff, namespace and type scoping, replicating tombstones —
     /// are identical.
     pub fn sweep_retention(&mut self, now_ms: i64) -> Result<Vec<RetentionSweep>> {
+        // REQ-ANON-6: the declared sweep also expires vault rows past their
+        // policy TTL (counts via `sweep_anon_vault` for callers who want
+        // them).
+        self.sweep_anon_vault(now_ms)?;
         let policies = self.retention_policies()?;
         let mut out = Vec::new();
         for (ns, policy) in policies {
@@ -3176,7 +3496,7 @@ impl Areev {
             .collect::<Result<_>>()?;
         // Egress boundary; ns per grain (no ns parameter here). run_yield
         // inherits coverage through this and run_trace.
-        self.anon.egress_grains(None, &mut out)?;
+        self.egress_exit(None, &mut out)?;
         Ok(out)
     }
 
@@ -3202,7 +3522,7 @@ impl Areev {
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
             .collect::<Result<_>>()?;
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -3393,7 +3713,7 @@ impl Areev {
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
             .collect::<Result<_>>()?;
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -3423,7 +3743,8 @@ impl Areev {
         if self.anon.is_idle() {
             return Ok(());
         }
-        self.anon.egress_grains(ns_hint, std::slice::from_mut(g))
+        self.anon.egress_grains(ns_hint, std::slice::from_mut(g))?;
+        self.flush_anon_vault()
     }
 
     /// Structural recall: current grains about `subject` (optionally filtered
@@ -3436,7 +3757,7 @@ impl Areev {
         k: usize,
     ) -> Result<Vec<DeserializedGrain>> {
         let mut out = self.recall_raw(ns, subject, relation, k)?;
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -3536,7 +3857,7 @@ impl Areev {
                 out.push(deserialize_blob(&b)?);
             }
         }
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -3928,6 +4249,13 @@ impl Areev {
             },
             Some(subject.to_string()),
         )?;
+        // REQ-ANON-1: an erased identity must not survive in any live
+        // mapping or sealed vault row — decrypt-and-compare, hard-fail.
+        let mut scrub_names = vec![subject.to_string()];
+        if let Some(alias) = self.anon.ingress_alias(ns, subject)? {
+            scrub_names.push(alias);
+        }
+        self.scrub_anon_identities(ns, &scrub_names)?;
         // REQ-ANON-7 (ingress stays erasable): under an ingress policy the
         // stored subject is a value-derived pseudonym — recompute it from
         // the real identity and erase under that name too, so
@@ -4903,7 +5231,7 @@ impl Areev {
             .filter_map(|row| row.blob(0))
             .map(|b| deserialize_blob(&b))
             .collect::<Result<_>>()?;
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -4997,7 +5325,7 @@ impl Areev {
         }
         // Egress boundary: reached entity terms are subject/object strings —
         // detection-based (an object like "tea" is not an identity).
-        self.anon.egress_strings(ns, None, &mut out)?;
+        self.egress_strings_exit(ns, None, &mut out)?;
         Ok(out)
     }
 
@@ -5081,7 +5409,7 @@ impl Areev {
                 out.push(t);
             }
         }
-        self.anon.egress_strings(ns, None, &mut out)?;
+        self.egress_strings_exit(ns, None, &mut out)?;
         Ok(Some(out))
     }
 
@@ -5814,7 +6142,7 @@ impl Areev {
         // the egress pass on purpose: telemetry keys on hashes and counts,
         // which the transform preserves.
         self.record_recall_event(ns, subject, relation, query, &out, start);
-        self.anon.egress_grains(Some(ns), &mut out)?;
+        self.egress_exit(Some(ns), &mut out)?;
         Ok(out)
     }
 
@@ -6113,7 +6441,7 @@ impl Areev {
         }
         subjects.sort();
         // Egress boundary: subjects ARE identities by construction.
-        self.anon.egress_strings(ns, Some("person"), &mut subjects)?;
+        self.egress_strings_exit(ns, Some("person"), &mut subjects)?;
         Ok(subjects)
     }
 
@@ -6133,7 +6461,7 @@ impl Areev {
         // remembered text is written, so the transform happens BEFORE the
         // Event is serialized — the content address commits to the
         // transformed text (D8). One branch when no ingress policy declares.
-        let ingressed = self.anon.ingress_text(ns, content)?;
+        let ingressed = self.ingress_transform_text(ns, content)?;
         let content: &str = ingressed.as_deref().unwrap_or(content);
         let mut e = Event::new(content);
         e.common.namespace = Some(ns.to_string());
@@ -6179,11 +6507,11 @@ impl Areev {
             // Ingress boundary: host-supplied drafts carry raw identities and
             // values; subjects are `person` by construction, objects go
             // through detection (proposal §4.2).
-            let subject = match self.anon.ingress_identity(ns, &draft.subject)? {
+            let subject = match self.ingress_transform_identity(ns, &draft.subject)? {
                 Some(t) => t,
                 None => draft.subject.clone(),
             };
-            let object = match self.anon.ingress_text(ns, &draft.object)? {
+            let object = match self.ingress_transform_text(ns, &draft.object)? {
                 Some(t) => t,
                 None => draft.object.clone(),
             };
@@ -6227,7 +6555,7 @@ impl Areev {
         // so derived Fact drafts inherit the transform instead of leaking
         // around it (proposal §4.2). `capture` re-checks and finds nothing
         // new — already-tokenized text is settled.
-        let ingressed = self.anon.ingress_text(ns, content)?;
+        let ingressed = self.ingress_transform_text(ns, content)?;
         let content: &str = ingressed.as_deref().unwrap_or(content);
         let event = self.capture(ns, content, &Capture { observer: Some(observer), ..Default::default() })?;
         let drafts = extractor.map(|f| f(content)).unwrap_or_default();
@@ -6292,7 +6620,7 @@ impl Areev {
             for f in forks.iter_mut() {
                 let mut s = vec![std::mem::take(&mut f.subject)];
                 let ns = f.namespace.clone();
-                self.anon.egress_strings(&ns, Some("person"), &mut s)?;
+                self.egress_strings_exit(&ns, Some("person"), &mut s)?;
                 f.subject = s.pop().unwrap_or_default();
             }
         }
@@ -6439,7 +6767,7 @@ impl Areev {
         // content even though no full grain is returned).
         if !self.anon.is_idle() {
             let mut objects: Vec<String> = out.iter().map(|e| e.object.clone()).collect();
-            self.anon.egress_strings(ns, None, &mut objects)?;
+            self.egress_strings_exit(ns, None, &mut objects)?;
             for (e, o) in out.iter_mut().zip(objects) {
                 e.object = o;
             }

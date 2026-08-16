@@ -1,6 +1,7 @@
 //! Facade front door for text anonymization (proposal P0): the three
 //! explicit APIs, their JSON envelopes, and the fail-closed policy errors.
 
+use areev_cal::facade::CalStoreFacade;
 use areev_cal::AreevFacade;
 use areev_store::Areev;
 use tempfile::TempDir;
@@ -125,4 +126,55 @@ fn structured_writes_pass_the_ingress_boundary() {
     assert!(subject.starts_with("[PERSON_"), "stored subject leaked: {subject}");
     assert!(!object.contains("415 555"), "stored object leaked: {object}");
     assert!(object.contains("[PHONE_"), "expected value-derived token: {object}");
+}
+
+#[test]
+fn reveal_is_audited_by_fingerprint_never_identity() {
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open_encrypted(dir.path().join("v.db").to_str().unwrap(), [3u8; 32]).unwrap();
+    let facade = AreevFacade::with_session(m, Some("caller".to_string()), None);
+    facade
+        .with_store(|m| {
+            m.set_anon_policy(
+                "caller",
+                r#"{"mode": "egress", "scope": "session", "vault": true}"#,
+            )
+        })
+        .unwrap();
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), serde_json::json!("caller:john"));
+    fields.insert("relation".into(), serde_json::json!("prefers"));
+    fields.insert("object".into(), serde_json::json!("tea"));
+    fields.insert("namespace".into(), serde_json::json!("caller"));
+    facade.cal_add_if_novel("fact", &fields).unwrap();
+    let mut params = areev_cal::store_types::RecallParams::default();
+    params.subject = Some("caller:john".to_string());
+    params.namespace = Some("caller".to_string());
+    params.limit = Some(4);
+    let hits = facade.recall(&params).unwrap();
+    let token = hits[0].grain.fields["subject"].as_str().unwrap().to_string();
+
+    let out = facade.reveal_tokens("caller", std::slice::from_ref(&token)).unwrap();
+    let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(out["revealed"][&token], "caller:john");
+
+    // The audit Observation exists in agent:authz, carries the verb and a
+    // fingerprint — and never the identity itself.
+    let audits = facade
+        .with_store(|m| m.recent("agent:authz", None, 8))
+        .unwrap();
+    let reveal_audit = audits
+        .iter()
+        .map(|g| serde_json::to_string(&g.fields).unwrap())
+        .find(|s| s.contains("reveal"))
+        .expect("a reveal audit Observation must be written");
+    assert!(
+        !reveal_audit.contains("caller:john"),
+        "the audit grain must not re-identify: {reveal_audit}"
+    );
+    assert!(
+        reveal_audit.contains(&areev_core::authz::subject_fingerprint("caller:john")),
+        "the audit names the fingerprint: {reveal_audit}"
+    );
 }

@@ -172,9 +172,14 @@ COMMANDS:
                                       min_reader_version). `list` shows the
                                       declared policies, `clear --ns NS`
                                       removes one, `mappings` prints this
-                                      process's live pseudonym mappings.
-                                      Add --anonymize-egress to any verb to
-                                      force egress on as a host floor.
+                                      process's live pseudonym mappings, and
+                                      `reveal --ns NS --token T` reverse-looks
+                                      one up (admin verb; Tier-2 audited by
+                                      fingerprint). Add --anonymize-egress to
+                                      any verb to force egress on as a host
+                                      floor, and --anonymize-cmd 'CMD' to
+                                      install a Tier-1 NER detector (JSON
+                                      probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
   ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]  web console (default 127.0.0.1:7437)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
@@ -1031,6 +1036,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // upgrades a declared "off". It can never weaken a declared policy.
     if flags.contains_key("anonymize-egress") {
         m.set_anonymize_egress_floor(true);
+    }
+    // Tier-1 NER detector over the command seam (probed here, so a broken
+    // command fails at startup instead of failing every covered read closed).
+    if let Some(cmd_line) = flag(&flags, "anonymize-cmd") {
+        let backend =
+            areev_store::CommandAnonymize::new(&cmd_line).map_err(|e| e.to_string())?;
+        m.set_anonymizer(Box::new(backend));
     }
 
     // Optional host-supplied embedder: --embed-cmd 'CMD' spawns CMD per embed
@@ -2583,6 +2595,18 @@ fn run_anonymize(
             let ns = flag(flags, "ns").ok_or("anonymize clear requires --ns")?;
             m.clear_anon_policy(&ns).map_err(|e| e.to_string())?;
             println!("anonymization policy cleared for namespace '{ns}'");
+            Ok(())
+        }
+        "reveal" => {
+            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns")?;
+            let token = flag(flags, "token").ok_or("anonymize reveal requires --token")?;
+            // Facade path: admin-gated + Tier-2 audited (fingerprints only).
+            let facade =
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None);
+            let out = facade
+                .reveal_tokens(&ns, &[token])
+                .map_err(|e| e.to_string())?;
+            println!("{out}");
             Ok(())
         }
         "mappings" => {

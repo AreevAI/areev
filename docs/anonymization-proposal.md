@@ -1,6 +1,21 @@
 # Anonymization — prompt-safe context, PII-aware storage
 
-**Status:** P0–P2 BUILT (2026-08-16, branch `anonymization-p0`). P2: ingress
+**Status:** P0–P3 BUILT (2026-08-16, branch `anonymization-p0`). P3: the
+Tier-1 detector seam (`DetectorBackend` in core, `CommandAnonymize` over
+the command protocol, `--anonymize-cmd` / `set_anonymizer_command`,
+fail-closed when a policy demands an uninstalled kind), the sealed vault
+(`vault:<ns>:<placeholder>` rows under the `areev.vault.v1` subkey,
+write-behind persistence, cross-handle reseeding so tokens continue,
+`vault: true` requiring encryption + session/memory scope), REQ-ANON-1
+(erasure sweeps live mappings AND decrypt-and-compares the vault rows),
+REQ-ANON-2 (conformance-pinned: vault rows never ride a bundle),
+REQ-ANON-3 (`reveal` — admin-gated on the facade, Tier-2 audited by
+fingerprint, `areev anonymize reveal`, `reveal_tokens` on both bindings),
+and REQ-ANON-6 (`vault_ttl_days`, swept by `sweep_retention` /
+`sweep_anon_vault`). One divergence from the draft recorded: vault rows key
+by `vault:<ns>:<placeholder>` with reseed-on-open continuation, not by
+`mapping_id` — the draft's collision concern is solved by refusing
+context-scope vaults instead, which keeps one row per value. P2: ingress
 mode (value-derived pseudonyms at `capture`/`remember`/`attach_facts`, the
 facade's structured writes, and the memory-tool adapter — all before
 serialization, D8), `memory` scope (HKDF-keyed tokens stable across
