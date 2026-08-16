@@ -184,6 +184,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(retention_row_never_clobbers_local_policy);
         $per_case!(anon_policy_replicates_write_if_absent);
         $per_case!(vault_rows_never_replicate);
+        $per_case!(value_derived_anon_refuses_without_page_key);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(forget_reclaims_sole_referenced_blob);

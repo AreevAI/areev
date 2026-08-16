@@ -204,3 +204,29 @@ pub fn vault_rows_never_replicate(b: &dyn Backend) {
         "no vault row may exist on the replica"
     );
 }
+
+/// Value-derived pseudonym features (ingress modes, memory scope, the vault)
+/// are keyed from the page cipher. A memory with no page key — an
+/// unencrypted file, or ANY Postgres schema (the page cipher is
+/// file-backend-only) — must refuse those declarations loudly at `set`,
+/// never degrade to unkeyed derivation. Plain egress stays available.
+pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
+    let mut m = b.open_named("anon_nokey");
+    for policy in [
+        r#"{"mode": "ingress"}"#,
+        r#"{"mode": "both"}"#,
+        r#"{"mode": "egress", "scope": "memory"}"#,
+        r#"{"mode": "egress", "scope": "session", "vault": true}"#,
+    ] {
+        let err = m.set_anon_policy("ns", policy).unwrap_err().to_string();
+        assert!(
+            err.contains("encrypted"),
+            "expected an encrypted-memory refusal for {policy}, got: {err}"
+        );
+    }
+    // The keyless-safe modes still work end to end.
+    m.set_anon_policy("ns", r#"{"mode": "egress", "scope": "session"}"#).unwrap();
+    m.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let got = m.recall("ns", "caller:john", None, 4).unwrap();
+    assert_eq!(got[0].fields["subject"], "[PERSON_1]", "egress must work keyless");
+}
