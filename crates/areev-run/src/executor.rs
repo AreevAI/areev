@@ -95,8 +95,16 @@ impl HostToolExecutor for CommandExecutor {
     ) -> ExecResult {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        let mut child = match Command::new("/bin/sh")
-            .arg("-c")
+        // The platform shell: /bin/sh -c on unix, cmd /C on Windows.
+        #[cfg(not(windows))]
+        let mut shell = Command::new("/bin/sh");
+        #[cfg(not(windows))]
+        shell.arg("-c");
+        #[cfg(windows)]
+        let mut shell = Command::new("cmd");
+        #[cfg(windows)]
+        shell.arg("/C");
+        let mut child = match shell
             .arg(&self.cmd)
             .env("AREEV_TOOL_NAME", tool_name)
             .env("AREEV_TOOL_HASH", tool_hash)

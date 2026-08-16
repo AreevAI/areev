@@ -203,7 +203,6 @@ dependencies = [
 name = "areev-core"
 version = "1.0.0"
 dependencies = [
- "chrono",
  "hex",
  "insta",
  "proptest",

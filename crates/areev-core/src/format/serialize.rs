@@ -44,9 +44,12 @@ fn reject_non_finite(value: &Value) -> Result<()> {
 /// Returns (blob_bytes, content_address_hash).
 pub fn serialize_grain<G: Grain + 'static>(grain: &G) -> Result<(Vec<u8>, Hash)> {
     let common = grain.common();
-    let created_at = common
-        .created_at
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let created_at = common.created_at.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    });
 
     let mut map = BTreeMap::<String, Value>::new();
 

@@ -5,7 +5,7 @@
 //! the executor pool.
 
 use crate::clock::Clock;
-use crate::executor::{DispatchJob, HostToolExecutor, Pool};
+use crate::executor::{DispatchDone, DispatchJob, HostToolExecutor, Pool};
 use crate::journal::{self, JournalView};
 use crate::manifest::{BudgetsSpec, RunManifest};
 use crate::{err_run, RunSession, VerifyReport, VerifyStep};
@@ -946,6 +946,11 @@ impl Runner {
 
             let mut parked_envelope: Option<Value> = None;
             let mut finished: Option<RunOutcome> = None;
+            // This iteration's dispatch wave, in COMMAND ORDER: every
+            // Dispatch lands here — journal-answered replays as
+            // Some(outcome), fresh pool submissions as None — and is fed
+            // back to step() as one batch at the wave boundary below.
+            let mut wave: Vec<(JournalKey, Option<EffectOutcome>)> = Vec::new();
 
             for cmd in out.commands {
                 match cmd {
@@ -1011,10 +1016,10 @@ impl Runner {
                     Command::Dispatch { key, executor, input } => {
                         if let Some(outcome) = results.get(&key) {
                             // Replay: the journal answers; nothing executes.
-                            events.push(EventIn::EffectResolved {
-                                key,
-                                outcome: outcome.clone(),
-                            });
+                            // Resolved WITH the wave (not immediately), so a
+                            // mixed replay+fresh superstep feeds one batch in
+                            // dispatch order — the cadence verify replays.
+                            wave.push((key, Some(outcome.clone())));
                             continue;
                         }
                         // Subgraphs run INLINE on the driver thread — the
@@ -1063,7 +1068,7 @@ impl Runner {
                                 ok: matches!(outcome, EffectOutcome::Completed { .. }),
                             });
                             results.insert(key.clone(), outcome.clone());
-                            events.push(EventIn::EffectResolved { key, outcome });
+                            wave.push((key, Some(outcome)));
                             continue;
                         }
                         // LLM effects: prepare the request ON THIS THREAD
@@ -1113,6 +1118,7 @@ impl Runner {
                             None
                         };
                         let idem = idempotency_key(&key, &input);
+                        wave.push((key.clone(), None));
                         pool.submit(DispatchJob {
                             key,
                             executor,
@@ -1239,33 +1245,21 @@ impl Runner {
                 return Ok(RunSession::Finished { outcome, run_id });
             }
 
-            if let Some(envelope) = parked_envelope {
-                if in_flight == 0 {
-                    return Ok(RunSession::Parked { envelope, run_id });
-                }
-            }
-
-            if !events.is_empty() {
-                // Journal replays queued: prepend a clock reading and loop.
-                events.insert(0, EventIn::ClockReading { unix_ms: self.clock.now_ms() });
-                continue;
-            }
-
-            if in_flight > 0 {
-                // Block for at least one completion; drain the rest.
-                let done = pool
-                    .done_rx
-                    .recv()
-                    .map_err(|_| RunError::Storage { detail: "executor pool died".into() })?;
-                in_flight -= 1;
-                let mut batch = vec![done];
-                while let Ok(more) = pool.done_rx.try_recv() {
+            if !wave.is_empty() {
+                // The wave boundary: verify replays every superstep as ONE
+                // close reading followed by its resolutions in dispatch
+                // order, so the live driver must feed exactly that.
+                // Trickling completions in arrival batches — each with its
+                // own clock reading — makes scheduler state depend on
+                // thread timing: an unjournaled decision that diverges
+                // replay (and shifts every later scripted-clock value).
+                let mut completed: BTreeMap<JournalKey, DispatchDone> = BTreeMap::new();
+                while in_flight > 0 {
+                    let done = pool
+                        .done_rx
+                        .recv()
+                        .map_err(|_| RunError::Storage { detail: "executor pool died".into() })?;
                     in_flight -= 1;
-                    batch.push(more);
-                }
-                let now = self.clock.now_ms();
-                events.push(EventIn::ClockReading { unix_ms: now });
-                for done in batch {
                     results_seen += 1;
                     if opts.inject_crash == Some(CrashPoint::BeforeResult(results_seen)) {
                         // The effect FIRED (the executor ran); its result
@@ -1275,45 +1269,64 @@ impl Runner {
                             detail: "injected crash before result write".into(),
                         });
                     }
-                    let intent = intents.get(&done.key).copied().ok_or_else(|| {
-                        RunError::Storage { detail: "completion without intent".into() }
-                    })?;
-                    // Result durability precedes bookkeeping. The executor
-                    // is the one the job DISPATCHED under (a flow tool runs
-                    // as Host inside an Abstract node) — the result grain
-                    // re-states what ran, matching its intent.
-                    self.facade
-                        .with_store(|m| {
-                            journal::write_result(
-                                m,
-                                &self.ns,
-                                &run_id,
-                                plan_hash,
-                                &intent,
-                                &done.key,
-                                &done.executor,
-                                &done.outcome,
-                                st.superstep,
-                                now,
-                                &self.principal,
-                            )
-                        })
-                        .map_err(err_run)?;
-                    emit(crate::stream::RunEvent::EffectSettled {
-                        superstep: st.superstep,
-                        node: done.key.node.clone(),
-                        task_path: done.key.task_path.clone(),
-                        attempt: done.key.attempt,
-                        effect_seq: done.key.effect_seq,
-                        ok: matches!(done.outcome, EffectOutcome::Completed { .. }),
-                    });
-                    results.insert(done.key.clone(), done.outcome.clone());
-                    events.push(EventIn::EffectResolved {
-                        key: done.key,
-                        outcome: done.outcome,
-                    });
+                    completed.insert(done.key.clone(), done);
+                }
+                let now = self.clock.now_ms();
+                events.push(EventIn::ClockReading { unix_ms: now });
+                for (key, replayed) in wave {
+                    let outcome = match replayed {
+                        Some(outcome) => outcome,
+                        None => {
+                            let done = completed.remove(&key).ok_or_else(|| {
+                                RunError::Storage {
+                                    detail: "completion missing for a dispatched effect".into(),
+                                }
+                            })?;
+                            let intent = intents.get(&key).copied().ok_or_else(|| {
+                                RunError::Storage { detail: "completion without intent".into() }
+                            })?;
+                            // Result durability precedes bookkeeping. The
+                            // executor is the one the job DISPATCHED under
+                            // (a flow tool runs as Host inside an Abstract
+                            // node) — the result grain re-states what ran,
+                            // matching its intent.
+                            self.facade
+                                .with_store(|m| {
+                                    journal::write_result(
+                                        m,
+                                        &self.ns,
+                                        &run_id,
+                                        plan_hash,
+                                        &intent,
+                                        &key,
+                                        &done.executor,
+                                        &done.outcome,
+                                        st.superstep,
+                                        now,
+                                        &self.principal,
+                                    )
+                                })
+                                .map_err(err_run)?;
+                            emit(crate::stream::RunEvent::EffectSettled {
+                                superstep: st.superstep,
+                                node: key.node.clone(),
+                                task_path: key.task_path.clone(),
+                                attempt: key.attempt,
+                                effect_seq: key.effect_seq,
+                                ok: matches!(done.outcome, EffectOutcome::Completed { .. }),
+                            });
+                            results.insert(key.clone(), done.outcome.clone());
+                            done.outcome
+                        }
+                    };
+                    events.push(EventIn::EffectResolved { key, outcome });
                 }
                 continue;
+            }
+
+            if let Some(envelope) = parked_envelope {
+                // in_flight is 0 here: every dispatch drains with its wave.
+                return Ok(RunSession::Parked { envelope, run_id });
             }
 
             // Parked with the envelope announced in an earlier session.

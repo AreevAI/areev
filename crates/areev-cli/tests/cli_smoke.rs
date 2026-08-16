@@ -1212,10 +1212,16 @@ fn run_demo_end_to_end() {
         .to_string();
     assert_eq!(wf.len(), 64);
 
-    // Start: greet executes via --tool-cmd; approve parks the run.
+    // Start: greet executes via --tool-cmd; approve parks the run. The
+    // command must speak the platform shell: cmd.exe has no printf and
+    // treats single quotes as literals.
+    #[cfg(not(windows))]
+    let greet_cmd = r#"printf '{"greeting":"hello"}'"#;
+    #[cfg(windows)]
+    let greet_cmd = r#"echo {"greeting":"hello"}"#;
     let (ok, out, err) = areev(&[
         "run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "demo-1",
-        "--input", r#"{"who":"world"}"#, "--tool-cmd", r#"printf '{"greeting":"hello"}'"#,
+        "--input", r#"{"who":"world"}"#, "--tool-cmd", greet_cmd,
     ]);
     assert!(ok, "start failed: {err}");
     let envelope: serde_json::Value =
