@@ -350,11 +350,16 @@ impl UiServer {
     /// deployments with nowhere to put one (edge boxes, appliances).
     #[cfg(feature = "tls")]
     pub fn with_tls(mut self, cert_pem: &str, key_pem: &str) -> std::io::Result<Self> {
+        use rustls::pki_types::pem::PemObject;
+        let pem_err =
+            |e: rustls::pki_types::pem::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string());
         let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
-            rustls_pemfile::certs(&mut BufReader::new(std::fs::File::open(cert_pem)?))
-                .collect::<Result<_, _>>()?;
-        let key = rustls_pemfile::private_key(&mut BufReader::new(std::fs::File::open(key_pem)?))?
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no private key in PEM"))?;
+            rustls::pki_types::CertificateDer::pem_file_iter(cert_pem)
+                .map_err(pem_err)?
+                .collect::<Result<_, _>>()
+                .map_err(pem_err)?;
+        let key =
+            rustls::pki_types::PrivateKeyDer::from_pem_file(key_pem).map_err(pem_err)?;
         let config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key)
@@ -2184,10 +2189,11 @@ mod tls_tests {
 
         // 1. TLS round-trip: trust exactly our self-signed cert.
         let mut roots = rustls::RootCertStore::empty();
-        for c in rustls_pemfile::certs(&mut std::io::BufReader::new(
-            std::fs::File::open(&cert).unwrap(),
-        )) {
-            roots.add(c.unwrap()).unwrap();
+        {
+            use rustls::pki_types::pem::PemObject;
+            for c in rustls::pki_types::CertificateDer::pem_file_iter(&cert).unwrap() {
+                roots.add(c.unwrap()).unwrap();
+            }
         }
         let config = std::sync::Arc::new(
             rustls::ClientConfig::builder()

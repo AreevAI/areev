@@ -3393,17 +3393,21 @@ fn run_eval_case(
 ) -> (bool, String) {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    // The platform shell: /bin/sh -c on unix, cmd /C on Windows.
+    // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The
+    // Windows command string must go through raw_arg — Command::arg
+    // MSVC-quotes embedded quotes, which cmd.exe does not parse.
     #[cfg(not(windows))]
     let mut shell = Command::new("/bin/sh");
     #[cfg(not(windows))]
-    shell.arg("-c");
+    shell.arg("-c").arg(cmd);
     #[cfg(windows)]
     let mut shell = Command::new("cmd");
     #[cfg(windows)]
-    shell.arg("/C");
+    {
+        use std::os::windows::process::CommandExt;
+        shell.raw_arg("/C").raw_arg(cmd);
+    }
     let child = shell
-        .arg(cmd)
         .env("AREEV_EVALSET", evalset)
         .env("AREEV_EVAL_CASE", case)
         .stdin(Stdio::piped())

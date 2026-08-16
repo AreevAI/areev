@@ -95,17 +95,21 @@ impl HostToolExecutor for CommandExecutor {
     ) -> ExecResult {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        // The platform shell: /bin/sh -c on unix, cmd /C on Windows.
+        // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The
+        // Windows command string must go through raw_arg — Command::arg
+        // MSVC-quotes embedded quotes, which cmd.exe does not parse.
         #[cfg(not(windows))]
         let mut shell = Command::new("/bin/sh");
         #[cfg(not(windows))]
-        shell.arg("-c");
+        shell.arg("-c").arg(&self.cmd);
         #[cfg(windows)]
         let mut shell = Command::new("cmd");
         #[cfg(windows)]
-        shell.arg("/C");
+        {
+            use std::os::windows::process::CommandExt;
+            shell.raw_arg("/C").raw_arg(&self.cmd);
+        }
         let mut child = match shell
-            .arg(&self.cmd)
             .env("AREEV_TOOL_NAME", tool_name)
             .env("AREEV_TOOL_HASH", tool_hash)
             .env("AREEV_IDEMPOTENCY_KEY", idempotency_key)

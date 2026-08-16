@@ -131,7 +131,8 @@ fn kill_switch_drill_measures_cancel_to_drain_under_the_clause() {
     );
 
     // 4. Verify still passes — a canceled run replays like any other.
-    assert!(runner.verify("drill-1").unwrap().verified);
+    let report = runner.verify("drill-1").unwrap();
+    assert!(report.verified, "canceled-run replay diverged: {report:?}");
 }
 
 /// The review's P0, pinned at the DRIVER level: a bounded cycle must

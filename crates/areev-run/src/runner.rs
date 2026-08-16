@@ -1500,6 +1500,29 @@ impl Runner {
                 EventIn::Start { input: manifest.input.clone() },
             ];
         }
+        // Cancel is an OUT-OF-BAND marker (drive polls the Fact; the
+        // journal has no CancelSeen entry) — replay it from where it IS
+        // journaled: the checkpoint state. WHERE inside the superstep the
+        // live driver saw it is read off the journal's own evidence: the
+        // driver polls at wave boundaries, so a checkpoint that carries
+        // both this superstep's resolutions and the cancel means the
+        // marker rode the SAME event batch as the resolutions; a step
+        // whose dispatches the journal never answered, while the coming
+        // checkpoint carries the cancel, means the live driver canceled
+        // BEFORE dispatching — that boundary is rewound and re-fed with
+        // CancelSeen up front. Feeding it blindly at the superstep's open
+        // (the old rule) replayed a phase the live driver can only
+        // produce when the marker predates the run.
+        let cancel_peek = |ckpt_idx: usize, st: &SchedulerState| -> Option<EventIn> {
+            if st.cancel.is_some() {
+                return None;
+            }
+            let c = view.checkpoints.get(ckpt_idx)?.scheduler.get("cancel")?.as_array()?;
+            Some(EventIn::CancelSeen {
+                principal: c.first()?.as_str()?.to_string(),
+                reason: c.get(1)?.as_str()?.to_string(),
+            })
+        };
         let mut guard = 0;
         'replay: loop {
             guard += 1;
@@ -1511,30 +1534,16 @@ impl Runner {
                 });
                 return Ok(report);
             }
-            // Cancel is an OUT-OF-BAND marker (drive polls the Fact; the
-            // journal has no CancelSeen entry) — replay it from where it IS
-            // journaled: the checkpoint state. When the next stored
-            // checkpoint shows the cancel and the replayed state doesn't,
-            // feed the event now, so a canceled run verifies like any other.
-            if st.cancel.is_none() {
-                if let Some(next) = view.checkpoints.get(ckpt_idx) {
-                    if let Some(c) = next.scheduler.get("cancel").and_then(|c| c.as_array()) {
-                        if let (Some(by), Some(reason)) =
-                            (c.first().and_then(|v| v.as_str()), c.get(1).and_then(|v| v.as_str()))
-                        {
-                            events.push(EventIn::CancelSeen {
-                                principal: by.to_string(),
-                                reason: reason.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
+            let pre_state = st.clone();
+            let pre_events = events.clone();
+            let pre_ckpt_idx = ckpt_idx;
+            let pre_report_len = report.steps.len();
             let out = step(&env, st, &events);
             st = out.state;
             events = Vec::new();
             let mut resolved: Vec<EventIn> = Vec::new();
             let mut parked = false;
+            let mut unanswered: Option<JournalKey> = None;
             for cmd in out.commands {
                 match cmd {
                     Command::WriteIntent { .. } => {}
@@ -1546,16 +1555,8 @@ impl Runner {
                                 resolved.push(EventIn::EffectResolved { key, outcome });
                             }
                             None => {
-                                report.steps.push(VerifyStep {
-                                    superstep: st.superstep,
-                                    verdict: format!(
-                                        "effect {} has no journaled result — not \
-                                         verifiable past this point",
-                                        key.tool_call_id()
-                                    ),
-                                    ok: false,
-                                });
-                                break 'replay;
+                                unanswered = Some(key);
+                                break;
                             }
                         }
                     }
@@ -1598,6 +1599,31 @@ impl Runner {
                     Command::Finish { .. } => {}
                 }
             }
+            if let Some(key) = unanswered {
+                if let Some(cancel_ev) = cancel_peek(pre_ckpt_idx, &pre_state) {
+                    // The live driver canceled at this boundary BEFORE
+                    // dispatching (the journal never answered these
+                    // effects, and the coming checkpoint carries the
+                    // cancel): rewind and re-feed the same boundary with
+                    // CancelSeen — the batch the live driver actually saw.
+                    st = pre_state;
+                    ckpt_idx = pre_ckpt_idx;
+                    report.steps.truncate(pre_report_len);
+                    events = pre_events;
+                    events.push(cancel_ev);
+                    continue;
+                }
+                report.steps.push(VerifyStep {
+                    superstep: st.superstep,
+                    verdict: format!(
+                        "effect {} has no journaled result — not \
+                         verifiable past this point",
+                        key.tool_call_id()
+                    ),
+                    ok: false,
+                });
+                break 'replay;
+            }
             if st.is_terminal() {
                 // The terminal checkpoint (written by drive on Finish).
                 if let Some(stored) = view.checkpoints.get(ckpt_idx) {
@@ -1630,6 +1656,13 @@ impl Runner {
                     .unwrap_or(st.clock_ms);
                 events.push(EventIn::ClockReading { unix_ms: close });
                 events.extend(resolved);
+                // The checkpoint these resolutions close may also carry
+                // the cancel: the live driver polls the marker at wave
+                // boundaries, so it saw it WITH this batch — CancelSeen
+                // rides the same feed, never a boundary of its own.
+                if let Some(cancel_ev) = cancel_peek(ckpt_idx, &st) {
+                    events.push(cancel_ev);
+                }
                 continue;
             }
             if parked {
