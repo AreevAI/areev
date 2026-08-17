@@ -52,7 +52,16 @@ on the latter two, optional-but-recorded on the hash form.
    `FORGET SUBJECT` — classifies `Read` and is `read`-gated, deliberately
    NOT behind the destructive cap.
 Saved-query bodies get an extra `check_statement_read_only` pass (destructive
-statements are refused there regardless of the gate). `cal_forget_scope`
+statements are refused there regardless of the gate), and `validate_query_body`
+also **parses** the body at DEFINE. It used to stop at the word-level keyword
+scan whenever the body contained `$` — i.e. for most saved queries — so any
+syntax error was stored and first surfaced at RUN. The reason for that skip was
+real but narrow (a parameter in a numeric position like `RECENT $limit` is not a
+literal until RUN substitutes it), so the check parses the body as written and,
+on failure, retries with `params_as_literals` standing the parameters in; only a
+body that fails BOTH is refused (`CAL-E059`). The reported error is always the
+one from the body as the author wrote it — the placeholder form is an internal
+probe whose spans would point at text nobody typed. `cal_forget_scope`
 remains an unwired stub.
 
 Security invariants in the lexer: **S-1** bidi-control rejection
@@ -98,6 +107,17 @@ the audit hash.
   assembler both call it (parity pinned by areev-context's
   `tests/render_parity.rs`) — never grow a second implementation of a
   format name.
+  **`Disclosure`** (OMS §4 `WITH progressive_disclosure`) is the body axis,
+  orthogonal to `MetadataDetail`'s envelope axis: `summary`/`headlines` clip
+  free-text bodies (40/80 chars, the same ladder `templates::effective_truncate`
+  uses), `full` leaves them whole AND emits the long-form definition bodies no
+  other tier carries — a Skill's `instructions`/`when_to_use`, which otherwise
+  reach no rendered path at all. `None` (nothing requested) is the historical
+  render, byte for byte; the `*_at` entry points take the tier and the bare
+  `render_grain_sml`/`render_grain_markdown` delegate with `None`, which is what
+  keeps render parity honest. Gating the definition body behind `full` is
+  deliberate: a recall of twenty skills must stay a listing, not twenty
+  playbooks.
 - `templates.rs` — Mustache-subset engine (closed variable set, 10 filters,
   F1–F7 security invariants, 1MB output cap). Builtins are exactly the three
   §10.1 sectioned presets (`structured`/`readable`/`compact`); a builtin must

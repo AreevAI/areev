@@ -28,6 +28,7 @@ pub mod cal;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod eval;
 pub mod external;
 pub mod llm;
 pub mod manifest;

@@ -158,11 +158,55 @@ pub fn parse_with_params(input: &str, _params: &HashMap<String, Value>) -> CalRe
     parser.parse_query()
 }
 
+/// Rewrite every `$param` reference to a bare literal so a body whose
+/// parameters sit in positions that demand one (`RECENT $limit`) can still be
+/// parsed for SHAPE at DEFINE time. Only ever fed to the parser — never stored,
+/// never executed.
+///
+/// String literals are stepped over: a `"$5.00"` in a WHERE value is data, not
+/// a parameter, and rewriting it could fail a body that is perfectly valid.
+fn params_as_literals(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                out.push(c);
+                if c == '\\' {
+                    // The escaped character cannot close the literal.
+                    if let Some(n) = chars.next() {
+                        out.push(n);
+                    }
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                out.push(c);
+            }
+            None if c == '$' => {
+                while chars.peek().is_some_and(|n| n.is_ascii_alphanumeric() || *n == '_') {
+                    chars.next();
+                }
+                // `1` parses in both a numeric and a value position; the type
+                // mismatch it can imply (CAL-E020) belongs to the executor, so
+                // a shape check never sees it.
+                out.push('1');
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 /// Recursively check that a statement is read-only (no writes, no RUN) — the
 /// enforcement behind the "saved-query bodies stay read-only" invariant. A free
 /// function so the executor can re-check a parsed RUN body at execution time,
 /// not only the parser at DEFINE time (defense in depth: the DEFINE-time scan
-/// is skipped for `$`-parameterized bodies, so RUN is the precise gate).
+/// runs a word-level guard BEFORE the parse, so it holds even for a body the
+/// parser has to see through placeholders).
 pub(crate) fn check_read_only_statement(stmt: &CalStatement, span: &Span) -> CalResult<()> {
     let write = |s: &str| {
         Err(CalError::WriteInQueryBody {
@@ -2701,13 +2745,7 @@ impl Parser {
                 } else {
                     None
                 };
-                // Recognized syntactically but not yet wired into the
-                // recall engine — surface a CAL-W004 hint so callers
-                // don't believe the option is honored.
-                self.warnings.push(CalWarning::UnknownExtensionOption {
-                    option: "progressive_disclosure (parsed but executor no-op)".into(),
-                    span: Some(span),
-                });
+                let _ = span;
                 Ok(Some(WithOption::ProgressiveDisclosure { level }))
             }
             // OMS §4 `consistency(level)` where level ∈ eventual|bounded|linearizable.
@@ -6865,12 +6903,15 @@ impl Parser {
         self.input[start_byte..end_byte].trim().to_string()
     }
 
-    /// Validate that a query body contains only read-tier statements.
+    /// Validate that a query body contains only read-tier statements, and that
+    /// it can actually parse.
     fn validate_query_body(&self, body: &str, span: &Span) -> CalResult<()> {
-        // If the body contains parameter references ($name), skip parse-time
-        // validation. Parameters are substituted at RUN time, so the body
-        // may not parse correctly until then (e.g., RECENT $limit is not a
-        // valid number literal). The body will be validated when RUN executes.
+        // A `$`-bearing body still gets the evade-proof keyword scan below, and
+        // then a real parse. It used to get ONLY the keyword scan, so any
+        // syntax error in a parameterized body — the shape most saved queries
+        // have — was stored unverified and first surfaced when a caller ran it.
+        // A stored query that can never run is a landmine, and its first caller
+        // is often an unattended agent.
         if body.contains('$') {
             // Word-level lexical scan (a `$`-body can't fully parse until RUN
             // substitutes params, so this guard must not be evadable). Split on
@@ -6897,7 +6938,31 @@ impl Parser {
                     });
                 }
             }
-            return Ok(());
+            // Now the shape. The reason the parse used to be skipped here is
+            // real but narrow: a parameter in a NUMERIC position (`RECENT
+            // $limit`) is not a valid number literal until RUN substitutes it,
+            // so the body as written genuinely does not parse. Value positions
+            // (`WHERE x = $p`) do. So try it as written, then retry with every
+            // parameter standing in as a literal — a body that fails BOTH is
+            // malformed no matter what RUN eventually substitutes.
+            match super::parser::parse(body) {
+                Ok(q) => return self.check_statement_read_only(&q.statement, span),
+                Err(strict) => {
+                    let filled = params_as_literals(body);
+                    match super::parser::parse(&filled) {
+                        Ok(q) => return self.check_statement_read_only(&q.statement, span),
+                        // Report the error from the body as the author wrote
+                        // it; the placeholder form is an internal probe and its
+                        // spans would point at text the author never typed.
+                        Err(_) => {
+                            return Err(CalError::InvalidQueryBody {
+                                detail: strict.to_string(),
+                                span: Some(*span),
+                            })
+                        }
+                    }
+                }
+            }
         }
 
         // No parameters — safe to parse and validate fully.

@@ -475,6 +475,14 @@ Saved-query limits: 100 per namespace, 8 KiB body, 10 parameters. Saved-query
 bodies get an extra read-only verification pass, so a saved query can never
 smuggle in a write or a blocked keyword.
 
+`DEFINE` also **parses** the body, so a query that could never run is refused
+where it is written rather than stored as a landmine for its first caller —
+which is typically an unattended agent, long after whoever wrote the query has
+moved on. A body whose parameters sit in positions that demand a literal
+(`RECENT $limit`) is still accepted: the check re-parses it with the parameters
+standing in, so only a body that is malformed *however* it is bound is rejected
+(`CAL-E059`).
+
 Saved queries and custom templates are **host metadata carried by the memory
 file**, not memories: they persist as `meta` rows (`qry:<name>`, `tpl:<name>`)
 and so travel with the `.db` — the same set is visible from the CLI, MCP and
@@ -631,7 +639,7 @@ representative selection:
 | `WITH conflict_resolution` | Keep only the newest grain per `(subject, relation)` |
 | `WITH contradiction_detection` | Keep everything, but stamp `contested_by` on grains that are live tips of an open fork |
 | `WITH annotate_relative_time` | Add "2 weeks ago"-style labels |
-| `WITH progressive_disclosure(summary)` | OMS progressive-disclosure level |
+| `WITH progressive_disclosure(summary\|headlines\|full)` | OMS §4 disclosure level — how much of each grain's **body** a render carries (orthogonal to metadata). `summary` clips free-text bodies to 40 chars, `headlines` to 80, `full` leaves them whole **and** adds the long-form definition bodies no other tier carries: a Skill's `when_to_use` and `instructions`. Omitting the option keeps each format's established output unchanged. The bare form (no level) means `full` |
 
 ```sql
 RECALL facts ABOUT "dietary restrictions" WITH rerank, diversity(0.4), min_score(0.5)

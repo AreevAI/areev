@@ -901,6 +901,67 @@ tokens and the vault are file-backend + encryption features by design.
 
 ---
 
+## 17. Attach a file to a memory (CAS blobs)
+
+Grains stay small; media lives in the per-memory content-addressed store and is
+referenced by `cas://` URI. The address IS the content, so storing the same
+bytes twice stores them once.
+
+```bash
+# Store bytes, get the address back (idempotent).
+URI=$(areev blob put invoice-001.pdf --db acct.db)
+echo "$URI"          # cas://sha256:a0864a70...
+
+# …or from a pipe.
+pdftotext invoice-001.pdf - | areev blob put --stdin --db acct.db
+
+# Read them back, hash-verified.
+areev blob get "$URI" --db acct.db > roundtrip.pdf
+```
+
+Reference the blob from a grain's `content_refs` so erasure and GC can see it:
+a blob referenced by no live grain is reclaimed by `gc_blobs`, and a
+sole-referenced attachment is reclaimed by `forget-subject` along with the
+grain that named it.
+
+**`blob get` deliberately does not open the memory.** The embedded backend
+takes an *exclusive* file lock, so while `areev run` holds a memory every other
+verb is refused — including a read. A tool subprocess launched by that run
+would otherwise be unable to fetch the very attachment it was started to
+process:
+
+```bash
+# inside a --tool-cmd subprocess, while the run holds the writer:
+areev blob get "$attachment_uri" --db acct.db > /tmp/att.pdf   # works
+areev recall ... --db acct.db                                   # STO-E001, locked
+```
+
+This is safe rather than a loophole: blobs are immutable, live beside the file
+rather than in it, and carry their checksum as their address, which the read
+re-verifies. An **encrypted** memory is the exception — decrypting the sidecar
+needs the derived key, so `blob get` opens it and therefore needs
+`--passphrase-env` and an unheld file.
+
+Both bindings carry the pair, bytes in and bytes out (not the usual JSON-string
+return — base64 through JSON would inflate every payload by a third):
+
+```python
+uri = m.put_blob(open("invoice-001.pdf", "rb").read())
+data = m.get_blob(uri)          # bytes
+```
+
+```js
+const uri = await m.putBlob(await fs.readFile('invoice-001.pdf'))
+const data = await m.getBlob(uri)   // Buffer
+```
+
+There is no MCP tool for blobs, deliberately: MCP results are JSON over stdio,
+so a binary payload would have to be base64'd into the response and would blow
+the context window it landed in. Tools that need bytes should take the `cas://`
+URI from a grain's `content_refs` and shell out to `areev blob get`.
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

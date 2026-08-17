@@ -289,7 +289,7 @@ fn open_heals_a_file_written_before_the_link_indexes_existed() {
         let m = Areev::open(path).unwrap();
         assert_eq!(
             m.meta_get("link_index").unwrap().as_deref(),
-            Some("2"),
+            Some("3"),
             "a file written by this build declares its link indexes current"
         );
         m.meta_put("link_index", "0").unwrap();

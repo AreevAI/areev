@@ -26,9 +26,9 @@ name = "areev"
 crate-type = ["cdylib"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.2.0" }
-areev-store = { path = "../areev-store", version = "1.2.0" }
-areev-cal = { path = "../areev-cal", version = "1.2.0" }
+areev-core = { path = "../areev-core", version = "1.2.1" }
+areev-store = { path = "../areev-store", version = "1.2.1" }
+areev-cal = { path = "../areev-cal", version = "1.2.1" }
 areev-loop = { path = "../areev-loop" }
 areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }

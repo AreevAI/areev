@@ -81,6 +81,15 @@ COMMANDS:
                                       policy is a file-truth that travels
                                       with the memory; `set` declares,
                                       `sweep --yes` enforces (audited)
+  blob     put <FILE> | put --stdin   store bytes in the content-addressed
+                                      blob store; prints the cas:// URI
+                                      (idempotent — the address IS the content)
+           get <cas-uri>              write those bytes to stdout, hash-verified.
+                                      Reads the .blobs sidecar WITHOUT opening
+                                      the memory, so a --tool-cmd subprocess can
+                                      fetch an attachment while its run holds
+                                      the single writer (an encrypted memory
+                                      still needs --passphrase-env)
   blobs encrypt                       encrypt CAS attachments written before
                                       sidecar encryption landed (needs the
                                       memory's key; new blobs are sealed on
@@ -989,6 +998,25 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             .ok_or_else(|| format!("--telemetry: unknown mode '{v}' (off|aggregate|full)"))?,
         None => areev_store::TelemetryMode::Aggregate,
     };
+
+    // `areev blob get` is served BEFORE the open, from the `.blobs` sidecar.
+    // The embedded backend's file lock is exclusive — while a run holds a
+    // memory, a second process is refused even for a read — which would put an
+    // attachment out of reach of the very `--tool-cmd` subprocess the run
+    // spawned to process it. Blobs are immutable, live beside the file, and
+    // carry their checksum as their address, so reading one needs neither the
+    // database nor a lock. A sealed blob still needs the memory's derived key,
+    // so that case falls through to the normal open below.
+    if cmd == "blob" && positional.first().map(String::as_str) == Some("get") && !is_pg_url {
+        let uri = positional
+            .get(1)
+            .ok_or("usage: areev blob get <cas-uri> --db <file>")?;
+        if let Some(bytes) = areev_store::read_blob_offline(&db, uri).map_err(|e| e.to_string())? {
+            use std::io::Write;
+            std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
 
     // Files carry their own declarations (meta table); a bare open honors
     // them. --index-text is an explicit, deliberate re-stamp; encryption is a
@@ -2538,6 +2566,45 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             return run_tool_provenance(m, &ns, &hash_arg.unwrap(), &flags);
         }
+        "blob" => {
+            // `blob put` writes; `blob get` normally never reaches here (it is
+            // served pre-open above) — it lands here only for a sealed blob or
+            // a Postgres memory, both of which genuinely need the open handle.
+            match positional.first().map(String::as_str).unwrap_or("") {
+                "put" => {
+                    let bytes = match positional.get(1) {
+                        Some(path) => std::fs::read(path)
+                            .map_err(|e| format!("blob put: reading {path}: {e}"))?,
+                        None => {
+                            if !flags.contains_key("stdin") {
+                                return Err("usage: areev blob put <FILE> --db <file>  (or --stdin)".into());
+                            }
+                            use std::io::Read;
+                            let mut buf = Vec::new();
+                            std::io::stdin()
+                                .read_to_end(&mut buf)
+                                .map_err(|e| format!("blob put: reading stdin: {e}"))?;
+                            buf
+                        }
+                    };
+                    // Idempotent by construction: the address is the content.
+                    println!("{}", m.put_blob(&bytes).map_err(|e| e.to_string())?);
+                }
+                "get" => {
+                    let uri = positional
+                        .get(1)
+                        .ok_or("usage: areev blob get <cas-uri> --db <file>")?;
+                    use std::io::Write;
+                    let bytes = m.get_blob(uri).map_err(|e| e.to_string())?;
+                    std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
+                }
+                other => {
+                    return Err(format!(
+                        "unknown blob subcommand '{other}' — try `areev blob put|get`"
+                    ))
+                }
+            }
+        }
         "blobs" => {
             // `areev blobs encrypt` — migrate CAS attachments written before
             // sidecar encryption landed (GDPR Art. 32; docs/gdpr.md §4).
@@ -3804,7 +3871,6 @@ fn load_gating_evidence(
     rec_hash: &str,
     run_id: &str,
 ) -> Result<areev_loop::GatingEvidence, String> {
-    use areev_loop::SubstrateRead;
     let rec = engine
         .recommendations(sub, None)
         .map_err(|e| e.to_string())?
@@ -3814,34 +3880,22 @@ fn load_gating_evidence(
     let pin = rec
         .evalset_hash
         .ok_or_else(|| "this recommendation pins no evalset — --gating-run only applies to code revisions".to_string())?;
-    let facts = sub
-        .grains_of_type("fact", Some("agent:harness"), Default::default())
-        .map_err(|e| e.to_string())?;
-    for f in facts {
-        if f.str_field("relation") != Some("mg:eval_run")
-            || f.str_field("subject") != Some(format!("evalset:{pin}").as_str())
-        {
-            continue;
-        }
-        let Some(summary) = f
-            .str_field("object")
-            .and_then(|o| serde_json::from_str::<serde_json::Value>(o).ok())
-        else {
-            continue;
-        };
-        if summary.get("run_id").and_then(|v| v.as_str()) == Some(run_id) {
-            return Ok(areev_loop::GatingEvidence {
-                evalset_hash: pin,
-                run_id: run_id.to_string(),
-                passed: summary.get("passed").and_then(|v| v.as_u64()).unwrap_or(0),
-                failed: summary.get("failed").and_then(|v| v.as_u64()).unwrap_or(u64::MAX),
-            });
-        }
+    // Read through the shared evalset reader, so the run that GATES an apply
+    // and the runs that later JUDGE it are parsed by exactly one piece of code.
+    // Two parsers of this summary drifting apart would let a rule be admitted
+    // on one reading of an evalset and measured on another.
+    match areev_loop::eval::eval_run_by_id(sub, &pin, run_id).map_err(|e| e.to_string())? {
+        Some(run) => Ok(areev_loop::GatingEvidence {
+            evalset_hash: pin,
+            run_id: run.run_id,
+            passed: run.passed,
+            failed: run.failed,
+        }),
+        None => Err(format!(
+            "no recorded gate run '{run_id}' for evalset {pin} — run `areev eval run \
+             --evalset {pin} ...` first"
+        )),
     }
-    Err(format!(
-        "no recorded gate run '{run_id}' for evalset {pin} — run `areev eval run \
-         --evalset {pin} ...` first"
-    ))
 }
 
 fn resolve_hash(engine: &Engine, sub: &AreevSubstrate, prefix: &str) -> Result<String, String> {

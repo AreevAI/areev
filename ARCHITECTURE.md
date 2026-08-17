@@ -252,6 +252,12 @@ maintained on write. The store keeps, among others:
   for entity-valued objects). This is the "hexastore-equivalent" the spec
   permits — the permutations CAL's bounded traversal actually needs, rather
   than the full six.
+  A grain that names a `subject` but asserts no relation or object is indexed
+  too, as a subject-anchored row with both other positions NULL. Requiring a
+  complete triple dropped such grains from the index entirely, and because
+  erasure and DSAR disclosure select through these same indexes, the cost was
+  not only a silent empty recall but an identity's own Event surviving
+  `forget_subject` — see `docs/erasure.md`.
 - **`entity_latest`** — the current head(s) per `(subject, relation)`, so
   "current value of X" is a point read.
 - **A full-text index** (BM25) and a **vector index** for hybrid recall.
@@ -274,6 +280,16 @@ hash-verified. Recall never scans bytes — searchability comes from *derived
 text* (transcripts, extractions) stored in grain content and from embedding
 references. See the [security model](docs/security-model.md) for the current
 plaintext-sidecar limitation.
+
+Because the payloads live *beside* the file rather than in it, a blob can be
+read **without opening the memory** (`read_blob_offline`, `areev blob get`).
+That is not a convenience: the embedded backend's file lock is exclusive, so
+while a run holds a memory even a reader is refused — which would put an
+attachment out of reach of the very `--tool-cmd` subprocess the run spawned to
+process it. No read-only open mode is needed to fix that, because a blob has
+nothing to be consistent *with*: it is immutable, and its address is its
+checksum, which the read re-verifies. An encrypted memory is the exception —
+decrypting the sidecar needs the derived key, so that path still opens.
 
 ---
 

@@ -139,7 +139,14 @@ references** in the namespace — for the identity itself AND every
 partition-style key carrying it as a boundary-guarded prefix
 (REQ-ERASE-7):
 
-- triple **subject** position (the grain is about the identity),
+- triple **subject** position (the grain is about the identity) —
+  including a grain that names a `subject` but asserts no relation or
+  object, such as an Event about a person or a message. Those used to
+  reach no index at all, which made them invisible to this selector: an
+  erasure reported success while the identity's own transcript stayed in
+  the file, and `subject_report` under-disclosed it by exactly the same
+  grains. Files written before the fix are healed by the `link_index`
+  stamp on open — see `areev-store/CLAUDE.md`, "Subject anchors",
 - triple **object** position (the grain points at the identity —
   over-deletion is the safe direction for erasure),
 - **thread events** whose session id is the identity (or an

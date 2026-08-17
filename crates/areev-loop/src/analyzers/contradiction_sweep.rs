@@ -173,6 +173,8 @@ impl Analyzer for ContradictionSweep {
                     ),
                     review_after_ms: 86_400_000,
                     horizons_ms: vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000],
+                    // A count of excess live values: fewer is better.
+                    higher_is_better: false,
                 }),
             );
         }

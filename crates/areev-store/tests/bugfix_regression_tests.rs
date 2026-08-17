@@ -299,3 +299,133 @@ fn supersede_changed_key_reelection_ignores_link_rows() {
     assert!(!inserted, "value probe must match the re-elected head's true object");
     assert_eq!(h, h2a);
 }
+
+// ── Issue #23: a subject carried WITHOUT a relation/object ─────────────────
+// Structural indexing used to require all three of (subject, relation, object),
+// so a grain that merely named a subject reached no index at all. Two failures
+// fell out of that, and the second is the serious one:
+//   1. `recall(ns, subject, …)` answered empty for a grain that plainly carried
+//      the subject — a silent no-match on a filter every surface accepts.
+//   2. `forget_subject`/`subject_report` select through `triples`, so the same
+//      grain was invisible to erasure AND to DSAR disclosure.
+
+fn subject_event(ns: &str, subject: &str, content: &str) -> areev_core::types::Event {
+    let mut e = areev_core::types::Event::new(content).subject(subject);
+    e.common.namespace = Some(ns.to_string());
+    e
+}
+
+#[test]
+fn subject_only_grain_is_structurally_recallable() {
+    let (mut m, _d) = open_mem();
+    m.add(&subject_event("acct", "msg:inv-001", "first delivery")).unwrap();
+    m.add(&subject_event("acct", "msg:inv-002", "other message")).unwrap();
+
+    let got = m.recall("acct", "msg:inv-001", None, 8).unwrap();
+    assert_eq!(got.len(), 1, "a subject-only grain must match its own subject");
+    assert_eq!(
+        got[0].fields.get("content").and_then(|v| v.as_str()),
+        Some("first delivery")
+    );
+
+    // What the filter must EXCLUDE — a test that only checks presence passes
+    // against an index that matches everything.
+    assert!(
+        m.recall("acct", "msg:never-stored", None, 8).unwrap().is_empty(),
+        "an unknown subject must stay empty"
+    );
+    // The grain asserts no relation, so a relation-filtered probe must not
+    // invent one for it.
+    assert!(
+        m.recall("acct", "msg:inv-001", Some("mg:subject"), 8).unwrap().is_empty(),
+        "a subject-only row carries no relation and must not answer a relation filter"
+    );
+}
+
+#[test]
+fn subject_only_grain_is_erased_and_disclosed_with_its_subject() {
+    let (mut m, _d) = open_mem();
+    m.add(&subject_event("clinic", "pat", "call transcript")).unwrap();
+    m.add(&fact("clinic", "pat", "lives_in", "Berlin")).unwrap();
+    m.add(&fact("clinic", "mara", "prefers", "tea")).unwrap();
+
+    // The DSAR read must disclose exactly what the erasure removes (both, not
+    // just the Fact) — that pairing is the whole contract.
+    let report = m.subject_report("clinic", "pat").unwrap();
+    assert_eq!(report.grains.len(), 2, "DSAR must disclose the subject-only grain too");
+
+    let rep = m.forget_subject("clinic", "pat").unwrap();
+    assert_eq!(rep.grains_erased, 2, "erasure must reach the subject-only grain");
+
+    let left = m.recent("clinic", None, 8).unwrap();
+    assert_eq!(left.len(), 1, "only the unrelated grain survives");
+    assert_eq!(left[0].fields.get("subject").and_then(|v| v.as_str()), Some("mara"));
+}
+
+#[test]
+fn superseding_a_subject_only_grain_drops_it_from_heads_only_recall() {
+    let (mut m, _d) = open_mem();
+    let v1 = m.add(&subject_event("acct", "msg:inv-001", "draft")).unwrap();
+    let mut v2 = subject_event("acct", "msg:inv-001", "corrected");
+    m.supersede(&v1, &mut v2).unwrap();
+
+    let got = m.recall("acct", "msg:inv-001", None, 8).unwrap();
+    assert_eq!(got.len(), 1, "heads-only recall must not return the superseded version");
+    assert_eq!(
+        got[0].fields.get("content").and_then(|v| v.as_str()),
+        Some("corrected")
+    );
+}
+
+#[test]
+fn rebuilding_the_link_indexes_replays_subject_anchors_without_duplicating_them() {
+    // Existing files reach the anchors through the `link_index` stamp bump, so
+    // the rebuild is the migration — and it replays (DELETE+INSERT) rather than
+    // appends. If it appended, one reindex would double every subject-only
+    // grain in recall and inflate the erasure selector.
+    let d = TempDir::new().unwrap();
+    let path = d.path().join("m.db");
+    let path = path.to_str().unwrap();
+
+    let mut m = Areev::open(path).unwrap();
+    m.add(&subject_event("clinic", "pat", "call transcript")).unwrap();
+    assert_eq!(m.recall("clinic", "pat", None, 8).unwrap().len(), 1);
+
+    m.rebuild_link_indexes().unwrap();
+    assert_eq!(
+        m.recall("clinic", "pat", None, 8).unwrap().len(),
+        1,
+        "one grain must stay one result across a reindex"
+    );
+    m.rebuild_link_indexes().unwrap();
+    assert_eq!(m.recall("clinic", "pat", None, 8).unwrap().len(), 1);
+    assert_eq!(m.forget_subject("clinic", "pat").unwrap().grains_erased, 1);
+    drop(m);
+
+    // …and open() re-stamps the file as current so the migration runs once.
+    let m = Areev::open(path).unwrap();
+    assert_eq!(m.meta_get("link_index").unwrap().as_deref(), Some("3"));
+}
+
+#[test]
+fn rebuild_keeps_a_superseded_subject_only_grain_out_of_heads_only_recall() {
+    // The rebuild reconstructs `cur` from the grain's supersession state. Get
+    // that wrong and a reindex silently resurrects stale content into every
+    // heads-only recall — the exact failure mode `include_superseded` exists
+    // to make opt-in.
+    let d = TempDir::new().unwrap();
+    let path = d.path().join("m.db");
+    let mut m = Areev::open(path.to_str().unwrap()).unwrap();
+
+    let v1 = m.add(&subject_event("acct", "msg:inv-001", "draft")).unwrap();
+    let mut v2 = subject_event("acct", "msg:inv-001", "corrected");
+    m.supersede(&v1, &mut v2).unwrap();
+
+    m.rebuild_link_indexes().unwrap();
+    let got = m.recall("acct", "msg:inv-001", None, 8).unwrap();
+    assert_eq!(got.len(), 1, "the superseded version must not come back");
+    assert_eq!(
+        got[0].fields.get("content").and_then(|v| v.as_str()),
+        Some("corrected")
+    );
+}

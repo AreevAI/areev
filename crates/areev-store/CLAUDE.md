@@ -60,6 +60,20 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   object-anchored mirror of an anchored `recall_hybrid` ("what points at X"),
   and is what makes `WITH multi_hop` follow reverse edges — so it inherits the
   same entity-relations restriction.
+- **Subject anchors**: a grain carrying a `subject` but NOT a full `(s,p,o)`
+  triple (an Event about a message id, an Observation about an entity) still
+  gets one `triples` row — `(ns, s, NULL, NULL, seq, cur)`. Relation and object
+  are NULL because the grain asserts neither, which also makes the row inert to
+  every relation-bound query by construction; like links it never reaches
+  `heads`/`entity_latest` (a log entry about a subject has no "current value").
+  Requiring all three used to drop these grains from the index entirely, which
+  cost two things, the second far worse than the first: `recall(ns, subject, …)`
+  answered empty for a grain that plainly carried the subject, and — because
+  `forget_subject`/`subject_report` select through `triples` — the identity's
+  own grain was invisible to **erasure and DSAR disclosure**. Existing files are
+  healed by the `link_index` stamp bump (v3) on open; the rebuild replays the
+  rows and reconstructs `cur` from supersession state, so a reindex neither
+  duplicates a grain nor resurrects a superseded one.
 - **Cross-grain links**: `GrainCommon.related_to` entries index as triples
   subject-ed on the linking grain's *own* hash — `(own_hash, relation_type,
   target_hash)` — so `related()`/`path()` traverse them like any edge. They are
@@ -119,7 +133,16 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   `tests/meta_tests.rs` covers persistence/reconciliation.
 - CAS blob sidecar at `"{path}.blobs"`, git-style `hex[..2]/hex[2..]` fan-out:
   `put_blob` (idempotent, tmp+rename), `get_blob` (re-verifies sha256),
-  `gc_blobs` (ref-count from live grains' `content_refs`).
+  `gc_blobs` (ref-count from live grains' `content_refs`). Free fn
+  **`read_blob_offline(db_path, uri)`** reads one blob WITHOUT opening the
+  database — the file lock is exclusive, so while a run holds a memory a second
+  process is refused even for a read, which would strand an attachment out of
+  reach of the `--tool-cmd` subprocess meant to process it. Safe without a lock
+  because a blob is immutable, lives beside the file, and its address is its
+  checksum (re-verified here too). `Ok(None)` = sealed, so the caller must open
+  with the key. Surfaces: `areev blob put|get` (get is served pre-open),
+  `put_blob`/`get_blob` in both bindings — **bytes in, bytes out**, the one
+  documented exception to the JSON-strings-out FFI convention.
 
 ## Core invariants
 

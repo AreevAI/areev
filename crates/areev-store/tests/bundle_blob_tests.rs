@@ -1,7 +1,7 @@
 //! CAS blob sidecar (§5.11) and bundle backup/sync (§5.10) tests.
 
 use areev_core::types::{Fact, Grain};
-use areev_store::Areev;
+use areev_store::{read_blob_offline, Areev};
 use tempfile::TempDir;
 
 fn fact(ns: &str, s: &str, r: &str, o: &str) -> Fact {
@@ -95,4 +95,84 @@ fn bundle_fast_forward_replication() {
         b.recall("ns", "alice", Some("speaks"), 16).unwrap().len(),
         1
     );
+}
+
+// ── Issue #27: reading a blob without opening the database ────────────────
+// The embedded backend's file lock is EXCLUSIVE — while a run holds a memory,
+// a second process is refused even for a read. That put an attachment out of
+// reach of the very `--tool-cmd` subprocess the run spawned to process it.
+// `read_blob_offline` answers that without a read-only open mode: blobs are
+// immutable, live in the `.blobs` sidecar rather than in the file, and carry
+// their checksum as their address, so there is no lock to take and no
+// consistency question to answer.
+
+#[test]
+fn blobs_are_readable_without_opening_the_database() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("m.db");
+    let path = path.to_str().unwrap().to_string();
+
+    let payload = b"invoice attachment \x00\x01\xff bytes".to_vec();
+    let uri = {
+        let mut m = Areev::open(&path).unwrap();
+        m.put_blob(&payload).unwrap()
+    };
+
+    // The handle above is dropped, but the point is that this call never opens
+    // the database at all — it is the same code path a subprocess takes while
+    // the writer is still held.
+    let got = read_blob_offline(&path, &uri).unwrap();
+    assert_eq!(got.as_deref(), Some(payload.as_slice()));
+}
+
+#[test]
+fn the_offline_read_holds_no_lock_against_a_live_handle() {
+    // The actual scenario: a handle is OPEN and holding the file when the read
+    // happens. A second `Areev::open` here would fail; this must not.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("m.db");
+    let path = path.to_str().unwrap().to_string();
+
+    let mut held = Areev::open(&path).unwrap();
+    let uri = held.put_blob(b"held-open payload").unwrap();
+
+    assert!(Areev::open(&path).is_err(), "a second open must still be refused");
+    assert_eq!(
+        read_blob_offline(&path, &uri).unwrap().as_deref(),
+        Some(b"held-open payload".as_slice()),
+        "the sidecar read must not need the lock the writer holds"
+    );
+    drop(held);
+}
+
+#[test]
+fn the_offline_read_verifies_the_address_and_refuses_junk() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("m.db");
+    let path = path.to_str().unwrap().to_string();
+    {
+        let mut m = Areev::open(&path).unwrap();
+        m.put_blob(b"payload").unwrap();
+    }
+
+    for bad in ["not-a-uri", "cas://sha256:", "cas://sha256:abc", "cas://sha256:\u{20ac}"] {
+        assert!(read_blob_offline(&path, bad).is_err(), "must reject {bad:?}");
+    }
+    // Well-formed but absent is a clean Err, not a panic or a silent empty.
+    assert!(read_blob_offline(&path, &format!("cas://sha256:{}", "a".repeat(64))).is_err());
+
+    // A corrupted sidecar file must fail the content-address check rather than
+    // hand back wrong bytes — the address IS the integrity guarantee here,
+    // since no database row corroborates it.
+    let uri = {
+        let mut m = Areev::open(&path).unwrap();
+        m.put_blob(b"tamper me").unwrap()
+    };
+    let hex = uri.strip_prefix("cas://sha256:").unwrap();
+    let blob_file = std::path::PathBuf::from(format!("{path}.blobs"))
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    std::fs::write(&blob_file, b"different bytes entirely").unwrap();
+    let e = read_blob_offline(&path, &uri).unwrap_err().to_string();
+    assert!(e.contains("corrupt"), "tampering must be caught: {e}");
 }
