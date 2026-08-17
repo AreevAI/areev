@@ -1574,7 +1574,11 @@ fn measure_outcomes<S: OmsSubstrate>(
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
         };
-        let regressed = current > metric.baseline + f64::EPSILON;
+        let regressed = crate::recommendation::is_regression(
+            metric.baseline,
+            current,
+            metric.higher_is_better,
+        );
         p.outcomes.entry(rec_hash.clone()).or_default().push(
             crate::recommendation::OutcomeResult {
                 rec_hash: rec_hash.clone(),
@@ -1595,6 +1599,7 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline: metric.baseline,
                 current,
                 unit: metric.unit.clone(),
+                higher_is_better: metric.higher_is_better,
             });
         }
     }
@@ -1602,7 +1607,7 @@ fn measure_outcomes<S: OmsSubstrate>(
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
-fn measure_metric<S: SubstrateRead>(
+pub(crate) fn measure_metric<S: SubstrateRead>(
     sub: &S,
     metric: &crate::recommendation::MetricSnapshot,
     since_ms: i64,
@@ -1651,6 +1656,39 @@ fn measure_metric<S: SubstrateRead>(
                 .filter_map(|f| f.fact_object().map(normalize_ident))
                 .collect();
             Ok(Some(distinct.len().saturating_sub(1) as f64))
+        }
+        // `evalset:<hash>:<field>` — external correctness, measured the only
+        // way that keeps the honesty rule ("Areev Loop improves the agent's
+        // memory, not its outputs") intact: an evalset run is an INTERNAL,
+        // BOUNDED, ATTRIBUTABLE measurement. The engine never runs the evalset;
+        // it only reads summaries a host journaled with `areev eval run`.
+        //
+        // `since_ms` is the apply time, and it is load-bearing rather than an
+        // optimization: a run journaled BEFORE the apply cannot be evidence of
+        // what applying did. Comparing the baseline run against itself would
+        // report "held" forever — a fabricated receipt, which is worse than no
+        // receipt at all. No run since the apply → `None` → not yet
+        // measurable, and the checkpoint stays due.
+        m if m.starts_with("evalset:") => {
+            let Some((evalset, field)) = crate::eval::parse_evalset_metric(m) else {
+                return Ok(None);
+            };
+            let Some(run) = crate::eval::newest_eval_run(sub, evalset, Some(since_ms))? else {
+                return Ok(None);
+            };
+            // `failed`/`passed`/`total` are promoted so a metric can be written
+            // against any evalset without the host having to add fields;
+            // anything else is read from the summary the host did write.
+            Ok(match field {
+                "failed" => Some(run.failed as f64),
+                "passed" => Some(run.passed as f64),
+                "total" => Some(run.total() as f64),
+                "error_rate" => match run.total() {
+                    0 => None, // no cases ran: undefined, not zero
+                    t => Some(run.failed as f64 / t as f64),
+                },
+                other => run.field(other),
+            })
         }
         _ => Ok(None),
     }

@@ -866,3 +866,28 @@ test('wildcard namespaces refuse on writes and malformed patterns', async () => 
   await assert.rejects(() => m.recall('acme', undefined, 16, 'org*'), /VAL-E001/)
   m.close()
 })
+
+test('CAS blobs round-trip as bytes and dedupe by address', async () => {
+  const m = makeDb()
+  const payload = Buffer.from([0x69, 0x6e, 0x76, 0x00, 0x01, 0xff])
+
+  const uri = await m.putBlob(payload)
+  assert.ok(uri.startsWith('cas://sha256:'))
+  // Content addressing dedupes by construction: same bytes, same address.
+  assert.equal(await m.putBlob(payload), uri)
+  assert.notEqual(await m.putBlob(Buffer.from('other')), uri)
+
+  const got = await m.getBlob(uri)
+  assert.ok(Buffer.isBuffer(got), 'blobs come back as a Buffer')
+  assert.deepEqual(Buffer.from(got), payload)
+  m.close()
+})
+
+test('malformed cas uris reject rather than panic', async () => {
+  const m = makeDb()
+  await assert.rejects(() => m.getBlob('not-a-cas-uri'), /VAL-E001/)
+  // Short/truncated addresses must error, never panic on a byte slice.
+  await assert.rejects(() => m.getBlob('cas://sha256:abc'), /VAL-E001/)
+  await assert.rejects(() => m.getBlob('cas://sha256:' + 'a'.repeat(64)), /STO-E001/)
+  m.close()
+})

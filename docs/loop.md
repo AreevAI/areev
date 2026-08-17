@@ -323,6 +323,44 @@ depend on signals outside Areev and on a hundred factors that aren't the
 change, so the honest output is a **monitored trend a human judges**, never a
 machine verdict — the design suppresses causal claims at low sample sizes on
 purpose. Areev Loop improves the agent's *memory*, not its *outputs* (§2.4).
+
+### Evalset-backed outcomes — where that boundary legitimately moves
+
+If you have a **labeled ground-truth set**, external correctness stops being
+open-ended: an evalset run is itself internal, bounded and attributable. So a
+recommendation may carry a metric naming one:
+
+```
+metric = "evalset:<EVALSET_HASH>:<field>"
+```
+
+`<field>` is read from the summary `areev eval run` journals. Four names are
+promoted and work against any evalset — `passed`, `failed`, `total`,
+`error_rate` (`failed/total`) — and anything else is read from the summary your
+harness wrote, e.g. `evalset:abc123:category_accuracy`.
+
+**State the direction.** The built-in metrics are recurrence counts where lower
+is better; an accuracy is the opposite. `MetricSnapshot.higher_is_better` says
+which, and it is not cosmetic: read the wrong way, the Verify gate sees a rule
+that *improved* accuracy and proposes reverting it. The comparison lives in one
+function (`recommendation::is_regression`) that both the engine's recorded
+verdict and `outcome_review`'s revert draft call.
+
+**A run from before the apply is never evidence.** The lookup is scoped to
+summaries journaled at or after the apply. If no eval run has happened since,
+the metric is *not yet measurable* and the checkpoint stays due — the engine
+does not fall back to the baseline run. Scoring the baseline against itself
+would report `held` forever, which is a fabricated receipt and worse than none.
+
+No scheduler is implied: run `areev eval run` from cron or CI exactly as you run
+`areev loop run`; outcomes only ever **read** what it journaled. The apply gate
+(`areev loop apply --gating-run <id>`) and the outcome edge deliberately read
+those summaries through **one** function (`areev_loop::eval`), so a rule cannot
+be admitted on one reading of an evalset and judged on another.
+
+So for a learned vendor-alias rule, the receipt becomes exactly what it should
+be: *canonical-vendor accuracy on the 184-row ground truth went up, and stayed
+up at 1d, 7d and 30d.*
 Outcomes accrue over real calendar time as checkpoints elapse; the loop is
 exercised end-to-end by the engine test suite, which controls the clock.
 

@@ -182,6 +182,22 @@ export declare class Areev {
    * most similar first. Requires an installed embedder; never writes.
    */
   nearest(text: string, subject?: string | undefined | null, relation?: string | undefined | null, k?: number | undefined | null, ns?: string | undefined | null): Promise<string>
+  /**
+   * Store bytes in the content-addressed blob store; resolves to the
+   * `cas://sha256:<hex>` URI. Idempotent — the address IS the content.
+   *
+   * Bytes in, URI out: the "JSON strings out" convention covers *structured*
+   * results, and a blob is neither structured nor safely representable as
+   * one — base64 through JSON would inflate every payload by a third and
+   * lose the streaming property the CAS exists to provide.
+   */
+  putBlob(data: Uint8Array): Promise<string>
+  /**
+   * Fetch blob bytes by `cas://sha256:` URI. The content address is
+   * re-verified on read, so corruption surfaces as an error rather than as
+   * wrong bytes.
+   */
+  getBlob(uri: string): Promise<Buffer>
   /** Store statistics as JSON. */
   stats(): Promise<string>
   /** Incremental backup to a bundle file. Returns last_op_seq cursor. */

@@ -945,7 +945,13 @@ const LINK_INDEX_KEY: &str = "link_index";
 
 /// Bumped when a change to what the link indexes contain requires a rebuild of
 /// files stamped with an earlier value.
-const LINK_INDEX_VERSION: &str = "2";
+///
+/// `3` adds the subject-anchored rows for grains that carry a `subject` without
+/// a full triple. Files written before it are not merely missing a retrieval
+/// path — `forget_subject`/`subject_report` select through `triples`, so those
+/// grains were invisible to erasure and to DSAR disclosure. The rebuild is what
+/// closes that on an existing file, so it must run rather than be opt-in.
+const LINK_INDEX_VERSION: &str = "3";
 
 /// `meta` stamp for the namespace registry (`ns_reg`) — same
 /// stamp-not-emptiness reasoning as [`LINK_INDEX_KEY`]: a file can
@@ -1314,6 +1320,16 @@ struct GrainPrep {
     /// link is an annotation and MUST NOT change the target's supersession
     /// state. Empty for the overwhelming majority of grains.
     links: Vec<(i64, i64, i64)>,
+    /// Dictionary id of the grain's `subject` when it carries one but NOT a
+    /// complete `(s, p, o)` triple — an Event/Observation/… that is *about*
+    /// something without asserting a relation. Indexed as a subject-anchored
+    /// row `(ns, s, NULL, NULL, seq, cur)` so the structural leg and the
+    /// erasure selector can both find it; NULL relation/object because the
+    /// grain genuinely asserts neither, which also makes the row inert to
+    /// every relation-bound query by construction. Never written to
+    /// `heads`/`entity_latest`: a log entry about a subject has no "current
+    /// value" to be the head of (same reasoning as `links`).
+    subject_only: Option<i64>,
     /// Dictionary id of `run_id`, for the run index.
     run: Option<i64>,
     /// Raw 32-byte `derived_from` parent address, for reverse provenance.
@@ -1445,6 +1461,36 @@ fn projected_text(view: &DeserializedGrain) -> Option<String> {
     } else {
         Some(parts.join(" "))
     }
+}
+
+/// Read one CAS blob straight from a memory's `.blobs` sidecar, **without
+/// opening the database**.
+///
+/// This exists because the embedded backend's file lock is *exclusive*: while
+/// a run holds a memory, a second process is refused even for a read. That
+/// would leave an attachment unreachable to the very `--tool-cmd` subprocess
+/// the run spawned to process it.
+///
+/// Blobs need no database to be read, and no lock to be safe: they are
+/// immutable, they live beside the file rather than in it, and the address IS
+/// the checksum — which this re-verifies, exactly like [`Areev::get_blob`]. So
+/// there is no consistency question to answer here, only a lock to not take.
+///
+/// `Ok(None)` means the blob is sealed: decrypting needs the memory's derived
+/// sidecar key, so that caller has to open the memory with its passphrase.
+pub fn read_blob_offline(db_path: &str, uri: &str) -> Result<Option<Vec<u8>>> {
+    use sha2::{Digest, Sha256};
+    let hex = Areev::cas_hex(uri)?;
+    let dir = std::path::PathBuf::from(format!("{db_path}.blobs"));
+    let raw = std::fs::read(fs_blob_path(&dir, hex))
+        .map_err(|_| AreevError::Storage(format!("blob missing: {uri}")))?;
+    if blobcrypt::is_sealed(&raw) {
+        return Ok(None);
+    }
+    if hex::encode(Sha256::digest(&raw)) != hex {
+        return Err(AreevError::Storage(format!("blob corrupt: {uri}")));
+    }
+    Ok(Some(raw))
 }
 
 /// Where the CAS blob payloads live: a `.blobs` fan-out directory next to
@@ -3196,6 +3242,15 @@ impl Areev {
             // older entity-relations declaration predates this reserved edge.
             osp = rl == "mg:harness" || self.entity_rels.contains(rl.as_str());
         }
+        // A subject WITHOUT a full triple still has to reach the structural
+        // index. It used to be dropped entirely, so `recall(ns, subject, …)`
+        // returned empty for an Event that plainly carried the subject — and,
+        // far worse, `forget_subject`/`subject_report` (which select through
+        // `triples`) silently under-erased and under-disclosed it.
+        let subject_only = match (&gv.subject, s) {
+            (Some(sj), None) => Some(self.term_id(sj)?),
+            _ => None,
+        };
         let session = match &gv.session {
             Some(x) => Some(self.term_id(x)?),
             None => None,
@@ -3259,6 +3314,7 @@ impl Areev {
             tokens,
             doc_len,
             links,
+            subject_only,
             run,
             parent,
             corpus_export: gv.corpus_export,
@@ -3416,6 +3472,12 @@ impl Areev {
                     self.term_id(target)?;
                 }
             }
+            // A subject-only grain written before subject anchoring existed has
+            // its subject nowhere in the dictionary — intern it here or the
+            // lookup-only planning pass below can never find it.
+            if let (Some(sj), true) = (&gv.subject, gv.relation.is_none() || gv.object.is_none()) {
+                self.term_id(sj)?;
+            }
         }
 
         struct Row {
@@ -3425,6 +3487,11 @@ impl Areev {
             parent: Option<Vec<u8>>,
             corpus_export: bool,
             links: Vec<(i64, i64, i64)>,
+            /// Dictionary id of a subject carried without a full triple, and
+            /// whether the grain is superseded (so the rebuilt row lands with
+            /// the same `cur` the incremental path would have left it at).
+            subject_only: Option<i64>,
+            superseded: bool,
         }
         // One transaction for delete + corpus read + plan + writes,
         // serialized against concurrent writers by the zero-id reservation —
@@ -3436,19 +3503,19 @@ impl Areev {
             self.db.execute("DELETE FROM prov_idx", vec![])?;
             self.db.execute("DELETE FROM run_idx", vec![])?;
             self.db.execute("DELETE FROM corpus_idx", vec![])?;
-            let mut rows: Vec<(i64, i64, Vec<u8>)> = Vec::new();
+            let mut rows: Vec<(i64, i64, Vec<u8>, bool)> = Vec::new();
             for row in self
                 .db
-                .query("SELECT seq, ns, blob FROM grains ORDER BY seq", vec![])?
+                .query("SELECT seq, ns, blob, svt FROM grains ORDER BY seq", vec![])?
             {
                 let (Some(seq), Some(ns), Some(blob)) = (row.i64(0), row.i64(1), row.blob(2))
                 else {
                     continue;
                 };
-                rows.push((seq, ns, blob));
+                rows.push((seq, ns, blob, row.i64(3).is_some()));
             }
             let mut plan: Vec<Row> = Vec::with_capacity(rows.len());
-            for (seq, ns, blob) in &rows {
+            for (seq, ns, blob, superseded) in &rows {
                 let view = deserialize_blob(blob)?;
                 let gv = extract_view(&view);
                 // Lookup only: the warm pass interned this snapshot's terms,
@@ -3476,6 +3543,12 @@ impl Areev {
                         }
                     }
                 }
+                let subject_only = match &gv.subject {
+                    Some(sj) if gv.relation.is_none() || gv.object.is_none() => {
+                        self.term_lookup(sj)?
+                    }
+                    _ => None,
+                };
                 plan.push(Row {
                     seq: *seq,
                     ns: *ns,
@@ -3483,6 +3556,8 @@ impl Areev {
                     parent,
                     corpus_export: gv.corpus_export,
                     links,
+                    subject_only,
+                    superseded: *superseded,
                 });
             }
 
@@ -3506,6 +3581,26 @@ impl Areev {
                     self.db.execute(
                         "INSERT INTO corpus_idx(seq) VALUES (?1)",
                         vec![pi(r.seq)],
+                    )?;
+                    n += 1;
+                }
+                if let Some(s) = r.subject_only {
+                    // Replayed, not appended — same rule as links below. The
+                    // row carries the `cur` the incremental path would have
+                    // left it at, so a rebuild never resurrects a superseded
+                    // grain into a heads-only recall.
+                    self.db.execute(
+                        "DELETE FROM triples WHERE ns=?1 AND s=?2 AND p IS NULL AND o IS NULL AND seq=?3",
+                        vec![pi(r.ns), pi(s), pi(r.seq)],
+                    )?;
+                    self.db.execute(
+                        "INSERT INTO triples(ns,s,p,o,seq,cur) VALUES (?1,?2,NULL,NULL,?3,?4)",
+                        vec![
+                            pi(r.ns),
+                            pi(s),
+                            pi(r.seq),
+                            pi(if r.superseded { 0 } else { 1 }),
+                        ],
                     )?;
                     n += 1;
                 }
@@ -7468,6 +7563,21 @@ impl Areev {
 impl Areev {
     // ----- CAS blob store (`.blobs` fan-out dir / in-schema table) -----
 
+    /// Parse and validate a `cas://sha256:<hex>` URI into its hex address.
+    ///
+    /// Validation happens before anything byte-slices `hex[..2]`: an untrusted
+    /// or truncated URI (an imported `content_ref`, a hand-typed argument) must
+    /// return `Err`, never panic on a short or non-char-boundary slice.
+    fn cas_hex(uri: &str) -> Result<&str> {
+        let hex = uri
+            .strip_prefix("cas://sha256:")
+            .ok_or_else(|| AreevError::Validation(format!("not a cas uri: {uri}")))?;
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(AreevError::Validation(format!("malformed cas uri: {uri}")));
+        }
+        Ok(hex)
+    }
+
     /// Store bytes in the per-memory CAS; returns the `cas://sha256:` URI.
     /// Idempotent — content addressing dedupes by construction.
     pub fn put_blob(&mut self, bytes: &[u8]) -> Result<String> {
@@ -7501,15 +7611,7 @@ impl Areev {
     /// Fetch bytes by `cas://sha256:` URI, verifying the hash on read.
     pub fn get_blob(&mut self, uri: &str) -> Result<Vec<u8>> {
         use sha2::{Digest, Sha256};
-        let hex = uri
-            .strip_prefix("cas://sha256:")
-            .ok_or_else(|| AreevError::Validation(format!("not a cas uri: {uri}")))?;
-        // Validate before anything byte-slices `hex[..2]` — an untrusted or
-        // truncated URI (e.g. from an imported content_ref) must return Err,
-        // never panic on a short or non-char-boundary slice.
-        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(AreevError::Validation(format!("malformed cas uri: {uri}")));
-        }
+        let hex = Self::cas_hex(uri)?;
         let bytes = match &self.blob_store {
             BlobStore::Fs(dir) => std::fs::read(fs_blob_path(dir, hex))
                 .map_err(|_| AreevError::Storage(format!("blob missing: {uri}")))?,
@@ -7835,6 +7937,13 @@ impl Areev {
                         vec![pi(pr.ns_id), pi(s), pi(p), pi(o), pi(seq), pb(pr.hash.as_bytes().to_vec())],
                     )?;
                 }
+            }
+            // Subject-anchored row — same treatment as the local write path.
+            if let Some(s) = pr.subject_only {
+                dbr.execute(
+                    "INSERT INTO triples(ns,s,p,o,seq,cur) VALUES (?1,?2,NULL,NULL,?3,1)",
+                    vec![pi(pr.ns_id), pi(s), pi(seq)],
+                )?;
             }
             // Cross-grain `related_to` links — same treatment as the local
             // write path: triples + osp for retrieval, never heads or
@@ -8336,6 +8445,16 @@ fn insert_prepped(
             db.execute_hot(
                 "INSERT INTO heads(ns,s,p,seq,hash,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
                 vec![pi(pr.ns_id), pi(s), pi(p), pi(seq), pb(pr.hash.as_bytes().to_vec()), pi(pr.created)],
+            )?;
+        }
+        // Subject-anchored row for a grain that names a subject but asserts no
+        // relation. Same placement rule as links: `triples` only, never
+        // heads/entity_latest. No `osp` row — the object is NULL, so there is
+        // no reverse edge to traverse.
+        if let Some(s) = pr.subject_only {
+            db.execute_hot(
+                "INSERT INTO triples(ns,s,p,o,seq,cur) VALUES (?1,?2,NULL,NULL,?3,1)",
+                vec![pi(pr.ns_id), pi(s), pi(seq)],
             )?;
         }
         // Cross-grain `related_to` links (OMS §6.1), e.g. the §8.4 execution

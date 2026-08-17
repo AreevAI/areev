@@ -160,6 +160,30 @@ pub struct MetricSnapshot {
     /// verdict is never final until the last horizon. Empty → `[review_after_ms]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub horizons_ms: Vec<i64>,
+    /// Which direction is an improvement. The built-in metrics are all
+    /// recurrence counts, where lower is better — so this defaults to `false`
+    /// and every existing snapshot deserializes unchanged. An evalset accuracy
+    /// is the opposite, and getting it wrong does not merely misreport: the
+    /// Verify gate would read a rule that IMPROVED accuracy as a regression and
+    /// propose reverting it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub higher_is_better: bool,
+}
+
+/// The one regression rule.
+///
+/// The verdict is computed in two places — once by the engine for the recorded
+/// `OutcomeResult`, once by `outcome_review` when it drafts the revert — and
+/// the two silently disagreeing would either revert a change that held or sit
+/// on one that regressed. So both call this.
+pub fn is_regression(baseline: f64, current: f64, higher_is_better: bool) -> bool {
+    /// Minimum worsening to call a regression (avoids noise at n=1).
+    const EPSILON: f64 = 1e-9;
+    if higher_is_better {
+        current < baseline - EPSILON
+    } else {
+        current > baseline + EPSILON
+    }
 }
 
 impl MetricSnapshot {

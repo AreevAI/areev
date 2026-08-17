@@ -1822,3 +1822,153 @@ fn governed_code_change_applies_only_through_the_gate() {
         other => panic!("stale-pin apply must refuse (re-gate), got {other:?}"),
     }
 }
+
+// ── Issue #29: evalset-backed outcome metric ──────────────────────────────
+// `areev loop outcomes` could only close the receipt on internal recurrence
+// counts. An evalset run is ALSO internal, bounded and attributable, so it can
+// carry external correctness without breaking the honesty rule — provided the
+// measurement never scores against a run that predates the apply.
+mod evalset_outcome {
+    use super::*;
+    use crate::recommendation::MetricSnapshot;
+
+    const EVALSET: &str = "abc123";
+
+    fn snapshot(field: &str, baseline: f64, higher_is_better: bool) -> MetricSnapshot {
+        MetricSnapshot {
+            metric: format!("evalset:{EVALSET}:{field}"),
+            baseline,
+            unit: "ratio".into(),
+            n: 184,
+            window: "evalset".into(),
+            subject: None,
+            namespace: None,
+            relation: None,
+            query: String::new(),
+            review_after_ms: 86_400_000,
+            horizons_ms: vec![],
+            higher_is_better,
+        }
+    }
+
+    /// Journal a summary the way `areev eval run` does.
+    fn journal_run(sub: &mut TestSubstrate, run_id: &str, at_ms: i64, extra: serde_json::Value) {
+        let mut summary = serde_json::json!({"run_id": run_id, "passed": 1, "failed": 0});
+        if let (Some(o), Some(e)) = (summary.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        sub.add_fact_at(
+            "agent:harness",
+            &format!("evalset:{EVALSET}"),
+            "mg:eval_run",
+            &summary.to_string(),
+            at_ms,
+        );
+    }
+
+    fn measure(sub: &TestSubstrate, m: &MetricSnapshot, since: i64) -> Option<f64> {
+        crate::engine::measure_metric(&sub.inner, m, since).unwrap()
+    }
+
+    #[test]
+    fn resolves_a_host_field_from_the_newest_run() {
+        let mut sub = TestSubstrate::new();
+        journal_run(&mut sub, "eval-1", 1_000, serde_json::json!({"category_accuracy": 0.71}));
+        journal_run(&mut sub, "eval-2", 2_000, serde_json::json!({"category_accuracy": 0.92}));
+        let m = snapshot("category_accuracy", 0.71, true);
+        assert_eq!(measure(&sub, &m, 500), Some(0.92), "the newest run is the current value");
+    }
+
+    #[test]
+    fn a_run_that_predates_the_apply_is_not_evidence() {
+        // The failure this prevents is a FABRICATED receipt: scoring the
+        // baseline run against itself reports "held" forever, which reads as
+        // proof the change worked.
+        let mut sub = TestSubstrate::new();
+        journal_run(&mut sub, "eval-1", 1_000, serde_json::json!({"category_accuracy": 0.71}));
+        let m = snapshot("category_accuracy", 0.71, true);
+        assert_eq!(
+            measure(&sub, &m, 5_000),
+            None,
+            "no run since the apply means NOT YET MEASURABLE, not 'held'"
+        );
+        // Once a fresh run lands, it measures.
+        journal_run(&mut sub, "eval-2", 6_000, serde_json::json!({"category_accuracy": 0.92}));
+        assert_eq!(measure(&sub, &m, 5_000), Some(0.92));
+    }
+
+    #[test]
+    fn promoted_fields_work_without_the_host_adding_any() {
+        let mut sub = TestSubstrate::new();
+        sub.add_fact_at(
+            "agent:harness",
+            &format!("evalset:{EVALSET}"),
+            "mg:eval_run",
+            &serde_json::json!({"run_id": "eval-1", "passed": 150, "failed": 34}).to_string(),
+            1_000,
+        );
+        assert_eq!(measure(&sub, &snapshot("failed", 0.0, false), 0), Some(34.0));
+        assert_eq!(measure(&sub, &snapshot("passed", 0.0, true), 0), Some(150.0));
+        assert_eq!(measure(&sub, &snapshot("total", 0.0, false), 0), Some(184.0));
+        let rate = measure(&sub, &snapshot("error_rate", 0.0, false), 0).unwrap();
+        assert!((rate - 34.0 / 184.0).abs() < 1e-9, "error_rate = failed/total, got {rate}");
+    }
+
+    #[test]
+    fn degenerate_and_malformed_inputs_measure_nothing_rather_than_guessing() {
+        let mut sub = TestSubstrate::new();
+        // An empty evalset must not divide by zero into NaN.
+        sub.add_fact_at(
+            "agent:harness",
+            &format!("evalset:{EVALSET}"),
+            "mg:eval_run",
+            &serde_json::json!({"run_id": "eval-0", "passed": 0, "failed": 0}).to_string(),
+            1_000,
+        );
+        assert_eq!(measure(&sub, &snapshot("error_rate", 0.0, false), 0), None);
+        // A field the summary never recorded is unmeasurable, not zero.
+        assert_eq!(measure(&sub, &snapshot("category_accuracy", 0.0, true), 0), None);
+        // A malformed metric string resolves to nothing.
+        let mut bad = snapshot("x", 0.0, false);
+        bad.metric = "evalset:onlyhash".into();
+        assert_eq!(measure(&sub, &bad, 0), None);
+        // A different evalset's runs never leak in.
+        let mut other = snapshot("failed", 0.0, false);
+        other.metric = "evalset:deadbeef:failed".into();
+        assert_eq!(measure(&sub, &other, 0), None);
+    }
+
+    #[test]
+    fn a_summary_missing_its_counts_is_dropped_not_defaulted() {
+        // Fail-closed: at the apply gate an absent `failed` must never read as
+        // "zero failures".
+        let mut sub = TestSubstrate::new();
+        sub.add_fact_at(
+            "agent:harness",
+            &format!("evalset:{EVALSET}"),
+            "mg:eval_run",
+            &serde_json::json!({"run_id": "eval-x", "category_accuracy": 0.99}).to_string(),
+            1_000,
+        );
+        assert_eq!(measure(&sub, &snapshot("category_accuracy", 0.5, true), 0), None);
+        assert!(crate::eval::eval_runs(&sub.inner, EVALSET, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_gating_and_outcome_edges_read_the_same_runs() {
+        let mut sub = TestSubstrate::new();
+        journal_run(&mut sub, "eval-1", 1_000, serde_json::json!({}));
+        journal_run(&mut sub, "eval-2", 2_000, serde_json::json!({}));
+        let by_id = crate::eval::eval_run_by_id(&sub.inner, EVALSET, "eval-1")
+            .unwrap()
+            .expect("gating edge finds the named run");
+        assert_eq!(by_id.run_id, "eval-1");
+        let newest = crate::eval::newest_eval_run(&sub.inner, EVALSET, None)
+            .unwrap()
+            .expect("outcome edge finds the newest run");
+        assert_eq!(newest.run_id, "eval-2");
+        assert!(crate::eval::eval_run_by_id(&sub.inner, EVALSET, "eval-nope").unwrap().is_none());
+    }
+}

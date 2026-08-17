@@ -13,6 +13,7 @@ use areev_store::{
     parse_relations, Axis, CommandEmbed, Areev as RustAreev, Direction, FactDraft, TelemetryMode,
 };
 use areev_loop_adapter::{now_ms, BorrowedSubstrate};
+use napi::bindgen_prelude::{Buffer, Uint8Array};
 use napi_derive::napi;
 use serde_json::json;
 use areev_loop::{Decision, Engine, ObserverType, RecStatus, RunOptions, ScopeSet};
@@ -237,6 +238,9 @@ job_types! {
     U32Job => u32,
     /// Store call returning an op-log cursor.
     I64Job => i64,
+    /// Store call returning raw bytes (`getBlob`). Blobs are binary, so the
+    /// JSON-out convention deliberately does not apply to them.
+    BufferJob => Buffer,
 }
 
 /// One memory = one file. Open with `new Areev("caller.db", "caller")`.
@@ -1164,6 +1168,36 @@ impl Areev {
                 .map(|(h, sim)| json!({"hash": h.to_hex(), "similarity": sim}))
                 .collect();
             serde_json::to_string(&out).map_err(err)
+        })
+    }
+
+    /// Store bytes in the content-addressed blob store; resolves to the
+    /// `cas://sha256:<hex>` URI. Idempotent — the address IS the content.
+    ///
+    /// Bytes in, URI out: the "JSON strings out" convention covers *structured*
+    /// results, and a blob is neither structured nor safely representable as
+    /// one — base64 through JSON would inflate every payload by a third and
+    /// lose the streaming property the CAS exists to provide.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn put_blob(&self, data: Uint8Array) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let bytes: Vec<u8> = data.to_vec();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|m| m.put_blob(&bytes)).map_err(err)
+        })
+    }
+
+    /// Fetch blob bytes by `cas://sha256:` URI. The content address is
+    /// re-verified on read, so corruption surfaces as an error rather than as
+    /// wrong bytes.
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn get_blob(&self, uri: String) -> napi::bindgen_prelude::AsyncTask<BufferJob> {
+        let slot = self.facade.clone();
+        BufferJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let bytes = facade.with_store(|m| m.get_blob(&uri)).map_err(err)?;
+            Ok(bytes.into())
         })
     }
 

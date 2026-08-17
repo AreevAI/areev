@@ -14,6 +14,7 @@ use areev_store::{
 use areev_loop_adapter::{now_ms, BorrowedSubstrate};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use serde_json::json;
 use areev_loop::{Decision, Engine, ObserverType, RecStatus, RunOptions, ScopeSet};
 
@@ -1043,6 +1044,31 @@ impl Areev {
             })
             .collect();
         serde_json::to_string(&out).map_err(err)
+    }
+
+    /// Store bytes in the content-addressed blob store; returns the
+    /// `cas://sha256:<hex>` URI. Idempotent — the address IS the content, so
+    /// storing the same bytes twice stores them once.
+    ///
+    /// Bytes in, URI out: the "JSON strings out" convention covers *structured*
+    /// results, and a blob is neither structured nor safely representable as
+    /// one — base64 through JSON would inflate every payload by a third and
+    /// lose the streaming property the CAS exists to provide.
+    #[pyo3(signature = (data))]
+    fn put_blob(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<String> {
+        py.detach(|| self.facade.with_store(|m| m.put_blob(&data)))
+            .map_err(err)
+    }
+
+    /// Fetch blob bytes by `cas://sha256:` URI. The content address is
+    /// re-verified on read, so corruption surfaces as an error rather than as
+    /// wrong bytes.
+    #[pyo3(signature = (uri))]
+    fn get_blob<'py>(&self, py: Python<'py>, uri: String) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = py
+            .detach(|| self.facade.with_store(|m| m.get_blob(&uri)))
+            .map_err(err)?;
+        Ok(PyBytes::new(py, &bytes))
     }
 
     /// Store statistics as JSON.

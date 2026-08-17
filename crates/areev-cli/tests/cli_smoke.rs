@@ -1429,3 +1429,39 @@ fn ns_pattern_guards_through_the_binary() {
     assert!(!ok, "a wildcard purge must fail");
     assert!(err.contains("VAL-E001") || err.contains("exact namespace"), "{err}");
 }
+
+/// Issue #27 — the CAS blob store reaches the CLI, and `blob get` in
+/// particular works WITHOUT opening the memory, which is what lets a
+/// `--tool-cmd` subprocess fetch an attachment while its run holds the writer.
+#[test]
+fn blob_put_get_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("blob.db");
+    let db = db.to_str().unwrap();
+    let file = dir.path().join("att.txt");
+    std::fs::write(&file, b"invoice attachment payload").unwrap();
+    let file = file.to_str().unwrap();
+
+    let (ok, uri, err) = areev(&["blob", "put", file, "--db", db]);
+    assert!(ok, "blob put failed: {err}");
+    let uri = uri.trim().to_string();
+    assert!(uri.starts_with("cas://sha256:"), "expected a cas uri, got {uri:?}");
+
+    // Content addressing dedupes by construction.
+    let (ok, again, _) = areev(&["blob", "put", file, "--db", db]);
+    assert!(ok);
+    assert_eq!(again.trim(), uri, "the same bytes must yield the same address");
+
+    let (ok, out, err) = areev(&["blob", "get", &uri, "--db", db]);
+    assert!(ok, "blob get failed: {err}");
+    assert_eq!(out, "invoice attachment payload");
+
+    // Junk addresses refuse with a code rather than panicking on a byte slice.
+    let (ok, _, err) = areev(&["blob", "get", "cas://sha256:abc", "--db", db]);
+    assert!(!ok, "a malformed uri must fail");
+    assert!(err.contains("VAL-E001"), "refusal must carry the code: {err}");
+
+    let (ok, _, err) = areev(&["blob", "frobnicate", "--db", db]);
+    assert!(!ok, "an unknown subcommand must fail");
+    assert!(err.contains("blob put|get"), "the refusal should name the verbs: {err}");
+}

@@ -429,6 +429,20 @@ Only the stdio (`--mcp`) transport is available; the server refuses any other
 that spawns it (see the [security model](security-model.md)), run it under a
 parent you trust.
 
+### What is deliberately not a tool: CAS blobs
+
+There is no `areev_blob_put` / `areev_blob_get`. MCP results are JSON over
+stdio, so blob bytes would have to be base64'd into a tool result and land
+whole in the model's context — a 2 MB attachment becomes ~2.7 MB of base64 in
+the window it was supposed to stay out of. The CAS exists precisely so that
+media is referenced rather than carried.
+
+A tool that needs the bytes should take the `cas://` URI from the grain's
+`content_refs` (which `areev_recall` already returns) and fetch them out of
+band with `areev blob get`, which reads the sidecar without opening the memory
+and therefore works even while a run holds the writer. See
+[cookbook §17](cookbook.md).
+
 ---
 
 ---

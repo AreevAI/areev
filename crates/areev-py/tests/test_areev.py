@@ -1125,3 +1125,33 @@ def test_wildcard_namespace_refusals(tmp_path):
     # A malformed pattern errors instead of silently matching nothing.
     with pytest.raises(ValueError, match="VAL-E001"):
         m.recall("acme", ns="org*")
+
+
+# --------------------------------------------------------------------------
+# CAS blobs (issue #27) — bytes in, bytes out
+# --------------------------------------------------------------------------
+
+def test_blob_roundtrip_and_idempotence(tmp_path):
+    m = make_db(tmp_path)
+    payload = b"invoice attachment \x00\x01\xff bytes"
+
+    uri = m.put_blob(payload)
+    assert uri.startswith("cas://sha256:")
+    # Content addressing dedupes by construction: same bytes, same address.
+    assert m.put_blob(payload) == uri
+    assert m.put_blob(b"other") != uri
+
+    got = m.get_blob(uri)
+    assert isinstance(got, bytes), "blobs come back as bytes, not a list of ints"
+    assert got == payload
+
+
+def test_blob_bad_uris_raise(tmp_path):
+    m = make_db(tmp_path)
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.get_blob("not-a-cas-uri")
+    # Short/truncated addresses must error, never panic on a byte slice.
+    with pytest.raises(ValueError, match="VAL-E001"):
+        m.get_blob("cas://sha256:abc")
+    with pytest.raises(ValueError, match="STO-E001"):
+        m.get_blob("cas://sha256:" + "a" * 64)

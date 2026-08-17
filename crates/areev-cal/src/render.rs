@@ -39,6 +39,50 @@ pub enum MetadataDetail {
     Full,
 }
 
+/// OMS §4 progressive disclosure: how much of a grain's BODY a render carries.
+/// Deliberately orthogonal to [`MetadataDetail`], which governs the envelope
+/// (hash, namespace, confidence) rather than the content.
+///
+/// The distinction that matters is at [`Disclosure::Full`]: some grain types
+/// carry a long-form definition body that no other tier renders — a Skill's
+/// `instructions` is the field that *is* the skill, and until `full` existed it
+/// could not be reached through any rendered path at all, only through raw JSON
+/// recall, which defeats budgeted assembly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disclosure {
+    /// Terse: bodies clipped hard, long-form definitions omitted.
+    Summary,
+    /// Middle: bodies clipped, long-form definitions still omitted.
+    Headlines,
+    /// Everything, long-form definition bodies included.
+    Full,
+}
+
+impl Disclosure {
+    /// Character cap for a free-text body at this tier. Mirrors the ladder
+    /// `templates::effective_truncate` already applies to budgeted template
+    /// renders, so one word means one thing across both.
+    fn body_cap(self) -> usize {
+        match self {
+            Disclosure::Summary => 40,
+            Disclosure::Headlines => 80,
+            Disclosure::Full => usize::MAX,
+        }
+    }
+
+    /// Whether this tier carries long-form definition bodies.
+    fn carries_definitions(self) -> bool {
+        matches!(self, Disclosure::Full)
+    }
+}
+
+/// Body cap for a render, given an optional requested tier. `None` — no
+/// `progressive_disclosure` asked for — keeps each arm's established default,
+/// so an unannotated query renders byte-for-byte as it always has.
+fn body_cap(disclosure: Option<Disclosure>, default: usize) -> usize {
+    disclosure.map_or(default, Disclosure::body_cap)
+}
+
 /// A borrowed, surface-neutral view of one grain. The CAL executor builds it
 /// from a `CalGrainResult`, `areev-context` from a `DeserializedGrain`; both
 /// views of the same stored grain render to the same bytes.
@@ -212,6 +256,16 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 /// …); unknown types fall back to a generic `<grain type="…">` element with
 /// the fields as child tags, so an unusual grain still renders truthfully.
 pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
+    render_grain_sml_at(view, level, None)
+}
+
+/// [`render_grain_sml`] at an explicit progressive-disclosure tier. `None` is
+/// the historical render, unchanged byte for byte.
+pub fn render_grain_sml_at(
+    view: &GrainView,
+    level: MetadataDetail,
+    disclosure: Option<Disclosure>,
+) -> String {
     let meta = extract_metadata(view, level);
     let attrs = meta
         .as_ref()
@@ -232,7 +286,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
         }
         "event" => {
             let content = view.get_str("content").unwrap_or("");
-            let display = truncate(content, 500);
+            let display = truncate(content, body_cap(disclosure, 500));
             // The speaker matters: `relation` carries it on CAL results,
             // `role`/`speaker` on raw event fields. A conversation whose
             // turns lose their speakers is unreadable.
@@ -281,7 +335,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
             };
             let mut sml = format!("<tool tool=\"{}\" status=\"{status}\"{attrs}>", sml_escape(tool));
             if !result_str.is_empty() {
-                sml.push_str(&sml_escape(truncate(result_str, 300)));
+                sml.push_str(&sml_escape(truncate(result_str, body_cap(disclosure, 300))));
             }
             if let Some(d) = view.get_u64("duration_ms") {
                 sml.push_str(&format!(" ({d}ms)"));
@@ -294,7 +348,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
             format!(
                 "<observation observer=\"{}\"{attrs}>{}</observation>",
                 sml_escape(observer),
-                sml_escape(&observation_content(view))
+                sml_escape(truncate(&observation_content(view), body_cap(disclosure, usize::MAX)))
             )
         }
         "goal" => {
@@ -305,7 +359,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
                 "<goal state=\"{}\" priority=\"{}\"{attrs}>{}</goal>",
                 sml_escape(state),
                 sml_escape(priority),
-                sml_escape(desc)
+                sml_escape(truncate(desc, body_cap(disclosure, usize::MAX)))
             );
             if let Some(c) = view.get_str("criteria") {
                 sml = sml.replace(
@@ -322,7 +376,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
             if !conclusion.is_empty() {
                 sml.push_str(&format!(
                     "<conclusion>{}</conclusion>",
-                    sml_escape(conclusion)
+                    sml_escape(truncate(conclusion, body_cap(disclosure, usize::MAX)))
                 ));
             }
             if premise_count > 0 {
@@ -337,7 +391,7 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
             let dissent_count = view.get_i64("dissent_count").unwrap_or(0);
             format!(
                 "<consensus agreed=\"{agree_count}\" dissent=\"{dissent_count}\"{attrs}>{}</consensus>",
-                sml_escape(agreed)
+                sml_escape(truncate(agreed, body_cap(disclosure, usize::MAX)))
             )
         }
         "consent" => {
@@ -369,6 +423,18 @@ pub fn render_grain_sml(view: &GrainView, level: MetadataDetail) -> String {
             let mut sml = format!("<skill name=\"{}\"{domain_attr}{attrs}>", sml_escape(name));
             if let Some(desc) = view.get_str("description").filter(|d| !d.is_empty()) {
                 sml.push_str(&sml_escape(desc));
+            }
+            // `instructions` is the field that IS the skill, and `when_to_use`
+            // is what tells a model whether to read it. Both are long-form, so
+            // they ride only at full disclosure — a recall of twenty skills at
+            // the default tier must stay a listing, not twenty playbooks.
+            if disclosure.is_some_and(Disclosure::carries_definitions) {
+                if let Some(w) = view.get_str("when_to_use").filter(|w| !w.is_empty()) {
+                    sml.push_str(&format!("<when_to_use>{}</when_to_use>", sml_escape(w)));
+                }
+                if let Some(i) = view.get_str("instructions").filter(|i| !i.is_empty()) {
+                    sml.push_str(&format!("<instructions>{}</instructions>", sml_escape(i)));
+                }
             }
             sml.push_str("</skill>");
             sml
@@ -703,6 +769,12 @@ const RENDER_SKIP: [&str; 8] = [
 /// field shape, matching the golden-pinned output
 /// (`**john** likes jazz *(0.80, 2026-01-05)*`).
 pub fn render_grain_markdown(view: &GrainView) -> String {
+    render_grain_markdown_at(view, None)
+}
+
+/// [`render_grain_markdown`] at an explicit progressive-disclosure tier. `None`
+/// is the historical render, unchanged byte for byte.
+pub fn render_grain_markdown_at(view: &GrainView, disclosure: Option<Disclosure>) -> String {
     let serde_json::Value::Object(map) = view.fields else {
         return String::new();
     };
@@ -817,6 +889,18 @@ pub fn render_grain_markdown(view: &GrainView) -> String {
                         .and_then(serde_json::Value::as_i64)
                         .unwrap_or(0);
                     line.push_str(&format!(" (proficiency {p:.2}, practised {practised}×)"));
+                }
+                // The long-form definition, at full disclosure only — same rule
+                // as the SML arm, so a skill discloses identically in both.
+                if disclosure.is_some_and(Disclosure::carries_definitions) {
+                    let when = map.get("when_to_use").and_then(|v| v.as_str()).unwrap_or("");
+                    if !when.is_empty() {
+                        line.push_str(&format!("\n\n*Use when*: {when}"));
+                    }
+                    let instr = map.get("instructions").and_then(|v| v.as_str()).unwrap_or("");
+                    if !instr.is_empty() {
+                        line.push_str(&format!("\n\n{instr}"));
+                    }
                 }
                 line
             } else if !subject.is_empty() && !text.is_empty() {

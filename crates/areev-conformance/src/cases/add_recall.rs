@@ -64,3 +64,49 @@ pub fn reopen_preserves_state_and_counters(b: &dyn Backend) {
     sorted.dedup();
     assert_eq!(seqs, sorted, "op_seq strictly increasing, no reuse");
 }
+
+/// A grain may carry a `subject` without asserting a relation or object (an
+/// Event about a message id, an Observation about an entity). That subject has
+/// to reach the structural index on every backend: it is both the retrieval key
+/// AND — because `forget_subject`/`subject_report` select through the same
+/// index — the difference between erasing an identity and silently keeping it.
+pub fn subject_without_relation_is_indexed(b: &dyn Backend) {
+    let mut m = b.open();
+    let mut e = areev_core::types::Event::new("call transcript").subject("pat");
+    e.common.namespace = Some("ns".into());
+    m.add(&e).unwrap();
+    m.add(&fact("ns", "pat", "lives_in", "Berlin")).unwrap();
+    m.add(&fact("ns", "mara", "prefers", "tea")).unwrap();
+
+    // Retrieval leg.
+    assert_eq!(
+        m.recall("ns", "pat", None, 8).unwrap().len(),
+        2,
+        "[{}] subject-only grain must join the structural recall",
+        b.name()
+    );
+    // What it must exclude: the grain asserts no relation, so no relation
+    // filter may match it, and an unknown subject stays empty.
+    assert_eq!(
+        m.recall("ns", "pat", Some("lives_in"), 8).unwrap().len(),
+        1,
+        "[{}] a relation filter must not pick up the subject-only grain",
+        b.name()
+    );
+    assert!(m.recall("ns", "nobody", None, 8).unwrap().is_empty(), "[{}]", b.name());
+
+    // Disclosure and erasure legs — the pair that shares one selector.
+    assert_eq!(
+        m.subject_report("ns", "pat").unwrap().grains.len(),
+        2,
+        "[{}] DSAR must disclose the subject-only grain",
+        b.name()
+    );
+    assert_eq!(
+        m.forget_subject("ns", "pat").unwrap().grains_erased,
+        2,
+        "[{}] erasure must reach the subject-only grain",
+        b.name()
+    );
+    assert_eq!(m.recent("ns", None, 8).unwrap().len(), 1, "[{}] unrelated grain survives", b.name());
+}

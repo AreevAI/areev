@@ -249,6 +249,11 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
             "transferable",
             "practice_count",
             "last_practiced_at",
+            // The definition body. Omitting these made the field that IS the
+            // skill unreachable through PROJECT, leaving raw JSON recall as the
+            // only way to read a skill's own instructions.
+            "instructions",
+            "when_to_use",
         ],
         toon_columns: &["name", "domain", "proficiency"],
     },

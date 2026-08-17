@@ -735,8 +735,11 @@ impl CalExecutor {
             payload,
             &query.format,
             grouped_by.as_deref(),
-            &query.user_vars,
-            store,
+            RenderInputs {
+                user_vars: &query.user_vars,
+                store,
+                disclosure: disclosure_of(&query.with_options),
+            },
             None,
             &mut exec_warnings,
         )?;
@@ -814,8 +817,11 @@ impl CalExecutor {
             payload,
             &query.format,
             grouped_by.as_deref(),
-            &query.user_vars,
-            store,
+            RenderInputs {
+                user_vars: &query.user_vars,
+                store,
+                disclosure: disclosure_of(&query.with_options),
+            },
             None,
             &mut exec_warnings,
         )?;
@@ -2382,7 +2388,18 @@ impl CalExecutor {
         // propagate its metadata to the renderer.
         if query.pipeline.is_empty() {
             if let Some(ref fmt) = query.format {
-                return apply_format_clause_to_grains(&grains, fmt, None, &query.user_vars, store, &Default::default(), exec_warnings);
+                return apply_format_clause_to_grains(
+                    &grains,
+                    fmt,
+                    None,
+                    RenderInputs {
+                        user_vars: &query.user_vars,
+                        store,
+                        disclosure: disclosure_of(&query.with_options),
+                    },
+                    &Default::default(),
+                    exec_warnings,
+                );
             }
         }
 
@@ -4043,8 +4060,11 @@ impl CalExecutor {
             payload,
             &entry.format,
             grouped_by.as_deref(),
-            &entry.user_vars,
-            store,
+            RenderInputs {
+                user_vars: &entry.user_vars,
+                store,
+                disclosure: disclosure_of(&entry.with_options),
+            },
             None,
             exec_warnings,
         )?;
@@ -4406,8 +4426,15 @@ impl CalExecutor {
                     result,
                     &assemble.format,
                     None,
-                    &query.user_vars,
-                    store,
+                    RenderInputs {
+                        user_vars: &query.user_vars,
+                        store,
+                        // An ASSEMBLE holds its own WITH options so they scope
+                        // to this assembly even when nested; fall back to the
+                        // enclosing query's.
+                        disclosure: disclosure_of(&assemble.with_options)
+                            .or_else(|| disclosure_of(&query.with_options)),
+                    },
                     // `context_name` is the explicit `ASSEMBLE "name"`
                     // override; `topic` is the bare name. `for_whom` is the
                     // FOR clause, which is what §10.5 calls the intent.
@@ -4599,8 +4626,11 @@ impl CalExecutor {
                 &grains,
                 clause,
                 None,
-                &query.user_vars,
-                store,
+                RenderInputs {
+                    user_vars: &query.user_vars,
+                    store,
+                    disclosure: disclosure_of(&query.with_options),
+                },
                 &plan,
                 exec_warnings,
             )?
@@ -5588,12 +5618,42 @@ fn extract_hash_from_condition(condition: Option<&Condition>) -> Option<String> 
 ///
 /// When `grouped_by` is `Some`, the grains have been reordered by `| GROUP BY`
 /// and FORMAT renderers emit group headers.
+/// The ambient inputs a FORMAT render needs beyond the grains themselves.
+/// Grouped because all three stages of the format path take the same set, and
+/// threading them one by one pushed each signature past what is readable.
+#[derive(Clone, Copy)]
+struct RenderInputs<'a> {
+    /// `WITH VARS` bindings, for template rendering.
+    user_vars: &'a HashMap<String, String>,
+    /// Store access — templates are host metadata read through the facade.
+    store: &'a dyn CalStoreFacade,
+    /// OMS §4 `WITH progressive_disclosure(level)`. `None` = not asked for, and
+    /// every render then keeps its historical output byte for byte.
+    disclosure: Option<crate::render::Disclosure>,
+}
+
+/// The progressive-disclosure tier a `WITH` clause asks for (OMS §4).
+///
+/// The parser has already refused any level word outside
+/// `summary | headlines | full`, so the fallthrough only ever catches the bare
+/// `WITH progressive_disclosure` form — read as "everything", since `full` is
+/// the only tier that adds anything a caller could be asking for.
+fn disclosure_of(opts: &[super::ast::WithOption]) -> Option<crate::render::Disclosure> {
+    opts.iter().find_map(|o| match o {
+        super::ast::WithOption::ProgressiveDisclosure { level } => Some(match level.as_deref() {
+            Some("summary") => crate::render::Disclosure::Summary,
+            Some("headlines") => crate::render::Disclosure::Headlines,
+            _ => crate::render::Disclosure::Full,
+        }),
+        _ => None,
+    })
+}
+
 fn apply_format_clause(
     payload: CalResultPayload,
     format: &Option<FormatClause>,
     grouped_by: Option<&str>,
-    user_vars: &HashMap<String, String>,
-    store: &dyn CalStoreFacade,
+    inputs: RenderInputs<'_>,
     // `(context name, FOR intent)` — only an ASSEMBLE has them, and they feed
     // `{{assembly.name}}` / `{{assembly.intent}}`.
     assemble_ident: Option<(&str, &str)>,
@@ -5655,7 +5715,9 @@ fn apply_format_clause(
         sources: (!render_sources.is_empty()).then_some(render_sources.as_slice()),
     };
 
-    apply_format_clause_to_grains(grains, clause, grouped_by, user_vars, store, &plan, warnings)
+    apply_format_clause_to_grains(
+        grains, clause, grouped_by, inputs, &plan, warnings,
+    )
 }
 
 /// Apply a `FormatClause` to a slice of grains, producing either
@@ -5671,8 +5733,7 @@ fn apply_format_clause_to_grains(
     grains: &[CalGrainResult],
     clause: &FormatClause,
     grouped_by: Option<&str>,
-    user_vars: &HashMap<String, String>,
-    store: &dyn CalStoreFacade,
+    inputs: RenderInputs<'_>,
     plan: &super::templates::RenderPlan<'_>,
     warnings: &mut Vec<String>,
 ) -> std::result::Result<CalResultPayload, CalError> {
@@ -5687,13 +5748,17 @@ fn apply_format_clause_to_grains(
             })
         }
         FormatClause::Single(spec) => {
-            format_grain_results(grains, spec, grouped_by, user_vars, store, plan, warnings)
+            format_grain_results(
+                grains, spec, grouped_by, inputs, plan, warnings,
+            )
         }
         FormatClause::Multi(entries) => {
             let mut formats = HashMap::new();
             for entry in entries {
                 let rendered =
-                    format_grain_results(grains, &entry.spec, grouped_by, user_vars, store, plan, warnings)?;
+                    format_grain_results(
+                        grains, &entry.spec, grouped_by, inputs, plan, warnings,
+                    )?;
                 if let CalResultPayload::Formatted { text, format, .. } = rendered {
                     let key = entry.alias.clone().unwrap_or(format);
                     formats.insert(key, text);
@@ -5747,11 +5812,11 @@ fn format_grain_results(
     grains: &[CalGrainResult],
     format: &super::ast::FormatSpec,
     grouped_by: Option<&str>,
-    user_vars: &HashMap<String, String>,
-    store: &dyn CalStoreFacade,
+    inputs: RenderInputs<'_>,
     plan: &super::templates::RenderPlan<'_>,
     warnings: &mut Vec<String>,
 ) -> std::result::Result<CalResultPayload, CalError> {
+    let RenderInputs { user_vars, store, disclosure } = inputs;
     let (text, format_name) = match format {
         super::ast::FormatSpec::Json => {
             if let Some(field) = grouped_by {
@@ -5789,7 +5854,10 @@ fn format_grain_results(
                         }
                     ));
                     for grain in members {
-                        md.push_str(&crate::render::render_grain_markdown(&grain_view(grain)));
+                        md.push_str(&crate::render::render_grain_markdown_at(
+                            &grain_view(grain),
+                            disclosure,
+                        ));
                         md.push('\n');
                     }
                 }
@@ -5798,7 +5866,10 @@ fn format_grain_results(
                 // line is noise in a prompt, and the assertion already names
                 // what it is about.
                 for grain in grains {
-                    md.push_str(&crate::render::render_grain_markdown(&grain_view(grain)));
+                    md.push_str(&crate::render::render_grain_markdown_at(
+                        &grain_view(grain),
+                        disclosure,
+                    ));
                     md.push('\n');
                 }
             }
@@ -5878,7 +5949,11 @@ fn format_grain_results(
                     ));
                     for grain in members {
                         sml.push_str("    ");
-                        sml.push_str(&crate::render::render_grain_sml(&grain_view(grain), level));
+                        sml.push_str(&crate::render::render_grain_sml_at(
+                            &grain_view(grain),
+                            level,
+                            disclosure,
+                        ));
                         sml.push('\n');
                     }
                     sml.push_str("  </group>\n");
@@ -5886,7 +5961,11 @@ fn format_grain_results(
             } else {
                 for grain in grains {
                     sml.push_str("  ");
-                    sml.push_str(&crate::render::render_grain_sml(&grain_view(grain), level));
+                    sml.push_str(&crate::render::render_grain_sml_at(
+                        &grain_view(grain),
+                        level,
+                        disclosure,
+                    ));
                     sml.push('\n');
                 }
             }

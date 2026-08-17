@@ -212,6 +212,8 @@ impl Analyzer for ToolFailureClustering {
                     // Re-measure at 1 day, 1 week, 1 month — a late recurrence
                     // (held at 1d, regressed at 30d) is caught by the schedule.
                     horizons_ms: vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000],
+                    // A count of recurrences: fewer is better.
+                    higher_is_better: false,
                 }),
             );
         }

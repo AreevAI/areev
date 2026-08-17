@@ -196,6 +196,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(subject_erasure_replicates);
         $per_case!(retention_erases_only_older);
         $per_case!(subject_report_mirrors_erasure);
+        $per_case!(subject_without_relation_is_indexed);
         // run journal (the runtime's resume-correctness substrate)
         $per_case!(run_id_indexes_on_any_grain_type);
         $per_case!(run_grains_pages_completely);

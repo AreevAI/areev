@@ -22,6 +22,9 @@ pub struct OutcomeInput {
     pub baseline: f64,
     pub current: f64,
     pub unit: String,
+    /// Carried from the metric snapshot so the analyzer applies the SAME
+    /// direction the engine did — see `recommendation::is_regression`.
+    pub higher_is_better: bool,
 }
 
 /// The context handed to `analyze`. Read-only by construction.

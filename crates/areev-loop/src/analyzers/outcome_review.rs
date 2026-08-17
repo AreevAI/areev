@@ -6,7 +6,10 @@
 //! accountable to measured history.
 //!
 //! Our built-in metrics are lower-is-better (e.g. `tool_error_rate`), so a
-//! regression is `current > baseline` beyond a small epsilon.
+//! regression is `current > baseline` beyond a small epsilon. An evalset
+//! metric can be higher-is-better and inverts that, which is why the direction
+//! travels on the input and the comparison lives in ONE place
+//! (`recommendation::is_regression`).
 
 use crate::analyzer::{AnalyzeCtx, Analyzer};
 use crate::error::Result;
@@ -14,9 +17,6 @@ use crate::manifest::*;
 use crate::model::{ActionKind, Severity};
 use crate::recommendation::{Proposal, RecDraft, Summary};
 use serde_json::{json, Map};
-
-/// Minimum relative worsening to call a regression (avoids noise at n=1).
-const REGRESSION_EPSILON: f64 = 1e-9;
 
 pub struct OutcomeReview {
     manifest: AnalyzerManifest,
@@ -57,7 +57,11 @@ impl Analyzer for OutcomeReview {
     fn analyze(&self, ctx: &AnalyzeCtx) -> Result<Vec<RecDraft>> {
         let mut drafts = Vec::new();
         for input in ctx.outcome_inputs() {
-            let regressed = input.current > input.baseline + REGRESSION_EPSILON;
+            let regressed = crate::recommendation::is_regression(
+                input.baseline,
+                input.current,
+                input.higher_is_better,
+            );
             if !regressed {
                 continue;
             }
@@ -104,6 +108,18 @@ mod tests {
             baseline,
             current,
             unit: "ratio".into(),
+            higher_is_better: false,
+        }
+    }
+
+    /// A higher-is-better metric (an evalset accuracy) must invert the verdict.
+    /// Reading it the built-in way would propose reverting exactly the changes
+    /// that worked.
+    fn rising(baseline: f64, current: f64) -> OutcomeInput {
+        OutcomeInput {
+            metric: "evalset:abc123:category_accuracy".into(),
+            higher_is_better: true,
+            ..input(baseline, current)
         }
     }
 
@@ -121,5 +137,27 @@ mod tests {
         let mut sub = TestSubstrate::new();
         sub.set_outcome_inputs(vec![input(0.5, 0.2), input(0.3, 0.3)]);
         assert!(sub.analyze(&OutcomeReview::new(), 10_000).is_empty());
+    }
+
+    #[test]
+    fn a_higher_is_better_metric_regresses_when_it_falls() {
+        let mut sub = TestSubstrate::new();
+        // Accuracy dropped 0.92 -> 0.71: that IS the regression.
+        sub.set_outcome_inputs(vec![rising(0.92, 0.71)]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1, "a fall in accuracy must propose a revert");
+        assert_eq!(drafts[0].action_kind, ActionKind::Revert);
+    }
+
+    #[test]
+    fn a_higher_is_better_metric_holds_when_it_rises() {
+        let mut sub = TestSubstrate::new();
+        // The failure this pins: reading accuracy with the lower-is-better
+        // rule would revert the recommendation that improved it.
+        sub.set_outcome_inputs(vec![rising(0.71, 0.92), rising(0.8, 0.8)]);
+        assert!(
+            sub.analyze(&OutcomeReview::new(), 10_000).is_empty(),
+            "rising accuracy is the receipt, not a regression"
+        );
     }
 }
