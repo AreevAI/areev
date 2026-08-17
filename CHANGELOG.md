@@ -9,6 +9,8 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-17
+
 ### Added
 
 - **Namespace prefix scoping (`"org.*"`)** — one convention on every read
