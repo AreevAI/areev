@@ -9,6 +9,83 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-08-17
+
+### Fixed
+
+- **A grain carrying a `subject` without a relation or object reached no
+  index at all** (#23). Structural indexing required all three positions, so
+  an Event *about* a message id or a person was invisible to
+  `recall(ns, subject, …)` — a silent empty result on a filter every surface
+  accepts. The same root cause was the serious one: `forget_subject` and
+  `subject_report` select through those indexes, so the identity's own grain
+  survived erasure and went **undisclosed in a DSAR**, while the erasure
+  reported success. Such grains now get a subject-anchored row (relation and
+  object NULL, because the grain asserts neither — which also keeps the row
+  inert to every relation-bound query). Never written to `heads`/
+  `entity_latest`: a log entry about a subject has no "current value". Existing
+  files are healed on open by a `link_index` stamp bump; the rebuild replays
+  the rows and reconstructs `cur` from supersession state, so a reindex neither
+  duplicates a grain nor resurrects a superseded one. Pinned on both backends
+  (`subject_without_relation_is_indexed`).
+- **`DEFINE QUERY` stored bodies that could never `RUN`** (#24). Define-time
+  validation skipped parsing entirely whenever the body contained `$` — the
+  shape most saved queries have — and fell back to a keyword blocklist, so any
+  syntax error was stored and first surfaced when a caller ran it, typically an
+  unattended agent long after the author had moved on. The body is now parsed
+  at `DEFINE`. Bodies whose parameters sit in positions demanding a literal
+  (`RECENT $limit`) are still accepted: the check re-parses with the parameters
+  standing in, so only a body malformed *however* it is bound is refused
+  (`CAL-E059`). The read-only and destructive guards are unchanged.
+- **A Skill's `instructions` could not be reached through any rendered path**
+  (#25). The field that *is* the skill was absent from the grain type's
+  queryable fields (`PROJECT name, instructions` → `CAL-E060`) and no format
+  emitted it, leaving raw JSON recall — which defeats budgeted assembly — as
+  the only way to read it. `instructions` and `when_to_use` are now projectable
+  and render at full disclosure.
+
+### Added
+
+- **`WITH progressive_disclosure(summary|headlines|full)` now executes**
+  (#25). It was documented in `docs/cal-reference.md` but parsed and discarded,
+  warning `CAL-W004`. It is the *body* axis, orthogonal to metadata: `summary`
+  and `headlines` clip free-text bodies (40/80 chars, the same ladder budgeted
+  template renders already use), and `full` leaves them whole **and** adds the
+  long-form definition bodies no other tier carries — a Skill's `when_to_use`
+  and `instructions`, so they reach a budgeted `ASSEMBLE` instead of being
+  injected around it. Omitting the option renders exactly as before, byte for
+  byte.
+- **The CAS blob store reaches the CLI and both bindings** (#27):
+  `areev blob put <FILE>|--stdin` prints the `cas://` URI (idempotent by
+  construction), `areev blob get <cas-uri>` writes hash-verified bytes to
+  stdout, and `put_blob`/`get_blob` ship in Python and Node — bytes in, bytes
+  out, the one documented exception to the scalars-in/JSON-out convention.
+  `blob get` deliberately **does not open the memory**: the embedded backend's
+  file lock is exclusive, so while a run holds a memory even a reader is
+  refused, which put an attachment out of reach of the very `--tool-cmd`
+  subprocess the run spawned to process it. Reading the sidecar needs no lock
+  and answers no consistency question — a blob is immutable and its address is
+  its checksum, re-verified on read. Encrypted memories still open, since
+  decryption needs the derived key. No MCP tool, deliberately: blob bytes would
+  have to be base64'd into a tool result and land whole in the model's context.
+- **Evalset-backed outcome metrics** (#29). A recommendation may carry
+  `metric = "evalset:<EVALSET_HASH>:<field>"`, resolved by `areev loop outcomes`
+  from the summaries `areev eval run` journals — `passed`, `failed`, `total`
+  and `error_rate` work against any evalset, and any other field is read from
+  the summary the harness wrote. This moves the honesty boundary legitimately
+  rather than breaking it: an evalset run is itself an internal, bounded,
+  attributable measurement. Two safeguards are load-bearing. A run journaled
+  **before** the apply is never evidence (no run since → not yet measurable,
+  and the checkpoint stays due; scoring the baseline against itself would
+  report `held` forever, a fabricated receipt). And `MetricSnapshot.higher_is_better`
+  states the direction, because the built-in metrics are recurrence counts
+  where lower is better while an accuracy is the opposite — read the wrong way,
+  the Verify gate would propose reverting the rules that worked. The regression
+  comparison now lives in one function both the engine and `outcome_review`
+  call. The apply gate (`--gating-run`) and the outcome edge read those
+  summaries through one shared reader, so a rule cannot be admitted on one
+  reading of an evalset and judged on another.
+
 ## [1.2.0] — 2026-08-17
 
 ### Added
@@ -268,7 +345,9 @@ plane), renamed on every surface.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/AreevAI/areev/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/AreevAI/areev/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AreevAI/areev/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/AreevAI/areev/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/AreevAI/areev/compare/v1.0.0...v1.0.1
