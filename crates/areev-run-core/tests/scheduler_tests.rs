@@ -290,6 +290,105 @@ fn bounded_self_loop_iterates_exactly_max_cycles_plus_one_runs() {
 }
 
 #[test]
+fn cycle_whose_back_edge_targets_a_non_entry_node_parks_instead_of_stalling() {
+    // GitHub issue #33's exact repro shape: a -> g, g -> c (cond +
+    // max_cycles), c -> g — the back-edge closes the cycle on `g`, NOT on
+    // the plan's entry `a`. Before the fix, `refresh_readiness` required
+    // the not-yet-resolvable `c -> g` edge before `g` could ever go Ready,
+    // so the run stalled naming "a" on superstep 1 — even though `a`'s own
+    // edge fired — and `g` was never dispatched at all.
+    let mut w = wf(&["a", "g", "c"])
+        .edge("a", "g")
+        .cond_edge("g", "c", "decision == \"question\"");
+    w.edges[1].max_cycles = Some(6);
+    w.edges.push(areev_core::types::WorkflowEdge {
+        src: "c".into(),
+        dst: "g".into(),
+        cond: None,
+        max_cycles: None,
+    });
+    let plan = PlanGraph::build(&w).unwrap();
+    let mut execs = host_execs(&plan);
+    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "g".into() };
+    let behavior = |key: &JournalKey, _in: &Value| ok(json!({key.node.clone(): true}));
+
+    let r = Sim {
+        env: env(&plan, &execs, Budgets::default()),
+        behavior: &behavior,
+        seed: 9,
+        clock: 1_000,
+        respond: BTreeMap::new(),
+    }
+    .run();
+
+    assert!(!r.state.is_terminal(), "must park on g's ask, not finish stalled");
+    assert_eq!(r.state.pending_asks.len(), 1);
+    let ask_id = r.state.pending_asks.keys().next().unwrap().clone();
+    // The ask id is the journal key digest for g's first attempt — proof
+    // the park landed on g, not on a stall diagnosis naming a.
+    let expect_key = JournalKey {
+        run_id: "run-1".into(),
+        task_path: "".into(),
+        node: "g".into(),
+        attempt: 1,
+        effect_seq: 0,
+        kind: EffectKind::Tool,
+    };
+    assert_eq!(ask_id, expect_key.tool_call_id(), "parked on g's ask, not stalled at a");
+}
+
+#[test]
+fn all_host_cycle_whose_back_edge_targets_a_non_entry_node_iterates_correctly() {
+    // Same shape, no Client node (the issue's "not the client node" check)
+    // — driven far enough to prove `g` and `c` both re-enter correctly
+    // across generations, not just that the very first dispatch succeeds.
+    let mut w = wf(&["a", "g", "c"])
+        .edge("a", "g")
+        .cond_edge("g", "c", "decision == \"question\"");
+    w.edges[1].max_cycles = Some(2);
+    w.edges.push(areev_core::types::WorkflowEdge {
+        src: "c".into(),
+        dst: "g".into(),
+        cond: None,
+        max_cycles: None,
+    });
+    let plan = PlanGraph::build(&w).unwrap();
+    let execs = host_execs(&plan);
+    let behavior = |key: &JournalKey, input: &Value| match key.node.as_str() {
+        "g" => {
+            let runs = input.get("g_runs").and_then(|v| v.as_i64()).unwrap_or(0);
+            ok(json!({"decision": "question", "g_runs": runs + 1}))
+        }
+        "c" => {
+            let runs = input.get("c_runs").and_then(|v| v.as_i64()).unwrap_or(0);
+            ok(json!({"c_runs": runs + 1}))
+        }
+        _ => ok(json!({key.node.clone(): true})),
+    };
+
+    let r = Sim {
+        env: env(&plan, &execs, Budgets::default()),
+        behavior: &behavior,
+        seed: 13,
+        clock: 1_000,
+        respond: BTreeMap::new(),
+    }
+    .run();
+
+    // g dispatches once per generation (0, 1, 2 — the third g->c attempt
+    // exhausts max_cycles=2); c runs once per successfully fired loop edge.
+    assert_eq!(r.state.context["g_runs"], json!(3), "g ran across three generations");
+    assert_eq!(r.state.context["c_runs"], json!(2), "c ran once per fired loop edge");
+    let exhausted = r
+        .checkpoints
+        .iter()
+        .flat_map(|c| &c.edges)
+        .filter(|(_, _, o)| *o == EdgeOutcome::CycleExhausted)
+        .count();
+    assert_eq!(exhausted, 1, "the bounded edge reports exhaustion exactly once");
+}
+
+#[test]
 fn retryable_failures_retry_within_budget_then_succeed() {
     let w = wf(&["flaky", "next"]).edge("flaky", "next");
     let mut w = w;
