@@ -349,7 +349,7 @@ The same runtime on every surface — one journal, one set of rules:
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
 | Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `changes_since` — JSON strings out |
 | Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, …) — promises, JSON strings out |
-| HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue |
+| HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves (not runs of them) — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) |
 
 Authorization uses three verbs, granted like any other
 ([CAL DCL](cal-reference.md)): `run.execute` (start/resume), `run.respond`

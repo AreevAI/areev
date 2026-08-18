@@ -404,6 +404,25 @@
   #gscrub input[type=range] { width:100%; accent-color:var(--accent); }
   .scrub-ticks { display:flex; justify-content:space-between; font-size:11.5px; color:var(--faint); }
 
+  /* ── workflows ── */
+  /* The plan list reuses .starter (query page's card) — a workflow card is
+     the same shape: a bold label plus a code-styled gloss line. */
+  #wfList { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+  #wfwrap { background:var(--well); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+  #wfstage { position:relative; }
+  #wfcanvas { display:block; width:100%; height:520px; cursor:default; }
+  #wfcanvas.connecting { cursor:crosshair; }
+  #wftools { top:16px; left:16px; display:flex; align-items:center; gap:9px; background:none; border:0; box-shadow:none; }
+  #wflegend { bottom:16px; left:16px; display:flex; align-items:center; gap:14px; height:34px; padding:0 14px; border-radius:17px; }
+  #wflegend span { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text); white-space:nowrap; }
+  #wfzoom { bottom:16px; right:16px; display:flex; align-items:center; height:34px; padding:0 4px; border-radius:17px; }
+  #wfzoom button { width:30px; height:28px; border:0; background:none; color:var(--text); font-size:16px; border-radius:14px; }
+  #wfzoom button.lbl { width:auto; padding:0 10px; font-size:12px; font-weight:600; color:var(--accent); }
+  #wfinspect { top:16px; right:16px; width:302px; padding:18px; display:flex; flex-direction:column; gap:13px; max-height:488px; overflow-y:auto; }
+  .wf-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:10px; font-size:11.5px; font-weight:600; width:fit-content; }
+  .wf-field { display:flex; flex-direction:column; gap:5px; }
+  .wf-field .tiny { color:var(--dim); }
+
   /* ── suggestions ── */
   /* Page-level stacks own the rhythm between blocks; `.stack` is an inner
      group whose own rows carry their separators, so it takes no gap. */
@@ -515,6 +534,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4.5v15l13-7.5-13-7.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
         <span class="grow">Runs</span>
         <span class="pill" id="runPill" hidden>0</span>
+      </button>
+      <button class="nav-item" data-page="workflows">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="18.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="12" cy="18" r="2.3" stroke-width="1.7"/><path d="M7.6 7.2L11 16M16.4 7.2L13 16M7.8 6h8.4" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="grow">Workflows</span>
       </button>
       <button class="nav-item" data-page="suggestions">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
@@ -658,6 +681,62 @@
         <span class="sub">Governed workflow runs: journaled, checkpointed, pausable. A run waiting on a person shows its approval below — approving requires your own sign-in (a shared console token is refused: the approver's identity is the audit record).</span>
       </div>
       <div class="col" id="runList"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ── WORKFLOWS: plans as an editable graph ──
+         One action slot, top right, for whatever this view's primary act is:
+         "New workflow" on the list, "Save as new plan" in the editor. -->
+    <section class="page" id="page-workflows" hidden>
+      <div class="col" style="display:flex;align-items:flex-end;gap:16px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:7px">
+          <button class="btn ghost sm" id="wfBack" hidden style="align-self:flex-start">← All workflows</button>
+          <h1 id="wfTitle">Workflows</h1>
+          <span class="sub" id="wfSub">Plans <code>areev run</code> executes: nodes are steps, edges are the order they
+            can happen in. Plans are content-addressed and immutable, like every memory here — saving a
+            change writes a new plan; the old one stays recallable by its hash.</span>
+        </div>
+        <button class="btn sm" id="wfNewBtn">New workflow</button>
+        <button class="btn sm" id="wfSave" hidden>Save as new plan</button>
+      </div>
+
+      <div class="col" id="wfList"><div class="empty">loading…</div></div>
+
+      <div id="wfEditorWrap" hidden style="display:flex;flex-direction:column;gap:16px">
+        <div class="col composer" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <div class="wf-field" style="flex:2;min-width:220px">
+              <span class="tiny">Name</span>
+              <input type="text" id="wfName" placeholder="e.g. refund_approval">
+            </div>
+            <div class="wf-field" style="flex:3;min-width:260px">
+              <span class="tiny">Trigger (optional)</span>
+              <input type="text" id="wfTrigger" placeholder="e.g. refund_requests ticket opened">
+            </div>
+          </div>
+          <div class="banner" id="wfLockedNote" hidden style="background:var(--accent-soft);border-color:var(--accent-line)">
+            <span class="grow">This plan has a bounded-cycle edge or a per-node retry count — CAL can
+              visualize both but has no syntax yet to author them through <code>ADD workflow</code>.
+              Open for viewing only; edit this one via the Rust or Python API.</span>
+          </div>
+        </div>
+
+        <div class="wide" id="wfwrap">
+          <div id="wfstage">
+            <canvas id="wfcanvas"></canvas>
+            <div class="float" id="wftools">
+              <button class="btn sm" id="wfAddNode">+ Node</button>
+              <button class="btn ghost sm" id="wfResetLayout">Reset layout</button>
+              <span class="tiny" id="wfHint">Drag a step's dot to connect it</span>
+            </div>
+            <div class="float" id="wflegend"></div>
+            <div class="float" id="wfzoom">
+              <button id="wfout" title="zoom out">−</button><button id="wfin" title="zoom in">+</button><button class="lbl" id="wffit">Fit</button>
+            </div>
+            <div class="float" id="wfinspect" hidden></div>
+          </div>
+        </div>
+        <div class="col" id="wfReasonBox"></div>
+      </div>
     </section>
 
     <!-- ── CONNECT ── -->
@@ -1156,6 +1235,14 @@ function wireChrome() {
     if (e.key === '/' && document.activeElement === document.body) { e.preventDefault(); $('ask').focus(); }
   });
   Graph.wire();
+  WFGraph.wire();
+  $('wfNewBtn').onclick = wfNew;
+  $('wfBack').onclick = wfClose;
+  $('wfName').addEventListener('input', () => { if (WF_DRAFT) { WF_DRAFT.name = $('wfName').value; renderWorkflowHeader(); } });
+  $('wfTrigger').addEventListener('input', () => { if (WF_DRAFT) WF_DRAFT.trigger = $('wfTrigger').value; });
+  $('wfAddNode').onclick = wfAddNode;
+  $('wfResetLayout').onclick = () => { WFGraph.resetOverrides(); WFGraph.mount(); };
+  $('wfSave').onclick = wfArmSave;
 }
 /* Deep links: #memory · #graph · #activity · #suggestions · #connect/sync */
 function applyHash() {
@@ -1163,7 +1250,7 @@ function applyHash() {
   if (!raw) return false;
   const [head, tail] = raw.split('/');
   if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
-  if (['memory', 'activity', 'suggestions', 'connect', 'query'].includes(head)) {
+  if (['memory', 'activity', 'runs', 'workflows', 'suggestions', 'connect', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
     if (head === 'connect' && ['agent', 'sync', 'settings'].includes(tail)) CONTAB = tail;
@@ -1251,7 +1338,7 @@ async function respondRun(id, ask, refuse) {
 /* ══ render ═══════════════════════════════════════════════════════════ */
 function render() {
   syncHash();
-  for (const p of ['memory', 'activity', 'runs', 'suggestions', 'connect', 'query']) $('page-' + p).hidden = PAGE !== p;
+  for (const p of ['memory', 'activity', 'runs', 'workflows', 'suggestions', 'connect', 'query']) $('page-' + p).hidden = PAGE !== p;
   $('nav').querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === PAGE));
   $('listView').hidden = MVIEW !== 'list';
   $('graphView').hidden = MVIEW !== 'graph';
@@ -1262,6 +1349,7 @@ function render() {
   if (PAGE === 'memory') { renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild(); }
   if (PAGE === 'activity') renderActivity();
   if (PAGE === 'runs') renderRuns();
+  if (PAGE === 'workflows') renderWorkflows();
   if (PAGE === 'suggestions') { renderSuggestions(); lock($('runLoop')); }
   if (PAGE === 'connect') renderConnect();
   if (PAGE === 'query') {
@@ -2780,6 +2868,708 @@ const Graph = (() => {
     },
     mount() { resize(); build(); fit(); legend(); ticks(); inspect(); if (!raf) loop(); },
     rebuild() { if (!cv || !cv.clientWidth) return; resize(); build(); legend(); ticks(); inspect(); if (!raf) loop(); },
+  };
+})();
+
+/* ══ workflows: plans as an editable graph ═══════════════════════════
+   A Workflow grain is nodes+edges+bindings — content-addressed and
+   immutable like every grain here, so "editing" one means authoring a
+   new one. SAVE always writes `ADD workflow`, never `SUPERSEDE workflow`:
+   the SUPERSEDE form has no surface syntax to carry a `name` forward
+   (areev-cal/src/executor.rs builds its fields map from scratch), so a
+   supersede would silently drop it. A plan whose edges carry a bounded
+   cycle (`max_cycles`) or whose nodes carry a retry count opens
+   view-only — `ADD workflow`'s `* N` populates `retries`, not
+   `max_cycles`, and has no way to re-emit either on a resave, so editing
+   one through the console would silently unbound its loop. */
+function workflowGrains() { return BROWSE.filter(g => g.type === 'workflow' && isCurrent(g)); }
+function toolDefs() { return BROWSE.filter(g => g.type === 'tool' && (g.fields || {}).kind === 'definition' && isCurrent(g)); }
+function wfLabel(g) {
+  const f = g.fields || {};
+  if (f.name) return f.name;
+  if (f.trigger) return f.trigger;
+  if (Array.isArray(f.nodes) && f.nodes.length) return f.nodes.slice(0, 3).join(' → ') + (f.nodes.length > 3 ? ' …' : '');
+  return shortHash(g.hash);
+}
+function wfIsCalEditable(g) {
+  const f = g.fields || {};
+  const edges = Array.isArray(f.edges) ? f.edges : [];
+  if (edges.some(e => e.max_cycles != null)) return false;
+  if (f.retries && Object.keys(f.retries).length) return false;
+  return true;
+}
+function wfNodeExecutor(bindings, nodeId) {
+  const raw = bindings ? bindings[nodeId] : null;
+  if (!raw) return { kind: 'abstract', tool: null, hash: null };
+  const hash = String(raw).replace(/^sha256:/, '');
+  const target = BYHASH[hash];
+  if (!target) return { kind: 'host', tool: null, hash };
+  if (target.type === 'workflow') return { kind: 'subgraph', tool: target, hash };
+  const ek = (target.fields || {}).executor_kind;
+  return { kind: ek === 'client' ? 'client' : 'host', tool: target, hash };
+}
+const WF_KIND_LABEL = { host: 'Host tool', client: 'Human approval', abstract: 'Abstract (LLM step)', subgraph: 'Subgraph (another plan)' };
+/* The second line on a node's card — what actually runs, not just what
+   kind it is, so reading the graph tells you what each step does without
+   opening the inspector for every one. */
+function wfNodeSubtitle(ex) {
+  if (ex.kind === 'abstract') return 'Abstract (LLM step)';
+  const toolName = ex.tool ? ((ex.tool.fields || {}).tool_name || shortHash(ex.hash)) : (ex.hash ? shortHash(ex.hash) : '?');
+  const label = ex.kind === 'client' ? 'Human approval' : ex.kind === 'subgraph' ? 'Subgraph' : 'Host tool';
+  return label + ' · ' + toolName;
+}
+const calEsc = s => String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+let WF_SEL = null, WF_DRAFT = null, WF_LOCKED = false, WF_PICK = null;
+
+function wfOpen(hash) {
+  const g = BYHASH[hash];
+  if (!g) return;
+  const f = g.fields || {};
+  WF_SEL = hash;
+  WF_LOCKED = !wfIsCalEditable(g);
+  WF_DRAFT = {
+    name: f.name || '',
+    trigger: f.trigger || '',
+    nodes: Array.isArray(f.nodes) ? f.nodes.slice() : [],
+    edges: (Array.isArray(f.edges) ? f.edges : []).map(e => ({
+      src: e.src, dst: e.dst, cond: e.cond || null,
+      max_cycles: e.max_cycles != null ? e.max_cycles : null,
+    })),
+    bindings: Object.assign({}, f.bindings || {}),
+  };
+  WF_PICK = null;
+  WFGraph.resetOverrides();
+  renderWorkflows();
+}
+function wfNew() {
+  WF_SEL = null; WF_LOCKED = false;
+  WF_DRAFT = { name: '', trigger: '', nodes: ['start'], edges: [], bindings: {} };
+  WF_PICK = { kind: 'node', id: 'start' };
+  WFGraph.resetOverrides();
+  renderWorkflows();
+}
+function wfClose() {
+  WF_SEL = null; WF_DRAFT = null; WF_PICK = null;
+  renderWorkflows();
+}
+function wfNodeExists(id) { return WF_DRAFT.nodes.includes(id); }
+function wfAddNode() {
+  if (WF_LOCKED || !WF_DRAFT) return;
+  let n = 1, id = 'step_1';
+  while (wfNodeExists(id)) { n++; id = 'step_' + n; }
+  WF_DRAFT.nodes.push(id);
+  WF_PICK = { kind: 'node', id };
+  WFGraph.rebuild(); WFGraph.draw(); renderInspect();
+}
+function wfRenameNode(oldId, nextRaw) {
+  const next = String(nextRaw || '').trim();
+  if (!WF_DRAFT || !next || next === oldId) return false;
+  if (wfNodeExists(next)) { toast('A step named "' + next + '" already exists'); return false; }
+  WF_DRAFT.nodes = WF_DRAFT.nodes.map(n => n === oldId ? next : n);
+  WF_DRAFT.edges.forEach(e => { if (e.src === oldId) e.src = next; if (e.dst === oldId) e.dst = next; });
+  if (WF_DRAFT.bindings[oldId] != null) { WF_DRAFT.bindings[next] = WF_DRAFT.bindings[oldId]; delete WF_DRAFT.bindings[oldId]; }
+  if (WF_PICK && WF_PICK.kind === 'node' && WF_PICK.id === oldId) WF_PICK.id = next;
+  WFGraph.renameOverride(oldId, next);
+  WFGraph.rebuild(); WFGraph.draw();
+  return true;
+}
+function wfDeleteNode(id) {
+  if (WF_LOCKED || !WF_DRAFT || WF_DRAFT.nodes.length <= 1) return;
+  WF_DRAFT.nodes = WF_DRAFT.nodes.filter(n => n !== id);
+  WF_DRAFT.edges = WF_DRAFT.edges.filter(e => e.src !== id && e.dst !== id);
+  delete WF_DRAFT.bindings[id];
+  WF_PICK = null;
+  WFGraph.rebuild(); WFGraph.draw(); renderInspect();
+}
+function wfBindNode(id, hashOrEmpty) {
+  if (!WF_DRAFT) return;
+  if (hashOrEmpty) WF_DRAFT.bindings[id] = hashOrEmpty; else delete WF_DRAFT.bindings[id];
+  WFGraph.draw(); renderInspect();
+}
+/* Connecting two steps is a drag gesture (from a node's connector dot to
+   another node) rather than a click-click mode toggle — see WFGraph.wire's
+   handle drag handling. These three are the plain selection path. */
+function wfConnectNodes(fromId, toId) {
+  if (!WF_DRAFT || WF_LOCKED || fromId === toId) return;
+  const dup = WF_DRAFT.edges.some(e => e.src === fromId && e.dst === toId);
+  if (dup) { toast('That edge already exists'); return; }
+  WF_DRAFT.edges.push({ src: fromId, dst: toId, cond: null, max_cycles: null });
+  WF_PICK = { kind: 'edge', idx: WF_DRAFT.edges.length - 1 };
+  WFGraph.rebuild(); WFGraph.draw(); renderInspect();
+}
+function wfNodeClicked(id) {
+  WF_PICK = { kind: 'node', id };
+  WFGraph.draw(); renderInspect();
+}
+function wfEdgeClicked(idx) {
+  WF_PICK = { kind: 'edge', idx };
+  WFGraph.draw(); renderInspect();
+}
+function wfCanvasBgClicked() {
+  WF_PICK = null;
+  WFGraph.draw(); renderInspect();
+}
+function wfSetEdgeCond(idx, condRaw) {
+  const e = WF_DRAFT.edges[idx]; if (!e || e.max_cycles != null) return;
+  const cond = String(condRaw || '').trim();
+  e.cond = cond || null;
+  WFGraph.draw();
+}
+function wfDeleteEdge(idx) {
+  const e = WF_DRAFT.edges[idx]; if (!e || WF_LOCKED || e.max_cycles != null) return;
+  WF_DRAFT.edges.splice(idx, 1);
+  WF_PICK = null;
+  WFGraph.rebuild(); WFGraph.draw(); renderInspect();
+}
+
+function renderInspect() {
+  const box = $('wfinspect');
+  if (!WF_DRAFT || !WF_PICK) { box.hidden = true; WFGraph.setSelection(null); WFGraph.draw(); return; }
+  if (WF_PICK.kind === 'node' && !WF_DRAFT.nodes.includes(WF_PICK.id)) { WF_PICK = null; box.hidden = true; return; }
+  if (WF_PICK.kind === 'edge' && !WF_DRAFT.edges[WF_PICK.idx]) { WF_PICK = null; box.hidden = true; return; }
+  box.hidden = false; box.textContent = '';
+  WFGraph.setSelection(WF_PICK);
+
+  if (WF_PICK.kind === 'node') {
+    const id = WF_PICK.id;
+    const ex = wfNodeExecutor(WF_DRAFT.bindings, id);
+    const badge = el('span', 'wf-badge', WF_KIND_LABEL[ex.kind]);
+    badge.style.cssText = 'background:var(--well);color:' + WFGraph.kindColor(ex.kind);
+    box.appendChild(badge);
+
+    const nameField = el('div', 'wf-field');
+    nameField.appendChild(el('span', 'tiny', 'Step name'));
+    const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.value = id;
+    nameInput.disabled = WF_LOCKED;
+    nameInput.addEventListener('change', () => { if (!wfRenameNode(id, nameInput.value)) { nameInput.value = id; } else { renderInspect(); } });
+    nameField.appendChild(nameInput);
+    box.appendChild(nameField);
+
+    const bindField = el('div', 'wf-field');
+    bindField.appendChild(el('span', 'tiny', 'Runs as'));
+    const sel = document.createElement('select'); sel.disabled = WF_LOCKED;
+    const opt0 = document.createElement('option'); opt0.value = ''; opt0.textContent = '— unbound (abstract LLM step) —';
+    sel.appendChild(opt0);
+    for (const t of toolDefs()) {
+      const tf = t.fields || {};
+      const opt = document.createElement('option');
+      opt.value = t.hash;
+      opt.textContent = (tf.tool_name || shortHash(t.hash)) + (tf.executor_kind === 'client' ? '  (human approval)' : '');
+      if (ex.hash === t.hash) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', () => wfBindNode(id, sel.value || null));
+    bindField.appendChild(sel);
+    if (ex.tool && (ex.tool.fields || {}).tool_description) bindField.appendChild(el('span', 'tiny', ex.tool.fields.tool_description));
+    if (ex.kind === 'subgraph') bindField.appendChild(el('span', 'tiny', 'Bound to another plan — runs as a child run.'));
+    box.appendChild(bindField);
+
+    const orig = WF_SEL && BYHASH[WF_SEL] ? (BYHASH[WF_SEL].fields || {}).retries : null;
+    if (orig && orig[id] != null) box.appendChild(el('span', 'tiny', 'Retries on failure: ' + orig[id] + ' (read-only here)'));
+
+    const del = el('button', 'btn ghost sm', 'Delete step');
+    del.disabled = WF_LOCKED || WF_DRAFT.nodes.length <= 1;
+    del.onclick = () => wfDeleteNode(id);
+    box.appendChild(del);
+  } else {
+    const idx = WF_PICK.idx;
+    const e = WF_DRAFT.edges[idx];
+    const hd = el('span', null, e.src + ' → ' + e.dst);
+    hd.style.cssText = 'font-size:15px;font-weight:600;color:var(--ink)';
+    box.appendChild(hd);
+    if (e.max_cycles != null) {
+      const b = el('span', 'wf-badge', '↻ repeats up to ' + e.max_cycles + '×');
+      b.style.cssText = 'background:var(--warn-soft);color:var(--warn)';
+      box.appendChild(b);
+      box.appendChild(el('span', 'tiny', 'A bounded-cycle edge — not editable through the console yet.'));
+    } else {
+      const condField = el('div', 'wf-field');
+      condField.appendChild(el('span', 'tiny', 'Only when (leave blank for always)'));
+      const inp = document.createElement('input'); inp.type = 'text'; inp.value = e.cond || '';
+      inp.placeholder = 'e.g. approved == true'; inp.disabled = WF_LOCKED;
+      inp.addEventListener('change', () => wfSetEdgeCond(idx, inp.value));
+      condField.appendChild(inp);
+      box.appendChild(condField);
+      const del = el('button', 'btn ghost sm', 'Delete edge');
+      del.disabled = WF_LOCKED;
+      del.onclick = () => wfDeleteEdge(idx);
+      box.appendChild(del);
+    }
+  }
+  WFGraph.draw();
+}
+
+function wfCard(g) {
+  const f = g.fields || {};
+  const nodesN = Array.isArray(f.nodes) ? f.nodes.length : 0;
+  const edgesN = Array.isArray(f.edges) ? f.edges.length : 0;
+  const b = el('button', 'starter');
+  b.appendChild(el('b', '', wfLabel(g)));
+  const bits = [nodesN + (nodesN === 1 ? ' step' : ' steps'), edgesN + (edgesN === 1 ? ' edge' : ' edges')];
+  if (!wfIsCalEditable(g)) bits.push('view-only');
+  bits.push(relTime(createdMs(f)));
+  b.appendChild(el('span', 'meta', bits.join(' · ')));
+  if (f.trigger) b.appendChild(el('code', '', f.trigger));
+  b.onclick = () => wfOpen(g.hash);
+  return b;
+}
+/* One action slot, top right: "New workflow" on the list, "Save as new
+   plan" in the editor — never both, never scattered across the page. */
+function renderWorkflowHeader() {
+  const editing = !!WF_DRAFT;
+  $('wfBack').hidden = !editing;
+  $('wfNewBtn').hidden = editing;
+  $('wfSave').hidden = !editing;
+  if (!editing) {
+    $('wfTitle').textContent = 'Workflows';
+    $('wfSub').innerHTML = 'Plans <code>areev run</code> executes: nodes are steps, edges are the order '
+      + 'they can happen in. Plans are content-addressed and immutable, like every memory here — saving a '
+      + 'change writes a new plan; the old one stays recallable by its hash.';
+    return;
+  }
+  $('wfTitle').textContent = (WF_DRAFT.name && WF_DRAFT.name.trim())
+    || (WF_SEL && BYHASH[WF_SEL] ? wfLabel(BYHASH[WF_SEL]) : (WF_SEL ? 'Untitled plan' : 'New workflow'));
+  $('wfSub').textContent = WF_SEL
+    ? 'Editing from ' + shortHash(WF_SEL) + ' — the old version stays recallable by that hash.'
+    : 'Not yet saved. Name it, wire up its steps, then save.';
+  const canSave = !WF_LOCKED && canWrite() && stmtSupported('ADD');
+  $('wfSave').disabled = !canSave;
+  $('wfSave').title = WF_LOCKED ? 'This plan is view-only in the console'
+    : !canWrite() ? READONLY_WHY
+    : !stmtSupported('ADD') ? 'This build has no ADD workflow support'
+    : 'Write a new plan grain with these steps';
+}
+function renderWorkflows() {
+  const listHost = $('wfList');
+  listHost.hidden = !!WF_DRAFT;
+  if (!WF_DRAFT) {
+    const grains = workflowGrains();
+    const byLabel = new Map();
+    for (const g of grains) {
+      const k = wfLabel(g);
+      const cur = byLabel.get(k);
+      if (!cur || createdMs(g.fields) > createdMs(cur.fields)) byLabel.set(k, g);
+    }
+    const items = [...byLabel.values()].sort((a, b) => createdMs(b.fields) - createdMs(a.fields));
+    listHost.textContent = '';
+    if (!items.length) {
+      listHost.innerHTML = '<div class="empty">No workflows yet. A plan is what <code>areev run</code> executes — start one with "New workflow" above.</div>';
+    } else {
+      for (const g of items) listHost.appendChild(wfCard(g));
+    }
+  }
+
+  renderWorkflowHeader();
+  const wrap = $('wfEditorWrap');
+  wrap.hidden = !WF_DRAFT;
+  if (!WF_DRAFT) return;
+
+  $('wfName').value = WF_DRAFT.name || ''; $('wfName').disabled = WF_LOCKED;
+  $('wfTrigger').value = WF_DRAFT.trigger || ''; $('wfTrigger').disabled = WF_LOCKED;
+  $('wfLockedNote').hidden = !WF_LOCKED;
+  $('wfAddNode').disabled = WF_LOCKED;
+  WFGraph.mount();
+  renderInspect();
+}
+
+/* A plain sentence describing what changed, so saving rarely means typing
+   a reason from scratch — it means glancing at one and hitting Save. */
+function wfDiffSummary() {
+  const d = WF_DRAFT;
+  const name = d.name.trim() || 'this plan';
+  if (!WF_SEL) {
+    return 'Created "' + name + '" — ' + d.nodes.length + (d.nodes.length === 1 ? ' step' : ' steps')
+      + (d.edges.length ? ', ' + d.edges.length + (d.edges.length === 1 ? ' edge' : ' edges') : '') + '.';
+  }
+  const orig = (BYHASH[WF_SEL] || {}).fields || {};
+  const origNodes = new Set(orig.nodes || []), curNodes = new Set(d.nodes);
+  const addedNodes = d.nodes.filter(n => !origNodes.has(n));
+  const removedNodes = (orig.nodes || []).filter(n => !curNodes.has(n));
+  const key = e => e.src + ' → ' + e.dst;
+  const origEdges = new Map((orig.edges || []).map(e => [key(e), e]));
+  const curEdges = new Map(d.edges.map(e => [key(e), e]));
+  const addedEdges = [...curEdges.keys()].filter(k => !origEdges.has(k));
+  const removedEdges = [...origEdges.keys()].filter(k => !curEdges.has(k));
+  const changedConds = [...curEdges.keys()].filter(k => origEdges.has(k)
+    && (origEdges.get(k).cond || null) !== (curEdges.get(k).cond || null));
+  const origB = orig.bindings || {}, curB = d.bindings || {};
+  const rebound = [...new Set([...Object.keys(origB), ...Object.keys(curB)])]
+    .filter(n => String(origB[n] || '').replace(/^sha256:/, '') !== String(curB[n] || '').replace(/^sha256:/, ''));
+
+  const bits = [];
+  if (addedNodes.length) bits.push('added ' + addedNodes.join(', '));
+  if (removedNodes.length) bits.push('removed ' + removedNodes.join(', '));
+  if (addedEdges.length) bits.push('connected ' + addedEdges.join('; '));
+  if (removedEdges.length) bits.push('disconnected ' + removedEdges.join('; '));
+  if (changedConds.length) bits.push('updated the condition on ' + changedConds.join('; '));
+  if (rebound.length) bits.push('rebound ' + rebound.join(', '));
+  if ((orig.trigger || '') !== (d.trigger || '')) bits.push('changed the trigger');
+  if ((orig.name || '') !== d.name.trim()) bits.push('renamed the plan');
+  if (!bits.length) return 'Resaved "' + name + '" with no structural change.';
+  const s = bits.join('; ') + '.';
+  return (s.charAt(0).toUpperCase() + s.slice(1)).slice(0, 240);
+}
+
+function wfArmSave() {
+  if (!WF_DRAFT || WF_LOCKED) return;
+  if (!WF_DRAFT.name.trim()) { toast('Name the plan before saving'); $('wfName').focus(); return; }
+  if (!WF_DRAFT.nodes.length) { toast('Add at least one step'); return; }
+  const reason = wfDiffSummary();
+  /* A brand-new plan has nothing to justify yet — write it straight away
+     with an auto-generated reason. An edit to something that already
+     existed still gets a beat to look before it writes: the reason IS
+     that change's audit trail, just pre-filled instead of blank. */
+  if (!WF_SEL) { wfSave(reason); return; }
+
+  const box = $('wfReasonBox'); box.textContent = '';
+  const composer = el('div', 'reason');
+  composer.appendChild(el('span', 'meta', 'Why this change? Filled in from what you edited — adjust it if you like.'));
+  const line = el('div', 'line');
+  const why = document.createElement('input'); why.type = 'text'; why.value = reason;
+  const conf = el('button', 'btn sm', 'Save'); const cancel = el('button', 'btn ghost sm', 'Cancel');
+  line.appendChild(why); line.appendChild(conf); line.appendChild(cancel);
+  composer.appendChild(line);
+  box.appendChild(composer);
+  why.focus(); why.select();
+  cancel.onclick = () => { box.textContent = ''; };
+  conf.onclick = async () => {
+    if (!why.value.trim()) { toast('A reason is required — it goes in the audit trail'); why.focus(); return; }
+    conf.disabled = true; cancel.disabled = true;
+    await wfSave(why.value.trim());
+    conf.disabled = false; cancel.disabled = false;
+  };
+}
+async function wfSave(reason) {
+  const btn = $('wfSave'), prevLabel = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const d = WF_DRAFT;
+  const seen = new Set();
+  let body = '';
+  for (const e of d.edges) {
+    body += '"' + calEsc(e.src) + '" -> "' + calEsc(e.dst) + '"';
+    if (e.cond) body += ' WHEN "' + calEsc(e.cond) + '"';
+    body += ' ';
+    seen.add(e.src); seen.add(e.dst);
+  }
+  for (const n of d.nodes) if (!seen.has(n)) body += '"' + calEsc(n) + '" ';
+  let stmt = 'ADD workflow "' + calEsc(d.name.trim()) + '"';
+  if (d.trigger && d.trigger.trim()) stmt += ' ON "' + calEsc(d.trigger.trim()) + '"';
+  stmt += ' ' + body.trim();
+  for (const [node, hash] of Object.entries(d.bindings)) {
+    if (!hash) continue;
+    stmt += ' BIND "' + calEsc(node) + '" = sha256:' + String(hash).replace(/^sha256:/, '');
+  }
+  stmt += ' REASON "' + calEsc(reason) + '"';
+  const r = await cal(stmt);
+  btn.textContent = prevLabel;
+  if (!r.ok || !r.result || !r.result.hash) { toast('Could not save: ' + errText(r)); btn.disabled = false; return; }
+  toast('Saved as a new plan · ' + shortHash(r.result.hash));
+  $('wfReasonBox').textContent = '';
+  await loadBrowse();
+  wfOpen(r.result.hash);
+}
+
+/* ── the canvas: a deterministic layered layout, not a physics sim — a
+   plan reads as "what happens after what", which a left-to-right rank
+   order shows and a force-directed blob does not. Forward edges (no
+   `max_cycles`) decide rank; a bounded-cycle back-edge draws as a dashed
+   arc instead of feeding the ranking, or every node in its cycle would
+   collapse to the same rank. */
+const WFGraph = (() => {
+  let cv, ctx, W = 0, H = 0, dpr = 1;
+  let nodes = [], byId = new Map(), edgesGeo = [];
+  let scale = 1, tx = 0, ty = 0;
+  let drag = null, panning = null, moved = false, hoverId = null;
+  let connectFrom = null, connectPt = null, connectTarget = null;   // live drag-to-connect
+  let colors = {};
+  let posOverride = {};
+  let sel = null;
+
+  function recolor() {
+    colors = { host: cssVar('--accent'), client: cssVar('--warn'), abstract: cssVar('--cat-project'),
+      subgraph: cssVar('--hash'), line: cssVar('--line2'), ink: cssVar('--ink'), dim: cssVar('--dim'),
+      faint: cssVar('--faint'), surface: cssVar('--surface'), well: cssVar('--well') };
+  }
+  const clip = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+  const COL_W = 240, ROW_H = 96;
+  const HANDLE_R = 7, HANDLE_HIT = 11;
+
+  function layout() {
+    const draft = WF_DRAFT;
+    const ids = draft ? draft.nodes.slice() : [];
+    const forward = draft ? draft.edges.filter(e => e.max_cycles == null) : [];
+    const adj = new Map(ids.map(n => [n, []]));
+    const indeg = new Map(ids.map(n => [n, 0]));
+    for (const e of forward) {
+      if (!adj.has(e.src) || !adj.has(e.dst)) continue;
+      adj.get(e.src).push(e.dst);
+      indeg.set(e.dst, (indeg.get(e.dst) || 0) + 1);
+    }
+    const rank = new Map(ids.map(n => [n, 0]));
+    const queue = ids.filter(n => (indeg.get(n) || 0) === 0);
+    const seen = new Set(queue);
+    let i = 0, guard = 0;
+    while (i < queue.length && guard++ < ids.length * ids.length + 10) {
+      const n = queue[i++];
+      for (const m of adj.get(n) || []) {
+        if (rank.get(m) < rank.get(n) + 1) rank.set(m, rank.get(n) + 1);
+        indeg.set(m, (indeg.get(m) || 0) - 1);
+        if (indeg.get(m) <= 0 && !seen.has(m)) { seen.add(m); queue.push(m); }
+      }
+    }
+    const maxRank = ids.length ? Math.max(...ids.map(n => rank.get(n) || 0)) : 0;
+    for (const n of ids) if (!seen.has(n)) rank.set(n, maxRank + 1);
+    const buckets = new Map();
+    for (const n of ids) { const r = rank.get(n) || 0; if (!buckets.has(r)) buckets.set(r, []); buckets.get(r).push(n); }
+    nodes = [];
+    for (const [r, list] of buckets) {
+      list.forEach((id, i2) => {
+        const defX = r * COL_W, defY = (i2 - (list.length - 1) / 2) * ROW_H;
+        const o = posOverride[id];
+        nodes.push({ id, x: o ? o.x : defX, y: o ? o.y : defY, w: 150, h: 56 });
+      });
+    }
+    if (ctx) {
+      const draftB = draft ? draft.bindings : {};
+      for (const n of nodes) {
+        const ex = wfNodeExecutor(draftB, n.id);
+        ctx.font = '600 13.5px ' + cssVar('--sans');
+        const w1 = ctx.measureText(clip(n.id, 24)).width;
+        ctx.font = '11.5px ' + cssVar('--sans');
+        const w2 = ctx.measureText(clip(wfNodeSubtitle(ex), 30)).width;
+        n.w = Math.max(150, Math.max(w1, w2) + 44);
+      }
+    }
+    byId = new Map(nodes.map(n => [n.id, n]));
+    edgesGeo = (draft ? draft.edges : []).map((e, idx) => ({ e, idx, a: byId.get(e.src), b: byId.get(e.dst) }));
+  }
+  function resetOverrides() { posOverride = {}; }
+  function renameOverride(oldId, next) { if (posOverride[oldId]) { posOverride[next] = posOverride[oldId]; delete posOverride[oldId]; } }
+  function setSelection(s) { sel = s; }
+  function kindColor(kind) { return colors[kind] || colors.dim; }
+  function handlePt(n) { return { x: n.x + n.w / 2 + 14, y: n.y }; }
+
+  function toWorld(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left - W / 2 - tx) / scale, y: (e.clientY - r.top - H / 2 - ty) / scale };
+  }
+  function hitNode(p) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      if (Math.abs(p.x - n.x) <= n.w / 2 + 3 && Math.abs(p.y - n.y) <= n.h / 2 + 3) return n;
+    }
+    return null;
+  }
+  function hitHandle(p) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i], hp = handlePt(n);
+      if (Math.hypot(p.x - hp.x, p.y - hp.y) <= HANDLE_HIT) return n;
+    }
+    return null;
+  }
+  function bezierPoint(a, b, back, t) {
+    const midx = (a.x + b.x) / 2, bow = back ? -70 - Math.abs(a.x - b.x) * 0.15 : 0;
+    const c1x = midx, c1y = a.y + bow, c2x = midx, c2y = b.y + bow, u = 1 - t;
+    return { x: u*u*u*a.x + 3*u*u*t*c1x + 3*u*t*t*c2x + t*t*t*b.x, y: u*u*u*a.y + 3*u*u*t*c1y + 3*u*t*t*c2y + t*t*t*b.y };
+  }
+  function hitEdge(p) {
+    let best = -1, bestD = 9;
+    for (let i = 0; i < edgesGeo.length; i++) {
+      const { a, b, e } = edgesGeo[i];
+      if (!a || !b) continue;
+      for (let s = 0; s <= 20; s++) {
+        const pt = bezierPoint(a, b, e.max_cycles != null, s / 20);
+        const d = Math.hypot(pt.x - p.x, pt.y - p.y);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+    }
+    return best;
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function halo(text, x, y, font, fill) {
+    ctx.textAlign = 'center'; ctx.font = font; ctx.lineWidth = 3.5; ctx.lineJoin = 'round';
+    ctx.strokeStyle = colors.well; ctx.strokeText(text, x, y);
+    ctx.fillStyle = fill; ctx.fillText(text, x, y);
+  }
+  function arrow(x, y, ang, color) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-9, -4.5); ctx.lineTo(-9, 4.5); ctx.closePath();
+    ctx.fillStyle = color; ctx.fill(); ctx.restore();
+  }
+  function draw() {
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(W / 2 + tx, H / 2 + ty);
+    ctx.scale(scale, scale);
+    for (let i = 0; i < edgesGeo.length; i++) {
+      const { a, b, e } = edgesGeo[i];
+      if (!a || !b) continue;
+      const back = e.max_cycles != null;
+      const selected = sel && sel.kind === 'edge' && sel.idx === i;
+      const midx = (a.x + b.x) / 2, bow = back ? -70 - Math.abs(a.x - b.x) * 0.15 : 0;
+      ctx.beginPath();
+      ctx.moveTo(a.x + (b.x >= a.x ? a.w / 2 : -a.w / 2), a.y);
+      ctx.bezierCurveTo(midx, a.y + bow, midx, b.y + bow, b.x - (b.x >= a.x ? b.w / 2 : -b.w / 2), b.y);
+      ctx.strokeStyle = selected ? colors.ink : (back ? colors.faint : colors.line);
+      ctx.lineWidth = selected ? 2.4 : 1.8;
+      if (back) ctx.setLineDash([5, 4]);
+      ctx.globalAlpha = 0.9;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const end = bezierPoint(a, b, back, 0.985), near = bezierPoint(a, b, back, 0.9);
+      arrow(end.x, end.y, Math.atan2(end.y - near.y, end.x - near.x), selected ? colors.ink : (back ? colors.faint : colors.dim));
+      const mid = bezierPoint(a, b, back, 0.5);
+      let label = e.cond ? clip(e.cond, 26) : '';
+      if (back) label = (label ? label + '  ' : '') + '↻ ×' + e.max_cycles;
+      if (label && scale > 0.5) halo(label, mid.x, mid.y - 8, '11.5px ' + cssVar('--sans'), back ? colors.faint : colors.dim);
+    }
+    /* the edge being drawn right now, if any */
+    if (connectFrom && connectPt) {
+      const a = byId.get(connectFrom);
+      if (a) {
+        ctx.beginPath();
+        ctx.moveTo(a.x + a.w / 2, a.y);
+        ctx.lineTo(connectPt.x, connectPt.y);
+        ctx.strokeStyle = colors.ink; ctx.lineWidth = 2; ctx.setLineDash([4, 4]); ctx.globalAlpha = 0.7;
+        ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
+    }
+    ctx.globalAlpha = 1;
+    for (const n of nodes) {
+      const ex = wfNodeExecutor(WF_DRAFT ? WF_DRAFT.bindings : {}, n.id);
+      const c = colors[ex.kind] || colors.dim;
+      const selected = sel && sel.kind === 'node' && sel.id === n.id;
+      const isDropTarget = connectFrom && connectFrom !== n.id && connectTarget === n.id;
+      const x0 = n.x - n.w / 2, y0 = n.y - n.h / 2;
+      ctx.beginPath(); roundRect(x0, y0, n.w, n.h, 11);
+      ctx.fillStyle = colors.surface; ctx.fill();
+      ctx.lineWidth = selected || isDropTarget ? 2.6 : 1.6;
+      ctx.strokeStyle = isDropTarget ? colors.ink : (selected ? colors.ink : c);
+      if (ex.kind === 'abstract') ctx.setLineDash([4, 3]);
+      ctx.stroke(); ctx.setLineDash([]);
+      if (isDropTarget) {
+        ctx.globalAlpha = 0.08; ctx.fillStyle = colors.ink;
+        ctx.beginPath(); roundRect(x0, y0, n.w, n.h, 11); ctx.fill(); ctx.globalAlpha = 1;
+      }
+      ctx.beginPath(); ctx.arc(x0 + 14, y0 + 16, 4, 0, 7); ctx.fillStyle = c; ctx.fill();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = colors.ink;
+      ctx.font = (selected ? '700 ' : '600 ') + '13.5px ' + cssVar('--sans');
+      ctx.fillText(clip(n.id, 24), x0 + 25, y0 + 21);
+      ctx.fillStyle = colors.dim;
+      ctx.font = '11.5px ' + cssVar('--sans');
+      ctx.fillText(clip(wfNodeSubtitle(ex), 30), x0 + 25, y0 + 38);
+      /* the connector handle — always visible, brighter on hover so it
+         reads as grabbable before the user has ever dragged one */
+      const hp = handlePt(n);
+      const hot = hoverId === n.id || connectFrom === n.id;
+      ctx.beginPath(); ctx.arc(hp.x, hp.y, hot ? HANDLE_R + 1.5 : HANDLE_R, 0, 7);
+      ctx.fillStyle = colors.surface; ctx.fill();
+      ctx.lineWidth = hot ? 2.2 : 1.6; ctx.strokeStyle = hot ? colors.ink : colors.line; ctx.stroke();
+      ctx.beginPath(); ctx.arc(hp.x, hp.y, 2.5, 0, 7); ctx.fillStyle = hot ? colors.ink : colors.faint; ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  function resize() {
+    if (!cv) return;
+    dpr = window.devicePixelRatio || 1;
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  function fit() {
+    if (!nodes.length) { scale = 1; tx = ty = 0; draw(); return; }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of nodes) {
+      x0 = Math.min(x0, n.x - n.w / 2 - 30); y0 = Math.min(y0, n.y - n.h / 2 - 40);
+      x1 = Math.max(x1, n.x + n.w / 2 + 40); y1 = Math.max(y1, n.y + n.h / 2 + 40);
+    }
+    const padR = $('wfinspect').hidden ? 24 : 322, padT = 60, padB = 30, padL = 24;
+    const availW = Math.max(160, W - padL - padR), availH = Math.max(160, H - padT - padB);
+    scale = Math.max(0.3, Math.min(1.5, Math.min(availW / (x1 - x0), availH / (y1 - y0))));
+    tx = (padL + availW / 2) - W / 2 - ((x0 + x1) / 2) * scale;
+    ty = (padT + availH / 2) - H / 2 - ((y0 + y1) / 2) * scale;
+    draw();
+  }
+  function legend() {
+    const host = $('wflegend'); host.textContent = '';
+    for (const [k, label] of [['host', 'Host tool'], ['client', 'Human approval'], ['abstract', 'Abstract (LLM)'], ['subgraph', 'Subgraph']]) {
+      const s = el('span');
+      const d = el('span'); d.style.cssText = 'width:8px;height:8px;border-radius:4px;background:' + colors[k];
+      s.appendChild(d); s.appendChild(el('span', null, label));
+      host.appendChild(s);
+    }
+  }
+  return {
+    recolor, resetOverrides, renameOverride, setSelection, kindColor, draw,
+    rebuild() { layout(); },
+    wire() {
+      cv = $('wfcanvas'); ctx = cv.getContext('2d'); recolor();
+      window.addEventListener('resize', () => { if (!$('wfEditorWrap').hidden) { resize(); fit(); } });
+      cv.addEventListener('mousedown', e => {
+        const p = toWorld(e); moved = false;
+        const h = hitHandle(p);
+        if (h && !WF_LOCKED) { connectFrom = h.id; connectPt = p; connectTarget = null; return; }
+        const n = hitNode(p);
+        if (n) drag = { id: n.id, dx: n.x - p.x, dy: n.y - p.y };
+        else { panning = { x: e.clientX - tx, y: e.clientY - ty }; cv.classList.add('grabbing'); }
+      });
+      window.addEventListener('mousemove', e => {
+        if (connectFrom) {
+          const p = toWorld(e); connectPt = p;
+          const n = hitNode(p);
+          connectTarget = (n && n.id !== connectFrom) ? n.id : null;
+          draw(); return;
+        }
+        if (drag) {
+          const p = toWorld(e); const n = byId.get(drag.id);
+          if (n) { n.x = p.x + drag.dx; n.y = p.y + drag.dy; posOverride[n.id] = { x: n.x, y: n.y }; }
+          moved = true; draw(); return;
+        }
+        if (panning) { tx = e.clientX - panning.x; ty = e.clientY - panning.y; moved = true; draw(); return; }
+        if (!cv) return;
+        const r = cv.getBoundingClientRect();
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+        const p = toWorld(e);
+        const h = hitHandle(p), n = h ? null : hitNode(p);
+        const nextHover = h ? h.id : null;
+        if (nextHover !== hoverId) { hoverId = nextHover; draw(); }
+        cv.style.cursor = h ? 'crosshair' : (n || hitEdge(p) >= 0) ? 'pointer' : 'grab';
+      });
+      window.addEventListener('mouseup', e => {
+        if (connectFrom) {
+          const p = toWorld(e); const n = hitNode(p);
+          if (n && n.id !== connectFrom) wfConnectNodes(connectFrom, n.id);
+          connectFrom = null; connectPt = null; connectTarget = null; draw();
+          return;
+        }
+        if (drag) { if (!moved) wfNodeClicked(drag.id); drag = null; return; }
+        if (panning) {
+          if (!moved) {
+            const p = toWorld(e); const ei = hitEdge(p);
+            if (ei >= 0) wfEdgeClicked(ei); else wfCanvasBgClicked();
+          }
+          panning = null; cv.classList.remove('grabbing');
+        }
+      });
+      cv.addEventListener('mouseleave', () => { if (hoverId) { hoverId = null; draw(); } });
+      cv.addEventListener('wheel', e => { e.preventDefault();
+        const f = e.deltaY < 0 ? 1.12 : 0.89; scale = Math.max(0.25, Math.min(2.2, scale * f)); draw(); }, { passive: false });
+      cv.addEventListener('dblclick', () => fit());
+      $('wfin').onclick = () => { scale = Math.min(2.2, scale * 1.2); draw(); };
+      $('wfout').onclick = () => { scale = Math.max(0.25, scale / 1.2); draw(); };
+      $('wffit').onclick = () => fit();
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && connectFrom) { connectFrom = null; connectPt = null; connectTarget = null; draw(); }
+      });
+    },
+    mount() { if (!cv || !cv.clientWidth) { requestAnimationFrame(() => WFGraph.mount()); return; } resize(); layout(); fit(); legend(); draw(); },
   };
 })();
 
