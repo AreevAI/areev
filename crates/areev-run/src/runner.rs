@@ -936,6 +936,22 @@ impl Runner {
             // The kill switch: polled every iteration (a µs point read).
             if st.cancel.is_none() {
                 if let Some((by, reason)) = self.cancel_marker(&run_id) {
+                    // `step()`'s contract: any call that may CLOSE a
+                    // superstep carries a fresh ClockReading (doc comment on
+                    // `step()`). A freshly-seen cancel closes the run's
+                    // FINAL superstep, but without a reading taken HERE
+                    // `st.clock_ms` stays whatever an earlier, already-
+                    // completed wave last set it to — which can predate the
+                    // cancel Fact's own `created_at`, journaling a
+                    // clock_close_ms that appears to close before the
+                    // operator asked to cancel. `cancel_marker` only
+                    // returns once its read has observed the write `cancel`
+                    // performed, so a reading taken now is monotone at or
+                    // after it. `verify()`'s replay already assumes this
+                    // shape at both its own cancel_peek sites (a
+                    // ClockReading immediately preceding CancelSeen in the
+                    // same batch) — this is the live counterpart.
+                    events.push(EventIn::ClockReading { unix_ms: self.clock.now_ms() });
                     events.push(EventIn::CancelSeen { principal: by, reason });
                 }
             }

@@ -520,6 +520,83 @@ fn cancel_drains_without_new_dispatches() {
         !out2.commands.iter().any(|c| matches!(c, Command::Dispatch { .. })),
         "a canceled run must not dispatch new work"
     );
+    // The terminal checkpoint's clock_close_ms reflects the fresh reading
+    // this batch carried alongside CancelSeen — the shape a driver MUST
+    // produce (doc comment on `step()`: "any call that may open or close a
+    // superstep includes a fresh ClockReading"). This is the positive half
+    // of the contract; `cancel_without_a_fresh_reading_journals_a_stale_close`
+    // below pins what happens when a driver skips it.
+    let close_ms = out2
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            Command::WriteCheckpoint { decision_record, .. } => Some(decision_record.clock_close_ms),
+            _ => None,
+        })
+        .expect("cancellation writes a terminal checkpoint");
+    assert_eq!(close_ms, 2_000, "clock_close_ms must take the batch's fresh reading");
+}
+
+/// The failure mode a real driver can produce by skipping the reading: if
+/// `CancelSeen` rides a batch with NO accompanying `ClockReading`, the
+/// terminal checkpoint's `clock_close_ms` stays at whatever the LAST
+/// reading was — even if that reading predates the moment the cancel was
+/// actually discovered. `step()` has no way to notice this on its own (it
+/// only ever sees what a caller hands it); the guarantee has to come from
+/// every driver honoring the doc comment on `step()`. `areev-run`'s live
+/// driver used to violate exactly this (the kill-switch drill's
+/// `close_ms >= cancel_ms` assertion caught it under real concurrency);
+/// this is the deterministic, non-racy pin of the underlying mechanism.
+#[test]
+fn cancel_without_a_fresh_reading_journals_a_stale_close() {
+    let plan = PlanGraph::build(&wf(&["a", "b", "c"]).edge("a", "b").edge("b", "c")).unwrap();
+    let execs = host_execs(&plan);
+    let behavior = |key: &JournalKey, _in: &Value| ok(json!({key.node.clone(): true}));
+
+    let e = env(&plan, &execs, Budgets::default());
+    let st = SchedulerState::new("run-1", &plan);
+    let out = step(
+        &e,
+        st,
+        &[
+            EventIn::ClockReading { unix_ms: 1_000 },
+            EventIn::Start { input: json!({}) },
+        ],
+    );
+    let dispatched: Vec<JournalKey> = out
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Dispatch { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Same scenario as `cancel_drains_without_new_dispatches`, EXCEPT this
+    // batch carries no ClockReading before CancelSeen — the shape the live
+    // driver used to produce.
+    let mut events = vec![EventIn::CancelSeen { principal: "user:ops".into(), reason: "abort".into() }];
+    for key in dispatched {
+        events.push(EventIn::EffectResolved { key: key.clone(), outcome: behavior(&key, &json!({})) });
+    }
+    let out2 = step(&e, out.state, &events);
+    assert_eq!(
+        out2.state.outcome(),
+        Some(&RunOutcome::Canceled { by: "user:ops".into(), reason: "abort".into() })
+    );
+    let close_ms = out2
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            Command::WriteCheckpoint { decision_record, .. } => Some(decision_record.clock_close_ms),
+            _ => None,
+        })
+        .expect("cancellation writes a terminal checkpoint");
+    assert_eq!(
+        close_ms, 1_000,
+        "without a fresh reading, clock_close_ms is stuck at the superstep's OPEN — \
+         exactly the staleness a driver skipping the reading would journal"
+    );
 }
 
 #[test]
