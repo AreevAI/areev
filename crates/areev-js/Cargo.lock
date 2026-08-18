@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "areev-cal"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-core",
  "areev-store",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "areev-core"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "hex",
  "regex",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "areev-js"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "areev-llm"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-core",
  "areev-loop",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "areev-loop"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "areev-loop-adapter"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "areev-run"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "areev-run-core"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "areev-core",
  "serde",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "areev-store"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "aes-gcm",
  "areev-core",
