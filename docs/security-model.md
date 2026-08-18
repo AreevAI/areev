@@ -184,11 +184,40 @@ top of that.
   (`FORGET SUBJECT`, `PURGE … IN`, retention/anon/holds) take exact
   namespaces, and a `namespace_override`-pinned session cannot escape its pin
   via `IN` sets or patterns (the pin clears any caller-supplied scope).
+- **The console's namespace picker is a UI affordance over reads the bound
+  session could already perform, not a new authorization surface.** `--ns`
+  at launch is a display default, never an enforcement boundary (unlike
+  `namespace_override`, above) — a bound session's `/api/cal` can already
+  `RECALL` any namespace its `AuthzSet` covers. `GET /api/browse?ns=<name>`
+  (an alternative to the bound default; omit `ns` for the original,
+  unchanged behavior) and `GET /api/namespaces` (the picker's own namespace
+  list) apply that exact same read gate explicitly, since neither goes
+  through `AreevFacade::recall` — `changes_since`, `/api/browse`'s
+  underlying read, has no per-namespace check of its own, so the route
+  handler is the only enforcement point and has to check what `recall`
+  would have. `?ns=*` ("no filter, show every namespace at once") is
+  **owner-only**: a restricted principal must still enumerate namespaces
+  one at a time, even one holding a wildcard `read ON *` grant that would
+  pass every individual check — the firehose view is a stricter bar than
+  the per-namespace one. `GET /api/namespaces` filters its list the same
+  way, so a namespace's mere *name* is not disclosed to a principal with no
+  read grant on it. Covered by `areev-server`'s `namespace_route_tests`.
 - The store issues **parameterized SQL** exclusively; user strings are
   dictionary-encoded to integer term-ids before reaching the triple queries, so
   there is no SQL-injection surface.
 - The **web console** escapes grain-controlled data before rendering it, so a
   synced grain carrying HTML/JS markup is inert in the UI.
+- The console also treats grain-controlled data as untrusted on the way
+  *back out* to CAL, not just on the way in to HTML: the Workflows editor's
+  save path validates a plan's `BIND` hash against the content-address
+  format before splicing it bare into the `ADD workflow` statement it sends.
+  Every other value there (node names, `WHEN`, the trigger, the reason) goes
+  through the same quoting `calEsc()` gives everything else; a hash is the
+  one value CAL accepts unquoted, and `Workflow::bind()` accepts an
+  arbitrary string, so a binding authored outside the console (the Rust,
+  Python, or Node API, or a synced bundle) could otherwise append arbitrary
+  CAL clauses to that statement the moment someone re-saves the plan through
+  the UI.
 
 ## Threats in scope (please report)
 
