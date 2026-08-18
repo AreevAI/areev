@@ -702,3 +702,4 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.Areev = nativeBinding.Areev
 module.exports.dropPostgresSchema = nativeBinding.dropPostgresSchema
+module.exports.readBlobOffline = nativeBinding.readBlobOffline

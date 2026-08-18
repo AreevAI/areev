@@ -22,6 +22,22 @@ use areev_loop::{Decision, Engine, ObserverType, RecStatus, RunOptions, ScopeSet
 /// erasure primitive (`DROP SCHEMA … CASCADE`), the analogue of deleting a
 /// memory file. Destroys the memory AND its telemetry/blobs. Admin surface:
 /// gate it like any destructive operation in your host.
+/// Read one CAS blob from a memory's `.blobs` sidecar without opening the
+/// database.
+///
+/// The embedded backend's lock is exclusive, so a `--tool-cmd` subprocess
+/// cannot open the memory its own run is holding. No lock is needed: a blob is
+/// immutable and its address is its checksum, re-verified here. `null` means
+/// the blob is sealed — open the memory with its passphrase for that.
+#[napi(ts_return_type = "Buffer | null")]
+pub fn read_blob_offline(db_path: String, uri: String) -> napi::Result<Option<napi::bindgen_prelude::Buffer>> {
+    match areev_store::read_blob_offline(&db_path, &uri) {
+        Ok(Some(b)) => Ok(Some(b.into())),
+        Ok(None) => Ok(None),
+        Err(e) => Err(err(e)),
+    }
+}
+
 #[napi]
 pub fn drop_postgres_schema(url: String, schema: String) -> napi::Result<()> {
     areev_store::pg::drop_postgres_schema(&url, &schema).map_err(err)
