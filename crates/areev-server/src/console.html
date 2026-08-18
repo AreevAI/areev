@@ -222,7 +222,11 @@
   /* order-preserving masonry: cards keep result order, heights vary with content */
   #qcards { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));
             grid-auto-rows:8px; gap:0 16px; }
-  .qcard { background:var(--surface); border:1px solid var(--line); border-radius:12px;
+  /* `layoutMasonry()` reserves a gutter's worth of extra rows past each
+     card's own content height — but a grid item stretches to fill its full
+     row-span by default, so without `align-self:start` the card's own box
+     grows to swallow that reserved space and the "gap" never becomes a gap. */
+  .qcard { align-self:start; background:var(--surface); border:1px solid var(--line); border-radius:12px;
            padding:14px 16px; display:flex; flex-direction:column; gap:8px;
            box-shadow:var(--card-shadow); overflow:hidden; }
   .qcard .hd { display:flex; align-items:center; gap:8px; }
@@ -282,6 +286,57 @@
   .meta { font-size:13px; color:var(--dim); }
   .tiny { font-size:12.5px; color:var(--faint); }
   .mono { font-family:var(--mono); font-size:11.5px; color:var(--hash); }
+
+  /* ── page header: one breadcrumb line — home icon, prior pages, then the
+     current page as the trail's own last segment (not a separate display
+     headline below it) — followed by a description line. Every page's
+     title block, one component. All trail text shares one font size; color
+     and weight carry the hierarchy instead: prior pages read legibly rather
+     than near-invisible, the current-page segment is the cleanest, darkest,
+     boldest text in the row, and the description recedes a step further
+     neutral than either. ── */
+  .pagehead { display:flex; flex-direction:column; gap:3px; }
+  .pagehead .trail { display:flex; flex-wrap:wrap; align-items:center; gap:6px; row-gap:2px; }
+  .pagehead .trail .home { display:flex; align-items:center; padding:2px; margin-left:-2px; border:0; background:none; color:var(--dim); border-radius:5px; transition:color .12s; }
+  .pagehead .trail .home:hover { color:var(--accent); }
+  .pagehead .trail .sep { font-size:13.5px; color:var(--faint); }
+  .pagehead .trail .link { border:0; background:none; padding:0; font:500 13.5px var(--sans); color:var(--dim); cursor:pointer; }
+  .pagehead .trail .link:hover { color:var(--accent); }
+  .pagehead .ctitle { font:600 13.5px/19px var(--sans); color:var(--ink); letter-spacing:-.01em; }
+  .pagehead .cdesc { font-size:13.5px; line-height:20px; color:var(--muted); margin-top:2px; }
+  /* Editable title/description (Workflows only): the same element throughout
+     hover and focus — never swapped for a different tag — so turning it into
+     an active field never shifts anything around it. The padding/negative-
+     margin pair keeps the text sitting in exactly the same spot whether or
+     not the hover/focus background is showing. The input never carries its
+     own width: it sits in a grid cell sized by an invisible twin (::after,
+     same text via data-value) so the field hugs its content and the edit/
+     lock icons sit right after the text instead of stranded at the row's
+     far edge. */
+  .pagehead .edit-row { display:inline-flex; align-items:center; gap:5px; max-width:100%; vertical-align:middle; }
+  /* The sizer span carries the same ctitle/cdesc class as the input inside
+     it, so it (and its ::after, which inherits font from it for free) picks
+     up the exact same font as the real title/description text below —
+     no font:inherit here, that would out-specificity .pagehead .ctitle/
+     .cdesc and silently fall back to an ambient size. ::after and the input
+     also share identical padding/border so the ghost's measured width
+     already includes the room the input's own padding will eat into. */
+  .pagehead .input-sizer { display:inline-grid; align-items:center; min-width:1em; max-width:100%; }
+  .pagehead .input-sizer::after, .pagehead .input-sizer input {
+    grid-area:1/1; box-sizing:border-box; padding:1px 5px; border:1px solid transparent; }
+  .pagehead .input-sizer::after { content:attr(data-value) ' '; visibility:hidden; white-space:pre; }
+  .pagehead input.ctitle, .pagehead input.cdesc {
+    display:block; width:100%; min-width:1em; height:auto; background:none;
+    border-radius:6px; margin:-1px -5px; cursor:pointer; }
+  .pagehead input.ctitle:hover:not(:focus):not(:disabled), .pagehead input.cdesc:hover:not(:focus):not(:disabled) {
+    background:var(--raise); border-color:var(--line); cursor:text; }
+  .pagehead input.ctitle:focus, .pagehead input.cdesc:focus {
+    background:var(--surface); border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-soft); cursor:text; outline:none; }
+  .pagehead input.ctitle:disabled, .pagehead input.cdesc:disabled { color:var(--dim); cursor:default; }
+  .pagehead input.ctitle::placeholder, .pagehead input.cdesc::placeholder { color:var(--faint); }
+  .pagehead .edit-icon { display:flex; align-items:center; flex-shrink:0; color:var(--faint); opacity:0; transition:opacity .12s; cursor:pointer; }
+  .pagehead .edit-row:hover .edit-icon { opacity:1; }
+  .pagehead .lock-hint { display:flex; align-items:center; flex-shrink:0; color:var(--warn); cursor:help; margin-left:2px; }
 
   /* ── controls ── */
   button { font-family:inherit; cursor:pointer; }
@@ -407,10 +462,14 @@
   /* ── workflows ── */
   /* The plan list reuses .starter (query page's card) — a workflow card is
      the same shape: a bold label plus a code-styled gloss line. */
-  #wfList { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+  #wfList { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; align-items:start; }
+  #runList { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:12px; align-items:start; }
   #wfwrap { background:var(--well); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
   #wfstage { position:relative; }
-  #wfcanvas { display:block; width:100%; height:520px; cursor:default; }
+  /* The canvas is the reason this page exists — give it the room, not a
+     token box. Scales with the viewport rather than a fixed guess, with a
+     floor for short windows. */
+  #wfcanvas { display:block; width:100%; height:calc(100vh - 260px); min-height:480px; cursor:default; }
   #wfcanvas.connecting { cursor:crosshair; }
   #wftools { top:16px; left:16px; display:flex; align-items:center; gap:9px; background:none; border:0; box-shadow:none; }
   #wflegend { bottom:16px; left:16px; display:flex; align-items:center; gap:14px; height:34px; padding:0 14px; border-radius:17px; }
@@ -422,6 +481,21 @@
   .wf-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:10px; font-size:11.5px; font-weight:600; width:fit-content; }
   .wf-field { display:flex; flex-direction:column; gap:5px; }
   .wf-field .tiny { color:var(--dim); }
+
+  /* ── namespace combobox: a real dropdown (known namespaces, click to
+     pick) that is also just a text field — type a prefix pattern like
+     "org.*" and it's accepted the same as any exact name. Shared by every
+     page with a namespace picker. ── */
+  .ns-combo { position:relative; }
+  .ns-combo-input { height:34px; padding:0 30px 0 10px; font-size:13.5px; cursor:text; }
+  .ns-combo-arrow { position:absolute; right:10px; top:0; height:34px; display:flex; align-items:center; pointer-events:none; color:var(--faint); }
+  .ns-combo-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; right:0; background:var(--surface);
+                   border:1px solid var(--line2); border-radius:10px; box-shadow:var(--shadow); max-height:230px;
+                   overflow-y:auto; padding:4px; }
+  .ns-combo-opt { padding:7px 9px; border-radius:7px; font-size:13px; color:var(--text); cursor:pointer; }
+  .ns-combo-opt:hover, .ns-combo-opt.on { background:var(--raise); }
+  .ns-combo-opt.hint { color:var(--accent); font-family:var(--mono); font-size:12px; }
+  .ns-combo-empty { padding:7px 9px; font-size:13px; color:var(--faint); }
 
   /* ── suggestions ── */
   /* Page-level stacks own the rhythm between blocks; `.stack` is an inner
@@ -449,6 +523,8 @@
   .ev .ic { width:18px; flex-shrink:0; display:flex; justify-content:center; padding-top:5px; }
   .ev .body { flex:1; display:flex; flex-direction:column; gap:3px; min-width:0; }
   .ev .say { font-size:15.5px; color:var(--ink); }
+  .ev-tags { display:flex; align-items:center; gap:8px; flex-shrink:0; padding-top:4px; }
+  .ev-tags .tag { padding:3px 9px; border-radius:8px; font-size:11px; }
 
   /* ── connect ── */
   .apps { display:flex; gap:16px; }
@@ -544,36 +620,23 @@
         <span class="grow">Suggestions</span>
         <span class="pill" id="sugPill" hidden>0</span>
       </button>
-      <button class="nav-item" data-page="connect">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9.5 14.5l5-5M8 12l-2 2a3.5 3.5 0 005 5l2-2M16 12l2-2a3.5 3.5 0 00-5-5l-2 2" stroke-width="1.7" stroke-linecap="round"/></svg>
-        <span class="grow">Connect</span>
-      </button>
       <button class="nav-item" data-page="query">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4.5 6.5h15M4.5 12h9M4.5 17.5h12" stroke-width="1.7" stroke-linecap="round"/><path d="M16.5 15.5l2.2 2.2" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="14" r="2.6" stroke-width="1.7"/></svg>
         <span class="grow">Query</span>
       </button>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:9px;min-height:0">
-      <span class="sec-label" style="padding:0 11px">PEOPLE &amp; TOPICS</span>
-      <div id="entities"><span class="tiny" style="padding:0 11px">loading…</span></div>
+      <button class="nav-item" data-page="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke-width="1.7"/><path d="M19.4 13.5a1.7 1.7 0 000-3l-1-.2a6.7 6.7 0 00-.7-1.7l.6-.9a1.7 1.7 0 00-2.4-2.4l-.9.6a6.7 6.7 0 00-1.7-.7l-.2-1a1.7 1.7 0 00-3 0l-.2 1a6.7 6.7 0 00-1.7.7l-.9-.6a1.7 1.7 0 00-2.4 2.4l.6.9a6.7 6.7 0 00-.7 1.7l-1 .2a1.7 1.7 0 000 3l1 .2c.15.6.4 1.17.7 1.7l-.6.9a1.7 1.7 0 002.4 2.4l.9-.6c.53.3 1.1.55 1.7.7l.2 1a1.7 1.7 0 003 0l.2-1c.6-.15 1.17-.4 1.7-.7l.9.6a1.7 1.7 0 002.4-2.4l-.6-.9c.3-.53.55-1.1.7-1.7l1-.2z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span class="grow">Settings</span>
+      </button>
     </div>
 
     <div class="rail-foot">
       <div class="health" id="health" title="check every stored memory against its content address">
         <span class="dot" id="hdot"></span><span id="htext">checking…</span>
       </div>
-      <div class="toggle-row" id="whorow" style="display:none">
+      <div class="toggle-row" id="whorow" style="display:none;border:0;padding-top:0">
         <span id="whoami" title="the principal this session is bound to">…</span>
         <button id="signbtn" style="background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0">Sign in</button>
-      </div>
-      <div class="toggle-row">
-        <span>Developer mode</span>
-        <button class="sw" id="devsw" aria-label="developer mode"><i></i></button>
-      </div>
-      <div class="toggle-row" style="border:0;padding-top:0">
-        <span>Dark mode</span>
-        <button class="sw" id="themesw" aria-label="dark mode"><i></i></button>
       </div>
       <span class="tiny" id="dblabel" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{DB}}</span>
     </div>
@@ -582,11 +645,8 @@
   <main id="main">
     <!-- ── MEMORY ── -->
     <section class="page" id="page-memory">
-      <div style="display:flex;align-items:flex-end;gap:16px" class="col">
-        <div style="flex:1;display:flex;flex-direction:column;gap:7px">
-          <h1 id="memTitle">What your agent remembers</h1>
-          <span class="sub" id="memSub">loading…</span>
-        </div>
+      <div style="display:flex;align-items:flex-end;gap:16px" class="wide">
+        <div id="memCrumb" style="flex:1;min-width:0"></div>
         <div class="seg" id="mview">
           <button class="on" data-v="list">List</button>
           <button data-v="graph">Graph</button>
@@ -594,7 +654,7 @@
       </div>
 
       <div id="listView" style="display:flex;flex-direction:column;gap:24px">
-        <div class="col" style="display:flex;flex-direction:column;gap:11px">
+        <div class="wide" style="display:flex;flex-direction:column;gap:11px">
           <div class="askbar">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><circle cx="11" cy="11" r="6.6" stroke="var(--accent)" stroke-width="1.8"/><path d="M16 16l4.2 4.2" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/></svg>
             <input type="text" id="ask" placeholder="Search your memories — or ask a question and press Enter" autocomplete="off">
@@ -603,15 +663,15 @@
           <div class="examples" id="examples"></div>
         </div>
 
-        <div class="banner col" id="sugBanner" hidden>
+        <div class="banner wide" id="sugBanner" hidden>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style="flex-shrink:0"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke="var(--warn)" stroke-width="1.7" stroke-linejoin="round"/></svg>
           <span class="grow" id="sugBannerText"></span>
           <span class="go" id="sugBannerGo">Review →</span>
         </div>
 
-        <div class="col" id="filterBar" hidden></div>
-        <div class="card col" id="answer" hidden></div>
-        <div class="col" id="memList"><div class="empty">loading…</div></div>
+        <div class="wide" id="filterBar" hidden></div>
+        <div class="card wide" id="answer" hidden></div>
+        <div class="wide" id="memList"><div class="empty">loading…</div></div>
       </div>
 
       <div id="graphView" hidden>
@@ -649,21 +709,21 @@
 
     <!-- ── ACTIVITY ── -->
     <section class="page" id="page-activity" hidden>
-      <div class="col" style="display:flex;flex-direction:column;gap:7px">
-        <h1>Activity</h1>
-        <span class="sub">Everything your agent learned, changed, or forgot — newest first.</span>
+      <div class="wide" style="display:flex;align-items:flex-end;gap:16px">
+        <div id="actCrumb" style="flex:1;min-width:0"></div>
+        <div class="wf-field" style="width:220px">
+          <span class="tiny">Namespace</span>
+          <span id="actNsHost"></span>
+        </div>
       </div>
-      <div class="examples col" id="actFilters"></div>
-      <div class="col" id="actList"><div class="empty">loading…</div></div>
+      <div class="examples wide" id="actFilters"></div>
+      <div class="wide" id="actList"><div class="empty">loading…</div></div>
     </section>
 
     <!-- ── SUGGESTIONS ── -->
     <section class="page" id="page-suggestions" hidden>
-      <div class="col" style="display:flex;flex-direction:column;gap:7px">
-        <h1>Suggestions</h1>
-        <span class="sub">Ways to make this memory more reliable. Nothing is changed until you approve it, and every change can be undone.</span>
-      </div>
-      <div class="col" style="display:flex;align-items:center;gap:16px">
+      <div id="sugCrumb" class="wide"></div>
+      <div class="wide" style="display:flex;align-items:center;gap:16px">
         <div class="tabs" id="sugTabs" style="flex:1">
           <button class="on" data-s="pending">Needs review</button>
           <button data-s="applied">Applied</button>
@@ -671,56 +731,33 @@
         </div>
         <button class="btn sm" id="runLoop">Run analysis</button>
       </div>
-      <div class="col" id="sugList"><div class="empty">loading…</div></div>
+      <div class="wide" id="sugList"><div class="empty">loading…</div></div>
     </section>
 
     <!-- ── RUNS: the governed runtime viewer + HITL approval queue ── -->
     <section class="page" id="page-runs" hidden>
-      <div class="col" style="display:flex;flex-direction:column;gap:7px">
-        <h1>Runs</h1>
-        <span class="sub">Governed workflow runs: journaled, checkpointed, pausable. A run waiting on a person shows its approval below — approving requires your own sign-in (a shared console token is refused: the approver's identity is the audit record).</span>
-      </div>
-      <div class="col" id="runList"><div class="empty">loading…</div></div>
+      <div id="runCrumb" class="wide"></div>
+      <div class="wide" id="runList"><div class="empty">loading…</div></div>
     </section>
 
     <!-- ── WORKFLOWS: plans as an editable graph ──
          One action slot, top right, for whatever this view's primary act is:
          "New workflow" on the list, "Save as new plan" in the editor. -->
     <section class="page" id="page-workflows" hidden>
-      <div class="col" style="display:flex;align-items:flex-end;gap:16px">
-        <div style="flex:1;display:flex;flex-direction:column;gap:7px">
-          <button class="btn ghost sm" id="wfBack" hidden style="align-self:flex-start">← All workflows</button>
-          <h1 id="wfTitle">Workflows</h1>
-          <span class="sub" id="wfSub">Plans <code>areev run</code> executes: nodes are steps, edges are the order they
-            can happen in. Plans are content-addressed and immutable, like every memory here — saving a
-            change writes a new plan; the old one stays recallable by its hash.</span>
+      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
+        <div id="wfCrumb" style="flex:1;min-width:0"></div>
+        <div class="wf-field" id="wfNsField" style="width:200px">
+          <span class="tiny">Namespace</span>
+          <span id="wfNsHost"></span>
         </div>
         <button class="btn sm" id="wfNewBtn">New workflow</button>
         <button class="btn sm" id="wfSave" hidden>Save as new plan</button>
       </div>
 
-      <div class="col" id="wfList"><div class="empty">loading…</div></div>
+      <div class="wide" id="wfList"><div class="empty">loading…</div></div>
 
-      <div id="wfEditorWrap" hidden style="display:flex;flex-direction:column;gap:16px">
-        <div class="col composer" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
-          <div style="display:flex;gap:14px;flex-wrap:wrap">
-            <div class="wf-field" style="flex:2;min-width:220px">
-              <span class="tiny">Name</span>
-              <input type="text" id="wfName" placeholder="e.g. refund_approval">
-            </div>
-            <div class="wf-field" style="flex:3;min-width:260px">
-              <span class="tiny">Trigger (optional)</span>
-              <input type="text" id="wfTrigger" placeholder="e.g. refund_requests ticket opened">
-            </div>
-          </div>
-          <div class="banner" id="wfLockedNote" hidden style="background:var(--accent-soft);border-color:var(--accent-line)">
-            <span class="grow">This plan has a bounded-cycle edge or a per-node retry count — CAL can
-              visualize both but has no syntax yet to author them through <code>ADD workflow</code>.
-              Open for viewing only; edit this one via the Rust or Python API.</span>
-          </div>
-        </div>
-
-        <div class="wide" id="wfwrap">
+      <div id="wfEditorWrap" hidden style="display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;">
+        <div class="wide" id="wfwrap" style="flex:1;min-height:0;">
           <div id="wfstage">
             <canvas id="wfcanvas"></canvas>
             <div class="float" id="wftools">
@@ -739,28 +776,26 @@
       </div>
     </section>
 
-    <!-- ── CONNECT ── -->
-    <section class="page" id="page-connect" hidden>
-      <div class="col" style="display:flex;flex-direction:column;gap:7px">
-        <h1>Connect</h1>
-        <span class="sub">Attach agents to this memory, and keep every app your customers reach you through remembering the same things.</span>
-      </div>
-      <div class="tabs col" id="conTabs">
+    <!-- ── SETTINGS (formerly "Connect" — Agent/Sync tabs plus General,
+         which now also carries what used to sit in the rail-foot:
+         developer mode and dark mode) ── -->
+    <section class="page" id="page-settings" hidden>
+      <div id="setCrumb" class="wide"></div>
+      <div class="tabs wide" id="conTabs">
         <button class="on" data-c="agent">Your agent</button>
         <button data-c="sync">Sync across apps</button>
-        <button data-c="settings">Settings</button>
+        <button data-c="general">General</button>
       </div>
-      <div class="col" id="conBody"></div>
+      <div class="wide" id="conBody"></div>
     </section>
 
     <!-- ── QUERY ── -->
     <section class="page" id="page-query" hidden>
-      <div class="col" style="display:flex;align-items:center;gap:16px">
-        <h1>Query</h1>
-        <div style="flex:1"></div>
+      <div class="wide" style="display:flex;align-items:center;gap:16px">
+        <div id="queryCrumb" style="flex:1;min-width:0"></div>
         <button class="btn ghost sm" id="qreset" hidden>New query</button>
       </div>
-      <span class="col sub" id="qintro">Ask the memory a precise question. Every view in this console
+      <span class="wide sub" id="qintro">Ask the memory a precise question. Every view in this console
         runs the same language underneath — start from an example below and edit it.</span>
 
       <div class="col composer">
@@ -781,7 +816,7 @@
       </div>
       <div class="col" id="qerr" hidden></div>
 
-      <div class="col onramp" id="qonramp">
+      <div class="wide onramp" id="qonramp">
         <div class="qsec"><span class="sec-label">START FROM A QUESTION</span><i></i>
           <span class="tiny">Each one writes real CAL into the editor — edit it from there</span></div>
         <div class="starters" id="qstarters"></div>
@@ -796,7 +831,7 @@
         <div class="recents" id="qrecents"></div>
       </div>
 
-      <div class="col" id="qresult" hidden>
+      <div class="wide" id="qresult" hidden>
         <div id="qsummary"></div>
         <div id="qbar"></div>
         <div id="qbody"></div>
@@ -833,6 +868,90 @@ const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls;
   if (txt != null) n.textContent = txt; return n; };
+
+/* ══ page header ══════════════════════════════════════════════════════
+   One component for every page: a breadcrumb trail (home icon › section ›
+   optional current item) plus a description line beneath it. Every page
+   calls this instead of hand-rolling its own <h1>/.sub — home always jumps
+   to Memory; crumbs is an array of {label, onClick?} with the trailing,
+   onClick-less entry rendered as the bold "you are here" segment. */
+const HOME_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 11.5L12 4l8 7.5M6.5 10v9h11v-9" '
+  + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const EDIT_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M16.5 3.5l4 4L8 20l-5 1 1-5L16.5 3.5z" '
+  + 'stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+const LOCK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.8"/>'
+  + '<path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+/* An inline-editable title/description field: always the same <input>, in
+   display state or focused/active state — never swapped for another
+   element — so becoming editable never shifts the layout around it. A
+   pencil icon fades in on row hover as the "this is editable" cue; clicking
+   the text itself works just as well. cfg: {value, placeholder, disabled,
+   onCommit(newValue)}. lockHint, if given, adds a small icon carrying it as
+   a native tooltip (used for "why can't I edit this"). */
+function editableField(cls, cfg, lockHint) {
+  const row = el('div', 'edit-row');
+  // The sizer's data-value drives an invisible ::after twin (same text, same
+  // font) that the input shares a grid cell with — the cell (and so the
+  // input) is exactly as wide as the text/placeholder, never wider, so the
+  // edit/lock icons that follow sit right against the text instead of
+  // stranded at the far edge of a full-width field.
+  const sizer = el('span', 'input-sizer ' + cls);
+  sizer.dataset.value = cfg.value || cfg.placeholder || '';
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = cls; input.autocomplete = 'off';
+  input.value = cfg.value || '';
+  input.placeholder = cfg.placeholder || '';
+  input.disabled = !!cfg.disabled;
+  input.addEventListener('input', () => { sizer.dataset.value = input.value || cfg.placeholder || ''; });
+  input.addEventListener('blur', () => {
+    const v = input.value.trim();
+    if (v !== (cfg.value || '')) cfg.onCommit(v);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { input.value = cfg.value || ''; sizer.dataset.value = cfg.value || cfg.placeholder || ''; input.blur(); }
+  });
+  sizer.appendChild(input);
+  row.appendChild(sizer);
+  if (!cfg.disabled) {
+    const icon = el('span', 'edit-icon'); icon.innerHTML = EDIT_ICON;
+    icon.onclick = () => input.focus();
+    row.appendChild(icon);
+  }
+  if (lockHint) {
+    const lock = el('span', 'lock-hint'); lock.innerHTML = LOCK_ICON; lock.title = lockHint;
+    row.appendChild(lock);
+  }
+  return row;
+}
+/* opts (optional): { editTitle, editDesc: <editableField cfg>, lockHint }.
+   The current-page segment (either the last crumb's plain label, or the
+   editable title field when editTitle is set) renders IN the trail row,
+   right after its own leading "›" — one line, home icon through to "you
+   are here" — never a separate headline below it. descHtml (or editDesc)
+   is the one line beneath. */
+function renderCrumbHeader(hostId, crumbs, descHtml, opts) {
+  const host = $(hostId); if (!host) return;
+  opts = opts || {};
+  host.textContent = '';
+  const wrap = el('div', 'pagehead');
+  const trail = el('div', 'trail');
+  const home = el('button', 'home'); home.innerHTML = HOME_ICON; home.title = 'Memory'; home.onclick = () => go('memory');
+  trail.appendChild(home);
+  const priorCrumbs = opts.editTitle ? crumbs : crumbs.slice(0, -1);
+  for (const c of priorCrumbs) {
+    trail.appendChild(el('span', 'sep', '›'));
+    if (c.onClick) { const b = el('button', 'link', c.label); b.onclick = c.onClick; trail.appendChild(b); }
+    else trail.appendChild(el('span', 'link', c.label));
+  }
+  trail.appendChild(el('span', 'sep', '›'));
+  if (opts.editTitle) trail.appendChild(editableField('ctitle', opts.editTitle, opts.lockHint));
+  else trail.appendChild(el('span', 'ctitle', crumbs[crumbs.length - 1].label));
+  wrap.appendChild(trail);
+  if (opts.editDesc) wrap.appendChild(editableField('cdesc', opts.editDesc, null));
+  else if (descHtml) { const d = el('div', 'cdesc'); d.innerHTML = descHtml; wrap.appendChild(d); }
+  host.appendChild(wrap);
+}
 
 /* ══ api ══════════════════════════════════════════════════════════════ */
 let TOKEN = sessionStorage.getItem('areev.token') || '';
@@ -1129,18 +1248,103 @@ async function boot() {
   $('dblabel').title = full;
   wireChrome();
   applyHash();
-  await Promise.all([loadStats(), loadBrowse(), loadLog(), loadConfig(), loadCaps()]);
+  await Promise.all([loadStats(), loadBrowse(), loadLog(), loadConfig(), loadCaps(), loadNamespaces()]);
   verify();
   await loadRecs('pending');
-  if (PAGE === 'connect' && CONTAB === 'sync') await loadSegments();
+  if (WF_DEEPLINK) { wfOpen(WF_DEEPLINK); WF_DEEPLINK = null; }
+  if (PAGE === 'settings' && CONTAB === 'sync') await loadSegments();
   if (PAGE === 'suggestions' && !RECS[SUGTAB]) await loadRecs(SUGTAB);
   render();
   if (PAGE === 'memory' && MVIEW === 'graph') Graph.mount();
-  addEventListener('hashchange', () => { if (applyHash()) { render(); if (MVIEW === 'graph') Graph.mount(); } });
+  addEventListener('hashchange', () => {
+    if (applyHash()) {
+      if (WF_DEEPLINK) { wfOpen(WF_DEEPLINK); WF_DEEPLINK = null; }
+      render();
+      if (MVIEW === 'graph') Graph.mount();
+    }
+  });
 }
 let DB_PATH = '';
 async function loadStats() { STATS = await api('/api/stats') || {}; }
 async function loadConfig() { CONFIG = await api('/api/config'); }
+/* Every namespace this session can read, for the namespace pickers on
+   Activity/Workflows/etc. `null` = couldn't load (e.g. a very old build with
+   no /api/namespaces route) — pickers fall back to just the bound default. */
+let NAMESPACES = null;
+async function loadNamespaces() {
+  const r = await api('/api/namespaces');
+  NAMESPACES = (r && r.ok && Array.isArray(r.namespaces)) ? r.namespaces : null;
+}
+/* A namespace <select>, shared by every page that filters by it. `current`
+   is the bound value (falls back to the session default); onChange gets the
+   picked namespace or '*' for "all namespaces this session can read". */
+/* A namespace picker that is a dropdown AND a text field at once: click it
+   for the known-namespace list (with live counts), or just type — a prefix
+   pattern like "org.*" is accepted exactly like an exact name, since the
+   server (not this control) is what actually validates and gates it. */
+function nsCombo(id, current, onChange) {
+  const bound = boundNamespace();
+  const isOwner = !!(CONFIG && CONFIG.session && CONFIG.session.is_owner);
+  const list = NAMESPACES && NAMESPACES.length ? NAMESPACES : [{ namespace: bound, count: null }];
+  const options = list.map(n => ({ value: n.namespace, label: n.namespace + (typeof n.count === 'number' ? ' (' + n.count + ')' : '') }));
+  if (isOwner) options.unshift({ value: '*', label: 'All namespaces' });
+  const known = new Set(options.map(o => o.value));
+
+  const wrap = el('div', 'ns-combo'); wrap.id = id;
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'ns-combo-input'; input.autocomplete = 'off'; input.spellcheck = false;
+  input.placeholder = 'namespace, or prefix.*';
+  input.value = current || bound;
+  const arrow = el('span', 'ns-combo-arrow');
+  arrow.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 9l7 7 7-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const menu = el('div', 'ns-combo-menu'); menu.hidden = true;
+
+  function renderMenu() {
+    const typed = input.value.trim();
+    const f = typed.toLowerCase();
+    menu.textContent = '';
+    for (const o of options) {
+      if (f && !o.label.toLowerCase().includes(f) && !o.value.toLowerCase().includes(f)) continue;
+      const row = el('div', 'ns-combo-opt' + (o.value === input.value ? ' on' : ''), o.label);
+      row.onmousedown = e => { e.preventDefault(); commit(o.value); };
+      menu.appendChild(row);
+    }
+    if (typed && !known.has(typed)) {
+      const row = el('div', 'ns-combo-opt hint', (typed.endsWith('*') ? 'Use prefix ' : 'Use ') + '"' + typed + '"');
+      row.onmousedown = e => { e.preventDefault(); commit(typed); };
+      menu.appendChild(row);
+    }
+    if (!menu.childElementCount) menu.appendChild(el('div', 'ns-combo-empty', 'No matching namespace'));
+  }
+  function commit(v) {
+    v = (v || '').trim() || (current || bound);
+    input.value = v; menu.hidden = true;
+    if (v !== current) onChange(v);
+  }
+  input.addEventListener('focus', () => { renderMenu(); menu.hidden = false; });
+  input.addEventListener('input', renderMenu);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(input.value); input.blur(); }
+    else if (e.key === 'Escape') { input.value = current || bound; menu.hidden = true; input.blur(); }
+  });
+  input.addEventListener('blur', () => commit(input.value));
+  wrap.appendChild(input); wrap.appendChild(arrow); wrap.appendChild(menu);
+  return wrap;
+}
+const boundNamespace = () => (CONFIG && CONFIG.session && CONFIG.session.namespace) || 'shared';
+/* Per-namespace browse cache for pages with a namespace picker. The bound
+   session default always reads the already-loaded global BROWSE — no extra
+   fetch, and it stays what the rail/entities/graph use. A different
+   namespace fetches once and caches (switching back and forth is instant). */
+const NS_BROWSE_CACHE = new Map();
+async function browseForNamespace(ns) {
+  if (!ns || ns === boundNamespace()) return BROWSE;
+  if (NS_BROWSE_CACHE.has(ns)) return NS_BROWSE_CACHE.get(ns);
+  const r = await api('/api/browse?limit=2000&ns=' + encodeURIComponent(ns));
+  const rows = (r && r.ok && r.grains) ? r.grains : [];
+  NS_BROWSE_CACHE.set(ns, rows);
+  return rows;
+}
 async function loadBrowse() {
   const r = await api('/api/browse?limit=2000');
   BROWSE = (r && r.ok && r.grains) ? r.grains : [];
@@ -1185,24 +1389,8 @@ function wireChrome() {
   $('mview').querySelectorAll('button').forEach(b => {
     b.onclick = () => { MVIEW = b.dataset.v; render(); if (MVIEW === 'graph') Graph.mount(); };
   });
-  $('devsw').onclick = () => {
-    const on = document.documentElement.classList.toggle('dev');
-    localStorage.setItem('areev.dev', on ? '1' : '0');
-    $('devsw').classList.toggle('on', on);
-    render();
-  };
-  $('devsw').classList.toggle('on', document.documentElement.classList.contains('dev'));
-  $('themesw').onclick = () => {
-    const cur = document.documentElement.dataset.theme
-      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    const next = cur === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('areev.theme', next);
-    $('themesw').classList.toggle('on', next === 'dark');
-    Graph.recolor(); render();
-  };
-  $('themesw').classList.toggle('on',
-    (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark');
+  /* Developer mode / Dark mode toggles now live in Settings → General
+     (renderConnectGeneral), rebuilt fresh each visit — see settingsToggle(). */
   $('health').onclick = verify;
 
   $('askBtn').onclick = () => runAsk($('ask').value);
@@ -1237,44 +1425,53 @@ function wireChrome() {
   Graph.wire();
   WFGraph.wire();
   $('wfNewBtn').onclick = wfNew;
-  $('wfBack').onclick = wfClose;
-  $('wfName').addEventListener('input', () => { if (WF_DRAFT) { WF_DRAFT.name = $('wfName').value; renderWorkflowHeader(); } });
-  $('wfTrigger').addEventListener('input', () => { if (WF_DRAFT) WF_DRAFT.trigger = $('wfTrigger').value; });
   $('wfAddNode').onclick = wfAddNode;
   $('wfResetLayout').onclick = () => { WFGraph.resetOverrides(); WFGraph.mount(); };
   $('wfSave').onclick = wfArmSave;
 }
 /* Deep links: #memory · #graph · #activity · #suggestions · #connect/sync */
+/* Set by applyHash when the URL names a specific plan (#workflows/<hash>);
+   consumed once BROWSE has loaded (boot() and the hashchange listener both
+   need to open it, since a deep link can arrive either way). */
+let WF_DEEPLINK = null;
 function applyHash() {
   const raw = (location.hash || '').replace(/^#/, '');
   if (!raw) return false;
   const [head, tail] = raw.split('/');
   if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
-  if (['memory', 'activity', 'runs', 'workflows', 'suggestions', 'connect', 'query'].includes(head)) {
+  if (['memory', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
-    if (head === 'connect' && ['agent', 'sync', 'settings'].includes(tail)) CONTAB = tail;
+    if (head === 'settings' && ['agent', 'sync', 'general'].includes(tail)) CONTAB = tail;
     if (head === 'suggestions' && ['pending', 'applied', 'rejected'].includes(tail)) SUGTAB = tail;
+    if (head === 'workflows') {
+      if (tail && /^[0-9a-f]{8,64}$/i.test(tail)) WF_DEEPLINK = tail;
+      else { WF_SEL = null; WF_DRAFT = null; WF_PICK = null; }
+    }
     return true;
   }
   return false;
 }
 function syncHash() {
   const h = PAGE === 'memory' ? (MVIEW === 'graph' ? 'graph' : 'memory')
-    : PAGE === 'connect' ? 'connect/' + CONTAB
-    : PAGE === 'suggestions' ? 'suggestions/' + SUGTAB : PAGE;
+    : PAGE === 'settings' ? 'settings/' + CONTAB
+    : PAGE === 'suggestions' ? 'suggestions/' + SUGTAB
+    : PAGE === 'workflows' ? 'workflows' + (WF_SEL ? '/' + WF_SEL : '') : PAGE;
   if (location.hash.replace(/^#/, '') !== h) history.replaceState(null, '', '#' + h);
 }
 function go(page) {
   PAGE = page;
   if (page === 'suggestions' && !RECS[SUGTAB]) loadRecs(SUGTAB).then(render);
-  if (page === 'connect' && CONTAB === 'sync') loadSegments();
+  if (page === 'settings' && CONTAB === 'sync') loadSegments();
   render();
 }
 
 /* ══ runs: the HITL queue ═════════════════════════════════════════════ */
 let RUNS = null;
 async function renderRuns() {
+  renderCrumbHeader('runCrumb', [{ label: 'Runs' }],
+    "Governed workflow runs: journaled, checkpointed, pausable. A run waiting on a person shows its approval "
+    + "below — approving requires your own sign-in (a shared console token is refused: the approver's identity is the audit record).");
   const box = $('runList');
   if (RUNS === null) {
     box.innerHTML = '<div class="empty">loading…</div>';
@@ -1338,7 +1535,7 @@ async function respondRun(id, ask, refuse) {
 /* ══ render ═══════════════════════════════════════════════════════════ */
 function render() {
   syncHash();
-  for (const p of ['memory', 'activity', 'runs', 'workflows', 'suggestions', 'connect', 'query']) $('page-' + p).hidden = PAGE !== p;
+  for (const p of ['memory', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query']) $('page-' + p).hidden = PAGE !== p;
   $('nav').querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === PAGE));
   $('listView').hidden = MVIEW !== 'list';
   $('graphView').hidden = MVIEW !== 'graph';
@@ -1351,8 +1548,9 @@ function render() {
   if (PAGE === 'runs') renderRuns();
   if (PAGE === 'workflows') renderWorkflows();
   if (PAGE === 'suggestions') { renderSuggestions(); lock($('runLoop')); }
-  if (PAGE === 'connect') renderConnect();
+  if (PAGE === 'settings') renderSettingsPage();
   if (PAGE === 'query') {
+    renderCrumbHeader('queryCrumb', [{ label: 'Query' }], null);
     queryNotice(); syncEditor(); renderQueryResult(); renderOnramp();
     const sv = $('qsave');
     sv.disabled = !stmtSupported('DEFINE') || !canWrite();
@@ -1363,29 +1561,24 @@ function render() {
   if (document.documentElement.classList.contains('dev')) renderDevbar();
 }
 
+/* The rail no longer lists entities (moved out to declutter — the graph
+   page's inspector and the ask bar's examples reach the same filter), but
+   ACTIVE_ENTS itself stays: renderExamples() still uses it for suggested
+   questions. */
 function renderRail() {
   ACTIVE_ENTS = buildEntities(currentGrains()).filter(e => e.count > 0).slice(0, 40);
-  const host = $('entities'); host.textContent = '';
-  if (!ACTIVE_ENTS.length) { host.appendChild(el('span', 'tiny', 'nothing yet')); return; }
-  for (const e of ACTIVE_ENTS) {
-    const b = el('button', 'ent' + (ENTITY === e.name ? ' on' : ''));
-    const av = el('span', 'av', e.name.charAt(0).toUpperCase());
-    if (ENTITY !== e.name) av.style.color = 'var(' + (KIND_VAR[e.kind] || '--cat-thing') + ')';
-    b.appendChild(av);
-    b.appendChild(el('span', 'nm', e.name));
-    b.appendChild(el('span', 'ct', String(e.count)));
-    b.onclick = () => { ENTITY = ENTITY === e.name ? null : e.name; ANSWER = null; if (PAGE !== 'memory') go('memory'); else render(); };
-    host.appendChild(b);
-  }
 }
 function renderHeader() {
   const n = currentGrains().length;
-  $('memTitle').textContent = ENTITY ? 'What your agent remembers about ' + ENTITY : 'What your agent remembers';
   const db = ($('dblabel').textContent || '').trim();
-  $('memSub').innerHTML = n
+  const desc = n
     ? esc(n + (n === 1 ? ' memory' : ' memories')) + ', kept in <b style="color:var(--text);font-weight:500">'
       + esc(db) + '</b> — nothing here is ever overwritten, only added to.'
     : 'Nothing stored yet. Connect an agent and what it learns will show up here.';
+  const crumbs = ENTITY
+    ? [{ label: 'Memory', onClick: () => { ENTITY = null; render(); } }, { label: ENTITY }]
+    : [{ label: 'Memory' }];
+  renderCrumbHeader('memCrumb', crumbs, desc);
 }
 /* Only suggest questions the console can actually answer: a name it knows,
    or the time-based one that reads the op-log. */
@@ -1835,16 +2028,35 @@ async function openPanel(hash) {
 
 /* ══ activity ═════════════════════════════════════════════════════════ */
 const ACT_KINDS = [['all', 'Everything'], ['add', 'Learned'], ['supersede', 'Changed'], ['forget', 'Deleted']];
-function renderActivity() {
+/* null = the bound session default (the already-loaded global LOG/BYHASH —
+   no extra fetch). Anything else fetches that namespace's browse rows once
+   (cached) and reads op/hash/fields straight off them instead — a
+   namespace-scoped BROWSE row is already everything an op-log row plus a
+   BYHASH lookup would have given us. */
+let ACT_NS = null;
+async function actSetNamespace(ns) {
+  ACT_NS = (!ns || ns === boundNamespace()) ? null : ns;
+  await renderActivity();
+}
+async function renderActivity() {
+  renderCrumbHeader('actCrumb', [{ label: 'Activity' }], 'Everything your agent learned, changed, or forgot — newest first.');
   const f = $('actFilters'); f.textContent = '';
   for (const [k, label] of ACT_KINDS) {
     const c = el('span', 'chip' + (ACTFILTER === k ? ' on' : ''), label);
     c.onclick = () => { ACTFILTER = k; renderActivity(); };
     f.appendChild(c);
   }
+  const nsHost = $('actNsHost'); nsHost.textContent = '';
+  nsHost.appendChild(nsCombo('actNs', ACT_NS || boundNamespace(), actSetNamespace));
+
   const host = $('actList'); host.textContent = '';
-  let ops = LOG.slice().sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0))
-    .filter(o => { const g = BYHASH[o.hash]; return !(g && isInternal(g)); });
+  // A namespace-scoped browse row already carries op/hash/hlc *and* the
+  // resolved fields in one object — strictly more than /api/log's bare
+  // op-log entries, and (unlike /api/log, which spans every namespace with
+  // no filter of its own) it only ever contains this namespace's grains, so
+  // every row here resolves instead of falling through to a bare hash.
+  const rows = await browseForNamespace(ACT_NS || boundNamespace());
+  let ops = rows.slice().sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0)).filter(o => !isInternal(o));
   if (ACTFILTER !== 'all') ops = ops.filter(o => o.op === ACTFILTER);
   if (!ops.length) { host.appendChild(el('div', 'empty', 'Nothing here yet.')); return; }
   let day = null;
@@ -1856,7 +2068,7 @@ function renderActivity() {
       h.style.cssText = 'display:block;padding:24px 0 12px;font-size:13px;letter-spacing:.06em';
       host.appendChild(h);
     }
-    const g = BYHASH[o.hash];
+    const g = o;
     const ev = el('div', 'ev');
     ev.appendChild(el('span', 'at', clock(ms)));
     const ic = el('span', 'ic');
@@ -1881,6 +2093,16 @@ function renderActivity() {
     dev.textContent = 'op ' + o.op_seq + ' · ' + o.op + ' · ' + (o.hash || '').slice(0, 12);
     body.appendChild(dev);
     ev.appendChild(body);
+    /* A wide row has room to say what kind of grain this is and where it
+       lives — without that, the extra width past the text is just blank. */
+    const tags = el('div', 'ev-tags');
+    if (g && g.type) {
+      const kind = el('span', 'tag'); kind.style.cssText = 'background:var(--well);color:var(--dim);font-weight:500';
+      kind.textContent = g.type;
+      tags.appendChild(kind);
+    }
+    if (g && g.fields && g.fields.namespace) tags.appendChild(el('span', 'tiny mono', g.fields.namespace));
+    ev.appendChild(tags);
     ev.style.cursor = 'pointer';
     ev.onclick = () => openPanel(o.hash);
     host.appendChild(ev);
@@ -1905,6 +2127,8 @@ function sevStyle(sev) {
   return ['var(--muted)', 'var(--raise)'];
 }
 function renderSuggestions() {
+  renderCrumbHeader('sugCrumb', [{ label: 'Suggestions' }],
+    'Ways to make this memory more reliable. Nothing is changed until you approve it, and every change can be undone.');
   const host = $('sugList'); host.textContent = '';
   if (!canWrite()) host.appendChild(readOnlyNote());
   const list = RECS[SUGTAB] || [];
@@ -2163,11 +2387,13 @@ function snippetFor(kind) {
   if (kind === 'node') return 'import { Areev } from "areev";\nconst db = new Areev("' + db + '", "user:me");\ndb.addFact("john", "prefers", "green tea");\nconsole.log(db.recall("john"));';
   return '{\n  "mcpServers": {\n    "areev": {\n      "command": "areev",\n      "args": ["serve", "--mcp", "--db", "' + db + '"]\n    }\n  }\n}';
 }
-function renderConnect() {
+function renderSettingsPage() {
+  renderCrumbHeader('setCrumb', [{ label: 'Settings' }],
+    'Attach agents to this memory, sync it across the apps your customers reach you through, and configure how this console itself behaves.');
   const host = $('conBody'); host.textContent = '';
   if (CONTAB === 'agent') return renderConnectAgent(host);
   if (CONTAB === 'sync') return renderConnectSync(host);
-  return renderConnectSettings(host);
+  return renderConnectGeneral(host);
 }
 let SNIPTAB = 'claude';
 function renderConnectAgent(host) {
@@ -2356,7 +2582,40 @@ function renderConnectSync(host) {
   note.appendChild(nt);
   host.appendChild(note);
 }
-function renderConnectSettings(host) {
+/* One toggle row, shared by Developer mode and Dark mode — same markup the
+   rail used to own, now built fresh on every render instead of wired once
+   at boot, since it lives inside a page section that redraws per visit. */
+function settingsToggle(label, isOn, onToggle) {
+  const row = el('div', 'toggle-row');
+  row.appendChild(el('span', null, label));
+  const btn = el('button', 'sw' + (isOn ? ' on' : ''));
+  btn.setAttribute('aria-label', label);
+  btn.appendChild(el('i'));
+  btn.onclick = () => onToggle(btn);
+  row.appendChild(btn);
+  return row;
+}
+function renderConnectGeneral(host) {
+  const appearance = el('div', 'card'); appearance.style.cssText = 'padding:8px 22px 18px;margin-bottom:16px';
+  appearance.appendChild(el('h2', null, 'This console')).style.padding = '10px 0';
+  appearance.appendChild(settingsToggle('Developer mode', document.documentElement.classList.contains('dev'), btn => {
+    const on = document.documentElement.classList.toggle('dev');
+    localStorage.setItem('areev.dev', on ? '1' : '0');
+    btn.classList.toggle('on', on);
+    render();
+  }));
+  appearance.appendChild(settingsToggle('Dark mode',
+    (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark',
+    btn => {
+      const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const next = cur === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem('areev.theme', next);
+      btn.classList.toggle('on', next === 'dark');
+      Graph.recolor(); WFGraph.recolor(); render();
+    }));
+  host.appendChild(appearance);
+
   const c = CONFIG;
   if (!c || c.ok === false) { host.appendChild(el('div', 'empty', 'Configuration unavailable.')); return; }
   const warn = (c.warnings || []);
@@ -2882,8 +3141,8 @@ const Graph = (() => {
    view-only — `ADD workflow`'s `* N` populates `retries`, not
    `max_cycles`, and has no way to re-emit either on a resave, so editing
    one through the console would silently unbound its loop. */
-function workflowGrains() { return BROWSE.filter(g => g.type === 'workflow' && isCurrent(g)); }
-function toolDefs() { return BROWSE.filter(g => g.type === 'tool' && (g.fields || {}).kind === 'definition' && isCurrent(g)); }
+function workflowGrains() { return wfRows().filter(g => g.type === 'workflow' && isCurrent(g)); }
+function toolDefs() { return wfRows().filter(g => g.type === 'tool' && (g.fields || {}).kind === 'definition' && isCurrent(g)); }
 function wfLabel(g) {
   const f = g.fields || {};
   if (f.name) return f.name;
@@ -2902,7 +3161,7 @@ function wfNodeExecutor(bindings, nodeId) {
   const raw = bindings ? bindings[nodeId] : null;
   if (!raw) return { kind: 'abstract', tool: null, hash: null };
   const hash = String(raw).replace(/^sha256:/, '');
-  const target = BYHASH[hash];
+  const target = wfByHash()[hash];
   if (!target) return { kind: 'host', tool: null, hash };
   if (target.type === 'workflow') return { kind: 'subgraph', tool: target, hash };
   const ek = (target.fields || {}).executor_kind;
@@ -2921,13 +3180,36 @@ function wfNodeSubtitle(ex) {
 const calEsc = s => String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 let WF_SEL = null, WF_DRAFT = null, WF_LOCKED = false, WF_PICK = null;
+/* null = the bound session default (read straight off the global BROWSE/
+   BYHASH, already loaded at boot — no extra fetch). Any other value means
+   this page fetched and cached that namespace's rows separately (see
+   browseForNamespace); switching pages back to the default is instant and
+   never disturbs BROWSE, which the rail/entities/graph still depend on. */
+let WF_NS = null, WF_ROWS = null, WF_BYHASH_NS = null;
+const wfRows = () => WF_ROWS || BROWSE;
+const wfByHash = () => WF_BYHASH_NS || BYHASH;
+async function wfSetNamespace(ns) {
+  WF_NS = (!ns || ns === boundNamespace()) ? null : ns;
+  if (WF_NS) {
+    WF_ROWS = await browseForNamespace(WF_NS);
+    WF_BYHASH_NS = {};
+    for (const g of WF_ROWS) WF_BYHASH_NS[g.hash] = g;
+  } else {
+    WF_ROWS = null; WF_BYHASH_NS = null;
+  }
+  wfClose();   // a namespace switch closes whatever was open — its hash may not even exist here
+}
 
 function wfOpen(hash) {
-  const g = BYHASH[hash];
-  if (!g) return;
+  const g = wfByHash()[hash];
+  if (!g) { toast('No workflow found at ' + shortHash(hash)); return; }
   const f = g.fields || {};
   WF_SEL = hash;
-  WF_LOCKED = !wfIsCalEditable(g);
+  // A saved workflow always writes to this console's bound namespace (CAL's
+  // `ADD workflow` has no `SET namespace = ...` clause to target another
+  // one) — so a plan opened while browsing a different namespace is
+  // view-only, same as a plan CAL genuinely cannot re-author.
+  WF_LOCKED = !wfIsCalEditable(g) || !!WF_NS;
   WF_DRAFT = {
     name: f.name || '',
     trigger: f.trigger || '',
@@ -2943,6 +3225,7 @@ function wfOpen(hash) {
   renderWorkflows();
 }
 function wfNew() {
+  if (WF_NS) { toast('Switch back to "' + boundNamespace() + '" to create a plan — a save always writes there'); return; }
   WF_SEL = null; WF_LOCKED = false;
   WF_DRAFT = { name: '', trigger: '', nodes: ['start'], edges: [], bindings: {} };
   WF_PICK = { kind: 'node', id: 'start' };
@@ -3065,7 +3348,7 @@ function renderInspect() {
     if (ex.kind === 'subgraph') bindField.appendChild(el('span', 'tiny', 'Bound to another plan — runs as a child run.'));
     box.appendChild(bindField);
 
-    const orig = WF_SEL && BYHASH[WF_SEL] ? (BYHASH[WF_SEL].fields || {}).retries : null;
+    const orig = WF_SEL && wfByHash()[WF_SEL] ? (wfByHash()[WF_SEL].fields || {}).retries : null;
     if (orig && orig[id] != null) box.appendChild(el('span', 'tiny', 'Retries on failure: ' + orig[id] + ' (read-only here)'));
 
     const del = el('button', 'btn ghost sm', 'Delete step');
@@ -3108,6 +3391,7 @@ function wfCard(g) {
   b.appendChild(el('b', '', wfLabel(g)));
   const bits = [nodesN + (nodesN === 1 ? ' step' : ' steps'), edgesN + (edgesN === 1 ? ' edge' : ' edges')];
   if (!wfIsCalEditable(g)) bits.push('view-only');
+  if (WF_NS === '*' && f.namespace) bits.push(f.namespace);   // "All namespaces" — say which one each card is
   bits.push(relTime(createdMs(f)));
   b.appendChild(el('span', 'meta', bits.join(' · ')));
   if (f.trigger) b.appendChild(el('code', '', f.trigger));
@@ -3116,26 +3400,51 @@ function wfCard(g) {
 }
 /* One action slot, top right: "New workflow" on the list, "Save as new
    plan" in the editor — never both, never scattered across the page. */
+/* Why editing is off, in plain words — covers both reasons a plan can be
+   locked: CAL genuinely cannot re-author it (a bounded cycle / retry count),
+   or a save from here would land in the wrong namespace. */
+/* Plain text — this ends up in a native `title` tooltip, which can't render
+   the <code> markup the old inline banner used. */
+function wfLockReason() {
+  if (WF_NS) return 'Browsing "' + WF_NS + '" — switch back to "' + boundNamespace()
+    + '" (this console\'s own namespace) to edit or save. A save always writes there.';
+  const g = WF_SEL && wfByHash()[WF_SEL];
+  if (g && !wfIsCalEditable(g)) return 'This plan has a bounded-cycle edge or a per-node retry count — '
+    + 'CAL can visualize both but has no syntax yet to author them through ADD workflow. Open for viewing '
+    + 'only; edit this one via the Rust or Python API.';
+  return '';
+}
 function renderWorkflowHeader() {
   const editing = !!WF_DRAFT;
-  $('wfBack').hidden = !editing;
+  $('wfNsField').hidden = editing;
   $('wfNewBtn').hidden = editing;
+  $('wfNewBtn').disabled = !!WF_NS;
+  $('wfNewBtn').title = WF_NS ? 'Switch back to "' + boundNamespace() + '" to create a plan' : '';
   $('wfSave').hidden = !editing;
+  const nsHost = $('wfNsHost'); nsHost.textContent = '';
+  nsHost.appendChild(nsCombo('wfNs', WF_NS || boundNamespace(), ns => wfSetNamespace(ns)));
   if (!editing) {
-    $('wfTitle').textContent = 'Workflows';
-    $('wfSub').innerHTML = 'Plans <code>areev run</code> executes: nodes are steps, edges are the order '
-      + 'they can happen in. Plans are content-addressed and immutable, like every memory here — saving a '
-      + 'change writes a new plan; the old one stays recallable by its hash.';
+    renderCrumbHeader('wfCrumb', [{ label: 'Workflows' }],
+      'Plans <code>areev run</code> executes: nodes are steps, edges are the order they can happen in. '
+      + 'Plans are content-addressed and immutable, like every memory here — saving a change writes a new '
+      + 'plan; the old one stays recallable by its hash.');
     return;
   }
-  $('wfTitle').textContent = (WF_DRAFT.name && WF_DRAFT.name.trim())
-    || (WF_SEL && BYHASH[WF_SEL] ? wfLabel(BYHASH[WF_SEL]) : (WF_SEL ? 'Untitled plan' : 'New workflow'));
-  $('wfSub').textContent = WF_SEL
-    ? 'Editing from ' + shortHash(WF_SEL) + ' — the old version stays recallable by that hash.'
-    : 'Not yet saved. Name it, wire up its steps, then save.';
+  const fallbackName = (WF_SEL && wfByHash()[WF_SEL]) ? wfLabel(wfByHash()[WF_SEL]) : 'New workflow';
+  renderCrumbHeader('wfCrumb', [{ label: 'Workflows', onClick: wfClose }], null, {
+    editTitle: {
+      value: WF_DRAFT.name || '', placeholder: fallbackName, disabled: WF_LOCKED,
+      onCommit: v => { WF_DRAFT.name = v; renderWorkflowHeader(); },
+    },
+    editDesc: {
+      value: WF_DRAFT.trigger || '', placeholder: 'No trigger set — click to add one', disabled: WF_LOCKED,
+      onCommit: v => { WF_DRAFT.trigger = v; renderWorkflowHeader(); },
+    },
+    lockHint: WF_LOCKED ? wfLockReason() : null,
+  });
   const canSave = !WF_LOCKED && canWrite() && stmtSupported('ADD');
   $('wfSave').disabled = !canSave;
-  $('wfSave').title = WF_LOCKED ? 'This plan is view-only in the console'
+  $('wfSave').title = WF_LOCKED ? (WF_NS ? 'Browsing a different namespace — view only' : 'This plan is view-only in the console')
     : !canWrite() ? READONLY_WHY
     : !stmtSupported('ADD') ? 'This build has no ADD workflow support'
     : 'Write a new plan grain with these steps';
@@ -3165,9 +3474,6 @@ function renderWorkflows() {
   wrap.hidden = !WF_DRAFT;
   if (!WF_DRAFT) return;
 
-  $('wfName').value = WF_DRAFT.name || ''; $('wfName').disabled = WF_LOCKED;
-  $('wfTrigger').value = WF_DRAFT.trigger || ''; $('wfTrigger').disabled = WF_LOCKED;
-  $('wfLockedNote').hidden = !WF_LOCKED;
   $('wfAddNode').disabled = WF_LOCKED;
   WFGraph.mount();
   renderInspect();
@@ -3182,7 +3488,7 @@ function wfDiffSummary() {
     return 'Created "' + name + '" — ' + d.nodes.length + (d.nodes.length === 1 ? ' step' : ' steps')
       + (d.edges.length ? ', ' + d.edges.length + (d.edges.length === 1 ? ' edge' : ' edges') : '') + '.';
   }
-  const orig = (BYHASH[WF_SEL] || {}).fields || {};
+  const orig = (wfByHash()[WF_SEL] || {}).fields || {};
   const origNodes = new Set(orig.nodes || []), curNodes = new Set(d.nodes);
   const addedNodes = d.nodes.filter(n => !origNodes.has(n));
   const removedNodes = (orig.nodes || []).filter(n => !curNodes.has(n));
@@ -3213,7 +3519,12 @@ function wfDiffSummary() {
 
 function wfArmSave() {
   if (!WF_DRAFT || WF_LOCKED) return;
-  if (!WF_DRAFT.name.trim()) { toast('Name the plan before saving'); $('wfName').focus(); return; }
+  if (!WF_DRAFT.name.trim()) {
+    toast('Name the plan before saving');
+    const titleInput = document.querySelector('#wfCrumb input.ctitle');
+    if (titleInput) titleInput.focus();
+    return;
+  }
   if (!WF_DRAFT.nodes.length) { toast('Add at least one step'); return; }
   const reason = wfDiffSummary();
   /* A brand-new plan has nothing to justify yet — write it straight away
@@ -3477,8 +3788,14 @@ const WFGraph = (() => {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+  /* A guessed CSS calc() for "fill to the bottom of the window" drifts the
+     moment the header above it changes height — measure the canvas's own
+     rendered top instead, so it is always exactly right regardless of what
+     changed above it. */
   function resize() {
     if (!cv) return;
+    const top = cv.getBoundingClientRect().top;
+    cv.style.height = Math.max(480, Math.round(window.innerHeight - top - 32)) + 'px';
     dpr = window.devicePixelRatio || 1;
     W = cv.clientWidth; H = cv.clientHeight;
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);

@@ -830,6 +830,9 @@ impl UiServer {
                     "session": {
                         "namespace": self.facade.session_namespace(),
                         "mounts": self.facade.mount_aliases(),
+                        // Gates the console's "All namespaces" picker option —
+                        // same rule /api/browse?ns=* and /api/namespaces enforce.
+                        "is_owner": self.facade.authz().is_owner(),
                     },
                     "store": {
                         "index_text": index_text,
@@ -935,15 +938,42 @@ impl UiServer {
                     rows.reverse();
                     Ok((total, rows))
                 });
-                // Scope the browse to the session namespace, the way CAL
-                // already scopes recall. Without this the rail lists entities
-                // (`john`, `bob`) that every query on this console then reports
-                // as missing, because the two disagree about what is in view.
-                // Rows we cannot attribute — tombstone stubs, grains erased
-                // since — are kept: dropping them would hide an erasure.
-                let built = built.map(|(total, rows)| {
-                    let Some(ns) = self.facade.session_namespace() else {
-                        return (total, rows);
+                // Scope the browse to a namespace, the way CAL already scopes
+                // recall. Without this the rail lists entities (`john`, `bob`)
+                // that every query on this console then reports as missing,
+                // because the two disagree about what is in view.
+                //
+                // `?ns=<name>` lets the console browse a namespace other than
+                // the one it was launched with, and `?ns=*` lifts the filter
+                // entirely — both read-gated against the session's own
+                // `AuthzSet` exactly as a `RECALL ... WHERE namespace = ...`
+                // would be (`changes_since` itself reads the whole op-log
+                // unscoped; this filter is the only enforcement point, so it
+                // has to check what `AreevFacade::recall` checks, not less).
+                // Omitting `?ns` keeps the original session-default behavior
+                // byte-for-byte. Rows we cannot attribute — tombstone stubs,
+                // grains erased since — are kept regardless: dropping them
+                // would hide an erasure.
+                let ns_param = q("ns");
+                let built = built.and_then(|(total, rows)| {
+                    let authz = self.facade.authz();
+                    let filter_ns = match ns_param.as_deref() {
+                        Some("*") => {
+                            if !authz.is_owner() {
+                                return Err("not authorized to browse all namespaces".to_string());
+                            }
+                            None
+                        }
+                        Some(ns) => {
+                            authz
+                                .check(areev_core::authz::Verb::Read, ns)
+                                .map_err(|e| e.to_string())?;
+                            Some(ns.to_string())
+                        }
+                        None => self.facade.session_namespace().map(|s| s.to_string()),
+                    };
+                    let Some(ns) = filter_ns else {
+                        return Ok((total, rows));
                     };
                     let kept = rows
                         .into_iter()
@@ -954,11 +984,33 @@ impl UiServer {
                                 .is_none_or(|got| got == ns)
                         })
                         .collect();
-                    (total, kept)
+                    Ok((total, kept))
                 });
                 match built {
                     Ok((total, rows)) => ok_json(json!({"ok": true, "total_ops": total, "grains": rows})),
                     Err(e) => ok_json(json!({"ok": false, "error": e})),
+                }
+            }
+            ("GET", "/api/namespaces") => {
+                // Every namespace present in the file, for the console's
+                // namespace picker. A restricted principal only ever sees the
+                // ones its own grants cover — read access to the *names* of
+                // namespaces it cannot read from would itself be a disclosure.
+                let result = self.facade.with_store(|m| m.namespaces());
+                match result {
+                    Ok(list) => {
+                        let authz = self.facade.authz();
+                        let owner = authz.is_owner();
+                        let arr: Vec<Value> = list
+                            .into_iter()
+                            .filter(|(ns, _)| {
+                                owner || authz.check(areev_core::authz::Verb::Read, ns).is_ok()
+                            })
+                            .map(|(ns, n)| json!({"namespace": ns, "count": n}))
+                            .collect();
+                        ok_json(json!({"ok": true, "namespaces": arr}))
+                    }
+                    Err(e) => ok_json(json!({"ok": false, "error": e.to_string()})),
                 }
             }
             ("GET", "/api/grain") => {
@@ -1949,6 +2001,103 @@ mod credential_route_tests {
             "anonymous must not run the loop through CAL either: {}",
             text(&cal)
         );
+    }
+}
+
+#[cfg(test)]
+mod namespace_route_tests {
+    use super::UiServer;
+    use areev_cal::AreevFacade;
+    use areev_core::authz::{CredentialMap, AUTHZ_NS, REL_PERMITS};
+    use areev_core::types::{Fact, Grain};
+    use areev_store::Areev;
+
+    fn text(r: &(&str, &str, Vec<u8>)) -> String {
+        String::from_utf8_lossy(&r.2).to_string()
+    }
+
+    /// `agent:writer` is granted read+write on `caller` only — nothing on
+    /// `other`, nothing on the audit namespace.
+    fn restricted_server() -> UiServer {
+        std::env::set_var("AREEV_TEST_NS_WRITER_TOK", "writer-secret");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut store = Areev::open(path.to_str().unwrap()).unwrap();
+        store
+            .add(&Fact::new("agent:writer", REL_PERMITS, "read,write ON caller").namespace(AUTHZ_NS).created_at(1_000))
+            .unwrap();
+        store.add(&Fact::new("acme", "tier", "Enterprise").namespace("caller").created_at(2_000)).unwrap();
+        store.add(&Fact::new("bob", "role", "admin").namespace("other").created_at(3_000)).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        let map = CredentialMap::from_json(
+            r#"{"version":1,"tokens":[{"env":"AREEV_TEST_NS_WRITER_TOK","principal":"agent:writer"}]}"#,
+        )
+        .unwrap();
+        UiServer::new(facade, "test".into()).with_credentials(map)
+    }
+
+    /// Unbound local open — the implicit owner, unrestricted on every
+    /// namespace, same as a plain `areev ui` with no `--auth`.
+    fn owner_server() -> UiServer {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut store = Areev::open(path.to_str().unwrap()).unwrap();
+        store.add(&Fact::new("acme", "tier", "Enterprise").namespace("caller").created_at(1_000)).unwrap();
+        store.add(&Fact::new("bob", "role", "admin").namespace("other").created_at(2_000)).unwrap();
+        std::mem::forget(dir);
+        UiServer::new(AreevFacade::with_session(store, Some("caller".into()), None), "t".into())
+    }
+
+    #[test]
+    fn namespaces_route_hides_what_the_principal_cannot_read() {
+        let s = restricted_server();
+        let r = s.route("GET", "/api/namespaces", b"", Some("writer-secret"), None);
+        let body = text(&r);
+        assert!(body.contains("\"caller\""), "granted namespace must be listed: {body}");
+        assert!(!body.contains("\"other\""), "ungranted namespace must not be listed: {body}");
+        assert!(!body.contains(AUTHZ_NS), "the audit namespace must not leak either: {body}");
+    }
+
+    #[test]
+    fn namespaces_route_lists_everything_for_the_owner() {
+        let s = owner_server();
+        let r = s.route("GET", "/api/namespaces", b"", None, None);
+        let body = text(&r);
+        assert!(body.contains("\"caller\"") && body.contains("\"other\""), "{body}");
+    }
+
+    #[test]
+    fn browse_ns_param_is_read_gated_for_a_restricted_principal() {
+        let s = restricted_server();
+        let ok = s.route("GET", "/api/browse?ns=caller", b"", Some("writer-secret"), None);
+        assert!(text(&ok).contains("\"ok\":true"), "their own granted namespace must work: {}", text(&ok));
+
+        let denied = s.route("GET", "/api/browse?ns=other", b"", Some("writer-secret"), None);
+        let body = text(&denied);
+        assert!(body.contains("\"ok\":false"), "an ungranted namespace must be refused, not silently emptied: {body}");
+    }
+
+    #[test]
+    fn browse_ns_star_requires_owner() {
+        let s = restricted_server();
+        let r = s.route("GET", "/api/browse?ns=*", b"", Some("writer-secret"), None);
+        assert!(text(&r).contains("\"ok\":false"), "a restricted principal must not get the unfiltered view: {}", text(&r));
+
+        let owner = owner_server();
+        let r2 = owner.route("GET", "/api/browse?ns=*", b"", None, None);
+        let body2 = text(&r2);
+        assert!(body2.contains("\"ok\":true"), "the owner session may lift the filter: {body2}");
+        assert!(body2.contains("\"caller\"") && body2.contains("\"other\""), "{body2}");
+    }
+
+    #[test]
+    fn browse_without_ns_param_keeps_original_session_default_behavior() {
+        let s = owner_server();
+        let r = s.route("GET", "/api/browse", b"", None, None);
+        let body = text(&r);
+        assert!(body.contains("\"caller\""), "{body}");
+        assert!(!body.contains("\"other\""), "omitting ?ns must behave exactly as before this feature existed: {body}");
     }
 }
 

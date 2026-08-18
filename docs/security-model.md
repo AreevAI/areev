@@ -184,6 +184,24 @@ top of that.
   (`FORGET SUBJECT`, `PURGE … IN`, retention/anon/holds) take exact
   namespaces, and a `namespace_override`-pinned session cannot escape its pin
   via `IN` sets or patterns (the pin clears any caller-supplied scope).
+- **The console's namespace picker is a UI affordance over reads the bound
+  session could already perform, not a new authorization surface.** `--ns`
+  at launch is a display default, never an enforcement boundary (unlike
+  `namespace_override`, above) — a bound session's `/api/cal` can already
+  `RECALL` any namespace its `AuthzSet` covers. `GET /api/browse?ns=<name>`
+  (an alternative to the bound default; omit `ns` for the original,
+  unchanged behavior) and `GET /api/namespaces` (the picker's own namespace
+  list) apply that exact same read gate explicitly, since neither goes
+  through `AreevFacade::recall` — `changes_since`, `/api/browse`'s
+  underlying read, has no per-namespace check of its own, so the route
+  handler is the only enforcement point and has to check what `recall`
+  would have. `?ns=*` ("no filter, show every namespace at once") is
+  **owner-only**: a restricted principal must still enumerate namespaces
+  one at a time, even one holding a wildcard `read ON *` grant that would
+  pass every individual check — the firehose view is a stricter bar than
+  the per-namespace one. `GET /api/namespaces` filters its list the same
+  way, so a namespace's mere *name* is not disclosed to a principal with no
+  read grant on it. Covered by `areev-server`'s `namespace_route_tests`.
 - The store issues **parameterized SQL** exclusively; user strings are
   dictionary-encoded to integer term-ids before reaching the triple queries, so
   there is no SQL-injection surface.
