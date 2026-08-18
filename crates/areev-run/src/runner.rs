@@ -1436,6 +1436,140 @@ impl Runner {
         Ok(out.into_iter().map(|(_, id)| id).take(limit).collect())
     }
 
+    /// One run's full picture for an operator UI (issue #34): the frozen
+    /// manifest, terminal state, spend, journal size, pending asks, fork
+    /// lineage. Read-only — the same report `areev run inspect` prints.
+    pub fn inspect(&self, run_id: &str) -> Result<crate::InspectReport, RunError> {
+        let manifest = self.load_manifest(run_id)?;
+        let view = self
+            .facade
+            .with_store(|m| journal::load(m, &self.ns, run_id))
+            .map_err(err_run)?;
+        let last = view.checkpoints.last();
+        let scheduler = last.map(|c| c.scheduler.clone()).unwrap_or(Value::Null);
+        let asks = scheduler.get("pending_asks").cloned().unwrap_or(json!({}));
+        let phase = scheduler.get("phase").and_then(|p| p.as_str().map(String::from)).or_else(
+            || {
+                scheduler.get("phase").map(|p| {
+                    if p.get("Finished").is_some() { "finished".into() } else { "open".into() }
+                })
+            },
+        );
+        Ok(crate::InspectReport {
+            run_id: run_id.to_string(),
+            plan_hash: manifest.plan_hash.clone(),
+            principal: manifest.principal.clone(),
+            pinned: manifest
+                .pinned
+                .iter()
+                .map(|p| json!({"node": p.node, "tool": p.tool_name, "executor": p.executor}))
+                .collect(),
+            budgets: serde_json::to_value(manifest.budgets).unwrap_or(Value::Null),
+            fork_of: manifest
+                .fork_of
+                .as_ref()
+                .map(|f| json!({"base_run": f.base_run, "base_superstep": f.base_superstep})),
+            checkpoints: view.checkpoints.len(),
+            journal_entries: view.entries.len(),
+            superstep: scheduler.get("superstep").cloned(),
+            phase,
+            spent: scheduler.get("spent").cloned(),
+            pending_asks: asks,
+        })
+    }
+
+    /// The EU AI Act Article 14 report for `run_id` (or the newest run of
+    /// `plan`, or the newest run overall when neither is given), measured
+    /// from the journal rather than asserted (issue #34): where a human can
+    /// intervene, who is authorized to, what expires when, and how fast the
+    /// kill switch actually drained. Read-only — the same report
+    /// `areev run oversight-report` prints.
+    pub fn oversight_report(
+        &self,
+        run_id: Option<&str>,
+        plan: Option<&Hash>,
+    ) -> Result<crate::OversightReport, RunError> {
+        let target_run = match (run_id, plan) {
+            (Some(id), _) => Some(id.to_string()),
+            (None, Some(plan)) => {
+                let plan_hex = plan.to_hex();
+                self.recent_runs(64)?.into_iter().find(|id| {
+                    self.load_manifest(id).map(|mf| mf.plan_hash == plan_hex).unwrap_or(false)
+                })
+            }
+            (None, None) => self.recent_runs(1)?.into_iter().next(),
+        };
+        let Some(run_id) = target_run else {
+            return Err(RunError::UnresolvedRef {
+                what: "no runs recorded yet (or none for that plan) — nothing to report on"
+                    .into(),
+            });
+        };
+        let manifest = self.load_manifest(&run_id)?;
+        let gated: Vec<Value> = manifest
+            .pinned
+            .iter()
+            .filter(|p| p.executor == "client")
+            .map(|p| json!({"node": p.node, "tool": p.tool_name}))
+            .collect();
+        // Authorized responders: principals granted run.respond in the file.
+        let responders: Vec<String> = self
+            .facade
+            .with_store(|m| {
+                m.recent("agent:authz", Some(areev_core::types::GrainType::Fact), 4096)
+            })
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|g| {
+                        g.get_str("relation") == Some("mg:permits")
+                            && g.get_str("object").is_some_and(|o| o.contains("run.respond"))
+                    })
+                    .filter_map(|g| g.get_str("subject").map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Kill-switch time, measured: cancel Fact created_at → terminal
+        // checkpoint created_at, over every canceled run we can see.
+        let mut cancel_ms: Vec<i64> = Vec::new();
+        for id in self.recent_runs(64).unwrap_or_default() {
+            let cancel_at = self
+                .facade
+                .with_store(|m| {
+                    m.latest("agent:harness", &format!("run:{id}"), "mg:cancel").ok().flatten()
+                })
+                .and_then(|g| g.get_i64("created_at"));
+            let Some(cancel_at) = cancel_at else { continue };
+            if let Ok(view) = self.facade.with_store(|m| journal::load(m, &self.ns, &id)) {
+                if let Some(last) = view.checkpoints.last() {
+                    let drained_at = last.decisions.clock_close_ms as i64;
+                    if drained_at >= cancel_at {
+                        cancel_ms.push(drained_at - cancel_at);
+                    }
+                }
+            }
+        }
+        Ok(crate::OversightReport {
+            run_id,
+            plan_hash: manifest.plan_hash.clone(),
+            human_gates: json!({
+                "client_gated_nodes": gated,
+                "every_client_ask_is_an_approval": true,
+                "separation_of_duties": "responder != triggering principal, refused structurally",
+                "ask_ttl_sec": manifest.ask_ttl_sec,
+            }),
+            authorized_responders: json!({
+                "principals_granted_run_respond": responders,
+                "note": "empty = owner-only sessions (single-user mode); grants live IN the file as mg:permits Facts",
+            }),
+            budgets: serde_json::to_value(manifest.budgets).unwrap_or(Value::Null),
+            kill_switch: json!({
+                "verb": "run.cancel (deliberately the lowest-privilege run verb)",
+                "measured_cancel_to_drain_ms": cancel_ms,
+                "note": "measured from journaled cancel Facts to the terminal checkpoint's journaled close",
+            }),
+        })
+    }
+
     /// §5.5 gate 1 / verify tier 1: **journal-consistent replay**. Re-drives
     /// the run from the manifest's input with the clock scripted from
     /// journaled readings and every effect answered from the journal —

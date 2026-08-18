@@ -3111,112 +3111,30 @@ fn run_run(
         }
         "inspect" => {
             // One run, whole picture: the frozen manifest, terminal outcome,
-            // spend, journal size, pending asks, fork lineage.
+            // spend, journal size, pending asks, fork lineage — a thin
+            // wrapper over Runner::inspect (also reachable in-process from
+            // the Python/Node bindings, issue #34).
             let run_id = need("run-id", "areev run inspect --run-id ID")?;
-            let manifest = runner.facade.with_store(|m| {
-                areev_run::RunManifest::load(m, &run_id)
-            }).map_err(|e| e.to_string())?;
-            let view = runner.facade.with_store(|m| {
-                areev_run::journal::load(m, ns, &run_id)
-            }).map_err(|e| e.to_string())?;
-            let last = view.checkpoints.last();
-            let scheduler = last.map(|c| c.scheduler.clone()).unwrap_or(serde_json::Value::Null);
-            let asks = scheduler.get("pending_asks").cloned().unwrap_or(serde_json::json!({}));
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "run_id": run_id,
-                "plan_hash": manifest.plan_hash,
-                "principal": manifest.principal,
-                "pinned": manifest.pinned.iter().map(|p| serde_json::json!({
-                    "node": p.node, "tool": p.tool_name, "executor": p.executor,
-                })).collect::<Vec<_>>(),
-                "budgets": serde_json::to_value(manifest.budgets).unwrap(),
-                "fork_of": manifest.fork_of.as_ref().map(|f| serde_json::json!({
-                    "base_run": f.base_run, "base_superstep": f.base_superstep,
-                })),
-                "checkpoints": view.checkpoints.len(),
-                "journal_entries": view.entries.len(),
-                "superstep": scheduler.get("superstep"),
-                "phase": scheduler.get("phase").and_then(|p| p.as_str().map(String::from))
-                    .or_else(|| scheduler.get("phase").map(|p| if p.get("Finished").is_some() { "finished".into() } else { "open".into() })),
-                "spent": scheduler.get("spent"),
-                "pending_asks": asks,
-            })).unwrap());
+            let report = runner.inspect(&run_id).map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
         }
         "oversight-report" => {
             // The Art. 14 row as a command (docs/eu-ai-act.md): where can a
             // human intervene, who is AUTHORIZED to, what expires when, and
             // how fast the kill switch actually drained — measured from the
-            // journal, not asserted.
-            let target_run = match (flag(flags, "run-id"), flag(flags, "plan")) {
-                (Some(id), _) => Some(id),
-                (None, Some(plan)) => {
-                    // Newest run of this plan.
-                    runner.recent_runs(64).map_err(|e| e.to_string())?
-                        .into_iter()
-                        .find(|id| {
-                            runner.facade.with_store(|m| areev_run::RunManifest::load(m, id))
-                                .map(|mf| mf.plan_hash == plan)
-                                .unwrap_or(false)
-                        })
-                }
-                (None, None) => runner.recent_runs(1).map_err(|e| e.to_string())?.into_iter().next(),
-            };
-            let Some(run_id) = target_run else {
-                return Err("no runs recorded yet (or none for that plan) — nothing to report on".into());
-            };
-            let manifest = runner.facade.with_store(|m| areev_run::RunManifest::load(m, &run_id))
+            // journal, not asserted. A thin wrapper over
+            // Runner::oversight_report (also reachable in-process from the
+            // Python/Node bindings, issue #34).
+            let plan_hash = flag(flags, "plan")
+                .map(|p| {
+                    areev_core::error::Hash::from_hex(&p)
+                        .map_err(|_| format!("--plan is not a valid hash: {p}"))
+                })
+                .transpose()?;
+            let report = runner
+                .oversight_report(flag(flags, "run-id").as_deref(), plan_hash.as_ref())
                 .map_err(|e| e.to_string())?;
-            let gated: Vec<_> = manifest.pinned.iter()
-                .filter(|p| p.executor == "client")
-                .map(|p| serde_json::json!({"node": p.node, "tool": p.tool_name}))
-                .collect();
-            // Authorized responders: principals granted run.respond in the file.
-            let responders: Vec<String> = runner.facade.with_store(|m| {
-                m.recent("agent:authz", Some(areev_core::types::GrainType::Fact), 4096)
-            }).map(|rows| {
-                rows.into_iter()
-                    .filter(|g| g.get_str("relation") == Some("mg:permits")
-                        && g.get_str("object").is_some_and(|o| o.contains("run.respond")))
-                    .filter_map(|g| g.get_str("subject").map(String::from))
-                    .collect()
-            }).unwrap_or_default();
-            // Kill-switch time, measured: cancel Fact created_at → terminal
-            // checkpoint created_at, over every canceled run we can see.
-            let mut cancel_ms: Vec<i64> = Vec::new();
-            for id in runner.recent_runs(64).unwrap_or_default() {
-                let cancel_at = runner.facade.with_store(|m| {
-                    m.latest("agent:harness", &format!("run:{id}"), "mg:cancel").ok().flatten()
-                }).and_then(|g| g.get_i64("created_at"));
-                let Some(cancel_at) = cancel_at else { continue };
-                if let Ok(view) = runner.facade.with_store(|m| areev_run::journal::load(m, ns, &id)) {
-                    if let Some(last) = view.checkpoints.last() {
-                        let drained_at = last.decisions.clock_close_ms as i64;
-                        if drained_at >= cancel_at {
-                            cancel_ms.push(drained_at - cancel_at);
-                        }
-                    }
-                }
-            }
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "run_id": run_id,
-                "plan_hash": manifest.plan_hash,
-                "human_gates": {
-                    "client_gated_nodes": gated,
-                    "every_client_ask_is_an_approval": true,
-                    "separation_of_duties": "responder != triggering principal, refused structurally",
-                    "ask_ttl_sec": manifest.ask_ttl_sec,
-                },
-                "authorized_responders": {
-                    "principals_granted_run_respond": responders,
-                    "note": "empty = owner-only sessions (single-user mode); grants live IN the file as mg:permits Facts",
-                },
-                "budgets": serde_json::to_value(manifest.budgets).unwrap(),
-                "kill_switch": {
-                    "verb": "run.cancel (deliberately the lowest-privilege run verb)",
-                    "measured_cancel_to_drain_ms": cancel_ms,
-                    "note": "measured from journaled cancel Facts to the terminal checkpoint's journaled close",
-                },
-            })).unwrap());
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
         }
         "shadow" => {
             // §7.4's pre-apply check as a product surface: replay journaled

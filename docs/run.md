@@ -286,7 +286,11 @@ authorized to (the `run.respond` grants in the file), what expires when
 (ask TTLs), and how fast the kill switch actually drained — **measured**
 from the journaled cancel Fact to the terminal checkpoint close, not
 asserted. The article→capability→command map is
-[`docs/eu-ai-act.md`](eu-ai-act.md).
+[`docs/eu-ai-act.md`](eu-ai-act.md). Both `inspect` and `oversight-report`
+are also `Runner` methods, reachable in-process from the Python/Node
+bindings (`run_inspect`/`run_oversight_report`) — a tenant-deployed agent
+service renders these without shipping the CLI binary just for two
+read-only reports.
 
 ## LLM nodes (abstract nodes)
 
@@ -350,8 +354,8 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `changes_since` — JSON strings out |
-| Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, …) — promises, JSON strings out |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
+| Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves (not runs of them) — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other

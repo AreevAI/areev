@@ -59,6 +59,53 @@ def test_run_start_respond_resume_verify(db):
     assert shadow["effect_dispatches"] == 0
 
 
+def test_run_inspect(db):
+    wf = _plan(db)
+    session = json.loads(db.run_start(
+        wf, "py-inspect", input_json='{"who": "world"}',
+        tool_cmd='printf \'{"greeting": "hello"}\'',
+    ))
+    ask = session["parked"]["asks"][0]["tool_call_id"]
+    db.run_respond("py-inspect", ask, '{"approved": true}', responder="user:officer")
+    db.run_resume("py-inspect")
+
+    report = json.loads(db.run_inspect("py-inspect"))
+    assert report["run_id"] == "py-inspect"
+    assert report["plan_hash"] == wf
+    assert report["principal"] == "user:starter"
+    assert {p["node"] for p in report["pinned"]} == {"greet", "approve"}
+    assert report["checkpoints"] >= 1
+    assert report["journal_entries"] >= 1
+    assert report["fork_of"] is None
+
+
+def test_run_oversight_report(db):
+    wf = _plan(db)
+    session = json.loads(db.run_start(
+        wf, "py-oversight", input_json='{"who": "world"}',
+        tool_cmd='printf \'{"greeting": "hello"}\'',
+    ))
+    ask = session["parked"]["asks"][0]["tool_call_id"]
+    db.run_respond("py-oversight", ask, '{"approved": true}', responder="user:officer")
+    db.run_resume("py-oversight")
+
+    report = json.loads(db.run_oversight_report(run_id="py-oversight"))
+    assert report["run_id"] == "py-oversight"
+    assert report["plan_hash"] == wf
+    gated = report["human_gates"]["client_gated_nodes"]
+    assert any(n["node"] == "approve" for n in gated)
+    assert report["human_gates"]["every_client_ask_is_an_approval"] is True
+    assert report["authorized_responders"]["principals_granted_run_respond"] == []
+
+    # Neither run_id nor plan given → the newest run overall.
+    newest = json.loads(db.run_oversight_report())
+    assert newest["run_id"] == "py-oversight"
+
+    # plan resolves to that plan's newest run.
+    by_plan = json.loads(db.run_oversight_report(plan=wf))
+    assert by_plan["run_id"] == "py-oversight"
+
+
 def test_run_cancel_and_fork(db):
     wf = _plan(db)
     session = json.loads(db.run_start(
