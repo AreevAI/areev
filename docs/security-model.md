@@ -207,6 +207,17 @@ top of that.
   there is no SQL-injection surface.
 - The **web console** escapes grain-controlled data before rendering it, so a
   synced grain carrying HTML/JS markup is inert in the UI.
+- The console also treats grain-controlled data as untrusted on the way
+  *back out* to CAL, not just on the way in to HTML: the Workflows editor's
+  save path validates a plan's `BIND` hash against the content-address
+  format before splicing it bare into the `ADD workflow` statement it sends.
+  Every other value there (node names, `WHEN`, the trigger, the reason) goes
+  through the same quoting `calEsc()` gives everything else; a hash is the
+  one value CAL accepts unquoted, and `Workflow::bind()` accepts an
+  arbitrary string, so a binding authored outside the console (the Rust,
+  Python, or Node API, or a synced bundle) could otherwise append arbitrary
+  CAL clauses to that statement the moment someone re-saves the plan through
+  the UI.
 
 ## Threats in scope (please report)
 

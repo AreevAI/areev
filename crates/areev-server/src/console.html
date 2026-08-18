@@ -158,15 +158,41 @@
   .starter code { font-family:var(--mono); font-size:11.5px; color:var(--muted); background:var(--bg);
                   border:0; border-radius:6px; padding:8px 10px; display:block;
                   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .vocab { display:grid; grid-template-columns:repeat(auto-fit, minmax(185px, 1fr)); gap:10px; }
-  .vc { text-align:left; background:var(--surface); border:1px solid var(--line); border-radius:10px;
-        padding:13px 14px; display:flex; flex-direction:column; gap:5px; cursor:pointer;
-        transition:border-color .12s; }
-  .vc:hover { border-color:var(--accent-line); }
-  .vc .top { display:flex; align-items:baseline; gap:8px; }
-  .vc .k { font-family:var(--mono); font-size:12.5px; color:var(--ink); flex:1; }
-  .vc .n { font-size:17px; font-weight:600; color:var(--ink); }
-  .vc small { font-size:12.5px; line-height:18px; color:var(--muted); }
+  /* ── analytics: the grain-type census, namespace breakdown, growth trend
+     and recall-leg status that used to live as a small "WHAT'S IN THIS
+     MEMORY" teaser on this very page — moved to its own tab so it could
+     cover all 12 grain types instead of 4, without crowding the on-ramp.
+     `.crow` is the shared row shape for both the grain-type census
+     and the namespace breakdown — a mono key, an optional gloss, a bar
+     proportional to that list's own max (not a global constant), and a
+     right-aligned count. */
+  .stiles { display:grid; grid-template-columns:repeat(4, minmax(200px, 1fr)); gap:14px; }
+  .stile { padding:18px 20px; display:flex; flex-direction:column; gap:6px; }
+  .stile .lbl { font-size:11.5px; font-weight:600; color:var(--dim); letter-spacing:.09em; }
+  .stile .n { font-size:28px; font-weight:700; color:var(--ink); letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
+  .stile .sub { font-size:12.5px; color:var(--faint); }
+  .census { display:flex; flex-direction:column; margin-top:6px; }
+  .crow { display:flex; align-items:center; gap:14px; padding:9px 0; border:0; background:none;
+          width:100%; text-align:left; font-family:inherit; cursor:pointer; }
+  .crow .k { width:150px; flex-shrink:0; font-family:var(--mono); font-size:12.5px; color:var(--ink); }
+  .crow .k.wide { width:200px; }
+  .crow .g { width:230px; flex-shrink:0; font-size:12.5px; color:var(--faint);
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .crow .track { flex:1; height:8px; background:var(--raise); border-radius:4px; }
+  .crow .bar { height:100%; background:var(--accent); border-radius:4px; }
+  .crow .bar.zero { background:var(--line); }
+  .crow .n { width:40px; flex-shrink:0; text-align:right; font-size:14px; font-weight:600;
+             color:var(--ink); font-variant-numeric:tabular-nums; }
+  .crow .n.zero { color:var(--faint); font-weight:500; }
+  .gchart { display:flex; align-items:flex-end; gap:6px; height:100px; margin-top:22px; }
+  .gbar { flex:1; background:var(--accent-line); border-radius:4px 4px 0 0; }
+  .gbar.today { background:var(--accent); }
+  .legs { display:flex; gap:14px; }
+  .leg { flex:1; padding:16px 18px; display:flex; flex-direction:column; gap:8px; }
+  .leg .hd { display:flex; align-items:center; gap:8px; }
+  .leg .dot { width:7px; height:7px; border-radius:4px; flex-shrink:0; }
+  .leg b { font-size:14px; font-weight:600; color:var(--ink); }
+  .leg .d { font-size:12.5px; color:var(--faint); line-height:18px; }
   /* minmax(0,·) or a long description sets the column's min-content width and
      the two halves stop being halves. */
   .recents { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px 26px; }
@@ -245,7 +271,14 @@
   #graphView { width:100%; max-width:var(--wide); margin-left:auto; margin-right:auto; }
 
   /* ── rail ── */
-  .brand { display:flex; align-items:center; gap:9px; }
+  /* Nav items carry their own 11px left padding (room for the hover/active
+     pill around the icon), and the rail footer already insets by that same
+     11px to match — the brand row was the one place that didn't, so its
+     icon sat 11px left of every nav icon below it. */
+  .brand { display:flex; align-items:center; gap:9px; padding-left:11px; border:0; background:none;
+           font-family:inherit; text-align:left; cursor:pointer; width:100%; border-radius:9px;
+           padding-top:4px; padding-bottom:4px; margin:-4px 0; transition:background .12s; }
+  .brand:hover { background:var(--raise); }
   .brand b { font-size:17px; font-weight:700; color:var(--ink); letter-spacing:-.02em; }
   .nav { display:flex; flex-direction:column; gap:2px; }
   .nav-item { display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:9px;
@@ -299,7 +332,9 @@
   .pagehead .trail { display:flex; flex-wrap:wrap; align-items:center; gap:6px; row-gap:2px; }
   .pagehead .trail .home { display:flex; align-items:center; padding:2px; margin-left:-2px; border:0; background:none; color:var(--dim); border-radius:5px; transition:color .12s; }
   .pagehead .trail .home:hover { color:var(--accent); }
-  .pagehead .trail .sep { font-size:13.5px; color:var(--faint); }
+  /* The "›" sits 1px low against the icon/text either side of it — nudge
+     it down that 1px rather than the icon (which is already centred). */
+  .pagehead .trail .sep { font-size:13.5px; color:var(--faint); padding-bottom:1px; }
   .pagehead .trail .link { border:0; background:none; padding:0; font:500 13.5px var(--sans); color:var(--dim); cursor:pointer; }
   .pagehead .trail .link:hover { color:var(--accent); }
   .pagehead .ctitle { font:600 13.5px/19px var(--sans); color:var(--ink); letter-spacing:-.01em; }
@@ -363,12 +398,25 @@
   input[type=text], textarea { font-family:inherit; background:var(--surface); border:1px solid var(--line2);
     border-radius:10px; color:var(--ink); padding:9px 12px; font-size:14px; width:100%; }
   input[type=text]:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  /* A native <select>, restyled to match every other control here instead of
+     the browser's own chrome — `appearance:none` plus a drawn chevron.
+     Chrome renders no pseudo-elements on <select>, so the chevron is a real
+     sibling span (`.sel-wrap`/`.sel-arrow`), the same shape `.ns-combo`'s
+     own arrow already uses, not a ::after. */
+  select { appearance:none; -webkit-appearance:none; font-family:inherit; background:var(--surface);
+    border:1px solid var(--line2); border-radius:10px; color:var(--ink); padding:9px 30px 9px 12px;
+    font-size:14px; width:100%; cursor:pointer; }
+  select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  select:disabled { cursor:default; opacity:.6; }
+  .sel-wrap { position:relative; display:block; }
+  .sel-arrow { position:absolute; right:11px; top:0; height:100%; display:flex; align-items:center;
+               pointer-events:none; color:var(--faint); }
 
   /* ── ask ── */
   .askbar { display:flex; align-items:center; gap:13px; height:56px; padding:0 14px 0 18px; background:var(--surface);
             border:1px solid var(--line2); border-radius:13px; transition:border-color .12s, box-shadow .12s; }
   .askbar:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
-  .askbar input { border:0; background:none; padding:0; font-size:16px; flex:1; }
+  .askbar input { border:0; background:none; padding:0; font-size:16px; flex:1; height:100%; }
   .askbar input:focus { outline:none; box-shadow:none; }
   .askbar input::placeholder { color:var(--faint); }
   .examples { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:0 2px; }
@@ -485,13 +533,39 @@
   /* ── namespace combobox: a real dropdown (known namespaces, click to
      pick) that is also just a text field — type a prefix pattern like
      "org.*" and it's accepted the same as any exact name. Shared by every
-     page with a namespace picker. ── */
-  .ns-combo { position:relative; }
-  .ns-combo-input { height:34px; padding:0 30px 0 10px; font-size:13.5px; cursor:text; }
-  .ns-combo-arrow { position:absolute; right:10px; top:0; height:34px; display:flex; align-items:center; pointer-events:none; color:var(--faint); }
-  .ns-combo-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; right:0; background:var(--surface);
-                   border:1px solid var(--line2); border-radius:10px; box-shadow:var(--shadow); max-height:230px;
-                   overflow-y:auto; padding:4px; }
+     page with a namespace picker, rendered as one pill ("Namespace: value
+     ⌄") rather than each page inventing its own label placement — that
+     drift was exactly what made the header row's height/position jump
+     between pages that have this control and pages that don't. */
+  .ns-combo { position:relative; display:inline-flex; align-items:stretch; height:34px;
+              border-radius:9px; background:var(--surface); border:1px solid var(--line2);
+              cursor:text; flex-shrink:0; }
+  /* A shaded, static tag for "Namespace" — its own background, rounded to
+     match the pill's own left corners (no `overflow:hidden` on `.ns-combo`
+     for that — the dropdown menu is an absolutely-positioned child of it and
+     would get clipped too), and a hairline border to its right — so it
+     reads as the fixed label, leaving the plain-background value beside it
+     looking like the part you can edit. */
+  .ns-combo .lbl { display:flex; align-items:center; padding:0 11px; background:var(--raise);
+                   color:var(--dim); font-size:13px; flex-shrink:0; border-right:1px solid var(--line2);
+                   border-radius:8px 0 0 8px; }
+  .ns-combo .value { display:flex; align-items:center; gap:8px; padding:0 12px; }
+  /* Auto-width value: an invisible ::after twin (same text, via data-value)
+     sizes the grid cell the input shares with it, so the pill hugs "caller"
+     as tightly as it hugs "org.billing" — the same trick the editable page
+     title uses (see .pagehead .input-sizer above). `input[type=text]`'s own
+     rule outranks a single `.ns-combo-input` class on specificity, so every
+     override below is scoped through `.ns-combo` to actually win. */
+  .ns-combo .sizer { display:inline-grid; align-items:center; min-width:1em; }
+  .ns-combo .sizer::after, .ns-combo .ns-combo-input { grid-area:1/1; box-sizing:border-box; }
+  .ns-combo .sizer::after { content:attr(data-value) ' '; visibility:hidden; white-space:pre; font:inherit; }
+  .ns-combo .ns-combo-input { border:0; background:none; padding:0; height:auto; width:100%; min-width:1em;
+                              font:600 13px var(--sans); color:var(--ink); cursor:text; }
+  .ns-combo .ns-combo-input:focus { outline:none; box-shadow:none; }
+  .ns-combo-arrow { display:flex; align-items:center; color:var(--faint); flex-shrink:0; pointer-events:none; }
+  .ns-combo-menu { position:absolute; z-index:20; top:calc(100% + 4px); right:0; left:auto; min-width:240px;
+                   background:var(--surface); border:1px solid var(--line2); border-radius:10px;
+                   box-shadow:var(--shadow); max-height:230px; overflow-y:auto; padding:4px; }
   .ns-combo-opt { padding:7px 9px; border-radius:7px; font-size:13px; color:var(--text); cursor:pointer; }
   .ns-combo-opt:hover, .ns-combo-opt.on { background:var(--raise); }
   .ns-combo-opt.hint { color:var(--accent); font-family:var(--mono); font-size:12px; }
@@ -592,15 +666,19 @@
 
 <div id="shell">
   <nav id="rail">
-    <div class="brand">
+    <button class="brand" id="brandBtn" type="button" title="Memory">
       <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="7.5" y="2.5" width="14" height="14" rx="4.5" fill="none" stroke="var(--accent-line)" stroke-width="2"/><rect x="2.5" y="7.5" width="14" height="14" rx="4.5" fill="var(--accent)"/></svg>
       <b>Areev</b>
-    </div>
+    </button>
 
     <div class="nav" id="nav">
       <button class="nav-item on" data-page="memory">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4.5A1.5 1.5 0 016.5 3H17a1.5 1.5 0 011.5 1.5V21l-6.5-3.4L5.5 21V4.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
         <span class="grow">Memory</span>
+      </button>
+      <button class="nav-item" data-page="query">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4.5 6.5h15M4.5 12h9M4.5 17.5h12" stroke-width="1.7" stroke-linecap="round"/><path d="M16.5 15.5l2.2 2.2" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="14" r="2.6" stroke-width="1.7"/></svg>
+        <span class="grow">Query</span>
       </button>
       <button class="nav-item" data-page="activity">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12.5h4.2l2.6-7 4.2 13 2.4-6h4.6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -620,9 +698,9 @@
         <span class="grow">Suggestions</span>
         <span class="pill" id="sugPill" hidden>0</span>
       </button>
-      <button class="nav-item" data-page="query">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4.5 6.5h15M4.5 12h9M4.5 17.5h12" stroke-width="1.7" stroke-linecap="round"/><path d="M16.5 15.5l2.2 2.2" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="14" r="2.6" stroke-width="1.7"/></svg>
-        <span class="grow">Query</span>
+      <button class="nav-item" data-page="analytics">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 19V13.5M11.5 19V8.5M18 19V5" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="grow">Analytics</span>
       </button>
       <button class="nav-item" data-page="settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke-width="1.7"/><path d="M19.4 13.5a1.7 1.7 0 000-3l-1-.2a6.7 6.7 0 00-.7-1.7l.6-.9a1.7 1.7 0 00-2.4-2.4l-.9.6a6.7 6.7 0 00-1.7-.7l-.2-1a1.7 1.7 0 00-3 0l-.2 1a6.7 6.7 0 00-1.7.7l-.9-.6a1.7 1.7 0 00-2.4 2.4l.6.9a6.7 6.7 0 00-.7 1.7l-1 .2a1.7 1.7 0 000 3l1 .2c.15.6.4 1.17.7 1.7l-.6.9a1.7 1.7 0 002.4 2.4l.9-.6c.53.3 1.1.55 1.7.7l.2 1a1.7 1.7 0 003 0l.2-1c.6-.15 1.17-.4 1.7-.7l.9.6a1.7 1.7 0 002.4-2.4l-.6-.9c.3-.53.55-1.1.7-1.7l1-.2z" stroke-width="1.7" stroke-linejoin="round"/></svg>
@@ -707,14 +785,37 @@
       </div>
     </section>
 
+    <!-- ── ANALYTICS ── -->
+    <section class="page" id="page-analytics" hidden>
+      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
+        <div id="anCrumb" style="flex:1;min-width:0"></div>
+        <span id="anNsHost"></span>
+      </div>
+
+      <div class="wide stiles" id="anTiles"></div>
+
+      <div class="wide qsec"><span class="sec-label">WHAT'S IN THIS MEMORY</span><i></i>
+        <span class="tiny">All 12 grain types this memory can hold — click one to run it in Query</span></div>
+      <div class="wide census" id="anCensus"></div>
+
+      <div class="wide qsec"><span class="sec-label">NAMESPACES</span><i></i>
+        <span class="tiny">Every namespace this session can read — click one to scope the page to it</span></div>
+      <div class="wide census" id="anNsBreakdown"></div>
+
+      <div class="wide qsec"><span class="sec-label">GROWTH</span><i></i>
+        <span class="tiny" id="anGrowthCaption"></span></div>
+      <div class="wide" id="anGrowth"></div>
+
+      <div class="wide qsec"><span class="sec-label">HOW IT CAN BE QUERIED</span><i></i>
+        <span class="tiny">The recall legs active on this file</span></div>
+      <div class="wide legs" id="anLegs"></div>
+    </section>
+
     <!-- ── ACTIVITY ── -->
     <section class="page" id="page-activity" hidden>
-      <div class="wide" style="display:flex;align-items:flex-end;gap:16px">
+      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
         <div id="actCrumb" style="flex:1;min-width:0"></div>
-        <div class="wf-field" style="width:220px">
-          <span class="tiny">Namespace</span>
-          <span id="actNsHost"></span>
-        </div>
+        <span id="actNsHost"></span>
       </div>
       <div class="examples wide" id="actFilters"></div>
       <div class="wide" id="actList"><div class="empty">loading…</div></div>
@@ -746,10 +847,7 @@
     <section class="page" id="page-workflows" hidden>
       <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
         <div id="wfCrumb" style="flex:1;min-width:0"></div>
-        <div class="wf-field" id="wfNsField" style="width:200px">
-          <span class="tiny">Namespace</span>
-          <span id="wfNsHost"></span>
-        </div>
+        <span id="wfNsHost"></span>
         <button class="btn sm" id="wfNewBtn">New workflow</button>
         <button class="btn sm" id="wfSave" hidden>Save as new plan</button>
       </div>
@@ -798,7 +896,7 @@
       <span class="wide sub" id="qintro">Ask the memory a precise question. Every view in this console
         runs the same language underneath — start from an example below and edit it.</span>
 
-      <div class="col composer">
+      <div class="wide composer">
         <div class="qedit">
           <div id="qhl" aria-hidden="true"></div>
           <textarea id="qtext" spellcheck="false" rows="3"
@@ -814,15 +912,12 @@
           <span class="tiny" id="qnotice"></span>
         </div>
       </div>
-      <div class="col" id="qerr" hidden></div>
+      <div class="wide" id="qerr" hidden></div>
 
       <div class="wide onramp" id="qonramp">
         <div class="qsec"><span class="sec-label">START FROM A QUESTION</span><i></i>
           <span class="tiny">Each one writes real CAL into the editor — edit it from there</span></div>
         <div class="starters" id="qstarters"></div>
-        <div class="qsec"><span class="sec-label">WHAT’S IN THIS MEMORY</span><i></i>
-          <span class="tiny">Swap any of these for <code>facts</code> in a query</span></div>
-        <div class="vocab" id="qvocab"></div>
         <div class="qsec"><span class="sec-label">SAVED &amp; RECENT</span><i></i>
           <div class="menuwrap"><button class="btn ghost sm hasmenu" id="savedBtn">All saved</button>
             <div class="menu" id="savedMenu" hidden></div></div>
@@ -868,6 +963,17 @@ const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls;
   if (txt != null) n.textContent = txt; return n; };
+/* Wrap a native <select> with a drawn chevron (see the `select`/`.sel-wrap`
+   CSS) so it reads as one of this console's own controls rather than the
+   browser's default box — real native behavior underneath, just restyled. */
+function styledSelect(select) {
+  const wrap = el('div', 'sel-wrap');
+  wrap.appendChild(select);
+  const arrow = el('span', 'sel-arrow');
+  arrow.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 9l7 7 7-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  wrap.appendChild(arrow);
+  return wrap;
+}
 
 /* ══ page header ══════════════════════════════════════════════════════
    One component for every page: a breadcrumb trail (home icon › section ›
@@ -1291,10 +1397,15 @@ function nsCombo(id, current, onChange) {
   const known = new Set(options.map(o => o.value));
 
   const wrap = el('div', 'ns-combo'); wrap.id = id;
+  wrap.title = 'Scope this page to one namespace, or type a prefix like "org.*" to include its descendants too.';
+  wrap.appendChild(el('span', 'lbl', 'Namespace'));
+  const sizer = el('span', 'sizer');
   const input = document.createElement('input');
   input.type = 'text'; input.className = 'ns-combo-input'; input.autocomplete = 'off'; input.spellcheck = false;
   input.placeholder = 'namespace, or prefix.*';
   input.value = current || bound;
+  sizer.dataset.value = input.value;
+  sizer.appendChild(input);
   const arrow = el('span', 'ns-combo-arrow');
   arrow.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 9l7 7 7-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const menu = el('div', 'ns-combo-menu'); menu.hidden = true;
@@ -1318,17 +1429,23 @@ function nsCombo(id, current, onChange) {
   }
   function commit(v) {
     v = (v || '').trim() || (current || bound);
-    input.value = v; menu.hidden = true;
+    input.value = v; sizer.dataset.value = v; menu.hidden = true;
     if (v !== current) onChange(v);
   }
   input.addEventListener('focus', () => { renderMenu(); menu.hidden = false; });
-  input.addEventListener('input', renderMenu);
+  input.addEventListener('input', () => { sizer.dataset.value = input.value; renderMenu(); });
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); commit(input.value); input.blur(); }
-    else if (e.key === 'Escape') { input.value = current || bound; menu.hidden = true; input.blur(); }
+    else if (e.key === 'Escape') { input.value = current || bound; sizer.dataset.value = input.value; menu.hidden = true; input.blur(); }
   });
   input.addEventListener('blur', () => commit(input.value));
-  wrap.appendChild(input); wrap.appendChild(arrow); wrap.appendChild(menu);
+  // The arrow (and the label, and the pill's own padding) aren't the
+  // input — a plain click there hits the pill, not the field inside it, and
+  // does nothing. Forward it to the input's own focus, which is what
+  // actually opens the menu.
+  wrap.addEventListener('mousedown', e => { if (e.target === input) return; e.preventDefault(); input.focus(); });
+  const value = el('div', 'value'); value.appendChild(sizer); value.appendChild(arrow);
+  wrap.appendChild(value); wrap.appendChild(menu);
   return wrap;
 }
 const boundNamespace = () => (CONFIG && CONFIG.session && CONFIG.session.namespace) || 'shared';
@@ -1385,6 +1502,7 @@ async function refresh() {
 
 /* ══ chrome ═══════════════════════════════════════════════════════════ */
 function wireChrome() {
+  $('brandBtn').onclick = () => go('memory');
   $('nav').querySelectorAll('.nav-item').forEach(b => { b.onclick = () => go(b.dataset.page); });
   $('mview').querySelectorAll('button').forEach(b => {
     b.onclick = () => { MVIEW = b.dataset.v; render(); if (MVIEW === 'graph') Graph.mount(); };
@@ -1394,6 +1512,12 @@ function wireChrome() {
   $('health').onclick = verify;
 
   $('askBtn').onclick = () => runAsk($('ask').value);
+  // The bar is 56px tall, the input's own line-box is much shorter — click
+  // the bar's own padding above/below the text and it should still focus
+  // the field, not just the exact pixels the glyphs occupy.
+  $('ask').closest('.askbar').addEventListener('mousedown', e => {
+    if (e.target === $('ask')) return; e.preventDefault(); $('ask').focus();
+  });
   $('ask').addEventListener('keydown', e => { if (e.key === 'Enter') runAsk($('ask').value); });
   $('ask').addEventListener('input', () => { if (!$('ask').value) { ANSWER = null; }
     renderExamples(); renderMemList(); });
@@ -1439,7 +1563,7 @@ function applyHash() {
   if (!raw) return false;
   const [head, tail] = raw.split('/');
   if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
-  if (['memory', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
+  if (['memory', 'analytics', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
     if (head === 'settings' && ['agent', 'sync', 'general'].includes(tail)) CONTAB = tail;
@@ -1463,6 +1587,11 @@ function go(page) {
   PAGE = page;
   if (page === 'suggestions' && !RECS[SUGTAB]) loadRecs(SUGTAB).then(render);
   if (page === 'settings' && CONTAB === 'sync') loadSegments();
+  // Same reset applyHash() already does for a bare "#workflows" — without
+  // it, the sidebar's generic nav click left an open draft/selection in
+  // place, so "Workflows" looked like it wasn't navigating at all when you
+  // were mid-edit (it re-rendered the same editor you were already on).
+  if (page === 'workflows') { WF_SEL = null; WF_DRAFT = null; WF_PICK = null; }
   render();
 }
 
@@ -1532,10 +1661,188 @@ async function respondRun(id, ask, refuse) {
   RUNS = null; renderRuns();
 }
 
+/* ══ analytics ════════════════════════════════════════════════════════
+   The Query page's "WHAT'S IN THIS MEMORY" on-ramp, grown into its own
+   page: every grain type it offers as a starter (not just the 4), every
+   namespace, a growth trend, and the recall legs this file has active.
+   Stat tiles and the namespace breakdown are always whole-file — STATS and
+   the effective config have no per-namespace form. Composition and growth
+   follow the namespace picker, the same convention Activity/Workflows use. */
+const ANALYTICS_TYPES = [
+  ['facts', 'fact', "Things it holds as true"],
+  ['tools', 'tool', "Every tool call it made"],
+  ['observations', 'observation', "Things it noticed, unconfirmed"],
+  ['events', 'event', "Things that happened, in order"],
+  ['goals', 'goal', "Objectives it's working toward"],
+  ['states', 'state', "A snapshot of context, taken whole"],
+  ['workflows', 'workflow', "Procedures it can follow, as a graph"],
+  ['skills', 'skill', "Capabilities it has learned"],
+  ['reasonings', 'reasoning', "Chains of thought behind a decision"],
+  ['consensuses', 'consensus', "Agreements reached among agents"],
+  ['consents', 'consent', "Permissions granted or withdrawn"],
+  ['recommendations', 'recommendation', "Changes the loop proposed to itself"],
+];
+let AN_NS = null;
+async function anSetNamespace(ns) {
+  AN_NS = (!ns || ns === boundNamespace()) ? null : ns;
+  await renderAnalytics();
+}
+/* A census row: mono key, optional gloss, a bar proportional to `max` (that
+   list's own largest count — so the grain census and the namespace
+   breakdown each fill their own width instead of one dwarfing the other),
+   and a right-aligned count. `count == null` means "couldn't count it on
+   this build" (mirrors the vocab cards' own honesty about COUNT failing) —
+   shown as "—" and treated as 0 for the bar, never a lie. */
+function censusRow(host, key, gloss, count, max, onClick) {
+  const r = el('button', 'crow');
+  r.appendChild(el('span', 'k' + (gloss == null ? ' wide' : ''), key));
+  if (gloss != null) r.appendChild(el('span', 'g', gloss));
+  const track = el('div', 'track');
+  const bar = el('div', 'bar' + (count ? '' : ' zero'));
+  bar.style.width = Math.max(max ? ((count || 0) / max) * 100 : 0, 3) + '%';
+  track.appendChild(bar); r.appendChild(track);
+  r.appendChild(el('span', 'n' + (count ? '' : ' zero'), count == null ? '—' : String(count)));
+  if (onClick) r.onclick = onClick;
+  host.appendChild(r);
+}
+/* nsCombo fires its onChange once per commit path (option click, Enter,
+   blur-on-change) — on a fast synchronous page two of those firing for one
+   pick is invisible, but this page's render does several sequential
+   network round trips, wide enough for a second, newer call to land while
+   an older one is still mid-flight. AN_GEN guards against that: every call
+   takes a ticket, does ALL its awaiting up front, and only writes to the
+   DOM if its ticket is still the latest — an overtaken call discards its
+   (now-stale) results instead of appending duplicate rows on top of the
+   newer render's. */
+let AN_GEN = 0;
+async function renderAnalytics() {
+  const gen = ++AN_GEN;
+  const nsList = NAMESPACES || [];
+  const scope = AN_NS || boundNamespace();
+  const rows = await browseForNamespace(scope);
+
+  // Composition: one COUNT per grain type, scoped to the picked namespace.
+  // CAL has no "every namespace at once" wildcard on a RECALL WHERE clause
+  // (recall is exact-namespace or a registered "org.*" prefix, never a bare
+  // "*" — that lift-the-filter form is `/api/browse?ns=*`'s own owner-gated
+  // server route, not CAL) — so "All namespaces" sums one COUNT per real
+  // namespace instead of asking CAL for a wildcard it will refuse.
+  const esc = s => String(s).replace(/"/g, '\\"');
+  const scopeNs = AN_NS === '*' ? nsList.map(n => n.namespace) : [scope];
+  async function scopedCount(plural) {
+    const perNs = await Promise.all(scopeNs.map(ns =>
+      cal('RECALL ' + plural + ' WHERE namespace = "' + esc(ns) + '" COUNT')));
+    let total = 0, anyOk = false;
+    for (const r of perNs) {
+      if (r && r.ok && r.result && typeof r.result.count === 'number') { total += r.result.count; anyOk = true; }
+    }
+    return anyOk ? total : null;
+  }
+  const typeCounts = await Promise.all(ANALYTICS_TYPES.map(([plural]) => scopedCount(plural)));
+
+  if (gen !== AN_GEN) return; // superseded — a newer namespace pick (or re-render) already won
+
+  renderCrumbHeader('anCrumb', [{ label: 'Analytics' }],
+    "The shape of what's stored here — composition, growth, and what it can be queried by.");
+  const nsHost = $('anNsHost'); nsHost.textContent = '';
+  nsHost.appendChild(nsCombo('anNs', scope, anSetNamespace));
+
+  const tiles = $('anTiles'); tiles.textContent = '';
+  const tile = (label, value, sub, color) => {
+    const t = el('div', 'card stile');
+    t.appendChild(el('span', 'lbl', label));
+    const n = el('span', 'n', String(value)); if (color) n.style.color = color; t.appendChild(n);
+    t.appendChild(el('span', 'sub', sub));
+    tiles.appendChild(t);
+  };
+  const topNs = nsList.length ? nsList.slice().sort((a, b) => b.count - a.count)[0] : null;
+  tile('Total memories', STATS.grains != null ? STATS.grains : '?',
+    (STATS.current != null ? STATS.current : '?') + ' live now');
+  tile('Namespaces', nsList.length, topNs ? 'most of it is in ' + topNs.namespace : 'nothing scoped yet');
+  tile('Operations logged', STATS.ops != null ? STATS.ops : '?', 'adds, supersessions, forgets');
+  // Whole-file, like its three siblings above — `rows` (below) is the
+  // picker-scoped source the Growth *chart* uses; mixing scopes within one
+  // tile row would make the tiles look inconsistent with each other.
+  const weekAgo = Date.now() - 7 * 86400000;
+  const recent = BROWSE.filter(g => g.op === 'add' && !isInternal(g) && hlcMs(g.hlc) >= weekAgo).length;
+  tile('Last 7 days', '+' + recent, 'new memories written', 'var(--ok)');
+
+  const census = $('anCensus'); census.textContent = '';
+  const withCounts = ANALYTICS_TYPES.map(([plural, name, gloss], i) => [plural, name, gloss, typeCounts[i]])
+    .sort((a, b) => (b[3] || 0) - (a[3] || 0));
+  const maxCount = Math.max(1, ...withCounts.map(w => w[3] || 0));
+  for (const [plural, name, gloss, n] of withCounts) {
+    censusRow(census, name, gloss, n, maxCount, () => {
+      const s = 'RECALL ' + plural + (scopeNs.length === 1 ? ' WHERE namespace = "' + esc(scopeNs[0]) + '"' : '') + ' LIMIT 20';
+      go('query'); setQueryText(s); runQuery(s);
+    });
+  }
+
+  // Namespaces: always whole-file (this is the one section that shows every
+  // namespace at once) — clicking a row focuses the picker, and so every
+  // other section, on it.
+  const nsBox = $('anNsBreakdown'); nsBox.textContent = '';
+  if (!nsList.length) nsBox.appendChild(el('div', 'empty', 'No namespace list on this build.'));
+  const maxNs = Math.max(1, ...nsList.map(n => n.count || 0));
+  for (const n of nsList.slice().sort((a, b) => b.count - a.count)) {
+    censusRow(nsBox, n.namespace, null, n.count, maxNs, () => anSetNamespace(n.namespace));
+  }
+
+  // Growth: the last 14 days of "add" ops in the picked scope. `rows` is
+  // whatever window browseForNamespace loaded (2,000 ops, same cap the
+  // Graph/Activity views already accept) — captioned honestly rather than
+  // implying a full-history count.
+  const gHost = $('anGrowth'); gHost.textContent = '';
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(dayKey(Date.now() - i * 86400000));
+  const perDay = Object.fromEntries(days.map(d => [d, 0]));
+  for (const g of rows) {
+    if (g.op !== 'add' || isInternal(g)) continue;
+    const k = dayKey(hlcMs(g.hlc));
+    if (k in perDay) perDay[k]++;
+  }
+  const maxDay = Math.max(1, ...days.map(d => perDay[d]));
+  const chart = el('div', 'gchart');
+  days.forEach((d, i) => {
+    const b = el('div', 'gbar' + (i === days.length - 1 ? ' today' : ''));
+    b.style.height = Math.max((perDay[d] / maxDay) * 100, perDay[d] ? 4 : 2) + 'px';
+    b.title = d + ': ' + perDay[d];
+    chart.appendChild(b);
+  });
+  gHost.appendChild(chart);
+  const axis = el('div'); axis.style.cssText = 'display:flex;justify-content:space-between;margin-top:8px';
+  axis.appendChild(el('span', 'tiny', '14 days ago'));
+  const todayLbl = el('span', 'tiny', 'today'); todayLbl.style.cssText = 'color:var(--accent);font-weight:600';
+  axis.appendChild(todayLbl);
+  gHost.appendChild(axis);
+  $('anGrowthCaption').textContent = 'Memories written per day, '
+    + (scope === '*' ? 'across every namespace' : 'in ' + scope)
+    + ' — from the ' + rows.length + ' most recent operations loaded';
+
+  // Recall legs: whole-file, from the effective config — not affected by
+  // the namespace picker (recall configuration is per-file, not per-ns).
+  const legs = $('anLegs'); legs.textContent = '';
+  const r = CONFIG && CONFIG.recall && CONFIG.recall.legs;
+  const leg = (dotColor, title, desc) => {
+    const c = el('div', 'card leg');
+    const hd = el('div', 'hd');
+    const dot = el('span', 'dot'); dot.style.background = dotColor; hd.appendChild(dot);
+    hd.appendChild(el('b', null, title));
+    c.appendChild(hd);
+    c.appendChild(el('span', 'd', desc));
+    legs.appendChild(c);
+  };
+  leg('var(--ok)', 'Structural', 'Exact-match recall by subject, relation, namespace. Always on.');
+  leg(r && r.bm25 ? 'var(--ok)' : 'var(--ghost)', 'Full-text (BM25)',
+    r && r.bm25 ? 'Plain-words search over indexed content. On for this file.' : 'Off — this file has no text index built.');
+  leg(r && r.vector ? 'var(--ok)' : 'var(--ghost)', 'Vector',
+    r && r.vector ? 'Semantic similarity search. On for this file.' : 'Dormant — no embedding backend installed.');
+}
+
 /* ══ render ═══════════════════════════════════════════════════════════ */
 function render() {
   syncHash();
-  for (const p of ['memory', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query']) $('page-' + p).hidden = PAGE !== p;
+  for (const p of ['memory', 'analytics', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query']) $('page-' + p).hidden = PAGE !== p;
   $('nav').querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === PAGE));
   $('listView').hidden = MVIEW !== 'list';
   $('graphView').hidden = MVIEW !== 'graph';
@@ -1544,6 +1851,7 @@ function render() {
   $('conTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.c === CONTAB));
   renderRail(); renderHeader(); renderExamples(); renderBanner(); renderFilterBar();
   if (PAGE === 'memory') { renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild(); }
+  if (PAGE === 'analytics') renderAnalytics();
   if (PAGE === 'activity') renderActivity();
   if (PAGE === 'runs') renderRuns();
   if (PAGE === 'workflows') renderWorkflows();
@@ -2743,7 +3051,7 @@ function renderConnectGeneral(host) {
     if (res && res.ok) { toast('Policy cleared'); loadConfig().then(render); }
     else toast('Could not clear it: ' + ((res && res.error) || 'the console may be read-only'));
   };
-  form.appendChild(nsIn); form.appendChild(modeSel);
+  form.appendChild(nsIn); form.appendChild(styledSelect(modeSel));
   form.appendChild(lock(declare)); form.appendChild(lock(clear));
   abox.appendChild(form);
   const auditRows = anon.audit_counts || [];
@@ -3273,10 +3581,35 @@ function wfBindNode(id, hashOrEmpty) {
 /* Connecting two steps is a drag gesture (from a node's connector dot to
    another node) rather than a click-click mode toggle — see WFGraph.wire's
    handle drag handling. These three are the plain selection path. */
+/* Is there already a path start -> ... -> end through these edges? Used to
+   refuse a new edge that would close a cycle: every edge drawn in this
+   editor is hardcoded `max_cycles: null` (unbounded), and `ADD workflow`'s
+   `* N` syntax populates `retries`, not `max_cycles` — there is no CAL this
+   console can author that would re-emit a bound on save. A plan opens
+   view-only the moment any of its edges already carries one
+   (`wfIsCalEditable`), so every edge reachable from here is unbounded —
+   nothing to filter on, just walk them. An unbounded cycle a user can't
+   see coming here would only surface later, as `RUN-E002` at run-load time. */
+function wfCanReach(edges, start, end) {
+  const seen = new Set([start]), stack = [start];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur === end) return true;
+    for (const e of edges) {
+      if (e.src === cur && !seen.has(e.dst)) { seen.add(e.dst); stack.push(e.dst); }
+    }
+  }
+  return false;
+}
 function wfConnectNodes(fromId, toId) {
   if (!WF_DRAFT || WF_LOCKED || fromId === toId) return;
   const dup = WF_DRAFT.edges.some(e => e.src === fromId && e.dst === toId);
   if (dup) { toast('That edge already exists'); return; }
+  if (wfCanReach(WF_DRAFT.edges, toId, fromId)) {
+    toast('That would create a cycle this console has no way to bound — it would fail at run time. '
+      + 'Undo the loop, or author a bounded repeat outside the console.');
+    return;
+  }
   WF_DRAFT.edges.push({ src: fromId, dst: toId, cond: null, max_cycles: null });
   WF_PICK = { kind: 'edge', idx: WF_DRAFT.edges.length - 1 };
   WFGraph.rebuild(); WFGraph.draw(); renderInspect();
@@ -3334,6 +3667,19 @@ function renderInspect() {
     const sel = document.createElement('select'); sel.disabled = WF_LOCKED;
     const opt0 = document.createElement('option'); opt0.value = ''; opt0.textContent = '— unbound (abstract LLM step) —';
     sel.appendChild(opt0);
+    /* The option list below is built from Tool definitions only — there is
+       no way to author a subgraph binding through this select. Without a
+       matching <option>, a node actually bound to a Workflow grain (its
+       hash never equals any tool's) fell through to "unbound" here even
+       though the badge above correctly says "Subgraph". Represent the
+       current binding so the panel doesn't contradict itself; disabled
+       because re-selecting it wouldn't rebind to anything new. */
+    if (ex.kind === 'subgraph') {
+      const optSub = document.createElement('option');
+      optSub.value = ex.hash; optSub.disabled = true; optSub.selected = true;
+      optSub.textContent = 'Subgraph — ' + (ex.tool ? wfLabel(ex.tool) : shortHash(ex.hash));
+      sel.appendChild(optSub);
+    }
     for (const t of toolDefs()) {
       const tf = t.fields || {};
       const opt = document.createElement('option');
@@ -3343,7 +3689,7 @@ function renderInspect() {
       sel.appendChild(opt);
     }
     sel.addEventListener('change', () => wfBindNode(id, sel.value || null));
-    bindField.appendChild(sel);
+    bindField.appendChild(styledSelect(sel));
     if (ex.tool && (ex.tool.fields || {}).tool_description) bindField.appendChild(el('span', 'tiny', ex.tool.fields.tool_description));
     if (ex.kind === 'subgraph') bindField.appendChild(el('span', 'tiny', 'Bound to another plan — runs as a child run.'));
     box.appendChild(bindField);
@@ -3416,7 +3762,7 @@ function wfLockReason() {
 }
 function renderWorkflowHeader() {
   const editing = !!WF_DRAFT;
-  $('wfNsField').hidden = editing;
+  $('wfNsHost').hidden = editing;
   $('wfNewBtn').hidden = editing;
   $('wfNewBtn').disabled = !!WF_NS;
   $('wfNewBtn').title = WF_NS ? 'Switch back to "' + boundNamespace() + '" to create a plan' : '';
@@ -3567,15 +3913,28 @@ async function wfSave(reason) {
   let stmt = 'ADD workflow "' + calEsc(d.name.trim()) + '"';
   if (d.trigger && d.trigger.trim()) stmt += ' ON "' + calEsc(d.trigger.trim()) + '"';
   stmt += ' ' + body.trim();
+  /* Every other interpolated value here (node names, WHEN, trigger, reason,
+     the BIND key itself) goes through calEsc() into a quoted string —
+     `hash` is the one value emitted bare. A plan opened here can have been
+     authored outside this UI (Rust/Python/Node API, or a synced bundle),
+     and `wfOpen` copies its `bindings` map verbatim into the draft, so a
+     crafted binding value could otherwise append arbitrary CAL clauses
+     (rebinding other steps, overriding REASON/ON) to this statement the
+     moment someone re-saves that plan. HASH_RE (a full hex sha256, the
+     only shape a real binding ever has) is the same check the rest of the
+     console already uses to recognize a content address. */
+  const skippedBindings = [];
   for (const [node, hash] of Object.entries(d.bindings)) {
     if (!hash) continue;
+    if (!HASH_RE.test(String(hash))) { skippedBindings.push(node); continue; }
     stmt += ' BIND "' + calEsc(node) + '" = sha256:' + String(hash).replace(/^sha256:/, '');
   }
   stmt += ' REASON "' + calEsc(reason) + '"';
   const r = await cal(stmt);
   btn.textContent = prevLabel;
   if (!r.ok || !r.result || !r.result.hash) { toast('Could not save: ' + errText(r)); btn.disabled = false; return; }
-  toast('Saved as a new plan · ' + shortHash(r.result.hash));
+  toast('Saved as a new plan · ' + shortHash(r.result.hash)
+    + (skippedBindings.length ? ' — dropped a malformed binding on ' + skippedBindings.join(', ') : ''));
   $('wfReasonBox').textContent = '';
   await loadBrowse();
   wfOpen(r.result.hash);
@@ -3679,10 +4038,29 @@ const WFGraph = (() => {
     }
     return null;
   }
-  function bezierPoint(a, b, back, t) {
+  /* The curve `draw()` actually strokes, as a single source of truth — its
+     endpoints sit on the node borders (offset by half-width, toward
+     whichever side the other node is on), not the centers, so an edge
+     between two node boxes doesn't visibly cut into either of them. The
+     control points still bow off the raw centers (`midx`) — using the
+     border x there too would barely change the curve's shape, and this
+     keeps the bow symmetric regardless of node width. */
+  function edgeCurve(a, b, back) {
     const midx = (a.x + b.x) / 2, bow = back ? -70 - Math.abs(a.x - b.x) * 0.15 : 0;
-    const c1x = midx, c1y = a.y + bow, c2x = midx, c2y = b.y + bow, u = 1 - t;
-    return { x: u*u*u*a.x + 3*u*u*t*c1x + 3*u*t*t*c2x + t*t*t*b.x, y: u*u*u*a.y + 3*u*u*t*c1y + 3*u*t*t*c2y + t*t*t*b.y };
+    return {
+      ax: a.x + (b.x >= a.x ? a.w / 2 : -a.w / 2), ay: a.y,
+      bx: b.x - (b.x >= a.x ? b.w / 2 : -b.w / 2), by: b.y,
+      c1x: midx, c1y: a.y + bow, c2x: midx, c2y: b.y + bow,
+    };
+  }
+  /* Evaluated on that same curve — this used to plug the raw node centers
+     in as P0/P3 while `draw()` stroked the border-adjusted curve above, so
+     the arrowhead (t≈0.985) landed inside the destination node's box and
+     was painted over, and `hitEdge()`'s hit-testing didn't line up with
+     what was on screen. */
+  function bezierPoint(a, b, back, t) {
+    const c = edgeCurve(a, b, back), u = 1 - t;
+    return { x: u*u*u*c.ax + 3*u*u*t*c.c1x + 3*u*t*t*c.c2x + t*t*t*c.bx, y: u*u*u*c.ay + 3*u*u*t*c.c1y + 3*u*t*t*c.c2y + t*t*t*c.by };
   }
   function hitEdge(p) {
     let best = -1, bestD = 9;
@@ -3723,10 +4101,10 @@ const WFGraph = (() => {
       if (!a || !b) continue;
       const back = e.max_cycles != null;
       const selected = sel && sel.kind === 'edge' && sel.idx === i;
-      const midx = (a.x + b.x) / 2, bow = back ? -70 - Math.abs(a.x - b.x) * 0.15 : 0;
+      const c = edgeCurve(a, b, back);
       ctx.beginPath();
-      ctx.moveTo(a.x + (b.x >= a.x ? a.w / 2 : -a.w / 2), a.y);
-      ctx.bezierCurveTo(midx, a.y + bow, midx, b.y + bow, b.x - (b.x >= a.x ? b.w / 2 : -b.w / 2), b.y);
+      ctx.moveTo(c.ax, c.ay);
+      ctx.bezierCurveTo(c.c1x, c.c1y, c.c2x, c.c2y, c.bx, c.by);
       ctx.strokeStyle = selected ? colors.ink : (back ? colors.faint : colors.line);
       ctx.lineWidth = selected ? 2.4 : 1.8;
       if (back) ctx.setLineDash([5, 4]);
@@ -3923,51 +4301,51 @@ function histPush(q, summary) {
    A blank editor is a wall for anyone who does not already know CAL. These
    questions write real statements into that same editor, so the first answer
    also teaches the language that produced it. Keep the CAL current — bare `|`
-   is deprecated since CAL 1.1 (CAL-W007). */
-const STARTERS = [
-  ['What do we know about a person or account?', 'RECALL facts WHERE subject = "john"'],
-  ['Search the whole memory in plain words', 'RECALL facts ABOUT "invoices in euros"'],
-  ['How much does it know about one thing?', 'RECALL facts WHERE subject = "acme-corp" COUNT'],
-  ['Build a context brief to paste into a model',
-    'ASSEMBLE "brief me on john" FROM notes: (RECALL facts WHERE subject = "john") BUDGET 300 tokens FORMAT markdown'],
-];
-/* Grain types worth offering as a starting vocabulary, in the order a person
-   meets them. Counts come from the file itself, so this reads as *your* data. */
-const VOCAB = [
-  ['facts', 'Things it holds as true'],
-  ['observations', 'Things it noticed, unconfirmed'],
-  ['tools', 'Every tool call it made'],
-  ['events', 'Things that happened, in order'],
-];
+   is deprecated since CAL 1.1 (CAL-W007).
+
+   "john"/"acme-corp" as hardcoded example subjects almost never exist in a
+   real memory, so the very first thing a new user tries reliably comes back
+   empty. Pull an actual subject (and an actual value) from this file's own
+   Facts instead — BROWSE is already loaded at boot, so this costs nothing —
+   and fall back to filter-free forms (still true, just less specific) only
+   when the file genuinely has no facts yet to draw from. */
+function starterFact() {
+  for (const g of BROWSE) {
+    if (isGone(g) || isInternal(g) || g.type !== 'fact') continue;
+    const f = g.fields || {};
+    if (typeof f.subject === 'string' && f.subject && f.object != null) return f;
+  }
+  return null;
+}
+function buildStarters() {
+  const f = starterFact();
+  if (!f) return [
+    ['What is in this memory right now?', 'RECALL facts LIMIT 20'],
+    ['Search the whole memory in plain words', 'RECALL facts ABOUT "notes"'],
+    ['How much does it hold, in total?', 'RECALL facts COUNT'],
+    ['Build a context brief to paste into a model',
+      'ASSEMBLE "brief me on this memory" FROM notes: (RECALL facts LIMIT 20) BUDGET 300 tokens FORMAT markdown'],
+  ];
+  const q = s => '"' + String(s).replace(/"/g, '\\"') + '"';
+  const clip = s => { s = String(s); return s.length > 40 ? s.slice(0, 40) + '…' : s; };
+  const subj = f.subject, subjQ = q(subj), aboutQ = q(clip(f.object));
+  return [
+    ['What do we know about a person or account?', 'RECALL facts WHERE subject = ' + subjQ],
+    ['Search the whole memory in plain words', 'RECALL facts ABOUT ' + aboutQ],
+    ['How much does it know about one thing?', 'RECALL facts WHERE subject = ' + subjQ + ' COUNT'],
+    ['Build a context brief to paste into a model',
+      'ASSEMBLE "brief me on ' + subj.replace(/"/g, '\\"') + '" FROM notes: (RECALL facts WHERE subject = '
+        + subjQ + ') BUDGET 300 tokens FORMAT markdown'],
+  ];
+}
 function renderStarters() {
   const box = $('qstarters'); box.textContent = '';
-  for (const [question, stmt] of STARTERS) {
+  for (const [question, stmt] of buildStarters()) {
     const b = el('button', 'starter');
     b.appendChild(el('b', '', question));
     b.appendChild(el('code', '', stmt));
     b.onclick = () => { setQueryText(stmt); runQuery(stmt); };
     box.appendChild(b);
-  }
-}
-/* Counts are a nicety, not a promise: if COUNT fails on a build the card still
-   renders with its name and gloss, just without a number. */
-async function renderVocab() {
-  const box = $('qvocab'); box.textContent = '';
-  const cards = VOCAB.map(([kind, gloss]) => {
-    const b = el('button', 'vc');
-    const top = el('div', 'top');
-    top.appendChild(el('span', 'k', kind));
-    const n = el('span', 'n', ''); top.appendChild(n);
-    b.appendChild(top);
-    b.appendChild(el('small', '', gloss));
-    b.onclick = () => { const s = 'RECALL ' + kind + ' LIMIT 20';
-      setQueryText(s); runQuery(s); };
-    box.appendChild(b);
-    return [kind, n];
-  });
-  for (const [kind, n] of cards) {
-    const r = await cal('RECALL ' + kind + ' COUNT');
-    if (r.ok && r.result && typeof r.result.count === 'number') n.textContent = r.result.count;
   }
 }
 /* Saved queries live in the file; history is this browser. Both were behind ▾
@@ -4002,7 +4380,7 @@ async function renderRecents() {
     savedCol.appendChild(b);
   }
 }
-function renderOnramp() { renderStarters(); renderVocab(); renderRecents(); }
+function renderOnramp() { renderStarters(); renderRecents(); }
 
 /* ── the editor ────────────────────────────────────────────────────────
    A textarea cannot hold colour, so the caret stays in a transparent one and
