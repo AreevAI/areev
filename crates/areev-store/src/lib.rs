@@ -2307,6 +2307,16 @@ impl Areev {
         Ok(out)
     }
 
+    /// The ns's accumulated known-identity list (issue #32) — the same
+    /// propagation table `egress_grains` consults to catch a bare subject
+    /// mention in grain prose, exposed so free-text callers that never go
+    /// through a grain read (`scan_text`/`anonymize_text`) can pass it to
+    /// `areev_core::anon::scan`/`anonymize` as `known_identities` too.
+    /// Empty for an ns with no declared policy and no floor.
+    pub fn anon_known_identities(&self, ns: &str) -> Vec<String> {
+        self.anon.known_for(ns)
+    }
+
     fn reload_anon_policies(&mut self) -> Result<()> {
         let rows = self.meta_scan(anon_gate::ANON_PREFIX)?;
         self.anon.reload(&rows);

@@ -213,6 +213,30 @@ pub struct AnonPolicy {
     pub vault_ttl_days: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub because: Option<String>,
+    /// Caller-supplied identities to detect verbatim in free text (issue
+    /// #32's escape hatch): a host that hasn't interned the identity as a
+    /// grain subject first — an email's From header, a CRM row, a project
+    /// codename — still gets it detected and pseudonymized, without
+    /// writing it to the store just to make it detectable. Distinct from
+    /// the automatic propagation `scan_text`/`anonymize_text` already pull
+    /// from the store's own interned subjects for the call's namespace
+    /// (same table the grain-egress path builds).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known: Vec<KnownIdentity>,
+}
+
+/// One entry of [`AnonPolicy::known`]: a bare value and the category it
+/// should be detected/pseudonymized as — not always `person` (a project
+/// codename is `custom`, say).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownIdentity {
+    pub value: String,
+    #[serde(default = "default_known_category")]
+    pub category: String,
+}
+
+fn default_known_category() -> String {
+    "person".to_string()
 }
 
 fn default_detectors() -> Vec<String> {
@@ -233,6 +257,7 @@ impl Default for AnonPolicy {
             vault: false,
             vault_ttl_days: None,
             because: None,
+            known: Vec::new(),
         }
     }
 }
@@ -341,6 +366,18 @@ impl AnonPolicy {
                 ));
             }
         }
+        for k in &self.known {
+            if k.value.trim().is_empty() {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: empty known[].value entry".into(),
+                ));
+            }
+            if k.category.trim().is_empty() {
+                return Err(AreevError::Validation(
+                    "invalid anonymization policy: empty known[].category entry".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -420,6 +457,9 @@ pub fn scan_with(
     } else {
         Vec::new()
     };
+    if !policy.known.is_empty() {
+        detections.extend(detect::run_known(&text, &policy.known)?);
+    }
     for kind in policy.detectors.iter().filter(|d| *d != "tier0") {
         let backend = backends
             .iter()

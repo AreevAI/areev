@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use areev_core::anon::{anonymize, mapping_from_json, rehydrate, scan, AnonPolicy};
+use areev_core::anon::{anonymize, mapping_from_json, rehydrate, scan, AnonPolicy, KnownIdentity};
 use proptest::prelude::*;
 
 fn spans(text: &str) -> Vec<(String, String)> {
@@ -115,6 +115,30 @@ fn golden_dictionary_and_known_identities() {
     assert!(found.contains(&"john"), "tail propagation missed: {found:?}");
     assert!(found.contains(&"caller:john"), "full identity missed: {found:?}");
     assert!(!found.contains(&"johnson"), "boundary violated: {found:?}");
+}
+
+#[test]
+fn policy_known_identities_match_each_with_its_own_category() {
+    // GitHub issue #32's escape hatch: a caller-supplied `known` entry
+    // detects with the category IT names, not tier0's fixed "person" — a
+    // project codename is `custom`, not a person.
+    let policy = AnonPolicy {
+        known: vec![
+            KnownIdentity { value: "Kenneth Shea".into(), category: "person".into() },
+            KnownIdentity { value: "Project Falcon".into(), category: "custom".into() },
+            KnownIdentity { value: "ab".into(), category: "custom".into() }, // too short, dropped
+        ],
+        ..Default::default()
+    };
+    let out = scan("Kenneth Shea sent the Project Falcon NDA.", &policy, &[]).unwrap();
+    let found: BTreeMap<String, String> = out
+        .detections
+        .iter()
+        .map(|d| (out.text[d.start..d.end].to_string(), d.category.clone()))
+        .collect();
+    assert_eq!(found.get("Kenneth Shea"), Some(&"person".to_string()));
+    assert_eq!(found.get("Project Falcon"), Some(&"custom".to_string()));
+    assert_eq!(found.len(), 2, "the sub-3-char entry must not match: {found:?}");
 }
 
 #[test]
