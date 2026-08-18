@@ -9,6 +9,77 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-08-18
+
+### Added
+
+- **A Workflows tab in the console** (#37): lists Workflow grains as cards
+  and opens one into an editable node/edge graph — a deterministic
+  left-to-right layered layout on canvas, add/rename/delete a step, rebind
+  it to any Tool definition, drag a step's connector dot to wire it to
+  another step, set/clear an edge's `WHEN` condition. Saving always writes
+  a new `ADD workflow` grain, since plans are content-addressed and
+  immutable and "editing" one means authoring a new version; a plan with a
+  bounded-cycle edge or a per-node retry count opens **view-only**, because
+  `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either
+  (`* N` populates `retries`, not `max_cycles`). No new server routes —
+  built entirely on the existing `/api/browse` and `/api/cal` surface.
+  `crates/areev-store/examples/seed_workflow_demo.rs` seeds three demo
+  plans into the "Northwind Support" corpus.
+- **An Analytics tab in the console**: a grain-type census across all 12
+  types, a namespace breakdown, a 14-day growth trend, and recall-leg
+  status — generalizes the Query page's "WHAT'S IN THIS MEMORY" on-ramp
+  (now removed from Query in favor of it) to cover every grain type
+  instead of 4, and every namespace instead of just the bound one.
+
+### Fixed
+
+- **Workflow edge arrowheads were never visible, and edge selection didn't
+  line up with what was drawn.** The graph stroked each edge along a
+  border-adjusted bezier curve but evaluated the arrowhead position and
+  click hit-testing on a different curve through the raw node centers, so
+  the arrowhead landed inside the destination node (painted over by its
+  opaque fill) and a click near an edge sampled a curve offset from the
+  one on screen. Both now read off the exact curve that gets stroked.
+- **A node bound to another plan ("subgraph") showed as "unbound" in the
+  editor's "Runs as" picker**, contradicting the "Subgraph" badge shown
+  directly above it — the option list was built from Tool definitions
+  only, with no entry for a Workflow-grain target.
+- **A crafted `BIND` binding could inject arbitrary CAL into a plan's save
+  statement.** Every other value the Workflows editor writes into
+  `ADD workflow` (node names, `WHEN`, the trigger, the reason) is quoted;
+  the bound hash was spliced in bare. A plan opened in the console can
+  have been authored outside it (the Rust/Python/Node API, or a synced
+  bundle), so a binding value crafted to look like a hash followed by more
+  CAL could append clauses — rebinding other steps or overriding the
+  reason — the moment someone reopened and resaved that plan through the
+  UI. The hash is now validated against the content-address format before
+  it reaches the statement.
+- **Drawing a cycle in the workflow editor saved silently and only failed
+  later, at run time.** Every edge the console can author is
+  unconditionally unbounded (`ADD workflow` has no syntax to re-emit a
+  bound on save), so any cycle drawn through the editor was guaranteed to
+  fail at run-load with `RUN-E002`. Connecting an edge that would close
+  one is now refused up front.
+- The sidebar's Workflows nav item didn't reset an open draft or selection
+  the way navigating to a bare `#workflows` hash already did, so clicking
+  it while mid-edit just re-rendered the same editor instead of returning
+  to the plan list.
+- Query's "start from a question" examples wrote hardcoded placeholder
+  subjects (`"john"`, `"acme-corp"`) that almost never match a real
+  memory's own data, so the first thing a new user tried reliably came
+  back empty. They now pull an actual subject and value from the file's
+  own Facts, falling back to filter-free forms only when the file has none
+  yet.
+- Console-wide: one shared namespace-picker component ("Namespace  value
+  ⌄") replaced three different layouts across Activity, Workflows, and
+  Analytics, each with its own alignment quirks; every native `<select>`
+  in the console (the "Runs as" picker above, the anonymization policy
+  picker) now matches the rest of the UI instead of the browser's default
+  box; the "Areev" brand mark is clickable (home) and aligned with the nav
+  icons below it; the breadcrumb home icon's optical alignment against its
+  trail text.
+
 ## [1.2.1] — 2026-08-17
 
 ### Fixed
