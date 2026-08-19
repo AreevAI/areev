@@ -27,19 +27,23 @@ conformance kit for third-party substrates.
   run-outcome contract (`RunResult`: outcome / skip-reason / counts), plus
   `review` / `apply` / `rollback` with scopes, the mandatory BECAUSE, the
   self-approval block, and destructive gating.
-- The six default analyzers: tool-failure clustering, duplicate sweep,
-  contradiction sweep, fork surfacing, staleness, outcome review.
+- The default analyzers: tool-failure clustering, duplicate sweep,
+  contradiction sweep, fork surfacing, staleness, outcome review, and the
+  default-off `retention_sweep` and `run_outcome` passes over run journals.
 - `LOP` error domain (see the repo's `ERROR_CODES.md`).
 
 ## Status
 
 Workspace member during the churn phase; lifted to its own repo when semantics
-freeze (proposal §10). **Not published** from this workspace (`publish = false`).
+freeze (proposal §10).
 
-Not yet in this crate: the Areev substrate adapter, CLI/MCP/bindings surfaces,
-the LLM enrichment layer, auto-apply execution (the gate is present but
-conservative — nothing auto-applies), and the console. Those are later
-build-order items.
+The surfaces this crate deliberately does not carry live around it: the Areev
+substrate adapter is `areev-loop-adapter`, the LLM enrichment layer is
+`areev-llm`, and the CLI/MCP/console surfaces belong to their own crates. That
+separation is the point — the engine stays substrate-agnostic and depends on no
+`areev-*` sibling. Auto-apply execution remains conservative by design: the gate
+is present, and `code`, `evalset` and definition targets are excluded from it by
+name.
 
 ```rust
 use areev_loop::{Engine, ReferenceSubstrate, RunOptions};

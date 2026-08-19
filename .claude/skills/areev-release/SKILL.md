@@ -65,10 +65,25 @@ must publish bottom-up.
 This is the step that used to come last, and moving it is the single biggest
 win in the runbook.
 
+`main` carries a `protect-main` ruleset whose `pull_request` rule refuses a
+direct push, so the release commit lands the same way every other commit does.
+Note that `gh api repos/AreevAI/areev/branches/main/protection` returns 404
+here — rulesets are a different API from classic branch protection, and reading
+the 404 as "main is unprotected" is how you find out at `git push` time.
+
 ```bash
-git push origin main --tags
+git switch -c release/vX.Y.Z && git push -u origin release/vX.Y.Z
+gh pr create --base main --title "Release vX.Y.Z" --body-file <(...)
+# after review + green CI:
+gh pr merge --merge --delete-branch
+git switch main && git pull
+
+git tag vX.Y.Z && git push origin vX.Y.Z
 gh release create vX.Y.Z --notes-file <(sed -n '/## \[X.Y.Z\]/,/## \[/p' CHANGELOG.md)
 ```
+
+Tag the merge commit on `main`, not the branch tip — the tag must name the
+commit the registries build from, and a squash or merge rewrites it.
 
 Publishing the Release fires `release-pypi`, `release-npm` and `release-cli`
 **concurrently**, and each of those builds its five-platform matrix in

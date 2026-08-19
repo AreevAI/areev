@@ -54,9 +54,14 @@ Turso transitively includes [tantivy](https://github.com/quickwit-oss/tantivy)
 | tracing | MIT |
 | rmpv / rmp | MIT |
 | argon2, zeroize | MIT OR Apache-2.0 |
+| aes-gcm, hkdf | MIT OR Apache-2.0 |
 | getrandom | MIT OR Apache-2.0 |
-| ureq (areev-llm only) | MIT OR Apache-2.0 |
+| croner (areev-trigger only) | MIT |
+| ureq (areev-llm, areev-run) | MIT OR Apache-2.0 |
 | pyo3 (areev-py only) | MIT OR Apache-2.0 |
+| napi, napi-derive (areev-js only) | MIT |
+| tokio-postgres (areev-store, `postgres` feature) | MIT OR Apache-2.0 |
+| rustls, rustls-pki-types (areev-server, `tls` feature) | Apache-2.0 OR ISC OR MIT |
 
 "MIT OR Apache-2.0" dependencies are used under Apache-2.0. Full license
 texts ship in each crate's source distribution via crates.io.
