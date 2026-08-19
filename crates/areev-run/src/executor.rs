@@ -77,11 +77,25 @@ impl HostToolExecutor for ExecutorRegistry {
 /// the process-wide open-path registry would refuse it anyway).
 pub struct CommandExecutor {
     cmd: String,
+    /// Wall-clock ceiling per invocation. Before 1.3 there was none, and a tool
+    /// that never exited held its pool worker — then the whole driver at the
+    /// next wave boundary — indefinitely.
+    timeout: Option<std::time::Duration>,
 }
 
 impl CommandExecutor {
     pub fn new(cmd: &str) -> Self {
-        CommandExecutor { cmd: cmd.to_string() }
+        CommandExecutor {
+            cmd: cmd.to_string(),
+            timeout: Some(areev_core::proc::DEFAULT_TIMEOUT),
+        }
+    }
+
+    /// Override the per-invocation ceiling. `None` restores the pre-1.3
+    /// wait-forever behaviour for a host that genuinely wants it.
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -93,8 +107,8 @@ impl HostToolExecutor for CommandExecutor {
         input: &Value,
         idempotency_key: &str,
     ) -> ExecResult {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
+        use areev_core::proc::{self, SpawnPolicy};
+        use std::process::Command;
         // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The
         // Windows command string must go through raw_arg — Command::arg
         // MSVC-quotes embedded quotes, which cmd.exe does not parse.
@@ -109,16 +123,18 @@ impl HostToolExecutor for CommandExecutor {
             use std::os::windows::process::CommandExt;
             shell.raw_arg("/C").raw_arg(&self.cmd);
         }
-        let mut child = match shell
-            .env("AREEV_TOOL_NAME", tool_name)
-            .env("AREEV_TOOL_HASH", tool_hash)
-            .env("AREEV_IDEMPOTENCY_KEY", idempotency_key)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
+        let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        let out = match proc::run(
+            shell,
+            Some(input.to_string().as_bytes()),
+            &[
+                ("AREEV_TOOL_NAME", tool_name),
+                ("AREEV_TOOL_HASH", tool_hash),
+                ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
+            ],
+            &policy,
+        ) {
+            Ok(o) => o,
             Err(e) => {
                 return ExecResult::Err {
                     cause: FailCause::ExecutorError,
@@ -126,34 +142,30 @@ impl HostToolExecutor for CommandExecutor {
                 }
             }
         };
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(input.to_string().as_bytes());
-        }
-        drop(child.stdin.take());
-        let out = match child.wait_with_output() {
-            Ok(o) => o,
-            Err(e) => {
-                return ExecResult::Err {
-                    cause: FailCause::ExecutorError,
-                    detail: format!("wait: {e}"),
-                }
-            }
-        };
-        if !out.status.success() {
+        // A timeout is its own cause, not a generic executor error: §6.3 makes
+        // Timeout retryable for tool effects, so a wedged tool now gets the
+        // node's retry budget instead of parking a pool worker forever.
+        if out.timed_out {
             return ExecResult::Err {
-                cause: FailCause::ExecutorError,
+                cause: FailCause::Timeout,
                 detail: format!(
-                    "tool command exited {}: {}",
-                    out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
+                    "tool command exceeded its {}s ceiling and was killed",
+                    policy.timeout.map(|d| d.as_secs()).unwrap_or(0)
                 ),
             };
+        }
+        if let Some(why) = out.failure("tool command") {
+            return ExecResult::Err { cause: FailCause::ExecutorError, detail: why };
         }
         match serde_json::from_slice::<Value>(&out.stdout) {
             Ok(v) => ExecResult::Ok(v),
             Err(e) => ExecResult::Err {
                 cause: FailCause::ExecutorError,
-                detail: format!("tool output is not JSON: {e}"),
+                detail: if out.stdout_truncated {
+                    format!("tool output exceeded the capture cap and is not JSON: {e}")
+                } else {
+                    format!("tool output is not JSON: {e}")
+                },
             },
         }
     }

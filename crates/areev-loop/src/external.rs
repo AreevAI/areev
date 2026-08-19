@@ -34,8 +34,6 @@ use crate::recommendation::{Proposal, RecDraft, Summary};
 use crate::substrate::ReadOpts;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::io::Write;
-use std::process::{Command, Stdio};
 
 /// Live grains handed to the subprocess per run — a pipe-size backstop, not a
 /// correctness bound (the snapshot is best-effort context).
@@ -139,24 +137,10 @@ impl Analyzer for CommandAnalyzer {
 /// Spawn the command, write `request` to stdin, return stdout. Plain-string
 /// errors so callers can wrap them with the right analyzer id.
 fn run(argv: &[String], request: &str) -> std::result::Result<String, String> {
-    let mut child = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
+    let out = crate::proc::run_argv(argv, request, Some(crate::proc::DEFAULT_TIMEOUT))
         .map_err(|e| format!("spawn --analyzer-cmd {:?}: {e}", argv[0]))?;
-    {
-        let mut stdin = child.stdin.take().expect("stdin piped");
-        stdin
-            .write_all(request.as_bytes())
-            .map_err(|e| format!("write to --analyzer-cmd: {e}"))?;
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("--analyzer-cmd wait: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("--analyzer-cmd exited with {}", out.status));
+    if let Some(why) = out.failure("--analyzer-cmd") {
+        return Err(why);
     }
     String::from_utf8(out.stdout).map_err(|e| format!("--analyzer-cmd stdout not UTF-8: {e}"))
 }

@@ -466,3 +466,44 @@ fn governed_sessions_enforce_the_run_verbs() {
     let err = runner.start(&plan, "run-g2", json!({}), &opts()).unwrap_err();
     assert!(matches!(err, RunError::Unauthorized { .. }), "{err}");
 }
+
+/// A plan whose bound Tool Definition carries a malformed `tool_name` is
+/// refused at `run start`, before any effect is dispatched.
+///
+/// The name reaches a host tool as `$AREEV_TOOL_NAME`, and it arrives from a
+/// plan grain — which may have been imported from a bundle whose author we do
+/// not vouch for, since import verifies content integrity and not authorship.
+/// Refusing at resolve time keeps a newline- or metacharacter-bearing name out
+/// of a child's environment and fails loudly, rather than mid-superstep.
+#[test]
+fn malformed_tool_name_is_refused_at_resolve_time() {
+    let rig = Rig::new();
+
+    // Author the definition directly so the bad name is what a crafted bundle
+    // would carry, not something the builder would reject.
+    let mut wf = Workflow::new(vec!["step".to_string()]);
+    let def = Tool::new("evil; rm -rf /")
+        .kind(ToolKind::Definition)
+        .tool_description("crafted")
+        .created_at(500)
+        .namespace("ops");
+    let dh = rig.facade.with_store(|m| m.add(&def)).unwrap();
+    wf = wf.bind("step", &dh.to_hex());
+    let plan = rig
+        .facade
+        .with_store(|m| m.add(&wf.created_at(600).namespace("ops")))
+        .unwrap();
+
+    let err = rig
+        .runner(vec![1_000])
+        .start(&plan, "run-bad-tool-name", json!({}), &opts())
+        .unwrap_err();
+
+    match err {
+        RunError::UnresolvedRef { what } => {
+            assert!(what.contains("not a valid tool name"), "{what}");
+            assert!(what.contains("evil"), "the message should name the offender: {what}");
+        }
+        other => panic!("expected UnresolvedRef, got {other:?}"),
+    }
+}

@@ -9,6 +9,38 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Security
+
+- **Host command seams no longer inherit named secrets.** No subprocess seam
+  called `env_clear`/`env_remove`, so `--passphrase-env` (the memory's
+  encryption passphrase) and `--token-env` were inherited by every child of
+  `--tool-cmd`, `--embed-cmd`, `--anonymize-cmd`, `--llm-cmd`, `--analyzer-cmd`
+  and `areev eval`. The CLI wrapped its own copy in `Zeroizing` and then handed
+  the raw variable to every child. Both flags name a *variable*, so the names
+  are now registered at argument-parse time and withheld from every spawn. The
+  rest of the environment is still inherited — an `--llm-cmd` that reads its own
+  API key from the environment keeps working.
+- **A plan's `tool_name` is validated before it reaches a child.** It arrives as
+  `$AREEV_TOOL_NAME` and can come from an imported bundle (import verifies
+  content integrity, not authorship). Names outside `[A-Za-z0-9_.-]{1,64}` are
+  refused at `run start` rather than mid-superstep.
+
+### Changed
+
+- **One bounded spawn path for every host command seam** (`areev_core::proc`,
+  mirrored privately in `areev-loop`, which may not depend on an areev-*
+  sibling; `proc_contract.rs` pins the two together). Five hand-rolled copies
+  across six seams are gone, and with them three real defects:
+  - **No wall-clock ceiling.** A tool that never exited held its run-pool worker
+    and then the driver itself, forever. Now 300s by default, then killed —
+    surfacing as a retryable `Timeout` for tool effects rather than a hang.
+    `CommandExecutor::with_timeout(None)` restores the old behaviour.
+  - **No output cap.** stdout was read to EOF into memory unbounded. Now 64 MiB
+    per stream, drained past the cap so the child never blocks on a full pipe.
+  - **A stdin deadlock.** Every seam wrote its whole payload before reading a
+    byte of output, so a child that filled the pipe buffer while still reading
+    its input hung, and so did we. stdin now writes on its own thread.
+
 ### Added
 
 - **`read_blob_offline` in the Python and Node bindings.** The lock-free CAS

@@ -318,6 +318,24 @@ fn pin_from_definition(
         .get_str("tool_name")
         .unwrap_or(node)
         .to_string();
+    // Refuse a malformed tool name at resolve time, before the run starts.
+    // This name reaches a host tool as `$AREEV_TOOL_NAME`, and it arrives from
+    // a plan grain — which may have been imported from a bundle whose author we
+    // do not vouch for (import verifies content integrity, not authorship). It
+    // is not shell-interpolated, so this is not injection; the point is that an
+    // attacker-influenced string with newlines or shell metacharacters should
+    // never reach a child's environment, because a perfectly ordinary tool
+    // script that does something like `eval "$AREEV_TOOL_NAME"` turns it into
+    // one. Failing here also fails loudly and early rather than mid-superstep.
+    if !areev_core::types::json_schema_subset::is_valid_tool_name(&tool_name) {
+        return Err(RunError::UnresolvedRef {
+            what: format!(
+                "node '{node}' binds {} whose tool_name {tool_name:?} is not a valid \
+                 tool name (1-64 chars of [A-Za-z0-9_.-])",
+                h.to_hex()
+            ),
+        });
+    }
     let executor = match g.get_str("executor_kind") {
         Some("client") => "client",
         _ => "host",

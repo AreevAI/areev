@@ -362,29 +362,16 @@ impl CommandAnonymize {
     }
 
     fn run(&self, payload: &serde_json::Value) -> Result<String> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let mut child = Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
+        use areev_core::proc::{self, SpawnPolicy, StderrMode};
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..]);
+        // stderr stays inherited: an operator running `areev anonymize` is
+        // watching a terminal, and the detector's diagnostics are the point.
+        let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
+        let out = proc::run(cmd, Some(payload.to_string().as_bytes()), &[], &policy)
             .map_err(|e| AreevError::Storage(format!("spawn anonymizer {}: {e}", self.argv[0])))?;
-        child
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(payload.to_string().as_bytes())
-            .map_err(|e| AreevError::Storage(format!("anonymizer stdin: {e}")))?;
-        let out = child
-            .wait_with_output()
-            .map_err(|e| AreevError::Storage(format!("anonymizer wait: {e}")))?;
-        if !out.status.success() {
-            return Err(AreevError::Storage(format!(
-                "anonymizer {} exited with {}",
-                self.argv[0], out.status
-            )));
+        if let Some(why) = out.failure(&format!("anonymizer {}", self.argv[0])) {
+            return Err(AreevError::Storage(why));
         }
         String::from_utf8(out.stdout)
             .map_err(|e| AreevError::Storage(format!("anonymizer stdout not UTF-8: {e}")))
@@ -460,29 +447,14 @@ impl CommandEmbed {
     }
 
     fn run(&self, text: &str) -> Result<Vec<f32>> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let cmd_err = |e: std::io::Error| {
-            AreevError::Storage(format!("embed command '{}': {e}", self.argv[0]))
-        };
-        let mut child = Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(cmd_err)?;
-        {
-            let mut stdin = child.stdin.take().expect("stdin piped");
-            stdin.write_all(text.as_bytes()).map_err(cmd_err)?;
-            // dropping stdin closes the pipe so the child sees EOF
-        }
-        let out = child.wait_with_output().map_err(cmd_err)?;
-        if !out.status.success() {
-            return Err(AreevError::Storage(format!(
-                "embed command '{}' exited with {}",
-                self.argv[0], out.status
-            )));
+        use areev_core::proc::{self, SpawnPolicy, StderrMode};
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..]);
+        let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
+        let out = proc::run(cmd, Some(text.as_bytes()), &[], &policy)
+            .map_err(|e| AreevError::Storage(format!("embed command '{}': {e}", self.argv[0])))?;
+        if let Some(why) = out.failure(&format!("embed command '{}'", self.argv[0])) {
+            return Err(AreevError::Storage(why));
         }
         serde_json::from_slice::<Vec<f32>>(&out.stdout).map_err(|e| {
             AreevError::Validation(format!(
