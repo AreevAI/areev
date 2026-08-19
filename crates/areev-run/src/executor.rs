@@ -42,6 +42,16 @@ pub trait HostToolExecutor: Send + Sync {
         false
     }
 
+    /// Every distinct outbound refusal this executor has seen.
+    ///
+    /// Read, not drained: the driver journals them so a refusal is auditable
+    /// from the memory rather than only from a terminal that has scrolled,
+    /// and the CLI still prints the whole set when the run ends. Default:
+    /// none, for executors with no egress.
+    fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
+        Vec::new()
+    }
+
     /// Execute a content-addressed code blob. `bytes` were read and
     /// hash-verified on the driver thread; this runs on a pool worker.
     ///
@@ -123,6 +133,9 @@ impl EgressHandle {
     pub fn new(broker: Arc<crate::broker::Broker>) -> Self {
         EgressHandle { broker }
     }
+    fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
+        self.broker.refusals()
+    }
     /// The env a tool named `tool_name` gets. Empty when it has no grant, so
     /// a tool nobody authorized cannot even see the broker.
     fn env_for(&self, tool_name: &str) -> Vec<(&'static str, String)> {
@@ -171,6 +184,10 @@ impl CommandExecutor {
 }
 
 impl HostToolExecutor for CommandExecutor {
+    fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
+        self.egress.as_ref().map(|e| e.refusals()).unwrap_or_default()
+    }
+
     fn execute(
         &self,
         tool_name: &str,
@@ -347,6 +364,11 @@ impl HostToolExecutor for CodeExecutor {
         idempotency_key: &str,
     ) -> ExecResult {
         self.inner.execute(tool_name, tool_hash, input, idempotency_key)
+    }
+
+    /// Pass through: the wrapped executor is the one holding a broker.
+    fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
+        self.inner.refusals()
     }
 
     fn code_allowed(&self, _tool_hash: &str, uri: &str) -> bool {

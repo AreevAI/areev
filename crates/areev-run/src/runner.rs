@@ -1091,6 +1091,10 @@ impl Runner {
             .filter_map(|(k, e)| e.result.as_ref().map(|(_, o)| (k.clone(), o.clone())))
             .collect();
         let mut prev_ckpt: Option<Hash> = view.checkpoints.last().map(|c| c.hash);
+        // Distinct refusals already journaled for this drive, so a retry loop
+        // against one blocked host records one fact rather than many.
+        let mut refusals_seen: std::collections::BTreeSet<(String, String, String)> =
+            Default::default();
         let mut in_flight: usize = 0;
         let mut st = st;
         let mut events = initial_events;
@@ -1389,6 +1393,29 @@ impl Runner {
                             .clock_close_ms
                             .max(decision_record.clock_open_ms);
                         let superstep = decision_record.superstep;
+                        // Journaled at each superstep boundary rather than at the
+                        // terminal, so a crash loses at most one superstep of
+                        // evidence. One Observation per DISTINCT refusal. A tool retrying against the same
+                        // blocked host is one audit fact, not forty; the count
+                        // of attempts stays in the log line, which is the fast
+                        // path a human debugging actually reads.
+                        for r in self.executor.refusals() {
+                            let key = (r.caller.clone(), r.destination.clone(), r.reason.clone());
+                            if !refusals_seen.insert(key) {
+                                continue;
+                            }
+                            self.facade
+                                .with_store(|m| {
+                                    journal::write_egress_refusal(
+                                        m,
+                                        &run_id,
+                                        &r,
+                                        clock,
+                                        &self.principal,
+                                    )
+                                })
+                                .map_err(err_run)?;
+                        }
                         let h = self
                             .facade
                             .with_store(|m| {

@@ -862,7 +862,11 @@ impl Evaluator {
         if !refused.is_empty() {
             return Err(TriggerError::EgressRefused {
                 trigger: hash.to_string(),
-                host: refused.join(", "),
+                host: refused
+                    .iter()
+                    .map(|r| format!("{} ({})", r.destination, r.reason))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             });
         }
         match result {

@@ -15,8 +15,9 @@
 //! `(task_path, node, attempt, effect_seq, kind)` — never by op-log order.
 
 use areev_core::error::{AreevError, Hash, Result};
+use areev_core::authz::HARNESS_NS;
 use areev_core::types::{
-    ExecutionStatus, ExecutorKind, FailureCause, Grain, State, Tool,
+    ExecutionStatus, ExecutorKind, FailureCause, Grain, Observation, State, Tool,
 };
 use areev_run_core::{DecisionRecord, EffectKind, EffectOutcome, FailCause, JournalKey, NodeExecutor};
 use areev_store::Areev;
@@ -161,6 +162,33 @@ pub fn write_result(
         }
     }
     m.supersede(intent, &mut t)
+}
+
+/// Record one refused outbound call as a Tier-2 Observation.
+///
+/// Deliberately NOT a journal entry: like the run-outcome record, replay never
+/// sees it, so `verify` stays byte-identical whether or not a broker was
+/// configured. It is evidence about the run, not a step of it.
+pub fn write_egress_refusal(
+    m: &mut Areev,
+    run_id: &str,
+    refusal: &crate::broker::EgressRefusal,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let caller = if refusal.caller.is_empty() { "connector" } else { &refusal.caller };
+    let mut obs = Observation::new(principal, "system")
+        .subject(&format!("run:{run_id}"))
+        .object(&refusal.destination)
+        .namespace(HARNESS_NS)
+        .created_at(clock_ms as i64);
+    let ex = &mut obs.common.extra_fields;
+    ex.insert("run_id".into(), json!(run_id));
+    ex.insert("observation_kind".into(), json!("egress_refusal"));
+    ex.insert("caller".into(), json!(caller));
+    ex.insert("destination".into(), json!(refusal.destination));
+    ex.insert("reason".into(), json!(refusal.reason));
+    m.add(&obs)
 }
 
 /// Write a checkpoint State grain, chained by `derived_from`.

@@ -170,13 +170,30 @@ fn mint_token() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// One refused outbound call, kept for the audit record.
+///
+/// A refusal is an agent reaching for somewhere it was not allowed — the
+/// single most audit-worthy event this subsystem produces, and the one a
+/// reviewer asks about ("did it ever try?"). stderr answers that only until
+/// the terminal scrolls, so the driver journals these into the memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressRefusal {
+    /// The tool or connector that asked. Empty for a caller with no name of
+    /// its own (the connector path's default grant).
+    pub caller: String,
+    /// Where it tried to go, as the caller spelled it.
+    pub destination: String,
+    /// Why it was refused, in one phrase.
+    pub reason: String,
+}
+
 /// A running broker. Dropping it stops the listener.
 pub struct Broker {
     url: String,
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
     /// Destinations refused during this pass, for journalling.
-    refusals: Arc<std::sync::Mutex<Vec<String>>>,
+    refusals: Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
     /// caller -> its capability token.
     tokens: BTreeMap<String, String>,
     /// The token an unlisted caller presents, when a default grant exists.
@@ -270,9 +287,18 @@ impl Broker {
         &self.url
     }
 
-    /// Destinations this pass refused. Journaled so a connector reaching for
-    /// somewhere it should not is visible rather than merely failing.
-    pub fn refusals(&self) -> Vec<String> {
+    /// Every DISTINCT refusal so far.
+    ///
+    /// Deduplicated at the point of recording, on `(caller, destination,
+    /// reason)`. A tool retrying against one blocked host is one audit fact,
+    /// not forty — which is what bounds this list by the plan's shape rather
+    /// than by how hard something retries. The count of attempts is not kept
+    /// here; the operator-facing log line is per attempt.
+    ///
+    /// Read rather than drained, so several consumers can each see the whole
+    /// set: the driver journals them, the CLI prints them when the run ends,
+    /// and the trigger evaluator turns them into `TRG-E009`.
+    pub fn refusals(&self) -> Vec<EgressRefusal> {
         self.refusals.lock().map(|r| r.clone()).unwrap_or_default()
     }
 }
@@ -302,11 +328,20 @@ struct EgressRequest {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Record a refusal once. Bounded by distinct refusals, not by attempts.
+fn note_refusal(refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>, r: EgressRefusal) {
+    if let Ok(mut list) = refusals.lock() {
+        if !list.contains(&r) {
+            list.push(r);
+        }
+    }
+}
+
 fn serve_one(
     mut stream: TcpStream,
     policy: &EgressPolicy,
     credentials: &BTreeMap<String, Credential>,
-    refusals: &Arc<std::sync::Mutex<Vec<String>>>,
+    refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
     grants: &EgressGrants,
     by_token: &BTreeMap<String, String>,
     refusal_code: &'static str,
@@ -381,9 +416,14 @@ fn serve_one(
     };
 
     if let Err(e) = policy.permits(&req.url) {
-        if let Ok(mut r) = refusals.lock() {
-            r.push(req.url.clone());
-        }
+        note_refusal(
+            refusals,
+            EgressRefusal {
+                caller: caller.clone(),
+                destination: req.url.clone(),
+                reason: "destination outside the declared allowlist".into(),
+            },
+        );
         return respond(
             &mut stream,
             403,
@@ -402,9 +442,14 @@ fn serve_one(
     // read, so the write verb is always something someone decided to allow.
     if !grant.permits_method(&method) {
         let denied = EgressDenied::Method { method: method.clone() };
-        if let Ok(mut r) = refusals.lock() {
-            r.push(format!("{method} {}", req.url));
-        }
+        note_refusal(
+            refusals,
+            EgressRefusal {
+                caller: caller.clone(),
+                destination: req.url.clone(),
+                reason: format!("method {method} is not permitted for this caller"),
+            },
+        );
         return respond(
             &mut stream,
             403,
@@ -424,6 +469,14 @@ fn serve_one(
         // Scoped per caller: naming a credential is not the same as being
         // allowed to use it, which is the whole of the RBAC story here.
         if !grant.credentials.contains(name) {
+            note_refusal(
+                refusals,
+                EgressRefusal {
+                    caller: caller.clone(),
+                    destination: req.url.clone(),
+                    reason: format!("credential '{name}' is not granted to this caller"),
+                },
+            );
             return respond(
                 &mut stream,
                 403,
@@ -588,7 +641,10 @@ mod tests {
         let (status, body) = call(&b, serde_json::json!({ "url": "https://evil.com/steal" }));
         assert_eq!(status, 403);
         assert_eq!(body["code"], "TRG-E009");
-        assert_eq!(b.refusals(), vec!["https://evil.com/steal".to_string()]);
+        let refusals = b.refusals();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0].destination, "https://evil.com/steal");
+        assert!(refusals[0].reason.contains("allowlist"), "{:?}", refusals[0]);
     }
 
     #[test]

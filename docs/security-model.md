@@ -366,6 +366,12 @@ Grants are host configuration, never grains, for the same reason the
 code-executor allowlist is: a Definition declaring its own reach would be a
 permission arriving in the same bundle as the code it authorizes.
 
+**Refusals are evidence, so they are journaled.** Each distinct `(caller,
+destination, reason)` a run is refused lands as an Observation in
+`agent:harness` alongside the stderr line. A refusal is an agent reaching for
+somewhere it was not allowed — the event a reviewer asks about — and evidence
+that lives only in a terminal is evidence until the terminal scrolls.
+
 The limits are unchanged and worth repeating: exfiltration through an *allowed*
 host still works, hostname allowlisting cannot see through DNS tricks or domain
 fronting, and a brokered command cannot use a vendor SDK. This is why the

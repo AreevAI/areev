@@ -319,12 +319,29 @@ fail-closed check inverted into fail-open, silently, for exactly the users who
 had customized it. `rehydrate` keeps the default for callers that supply a bare
 mapping and have no policy in scope.
 
-**Egress refusals are still not journaled.** refusals are reported to the caller
-as a `403` and printed to stderr when a run ends, but they are **not journaled
-into the run record**. The executor holds the broker and runs on a pool thread,
-so journaling from there would need driver plumbing the rest of this did not.
-Worth closing, because a refusal a tool swallowed should be recoverable from
-the memory rather than from a terminal that has scrolled.
+**Egress refusals are now journaled.** *Closed.* Each distinct `(caller,
+destination, reason)` becomes an Observation in `agent:harness`, written at
+superstep boundaries so a crash loses at most one superstep of evidence.
+
+Two details are worth recording, because the obvious implementations are both
+wrong:
+
+- **Dedupe at the point of recording, not at the point of writing.** A tool
+  retrying against a blocked host would otherwise grow the broker's list
+  without bound, and bounding it only in the driver would leave the memory
+  growth in place. Deduped where the refusal is noted, the list is bounded by
+  the plan's shape rather than by how hard something retries.
+- **Read, do not drain.** Draining from the driver would have starved the
+  CLI's end-of-run log line, which is the fast path a human debugging actually
+  reads. Three consumers each want the whole set — the driver journals it, the
+  CLI prints it, the trigger evaluator turns it into `TRG-E009` — so the list
+  is read and each consumer tracks what it has already handled.
+
+It is deliberately not a journal entry: like the run-outcome record, replay
+never sees it, so `verify` stays byte-identical whether or not a broker was
+configured. This is also what makes the Art. 12 claim in
+[`eu-ai-act.md`](eu-ai-act.md) true for the egress subsystem rather than only
+for run terminals.
 
 ## 5. What this document does not propose
 

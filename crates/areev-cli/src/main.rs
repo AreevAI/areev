@@ -3331,10 +3331,11 @@ fn run_run(
         // A refusal the tool saw as a 403 and swallowed is a refusal the
         // operator would otherwise have to guess at from a failed node.
         if let Some(b) = b {
-            for d in b.refusals() {
+            for r in b.refusals() {
                 eprintln!(
-                    "areev: {}",
-                    areev_run_core::RunError::EgressRefused { destination: d }
+                    "areev: {} ({})",
+                    areev_run_core::RunError::EgressRefused { destination: r.destination },
+                    r.reason
                 );
             }
         }

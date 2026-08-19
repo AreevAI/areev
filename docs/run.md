@@ -237,9 +237,25 @@ field. Three rules are deliberate:
 
 The grant is host configuration, never a grain — a Definition declaring its own
 reach would be a permission arriving in the same bundle as the code it
-authorizes. Refusals are reported to the tool as a `403` carrying `RUN-E022`,
-and printed to stderr when the run ends so a refusal the tool swallowed is
-still visible.
+authorizes.
+
+**A refusal is journaled, not just logged.** It reaches the tool as a `403`
+carrying `RUN-E022`, prints to stderr when the run ends, *and* lands in the
+memory as an Observation in `agent:harness`:
+
+```bash
+areev cal 'RECALL observations WHERE namespace = "agent:harness"' --db runs.db
+# → observation_kind "egress_refusal", with run_id, caller, destination, reason
+```
+
+An agent reaching for somewhere it was not allowed is the most audit-worthy
+event this subsystem produces, and a terminal that has scrolled cannot answer
+"did it ever try?". One Observation per **distinct** `(caller, destination,
+reason)` per run, deduplicated where the refusal is recorded — a tool retrying
+forty times against one blocked host is one audit fact, not forty, so the
+record is bounded by the plan's shape rather than by how hard something
+retries. The per-attempt count stays in the log line. Like the run-outcome
+record, it is not a journal entry, so `verify` is unaffected.
 
 Omitting all three flags leaves tools exactly as they were: no broker, and
 whatever credentials your tool script already reads for itself.
