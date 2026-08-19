@@ -59,6 +59,53 @@ partner requires it.
    with the memory; `areev audit export` produces the hash-chain-verified
    accountability evidence a reviewer asks for first.
 
+## Postgres connection contract
+
+The numbers below are measured against `pgvector/pgvector:pg16` on loopback
+Docker (Apple M4 Max). Treat them as shape, not as managed-database figures.
+
+**Connections per handle: 1, or 2 with telemetry.** One `tokio_postgres`
+client per `Areev` handle, plus a second for the recall-telemetry sidecar. The
+**bindings default telemetry to `aggregate`**, so a stock Node or Python handle
+opens **two**. Pass `telemetry="off"` when you do not want the sidecar. A
+multi-tenant host with one memory per tenant multiplies this by tenants *and*
+by instances against the server's `max_connections` — cache handles per tenant
+with an LRU and close idle ones (`close()` in Node; drop in Rust/Python), or
+put a pooler (PgBouncer in transaction mode, Cloud SQL Auth Proxy) in front.
+There is no built-in pool.
+
+**Open cost: provision schemas ahead of the request path.** First open of a
+NEW schema runs the full DDL bootstrap under an advisory lock — hundreds of
+milliseconds, fine as a provisioning step and unacceptable inside a request.
+Steady-state open of an existing, populated schema is tens of milliseconds.
+Create the tenant's schema when the tenant is created, not on their first turn.
+
+**Outage recovery: automatic for reads, explicit for writes.** A managed
+Postgres restarts, fails over, and drops connections as routine maintenance.
+The handle now replaces a dead session in place — clearing the
+prepared-statement cache and the BM25 stats cache, both of which belonged to
+the dead session — and:
+
+- a **read** is replayed transparently: it had no effect, so running it twice
+  is running it once;
+- a **write** is **not** replayed. The connection may have died *after* the
+  server committed it, and nothing client-side can tell the difference, so
+  replaying risks applying it twice. The call returns its error (`STO-E001`,
+  carrying the Postgres SQLSTATE — `57P01` for an administrator restart) and
+  the handle is usable again on the next call. **Your host must treat a failed
+  write as a unit of work to redo**, exactly as it would any other transaction
+  failure.
+- nothing is replayed **inside an open transaction**: the transaction died
+  with the connection, so the whole unit has to be re-run.
+
+Conformance: `a_handle_recovers_from_a_database_outage` in
+`areev-conformance`, run against a real server with a real
+`pg_terminate_backend`.
+
+**Writers: concurrent, not single.** See control 4 above — `STO-E002` is never
+raised on this backend, and concurrent writers block and serialise at
+`reserve_write` rather than erroring.
+
 ## SSO note (trusted-header mode)
 
 The proxy shared secret (`--sso-secret-env`) is an **impersonation-grade

@@ -221,14 +221,49 @@ ASSEMBLE "<topic>" [FOR "<audience>"] FROM <sources> [WHERE ...]
          [BUDGET <n> [tokens|grains]]
          [PRIORITY label: weight, ... | PRIORITY a > b > c]
          [FORMAT <spec>] [WITH dedup(<field>)]
+
+<sources> = label: [PIN] (<sub-query>)
+          | label: [PIN] LITERAL "<text>"
 ```
 
 Clause order is fixed (it is the OMS §8.2 order): `FOR` directly after the topic,
-`BUDGET` before `PRIORITY`, and `FORMAT` before `WITH dedup`. A clause written out
-of order is not attached to the statement (e.g. `BUDGET` after `FORMAT` is
-silently dropped — see the golden-test notes). `WHERE` applies to the
-single-source form only. `PRIORITY` accepts weighted labels (`a: 0.5, b: 0.3`) or
-an ordering chain (`a > b > c`, mapped to evenly spaced weights).
+`BUDGET` before `PRIORITY`, and `FORMAT` before `WITH dedup`. **A clause written
+out of order is a parse error** naming the clause and the canonical order. It
+used to be silently dropped — `… FORMAT markdown BUDGET 900` ran at the
+4000-token default, so the guard you wrote was not the guard that ran.
+`WHERE` applies to the single-source form only. `PRIORITY` accepts weighted
+labels (`a: 0.5, b: 0.3`) or an ordering chain (`a > b > c`, mapped to evenly
+spaced weights).
+
+**Render order is FROM-clause order, and nothing else changes it.** Sections
+appear in the order their labels are written. `PRIORITY` weights how the token
+budget is *shared*; it does not reorder. A pipeline `ORDER BY` on an assembly
+cannot reorder sections either and emits `CAL-W016` rather than silently doing
+nothing — to order *within* a section, put the stage on that source's
+sub-query.
+
+**`LITERAL` — host text at an authored position.** A production system prompt
+is grains interleaved with fixed text, some of it contractually mandatory. A
+`LITERAL` source renders exactly the text given, at its authored index, and
+counts against the budget like any other section — so a compliance-critical
+instruction can live in the statement (i.e. in code) rather than as a mutable
+grain.
+
+**`PIN` — non-degradable.** The budget allocator satisfies pinned sources
+first, at their full cost, and never trims them; `PRIORITY` then shares what is
+left among the rest. If the pins alone exceed `BUDGET`, the statement fails
+with `CAL-E122` instead of summarising the one section that had to survive
+verbatim. `PIN` works on query sources too, not just literals.
+
+```sql
+ASSEMBLE "turn" FROM
+  guardrail: PIN LITERAL "Never diagnose. Route clinical questions to staff.",
+  turns:     PIN (RECALL events RECENT 3),
+  history:   (RECALL events RECENT 200)
+BUDGET 900 tokens
+PRIORITY history: 1.0
+FORMAT markdown
+```
 
 Single-source:
 
@@ -475,6 +510,18 @@ Saved-query limits: 100 per namespace, 8 KiB body, 10 parameters. Saved-query
 bodies get an extra read-only verification pass, so a saved query can never
 smuggle in a write or a blocked keyword.
 
+**Does `RUN` reuse a compiled plan?** Yes, per distinct *argument set*. The
+executor caches parsed statements keyed by exact text, and `RUN` substitutes
+parameters into the body **before** parsing — so a zero-parameter saved query
+hits the cache on every call after the first, and a parameterized one hits per
+distinct set of bindings. The same cache serves plain statement text from every
+surface (CLI, MCP, the server, both bindings), which is what keeps a real-time
+turn from re-lexing and re-parsing its statement each time. The Node and
+Python bindings additionally expose `calPrepare` / `cal_prepare`, which parses
+and validates a statement at startup and keeps the plan — turning a bad
+statement into a startup error instead of a first-turn error. The handle is the
+statement text itself; there is no opaque handle object to leak.
+
 `DEFINE` also **parses** the body, so a query that could never run is refused
 where it is written rather than stored as a landmine for its first caller —
 which is typically an unattended agent, long after whoever wrote the query has
@@ -604,6 +651,39 @@ RECALL facts WHERE namespace = "caller" | COUNT
 RECALL facts WHERE relation = "knows" | OBJECTS
 ```
 
+`WHERE session_id = "…"` is **pushed into the thread index**
+(`idx_thread(ns, session, seq)`) rather than applied as a post-filter, so
+`RECALL events WHERE session_id = "call-42" RECENT 20` is bounded by 20 turns
+*of that conversation* — not by the newest 20 rows of the namespace, which on a
+busy namespace could contain none of it. A session is an anchor, so the bare
+`RECALL WHERE session_id = "…"` form (no grain type) is accepted too. The Rust,
+Node and Python bindings also expose `thread_tail(session, n)` for the same
+read in transcript order.
+
+**Stages that rank, filter or count see the whole matching set, not a page of
+it.** A pipeline stage runs over the grains the statement returned, and that
+is `default_limit` (50) rows unless the statement said otherwise — so
+`ORDER BY priority DESC | LIMIT 5` used to return the top 5 *of the newest 50*
+and was indistinguishable from the top 5 overall. When an `ORDER BY`, a
+type-specific `WHERE` post-filter, or a `COUNT` is present, the scan widens to
+`max_limit` (1000) and the caller's bound is re-applied afterwards: **LIMIT
+bounds the answer, not the search for it.** If even the widened scan comes back
+full, the result carries `CAL-W015` — past that point the answer is the top-k
+of a window rather than of the memory, and nothing else would distinguish the
+two. Narrow with `WHERE`/`ABOUT`/`SINCE`, or raise `max_limit`.
+
+`ORDER BY created_at` is the one ordering pushed into the scan itself, so it is
+exact at any corpus size: `created_at` is a column on the `grains` table.
+Every other sort key (`priority`, `status`, `confidence`, and all
+type-specific fields) lives inside the immutable, content-addressed blob, where
+SQL cannot reach it without materializing a column per field — those are ranked
+in the executor over the widened scan.
+
+A stage attached to a payload it cannot act on — most usefully `ORDER BY` on a
+multi-source `ASSEMBLE`, which returns an assembled section list rather than a
+flat grain list — is skipped with `CAL-W016`. It used to vanish with no error
+and no warning.
+
 There is **no `| WHERE` stage** — filtering is a statement clause, not a
 pipeline stage. Write `RECALL … WHERE a = … AND b = …` instead. The parser
 rejects `| WHERE` with `CAL-E002` and lists the stages it does accept, which is
@@ -635,7 +715,7 @@ representative selection:
 | `WITH rerank` / `WITH rerank("model")` | Cross-encoder reranking (feature-gated) |
 | `WITH query_expansion` / `WITH query_decompose` / `WITH hyde` | Query rewriting strategies |
 | `WITH multi_hop(2)` | Entity-graph expansion (1–3 hops): follows the entities named by the first-pass results and adds what they anchor to the candidate pool, competing within `LIMIT` |
-| `WITH recency_weight(0.3)` / `WITH min_score(0.6)` | Scoring controls |
+| `WITH recency_weight(0.3)` / `WITH min_score(0.6)` | Scoring controls. `recency_weight(w)` scores `final = (1-w)·relevance + w·freshness`, `freshness = 1/(1 + age_hours)`, where relevance is the candidate's rank in fusion order; **state facts are exempt** (a current fact should not sink below a stale event just for being older). It re-ranks the retrieved candidates *before* the result is bounded. |
 | `WITH conflict_resolution` | Keep only the newest grain per `(subject, relation)` |
 | `WITH contradiction_detection` | Keep everything, but stamp `contested_by` on grains that are live tips of an open fork |
 | `WITH annotate_relative_time` | Add "2 weeks ago"-style labels |

@@ -1575,13 +1575,13 @@ impl CalStoreFacade for AreevFacade {
             // anchor, so without a type this must still fall through to the
             // "RECALL needs a subject filter, a free-text query, or a specific
             // grain type" refusal below rather than scanning the namespace.
-            (unanchored && params.grain_type.is_some() && k.field == "created_at").then(|| {
+            (unanchored && params.grain_type.is_some() && k.field == "created_at").then_some(
                 if k.descending {
                     areev_store::RecentOrder::CreatedAtDesc
                 } else {
                     areev_store::RecentOrder::CreatedAtAsc
-                }
-            })
+                },
+            )
         }) {
             let n = k.min(1000);
             if scoped {

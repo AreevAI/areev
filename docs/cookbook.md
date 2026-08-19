@@ -842,6 +842,69 @@ mapping = json.loads(m.anon_mappings())[0]["mapping"]
 final = json.loads(m.rehydrate_text(reply, json.dumps(mapping)))["text"]
 ```
 
+### Gate the policy in CI
+
+An egress control you cannot test is close to one you cannot use, and a
+fixture file is the first artifact an auditor asks for. Write down what the
+policy **must** redact and what it **must not**, and fail the build on either
+direction:
+
+```json
+{
+  "policy": {
+    "mode": "egress",
+    "default_action": "allow",
+    "categories": { "sg_nric": "redact", "mrn": "redact", "email": "redact" }
+  },
+  "must_redact": [
+    "NRIC S1234567D on file",
+    "MRN 00456123 admitted",
+    "contact jane@example.com"
+  ],
+  "must_not_redact": [
+    "invoice total 4471820 aed",
+    "S1234567A is not a valid NRIC",
+    "the ward saw 12345678 visitors"
+  ]
+}
+```
+
+```bash
+areev anonymize test --fixtures policy-fixtures.json
+# → 6 fixtures: 6 passed, 0 failed (0 missed, 0 false positive)
+# exits non-zero on any miss or false positive
+```
+
+The `must_not_redact` half is the load-bearing one: a policy that redacts
+everything passes `must_redact` trivially. Note what the negatives above pin —
+`S1234567A` has a valid NRIC *shape* but a wrong check digit, and the bare
+digit runs are quantities, not identifiers. The national-ID detectors are
+checksum-gated (Singapore NRIC/FIN weighted mod-11, UAE Emirates ID Luhn +
+`784` prefix), and MRN is cue-gated on a nearby `MRN` / `medical record
+number`, because matching bare digit runs would redact every quantity in a
+clinical note.
+
+### Redact on context, not just on category
+
+A name alone may be fine in a prompt; a name **beside a condition** is health
+data. That is a property of the pair, so no per-category action can express it:
+
+```json
+{
+  "mode": "egress",
+  "default_action": "allow",
+  "categories": { "person": "allow", "condition": "allow", "phi": "pseudonym" },
+  "term_sets": { "condition": ["type 2 diabetes", "hypertension"] },
+  "co_occurrence": [
+    { "when": "person", "near": "condition", "within_chars": 120, "as_category": "phi" }
+  ]
+}
+```
+
+"Jane Doe called about the invoice" keeps the name; "Jane Doe was diagnosed
+with type 2 diabetes" comes back as `[PHI_1]` — and the placeholder says *why*
+it was escalated rather than reading like an ordinary `[PERSON_1]`.
+
 `scope: "session"` keeps tokens stable across calls in one process. MCP and
 CAL payloads carry an `anonymized` report with mapping **ids** only — the
 mapping itself never rides a payload; the host process rehydrates.

@@ -9,7 +9,102 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+Nine findings from an external evaluation of 1.2.2 as the context assembler
+and memory for a regulated healthcare voice + chat agent (#42–#50), plus the
+loop's definition-rewrite gap (#28). Every one was reproduced against the code
+before it was fixed.
+
+- **`ORDER BY` ranked a truncated window, and vanished on `ASSEMBLE`** (#43).
+  A pipeline stage runs over what the statement already returned — a
+  `default_limit` page — so `ORDER BY priority DESC | LIMIT 5` returned the
+  top 5 *of the newest 50* and looked exactly like a correct answer.
+  `CONTRADICTIONS` already widened its scan for this reason; that fix is now
+  generalized to every stage with the same shape (`ORDER BY`, type-specific
+  `WHERE` post-filters, `COUNT`), with the caller's bound re-applied
+  afterwards and **`CAL-W015`** when even the widened scan fills. `ORDER BY
+  created_at` is pushed into the scan and is exact at any size — it is the one
+  sort key the `grains` table carries as a column; the rest live inside the
+  content-addressed blob. `ORDER BY` on a multi-source `ASSEMBLE` now emits
+  **`CAL-W016`** instead of being silently discarded. `WITH recency_weight(w)`
+  is **implemented** — it was parsed, stored, and read by nothing since 1.0,
+  while ten built-in saved queries passed it.
+- **`session_id` was a post-filter over a 50-row page** (#49). It is now pushed
+  into `idx_thread(ns, session, seq)`, so `RECALL events WHERE session_id = …`
+  is bounded by turns of *that conversation* rather than rows of the namespace
+  — on a busy namespace the tail of a conversation could be entirely outside
+  the window and the query answered "nothing". No new CAL syntax: the existing
+  `WHERE session_id` spelling now pushes down. `thread_tail` is exposed on the
+  Node and Python bindings.
+- **A Postgres handle never recovered from a database outage** (#48). One
+  `tokio_postgres` client with no reconnect meant a routine managed-database
+  restart (`57P01`) permanently poisoned a long-lived handle. The session is
+  now replaced in place, clearing the prepared-statement and BM25-stats caches
+  that belonged to it; **reads replay, writes do not** (a write may have
+  committed before the connection died), and nothing replays inside a
+  transaction. `docs/deployment-profile.md` gains the connection contract —
+  connections per handle, open cost, pooling guidance — and its stale
+  "advisory-locked single writer" claim is corrected to multi-writer.
+- **Windows `require()` failed on a package npm had refused** (#50). The
+  Windows leg built fine; npm's spam filter rejected the *name*
+  `areev-win32-x64-msvc`, and the release shipped a manifest promising it
+  anyway. Scoping the package makes napi derive `@areev/areev-<platform>`
+  names, which the filter does not reject — Windows works rather than being
+  dropped. `prepare-npm.mjs` now hard-fails a release when a declared target
+  produced no artifact. Three stale proposal headers corrected.
+
 ### Added
+
+- **`ASSEMBLE` literal sections and pinning** (#42). `label: LITERAL "…"`
+  renders host-supplied text at its authored position; `label: PIN …` marks a
+  source non-degradable — costed off the top and never trimmed, with
+  **`CAL-E122`** when the pins alone exceed `BUDGET`. A compliance-mandated
+  instruction can now live in the statement instead of as a mutable grain, and
+  cannot be summarised away by a long conversation. Render order is documented
+  as FROM-clause order, explicitly independent of `PRIORITY`, with a test.
+  **Out-of-order `ASSEMBLE` clauses are now a parse error** rather than
+  silently detaching. New CAL syntax ahead of the OMS spec — recorded as a
+  named decision in `ARCHITECTURE.md` §10.
+- **A host-supplied anonymization key** (#46). `AreevOptions::anon_key` is the
+  HKDF root for the session/memory/vault subkeys when given, else the page key
+  as before. The mapping vault and deterministic value-derived tokens now work
+  on **Postgres** — which refuses `encryption_key` because it is a page-cipher
+  capability — and on plaintext files. Never persisted; rotating it is a
+  crypto-erasure of the mapping table. Conformance case on both backends.
+- **Healthcare / national-ID detectors and CI-testable fixtures** (#47).
+  Singapore NRIC/FIN (weighted mod-11 with era offsets) and UAE Emirates ID
+  (`784` prefix + Luhn) are checksum-gated; MRNs are cue-gated on a nearby
+  `MRN`/`medical record number` rather than matching bare digit runs.
+  `co_occurrence` rules express "redact A when B is within N characters" — a
+  name beside a condition is health data, which no per-category action can
+  say — and `term_sets` name the categories they compare. `areev anonymize
+  test --fixtures F` asserts must-redact / must-not-redact and exits non-zero
+  on any miss or false positive.
+- **Pluggable LLM credentials and feature-gated providers** (#45).
+  `areev_llm::cred::Credential` mints the auth value per request instead of
+  reading a `String` once, so Application Default Credentials work: a
+  `vertex:<model>` provider reaches the **regional** `aiplatform` endpoint under
+  workload identity with no key on disk (the region is never defaulted and
+  `global` is refused). Service-account key JSON is refused by name — signing
+  its JWT needs an RSA dependency this tree does not carry. Providers are
+  individually feature-gated; **OpenRouter is off by default**, so a regulated
+  build can state that its artifact cannot reach a third-party router.
+- **A parsed-statement cache, and `calPrepare`** (#44). The executor caches
+  parsed statements by exact text, so a real-time turn stops re-lexing and
+  re-parsing on every turn — and it serves every surface, not just one. The
+  bindings built a fresh executor per `cal()` call and so could never hit a
+  cache; one executor now lives on the handle. `calPrepare`/`cal_prepare`
+  validates and warms a statement at startup. `RESULTS.md` §1b adds measured
+  binding-level p50/p95/p99 for `RECALL`, a three-source `ASSEMBLE`, and
+  `thread_tail`, on both backends.
+- **Executable, undoable definition rewrites in the loop** (#28). A proposal
+  may rewrite a saved query or template — where a self-improving agent's
+  prompt-assembly actually lives. `OmsSubstrate::definition_inverse` records
+  the statement that restores the previous definition (or a `DROP`), so
+  `ROLLBACK` really undoes it; a substrate that cannot produce one refuses the
+  apply rather than applying something rollback could not reverse. Definition
+  targets are excluded from auto-apply by name, like `code` and `evalset`.
 
 - **Triggers** (#36): a standing rule that starts a workflow, declared as a
   `Trigger` grain (type `0x0D`) and evaluated by `areev trigger run` — a

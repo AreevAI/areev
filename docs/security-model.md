@@ -49,18 +49,38 @@ top of that.
 
 ### Anonymization keys and the sealed vault
 
-- **Three subkeys derive from the page-cipher key** via HKDF with distinct
-  domain-separation strings: `areev.blobs.v1` (the CAS sidecar, above),
-  `areev.anon.memory.v1` (value-derived pseudonym tokens — ingress mode and
-  `memory` scope), and `areev.vault.v1` (the sealed placeholder→value vault:
-  AES-256-GCM per row, the `vault:<ns>:<placeholder>` row key bound in as
-  associated data). Destroying the page key destroys all three —
-  **crypto-erasure reaches the vault by construction**.
-- **No page key, no value-derived features.** On a plaintext file — or any
-  Postgres schema, where the page cipher does not exist — ingress modes,
-  `memory` scope, and the vault refuse loudly at policy `set` rather than
-  degrade to unkeyed derivation (conformance-pinned on both backends). The
-  egress session's `mapping_id` key falls back to a per-handle random key
+- **Subkeys derive from ONE root** via HKDF with distinct domain-separation
+  strings: `areev.blobs.v1` (the CAS sidecar, above), `areev.anon.memory.v1`
+  (value-derived pseudonym tokens — ingress mode and `memory` scope), and
+  `areev.vault.v1` (the sealed placeholder→value vault: AES-256-GCM per row,
+  the `vault:<ns>:<placeholder>` row key bound in as associated data).
+- **The root is `AreevOptions::anon_key` when the host supplies one, else the
+  page-cipher key.** With the page key as root, destroying it destroys all
+  three subkeys — **crypto-erasure reaches the vault by construction**. With a
+  host-supplied root the same property holds against *that* key instead: the
+  vault rows are unreadable without it.
+- **Trust model for a host-supplied `anon_key`.** It is a 32-byte secret that
+  belongs in a KMS or secret manager (Cloud KMS, AWS KMS, Vault) and is
+  supplied per process. **Whoever holds it can re-identify every pseudonym in
+  the vault** — it is exactly as sensitive as the plaintext it protects. It is
+  **never persisted**: not in `meta`, not in a bundle, not in the file, so it
+  cannot leak through sync or export. **Rotating it is destructive**: existing
+  vault rows become permanently unreadable and every value-derived token
+  changes, so a rotation is a crypto-erasure of the mapping table and a break
+  in pseudonym continuity, not a routine hygiene step. Rotate deliberately —
+  to revoke re-identification — and re-derive nothing.
+- **Why it exists.** The Postgres backend refuses `encryption_key` outright (it
+  is a page-cipher capability), so when the page key was the only possible root
+  the mapping vault and deterministic tokens were unavailable on exactly the
+  backend built for stateless hosts — Cloud Run, ECS, Kubernetes. Separating
+  the anonymization root from encryption-at-rest fixes that, and lets a file be
+  encrypted under one key and pseudonymised under another, which is what
+  separating the two roles is for.
+- **No root, no value-derived features.** With neither an `anon_key` nor a page
+  key, ingress modes, `memory` scope, and the vault refuse loudly at policy
+  `set` rather than degrade to unkeyed derivation (conformance-pinned on both
+  backends), and the refusal names `anon_key` as the fix that works everywhere.
+  The egress session's `mapping_id` key falls back to a per-handle random key
   held only in memory.
 - **The vault never replicates.** `vault:` rows are excluded from bundle
   export, and the import allowlist refuses them from a crafted bundle — the

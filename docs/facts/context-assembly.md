@@ -233,11 +233,11 @@ without `FORMAT`, the same statement returns the `assembled` token ledger
 Syntax facts this exercise pinned down (all against the parser):
 
 - **Clause order is fixed and matches OMS §8.2**: topic, `FOR`, `FROM`, `BUDGET`,
-  `PRIORITY`, `FORMAT`, `WITH dedup` — `parse_assemble` at
-  `crates/areev-cal/src/parser.rs:3147` (FOR at `:3186`, BUDGET `:3248`,
-  PRIORITY `:3307`, FORMAT `:3395`, WITH-dedup `:3406`). Out-of-order clauses
-  detach silently — `BUDGET` after `FORMAT` is dropped, a **known bug**
-  (`crates/areev-cli/tests/golden/CLAUDE.md`, Suite 9 #2).
+  `PRIORITY`, `FORMAT`, `WITH dedup` — `parse_assemble` in
+  `crates/areev-cal/src/parser.rs`. **Fixed 2026-08-19 (issue #42):**
+  out-of-order clauses used to detach silently — `BUDGET` after `FORMAT` was
+  dropped and the assembly ran at the 4000-token default. They are now a parse
+  error naming the clause and the canonical order.
 - **Source labels are plain identifiers** — dotted labels (`org.policies:`) are a
   parse error (`CAL-E002`); mounts are addressed by the namespace *string* inside
   the source (`WHERE namespace = "org.policies"`), per the §8 acceptance test

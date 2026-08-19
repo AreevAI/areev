@@ -169,6 +169,21 @@ export declare class Areev {
    * (absent when the query raised none).
    */
   cal(query: string): Promise<string>
+  /**
+   * Parse and validate a statement now, and keep the plan, so the first
+   * real turn does not pay for it.
+   *
+   * The handle is the statement TEXT — there is no opaque handle object to
+   * leak or invalidate, because the executor already keys its plan cache on
+   * exactly that. Call this at startup for each statement your agent runs
+   * on the hot path: it turns a bad statement into a startup error instead
+   * of a first-turn error, and guarantees the plan is warm rather than
+   * hoping it is.
+   *
+   * Returns `{statement, cached}` where `cached` is the number of plans
+   * held.
+   */
+  calPrepare(query: string): Promise<string>
   /** Supersession-chain history for (subject, relation), newest first. */
   history(subject: string, relation: string, ns?: string | undefined | null): Promise<string>
   /**

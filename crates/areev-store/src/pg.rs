@@ -149,7 +149,14 @@ pub(crate) struct PgDb {
     /// until the process was recycled.
     url: String,
     schema: String,
-    client: RefCell<tokio_postgres::Client>,
+    // `Arc` so a caller can clone the handle out of the cell and drop the
+    // borrow BEFORE awaiting on it. Holding a `Ref` across an await is the
+    // shape that would deadlock against `reconnect`'s `borrow_mut`; taking the
+    // clone first makes that impossible by construction rather than by
+    // reasoning about which futures run when. `Arc` rather than `Rc` because
+    // `Db` is `Send` — the handle moves between threads even though only one
+    // uses it at a time.
+    client: RefCell<std::sync::Arc<tokio_postgres::Client>>,
     /// Prepared statements keyed by the ORIGINAL (untranslated) SQL, so hot
     /// callers hit the cache without re-translating.
     ///
@@ -241,7 +248,7 @@ impl PgDb {
             rt,
             url: url.to_string(),
             schema: schema.to_string(),
-            client: RefCell::new(client),
+            client: RefCell::new(std::sync::Arc::new(client)),
             cache: RefCell::new(HashMap::new()),
             in_txn: std::cell::Cell::new(false),
             stats: RefCell::new(None),
@@ -293,7 +300,7 @@ impl PgDb {
         // stats were cached against a connection that can no longer confirm them.
         self.cache.borrow_mut().clear();
         *self.stats.borrow_mut() = None;
-        *self.client.borrow_mut() = client;
+        *self.client.borrow_mut() = std::sync::Arc::new(client);
         Ok(())
     }
 
@@ -330,7 +337,8 @@ impl PgDb {
             return Ok(st.clone());
         }
         let translated = translate(sql)?;
-        let st = self.rt.block_on(self.client.borrow().prepare(&translated)).map_err(|e| {
+        let client = self.client.borrow().clone();
+        let st = self.rt.block_on(client.prepare(&translated)).map_err(|e| {
             AreevError::Storage(format!("prepare failed: {e} — translated SQL: {translated}"))
         })?;
         self.cache.borrow_mut().insert(sql.to_string(), st.clone());
@@ -343,12 +351,14 @@ impl PgDb {
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
         let rows = if hot {
             let st = self.prepared(sql)?;
-            self.rt.block_on(self.client.borrow().query(&st, &refs))
+            let client = self.client.borrow().clone();
+            self.rt.block_on(client.query(&st, &refs))
         } else {
             // Uncached path: the temporary statement is closed on drop, so
             // dynamic SQL leaves nothing behind on either side.
             let translated = translate(sql)?;
-            self.rt.block_on(self.client.borrow().query(translated.as_str(), &refs))
+            let client = self.client.borrow().clone();
+            self.rt.block_on(client.query(translated.as_str(), &refs))
         }
         .map_err(pg_err)?;
         rows.iter().map(row_to_row).collect()
@@ -391,11 +401,13 @@ impl PgDb {
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
         if hot {
             let st = self.prepared(sql)?;
-            self.rt.block_on(self.client.borrow().execute(&st, &refs)).map_err(pg_err)
+            let client = self.client.borrow().clone();
+            self.rt.block_on(client.execute(&st, &refs)).map_err(pg_err)
         } else {
             let translated = translate(sql)?;
+            let client = self.client.borrow().clone();
             self.rt
-                .block_on(self.client.borrow().execute(translated.as_str(), &refs))
+                .block_on(client.execute(translated.as_str(), &refs))
                 .map_err(pg_err)
         }
     }
@@ -419,25 +431,22 @@ impl Db for PgDb {
     }
 
     fn begin(&self) -> Result<()> {
-        let r = self
-            .rt
-            .block_on(self.client.borrow().batch_execute("BEGIN"))
-            .map_err(pg_err);
+        let client = self.client.borrow().clone();
+        let r = self.rt.block_on(client.batch_execute("BEGIN")).map_err(pg_err);
         // Set only on success, so a failed BEGIN does not wedge the handle
         // into "a transaction is open" and block every later recovery.
-        if r.is_ok() {
-            self.in_txn.set(true);
-        } else {
-            self.recover(r.as_ref().unwrap_err(), false);
+        match &r {
+            Ok(_) => self.in_txn.set(true),
+            Err(e) => {
+                self.recover(e, false);
+            }
         }
         r
     }
 
     fn commit(&self) -> Result<()> {
-        let r = self
-            .rt
-            .block_on(self.client.borrow().batch_execute("COMMIT"))
-            .map_err(pg_err);
+        let client = self.client.borrow().clone();
+        let r = self.rt.block_on(client.batch_execute("COMMIT")).map_err(pg_err);
         // Cleared either way: a failed COMMIT ends the transaction just as
         // surely as a successful one, and leaving the flag set would suppress
         // reconnects forever after a single outage mid-transaction.
@@ -449,10 +458,8 @@ impl Db for PgDb {
     }
 
     fn rollback(&self) -> Result<()> {
-        let r = self
-            .rt
-            .block_on(self.client.borrow().batch_execute("ROLLBACK"))
-            .map_err(pg_err);
+        let client = self.client.borrow().clone();
+        let r = self.rt.block_on(client.batch_execute("ROLLBACK")).map_err(pg_err);
         self.in_txn.set(false);
         if let Err(ref e) = r {
             self.recover(e, false);
@@ -572,13 +579,13 @@ impl Db for PgDb {
             // install into that schema — invisible to sibling memories, and
             // destroyed database-wide by that one memory's DROP SCHEMA
             // erasure.
-            let _ = self
-                .client
-                .borrow()
+            // Cloned out of the cell up front, so no borrow is held across an
+            // await (see the `client` field).
+            let client = self.client.borrow().clone();
+            let _ = client
                 .batch_execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
                 .await;
-            self.client
-                .borrow()
+            client
                 .batch_execute(&format!(
                     "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})"
                 ))
@@ -590,9 +597,7 @@ impl Db for PgDb {
                 })?;
             // A pre-existing column with a different dim would make every add
             // fail mid-transaction — refuse the embedder up front instead.
-            let row = self
-                .client
-                .borrow()
+            let row = client
                 .query_one(
                     "SELECT a.atttypmod FROM pg_attribute a
                       JOIN pg_class c ON a.attrelid = c.oid

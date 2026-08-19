@@ -189,6 +189,48 @@ erasure it mirrors), and the policy setters (retention/floor/hold/anon).
 Conformance: `cases/ns_scope.rs`, both backends; store tests:
 `tests/ns_scope_tests.rs`.
 
+## Session-scoped and ordered reads
+
+`recent_in_session[_scoped](ns, session, gtype, limit, live_only)` reads
+`idx_thread(ns, session, seq)` directly — newest-first, `live_only`-aware,
+optionally type-narrowed. It exists because `recent`/`recent_live` can only
+scan a namespace by insertion order, so a session filter layered on top is a
+post-filter over whatever page the scan returned: on a busy namespace the tail
+of one conversation can be entirely outside that window, and the query answers
+"nothing" instead of "the last N turns". The CAL facade routes
+`WHERE session_id = "…"` here (issue #49). `thread_tail` is the same index in
+transcript order (oldest→newest, all types, heads and superseded alike).
+
+`recent_ordered[_scoped](…, RecentOrder)` serves an ORDER BY from the scan.
+`RecentOrder::CreatedAt{Desc,Asc}` is the ONLY non-seq ordering, and
+deliberately so: `created_at` is the only sort key the `grains` table carries
+as a column. Every other field a caller might order by lives inside the
+immutable blob, so SQL cannot reach it without materializing a column per
+field — CAL ranks those in the executor over a widened scan instead
+(`CAL-W015`). The two orders differ whenever grains are backdated or imported
+out of order, which is exactly when a caller asks for `created_at` explicitly.
+
+## Anonymization key material
+
+Three keys are HKDF-derived from ONE root, with their own domain-separation
+strings: the session key (`areev.anon.session.v1`), the memory key
+(`areev.anon.memory.v1`, value-derived tokens) and the vault key
+(`areev.vault.v1`, sealed mapping rows).
+
+The root is `AreevOptions::anon_key` when the host supplies one, else the page
+key. Before the `anon_key` seam existed the root could ONLY be the page key,
+which the Postgres backend refuses outright (it is a page-cipher capability) —
+so the backend built for stateless hosts could not use the egress control built
+for untrusted egress, and value-derived tokens were unavailable on plaintext
+files too. The vault itself was never the problem: its rows live in `meta`
+under `VAULT_PREFIX`, which both backends have, and `forget_subject` scrubs
+them through the same path on both.
+
+The host key is never persisted — not in `meta`, not in a bundle, not in the
+file. Rotating it makes existing vault rows permanently unreadable and changes
+every derived token; that is a crypto-erasure lever as much as an operational
+hazard. Conformance: `host_anon_key_unlocks_the_vault`, both backends.
+
 ## Hybrid recall
 
 `recall_hybrid` = structural (`recall_seqs`) + BM25 (`search_text`, our own

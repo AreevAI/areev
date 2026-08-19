@@ -100,7 +100,7 @@ impl GoogleAdc {
     /// Ask the instance metadata server for the attached service account's
     /// token. Short timeout: off-GCP this endpoint is a black hole, and the
     /// file path below is the real fallback, not an error.
-    fn from_metadata_server(&self) -> Result<(String, u64)> {
+    fn fetch_from_metadata_server(&self) -> Result<(String, u64)> {
         let url = format!(
             "http://{}/computeMetadata/v1/instance/service-accounts/default/token?scopes={}",
             Self::metadata_host(),
@@ -135,7 +135,7 @@ impl GoogleAdc {
     }
 
     /// Exchange a gcloud `authorized_user` refresh token for an access token.
-    fn from_adc_file(&self) -> Result<(String, u64)> {
+    fn fetch_from_adc_file(&self) -> Result<(String, u64)> {
         let path = Self::adc_file_path()
             .ok_or_else(|| Error::LlmBackend("no ADC file found".into()))?;
         let raw = std::fs::read_to_string(&path)
@@ -209,9 +209,9 @@ impl Credential for GoogleAdc {
         }
         // Metadata server first: on a GCP workload it is authoritative and the
         // file usually is not there at all.
-        let (tok, ttl) = match self.from_metadata_server() {
+        let (tok, ttl) = match self.fetch_from_metadata_server() {
             Ok(v) => v,
-            Err(meta_err) => self.from_adc_file().map_err(|file_err| {
+            Err(meta_err) => self.fetch_from_adc_file().map_err(|file_err| {
                 Error::LlmBackend(format!(
                     "no Application Default Credentials: metadata server ({meta_err}); \
                      ADC file ({file_err})"
@@ -278,7 +278,7 @@ mod tests {
         std::fs::write(&p, r#"{"type":"service_account","project_id":"x"}"#).unwrap();
         // SAFETY: single-threaded test process; the var is restored below.
         unsafe { std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", &p) };
-        let err = GoogleAdc::new().from_adc_file().unwrap_err().to_string();
+        let err = GoogleAdc::new().fetch_from_adc_file().unwrap_err().to_string();
         unsafe { std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS") };
         assert!(err.contains("service-account KEY file"), "got: {err}");
         assert!(err.contains("workload identity"), "must name the fix: {err}");

@@ -910,6 +910,96 @@ leaves an acyclic graph — a standard theorem — which is what makes the
 generalization safe for arbitrary cycle shapes, not just the single-node
 self-loop or entry-targeted back-edge the original scheduler handled.
 
+### Pinned literal sections in `ASSEMBLE` (`LITERAL` + `PIN`)
+
+**Decision (2026-08-19, issue #42):** `ASSEMBLE` sources may be host-supplied
+literal text (`label: LITERAL "…"`) and may be marked non-degradable
+(`label: PIN …`). This is **new CAL syntax ahead of the OMS spec**, recorded
+here deliberately — the same posture `DEFINE QUERY` already has.
+
+Why it had to be syntax rather than a host wrapper: a production system prompt
+is not "some grains", it is grains **interleaved with fixed text at fixed
+positions**, and some of that text is legally or contractually mandatory. Two
+things were expressible nowhere. First, a literal: to include a fixed
+instruction the host had to write it into memory as a grain, which turns a
+compliance-critical string into a mutable row rather than code. Second,
+non-degradability: `PRIORITY` only *weights* the budget split, and the
+progressive-disclosure allocator walks every source Full→Summary→Omit — so a
+long conversation could silently summarise away the one section that had to
+survive verbatim. Neither is expressible by weighting, because both are about
+a source's **kind**, not its share.
+
+Mechanism: pinned sources are costed in full and reserved off the top; the
+remaining budget is shared by `PRIORITY` as before; the trim loop never
+touches a pin. If the pins alone exceed `BUDGET` the statement fails with
+`CAL-E122` rather than degrading them — for a guarantee of verbatim
+disclosure there is no honest partial answer, and a quiet one is the unsafe
+outcome. Render order is FROM-clause order and is now a documented contract
+with a test, explicitly independent of `PRIORITY`.
+
+Related, same change: **out-of-order `ASSEMBLE` clauses are a parse error.**
+They used to detach silently, so `… FORMAT markdown BUDGET 900` ran at the
+4000-token default — the guard you wrote was not the guard that ran.
+
+### One anonymization root, separate from encryption at rest
+
+**Decision (2026-08-19, issue #46):** the HKDF root for the anonymization
+subkeys (session / memory / vault) is `AreevOptions::anon_key` when the host
+supplies one, else the page-cipher key.
+
+Reversible pseudonymisation — replace identities before an LLM egress,
+rehydrate the reply — was keyed *only* from the page cipher, which the Postgres
+backend refuses outright because it is a page-cipher capability. So the backend
+built for stateless hosts could not use the egress control built for untrusted
+egress, and deterministic value-derived tokens were unavailable on plaintext
+files too. Making the root a first-class, host-supplied capability fixes both
+at once and lets a memory be encrypted at rest under one key and pseudonymised
+under another — which is what separating those two roles is for. The key is
+never persisted; rotating it is a crypto-erasure of the mapping table. Trust
+model in [`docs/security-model.md`](docs/security-model.md).
+
+### Credentials are minted per request, not read once
+
+**Decision (2026-08-19, issue #45):** LLM backends hold a
+`areev_llm::cred::Credential`, not a `String`.
+
+A static key read once from an environment variable excludes every
+cloud-native auth model — Vertex AI under Application Default Credentials,
+Azure managed identity, AWS SigV4 — which exist precisely so that no key sits
+on disk. Those are not a larger version of "read a key from the environment";
+many organizations forbid creating such keys at all. The seam is deliberately
+narrow (mint the auth value, refresh it) so the endpoint and header stay with
+the backend. The Vertex adapter reuses the OpenAI-compatible client against the
+**regional** `aiplatform` host — the region is never defaulted and `global` is
+refused, because under a residency obligation the region is the entire point.
+Providers are individually feature-gated, and a third-party model router
+(OpenRouter) is off by default: it is an extra jurisdiction in the transfer
+path, and a regulated build should be able to state that its artifact cannot
+reach one.
+
+### LIMIT bounds the answer, not the search for it
+
+**Decision (2026-08-19, issue #43):** any post-retrieval pipeline stage that
+ranks, filters or counts widens its scan to `max_limit` and re-applies the
+caller's bound afterwards, warning (`CAL-W015`) when even the widened scan
+fills.
+
+`ORDER BY` sorts what the statement already returned, which is a
+`default_limit` page — so `ORDER BY priority DESC | LIMIT 5` returned the top
+5 *of the newest 50* and was indistinguishable from the top 5 overall.
+`CONTRADICTIONS` had already solved this for itself, with a comment explaining
+why; this generalizes that fix to every stage with the same shape rather than
+leaving it a one-off.
+
+True sort pushdown is possible for exactly one field. `created_at` is a column
+on `grains`, so it is pushed into the scan and is exact at any corpus size.
+Every other sort key callers actually use — `priority`, `status`,
+`confidence`, every type-specific field — lives **inside the immutable,
+content-addressed blob**, where SQL cannot reach it without materializing a
+column per field. That is a consequence of content addressing, not an
+oversight, and the honest response is to widen and then say so rather than to
+imply an exactness the storage model cannot provide.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves
