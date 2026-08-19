@@ -363,6 +363,71 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         if let Some(ref trigger) = wf.trigger {
             map.insert("trigger".to_string(), nfc_string(trigger));
         }
+    } else if let Some(t) = any.downcast_ref::<Trigger>() {
+        // `kind` is not omit-default here (unlike Tool's): a Trigger has no
+        // sensible "absent means interval" reading — the kind decides which
+        // other fields are even meaningful, so it is always stated.
+        map.insert(compact_field("kind").to_string(), nfc_string(t.kind.as_str()));
+        map.insert(compact_field("workflow").to_string(), nfc_string(&t.workflow));
+        if let Some(ref c) = t.connector {
+            map.insert(compact_field("connector").to_string(), nfc_string(c));
+        }
+        if let Some(ref sc) = t.scope {
+            map.insert(compact_field("scope").to_string(), nfc_string(sc));
+        }
+        // Omit-when-true: a live trigger is the overwhelming case, so the wire
+        // carries the flag only when it is off.
+        if !t.enabled {
+            map.insert(compact_field("enabled").to_string(), Value::Boolean(false));
+        }
+        if !t.dedup_key.is_empty() {
+            let keys: Vec<Value> = t.dedup_key.iter().map(|k| nfc_string(k)).collect();
+            map.insert(compact_field("dedup_key").to_string(), Value::Array(keys));
+        }
+        if let Some(i) = t.interval_secs {
+            map.insert(compact_field("interval_secs").to_string(), Value::Integer(i.into()));
+        }
+        if let Some(ref c) = t.cron {
+            map.insert(compact_field("cron").to_string(), nfc_string(c));
+        }
+        if let Some(a) = t.at_ms {
+            map.insert(compact_field("at_ms").to_string(), Value::Integer(a.into()));
+        }
+        if let Some(ref p) = t.predicate {
+            // A Condition tree: nested keys are the AST's own, never OMS field
+            // names, so they must NOT be compacted (see `KeyMode::Verbatim`).
+            map.insert(
+                compact_field("predicate").to_string(),
+                json_to_msgpack(p),
+            );
+        }
+        if !t.members.is_empty() {
+            let members: Vec<Value> = t.members.iter().map(|m| nfc_string(m)).collect();
+            map.insert(compact_field("members").to_string(), Value::Array(members));
+        }
+        if let Some(ref c) = t.correlate {
+            map.insert(compact_field("correlate").to_string(), nfc_string(c));
+        }
+        if let Some(w) = t.window_ms {
+            map.insert(compact_field("window_ms").to_string(), Value::Integer(w.into()));
+        }
+        if t.concurrency != crate::types::Concurrency::default() {
+            map.insert(
+                compact_field("concurrency").to_string(),
+                nfc_string(t.concurrency.as_str()),
+            );
+        }
+        if t.catchup != crate::types::Catchup::default() {
+            map.insert(compact_field("catchup").to_string(), nfc_string(t.catchup.as_str()));
+        }
+        if let Some(ref c) = t.config {
+            // int:* keys ARE compacted (ContextTop mode on read); connector-
+            // specific keys pass through verbatim.
+            map.insert(
+                compact_field("config").to_string(),
+                json_to_msgpack_with_key_compaction(c),
+            );
+        }
     } else if let Some(action) = any.downcast_ref::<Tool>() {
         map.insert(
             compact_field("tool_name").to_string(),

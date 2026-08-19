@@ -147,6 +147,17 @@ fn representative_fields(gt: GrainType) -> Vec<(&'static str, serde_json::Value)
                 serde_json::json!({"template": "t1", "args": {"metric": "hit_rate"}}),
             ),
         ],
+        GrainType::Trigger => vec![
+            ("kind", serde_json::json!("polling")),
+            (
+                "workflow",
+                serde_json::json!(
+                    "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+                ),
+            ),
+            ("connector", serde_json::json!("gmail")),
+            ("scope", serde_json::json!("mailbox:accounts@example.com")),
+        ],
     }
 }
 

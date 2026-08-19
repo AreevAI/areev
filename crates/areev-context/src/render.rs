@@ -220,6 +220,10 @@ impl GrainRenderer for SharedRenderer {
             // ranks above passive records but below the facts it reasons
             // about.
             GrainType::Recommendation => 0.7,
+            // A declaration of what the agent is supposed to be doing on its
+            // own is worth surfacing, but it is standing configuration rather
+            // than something that just happened — below an Event, above a plan.
+            GrainType::Trigger => 0.55,
         };
         adjusted_priority(base, grain, hit)
     }

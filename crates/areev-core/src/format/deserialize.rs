@@ -440,6 +440,11 @@ fn msgpack_to_json(value: &Value, mode: KeyMode) -> Result<serde_json::Value> {
                             // yielded `ctx` to a type-specific field, so its keys
                             // were compacted the same way and reverse the same way.
                             "context" | "common_context" => KeyMode::ContextTop,
+                            // A Trigger's `config` carries the same A.7 `int:`
+                            // vocabulary as a `context` map and is compacted
+                            // with it on write, so it reverses the same way.
+                            // Connector-specific keys inside it stay verbatim.
+                            "config" => KeyMode::ContextTop,
                             "edges" => KeyMode::WorkflowEdgeArray,
                             "related_to" => KeyMode::RelatedToArray,
                             _ => KeyMode::Verbatim,
@@ -594,6 +599,23 @@ impl DeserializedGrain {
                     wf = wf.trigger(t);
                 }
                 Box::new(wf)
+            }
+            GrainType::Trigger => {
+                let kind = self
+                    .get_str("kind")
+                    .and_then(TriggerKind::parse)
+                    .unwrap_or_default();
+                let mut t = Trigger::new(kind, &s("workflow"));
+                if let Some(c) = self.get_str("connector") {
+                    t = t.connector(c);
+                }
+                if let Some(sc) = self.get_str("scope") {
+                    t = t.scope(sc);
+                }
+                if let Some(c) = self.get_str("cron") {
+                    t = t.cron(c);
+                }
+                Box::new(t)
             }
             GrainType::Tool => {
                 let mut tool = Tool::new(&s("tool_name"));
@@ -1246,6 +1268,46 @@ impl DeserializedGrain {
     /// edges (including conditions and cycle bounds), tool bindings and retries.
     ///
     /// Node order is load-bearing: the first element is the graph's entry point.
+    /// Reconstruct a [`Trigger`] grain.
+    pub fn to_trigger(&self) -> Result<Trigger> {
+        if self.grain_type != GrainType::Trigger {
+            return Err(AreevError::Validation("not a Trigger grain".into()));
+        }
+        let kind = self
+            .get_str("kind")
+            .and_then(TriggerKind::parse)
+            .unwrap_or_default();
+        let workflow = self.get_str("workflow").unwrap_or("").to_string();
+        let strings = |field: &str| -> Vec<String> {
+            self.fields
+                .get(field)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let mut t = Trigger::new(kind, &workflow);
+        t.connector = self.get_str("connector").map(str::to_string);
+        t.scope = self.get_str("scope").map(str::to_string);
+        // Omitted means true — the write side omits the flag when live.
+        t.enabled = self.fields.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        t.dedup_key = strings("dedup_key");
+        t.interval_secs = self.get_i64("interval_secs").and_then(|v| u32::try_from(v).ok());
+        t.cron = self.get_str("cron").map(str::to_string);
+        t.at_ms = self.get_i64("at_ms");
+        t.predicate = self.fields.get("predicate").cloned();
+        t.members = strings("members");
+        t.correlate = self.get_str("correlate").map(str::to_string);
+        t.window_ms = self.get_i64("window_ms");
+        t.concurrency = self
+            .get_str("concurrency")
+            .and_then(Concurrency::parse)
+            .unwrap_or_default();
+        t.catchup = self.get_str("catchup").and_then(Catchup::parse).unwrap_or_default();
+        t.config = self.fields.get("config").cloned();
+        self.fill_common_scalars(&mut t.common);
+        Ok(t)
+    }
+
     pub fn to_workflow(&self) -> Result<Workflow> {
         if self.grain_type != GrainType::Workflow {
             return Err(AreevError::Validation("not a Workflow grain".into()));

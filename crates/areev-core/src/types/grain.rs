@@ -26,6 +26,10 @@ pub enum GrainType {
     /// so inserting a variant mid-enum would silently renumber every stored
     /// row and break type-filtered recall in every existing file.
     Recommendation,
+    /// OMS 1.6 §8.13. Appended last for the same reason Recommendation was:
+    /// `areev-store` indexes the `gtype` column as this enum's ordinal, so
+    /// inserting a variant mid-enum silently renumbers every stored row.
+    Trigger,
 }
 
 impl GrainType {

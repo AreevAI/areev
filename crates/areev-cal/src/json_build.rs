@@ -62,6 +62,12 @@ pub fn required_fields(grain_type: &str) -> &'static [&'static str] {
         "goal" => &["description"],
         "consent" => &["subject_did", "user_id"],
         "skill" => &["name", "description"],
+        // Unconditional only. A trigger also has *kind-specific* requirements
+        // (an interval trigger needs `interval_secs`, a schedule one needs
+        // `cron`, a composite one needs members and a predicate) which cannot
+        // be expressed in a flat list; `Trigger::incoherence` enforces those and
+        // names the missing piece.
+        "trigger" => &["kind", "workflow"],
         _ => &[],
     }
 }
@@ -127,6 +133,24 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
         // Listing them here routed both into `common.context`, where `field_str`
         // (top-level only) never looked.
         "workflow" => &["nodes", "edges", "bindings", "retries", "trigger"],
+        "trigger" => &[
+            "kind",
+            "workflow",
+            "connector",
+            "scope",
+            "enabled",
+            "dedup_key",
+            "interval_secs",
+            "cron",
+            "at_ms",
+            "predicate",
+            "members",
+            "correlate",
+            "window_ms",
+            "concurrency",
+            "catchup",
+            "config",
+        ],
         "tool" => &[
             "tool_name",
             "input",
@@ -268,6 +292,67 @@ fn collect_extra_fields(
 
 /// Build a `Workflow` from JSON fields, parsing nodes, edges, bindings, retries,
 /// and trigger. Validates referential integrity of all graph components.
+/// Build a [`Trigger`] from JSON fields.
+///
+/// Refuses an incoherent declaration here rather than letting it be stored and
+/// discovered later as silence — a trigger that can never fire is the failure
+/// mode nobody notices, because its symptom is nothing happening.
+fn build_trigger_from_json(
+    fields: &serde_json::Map<String, serde_json::Value>,
+    get_str: &dyn Fn(&str) -> Option<String>,
+) -> Result<Trigger> {
+    let kind_str = get_str("kind").ok_or_else(|| {
+        AreevError::Validation("ADD trigger requires 'kind'".into())
+    })?;
+    let kind = TriggerKind::parse(&kind_str).ok_or_else(|| {
+        AreevError::Validation(format!(
+            "unknown trigger kind '{kind_str}' (interval|schedule|once|polling|memory|webhook|manual|composite)"
+        ))
+    })?;
+    let workflow = get_str("workflow")
+        .ok_or_else(|| AreevError::Validation("ADD trigger requires 'workflow'".into()))?;
+
+    let strings = |field: &str| -> Vec<String> {
+        fields
+            .get(field)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+
+    let mut t = Trigger::new(kind, &workflow);
+    t.connector = get_str("connector");
+    t.scope = get_str("scope");
+    t.enabled = fields.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    t.dedup_key = strings("dedup_key");
+    t.interval_secs = fields
+        .get("interval_secs")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok());
+    t.cron = get_str("cron");
+    t.at_ms = fields.get("at_ms").and_then(|v| v.as_i64());
+    t.predicate = fields.get("predicate").cloned();
+    t.members = strings("members");
+    t.correlate = get_str("correlate");
+    t.window_ms = fields.get("window_ms").and_then(|v| v.as_i64());
+    if let Some(c) = get_str("concurrency") {
+        t.concurrency = Concurrency::parse(&c).ok_or_else(|| {
+            AreevError::Validation(format!("unknown concurrency '{c}' (forbid|allow|replace)"))
+        })?;
+    }
+    if let Some(c) = get_str("catchup") {
+        t.catchup = Catchup::parse(&c).ok_or_else(|| {
+            AreevError::Validation(format!("unknown catchup '{c}' (last|none|all)"))
+        })?;
+    }
+    t.config = fields.get("config").cloned();
+
+    if let Some(why) = t.incoherence() {
+        return Err(AreevError::Validation(why));
+    }
+    Ok(t)
+}
+
 fn build_workflow_from_json(
     fields: &serde_json::Map<String, serde_json::Value>,
     get_str: &dyn Fn(&str) -> Option<String>,
@@ -917,6 +1002,12 @@ pub fn build_grain_from_json<S: GrainSink>(
                 grain.common_mut().extra_fields = collect_extra_fields(fields, "workflow");
                 sink.consume(&grain)
             }
+            "trigger" => {
+                let trig = build_trigger_from_json(fields, &get_str)?;
+                let mut grain = apply_common!(trig);
+                grain.common_mut().extra_fields = collect_extra_fields(fields, "trigger");
+                sink.consume(&grain)
+            }
             "tool" => {
                 let tool_name = require_str("tool_name", "tool")?;
                 let mut tool = Tool::new(&tool_name);
@@ -1257,9 +1348,30 @@ mod tests {
         .clone()
     }
 
+    /// The shared payload plus whatever only this type can accept.
+    ///
+    /// `kind` is the reason this exists: Tool reads it as
+    /// `definition|execution` and Trigger as `interval|schedule|…`, so one
+    /// shared value cannot satisfy both. Grains are single-typed, so the two
+    /// never meet in a real payload — only in a fixture that tries to be every
+    /// type at once.
+    fn full_payload_for(gt: &str) -> serde_json::Map<String, serde_json::Value> {
+        let mut fields = full_payload();
+        if gt == "trigger" {
+            fields.insert("kind".into(), json!("interval"));
+            fields.insert(
+                "workflow".into(),
+                json!("a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"),
+            );
+            // Satisfies the kind-specific requirement `incoherence()` enforces.
+            fields.insert("interval_secs".into(), json!(120));
+        }
+        fields
+    }
+
     const ALL_TYPES: &[&str] = &[
         "fact", "event", "state", "workflow", "tool", "observation", "goal",
-        "reasoning", "consensus", "consent", "skill",
+        "reasoning", "consensus", "consent", "skill", "trigger",
     ];
 
     /// `required_fields` is what `DESCRIBE` publishes and what ARCHITECTURE
@@ -1271,7 +1383,7 @@ mod tests {
         for gt in ALL_TYPES {
             // Every declared requirement really is enforced.
             for missing in required_fields(gt) {
-                let mut fields = full_payload();
+                let mut fields = full_payload_for(gt);
                 fields.remove(*missing);
                 // `goal` accepts `object` in place of `description`, so drop the
                 // fallback too or the requirement can't be observed.
@@ -1288,7 +1400,7 @@ mod tests {
             // And the full payload is accepted, so nothing beyond the declared
             // set is silently required.
             assert!(
-                build_grain_from_json(gt, &full_payload(), NullSink).is_ok(),
+                build_grain_from_json(gt, &full_payload_for(gt), NullSink).is_ok(),
                 "{gt}: rejected a payload carrying every declared required field"
             );
         }

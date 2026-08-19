@@ -368,6 +368,19 @@ fn all_grain_types_round_trip_is_deterministic() {
         GrainType::Recommendation,
     );
 
+    // 0x0D Trigger
+    assert_grain_round_trip(
+        &Trigger::new(TriggerKind::Polling, &"a1".repeat(32))
+            .connector("gmail")
+            .scope("mailbox:accounts@example.com")
+            .interval_secs(120)
+            .dedup_key("/message_id")
+            .config(serde_json::json!({ "int:cursor_field": "since" }))
+            .created_at(CREATED_AT)
+            .namespace(NS),
+        GrainType::Trigger,
+    );
+
     // 0x05 Tool
     assert_grain_round_trip(
         &Tool::new("calculator")

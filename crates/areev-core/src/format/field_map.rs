@@ -152,6 +152,24 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     m.insert("int:config_schema", "icfg");
     m.insert("int:event_schema", "ievt");
 
+    // Trigger fields (OMS 1.6 §8.13). `kind` is shared with Tool ("aknd") —
+    // same field name, same short key, which is what the map is keyed on.
+    m.insert("workflow", "twf");
+    m.insert("connector", "tcon");
+    m.insert("scope", "tscp");
+    m.insert("enabled", "tena");
+    m.insert("dedup_key", "tdk");
+    m.insert("interval_secs", "tint");
+    m.insert("cron", "tcron");
+    m.insert("at_ms", "tat");
+    m.insert("predicate", "tpred");
+    m.insert("members", "tmem");
+    m.insert("correlate", "tcorr");
+    m.insert("window_ms", "twin");
+    m.insert("concurrency", "tconc");
+    m.insert("catchup", "tcatch");
+    m.insert("config", "tcfg");
+
     // Observation fields
     m.insert("observer_id", "oid");
     m.insert("observer_type", "otype");
