@@ -140,7 +140,7 @@ pub enum CalStatement {
     #[serde(alias = "SUPERSEDE", alias = "Supersede")]
     Supersede(SupersedeStmt),
 
-    /// `SUPERSEDE <hash> [ON "trigger"] graph... [BIND ...] REASON "..."`
+    /// `SUPERSEDE <hash> graph... [BIND ...] REASON "..."`
     #[serde(alias = "SUPERSEDE_WORKFLOW", alias = "SupersedeWorkflow")]
     SupersedeWorkflow(SupersedeWorkflowStmt),
 
@@ -668,8 +668,6 @@ pub struct BindClause {
 pub struct AddWorkflowStmt {
     /// Workflow name (positional string after `ADD workflow`).
     pub name: String,
-    /// Optional trigger (`ON "..."`).
-    pub trigger: Option<String>,
     /// All nodes discovered during parsing (unique, in declaration order).
     pub nodes: Vec<String>,
     /// Graph edges parsed from arrow chains.
@@ -690,8 +688,6 @@ pub struct AddWorkflowStmt {
 pub struct SupersedeWorkflowStmt {
     /// Hash of the grain to supersede.
     pub hash: String,
-    /// Optional trigger (`ON "..."`).
-    pub trigger: Option<String>,
     /// All nodes discovered during parsing.
     pub nodes: Vec<String>,
     /// Graph edges parsed from arrow chains.
@@ -1762,6 +1758,8 @@ pub enum GrainTypePlural {
     /// OMS 1.5 / CAL 1.2. Query-only: engine-emitted and lifecycle-gated, so
     /// deliberately absent from the addable set (no `ADD recommendation`).
     Recommendations,
+    /// OMS 1.6 §8.13. A standing rule that starts a workflow.
+    Triggers,
     /// Wildcard — `RECALL *` or `RECALL grains` — matches all types.
     All,
 }
@@ -1782,6 +1780,7 @@ impl GrainTypePlural {
             "consents" | "consent" => Some(Self::Consents),
             "skills" | "skill" => Some(Self::Skills),
             "recommendations" | "recommendation" => Some(Self::Recommendations),
+            "triggers" | "trigger" => Some(Self::Triggers),
             "*" | "grains" | "all" => Some(Self::All),
             _ => None,
         }
@@ -1802,6 +1801,7 @@ impl GrainTypePlural {
             Self::Consents => "consents",
             Self::Skills => "skills",
             Self::Recommendations => "recommendations",
+            Self::Triggers => "triggers",
             Self::All => "*",
         }
     }
@@ -1821,6 +1821,7 @@ impl GrainTypePlural {
             Self::Consents => Some(areev_core::types::GrainType::Consent),
             Self::Skills => Some(areev_core::types::GrainType::Skill),
             Self::Recommendations => Some(areev_core::types::GrainType::Recommendation),
+            Self::Triggers => Some(areev_core::types::GrainType::Trigger),
             Self::All => None,
         }
     }

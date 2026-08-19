@@ -58,7 +58,6 @@ fn main() {
         "issue_refund".into(),
         "deny".into(),
     ])
-    .trigger("refund_requests ticket opened")
     .edge("lookup_refund", "check_limit")
     .cond_edge("check_limit", "auto_approve", "amount.under_limit == true")
     .cond_edge("check_limit", "approve", "amount.under_limit == false")
@@ -82,7 +81,6 @@ fn main() {
         "escalate".into(),
         "notify_customer".into(),
     ])
-    .trigger("invoice_disputes ticket opened")
     .edge("fetch_invoice", "validate_dispute")
     .cond_edge("validate_dispute", "apply_credit", "dispute.valid == true")
     .cond_edge("validate_dispute", "escalate", "dispute.valid == false")
@@ -106,7 +104,6 @@ fn main() {
         "resolved".into(),
         "escalate_to_collections".into(),
     ])
-    .trigger("payment failed 3 consecutive months")
     .edge("send_reminder", "check_payment")
     .edge_with_cycles("check_payment", "send_reminder", 3)
     .cond_edge("check_payment", "resolved", "paid == true")

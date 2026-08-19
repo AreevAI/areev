@@ -18,6 +18,7 @@
 pub mod clock;
 pub mod executor;
 pub mod journal;
+pub mod lease;
 pub mod manifest;
 pub mod otel;
 pub mod reducers;
@@ -131,3 +132,4 @@ pub struct OversightReport {
     pub budgets: serde_json::Value,
     pub kill_switch: serde_json::Value,
 }
+pub use lease::{RunLease, DEFAULT_RUN_LEASE_MS};

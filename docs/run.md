@@ -400,3 +400,27 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
   (including a second `areev run` on the same file) are refused with
   `STO-E002`. Respond-then-resume across processes works because each verb
   opens, works, and closes.
+
+## Run leases
+
+A run is leased while a driver advances it. The lease is taken at `start` /
+`resume`, renewed at each superstep boundary, and released when the run reaches
+a terminal outcome.
+
+Before this existed, two drivers advancing one run **last-write-wins in the
+journal, silently**: `journal::ingest` overwrites a second result for the same
+key, and the owner-nonce ownership check is a documented gap. The doc comment on
+`RUN-E016 Tainted` claimed forked supersession tips were detected as taint —
+they were not. The lease prevents the case rather than noticing it afterwards.
+
+- A driver that stalls past its lease loses it. Its next checkpoint is refused
+  with **`RUN-E021 LeaseLost`** instead of landing behind whoever took over.
+- An expired lease is reclaimable, so a crashed driver does not park its run
+  forever — the cost of node loss is one lease TTL, not a recovery procedure.
+- Re-entering a lease this driver already holds is ordinary (that is what
+  resuming your own run is).
+- The lease is a `meta` row with the fence *inside* its value, so a renewal is a
+  compare-and-swap against the exact row the holder last saw. No fencing-token
+  column is needed, because the lock and the data are the same row.
+- On the embedded backend one memory is one writer, enforced at open, so two
+  drivers cannot reach one run anyway. This earns its keep on Postgres.

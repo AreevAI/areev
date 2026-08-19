@@ -24,7 +24,6 @@ fn open_mem() -> (Areev, TempDir) {
 /// A three-step plan, stored.
 fn plan(m: &mut Areev) -> areev_core::error::Hash {
     let wf = Workflow::new(vec!["build".into(), "test".into(), "deploy".into()])
-        .trigger("merge to main")
         .edge("build", "test")
         .edge("test", "deploy")
         .created_at(1_700_000_000_000)
@@ -132,7 +131,6 @@ fn unrelated_workflows_do_not_bleed_into_each_other() {
     let b = m
         .add(
             &Workflow::new(vec!["build".into()])
-                .trigger("nightly")
                 .created_at(1_700_000_009_000)
                 .namespace("ci"),
         )

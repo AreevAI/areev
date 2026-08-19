@@ -137,9 +137,9 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         host_addable: true,
         required_add_fields: &["nodes"],
         queryable_fields: &[
-            "trigger", "node", "binding", "nodes", "edges", "bindings", "name", "retries",
+            "node", "binding", "nodes", "edges", "bindings", "name", "retries",
         ],
-        toon_columns: &["trigger", "content"],
+        toon_columns: &["name", "content"],
     },
     GrainTypeMeta {
         ty: GrainType::Tool,
@@ -287,6 +287,23 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
             "rec_status",
         ],
         toon_columns: &["target_ref", "severity", "content"],
+    },
+    GrainTypeMeta {
+        ty: GrainType::Trigger,
+        byte: 0x0D,
+        name: "trigger",
+        plural: "triggers",
+        // Not expressible as flat `SET k=v` pairs: `dedup_key` and `members`
+        // are lists and `predicate`/`config` are nested JSON. Authored through
+        // `areev trigger add`, which builds the grain, rather than by hand.
+        add_via_set: false,
+        host_addable: true,
+        required_add_fields: &["kind", "workflow"],
+        // Typed and queryable — the whole reason this is not an Observation
+        // carrying `int:` keys in a `context` map, which no CAL query can
+        // filter on.
+        queryable_fields: &["kind", "workflow", "connector", "scope", "enabled", "cron"],
+        toon_columns: &["kind", "content"],
     },
 ];
 

@@ -1714,6 +1714,7 @@ fn section_tag(gt: &GrainType) -> &'static str {
         GrainType::Consent => "consents",
         GrainType::Skill => "skills",
         GrainType::Recommendation => "recommendations",
+        GrainType::Trigger => "triggers",
     }
 }
 

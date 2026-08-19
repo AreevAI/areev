@@ -236,6 +236,65 @@ top of that.
 - Cryptographic weaknesses in the encryption or crypto-erasure paths.
 - Secret or data leakage in error messages, logs, or `Debug` output.
 
+## Host command seams (`--tool-cmd` and friends)
+
+Six flags hand Areev a command to run: `--tool-cmd` (and `$AREEV_RUN_TOOL_CMD`
+for the MCP server), `--embed-cmd`, `--anonymize-cmd`, `--llm-cmd`,
+`--analyzer-cmd`, and `areev eval`'s case runner. Say the posture plainly:
+
+> **A host command runs as you, with your privileges, on your machine.** Areev
+> does not sandbox it. `--tool-cmd` and the eval runner go through the platform
+> shell (`/bin/sh -c`, `cmd /C`); the other four are argv-split and never see a
+> shell. A command you would not run at a prompt is a command you should not
+> put behind these flags.
+
+This is the same posture GitHub Actions takes with third-party actions, and it
+is a deliberate v1 choice rather than an oversight: the alternative is a sandbox
+that would still not stop a connector from misusing a credential it was
+legitimately given.
+
+What Areev *does* guarantee, as of 1.3:
+
+- **Secrets you name are withheld.** `--passphrase-env VAR` and `--token-env
+  VAR` pass a variable *name*, so Areev knows exactly which variables hold
+  secrets and removes them from every child's environment. Before 1.3 the
+  memory's encryption passphrase was inherited by every subprocess Areev
+  started.
+- **The rest of the environment is inherited.** Deliberately: an `--llm-cmd` or
+  `--embed-cmd` that reads its own API key from the environment must keep
+  working. Areev withholds what it *knows* is secret, not everything that might
+  be. If a command must not see the ambient environment at all, do not rely on
+  Areev for that — wrap it in `env -i` yourself.
+- **A wall-clock ceiling.** 300s per invocation by default; the child is killed
+  when it elapses. Note this kills the *direct* child: a shell command that
+  spawned background grandchildren may leave them running, because killing a
+  whole tree needs process groups.
+- **An output cap.** 64 MiB per stream, drained past the cap so a capped child
+  never blocks on a full pipe.
+- **Tool names are validated.** A plan's `tool_name` reaches the child as
+  `$AREEV_TOOL_NAME`, and a plan can arrive by bundle import — which verifies
+  content integrity, not authorship. A name outside `[A-Za-z0-9_.-]{1,64}` is
+  refused when the run starts.
+
+Not provided: memory or CPU limits, filesystem confinement, network
+restrictions, or privilege reduction. Do not put a command you do not trust
+behind these flags.
+
+### Tier C: sandboxed pure-compute tools
+
+`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen two-function
+import set, a fuel ceiling, a memory-page ceiling, and a module-size cap applied
+before the decoder sees the bytes. A module cannot open a socket, touch the
+filesystem, read an environment variable, see a clock, or run forever.
+
+Be precise about what that buys. Tier C protects **the host from the tool**, and
+it is real isolation for parsing, extraction, classification and scoring. It is
+**not credential protection**: a connector that legitimately holds an OAuth token
+and makes outbound calls is not made safer by isolation, which is why the egress
+allowlist and the credential broker exist. By Tier C's own design a module cannot
+make a network call, so a connector will never be one — the two mechanisms cover
+different threats and neither substitutes for the other.
+
 ## Threats out of scope
 
 - An already-compromised host, physical access, or a malicious local process

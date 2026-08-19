@@ -362,29 +362,16 @@ impl CommandAnonymize {
     }
 
     fn run(&self, payload: &serde_json::Value) -> Result<String> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let mut child = Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
+        use areev_core::proc::{self, SpawnPolicy, StderrMode};
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..]);
+        // stderr stays inherited: an operator running `areev anonymize` is
+        // watching a terminal, and the detector's diagnostics are the point.
+        let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
+        let out = proc::run(cmd, Some(payload.to_string().as_bytes()), &[], &policy)
             .map_err(|e| AreevError::Storage(format!("spawn anonymizer {}: {e}", self.argv[0])))?;
-        child
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(payload.to_string().as_bytes())
-            .map_err(|e| AreevError::Storage(format!("anonymizer stdin: {e}")))?;
-        let out = child
-            .wait_with_output()
-            .map_err(|e| AreevError::Storage(format!("anonymizer wait: {e}")))?;
-        if !out.status.success() {
-            return Err(AreevError::Storage(format!(
-                "anonymizer {} exited with {}",
-                self.argv[0], out.status
-            )));
+        if let Some(why) = out.failure(&format!("anonymizer {}", self.argv[0])) {
+            return Err(AreevError::Storage(why));
         }
         String::from_utf8(out.stdout)
             .map_err(|e| AreevError::Storage(format!("anonymizer stdout not UTF-8: {e}")))
@@ -460,29 +447,14 @@ impl CommandEmbed {
     }
 
     fn run(&self, text: &str) -> Result<Vec<f32>> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let cmd_err = |e: std::io::Error| {
-            AreevError::Storage(format!("embed command '{}': {e}", self.argv[0]))
-        };
-        let mut child = Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(cmd_err)?;
-        {
-            let mut stdin = child.stdin.take().expect("stdin piped");
-            stdin.write_all(text.as_bytes()).map_err(cmd_err)?;
-            // dropping stdin closes the pipe so the child sees EOF
-        }
-        let out = child.wait_with_output().map_err(cmd_err)?;
-        if !out.status.success() {
-            return Err(AreevError::Storage(format!(
-                "embed command '{}' exited with {}",
-                self.argv[0], out.status
-            )));
+        use areev_core::proc::{self, SpawnPolicy, StderrMode};
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..]);
+        let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
+        let out = proc::run(cmd, Some(text.as_bytes()), &[], &policy)
+            .map_err(|e| AreevError::Storage(format!("embed command '{}': {e}", self.argv[0])))?;
+        if let Some(why) = out.failure(&format!("embed command '{}'", self.argv[0])) {
+            return Err(AreevError::Storage(why));
         }
         serde_json::from_slice::<Vec<f32>>(&out.stdout).map_err(|e| {
             AreevError::Validation(format!(
@@ -864,6 +836,99 @@ pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, St
 /// `meta` key prefix for sealed vault rows (`vault:<ns>:<placeholder>`).
 /// Deliberately OUTSIDE `REPLICABLE_META_PREFIXES` — the re-identification
 /// table never rides a bundle (REQ-ANON-2).
+/// One trigger's evaluation state — the mutable half a content-addressed
+/// declaration cannot hold.
+///
+/// Serialized as the JSON value of a `trg:<trigger-hash>` meta row. Never
+/// replicates (see [`TRG_PREFIX`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TriggerState {
+    /// Epoch-ms of the next occurrence. `None` means "compute it from the
+    /// declaration", which is how a never-evaluated trigger is represented.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_fired_at: Option<i64>,
+    /// Opaque and connector-defined — a Gmail `historyId`, an ETag, a
+    /// timestamp. Areev stores it and hands it back, never interprets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Op-log cursor for a `Memory` trigger. Distinct from `cursor` because one
+    /// is ours and monotonic while the other belongs to a third party.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_cursor: Option<i64>,
+    /// Node identity holding the lease, `None` when free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<i64>,
+    /// Bumped on every claim. Lives inside the compared value, which is what
+    /// makes [`Areev::meta_cas`] fence without a separate token column.
+    pub fence: u64,
+    /// Paused by an operator. Distinct from the declaration's `enabled`: that
+    /// is the author's intent and replicates, this is an operational brake and
+    /// stays on the host that pulled it.
+    pub paused: bool,
+    /// This trigger will never fire again — a one-shot past its instant.
+    ///
+    /// Needed because an absent `next_due_at` already means "never evaluated,
+    /// so fire now". Without a separate flag, "no next instant" and "no
+    /// baseline" are the same value, and a `once` trigger re-fires on every
+    /// pass forever.
+    pub exhausted: bool,
+    /// Consecutive failures, driving backoff so a broken connector does not
+    /// hot-loop.
+    pub consecutive_failures: u32,
+    /// Last failure text, surfaced by `areev trigger status`. An unfired
+    /// trigger is invisible otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// In-flight partial matches for a composite trigger, keyed by correlation
+    /// value.
+    ///
+    /// Keyed by correlation rather than globally on purpose. Argo Events keys
+    /// satisfied dependencies per *sensor*, so Monday's `dep-a` pairs with
+    /// Tuesday's `dep-b`, and its only remedy is a wall-clock reset cron that
+    /// silently does nothing if the process is down at the reset instant. Keying
+    /// by `(trigger, correlation value)` with a per-match expiry makes
+    /// correlation and windowing the same mechanism and removes the need for a
+    /// reset — the decomposition Flink CEP reaches through `keyBy` + `within`
+    /// and Prefect through `for_each` + `within`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub partials: std::collections::BTreeMap<String, PartialMatch>,
+}
+
+/// One in-flight composite match: which members have fired for a correlation
+/// value, and when the match started.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PartialMatch {
+    /// member trigger hash -> epoch-ms it fired.
+    pub members: std::collections::BTreeMap<String, i64>,
+    /// When the first member fired. The window is measured from here, so a
+    /// slow-arriving second member cannot extend the window indefinitely.
+    pub started_ms: i64,
+}
+
+impl TriggerState {
+    /// Whether the lease is held by someone else at `now_ms`.
+    pub fn leased(&self, now_ms: i64) -> bool {
+        self.lease_until.is_some_and(|until| until > now_ms)
+    }
+
+    /// Whether the *state* permits firing at `now_ms`.
+    ///
+    /// Deliberately NOT the whole answer: an absent `next_due_at` means "never
+    /// evaluated", and what that implies depends on the declaration — an
+    /// interval trigger should fire at once, a cron or one-shot should wait for
+    /// its instant. `areev_trigger::schedule::is_due` is the complete check;
+    /// this is the half that needs no declaration.
+    pub fn permits_firing(&self, now_ms: i64) -> bool {
+        !self.paused && !self.exhausted && self.next_due_at.is_none_or(|due| due <= now_ms)
+    }
+}
+
 const VAULT_PREFIX: &str = "vault:";
 
 const REPLICABLE_META_PREFIXES: [&str; 5] =
@@ -929,6 +994,17 @@ const RETENTION_FLOOR_PREFIX: &str = "retention_floor:";
 /// ALL age-based destruction there refuses, floors notwithstanding
 /// (litigation holds are not a retention parameter, they are a stop).
 const HOLD_PREFIX: &str = "hold:";
+
+/// `meta` key prefix for trigger evaluation state (`trg:<trigger-hash>`).
+///
+/// Deliberately OUTSIDE [`REPLICABLE_META_PREFIXES`]. The declaration is a
+/// grain and replicates; this is per-host *usage* — next-due, cursor, lease,
+/// fence — and replicating it is actively wrong twice over. Two synced hosts
+/// would ping-pong on each other's watermark, each firing because it saw the
+/// other's, or neither firing because both did. And a dev memory restored from
+/// prod would inherit prod's cursor and silently skip real work while reporting
+/// success. Same reasoning that keeps a saved query's `last_run_at` local.
+const TRG_PREFIX: &str = "trg:";
 
 const MIN_READER_VERSION_KEY: &str = "min_reader_version";
 
@@ -2208,6 +2284,102 @@ impl Areev {
     pub fn meta_delete(&self, key: &str) -> Result<()> {
         self.db.execute("DELETE FROM meta WHERE k = ?1", vec![pt(key)])?;
         Ok(())
+    }
+
+    /// Conditional write on a single `meta` row. Returns `true` iff this caller
+    /// won.
+    ///
+    /// `expected == None` claims the row only if it is absent; `Some(prev)`
+    /// swaps it only if it still holds exactly `prev`. Both forms are one
+    /// statement whose rows-affected count *is* the answer, which is the same
+    /// shape `scrub_term_if_unreferenced` already uses — the store has had
+    /// guarded conditional writes for a while, just never a named helper.
+    ///
+    /// This is the whole arbitration primitive for triggers. Because a lease's
+    /// fence lives *inside* the compared value, fencing is automatic: a holder
+    /// whose lease expired carries a stale `v`, so its release matches no row,
+    /// affects nothing, and is refused. That is Kleppmann's fencing-token
+    /// argument obtained without a token column — available precisely because
+    /// the lock and the data are the same row in the same transaction.
+    ///
+    /// Portable by construction: `meta` already has an upsert conflict target
+    /// and `INSERT OR IGNORE` already translates, so neither backend needs a
+    /// new dialect entry.
+    ///
+    /// Compares the WHOLE value, so a row under contention must have exactly
+    /// one writer. That is the intent for lease rows; do not reach for this on a
+    /// row whose fields are independently owned.
+    pub fn meta_cas(&self, key: &str, expected: Option<&str>, new: &str) -> Result<bool> {
+        let affected = match expected {
+            None => self.db.execute(
+                "INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)",
+                vec![pt(key), pt(new)],
+            )?,
+            Some(prev) => self.db.execute(
+                "UPDATE meta SET v = ?3 WHERE k = ?1 AND v = ?2",
+                vec![pt(key), pt(prev), pt(new)],
+            )?,
+        };
+        Ok(affected > 0)
+    }
+
+    /// Read one trigger's evaluation state, with the raw row alongside it.
+    ///
+    /// The raw string is what a later [`Self::meta_cas`] must present as
+    /// `expected`, so it is returned rather than re-serialized — a round trip
+    /// through the struct could differ by key order or float formatting and
+    /// would then never match.
+    pub fn trigger_state(&self, trigger: &str) -> Result<Option<(TriggerState, String)>> {
+        let key = format!("{TRG_PREFIX}{trigger}");
+        let Some(raw) = self.meta_get(&key)? else {
+            return Ok(None);
+        };
+        match serde_json::from_str::<TriggerState>(&raw) {
+            Ok(st) => Ok(Some((st, raw))),
+            // A state row this build cannot parse must not read as "never
+            // fired" — that would re-fire everything and, for a polling
+            // trigger, reprocess the whole backlog. Refuse loudly, the same way
+            // an unreadable retention policy does rather than silently meaning
+            // "keep forever".
+            Err(e) => Err(AreevError::Validation(format!(
+                "unreadable trigger state for {trigger}: {e}"
+            ))),
+        }
+    }
+
+    /// Claim-if-absent, or swap against the exact prior row. Returns whether
+    /// this caller won.
+    pub fn put_trigger_state(
+        &self,
+        trigger: &str,
+        expected_raw: Option<&str>,
+        state: &TriggerState,
+    ) -> Result<bool> {
+        let json = serde_json::to_string(state).map_err(db_err)?;
+        self.meta_cas(&format!("{TRG_PREFIX}{trigger}"), expected_raw, &json)
+    }
+
+    /// Every trigger with state, as `(trigger hash, state)`. Unreadable rows
+    /// are surfaced as an error rather than skipped, for the reason above.
+    pub fn trigger_states(&self) -> Result<Vec<(String, TriggerState)>> {
+        let mut out = Vec::new();
+        for (suffix, raw) in self.meta_scan(TRG_PREFIX)? {
+            match serde_json::from_str::<TriggerState>(&raw) {
+                Ok(st) => out.push((suffix, st)),
+                Err(e) => {
+                    return Err(AreevError::Validation(format!(
+                        "unreadable trigger state for {suffix}: {e}"
+                    )))
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Forget a trigger's evaluation state. Used when its declaration is
+    /// tombstoned; a missing row is not an error.
+    pub fn clear_trigger_state(&self, trigger: &str) -> Result<()> {
+        self.meta_delete(&format!("{TRG_PREFIX}{trigger}"))
     }
 
     /// Declared retention policies (GDPR Art. 5(1)(e), storage limitation),
@@ -7550,6 +7722,18 @@ impl Areev {
             ops: one("SELECT COUNT(*) FROM oplog")? as usize,
             events_indexed: one("SELECT COUNT(*) FROM thread_idx")? as usize,
         })
+    }
+
+    /// The highest op-log sequence written so far, or 0 on an empty memory.
+    ///
+    /// Lets a new consumer start from "now" rather than from the beginning of
+    /// history — the seeding read a change-feed subscriber needs so that
+    /// declaring it does not replay everything the memory has ever held.
+    pub fn head_op_seq(&mut self) -> Result<i64> {
+        let rows = self
+            .db
+            .query("SELECT COALESCE(MAX(op_seq), 0) FROM oplog", vec![])?;
+        Ok(rows.first().and_then(|r| r.i64(0)).unwrap_or(0))
     }
 
     /// Op-log cursor read — the change feed (backs sync + UIs).

@@ -1071,9 +1071,6 @@ impl CalExecutor {
                 // Build JSON fields for the workflow grain.
                 let mut fields = serde_json::Map::new();
                 fields.insert("name".into(), serde_json::Value::String(wf.name.clone()));
-                if let Some(ref trigger) = wf.trigger {
-                    fields.insert("trigger".into(), serde_json::Value::String(trigger.clone()));
-                }
                 // nodes: array of strings
                 fields.insert(
                     "nodes".into(),
@@ -1169,9 +1166,6 @@ impl CalExecutor {
                 };
                 // Build workflow fields for supersession.
                 let mut fields = serde_json::Map::new();
-                if let Some(ref trigger) = wf.trigger {
-                    fields.insert("trigger".into(), serde_json::Value::String(trigger.clone()));
-                }
                 fields.insert(
                     "nodes".into(),
                     serde_json::Value::Array(
@@ -3356,6 +3350,17 @@ impl CalExecutor {
             DescribeTarget::GrainType(gt) => {
                 let type_name = gt.as_str();
                 let specific_fields: &[&str] = match gt {
+                    // OMS 1.6 §8.13. Typed and queryable — the reason a trigger
+                    // is its own grain rather than an Observation carrying
+                    // `int:` keys in a context map, which no query can filter.
+                    GrainTypePlural::Triggers => &[
+                        "kind",
+                        "workflow",
+                        "connector",
+                        "scope",
+                        "enabled",
+                        "cron",
+                    ],
                     GrainTypePlural::Facts => {
                         &["subject", "relation", "object", "confidence", "session_id"]
                     }
@@ -6474,7 +6479,7 @@ fn grain_matches_set_condition(grain: &CalGrainResult, cond: &TypeSpecificSetCon
 /// Apply a type-specific field condition to a single grain result.
 ///
 /// Returns `true` if the grain matches the condition.
-fn grain_matches_condition(
+pub fn grain_matches_condition(
     grain: &CalGrainResult,
     field: &str,
     comparator: &Comparator,
@@ -6551,9 +6556,22 @@ fn grain_matches_condition(
 
 /// Evaluate a full `Condition` tree against a single grain result.
 ///
+/// Public because it is the ONE boolean evaluator in the workspace, and a
+/// second implementation would be a second set of semantics. `areev-trigger`
+/// uses it for memory-trigger predicates and composite gates: the `Condition`
+/// AST already has And/Or/Not with parenthesised grouping and the right
+/// precedence, it already serializes, and it is total — a missing field is
+/// false rather than an error. Reusing it also keeps `areev_run_core::cond`'s
+/// standing exclusion on expression languages intact, because nothing new is
+/// parsed.
+///
+/// Note this is the AUTHORITATIVE match. The structural push-down in
+/// `apply_where_clause` drops OR and NOT with a warning, so it *widens*; a
+/// caller that trusts the recall result alone gets more than it asked for.
+///
 /// Used by `PipelineStage::Filter` (post-pipeline WHERE) to filter grains
 /// by conditions after pipeline stages like SELECT have been applied.
-fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {
+pub fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {
     match condition {
         Condition::Comparison {
             field,

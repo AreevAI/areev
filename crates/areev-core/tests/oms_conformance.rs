@@ -343,7 +343,6 @@ fn all_grain_types_round_trip_is_deterministic() {
     // 0x04 Workflow
     assert_grain_round_trip(
         &Workflow::new(vec!["start".into(), "process".into(), "end".into()])
-            .trigger("on_request")
             .edge("start", "process")
             .edge("process", "end")
             .created_at(CREATED_AT)
@@ -366,6 +365,19 @@ fn all_grain_types_round_trip_is_deterministic() {
         .created_at(CREATED_AT)
         .namespace(NS),
         GrainType::Recommendation,
+    );
+
+    // 0x0D Trigger
+    assert_grain_round_trip(
+        &Trigger::new(TriggerKind::Polling, &"a1".repeat(32))
+            .connector("gmail")
+            .scope("mailbox:accounts@example.com")
+            .interval_secs(120)
+            .dedup_key("/message_id")
+            .config(serde_json::json!({ "int:cursor_field": "since" }))
+            .created_at(CREATED_AT)
+            .namespace(NS),
+        GrainType::Trigger,
     );
 
     // 0x05 Tool
@@ -580,7 +592,6 @@ fn related_to_links_expand_their_nested_keys() {
 #[test]
 fn to_workflow_restores_the_full_topology() {
     let mut wf = Workflow::new(vec!["build".into(), "test".into(), "deploy".into()])
-        .trigger("merge to main")
         .edge("build", "test")
         .cond_edge("test", "deploy", "tests green")
         .bind("test", "sha256:abc")
@@ -598,7 +609,6 @@ fn to_workflow_restores_the_full_topology() {
     let back = deserialize_blob(&blob).unwrap().to_workflow().unwrap();
 
     assert_eq!(back.nodes, vec!["build", "test", "deploy"]);
-    assert_eq!(back.trigger.as_deref(), Some("merge to main"));
     assert_eq!(back.edges.len(), 3);
     assert_eq!(back.edges[0].src, "build");
     assert_eq!(back.edges[1].cond.as_deref(), Some("tests green"));

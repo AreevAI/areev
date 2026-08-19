@@ -11,6 +11,112 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ### Added
 
+- **Triggers** (#36): a standing rule that starts a workflow, declared as a
+  `Trigger` grain (type `0x0D`) and evaluated by `areev trigger run` — a
+  one-shot idempotent command safe to invoke concurrently. There is still no
+  daemon and no scheduler; what changes is that the cadence is data in the
+  memory instead of a fact buried in someone's crontab.
+  - Eight kinds over four primitives: `interval`/`schedule`/`once` (Time),
+    `polling` (Time + Poll), `memory` (state predicate), `webhook`/`manual`
+    (Push), and `composite`. The last three are declared and validated now and
+    fire in a later release.
+  - Idempotency by construction: the run id is derived from
+    `(trigger, connector, dedup value)`, so a re-delivered item is one run and
+    one recorded skip. Correctness does not rest on the lease — the lease only
+    prevents duplicate connector calls.
+  - The first poll seeds the cursor and fires nothing, so declaring a mailbox
+    trigger does not replay history.
+  - `--catchup last|none|all` and `--concurrency forbid|allow|replace` for
+    missed occurrences and overrun.
+  - Connectors reuse the `--tool-cmd` seam, so there is one subprocess contract
+    and they inherit its timeout, output cap and secret scrub.
+  - Cron is **UTC only**; a non-UTC timezone is refused with `TRG-E006` rather
+    than mishandled across a DST boundary.
+  - **Outbound allowlisting** (`int:allowed_outbound_hosts`, Fermyon Spin
+    semantics) and **credential brokering**: `--credential NAME=ENV_VAR` gives
+    the connector `AREEV_EGRESS_URL` instead of a token, and a loopback broker
+    checks the destination and attaches the credential on the way out. A
+    destination outside the allowlist is refused with `TRG-E009` before any
+    request is made.
+  - `areev trigger render --target cron|launchd|systemd|k8s-cronjob` emits
+    heartbeat config for infrastructure you already run and creates nothing. The
+    rendered interval is the GCD of declared intervals floored at 60s, not the
+    shortest one — the memory owns the cadence.
+  - `areev trigger deliver` ingests a webhook or manual payload. Areev never
+    opens a port: the host owns the listener and hands the payload over.
+  - A read-only Triggers tab in the console, on the existing `/api/browse`
+    surface with no new server route.
+  - CAL: `RECALL triggers WHERE kind = "polling" AND enabled = true` — the
+    grain-type plural set grows to 13, which is what typed queryable fields buy.
+  - New docs: [`docs/triggers.md`](docs/triggers.md).
+
+- **Run leases** (`RUN-E021`): a run is leased while a driver advances it, taken
+  at start/resume, renewed at each superstep boundary, and released when the run
+  finishes **or parks**. Two drivers on one run previously last-write-wins in
+  the journal, silently — `journal::ingest` overwrites a second result for the
+  same key and the owner-nonce check is a documented gap, so the `Tainted` doc
+  comment's claim that forked tips were detected was not true of the shipped
+  code. This prevents the case rather than noticing it afterwards. An expired
+  lease is reclaimable, so a crashed driver does not park its run forever.
+
+- **`areev-sandbox` (Tier C)**: a standalone package that runs a pure `wasm32`
+  module with no WASI, a frozen two-function import set, fuel, a memory ceiling,
+  and a module-size cap applied before decode. Deliberately outside the
+  workspace so `wasmi`'s tree and MSRV never reach workspace `cargo deny`, MSRV
+  checks or test time; it has its own CI job. Protects the host from the tool —
+  explicitly not credential protection, which is what the egress allowlist and
+  broker are for.
+
+### Removed
+
+- **`Workflow.trigger`** (breaking). A free-text "activation condition" that
+  nothing ever read — neither `areev-run-core` nor `areev-run` — so it described
+  an activation that could not activate anything, while the console offered to
+  set it. A trigger is now a `Trigger` grain that points *at* a plan, which is
+  the only direction that works: a Workflow is content-addressed and a run's
+  manifest pins its hash, so a plan carrying a list of triggers would change
+  address every time one was added.
+  - CAL's `ADD workflow "n" ON "..."` clause is removed and **refused by name**,
+    with a message pointing at `areev trigger add`. Silently ignoring it would
+    leave an author believing they had scheduled something.
+  - Old blobs still deserialize: an unknown field is preserved and ignored, so
+    this costs a vestigial key in grains already written and nothing else.
+  - The console's plan subtitle becomes a read-only shape summary.
+
+### Security
+
+- **Host command seams no longer inherit named secrets.** No subprocess seam
+  called `env_clear`/`env_remove`, so `--passphrase-env` (the memory's
+  encryption passphrase) and `--token-env` were inherited by every child of
+  `--tool-cmd`, `--embed-cmd`, `--anonymize-cmd`, `--llm-cmd`, `--analyzer-cmd`
+  and `areev eval`. The CLI wrapped its own copy in `Zeroizing` and then handed
+  the raw variable to every child. Both flags name a *variable*, so the names
+  are now registered at argument-parse time and withheld from every spawn. The
+  rest of the environment is still inherited — an `--llm-cmd` that reads its own
+  API key from the environment keeps working.
+- **A plan's `tool_name` is validated before it reaches a child.** It arrives as
+  `$AREEV_TOOL_NAME` and can come from an imported bundle (import verifies
+  content integrity, not authorship). Names outside `[A-Za-z0-9_.-]{1,64}` are
+  refused at `run start` rather than mid-superstep.
+
+### Changed
+
+- **One bounded spawn path for every host command seam** (`areev_core::proc`,
+  mirrored privately in `areev-loop`, which may not depend on an areev-*
+  sibling; `proc_contract.rs` pins the two together). Five hand-rolled copies
+  across six seams are gone, and with them three real defects:
+  - **No wall-clock ceiling.** A tool that never exited held its run-pool worker
+    and then the driver itself, forever. Now 300s by default, then killed —
+    surfacing as a retryable `Timeout` for tool effects rather than a hang.
+    `CommandExecutor::with_timeout(None)` restores the old behaviour.
+  - **No output cap.** stdout was read to EOF into memory unbounded. Now 64 MiB
+    per stream, drained past the cap so the child never blocks on a full pipe.
+  - **A stdin deadlock.** Every seam wrote its whole payload before reading a
+    byte of output, so a child that filled the pipe buffer while still reading
+    its input hung, and so did we. stdin now writes on its own thread.
+
+### Added
+
 - **`read_blob_offline` in the Python and Node bindings.** The lock-free CAS
   read added in 1.2.1 reached only the CLI, so a `--tool-cmd` subprocess
   written in Python or Node — the common case for a binding host — still had

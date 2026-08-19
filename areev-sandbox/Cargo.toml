@@ -1,0 +1,30 @@
+[package]
+name = "areev-sandbox"
+version = "1.2.2"
+edition = "2021"
+# wasmi's stable line sets this; deliberately NOT inherited from the workspace,
+# because this package is not a member of it.
+rust-version = "1.86"
+description = "Tier C sandbox for Areev: run a pure wasm32 module with fuel, memory caps, and a frozen import set. Invoked as a subprocess."
+license = "MIT OR Apache-2.0"
+authors = ["MindGryd Software Private Limited"]
+repository = "https://github.com/AreevAI/areev"
+publish = false
+
+[dependencies]
+# The stable line. wasmi 2.x is beta-only at time of writing, and shipping a
+# pre-release runtime as a security boundary is the wrong trade — the whole
+# point of this package is that it is the part you trust to hold a line.
+#
+# Five required dependencies (spin, wasmi_collections, wasmi_core, wasmi_ir,
+# wasmparser) and no_std-capable. Compare wasmtime: 50 direct dependencies and
+# an MSRV of 1.94 against the workspace's 1.90 — which is exactly why this is a
+# standalone package invoked as a subprocess rather than a workspace member.
+wasmi = "0.51"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Dev-only: lets the tests express modules as readable WAT instead of byte
+# arrays. Never reaches the shipped binary.
+wat = "1"

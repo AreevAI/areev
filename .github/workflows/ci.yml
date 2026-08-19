@@ -275,3 +275,20 @@ jobs:
       - name: Assert the generated binding loader is committed
         working-directory: crates/areev-js
         run: git diff --exit-code -- index.js index.d.ts
+
+  # areev-sandbox is a standalone package, deliberately outside the workspace
+  # (it carries wasmi). `cargo test --workspace` never touches it, so it needs
+  # its own job or a change here can break it silently — the same reason
+  # areev-js has one.
+  sandbox:
+    name: sandbox (wasm tier C)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --manifest-path areev-sandbox/Cargo.toml
+      - name: test
+        run: cargo test --manifest-path areev-sandbox/Cargo.toml
+      - name: clippy
+        run: cargo clippy --manifest-path areev-sandbox/Cargo.toml --all-targets -- -D warnings

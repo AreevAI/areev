@@ -875,6 +875,22 @@ impl Runner {
             max_effects_per_attempt: 16,
         };
         let run_id = st.run_id.clone();
+
+        // Take the run lease before advancing anything. Two drivers on one run
+        // used to last-write-wins in the journal, silently — the `Tainted` doc
+        // comment claimed forked tips were detected, but nothing detected them.
+        // This prevents the case instead of noticing it afterwards. On the
+        // embedded backend one memory is one writer, so this always succeeds
+        // and costs a single meta row.
+        let holder = format!("{}#{}", self.principal, std::process::id());
+        let mut lease = crate::lease::RunLease::acquire(
+            &self.facade,
+            &run_id,
+            &holder,
+            self.clock.now_ms() as i64,
+            crate::lease::DEFAULT_RUN_LEASE_MS,
+        )?;
+
         // §6.10: the event bus wraps the observer; `emit` never blocks.
         // Arc'd because LLM jobs carry a TokenChunk sink into the pool.
         let bus = self
@@ -1184,6 +1200,10 @@ impl Runner {
                             hash: h.to_hex(),
                         });
                         prev_ckpt = Some(h);
+                        // Renew on the superstep boundary — the point at which
+                        // progress became durable, and therefore the point at
+                        // which a driver that has lost the run must stop.
+                        lease.renew(&self.facade, &run_id, self.clock.now_ms() as i64)?;
                     }
                     Command::Finish { outcome } => {
                         finished = Some(outcome);
@@ -1258,6 +1278,10 @@ impl Runner {
                     outcome: format!("{outcome:?}"),
                     dropped_events: bus.as_ref().map(|b| b.dropped()).unwrap_or(0),
                 });
+                // A terminal run needs no lease: releasing lets `verify`,
+                // `fork` or an inspect start at once rather than waiting one
+                // lease TTL for a run that is already over.
+                lease.release(&self.facade);
                 return Ok(RunSession::Finished { outcome, run_id });
             }
 
@@ -1342,11 +1366,21 @@ impl Runner {
 
             if let Some(envelope) = parked_envelope {
                 // in_flight is 0 here: every dispatch drains with its wave.
+                //
+                // Release: a parked run is not a process. It is a journaled
+                // checkpoint waiting on a human, so there is no in-memory state
+                // to protect and any driver may pick it up — that portability is
+                // the property the runtime is built on. Holding the lease across
+                // a park would make the next `areev run resume`, in a different
+                // process with a different holder id, wait out a full lease TTL
+                // for a run nobody is advancing.
+                lease.release(&self.facade);
                 return Ok(RunSession::Parked { envelope, run_id });
             }
 
             // Parked with the envelope announced in an earlier session.
             if !st.pending_asks.is_empty() {
+                lease.release(&self.facade);
                 return Ok(RunSession::Parked {
                     envelope: json!({
                         "kind": "requires_action",

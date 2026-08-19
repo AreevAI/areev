@@ -13,6 +13,7 @@ mod recommendation;
 mod skill;
 mod state;
 mod tool;
+mod trigger;
 mod workflow;
 
 pub use executor_kind::ExecutorKind;
@@ -26,6 +27,7 @@ pub use json_schema_subset::{
     validate_instance, InstanceErrorKind, SchemaSubsetError, SchemaValidator,
 };
 pub use observation::*;
+pub use trigger::*;
 pub use reasoning::*;
 pub use recommendation::{
     compute_dedup_key, Analyzer, Proposal, RecStatus, Recommendation, Severity, Summary,

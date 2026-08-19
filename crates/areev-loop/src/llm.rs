@@ -29,8 +29,6 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
-use std::process::{Command, Stdio};
 
 /// Caps that bound what a single LLM contribution can inject (defense in depth;
 /// the engine enforces them after parsing).
@@ -254,27 +252,10 @@ impl CommandLlm {
     }
 
     fn run(&self, request: &str) -> Result<String> {
-        let mut child = Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
+        let out = crate::proc::run_argv(&self.argv, request, Some(crate::proc::DEFAULT_TIMEOUT))
             .map_err(|e| Error::LlmBackend(format!("spawn --llm-cmd {:?}: {e}", self.argv[0])))?;
-        {
-            let mut stdin = child.stdin.take().expect("stdin piped");
-            stdin
-                .write_all(request.as_bytes())
-                .map_err(|e| Error::LlmBackend(format!("write to --llm-cmd: {e}")))?;
-        }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| Error::LlmBackend(format!("--llm-cmd wait: {e}")))?;
-        if !out.status.success() {
-            return Err(Error::LlmBackend(format!(
-                "--llm-cmd exited with {}",
-                out.status
-            )));
+        if let Some(why) = out.failure("--llm-cmd") {
+            return Err(Error::LlmBackend(why));
         }
         String::from_utf8(out.stdout)
             .map_err(|e| Error::LlmBackend(format!("--llm-cmd stdout not UTF-8: {e}")))

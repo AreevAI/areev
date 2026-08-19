@@ -53,7 +53,7 @@ fn workflow_graph_survives_the_round_trip() {
 
     let add = ex
         .execute(
-            r#"ADD workflow "CI pipeline" ON "merge to main"
+            r#"ADD workflow "CI pipeline"
                  build -> test -> deploy
                BIND test = sha256:1111111111111111111111111111111111111111111111111111111111111111
                REASON "integration""#,
@@ -65,7 +65,10 @@ fn workflow_graph_survives_the_round_trip() {
     let g = recall_one(&ex, &facade, "workflows");
     let f = &g["fields"];
 
-    assert_eq!(f["trigger"], "merge to main");
+    // No `trigger` field: it was removed in 1.3 because nothing read it. A
+    // plan is its graph; what starts it is a Trigger grain pointing at this
+    // hash.
+    assert!(f.get("trigger").is_none(), "the inert trigger field must be gone");
     assert_eq!(
         f["nodes"],
         serde_json::json!(["build", "test", "deploy"]),

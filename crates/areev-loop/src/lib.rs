@@ -34,6 +34,7 @@ pub mod llm;
 pub mod manifest;
 pub mod model;
 pub mod policy;
+pub mod proc;
 pub mod recommendation;
 pub mod reference;
 pub mod substrate;

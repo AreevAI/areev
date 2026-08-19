@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod trigger_cli;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -81,6 +82,37 @@ COMMANDS:
                                       policy is a file-truth that travels
                                       with the memory; `set` declares,
                                       `sweep --yes` enforces (audited)
+  trigger  add --type KIND --workflow HASH --because \"why\"
+           [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
+           [--scope S] [--dedup-key PTR] [--catchup last|none|all]
+                                      declare a trigger. Like retention, the
+                                      declaration is a file-truth that
+                                      travels with the memory and is enforced
+                                      separately
+  trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
+           [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
+                                      evaluate once and exit — the cadence is
+                                      data in the memory, so the heartbeat can
+                                      be coarse. Safe to invoke concurrently.
+                                      Without --tool-cmd it ingests without
+                                      executing; --dry-run touches nothing.
+                                      --credential names an env var whose value
+                                      the egress broker attaches on the way out,
+                                      so the connector never holds the token
+  trigger  render --target cron|launchd|systemd|k8s-cronjob
+                                      emit heartbeat config for infrastructure
+                                      you already run; never creates anything
+  trigger  deliver --id T [< payload.json]
+                                      hand a webhook/manual payload to Areev.
+                                      The host owns the listener — Areev never
+                                      opens a port. Idempotent on the dedup key
+  trigger  list | show <T> | status   what is declared, and what has actually
+                                      fired (a trigger that never fired is
+                                      reported, not silent)
+  trigger  pause <T> --because \"why\" | resume <T> --because \"why\"
+                                      operational brake; unlike the
+                                      declaration's own enabled flag it stays
+                                      on this host and does not replicate
   blob     put <FILE> | put --stdin   store bytes in the content-addressed
                                       blob store; prints the cas:// URI
                                       (idempotent — the address IS the content)
@@ -892,6 +924,25 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let (flags, positional) = parse_args(&argv[1..]);
+
+    // Register the environment variables the operator has told us hold secrets,
+    // before anything can spawn a child. Every subprocess seam scrubs these.
+    // Registering by NAME is what makes this possible: `--passphrase-env VAR`
+    // passes the variable name, not the value, so we know exactly what to
+    // withhold without ever having to guess which ambient variables are
+    // sensitive. Done here, at the one choke point every verb passes through,
+    // rather than at each flag's read site — `--token-env` is consumed inside
+    // two different verb arms, and a seam that spawned before the arm ran would
+    // have leaked it.
+    // Both registries: areev-loop owns the `--llm-cmd` and `--analyzer-cmd`
+    // seams and cannot depend on an areev-* sibling, so it keeps its own.
+    for var_flag in ["passphrase-env", "token-env"] {
+        if let Some(var) = flag(&flags, var_flag) {
+            areev_core::proc::deny_env_var(&var);
+            areev_loop::proc::deny_env_var(&var);
+        }
+    }
+
     // Long-lived / exposed surfaces must name their memory explicitly rather
     // than silently defaulting to the personal file.
     let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui" | "hub"))?;
@@ -2543,6 +2594,9 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             run_audit(&mut m, &flags, &positional)?;
         }
         "anonymize" => run_anonymize(m, &flags, &positional)?,
+        "trigger" => {
+            return trigger_cli::run_trigger(m, &ns, &flags, &positional);
+        }
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;
         }
@@ -3546,8 +3600,8 @@ fn run_eval_case(
     input: &serde_json::Value,
     expect: &serde_json::Value,
 ) -> (bool, String) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    use areev_core::proc::{self, SpawnPolicy};
+    use std::process::Command;
     // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The
     // Windows command string must go through raw_arg — Command::arg
     // MSVC-quotes embedded quotes, which cmd.exe does not parse.
@@ -3562,28 +3616,18 @@ fn run_eval_case(
         use std::os::windows::process::CommandExt;
         shell.raw_arg("/C").raw_arg(cmd);
     }
-    let child = shell
-        .env("AREEV_EVALSET", evalset)
-        .env("AREEV_EVAL_CASE", case)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
+    let out = match proc::run(
+        shell,
+        Some(input.to_string().as_bytes()),
+        &[("AREEV_EVALSET", evalset), ("AREEV_EVAL_CASE", case)],
+        &SpawnPolicy::default(),
+    ) {
+        Ok(o) => o,
         Err(e) => return (false, format!("spawn failed: {e}")),
     };
-    if let Some(stdin) = child.stdin.as_mut() {
-        let _ = stdin.write_all(input.to_string().as_bytes());
-    }
-    drop(child.stdin.take());
-    let out = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => return (false, format!("wait failed: {e}")),
-    };
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !out.status.success() {
-        return (false, format!("exit {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+    if let Some(why) = out.failure("eval case") {
+        return (false, why);
     }
     let ok = if let Some(eq) = expect.get("equals") {
         serde_json::from_str::<serde_json::Value>(&stdout)

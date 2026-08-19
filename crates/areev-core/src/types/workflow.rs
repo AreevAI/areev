@@ -55,8 +55,6 @@ pub struct Workflow {
     pub bindings: HashMap<String, String>,
     /// Node ID → max repeat count on failure.
     pub retries: HashMap<String, u32>,
-    /// Activation condition (optional).
-    pub trigger: Option<String>,
     pub common: GrainCommon,
 }
 
@@ -67,17 +65,11 @@ impl Workflow {
             edges: Vec::new(),
             bindings: HashMap::new(),
             retries: HashMap::new(),
-            trigger: None,
             common: GrainCommon {
                 confidence: 1.0,
                 ..Default::default()
             },
         }
-    }
-
-    pub fn trigger(mut self, trigger: &str) -> Self {
-        self.trigger = Some(trigger.to_string());
-        self
     }
 
     pub fn edge(mut self, src: &str, dst: &str) -> Self {
@@ -138,14 +130,15 @@ impl Grain for Workflow {
     }
 
     fn text(&self) -> String {
-        // For embedding/indexing: trigger + node labels joined
-        let mut parts = Vec::new();
-        if let Some(ref t) = self.trigger {
-            parts.push(t.clone());
-        }
-        if !self.nodes.is_empty() {
-            parts.push(self.nodes.join(" -> "));
-        }
-        parts.join(" | ")
+        // For embedding/indexing: the node labels, which are what a plan is.
+        //
+        // This used to lead with a free-text `trigger` field. That field was
+        // removed in 1.3: nothing ever read it — neither the scheduler nor the
+        // driver — so it described an activation condition that could not
+        // activate anything. Real triggers are `Trigger` grains (OMS 1.6 §8.13)
+        // that point AT a plan, which is also the only direction that works,
+        // since a Workflow is content-addressed and a plan that grew a list of
+        // triggers would change address every time one was added.
+        self.nodes.join(" -> ")
     }
 }

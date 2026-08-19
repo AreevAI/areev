@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/areev-core", "crates/areev-store", "crates/areev-cal", "crates/areev-cli", "crates/areev-mcp", "crates/areev-context", "crates/areev-server", "crates/areev-py", "crates/areev-bench", "crates/areev-loop", "crates/areev-loop-adapter", "crates/areev-llm", "crates/areev-conformance", "crates/areev-run-core", "crates/areev-run"]
+# areev-sandbox is a STANDALONE package, deliberately not a member: it carries
+# wasmi, whose MSRV and dependency tree must not reach workspace `cargo deny`,
+# MSRV checks, or test time. Built and tested on its own, invoked as a
+# subprocess — the areev-js pattern, and the accepted D7 placement decision.
+exclude = ["areev-sandbox"]
+members = ["crates/areev-core", "crates/areev-store", "crates/areev-cal", "crates/areev-cli", "crates/areev-mcp", "crates/areev-context", "crates/areev-server", "crates/areev-py", "crates/areev-bench", "crates/areev-loop", "crates/areev-loop-adapter", "crates/areev-llm", "crates/areev-conformance", "crates/areev-run-core", "crates/areev-run", "crates/areev-trigger"]
 
 [workspace.package]
 version = "1.2.2"
