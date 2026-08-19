@@ -85,10 +85,15 @@ COMMANDS:
   trigger  add --type KIND --workflow HASH --because \"why\"
            [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
            [--scope S] [--dedup-key PTR] [--catchup last|none|all]
+           [--where EXPR] [--members ALIAS=HASH,...] [--correlate PTR]
+           [--window 10m]
                                       declare a trigger. Like retention, the
                                       declaration is a file-truth that
                                       travels with the memory and is enforced
-                                      separately
+                                      separately. --where is CAL WHERE syntax:
+                                      it selects grains for a `memory` trigger
+                                      and gates member aliases for a
+                                      `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
            [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
                                       evaluate once and exit — the cadence is

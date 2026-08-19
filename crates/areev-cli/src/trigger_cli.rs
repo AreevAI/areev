@@ -12,10 +12,36 @@ use areev_cal::AreevFacade;
 use areev_core::types::{Catchup, Concurrency, Grain, Trigger, TriggerKind};
 use areev_store::Areev;
 use areev_trigger::{
-    schedule, EvalOptions, Evaluator, RunStarter, StartResult, SystemClock,
+    predicate, schedule, EvalOptions, Evaluator, RunStarter, StartResult, SystemClock,
 };
 
 use crate::{flag, need};
+
+/// `10m`, `2h`, `90s`, `1d` -> milliseconds.
+///
+/// The unit suffix is mandatory. A bare number is ambiguous between the seconds
+/// `--interval` takes and the milliseconds the field stores, and guessing wrong
+/// moves a correlation window by three orders of magnitude without saying so.
+fn parse_window_ms(spec: &str) -> Result<i64, String> {
+    let spec = spec.trim();
+    let bad = || {
+        format!("--window: {spec:?} must be a positive number with a unit -- 90s, 10m, 2h, 1d")
+    };
+    let mult = match spec.as_bytes().last() {
+        Some(b's') => 1_000i64,
+        Some(b'm') => 60_000,
+        Some(b'h') => 3_600_000,
+        Some(b'd') => 86_400_000,
+        _ => return Err(bad()),
+    };
+    // The suffix matched an ASCII byte, so trimming one byte stays on a
+    // character boundary.
+    let n: i64 = spec[..spec.len() - 1].trim().parse().map_err(|_| bad())?;
+    if n <= 0 {
+        return Err(bad());
+    }
+    n.checked_mul(mult).ok_or_else(bad)
+}
 
 /// First `n` characters, safely.
 ///
@@ -180,6 +206,37 @@ fn add(
     }
     if let Some(c) = flag(flags, "catchup") {
         t = t.catchup(Catchup::parse(&c).ok_or_else(|| format!("--catchup: {c} (last|none|all)"))?);
+    }
+    // `memory` and `composite` select with a predicate, written in CAL `WHERE`
+    // syntax and stored as a Condition tree. A data structure rather than an
+    // expression string is what keeps this off the frozen edge grammar and out
+    // of an OMS syntax decision -- see `predicate`'s module doc.
+    if let Some(w) = flag(flags, "where") {
+        let cond = predicate::parse_predicate(&w).map_err(|e| e.to_string())?;
+        t = t.predicate(predicate::to_value(&cond).map_err(|e| e.to_string())?);
+    }
+    // `alias=hash` pairs. A gate names its members by alias because a 64-hex
+    // content address is not a legal identifier in any expression grammar --
+    // CAL's lexer reads it as a number.
+    for pair in flag(flags, "members").iter().flat_map(|v| v.split(',')) {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (alias, hash) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("--members: expected alias=hash pairs, got {pair:?}"))?;
+        let (alias, hash) = (alias.trim(), hash.trim());
+        if alias.is_empty() || hash.is_empty() {
+            return Err(format!("--members: both sides of {pair:?} must be non-empty"));
+        }
+        t = t.member(alias, hash);
+    }
+    if let Some(c) = flag(flags, "correlate") {
+        t = t.correlate(&c);
+    }
+    if let Some(w) = flag(flags, "window") {
+        t = t.window_ms(parse_window_ms(&w)?);
     }
     if let Some(tz) = flag(flags, "timezone") {
         t = t.config(serde_json::json!({ "int:timezone": tz }));

@@ -304,11 +304,22 @@ impl Evaluator {
 
         let mut report = EvalReport::default();
         let item = PollItem { id: String::new(), payload };
+        report.items = 1;
         let Some(value) = dedup_value(&item, &trigger.dedup_key) else {
             report.unidentifiable = 1;
+            // Journal before returning. A delivery naming nothing is precisely
+            // the case the record exists for: the sender's payload shape
+            // changed under us, and stdout of whatever invoked this is not an
+            // audit record -- the replicating Observation is.
+            self.journal(
+                &hash,
+                &trigger,
+                &FireOutcome { items: 1, unidentifiable: 1, ..Default::default() },
+                Some("delivered"),
+                now,
+            )?;
             return Ok(report);
         };
-        report.items = 1;
         let run_id = run_id_for(&hash, trigger.connector.as_deref(), &value);
         match self.start_run(&trigger, &run_id, &item, &hash) {
             StartOutcome::Started => report.runs_started = 1,
@@ -564,8 +575,9 @@ impl Evaluator {
                     })
                     .collect()
             }
-            // Land in a later phase; declarations are accepted now so the
-            // vocabulary is stable, but nothing fires them yet.
+            // These do not poll. The host owns the listener and hands the
+            // payload to `deliver`, which fires them on the same idempotency
+            // terms; an evaluation pass simply has nothing to do for one.
             TriggerKind::Webhook | TriggerKind::Manual => Vec::new(),
         };
 
@@ -908,6 +920,20 @@ impl Evaluator {
             .extra_field("items", serde_json::json!(outcome.items))
             .extra_field("runs_started", serde_json::json!(outcome.runs_started))
             .extra_field("duplicates", serde_json::json!(outcome.duplicates));
+        // Without these, a firing where every item lacked the dedup key reads
+        // as "items 5, runs_started 0, duplicates 0" -- and that last zero
+        // actively misleads, saying the items were not skipped as duplicates
+        // without saying why they were skipped at all. Emitted only when
+        // non-zero, so an ordinary firing stays as small as it was.
+        if outcome.unidentifiable > 0 {
+            obs = obs.extra_field("unidentifiable", serde_json::json!(outcome.unidentifiable));
+        }
+        if outcome.ingested > 0 {
+            obs = obs.extra_field("ingested", serde_json::json!(outcome.ingested));
+        }
+        if !outcome.failures.is_empty() {
+            obs = obs.extra_field("failures", serde_json::json!(outcome.failures));
+        }
         if outcome.seeded {
             obs = obs.extra_field("seeded", serde_json::json!(true));
         }

@@ -129,6 +129,49 @@ only reports "created".
 position and stops. Otherwise declaring a mailbox trigger would start a run for
 every message in history.
 
+### What a firing records
+
+Every firing writes one Observation in `agent:triggers` carrying `trigger`,
+`kind`, `workflow`, `items`, `runs_started`, and `duplicates` — plus, when they
+are not zero, `unidentifiable`, `ingested`, `failures`, and `seeded`.
+
+Those conditional fields are what make the record self-explaining. A firing that
+reports `items 5, runs_started 0, duplicates 0` and nothing else is a mystery,
+and the zero duplicates actively misleads: it says the items were not skipped as
+duplicates without saying why they were skipped. `unidentifiable 5` says the
+connector emitted items whose declared dedup key resolved to nothing — a
+connector bug, visible as one.
+
+A **delivery** records on the same terms, including one that named nothing.
+`trigger status` and the command's own output are per-host and transient; the
+Observation replicates, and it is the audit record.
+
+## Watching the memory itself
+
+A `memory` trigger fires when grains matching a predicate appear. The predicate
+is CAL `WHERE` syntax, and it sees the grain's own fields plus two envelope
+fields, `grain_type` and `hash`:
+
+```bash
+areev trigger add --db crm.db --ns sales \
+  --type memory --workflow <WF_HASH> \
+  --where 'grain_type = "fact" AND relation = "signed_nda"' \
+  --because "kick off onboarding when an NDA is recorded"
+```
+
+The content address is the item identity, so `--dedup-key` is not needed and the
+same grain can never fire twice. **The first evaluation seeds at the head of the
+op log and matches nothing** — the same reason a poll primes rather than
+replaying a mailbox, since otherwise declaring a trigger on an established
+memory would start a run for every historical grain that matches.
+
+> **Watch `NOT` over a field the grain does not have.** Evaluation is total: a
+> missing field compares false, so `NOT status = "processed"` is *true* for
+> every grain with no `status` field at all. SQL would give you null here. On a
+> read that means extra rows; on a memory trigger it means one run per changed
+> grain, so name the type you mean (`grain_type = "fact" AND NOT ...`) rather
+> than relying on a negation to exclude the grains you never meant to match.
+
 ## Composing triggers
 
 A `composite` fires when a boolean expression over its members is satisfied.
@@ -136,12 +179,19 @@ Members are declared under **aliases**, and the expression names the aliases —
 a content address is not a legal identifier in any expression grammar, and an
 alias reads better and survives a member being re-declared at a new address.
 
+```bash
+areev trigger add --db ap.db --ns accounting \
+  --type composite --workflow <WF_HASH> \
+  --members 'invoice=<hash-a>,purchase_order=<hash-b>,escalation=<hash-c>' \
+  --where '(invoice = true AND purchase_order = true) OR escalation = true' \
+  --correlate /thread_id --window 10m \
+  --because "match an invoice to its purchase order before posting"
 ```
-members:   invoice = <hash-a>, purchase_order = <hash-b>
-predicate: (invoice = true AND purchase_order = true) OR escalation = true
-correlate: /thread_id
-window:    10m
-```
+
+`--members` takes `alias=hash` pairs. `--window` takes a unit — `90s`, `10m`,
+`2h`, `1d`; a bare number is refused rather than guessed, because the field
+stores milliseconds while `--interval` takes seconds and being wrong by three
+orders of magnitude is silent.
 
 The expression is written in CAL `WHERE` syntax and stored as a `Condition`
 tree — a data structure, not a language. That is deliberate: the runtime's edge
@@ -158,8 +208,10 @@ satisfied dependencies per *sensor*, so Monday's `dep-a` can pair with Tuesday's
 nothing if the process is down at the reset instant. Keying by correlation with
 a per-match expiry removes the need for a reset entirely.
 
-A gate that names an undeclared member is refused with `TRG-E008`: it could
-never be satisfied, so the trigger would be silently dead.
+A gate that names an undeclared member is refused with `TRG-E008` **when it is
+declared**, not when it first comes due: it could never be satisfied, so the
+trigger would be silently dead, and a declaration that sits in the memory
+looking live is the failure mode with no symptom.
 
 ## Missed occurrences
 
