@@ -849,6 +849,14 @@ are exempt with the reason stated in code: `subject_report` (the DSAR must
 disclose what is stored), `run_grains` (the runtime's machine replay), and
 the authz engine's grant recall (a pseudonymized principal would fail every
 check). The vocabulary is *pseudonymize* — no anonymity claim, anywhere.
+The free-text APIs (`scan_text`/`anonymize_text`) sit one layer up, on the
+facade, and stay pure-text-in/JSON-out — no store *writes* — but now read
+the store's known-identity table for the facade's default namespace, the
+same propagation table the grain-egress boundary builds: a subject already
+interned by an intake step is detectable in prose passed to these APIs too,
+not only in grain reads (issue #32). `AnonPolicy.known` is the
+caller-supplied complement — identities a host holds but never interned as
+a grain subject (a CRM row, an email header), each with its own category.
 
 ### Portability and provenance over lock-in
 

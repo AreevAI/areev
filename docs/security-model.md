@@ -73,6 +73,14 @@ top of that.
   never identities. Pseudonym mappings otherwise stay in process custody:
   bounded in memory, returned only to in-process callers, and carried on
   MCP/server payloads as mapping **ids** only.
+- **The free-text APIs read, never write, the trust boundary.**
+  `scan_text`/`anonymize_text` stay pure-text-in/JSON-out (no grain writes),
+  but they now read the store's known-identity table for the facade's
+  default namespace — the same propagation table grain-egress reads
+  already build — so a subject interned by an intake step is caught in
+  prose passed to these APIs too. `AnonPolicy.known` lets a caller inject
+  identities it holds but never interned as a grain subject, each with an
+  explicit category; those never touch the store either.
 
 ### Known limitations at rest
 

@@ -846,6 +846,29 @@ final = json.loads(m.rehydrate_text(reply, json.dumps(mapping)))["text"]
 CAL payloads carry an `anonymized` report with mapping **ids** only — the
 mapping itself never rides a payload; the host process rehydrates.
 
+The free-text APIs (`scan_text`/`anonymize_text`) propagate the same
+interned-subject table — a name written as a `subject` under the handle's
+namespace is caught in prose you scan/anonymize directly, not only in
+grain reads:
+
+```python
+m = areev.Areev("support.db", ns="caller")
+m.add_fact("Kenneth Shea", "role", "sell-side banker", ns="caller")
+m.set_anon_policy("caller", json.dumps({"mode": "egress"}))
+
+out = json.loads(m.anonymize_text("Kenneth Shea sent the Project Falcon NDA.", None, None))
+out["text"]   # "[PERSON_1] sent the Project Falcon NDA."
+```
+
+For identities you hold but never interned as a grain subject — an email's
+From header, a CRM row, a project codename — pass them straight in the
+policy's `known` list, each with its own category:
+
+```python
+policy = json.dumps({"known": [{"value": "Project Falcon", "category": "custom"}]})
+out = json.loads(m.anonymize_text("...Project Falcon...", policy, None))
+```
+
 Cross-process reconstruction needs the sealed vault (encrypted memory):
 
 ```bash

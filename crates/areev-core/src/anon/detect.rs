@@ -404,6 +404,31 @@ fn identity_match_terms(identities: &[String]) -> Vec<String> {
     terms
 }
 
+/// `AnonPolicy.known` — caller-supplied identities (issue #32), grouped by
+/// each entry's own category rather than tier0's fixed `"person"`. Same
+/// boundary-checked verbatim matching and 3-char floor as
+/// [`identity_match_terms`], just without the colon-tail heuristic (that
+/// one is specific to store subject id shapes like `caller:john`; a bare
+/// caller-supplied value has no such convention to lean on).
+pub(super) fn run_known(
+    text: &str,
+    known: &[super::KnownIdentity],
+) -> Result<Vec<Detection>> {
+    let mut by_category: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for k in known {
+        let value = k.value.trim();
+        if value.len() >= 3 {
+            by_category.entry(k.category.as_str()).or_default().push(value.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for (category, terms) in by_category {
+        detect_terms(text, &terms, category, "tier0.policy_known", &mut out)?;
+    }
+    Ok(out)
+}
+
 /// Case-insensitive, boundary-checked term matching for the user dictionary
 /// and known identities. Terms are matched verbatim (multi-word allowed).
 fn detect_terms(

@@ -9,6 +9,20 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Known-identity propagation now reaches `scan_text`/`anonymize_text`**
+  (#32): these free-text APIs read the store's known-identity table for the
+  facade's default namespace — the same propagation table grain-egress
+  reads already build — so a subject interned by an intake step (e.g. a
+  `subject` written under the namespace) is now detected/pseudonymized in
+  prose passed to these APIs too, not only in `recall`/CAL results.
+  `AnonPolicy` grows a `known: [{value, category}]` field so a caller can
+  also inject identities it holds but never interned as a grain subject
+  (an email's From header, a CRM row, a project codename), each with its
+  own detection category. Both APIs' signatures are unchanged; the
+  bindings pick this up with no code changes.
+
 ## [1.2.2] — 2026-08-18
 
 ### Added
