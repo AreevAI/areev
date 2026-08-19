@@ -149,10 +149,14 @@ impl Broker {
 
 impl Drop for Broker {
     fn drop(&mut self) {
+        // Signal and detach — deliberately NOT joined. The accept loop can be
+        // inside `serve_one` waiting on an upstream that has up to 60s of
+        // timeout left, and joining there would block the evaluator on a call
+        // whose result nobody wants any more. The thread owns its listener and
+        // exits at the next loop check, so the port is released promptly
+        // without anyone waiting for it.
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        drop(self.handle.take());
     }
 }
 

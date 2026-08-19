@@ -686,3 +686,86 @@ fn correlation_keeps_unrelated_work_apart() {
         "correlation values become distinct partial keys, got {keys:?}"
     );
 }
+
+#[test]
+fn a_once_trigger_fires_exactly_once_and_then_never_again() {
+    // `once` means once. After firing, `advance_after_firing` has no next
+    // instant to give — and "no next instant" must not be read as "never
+    // evaluated, so fire now", which is what an absent `next_due_at` means for
+    // every other clocked kind.
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Once, WF).at_ms(T0 + 1_000));
+    let ev = rig.evaluator(None);
+
+    // Before its instant: not due.
+    let early = ev.run(&opts()).unwrap();
+    assert_eq!(early.claimed, 0, "a once trigger must wait for its instant");
+
+    // At its instant: fires.
+    rig.clock.advance(1_000);
+    let fired = ev.run(&opts()).unwrap();
+    assert_eq!(fired.claimed, 1);
+    assert_eq!(fired.runs_started, 1);
+
+    // Every pass after: nothing, forever.
+    for step in 0..5 {
+        rig.clock.advance(60_000);
+        let again = ev.run(&opts()).unwrap();
+        assert_eq!(again.claimed, 0, "re-fired on pass {step}");
+        assert_eq!(again.runs_started, 0, "re-fired on pass {step}");
+    }
+    assert_eq!(rig.state(&h).last_fired_at, Some(T0 + 1_000), "only the first firing counts");
+}
+
+#[test]
+fn a_cron_trigger_waits_for_its_boundary_rather_than_firing_on_declaration() {
+    // `0 9 * * *` must not fire at midnight merely because it was just
+    // declared. An absent `next_due_at` means "never evaluated" — for a
+    // relative cadence that means fire now, for an absolute schedule it does
+    // not.
+    let rig = Rig::new(); // clock is at T0 = 2026-01-01T00:00:00Z
+    let h = rig.declare(Trigger::new(TriggerKind::Schedule, WF).cron("0 9 * * *"));
+    let ev = rig.evaluator(None);
+
+    let early = ev.run(&opts()).unwrap();
+    assert_eq!(early.claimed, 0, "midnight is not 9am");
+
+    // 09:00 the same day.
+    rig.clock.advance(9 * 3_600_000);
+    let fired = ev.run(&opts()).unwrap();
+    assert_eq!(fired.claimed, 1, "should fire on the boundary");
+    assert!(!rig.state(&h).exhausted, "a recurring schedule is never exhausted");
+
+    // An hour later it is not due again; the next boundary is tomorrow.
+    rig.clock.advance(3_600_000);
+    assert_eq!(ev.run(&opts()).unwrap().claimed, 0);
+}
+
+#[test]
+fn an_interval_trigger_still_fires_immediately_on_first_evaluation() {
+    // The other half of the same rule: a relative cadence has no baseline to
+    // wait out, so it fires at once — the loop gate's behaviour, and what makes
+    // a polling trigger seed its cursor promptly.
+    let rig = Rig::new();
+    rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(3600));
+    assert_eq!(rig.evaluator(None).run(&opts()).unwrap().claimed, 1);
+}
+
+#[test]
+fn display_helpers_do_not_panic_on_a_short_or_non_ascii_workflow() {
+    // A declaration can arrive by bundle import from an implementation we did
+    // not write, so a `&s[..12]` in a status line is a crash waiting for a
+    // grain we never authored.
+    let rig = Rig::new();
+    for wf in ["ab", "", "日本語のワークフロー"] {
+        let t = Trigger::new(TriggerKind::Interval, WF).interval_secs(60).created_at(T0).namespace(NS);
+        let mut t = t;
+        t.workflow = wf.to_string();
+        // `add` is the raw path — `incoherence()` would refuse an empty
+        // workflow at the CLI, but a foreign grain never passed through it.
+        let _ = rig.facade.with_store(|m| m.add(&t));
+    }
+    // The point is that this returns rather than panics.
+    let status = rig.evaluator(None).status().unwrap();
+    assert!(!status.is_empty());
+}

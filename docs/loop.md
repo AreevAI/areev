@@ -385,6 +385,41 @@ labeled) to the memory it injects — so the agent sees its own pending queue
 instead of waiting to be asked. `areev init` and `areev hook claude-code` print
 the flag in their snippets.
 
+## Where the loop's own state lives, and why it is a grain
+
+The loop persists one JSON blob — analyzer config, recommendation lifecycle,
+audit-chain heads, creators, cooldowns, and the run watermark — as a **Fact
+grain** in namespace `areev-loop`, subject `__loop_state__`, superseded on each
+write.
+
+`areev trigger` stores *its* state the opposite way: `trg:` rows in the store's
+`meta` table that deliberately never replicate. The asymmetry is a decision, not
+drift, and it is worth writing down so nobody harmonises one to match the other.
+
+**The loop's state must replicate, because most of it is governance.**
+`creators` and `co_creators` are what the self-approval block reads to refuse an
+approval by the principal who authored the recommendation; `audit_heads` chains
+the audit records; `status_index` carries the lifecycle. If those stopped
+travelling with the file, a replica would find no creator recorded and let
+someone approve their own recommendation — a separation-of-duties bypass, and a
+silent one.
+
+**A trigger's state must not, because it is a cursor.** A dev memory restored
+from prod that inherited prod's Gmail cursor would skip real mail while
+reporting success.
+
+The replication hazard also lands differently. Two hosts sharing a memory, where
+one skips because the other ran the loop five minutes ago, is **correct** — the
+loop analyses shared memory and its recommendations replicate too, so the work
+genuinely was done. The same reasoning does not transfer to a poll of an
+external system.
+
+The cost of the grain form is growth: one grain and two op-log entries per run,
+each carrying a full copy of the blob, with the superseded chain retained. What
+grows is the *history*, not the live grain, so the remedy if it bites is
+compaction — not restructuring, which would trade the atomicity of a single
+supersession for disk. That is not a trade a governance subsystem should make.
+
 ## Auto-apply & the policy file
 
 Auto-apply is **off by default** and is granted **only** by an optional

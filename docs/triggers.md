@@ -22,6 +22,14 @@ synced hosts would ping-pong on each other's watermark, and a dev memory
 restored from prod would inherit prod's cursor and silently skip real work while
 reporting success. Same reasoning that keeps a saved query's `last_run_at` local.
 
+> **Why Areev Loop does the opposite.** The self-improvement engine persists its
+> state *as a grain*, and that is also right — most of it is governance
+> (`creators`, `audit_heads`, `status_index`) that the self-approval block reads,
+> so it must travel with the file or a replica would let someone approve their
+> own recommendation. And a replica skipping because a peer analysed the same
+> shared memory minutes ago is correct, where skipping a mailbox poll is not.
+> Governance replicates; cursors do not. See [`loop.md`](loop.md).
+
 ## Kinds
 
 Eight declared kinds over four irreducible primitives.

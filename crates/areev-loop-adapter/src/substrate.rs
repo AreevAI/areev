@@ -620,6 +620,19 @@ fn load_state(f: &AreevFacade) -> WResult<Value> {
     }
 }
 
+/// Persist the loop's state as a superseded Fact grain.
+///
+/// A grain, not a `meta` row, and the opposite of what `areev trigger` does with
+/// its `trg:` state — deliberately. Most of this blob is **governance**:
+/// `creators` and `co_creators` are what the self-approval block reads to refuse
+/// an approval by the principal who authored the recommendation, `audit_heads`
+/// chains the audit records, `status_index` carries the lifecycle. All of it has
+/// to travel with the file, or a replica finds no creator recorded and lets
+/// someone approve their own recommendation — a silent separation-of-duties
+/// bypass.
+///
+/// A trigger's state is a cursor and must NOT replicate, for the mirror-image
+/// reason. Do not harmonise the two; see `docs/loop.md`.
 fn store_state(f: &AreevFacade, state: &Value) -> WResult<()> {
     let json = serde_json::to_string(state)
         .map_err(|e| WErr::Substrate(format!("encode loop state: {e}")))?;

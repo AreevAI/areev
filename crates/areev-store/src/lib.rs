@@ -870,6 +870,13 @@ pub struct TriggerState {
     /// is the author's intent and replicates, this is an operational brake and
     /// stays on the host that pulled it.
     pub paused: bool,
+    /// This trigger will never fire again — a one-shot past its instant.
+    ///
+    /// Needed because an absent `next_due_at` already means "never evaluated,
+    /// so fire now". Without a separate flag, "no next instant" and "no
+    /// baseline" are the same value, and a `once` trigger re-fires on every
+    /// pass forever.
+    pub exhausted: bool,
     /// Consecutive failures, driving backoff so a broken connector does not
     /// hot-loop.
     pub consecutive_failures: u32,
@@ -910,12 +917,15 @@ impl TriggerState {
         self.lease_until.is_some_and(|until| until > now_ms)
     }
 
-    /// Whether this trigger is due at `now_ms`. A never-evaluated trigger is
-    /// due immediately — the same rule the loop's gate uses, where a fresh file
-    /// fires on the first tick rather than waiting out an interval it has no
-    /// baseline for.
-    pub fn due(&self, now_ms: i64) -> bool {
-        !self.paused && self.next_due_at.is_none_or(|due| due <= now_ms)
+    /// Whether the *state* permits firing at `now_ms`.
+    ///
+    /// Deliberately NOT the whole answer: an absent `next_due_at` means "never
+    /// evaluated", and what that implies depends on the declaration — an
+    /// interval trigger should fire at once, a cron or one-shot should wait for
+    /// its instant. `areev_trigger::schedule::is_due` is the complete check;
+    /// this is the half that needs no declaration.
+    pub fn permits_firing(&self, now_ms: i64) -> bool {
+        !self.paused && !self.exhausted && self.next_due_at.is_none_or(|due| due <= now_ms)
     }
 }
 

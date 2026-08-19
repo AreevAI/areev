@@ -69,6 +69,17 @@ impl Default for EvalOptions {
     }
 }
 
+/// First `n` characters, safely — `&s[..n]` panics on a short string or a
+/// multi-byte boundary, and a message-formatting helper must not be what takes
+/// the process down. Declarations can arrive by bundle import from an
+/// implementation we did not write.
+fn short(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
 /// A stable-ish identity for this evaluator. Host name plus pid: enough to tell
 /// two nodes apart in a claim, and to recognise our own stale claim after a
 /// restart.
@@ -118,6 +129,8 @@ pub struct TriggerStatus {
     pub last_fired_at: Option<i64>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
+    /// Will never fire again — a one-shot past its instant.
+    pub exhausted: bool,
     /// Never fired and no failure recorded — the state an unnoticed
     /// misconfiguration sits in, so it is reported rather than inferred.
     pub never_fired: bool,
@@ -227,12 +240,15 @@ impl Evaluator {
                 workflow: t.workflow.clone(),
                 enabled: t.enabled,
                 paused: st.paused,
-                due: t.enabled && st.due(now) && !st.leased(now),
+                due: t.enabled
+                    && !st.leased(now)
+                    && schedule::is_due(&t, &st, now).unwrap_or(false),
                 leased_by: st.leased(now).then(|| st.claimed_by.clone()).flatten(),
                 next_due_at: st.next_due_at,
                 last_fired_at: st.last_fired_at,
                 consecutive_failures: st.consecutive_failures,
                 last_error: st.last_error.clone(),
+                exhausted: st.exhausted,
                 never_fired: st.last_fired_at.is_none() && st.consecutive_failures == 0,
             });
         }
@@ -265,14 +281,14 @@ impl Evaluator {
                 what: format!(
                     "trigger {} is a {} trigger — only webhook and manual triggers accept a \
                      delivery; a clocked or polling trigger fires from `trigger run`",
-                    &hash[..12],
+                    short(&hash, 12),
                     trigger.kind.as_str()
                 ),
             });
         }
         if !trigger.enabled {
             return Err(TriggerError::Malformed {
-                what: format!("trigger {} is disabled", &hash[..12]),
+                what: format!("trigger {} is disabled", short(&hash, 12)),
             });
         }
         let (state, _) = self
@@ -282,7 +298,7 @@ impl Evaluator {
             .unwrap_or_default();
         if state.paused {
             return Err(TriggerError::Malformed {
-                what: format!("trigger {} is paused", &hash[..12]),
+                what: format!("trigger {} is paused", short(&hash, 12)),
             });
         }
 
@@ -345,7 +361,23 @@ impl Evaluator {
                 report.skipped_paused += 1;
                 continue;
             }
-            if !state.due(now) {
+            // An absolute schedule seen for the first time: record when it
+            // will be due rather than re-deriving it every pass, so `trigger
+            // status` can say when it next fires and the comparison afterwards
+            // is a plain timestamp check.
+            if state.next_due_at.is_none() && !state.exhausted {
+                if let Some(first) = schedule::initial_due(&trigger, now)? {
+                    let mut seeded = state.clone();
+                    seeded.next_due_at = Some(first);
+                    let _ = self
+                        .facade
+                        .with_store(|m| m.put_trigger_state(&hash, raw.as_deref(), &seeded))
+                        .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+                    report.skipped_not_due += 1;
+                    continue;
+                }
+            }
+            if !schedule::is_due(&trigger, &state, now)? {
                 report.skipped_not_due += 1;
                 continue;
             }
@@ -448,6 +480,7 @@ impl Evaluator {
                     released.partials.remove(k);
                 }
                 prune_partials(&mut released, trigger, now);
+                released.exhausted = schedule::exhausts_after(trigger, now);
                 released.next_due_at = if outcome.draining {
                     // A backlog drains at once rather than waiting out the
                     // interval — a cold start should not take a day.
@@ -765,9 +798,22 @@ impl Evaluator {
         // The connector reads AREEV_EGRESS_URL out of its environment. The
         // spawn seam scrubs whatever `--passphrase-env` and `--token-env` name,
         // so this is the only network affordance it has from us.
-        std::env::set_var("AREEV_EGRESS_URL", broker.url());
-        let result = exec.execute(connector_name, hash, &payload, &idem);
-        std::env::remove_var("AREEV_EGRESS_URL");
+        //
+        // The variable is PROCESS-GLOBAL, and `HostToolExecutor::execute` has no
+        // per-call environment, so two evaluators in one process would race:
+        // one could hand its broker's URL to the other's connector, pointing it
+        // at the wrong allowlist. The lock makes the set→spawn→unset window
+        // exclusive. Production runs one evaluator per process, so this
+        // serialises nothing that was parallel; it closes a hazard that only
+        // exists in-process (and that our own threaded tests could reach).
+        static EGRESS_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let result = {
+            let _guard = EGRESS_ENV.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("AREEV_EGRESS_URL", broker.url());
+            let r = exec.execute(connector_name, hash, &payload, &idem);
+            std::env::remove_var("AREEV_EGRESS_URL");
+            r
+        };
 
         // Surface a refused destination as its own error rather than letting it
         // read as a generic connector failure — a connector reaching somewhere
@@ -935,7 +981,7 @@ pub fn run_id_for(trigger_hash: &str, connector: Option<&str>, dedup_value: &str
     h.update([0x1f]);
     h.update(dedup_value.as_bytes());
     let digest = hex(&h.finalize());
-    format!("{}-{}", &trigger_hash[..trigger_hash.len().min(8)], &digest[..12])
+    format!("{}-{}", short(trigger_hash, 8), short(&digest, 12))
 }
 
 fn hex(bytes: &[u8]) -> String {

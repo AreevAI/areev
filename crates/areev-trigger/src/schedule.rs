@@ -151,6 +151,61 @@ pub fn advance_after_firing(trigger: &Trigger, fired_at_ms: i64, now_ms: i64) ->
     }
 }
 
+/// When a never-evaluated trigger first becomes due.
+///
+/// `None` means "now". `Some(t)` means "not yet — at `t`", and the evaluator
+/// records it so the trigger wakes at the right moment instead of being asked
+/// this question again on every pass.
+///
+/// The split is between two kinds of cadence:
+///
+/// - **Relative** (`Interval`, `Polling`) has no baseline to wait out, so it
+///   fires at once — the loop gate's rule, and what makes a polling trigger
+///   seed its cursor promptly instead of an interval later.
+/// - **Absolute** (`Schedule`, `Once`) waits for the instant it names. A cron of
+///   `0 9 * * *` must not fire at midnight merely because it was just declared.
+/// - **Unclocked** kinds are eligible immediately; what gates them is whether
+///   anything arrived, which the evaluator decides.
+pub fn initial_due(trigger: &Trigger, now_ms: i64) -> Result<Option<i64>> {
+    Ok(match trigger.kind {
+        TriggerKind::Schedule => next_due_after(trigger, now_ms)?,
+        // A one-shot whose instant has already passed fires once, now.
+        TriggerKind::Once => trigger.at_ms.filter(|at| *at > now_ms),
+        TriggerKind::Interval
+        | TriggerKind::Polling
+        | TriggerKind::Memory
+        | TriggerKind::Webhook
+        | TriggerKind::Manual
+        | TriggerKind::Composite => None,
+    })
+}
+
+/// Is this trigger due at `now_ms`?
+///
+/// The complete check: state alone cannot answer it, because an absent
+/// `next_due_at` means "never evaluated" and what that implies depends on the
+/// declaration. See [`initial_due`].
+pub fn is_due(trigger: &Trigger, state: &areev_store::TriggerState, now_ms: i64) -> Result<bool> {
+    if !state.permits_firing(now_ms) {
+        return Ok(false);
+    }
+    if state.next_due_at.is_some() {
+        return Ok(true); // already compared against `now` above
+    }
+    Ok(initial_due(trigger, now_ms)?.is_none())
+}
+
+/// Whether this trigger can never fire again after a firing at `fired_at_ms`.
+///
+/// Only a one-shot exhausts. The other kinds that return no next instant
+/// (`Memory`, `Webhook`, `Manual`, `Composite`) are not clocked at all — they
+/// are eligible on every pass and gated by whether anything arrived — so
+/// treating "no next instant" as exhaustion would silence them permanently.
+pub fn exhausts_after(trigger: &Trigger, fired_at_ms: i64) -> bool {
+    trigger.kind == TriggerKind::Once
+        && next_due_after(trigger, fired_at_ms).ok().flatten().is_none()
+}
+
 /// Back off `next_due_at` after a failure, so a broken connector does not
 /// hot-loop against a source that is down.
 ///

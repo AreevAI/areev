@@ -17,6 +17,19 @@ use areev_trigger::{
 
 use crate::{flag, need};
 
+/// First `n` characters, safely.
+///
+/// `&s[..12]` panics on a string shorter than 12 bytes and on a multi-byte
+/// boundary. Hashes we author are 64 hex, but a declaration can arrive by
+/// bundle import from an implementation we did not write, and a display helper
+/// must not be the thing that takes the process down.
+fn short(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
 /// Bridges the evaluator to the real runtime.
 ///
 /// The duplicate rule is the whole idempotency story, so it is worth being
@@ -213,7 +226,13 @@ fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Strin
     for (h, t) in declarations {
         let what = t.scope.as_deref().unwrap_or("-");
         let off = if t.enabled { "" } else { "  [disabled]" };
-        println!("{}  {:<9} {:<28} -> {}{off}", &h[..12], t.kind.as_str(), what, &t.workflow[..12]);
+        println!(
+            "{}  {:<9} {:<28} -> {}{off}",
+            short(&h, 12),
+            t.kind.as_str(),
+            what,
+            short(&t.workflow, 12)
+        );
     }
     Ok(())
 }
@@ -248,6 +267,9 @@ fn show(
             Some(t) => println!("last fired   {t}"),
             None => println!("last fired   never"),
         }
+        if found.exhausted {
+            println!("exhausted    yes — a one-shot past its instant; it will not fire again");
+        }
         if found.consecutive_failures > 0 {
             println!("failures     {}", found.consecutive_failures);
         }
@@ -275,6 +297,10 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
     for s in &rows {
         let state = if !s.enabled {
             "disabled"
+        } else if s.exhausted {
+            // A one-shot that has fired. Reporting it as "waiting" would be a
+            // lie it tells forever.
+            "done"
         } else if s.paused {
             "paused"
         } else if s.leased_by.is_some() {
@@ -284,7 +310,13 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
         } else {
             "waiting"
         };
-        println!("{}  {:<8} {:<9} {}", &s.trigger[..12], state, s.kind, &s.workflow[..12]);
+        println!(
+            "{}  {:<8} {:<9} {}",
+            short(&s.trigger, 12),
+            state,
+            s.kind,
+            short(&s.workflow, 12)
+        );
         if let Some(e) = &s.last_error {
             println!("              last error: {e}");
         }
@@ -470,13 +502,13 @@ fn set_paused(
     if !ok {
         return Err(format!(
             "trigger {} changed underneath this command (a firing is in progress) — retry",
-            &target[..12]
+            short(&target, 12)
         ));
     }
     if json_out {
         println!("{}", serde_json::json!({ "ok": true, "trigger": target, "paused": paused }));
     } else {
-        println!("{verb}d trigger {}", &target[..12]);
+        println!("{verb}d trigger {}", short(&target, 12));
     }
     Ok(())
 }

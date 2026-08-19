@@ -130,17 +130,26 @@ fn an_unreadable_state_row_refuses_rather_than_reading_as_never_fired() {
 }
 
 #[test]
-fn a_never_evaluated_trigger_is_due_immediately() {
+fn state_alone_answers_only_half_the_due_question() {
+    // `permits_firing` is the half that needs no declaration. Whether an absent
+    // `next_due_at` means "fire now" depends on the trigger's kind, which is
+    // why the complete check lives in `areev_trigger::schedule::is_due` — an
+    // interval fires at once, a cron waits for its boundary.
     let fresh = TriggerState::default();
-    assert!(fresh.due(0), "no baseline means fire now, not wait an interval");
+    assert!(fresh.permits_firing(0));
     assert!(!fresh.leased(0));
 
     let paused = TriggerState { paused: true, ..Default::default() };
-    assert!(!paused.due(i64::MAX));
+    assert!(!paused.permits_firing(i64::MAX));
+
+    // A one-shot past its instant. Without this flag, "no next instant" and
+    // "no baseline yet" are the same value and the trigger re-fires forever.
+    let spent = TriggerState { exhausted: true, ..Default::default() };
+    assert!(!spent.permits_firing(i64::MAX), "an exhausted trigger never fires again");
 
     let later = TriggerState { next_due_at: Some(100), ..Default::default() };
-    assert!(!later.due(99));
-    assert!(later.due(100), "due is inclusive at the instant");
+    assert!(!later.permits_firing(99));
+    assert!(later.permits_firing(100), "due is inclusive at the instant");
 }
 
 #[test]
