@@ -29,7 +29,7 @@ tokio-postgres = { version = "0.7", optional = true }
 argon2 = "0.5"
 zeroize = "1"
 getrandom = "0.2"
-sha2 = "0.10"
+sha2 = "0.11"
 # CAS sidecar encryption (dependency-light policy, justified):
 # `aes-gcm` is ALREADY in this crate's graph — turso_core pulls the same
 # 0.10.x for the page cipher — so naming it directly adds no crate and keeps
