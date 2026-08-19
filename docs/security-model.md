@@ -315,6 +315,33 @@ allowlist and the credential broker exist. By Tier C's own design a module canno
 make a network call, so a connector will never be one — the two mechanisms cover
 different threats and neither substitutes for the other.
 
+### What reaches a model
+
+An `egress` anonymization policy now covers the run path as well as store
+reads. Before, it did not: a trigger hands its payload into `run start` in
+process, so an abstract node's prompt never passed a read exit, and the one
+place a model was called was the one place the policy missed. An operator who
+declared `egress` and ran abstract nodes had a reasonable belief that was
+false, which is the worst shape a security control can take.
+
+The boundary is the model, not the tool — a host tool must receive real values
+or it writes corrupt records — and it is deliberately narrow:
+
+- It is **not DLP**. The tool gets real data, so a compromised tool
+  exfiltrates real data. Brokered egress is what constrains that, and only
+  somewhat.
+- It replaces **only what the detectors catch**: `email` and `phone` by
+  pattern, `person` by interned known identities and the policy's
+  `custom_terms`. A bare personal name the memory has never seen as a subject
+  is not pseudonymized.
+- Rehydration **fails closed** — an unresolvable placeholder fails the node
+  rather than sending the placeholder to a vendor — but `unmatched` detection
+  recognizes the default `[CATEGORY_ID]` silhouette, so a custom `placeholder`
+  template weakens that check.
+- It requires `scope: memory`, and therefore an encrypted memory, because only
+  value-derived tokens replay identically (`RUN-E023` refuses the rest at
+  start).
+
 ### Credentials a host command never holds
 
 `areev run`'s `--credential` / `--allow-host` / `--tool-egress` and the trigger

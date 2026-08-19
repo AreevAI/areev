@@ -76,6 +76,128 @@ pub struct Runner {
     pub principal: String,
 }
 
+/// Collect every string in a JSON tree, in a stable depth-first order.
+///
+/// Walking rather than stringifying keeps structure out of the detector's
+/// way: an object key called `subject` is not a person's name, and a
+/// pseudonymized key would break the tool's schema.
+fn collect_strings(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
+        Value::Object(o) => o.iter().for_each(|(_, x)| collect_strings(x, out)),
+        _ => {}
+    }
+}
+
+/// Rebuild the tree, substituting strings from `next` in the same order
+/// [`collect_strings`] produced them.
+fn substitute_strings(v: &Value, next: &mut std::vec::IntoIter<String>) -> Value {
+    match v {
+        Value::String(_) => next.next().map(Value::String).unwrap_or_else(|| v.clone()),
+        Value::Array(a) => {
+            Value::Array(a.iter().map(|x| substitute_strings(x, next)).collect())
+        }
+        Value::Object(o) => Value::Object(
+            o.iter().map(|(k, x)| (k.clone(), substitute_strings(x, next))).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The anonymization boundary between run state and a model.
+///
+/// ## Why this seam and not the tool seam
+///
+/// The boundary is the **model**, not the tool. A host tool posting an invoice
+/// to a vendor must receive real values — a pseudonymized supplier name writes
+/// a corrupt invoice. A model extracting fields from that invoice works just as
+/// well on `[ORG_7C1A]`.
+///
+/// The gate in the store is an egress boundary on *reads*, and an abstract
+/// node's prompt is not a read: a trigger hands its payload straight into
+/// `run start` in process, so under an `egress` policy the one place a model is
+/// actually called was the one place the policy did not reach.
+///
+/// ## The round trip
+///
+/// Out, in [`Runner::pseudonymize_for_model`]: every string in the LLM effect's input is
+/// pseudonymized. Back, in [`Runner::rehydrate_from_model`]: the tool-call arguments the
+/// model produced are rehydrated *before* dispatch, so the tool sees real
+/// values again.
+///
+/// Rehydration **fails closed**. `rehydrate` leaves a token it cannot resolve
+/// intact and reports it; dispatching a partially rehydrated call would post a
+/// literal `[PERSON_A4F2]` to a vendor, so an unresolved token fails the node
+/// instead.
+impl Runner {
+    /// Is a model-facing anonymization policy live for this run's namespace?
+    fn anon_boundary_active(&self) -> Result<bool, RunError> {
+        let mode = self
+            .facade
+            .with_store(|m| m.anon_active_mode(&self.ns))
+            .map_err(err_run)?;
+        Ok(matches!(mode.as_deref(), Some("egress") | Some("both")))
+    }
+
+    /// Pseudonymize everything on its way to the model.
+    fn pseudonymize_for_model(&self, input: &Value) -> Result<Value, RunError> {
+        if !self.anon_boundary_active()? {
+            return Ok(input.clone());
+        }
+        let mut values = Vec::new();
+        collect_strings(input, &mut values);
+        if values.is_empty() {
+            return Ok(input.clone());
+        }
+        self.facade
+            .with_store(|m| m.anon_egress_text(&self.ns, &mut values))
+            .map_err(err_run)?;
+        Ok(substitute_strings(input, &mut values.into_iter()))
+    }
+
+    /// Rehydrate what came back, or say exactly which token could not be.
+    ///
+    /// `Err` here is the fail-closed case: the caller turns it into a failed
+    /// effect rather than dispatching a call with a placeholder still in it.
+    fn rehydrate_from_model(&self, input: &Value) -> Result<Value, String> {
+        let active = self.anon_boundary_active().map_err(|e| e.to_string())?;
+        if !active {
+            return Ok(input.clone());
+        }
+        let mapping = self
+            .facade
+            .with_store(|m| m.anon_mapping_for(&self.ns))
+            .map_err(|e| e.to_string())?;
+        let mut values = Vec::new();
+        collect_strings(input, &mut values);
+        if values.is_empty() {
+            return Ok(input.clone());
+        }
+        let mut out = Vec::with_capacity(values.len());
+        let mut unmatched: Vec<String> = Vec::new();
+        for v in values {
+            let r = areev_core::anon::rehydrate(&v, &mapping).map_err(|e| e.to_string())?;
+            for u in r.unmatched {
+                if !unmatched.contains(&u) {
+                    unmatched.push(u);
+                }
+            }
+            out.push(r.text);
+        }
+        if !unmatched.is_empty() {
+            return Err(format!(
+                "the model produced placeholder{} this run cannot resolve: {}. \
+                 Dispatching would send the placeholder itself to the tool, so \
+                 the effect is refused instead",
+                if unmatched.len() == 1 { "" } else { "s" },
+                unmatched.join(", ")
+            ));
+        }
+        Ok(substitute_strings(input, &mut out.into_iter()))
+    }
+}
+
 /// Journal-shaped transcript messages → the tool-calling seam's shape.
 /// Pure translation, on the driver thread; the pool never parses state.
 fn seam_messages(input: &Value) -> Vec<areev_llm::ChatMessage> {
@@ -316,6 +438,22 @@ impl Runner {
                             p.node,
                             crate::executor::strip_cas(uri)
                         ),
+                    });
+                }
+            }
+        }
+        // An abstract node crosses the model boundary, and a boundary whose
+        // placeholders are not value-derived cannot be replayed. Refuse here
+        // rather than let `verify` diverge later, which would look like a
+        // journal integrity failure instead of a configuration one.
+        if manifest.pinned.iter().any(|p| p.executor == "abstract") && self.anon_boundary_active()?
+        {
+            let policies = self.facade.with_store(|m| m.anon_policies()).map_err(err_run)?;
+            if let Some((_, policy)) = policies.iter().find(|(ns, _)| ns == &self.ns) {
+                if policy.scope != "memory" {
+                    return Err(RunError::AnonReplayUnsafe {
+                        ns: self.ns.clone(),
+                        scope: policy.scope.clone(),
                     });
                 }
             }
@@ -1158,8 +1296,9 @@ impl Runner {
                                     });
                                 }) as crate::executor::TokenSink
                             });
+                            let to_model = self.pseudonymize_for_model(&input)?;
                             Some(crate::executor::PreparedLlm {
-                                messages: seam_messages(&input),
+                                messages: seam_messages(&to_model),
                                 tools: defs,
                                 max_tokens: manifest.llm_max_tokens.unwrap_or(1024),
                                 on_token,
@@ -1192,6 +1331,23 @@ impl Runner {
                             None => None,
                         };
                         let idem = idempotency_key(&key, &input);
+                        // Rehydrate for the tool, never for the record: the
+                        // intent above journaled the pseudonymized input and
+                        // `idem` derives from it, so verify replays identically.
+                        let input = match self.rehydrate_from_model(&input) {
+                            Ok(v) => v,
+                            Err(why) => {
+                                // Fail the node, not the run: a plan's retries
+                                // and edges still decide what happens next.
+                                let outcome = EffectOutcome::Failed {
+                                    cause: FailCause::ExecutorError,
+                                    detail: why,
+                                    journal_bytes: 0,
+                                };
+                                wave.push((key, Some(outcome)));
+                                continue;
+                            }
+                        };
                         wave.push((key.clone(), None));
                         pool.submit(DispatchJob {
                             key,

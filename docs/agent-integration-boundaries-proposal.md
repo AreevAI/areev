@@ -5,8 +5,8 @@ three real workloads onto the existing primitives: invoice intake from an
 Outlook mailbox into Zoho Books, NDA review conducted over email, and
 contact-form lead enrichment into a CRM.
 
-**Parts 1 (`executor_uri`) and 3 (egress) are BUILT.** Part 2 is
-decided-in-principle and unbuilt; it names what it costs.
+**All three parts are BUILT.** Each section records what the implementation
+changed about the design, because two of the three changed materially.
 
 The review's conclusion was that the primitives compose — `Trigger` for
 ingress, `Workflow` for the plan, `Tool` Definitions for effects, the journal
@@ -125,6 +125,27 @@ executor.
 ---
 
 ## 2. Anonymization — the boundary is the model, not the tool
+
+**Built.** Two things the sketch below got wrong, both found by writing the
+tests:
+
+- **The prompt is not `input["messages"]`.** An abstract node's turn is built
+  by the *scheduler* as `{instruction, state}` from the run context, so
+  pseudonymizing the seam translation would have missed it entirely. The
+  transform belongs on the effect input, before the seam. The first draft of
+  the round-trip test failed for exactly this reason, which is the only reason
+  it was caught.
+- **A bare personal name is not detected.** Tier-0 catches `email` and `phone`
+  by pattern; `person` matches only interned known identities and the policy's
+  `custom_terms`. A test written with a plausible-looking name passed
+  vacuously against a memory with no interned identities. The honest statement
+  — now in both `run.md` and `security-model.md` — is that the boundary
+  replaces what the detectors catch, and callers should declare the terms they
+  care about rather than assume a name is covered.
+
+The `egress`-extension question below was resolved as recommended: extending
+the existing mode, because the current behavior was the defect and a second
+knob would have meant two ways to be half-protected.
 
 ### The correction
 
@@ -287,15 +308,16 @@ boundary.
 
 ## 4. Sequencing
 
-1. **Part 1 (`executor_uri`)** — built.
-2. **Part 3 (egress)** — built.
-3. **Part 2 (LLM boundary)** — remaining. The mechanism exists; it needs two
-   wiring points, the fail-closed rule on unmatched placeholders, and care with
-   verify and replay. It is also the part that makes [`gdpr.md`](gdpr.md) and
-   [`eu-ai-act.md`](eu-ai-act.md) true for agent workloads, which is what a
-   procurement reviewer asks about first.
+All three parts are built. Two follow-ups remain, both recorded rather than
+left implicit.
 
-One follow-up the egress work leaves open: refusals are reported to the caller
+**`unmatched` detection is silhouette-based.** `rehydrate` recognizes leftover
+tokens in the default `[CATEGORY_ID]` shape, so a policy with a custom
+`placeholder` template weakens the fail-closed check. Either narrow the
+template to a validated shape when the run boundary is active, or teach
+`rehydrate` the policy's own template.
+
+**Egress refusals are still not journaled.** refusals are reported to the caller
 as a `403` and printed to stderr when a run ends, but they are **not journaled
 into the run record**. The executor holds the broker and runs on a pool thread,
 so journaling from there would need driver plumbing the rest of this did not.

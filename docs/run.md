@@ -158,6 +158,48 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+### The model boundary (anonymization)
+
+If an `anon:<ns>` policy declares `egress` (or `both`) for the run's namespace,
+an abstract node's prompt is pseudonymized on the way out and the model's
+tool-call arguments are rehydrated on the way back:
+
+```
+run state ──pseudonymize──▶ model ──rehydrate──▶ host tool
+  real                  [EMAIL_7C1A]              real
+```
+
+The boundary is the **model, not the tool**. A tool posting an invoice must
+receive real values — a pseudonymized supplier writes a corrupt record — while
+the model doing the extraction works just as well on a placeholder.
+
+This closes a gap rather than adding a feature: the store's gate is an egress
+boundary on *reads*, and an abstract node's prompt is not a read. A trigger
+hands its payload straight into `run start` in process, so the one place a
+model was actually called was the one place an `egress` policy did not reach.
+
+Four things follow from it:
+
+- **Rehydration fails closed.** A placeholder the run cannot resolve — a model
+  inventing `[EMAIL_DEADBEEF]`, say — **fails the node** rather than
+  dispatching. Sending the placeholder itself to a vendor is worse than
+  failing.
+- **The journal keeps the pseudonymized form.** Rehydration happens for
+  dispatch only, and the idempotency key derives from the pseudonymized input,
+  so `verify` replays byte-identically whether or not a policy is live.
+- **The policy must be `scope: memory`**, which means an encrypted memory.
+  Session scope numbers tokens by order of appearance, so a replay would
+  pseudonymize differently and `verify` would diverge. A plan with an abstract
+  node under any other scope is refused at start with `RUN-E023`, which names
+  the fix.
+- **Only what the detectors catch is replaced.** Tier-0 detects `email` and
+  `phone` by pattern; `person` matches interned known identities and the
+  policy's `custom_terms`. A bare personal name that the memory has never seen
+  as a subject is **not** pseudonymized. Declare the terms you care about
+  rather than assuming a name is caught.
+
+A namespace with no declared policy is untouched, exactly as before.
+
 ### Brokered egress (`--credential`, `--allow-host`, `--tool-egress`)
 
 A tool that posts to a vendor API does not need to hold the token:

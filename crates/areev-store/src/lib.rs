@@ -2702,6 +2702,30 @@ impl Areev {
         self.flush_anon_vault()
     }
 
+    /// Pseudonymize free text on its way to a model, under `ns`'s declared
+    /// egress policy. A no-op when no policy covers `ns`.
+    ///
+    /// The read exits use this internally for grain fields; the run driver
+    /// needs it for text that never was a grain — an abstract node's prompt
+    /// is built from run state handed over in process by a trigger, so it
+    /// reaches a model without passing any read exit at all.
+    pub fn anon_egress_text(&mut self, ns: &str, values: &mut [String]) -> Result<()> {
+        self.egress_strings_exit(ns, None, values)
+    }
+
+    /// The live token -> value mapping for `ns`, for rehydrating text that
+    /// came back from a model. Seeded from the sealed vault at open, so it
+    /// covers tokens minted by earlier runs as well as this one.
+    pub fn anon_mapping_for(&self, ns: &str) -> Result<std::collections::BTreeMap<String, String>> {
+        let mut out = std::collections::BTreeMap::new();
+        for (m_ns, _, mapping) in self.anon.mappings()? {
+            if m_ns == ns {
+                out.extend(mapping);
+            }
+        }
+        Ok(out)
+    }
+
     /// Reverse-lookup one placeholder token (proposal D9, REQ-ANON-3):
     /// live sessions first, then the sealed vault. NO authorization here —
     /// the facade gates and audits; direct store callers already hold the

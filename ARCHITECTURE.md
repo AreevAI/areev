@@ -832,6 +832,30 @@ run is a command a host triggers, so improvement never runs unattended. That is
 the difference between "an LLM edits your memory" and self-improvement you can
 put in production.
 
+### The anonymization boundary is the model, not the tool
+
+An `egress` anonymization policy covers what leaves for a model provider, and
+that is a narrower claim than "what leaves the process". A host tool posting an
+invoice must receive real values — a pseudonymized supplier name writes a
+corrupt record — so pseudonymizing the tool seam would break the workflows the
+feature exists to serve.
+
+So the run driver pseudonymizes an abstract node's prompt and rehydrates the
+model's tool-call arguments before dispatch. Rehydration is for dispatch only:
+the journal keeps the pseudonymized form and the idempotency key derives from
+it, so `verify` replays byte-identically whether or not a policy is live. An
+unresolvable placeholder fails the node rather than sending itself to a vendor.
+
+This required the policy to be `scope: memory` (value-derived tokens, hence an
+encrypted memory) and refuses anything else at start with `RUN-E023`, because
+appearance-order tokens pseudonymize differently on replay and would surface as
+a journal integrity failure rather than the configuration error it is.
+
+The gap it closes is worth recording as its own lesson: the gate was an egress
+boundary on *store reads*, and the run path never read. A control whose
+coverage does not match the belief it creates is worse than no control, and the
+belief `egress` created was that model-facing data was pseudonymized.
+
 ### A declaration replicates; an authorization never does
 
 A `Tool` Definition may name its executor by content address
