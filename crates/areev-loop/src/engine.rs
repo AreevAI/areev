@@ -882,6 +882,18 @@ impl Engine {
     ) -> Result<()> {
         let mut created = Vec::new();
         if let Proposal::Cal { cal } = &rec.proposal {
+            // Belt and braces over the policy: `grants_auto_apply` already
+            // excludes the `query` class, so a definition rewrite cannot reach
+            // this path. If one ever did, it would apply with no recorded
+            // inverse and no human BECAUSE — refuse instead.
+            if cal.lines().map(str::trim).any(is_definition_statement) {
+                return Err(Error::InvalidProposal(
+                    "a definition rewrite (DEFINE QUERY / DEFINE TEMPLATE) is never \
+                     auto-applied: it changes what every future context contains, so it \
+                     requires a human APPROVE + APPLY with BECAUSE"
+                        .into(),
+                ));
+            }
             for r in sub.execute_cal(cal)? {
                 if let Some(h) = r.get("hash").and_then(Value::as_str) {
                     created.push(h.to_string());
@@ -893,6 +905,7 @@ impl Engine {
             target_ref: rec.target_ref.clone(),
             rollbackable: rec.rollbackable,
             created_hashes: created,
+            inverse_cal: None,
             metric: rec.metric.clone(),
         };
         let prev = p.audit_heads.get(&rec.hash).cloned();
@@ -1159,8 +1172,27 @@ impl Engine {
 
         // Execute the proposal.
         let mut created = Vec::new();
+        // The inverse of a change that creates no grain — see
+        // `AppliedRecord::inverse_cal`. Captured BEFORE execution, because
+        // afterwards the previous definition is gone.
+        let mut inverse_cal: Option<String> = None;
         match &rec.proposal {
             Proposal::Cal { cal } => {
+                for line in cal.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    if !is_definition_statement(line) {
+                        continue;
+                    }
+                    match sub.definition_inverse(line)? {
+                        Some(inv) => inverse_cal = Some(inv),
+                        None => {
+                            return Err(Error::InvalidProposal(format!(
+                                "this substrate cannot record a rollback inverse for {line:?}; \
+                                 a definition rewrite that ROLLBACK could not undo is refused \
+                                 rather than applied"
+                            )))
+                        }
+                    }
+                }
                 let rows = sub.execute_cal(cal)?;
                 for r in rows {
                     if let Some(h) = r.get("hash").and_then(Value::as_str) {
@@ -1228,6 +1260,7 @@ impl Engine {
             target_ref: rec.target_ref.clone(),
             rollbackable: rec.rollbackable,
             created_hashes: created,
+            inverse_cal,
             metric: rec.metric.clone(),
         };
         let prev = p.audit_heads.get(rec_hash).cloned();
@@ -1290,6 +1323,15 @@ impl Engine {
         }
         for h in &applied.created_hashes {
             sub.retract(h, &format!("rollback of {rec_hash}"))?;
+        }
+        // A definition rewrite creates no grain, so retracting `created_hashes`
+        // undoes nothing. Restoring it means re-running the statement captured
+        // at apply time — the previous definition, or a DROP when there was
+        // none. Runs BEFORE the audit is written, so a failed restore leaves
+        // the recommendation `applied` (still true) rather than recording a
+        // rollback that did not happen.
+        if let Some(inverse) = &applied.inverse_cal {
+            sub.execute_cal(inverse)?;
         }
         let prev = p.audit_heads.get(rec_hash).cloned();
         let audit = AuditRecord {
@@ -2087,6 +2129,18 @@ fn load_rec<S: SubstrateRead>(sub: &S, rec_hash: &str) -> Result<Recommendation>
     Recommendation::from_fields(rec_hash, &g.fields)
 }
 
+/// Is this line a definition rewrite — a statement that changes a saved
+/// `qry:`/`tpl:` registry row rather than writing a grain?
+///
+/// A keyword test, not a parse: the engine deliberately contains a CAL
+/// *writer*, never a parser (parsing is the substrate's job). Both spellings
+/// are matched case-insensitively, and `DROP` is intentionally absent — the
+/// loop may propose defining a query, never removing one.
+pub(crate) fn is_definition_statement(line: &str) -> bool {
+    let up = line.trim_start().to_ascii_uppercase();
+    up.starts_with("DEFINE QUERY") || up.starts_with("DEFINE TEMPLATE")
+}
+
 /// The refusal an advisory `Edit` earns. The engine has no executable edit
 /// primitive; the change belongs in the host.
 const ADVISORY_EDIT: &str = "This recommendation is advisory: the engine cannot execute this edit. \
@@ -2124,5 +2178,25 @@ pub(crate) fn ensure_executable(proposal: &Proposal) -> Result<()> {
                 Err(Error::InvalidProposal(ADVISORY_DATA.into()))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod definition_proposal_tests {
+    use super::is_definition_statement;
+
+    #[test]
+    fn definition_statements_are_recognized_in_both_spellings() {
+        assert!(is_definition_statement(r#"DEFINE QUERY "triage" AS { RECALL facts }"#));
+        assert!(is_definition_statement("  define template foo AS { x }"));
+        assert!(is_definition_statement("DEFINE TEMPLATE bar AS { y }"));
+        // Ordinary proposals are untouched.
+        assert!(!is_definition_statement("ADD fact {}"));
+        assert!(!is_definition_statement("SUPERSEDE abc WITH fact {}"));
+        assert!(!is_definition_statement("FORGET abc"));
+        // `DROP` is never proposable, so it is deliberately NOT a definition
+        // statement here — a proposal containing one still fails validation
+        // rather than being handed an inverse.
+        assert!(!is_definition_statement(r#"DROP QUERY "triage""#));
     }
 }

@@ -4,7 +4,7 @@
 //! (create memory, structural recall, batch-add, supersede, forget)
 //! running in-process.
 
-use areev_core::types::{Event, Fact, Grain};
+use areev_core::types::{Event, Fact, Grain, GrainType};
 use areev_store::{Axis, Direction, Areev, OP_ADD, OP_FORGET, OP_SUPERSEDE};
 use tempfile::TempDir;
 
@@ -151,6 +151,68 @@ fn thread_tail_returns_transcript_order() {
     assert_eq!(tail.len(), 20);
     assert_eq!(tail[0].get_str("content"), Some("turn 10"));
     assert_eq!(tail[19].get_str("content"), Some("turn 29"));
+}
+
+#[test]
+fn recent_in_session_beats_the_truncated_window() {
+    // The defect this read exists to fix (#49): the session's turns are OLDER
+    // than the page a namespace scan returns, so a post-filter over `recent`
+    // finds none of them while the index-backed read finds all of them.
+    let (mut m, _d) = open_mem();
+    for i in 0..5 {
+        let mut e = Event::new(&format!("call-7 turn {i}"));
+        e.session_id = Some("call-7".to_string());
+        e.common.namespace = Some("caller".to_string());
+        m.add(&e).unwrap();
+    }
+    // 200 newer events on other sessions bury it.
+    for i in 0..200 {
+        let mut e = Event::new(&format!("noise {i}"));
+        e.session_id = Some(format!("other-{i}"));
+        e.common.namespace = Some("caller".to_string());
+        m.add(&e).unwrap();
+    }
+
+    // What a post-filter over a 50-row page would have seen: nothing.
+    let page = m.recent("caller", Some(GrainType::Event), 50).unwrap();
+    let in_page = page
+        .iter()
+        .filter(|g| g.get_str("session_id") == Some("call-7"))
+        .count();
+    assert_eq!(in_page, 0, "the session must be outside the page for this test to mean anything");
+
+    // The index-backed read returns the whole session regardless of page.
+    let got = m
+        .recent_in_session("caller", "call-7", Some(GrainType::Event), 20, true)
+        .unwrap();
+    assert_eq!(got.len(), 5);
+    // Newest first, matching `recent`'s contract (thread_tail is the
+    // oldest-first transcript view).
+    assert_eq!(got[0].get_str("content"), Some("call-7 turn 4"));
+    assert_eq!(got[4].get_str("content"), Some("call-7 turn 0"));
+}
+
+#[test]
+fn recent_in_session_filters_type_and_unknown_session_is_empty() {
+    let (mut m, _d) = open_mem();
+    let mut e = Event::new("an event");
+    e.session_id = Some("s1".to_string());
+    e.common.namespace = Some("caller".to_string());
+    m.add(&e).unwrap();
+
+    // Narrowing to a type the session has none of returns empty, not the event.
+    let none = m
+        .recent_in_session("caller", "s1", Some(GrainType::Fact), 10, true)
+        .unwrap();
+    assert!(none.is_empty());
+    // No type filter: the event comes back.
+    let all = m.recent_in_session("caller", "s1", None, 10, true).unwrap();
+    assert_eq!(all.len(), 1);
+    // A session term nothing ever carried is an empty answer, not an error.
+    let unknown = m
+        .recent_in_session("caller", "never-used", None, 10, true)
+        .unwrap();
+    assert!(unknown.is_empty());
 }
 
 #[test]

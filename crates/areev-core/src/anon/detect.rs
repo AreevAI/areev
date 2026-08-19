@@ -33,6 +33,11 @@ pub const KNOWN_CATEGORIES: &[&str] = &[
     "otp",
     "account_number",
     "custom",
+    // National / health identifiers (issue #47). Every one of these is
+    // checksum-validated or cue-gated — see the individual detectors.
+    "sg_nric",
+    "ae_eid",
+    "mrn",
 ];
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -61,6 +66,7 @@ pub(super) fn run_tier0(
     text: &str,
     custom_terms: &[String],
     known_identities: &[String],
+    term_sets: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<Detection>> {
     let mut out = Vec::new();
     detect_email(text, &mut out);
@@ -72,9 +78,18 @@ pub(super) fn run_tier0(
     detect_date(text, &mut out);
     detect_credit_card(text, &mut out);
     detect_iban(text, &mut out);
+    detect_sg_nric(text, &mut out);
+    detect_ae_eid(text, &mut out);
+    detect_mrn(text, &mut out);
     detect_secret(text, &mut out);
     detect_keyword_proximity(text, &mut out);
     detect_terms(text, custom_terms, "custom", "tier0.dictionary", &mut out)?;
+    // Named dictionaries: each set emits its OWN category, which is what makes
+    // a co-occurrence rule expressible ("person near condition"). One shared
+    // `custom` bucket could not distinguish the two halves of the rule.
+    for (category, terms) in term_sets {
+        detect_terms(text, terms, category, "tier0.term_set", &mut out)?;
+    }
     let identity_terms = identity_match_terms(known_identities);
     detect_terms(text, &identity_terms, "person", "tier0.known_identity", &mut out)?;
     Ok(out)
@@ -257,6 +272,109 @@ fn detect_iban(text: &str, out: &mut Vec<Detection>) {
     for m in re.find_iter(text) {
         if boundary_ok(text, m.start(), m.end()) && iban_mod97_ok(m.as_str()) {
             out.push(det(m.start(), m.end(), "iban", "tier0.iban"));
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// National / health identifiers (issue #47)
+// ---------------------------------------------------------------------------
+//
+// These are the identifiers a health regulator actually asks about, and the
+// reason they belong in a precision-first tier is that the important ones
+// carry checksums: an NRIC-shaped string that fails its check digit is not an
+// NRIC, so the false-positive rate is near zero rather than "one letter
+// followed by seven digits". Where a family has no checksum (MRN), the
+// detector is gated on a nearby cue word instead of matching bare digit runs.
+
+/// Singapore NRIC / FIN — `[STFGM]` + 7 digits + a check letter.
+///
+/// Weighted mod-11 over the seven digits (weights 2,7,6,5,4,3,2), an offset
+/// that encodes the issue era (T/G +4, M +3), and a prefix-class letter table.
+/// Wrong check letter → not a detection.
+fn detect_sg_nric(text: &str, out: &mut Vec<Detection>) {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = re(&RE, r"[STFGMstfgm][0-9]{7}[A-Za-z]");
+    for m in re.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end()) && sg_nric_ok(m.as_str()) {
+            out.push(det(m.start(), m.end(), "sg_nric", "tier0.sg_nric"));
+        }
+    }
+}
+
+fn sg_nric_ok(s: &str) -> bool {
+    let up = s.to_ascii_uppercase();
+    let b = up.as_bytes();
+    if b.len() != 9 {
+        return false;
+    }
+    const W: [u32; 7] = [2, 7, 6, 5, 4, 3, 2];
+    let mut sum: u32 = 0;
+    for i in 0..7 {
+        let d = (b[1 + i] as char).to_digit(10);
+        match d {
+            Some(v) => sum += v * W[i],
+            None => return false,
+        }
+    }
+    // Era offset: T/G are the 2000s series, M the 2022 foreigner series.
+    let (offset, table): (u32, &[u8; 11]) = match b[0] {
+        b'S' => (0, b"JZIHGFEDCBA"),
+        b'T' => (4, b"JZIHGFEDCBA"),
+        b'F' => (0, b"XWUTRQPNMLK"),
+        b'G' => (4, b"XWUTRQPNMLK"),
+        b'M' => (3, b"KLJNPQRTUWX"),
+        _ => return false,
+    };
+    table[((sum + offset) % 11) as usize] == b[8]
+}
+
+/// UAE Emirates ID — 15 digits, `784-YYYY-NNNNNNN-C`, Luhn-checked.
+///
+/// The `784` issuer prefix plus a Luhn check makes this specific enough to
+/// run unconditionally; without the prefix check, any 15-digit run that
+/// happened to satisfy Luhn would match.
+fn detect_ae_eid(text: &str, out: &mut Vec<Detection>) {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = re(&RE, r"784[- ]?[0-9]{4}[- ]?[0-9]{7}[- ]?[0-9]");
+    for m in re.find_iter(text) {
+        let digits: String = m.as_str().chars().filter(char::is_ascii_digit).collect();
+        let vals: Vec<u8> = digits
+            .chars()
+            .filter_map(|c| c.to_digit(10).map(|d| d as u8))
+            .collect();
+        if vals.len() == 15 && boundary_ok(text, m.start(), m.end()) && luhn_ok(&vals) {
+            out.push(det(m.start(), m.end(), "ae_eid", "tier0.ae_eid"));
+        }
+    }
+}
+
+/// Medical record numbers — shape alone is a bare digit run, which is why
+/// this is CUE-GATED rather than pattern-only: a 6–12 digit run counts only
+/// when an MRN cue word sits within 40 characters before it. Matching bare
+/// digit runs would redact every quantity in a clinical note.
+fn detect_mrn(text: &str, out: &mut Vec<Detection>) {
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    let cue = re(
+        &CUE,
+        r"(?i)\b(mrn|medical record (no\.?|number)|patient (id|number)|chart (no\.?|number)|hospital number)\b",
+    );
+    let num = re(&NUM, r"[A-Za-z]{0,3}[0-9]{6,12}");
+    let cues: Vec<usize> = cue.find_iter(text).map(|m| m.end()).collect();
+    if cues.is_empty() {
+        return;
+    }
+    for m in num.find_iter(text) {
+        if !boundary_ok(text, m.start(), m.end()) {
+            continue;
+        }
+        let near = cues
+            .iter()
+            .any(|c| m.start() >= *c && m.start().saturating_sub(*c) <= 40);
+        if near {
+            out.push(det(m.start(), m.end(), "mrn", "tier0.mrn"));
         }
     }
 }
@@ -463,7 +581,7 @@ mod tests {
     use super::*;
 
     fn cats(text: &str) -> Vec<(String, String)> {
-        let dets = run_tier0(text, &[], &[]).unwrap();
+        let dets = run_tier0(text, &[], &[], &Default::default()).unwrap();
         dets.iter().map(|d| (d.category.clone(), text[d.start..d.end].to_string())).collect()
     }
 
@@ -485,5 +603,81 @@ mod tests {
     #[test]
     fn plain_digit_runs_are_not_phones() {
         assert!(cats("in 2026 there were 1462 cases").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod national_id_tests {
+    use super::*;
+
+    fn cats(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        run_tier0(text, &[], &[], &Default::default()).unwrap();
+        let mut d = Vec::new();
+        detect_sg_nric(text, &mut d);
+        detect_ae_eid(text, &mut d);
+        detect_mrn(text, &mut d);
+        for x in d {
+            out.push(format!("{}:{}", x.category, &text[x.start..x.end]));
+        }
+        out
+    }
+
+    #[test]
+    fn sg_nric_checksum_gates_the_detection() {
+        // One valid value per prefix class, each with its era offset applied.
+        for valid in ["S1234567D", "T1234567J", "F1234567N", "G1234567X", "M1234567X"] {
+            assert!(sg_nric_ok(valid), "{valid} must validate");
+            assert_eq!(cats(&format!("nric {valid} on file")).len(), 1, "{valid}");
+        }
+        // Same shape, wrong check letter — precision-first means this is NOT a
+        // detection, not a low-confidence one.
+        for invalid in ["S1234567A", "T1234567D", "F1234567D", "Z1234567D"] {
+            assert!(!sg_nric_ok(invalid), "{invalid} must not validate");
+            assert!(cats(&format!("nric {invalid}")).is_empty(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn sg_nric_is_case_insensitive_but_bounded() {
+        assert_eq!(cats("s1234567d").len(), 1);
+        // Embedded in a longer alphanumeric run: not a standalone identifier.
+        assert!(cats("XS1234567D9").is_empty());
+    }
+
+    #[test]
+    fn ae_eid_needs_the_issuer_prefix_and_luhn() {
+        // 784-1985-1234567-C: solve for the Luhn check digit.
+        let base = "78419851234567";
+        let vals: Vec<u8> = base.chars().map(|c| c.to_digit(10).unwrap() as u8).collect();
+        let check = (0..10u8)
+            .find(|c| {
+                let mut v = vals.clone();
+                v.push(*c);
+                luhn_ok(&v)
+            })
+            .expect("a Luhn check digit always exists");
+        let eid = format!("784-1985-1234567-{check}");
+        assert_eq!(cats(&format!("emirates id {eid}")).len(), 1, "{eid}");
+
+        // Wrong check digit, and a 15-digit run without the 784 prefix.
+        let bad = format!("784-1985-1234567-{}", (check + 1) % 10);
+        assert!(cats(&bad).is_empty(), "{bad} must fail Luhn");
+        assert!(cats("123456789012345").is_empty(), "no issuer prefix");
+    }
+
+    #[test]
+    fn mrn_needs_a_cue_word() {
+        // Cue-gated: the same digit run is PHI next to "MRN" and a quantity
+        // otherwise. Matching bare runs would redact every number in a note.
+        assert_eq!(cats("MRN 00456123 admitted").len(), 1);
+        assert_eq!(cats("Medical Record Number: 4471820").len(), 1);
+        assert!(
+            cats("the ward handled 4471820 samples last year").is_empty(),
+            "a bare digit run is not an MRN"
+        );
+        // Cue present but far away — outside the proximity window.
+        let far = format!("MRN was not recorded.{} 4471820", " ".repeat(60));
+        assert!(cats(&far).is_empty(), "proximity window must bound the cue");
     }
 }

@@ -3772,6 +3772,42 @@ impl Parser {
             (Vec::new(), Vec::new())
         };
 
+        // ── Out-of-order clauses are an error, not a silent detach ───────
+        //
+        // ASSEMBLE's clause order is fixed (OMS §8.2). Every clause is parsed
+        // by an `if self.at_exact(...)` that simply doesn't fire when the
+        // clause arrives late, so a misordered statement PARSED FINE and ran
+        // with the clause missing: `… FORMAT markdown BUDGET 900` silently
+        // dropped the budget and assembled to the 4000-token default. That is
+        // a security-adjacent failure — the guard you wrote is not the guard
+        // that ran — and it was a known bug (docs/facts/context-assembly.md
+        // §12) rather than an unknown one. Anything still sitting here that
+        // belongs to an earlier clause is now refused by name.
+        if let Some(st) = self.peek() {
+            let late = match st.token {
+                Token::Budget => Some("BUDGET"),
+                Token::Priority => Some("PRIORITY"),
+                Token::For => Some("FOR"),
+                Token::Where => Some("WHERE"),
+                Token::Format => Some("FORMAT"),
+                Token::From => Some("FROM"),
+                _ => None,
+            };
+            if let Some(clause) = late {
+                return Err(CalError::UnexpectedToken {
+                    expected: "end of the ASSEMBLE statement".into(),
+                    found: format!("{clause} clause out of order"),
+                    span: Some(st.span),
+                    suggestion: Some(
+                        "ASSEMBLE clauses are ordered: ASSEMBLE \"name\" FOR \"…\" FROM … \
+                         [WHERE …] BUDGET n PRIORITY … FORMAT … WITH dedup. A clause written \
+                         out of order used to be dropped silently — put it in this order."
+                            .into(),
+                    ),
+                });
+            }
+        }
+
         let span_end = self.prev_span();
         Ok(CalStatement::Assemble(AssembleStmt {
             topic,
@@ -3817,6 +3853,46 @@ impl Parser {
                 let sspan = self.current_span();
                 let label = self.parse_label()?;
                 self.expect_exact(&Token::Colon)?;
+                // `PIN` marks the source non-degradable. It sits between the
+                // colon and the body so it reads as a property of the body —
+                // `guardrail: PIN LITERAL "…"`, `turns: PIN (RECALL …)` — and
+                // so a source may still be LABELLED `pin`.
+                let pinned = self.eat_exact(&Token::Pin);
+                // `LITERAL "…"` — host text instead of a query.
+                if self.at_exact(&Token::Literal) {
+                    self.advance();
+                    let text = self.parse_string_literal()?;
+                    sources.push(NamedSource {
+                        label,
+                        // Placeholder: a literal source is never executed. Keeps
+                        // the serialized AST shape stable for existing readers.
+                        query: Box::new(CalStatement::Assemble(AssembleStmt {
+                            topic: String::new(),
+                            from: Source::Parameter {
+                                name: "_literal".to_string(),
+                            },
+                            where_clause: None,
+                            context_name: None,
+                            sources: None,
+                            budget: None,
+                            priority: None,
+                            format: None,
+                            for_whom: None,
+                            assemble_with: Vec::new(),
+                            with_options: Vec::new(),
+                            streaming: false,
+                            span: Some(sspan),
+                        })),
+                        literal: Some(text),
+                        pinned,
+                        with_options: Vec::new(),
+                        span: Some(sspan),
+                    });
+                    if !self.eat_exact(&Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 // Parse the sub-query (in parentheses or bare RECALL),
                 // accepting an optional WITH clause INSIDE the parens.
                 let (query, inside_with) = self.parse_assemble_source_query()?;
@@ -3831,6 +3907,8 @@ impl Parser {
                 sources.push(NamedSource {
                     label,
                     query: Box::new(query),
+                    literal: None,
+                    pinned,
                     with_options,
                     span: Some(sspan),
                 });

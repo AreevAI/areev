@@ -23,3 +23,11 @@ serde_json = "1"
 # The CAL-over-backend smoke drives the full stack (executor -> facade ->
 # store) against each backend.
 areev-cal = { path = "../areev-cal" }
+# ONLY for the reconnect-after-outage case: simulating a managed-Postgres
+# restart means terminating the store's backend from a SECOND connection
+# (`pg_terminate_backend`), which no public store API can or should do. Both
+# crates are already in the tree behind `areev-store/postgres`; this is a
+# dev-dependency on a `publish = false` crate, so it adds nothing to any
+# shipped artifact.
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-postgres = "0.7"

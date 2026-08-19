@@ -834,6 +834,23 @@ impl Default for HybridParamsRange {
     }
 }
 
+/// A sort key pushed into the store, rather than applied to whatever page the
+/// statement already returned.
+///
+/// Only fields the `grains` table carries as COLUMNS can be served this way —
+/// in practice `created_at`. Every other sort key callers use (`priority`,
+/// `status`, `confidence`, and all type-specific fields) lives inside the
+/// content-addressed blob, so ordering on it in SQL would mean materializing a
+/// column per field. Those are ranked in the executor instead, over a scan
+/// widened to `max_limit`, with `CAL-W015` when even that scan fills up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortKey {
+    /// The field to order by. Currently only `created_at` is index-backed.
+    pub field: String,
+    /// Descending when true.
+    pub descending: bool,
+}
+
 /// Parameters for recall queries.
 #[derive(Debug, Default, Clone)]
 pub struct RecallParams {
@@ -866,6 +883,20 @@ pub struct RecallParams {
     pub include_siblings: Option<bool>,
     /// Filter by user_id.
     pub user_id: Option<String>,
+    /// Filter to one conversation/session, pushed down to `idx_thread(ns,
+    /// session, seq)` rather than post-filtered.
+    ///
+    /// `session_id` is a *type-specific* field (Event, Observation, and the
+    /// other session-bearing types), so it is deliberately NOT in
+    /// `COMMON_FIELDS` — the post-retrieval filter still runs over it as a
+    /// backstop. What this field buys is the SCAN BOUND: without it,
+    /// `RECALL events WHERE session_id = "…"` fell into the unanchored
+    /// recent-by-type scan and filtered a `default_limit` page, so the tail of
+    /// a specific conversation in a busy namespace could be entirely outside
+    /// the window and the query answered "nothing". Set from
+    /// `WHERE session_id = "…"`; consumed by `AreevFacade::recall`, which
+    /// routes the unanchored path to `Areev::recent_in_session`.
+    pub session_id: Option<String>,
     /// Filter by grain type.
     pub grain_type: Option<GrainType>,
     /// Time range start (epoch milliseconds).
@@ -876,6 +907,9 @@ pub struct RecallParams {
     pub confidence_threshold: Option<f64>,
     /// Maximum results to return.
     pub limit: Option<usize>,
+    /// Index-backed ordering, pushed into the store's scan. See [`SortKey`]
+    /// for why this covers `created_at` and not the rest.
+    pub order_by: Option<SortKey>,
     /// Skip superseded grains (default: true).
     pub exclude_superseded: Option<bool>,
     /// Natural-language temporal expression (e.g., "last 7 days", "yesterday").

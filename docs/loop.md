@@ -91,6 +91,32 @@ up front); every decision carries a written reason.
 4. **Verify** — outcome review re-runs the stored metric after `review_after`
    and proposes a revert on regression.
 
+### Definition rewrites (`DEFINE QUERY` / `DEFINE TEMPLATE`)
+
+A proposal may rewrite a saved query or template — which is where a
+self-improving agent's *prompt-assembly* lives, so without it the loop could
+evolve an agent's memories but never the CAL that turns them into a prompt.
+Two rules make it safe, both enforced in the engine rather than by convention:
+
+- **Never auto-applied, regardless of policy.** The `query` target class is
+  excluded from `grants_auto_apply` by name, exactly as `code` and `evalset`
+  are. A grain edit changes one remembered value; a definition rewrite changes
+  what **every future context** contains, so it always requires a human
+  `APPROVE` + `APPLY` with `BECAUSE`.
+- **The inverse is recorded at apply, or the apply is refused.** A `DEFINE`
+  writes a `qry:`/`tpl:` registry row, not a grain, so the ordinary rollback
+  (retract `created_hashes`) would undo nothing while reporting success. The
+  substrate supplies `definition_inverse` — the statement restoring the
+  previous definition, or a `DROP` when there was none — and `ROLLBACK` runs
+  it. A substrate that cannot produce one (the default) refuses the apply:
+  a definition change `ROLLBACK` could not undo must not be applied at all.
+  Built-in definitions are immutable and therefore yield no inverse, so a
+  proposal to redefine one is refused.
+
+`DROP` is never proposable, and saved-query bodies keep their read-only
+verification pass, so a definition rewrite can no more smuggle in a write than
+a hand-written one can.
+
 The **audit trail is grains**: one immutable Observation per transition,
 hash-chained per recommendation, carrying the actor label and the reason. It
 syncs with the file and is queryable.

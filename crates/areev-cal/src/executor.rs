@@ -604,13 +604,38 @@ impl Drop for LetScope {
 // CalExecutor
 // ---------------------------------------------------------------------------
 
+/// Maximum parsed statements held in the plan cache.
+///
+/// A production host runs a small, fixed set of statements (its saved queries
+/// and a handful of literals) many times, so a modest cap gets essentially
+/// every hit; the bound exists to stop a host that interpolates values into
+/// statement text from growing the map without limit.
+const PLAN_CACHE_MAX: usize = 256;
+
 /// CAL query executor.
 ///
-/// Stateless aside from configuration. Create once and call `execute()` for
-/// each query. Thread-safe (`Send + Sync` by construction — no interior
-/// mutability).
+/// Stateless aside from configuration and a parse cache. Create once and call
+/// `execute()` for each query. Thread-safe.
 pub struct CalExecutor {
     config: CalExecutorConfig,
+    /// Parsed statements, keyed by exact statement text.
+    ///
+    /// A real-time turn does not call the Rust store — it calls a binding with
+    /// a statement STRING, and used to pay lexing, parsing and validation on
+    /// every single turn. Parsing is pure and deterministic over the text, so
+    /// the result is cacheable with no semantic change whatsoever: the same
+    /// text yields the same AST.
+    ///
+    /// Deliberately internal rather than a `prepare()` the caller must manage:
+    /// every surface — CLI, MCP, the server, both bindings, and `RUN "name"()`
+    /// — gets the saving without an API change and without a handle-lifetime
+    /// bug class. The bindings additionally expose an explicit handle for
+    /// hosts that want the guarantee rather than the heuristic.
+    ///
+    /// Cleared wholesale at the cap rather than evicted LRU: at this size the
+    /// bookkeeping costs more than the occasional re-parse, and the working
+    /// set is refilled by the next few turns.
+    plan_cache: std::sync::Mutex<HashMap<String, crate::ast::CalQuery>>,
     /// The governance seam (CAL 1.3 §8.16): loop lifecycle statements
     /// execute only when a host attached one — `areev-loop-adapter` provides the
     /// real implementation. Absent → those statements return
@@ -621,7 +646,41 @@ pub struct CalExecutor {
 impl CalExecutor {
     /// Create a new executor with the given configuration.
     pub fn new(config: CalExecutorConfig) -> Self {
-        Self { config, governance: None }
+        Self { config, governance: None, plan_cache: Default::default() }
+    }
+
+    /// Parse `input`, reusing a cached AST for identical text.
+    ///
+    /// Returns a clone: `execute` binds LET values into the query, so the
+    /// cached entry must stay pristine. Cloning an AST is still far cheaper
+    /// than lexing + parsing + validating one.
+    ///
+    /// A poisoned lock degrades to a plain parse rather than failing the
+    /// query — the cache is an optimization, and a caller's statement should
+    /// not fail because some other thread panicked.
+    pub fn parse_cached(
+        &self,
+        input: &str,
+    ) -> std::result::Result<crate::ast::CalQuery, CalError> {
+        if let Ok(cache) = self.plan_cache.lock() {
+            if let Some(q) = cache.get(input) {
+                return Ok(q.clone());
+            }
+        }
+        let query = crate::parser::parse(input)?;
+        if let Ok(mut cache) = self.plan_cache.lock() {
+            if cache.len() >= PLAN_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(input.to_string(), query.clone());
+        }
+        Ok(query)
+    }
+
+    /// How many statements the plan cache currently holds. Diagnostics and
+    /// tests; not a stability guarantee.
+    pub fn plan_cache_len(&self) -> usize {
+        self.plan_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
     /// Attach the governance host that backs `RUN LOOP`, `APPROVE`,
@@ -691,8 +750,9 @@ impl CalExecutor {
     ) -> std::result::Result<CalExecResult, CalError> {
         let start = std::time::Instant::now();
 
-        // 1. Parse (validates length, bidi, nesting limits, etc.)
-        let query = crate::parser::parse(input)?;
+        // 1. Parse (validates length, bidi, nesting limits, etc.), reusing an
+        // earlier parse of the identical text when there is one.
+        let query = self.parse_cached(input)?;
 
         // 2. Compute query hash (C-4: SHA-256 of normalized / trimmed input).
         let query_hash = compute_query_hash(input);
@@ -728,7 +788,7 @@ impl CalExecutor {
             self.execute_statement(&query.statement, store, &query, &mut exec_warnings)?;
 
         // 4. Apply pipeline stages.
-        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline)?;
+        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline, &mut exec_warnings)?;
 
         // 5. Apply FORMAT clause if present (CAL spec v1.0.1).
         let payload = apply_format_clause(
@@ -810,7 +870,7 @@ impl CalExecutor {
             self.execute_statement(&query.statement, store, &query, &mut exec_warnings)?;
 
         // Apply pipeline stages.
-        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline)?;
+        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline, &mut exec_warnings)?;
 
         // Apply FORMAT clause if present (CAL spec v1.0.1).
         let payload = apply_format_clause(
@@ -1981,7 +2041,16 @@ impl CalExecutor {
         }
 
         // 3. Parse the substituted body.
-        let parsed = super::parser::parse(&body).map_err(|e| CalError::InvalidQueryBody {
+        //
+        // Cached like any other statement — but note WHAT the key is. Params
+        // are substituted into the body TEXT above, before parsing, so the
+        // cache key is the substituted body: `RUN "triage"($subject: "amy")`
+        // reuses a plan only when called with the same arguments again. A
+        // zero-parameter saved query therefore always hits after its first
+        // call; a parameterized one hits per distinct argument set. This is
+        // the honest answer to "does RUN reuse a compiled plan?" and it is
+        // recorded in docs/cal-reference.md.
+        let parsed = self.parse_cached(&body).map_err(|e| CalError::InvalidQueryBody {
             detail: e.to_string(),
             span: run.span,
         })?;
@@ -2160,6 +2229,69 @@ impl CalExecutor {
             None
         };
 
+        // ── A post-retrieval stage must see the whole matching set ────────
+        //
+        // Same defect as CONTRADICTIONS above, in three more places. ORDER BY,
+        // the type-specific WHERE post-filter, and COUNT all run over the
+        // grains the statement ALREADY returned — a `default_limit` page. So
+        // `ORDER BY priority DESC | LIMIT 5` returned the top 5 *of the newest
+        // 50* and was indistinguishable from the top 5 overall; a
+        // `WHERE tool_name = …` post-filter searched the newest 50 for a match
+        // that might be older; `| COUNT` counted the page. Widening the scan
+        // and re-applying the caller's bound afterwards is the same trade
+        // CONTRADICTIONS already makes: LIMIT bounds the ANSWER, not the
+        // search for it.
+        //
+        // Why widening rather than a sort key pushed into SQL: the sort keys
+        // callers actually use (`priority`, `status`, `confidence`, and every
+        // type-specific field) live INSIDE the content-addressed blob, not in
+        // a `grains` column — the table carries only seq/ns/gtype/created_at/
+        // s/p/o/validity. Ordering on them in SQL would mean materializing a
+        // column per field. `created_at` IS a column, so that one case is
+        // pushed down properly (see `RecallParams::order_by`); everything else
+        // is ranked here, over a scan widened to `max_limit`, and says so via
+        // CAL-W015 when even that scan comes back full.
+        let order_by: Option<(String, bool)> = query.pipeline.iter().find_map(|st| match st {
+            PipelineStage::OrderBy {
+                field, descending, ..
+            } => Some((field.clone(), *descending)),
+            _ => None,
+        });
+        let has_count = query
+            .pipeline
+            .iter()
+            .any(|st| matches!(st, PipelineStage::Count { .. }));
+        let has_post_filter = recall.where_clause.as_ref().is_some_and(|w| {
+            !extract_type_specific_conditions(&w.condition).is_empty()
+                || !extract_type_specific_set_conditions(&w.condition).is_empty()
+        });
+        // CONTRADICTIONS has already widened to the same bound; don't stack.
+        let wide_reason: Option<String> = if recall.contradictions.is_some() {
+            None
+        } else if let Some((ref f, _)) = order_by {
+            Some(format!("ORDER BY {f}"))
+        } else if has_count {
+            Some("COUNT".to_string())
+        } else if has_post_filter {
+            Some("a post-retrieval WHERE filter".to_string())
+        } else {
+            None
+        };
+        // `created_at` is the one sort key the index can serve, so push it
+        // down instead of widening for it.
+        let pushed_down_sort = matches!(order_by, Some((ref f, _)) if f == "created_at");
+        if let (true, Some((ref field, descending))) = (pushed_down_sort, &order_by) {
+            params.order_by = Some(crate::store_types::SortKey {
+                field: field.clone(),
+                descending: *descending,
+            });
+        }
+        let widened_limit = if wide_reason.is_some() && !pushed_down_sort {
+            params.limit.replace(self.config.max_limit as usize)
+        } else {
+            None
+        };
+
         // WITH options.
         self.apply_with_options(&query.with_options, &mut params)?;
 
@@ -2253,6 +2385,59 @@ impl CalExecutor {
                             .iter()
                             .all(|c| grain_matches_set_condition(grain, c))
                 });
+            }
+        }
+
+        // ── Re-apply the caller's bound to the widened scan ──────────────
+        //
+        // The scan above was widened so this ranking/filtering could see the
+        // whole matching set. Rank it here, over that full set, then bound the
+        // ANSWER back to what the caller asked for. The pipeline's own ORDER BY
+        // still runs afterwards and re-sorts the same grains — idempotent, and
+        // it keeps the stage's behaviour unchanged for every path that did not
+        // widen.
+        if let Some(reason) = wide_reason {
+            // Even a max_limit scan can fill up. Saying so is the point: the
+            // result is a well-formed list that happens to be the top-k of a
+            // window rather than of the memory, and nothing else distinguishes
+            // the two.
+            if scan_was_bounded {
+                exec_warnings.push(
+                    super::errors::CalWarning::ScanBounded {
+                        stage: reason,
+                        scanned: self.config.max_limit as usize,
+                    }
+                    .to_string(),
+                );
+            }
+            if let Some((ref field, descending)) = order_by {
+                grains.sort_by(|a, b| {
+                    let cmp = compare_json_values(
+                        json_field(&a.fields, field),
+                        json_field(&b.fields, field),
+                    );
+                    if descending {
+                        cmp.reverse()
+                    } else {
+                        cmp
+                    }
+                });
+            }
+            // A pipeline that bounds or aggregates the result does that job
+            // itself, over the ranked set — truncating first would put the
+            // page back.
+            let pipeline_bounds = query.pipeline.iter().any(|st| {
+                matches!(
+                    st,
+                    PipelineStage::Limit { .. }
+                        | PipelineStage::First { .. }
+                        | PipelineStage::Count { .. }
+                )
+            });
+            if !pipeline_bounds {
+                if let Some(limit) = widened_limit {
+                    grains.truncate(limit);
+                }
             }
         }
 
@@ -2454,6 +2639,15 @@ impl CalExecutor {
                     }
                     ("query", Comparator::Eq) => {
                         params.query = Some(value_to_string(value)?);
+                    }
+                    // Pushed down to the thread index rather than post-filtered.
+                    // `session_id` stays OUT of `COMMON_FIELDS` (it is
+                    // type-specific, and `test_session_id_not_in_common_fields`
+                    // pins that), so the post-retrieval filter still runs over
+                    // it — this arm only narrows the SCAN, from "a page of the
+                    // namespace" to "this conversation".
+                    ("session_id", Comparator::Eq) => {
+                        params.session_id = Some(value_to_string(value)?);
                     }
                     ("time", Comparator::Eq) => {
                         params.temporal_expr = Some(value_to_string(value)?);
@@ -4057,7 +4251,7 @@ impl CalExecutor {
         let (payload, grouped_by) = if entry.pipeline.is_empty() {
             (payload, None)
         } else {
-            self.apply_pipeline(payload, &entry.pipeline)?
+            self.apply_pipeline(payload, &entry.pipeline, exec_warnings)?
         };
 
         // Apply FORMAT clause if present.
@@ -4719,6 +4913,7 @@ impl CalExecutor {
         &self,
         payload: CalResultPayload,
         stages: &[PipelineStage],
+        exec_warnings: &mut Vec<String>,
     ) -> std::result::Result<(CalResultPayload, Option<String>), CalError> {
         let mut current = payload;
         let mut grouped_by: Option<String> = None;
@@ -4946,8 +5141,28 @@ impl CalExecutor {
                     }
                 }
 
-                // Non-Grains payload: passthrough for all stages.
-                (other, _) => other,
+                // A stage attached to a payload it cannot act on.
+                //
+                // This used to be a bare passthrough, so `ORDER BY` on a
+                // multi-source ASSEMBLE — which returns `Assembled`, not
+                // `Grains` — was discarded with no error and no warning. That
+                // contradicts docs/cal-reference.md §5 (silence means the
+                // option did something), and it is precisely the case a host
+                // reaches for: rendering authored instruction blocks in an
+                // intended order. Section order on an ASSEMBLE is FROM-clause
+                // order and is not reorderable by a pipeline stage, so the
+                // honest answer is to say the stage did nothing.
+                (other, stage) => {
+                    exec_warnings.push(
+                        super::errors::CalWarning::PipelineStageInert {
+                            stage: pipeline_stage_name(stage),
+                            payload: payload_kind_name(&other),
+                            why: inert_stage_reason(&other),
+                        }
+                        .to_string(),
+                    );
+                    other
+                }
             };
         }
 
@@ -5256,6 +5471,41 @@ fn required_scope_for_statement(stmt: &CalStatement) -> &'static str {
         | CalStatement::ApplyRec(_)
         | CalStatement::RollbackRec(_)
         | CalStatement::RunLoop(_) => "admin",
+    }
+}
+
+/// The payload kind named in a `CAL-W016` inert-stage warning.
+fn payload_kind_name(payload: &CalResultPayload) -> &'static str {
+    match payload {
+        CalResultPayload::Assembled { .. } => "assembled",
+        CalResultPayload::Count { .. } => "count",
+        CalResultPayload::Formatted { .. } => "formatted",
+        CalResultPayload::Exists { .. } => "exists",
+        CalResultPayload::History { .. } => "history",
+        CalResultPayload::Explain { .. } => "explain",
+        CalResultPayload::Batch { .. } => "batch",
+        _ => "non-grain",
+    }
+}
+
+/// Why a pipeline stage cannot act on this payload — the `CAL-W016` clause
+/// that tells a caller what to do instead.
+fn inert_stage_reason(payload: &CalResultPayload) -> &'static str {
+    match payload {
+        // The case that motivated the warning. Section order on a multi-source
+        // ASSEMBLE is FROM-clause order by contract (docs/cal-reference.md),
+        // deliberately independent of PRIORITY, which weights the budget.
+        CalResultPayload::Assembled { .. } => {
+            "an assembly is a list of named sections, not a flat grain list — \
+             section order is FROM-clause order (PRIORITY weights the budget, \
+             it does not reorder); to order WITHIN a section, put the stage on \
+             that source's sub-query"
+        }
+        CalResultPayload::Count { .. } => "a count is a scalar; stage it before | COUNT",
+        CalResultPayload::Formatted { .. } => {
+            "FORMAT has already rendered the grains to text; stage it before FORMAT"
+        }
+        _ => "this statement does not return a grain list",
     }
 }
 
@@ -10221,6 +10471,8 @@ mod tests {
             context_name: None,
             sources: Some(vec![super::super::ast::NamedSource {
                 label: "facts".into(),
+                literal: None,
+                pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
                 span: None,
@@ -10300,6 +10552,8 @@ mod tests {
             context_name: None,
             sources: Some(vec![super::super::ast::NamedSource {
                 label: "events".into(),
+                literal: None,
+                pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
                 span: None,
@@ -10378,6 +10632,8 @@ mod tests {
             context_name: None,
             sources: Some(vec![super::super::ast::NamedSource {
                 label: "facts".into(),
+                literal: None,
+                pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
                 span: None,

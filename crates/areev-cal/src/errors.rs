@@ -300,6 +300,24 @@ pub enum CalError {
     #[error("CAL-E034: Duplicate ASSEMBLE source label \"{label}\"")]
     AssembleDuplicateLabel { label: String, span: Option<Span> },
 
+    /// CAL-E122 — The `PIN`ned sources alone do not fit the `BUDGET`.
+    ///
+    /// A pin is a promise of full, verbatim disclosure, so there is no
+    /// degraded answer to fall back to: summarising the section would break
+    /// the guarantee the pin exists to make, and dropping it silently is
+    /// worse. Failing loudly is the only honest outcome — the budget or the
+    /// pinned text has to change.
+    #[error(
+        "CAL-E122: pinned ASSEMBLE source(s) [{}] need {required} tokens but BUDGET is {budget} — a PIN is never summarised or dropped, so raise the budget or shorten the pinned text",
+        labels.join(", ")
+    )]
+    AssemblePinnedBudgetExceeded {
+        labels: Vec<String>,
+        required: u32,
+        budget: u32,
+        span: Option<Span>,
+    },
+
     /// CAL-E035 — PRIORITY references a label not in the FROM clause.
     #[error("CAL-E035: PRIORITY references unknown source label \"{label}\"")]
     AssemblePriorityMismatch { label: String, span: Option<Span> },
@@ -658,6 +676,7 @@ impl CalError {
             Self::AssembleTooManySources { .. } => "CAL-E032",
             Self::AssembleBudgetExceeded { .. } => "CAL-E033",
             Self::AssembleDuplicateLabel { .. } => "CAL-E034",
+            Self::AssemblePinnedBudgetExceeded { .. } => "CAL-E122",
             Self::AssemblePriorityMismatch { .. } => "CAL-E035",
             Self::TooManyLetBindings { .. } => "CAL-E036",
             Self::LetCircularReference { .. } => "CAL-E037",
@@ -737,6 +756,7 @@ impl CalError {
             | Self::InvalidQuery { span, .. }
             | Self::CryptoError { span, .. }
             | Self::FieldNotOnGrainType { span, .. }
+            | Self::AssemblePinnedBudgetExceeded { span, .. }
             | Self::AssembleTooManySources { span, .. }
             | Self::AssembleBudgetExceeded { span, .. }
             | Self::AssembleDuplicateLabel { span, .. }
@@ -1097,6 +1117,17 @@ impl CalError {
                 span: s,
             },
             Self::DuplicateFormatKey { key, .. } => Self::DuplicateFormatKey { key, span: s },
+            Self::AssemblePinnedBudgetExceeded {
+                labels,
+                required,
+                budget,
+                ..
+            } => Self::AssemblePinnedBudgetExceeded {
+                labels,
+                required,
+                budget,
+                span: s,
+            },
             Self::MissingAccumulateOps { .. } => Self::MissingAccumulateOps { span: s },
             Self::AccumulateNonNumericField { field, current, .. } => {
                 Self::AccumulateNonNumericField {
@@ -1398,6 +1429,39 @@ pub enum CalWarning {
         statement: &'static str,
         why: &'static str,
     },
+
+    /// CAL-W015 — A post-retrieval stage (ORDER BY, a type-specific WHERE
+    /// filter, COUNT) widened its scan to the executor's `max_limit` and
+    /// still filled it, so it ranked/filtered/counted a bounded window rather
+    /// than the whole matching set.
+    ///
+    /// The sibling of `ContradictionScanBounded`, generalized. `ORDER BY`
+    /// sorts the grains a statement already returned; without widening, that
+    /// is a page of `default_limit` rows, so `ORDER BY priority DESC LIMIT 5`
+    /// returned the top 5 *of the newest 50* and looked exactly like the top
+    /// 5 overall. Widening fixes every corpus up to `max_limit`; past that the
+    /// only honest thing left is to say so, because the answer is still a
+    /// well-formed list that happens to be wrong.
+    ScanBounded {
+        /// What forced the wide scan — "ORDER BY priority", "WHERE tool_name", "COUNT".
+        stage: String,
+        scanned: usize,
+    },
+
+    /// CAL-W016 — A pipeline stage was attached to a payload it cannot act on
+    /// (e.g. `ORDER BY` on a multi-source `ASSEMBLE`, which returns an
+    /// assembled section list rather than a flat grain list).
+    ///
+    /// These used to hit a catch-all passthrough arm and vanish with no error
+    /// and no warning, which contradicts `docs/cal-reference.md` §5: silence
+    /// means the option did something. Ordering an assembly is exactly the
+    /// case a host reaches for when rendering authored instruction blocks in
+    /// an intended order — and it was the one case that silently did nothing.
+    PipelineStageInert {
+        stage: String,
+        payload: &'static str,
+        why: &'static str,
+    },
 }
 
 impl CalWarning {
@@ -1417,6 +1481,8 @@ impl CalWarning {
             Self::EachIterationCapped { .. } => "CAL-W011",
             Self::ContradictionScanBounded { .. } => "CAL-W012",
             Self::WithOptionInert { .. } => "CAL-W014",
+            Self::ScanBounded { .. } => "CAL-W015",
+            Self::PipelineStageInert { .. } => "CAL-W016",
         }
     }
 
@@ -1435,7 +1501,9 @@ impl CalWarning {
             | Self::UnrecognizedWhereField { span, .. } => *span,
             Self::EachIterationCapped { .. }
             | Self::ContradictionScanBounded { .. }
-            | Self::WithOptionInert { .. } => None,
+            | Self::WithOptionInert { .. }
+            | Self::ScanBounded { .. }
+            | Self::PipelineStageInert { .. } => None,
         }
     }
 }
@@ -1526,6 +1594,22 @@ impl std::fmt::Display for CalWarning {
                 write!(
                     f,
                     "CAL-W014: WITH {option} has no effect on {statement} — {why}. The result is the same as without it."
+                )
+            }
+            Self::ScanBounded { stage, scanned } => {
+                write!(
+                    f,
+                    "CAL-W015: {stage} ran over the first {scanned} matching grains (the executor's max_limit) and that scan came back full — grains past it were never considered, so this is a bounded answer, not the true one. Narrow the query with WHERE/ABOUT/SINCE, or raise max_limit."
+                )
+            }
+            Self::PipelineStageInert {
+                stage,
+                payload,
+                why,
+            } => {
+                write!(
+                    f,
+                    "CAL-W016: {stage} has no effect on a {payload} result — {why}. The stage was skipped; the result is the same as without it."
                 )
             }
         }

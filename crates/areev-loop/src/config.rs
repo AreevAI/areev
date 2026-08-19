@@ -176,6 +176,17 @@ pub struct AppliedRecord {
     /// Grain hashes created by the apply, retracted on rollback (ADD inverse).
     #[serde(default)]
     pub created_hashes: Vec<String>,
+    /// CAL that undoes a change with no grain to retract.
+    ///
+    /// `created_hashes` is the inverse of an ADD: rollback retracts what the
+    /// apply created. A `DEFINE QUERY` / `DEFINE TEMPLATE` creates no grain —
+    /// it replaces a `qry:`/`tpl:` registry row — so retracting nothing would
+    /// let a rollback report success while the new definition stayed live.
+    /// This holds the statement that restores the previous definition (or
+    /// `DROP` when there was none), captured at apply time from the state
+    /// being replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inverse_cal: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric: Option<MetricSnapshot>,
 }

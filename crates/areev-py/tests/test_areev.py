@@ -1182,3 +1182,54 @@ def test_read_blob_offline_works_while_a_handle_is_open(tmp_path):
     uri = db.put_blob(b"during a run")
     assert areev.read_blob_offline(path, uri) == b"during a run"
     assert db.get_blob(uri) == b"during a run"
+
+
+def test_thread_tail_reads_one_conversation_past_the_default_page(tmp_path):
+    """The read a chat/voice agent makes every turn (#49).
+
+    Backed by ``idx_thread(ns, session, seq)``, so it is bounded by turns of
+    THIS session rather than rows of the namespace — before the pushdown a
+    conversation buried under newer traffic came back empty.
+    """
+    db = areev.Areev(str(tmp_path / "thread.db"), ns="caller")
+    wanted = [
+        {"type": "event", "fields": {"content": f"call-7 turn {i}", "session_id": "call-7"}}
+        for i in range(5)
+    ]
+    db.add_batch(json.dumps(wanted))
+    noise = [
+        {"type": "event", "fields": {"content": f"noise {i}", "session_id": f"other-{i}"}}
+        for i in range(200)
+    ]
+    db.add_batch(json.dumps(noise))
+
+    tail = json.loads(db.thread_tail("call-7", 20))
+    assert tail["session"] == "call-7"
+    assert len(tail["grains"]) == 5, "the whole session, not the part inside a page"
+    # Transcript order: oldest first.
+    assert tail["grains"][0]["fields"]["content"] == "call-7 turn 0"
+    assert tail["grains"][4]["fields"]["content"] == "call-7 turn 4"
+
+    # The CAL spelling of the same read pushes down too.
+    via_cal = json.loads(db.cal('RECALL events WHERE session_id = "call-7"'))
+    assert len(via_cal["grains"]) == 5
+
+
+def test_cal_prepare_validates_and_warms_a_statement(tmp_path):
+    """`cal_prepare` turns a bad statement into a startup error rather than a
+    first-turn error, and keeps the plan (#44)."""
+    db = areev.Areev(str(tmp_path / "prep.db"), ns="caller")
+    db.add_fact("amy", "likes", "rust")
+
+    first = json.loads(db.cal_prepare("RECALL facts RECENT 5"))
+    assert first["statement"] == "RECALL facts RECENT 5"
+    assert first["cached"] == 1
+
+    # One executor lives on the handle, so plans survive between calls.
+    second = json.loads(db.cal_prepare("RECALL facts RECENT 9"))
+    assert second["cached"] == 2
+
+    with pytest.raises(ValueError):
+        db.cal_prepare("RECALL facts FORMAT []")
+
+    assert len(json.loads(db.cal("RECALL facts RECENT 5"))["grains"]) == 1

@@ -232,7 +232,47 @@ impl<'a> AssembleEngine<'a> {
             .unwrap_or(DEFAULT_BUDGET_TOKENS);
 
         let labels: Vec<&str> = source_results.iter().map(|(l, _)| l.as_str()).collect();
-        let allocations = allocate_budget(&labels, budget_tokens, &stmt.priority);
+
+        // ── PIN: satisfy the non-degradable sources first ────────────────
+        //
+        // PRIORITY only *weights* the split, so it can never express "this
+        // section must survive verbatim" — a long conversation would summarise
+        // away the one instruction that is contractually mandatory. A pinned
+        // source is costed in full and taken off the top; PRIORITY then shares
+        // whatever is left among the rest. If the pins alone do not fit, the
+        // statement fails (CAL-E122) rather than silently degrading them —
+        // the whole point is that a quiet partial answer is the unsafe one.
+        let pinned_labels: HashSet<&str> = sources
+            .iter()
+            .filter(|s| s.pinned)
+            .map(|s| s.label.as_str())
+            .collect();
+        let pinned_cost: u32 = source_results
+            .iter()
+            .filter(|(l, _)| pinned_labels.contains(l.as_str()))
+            .map(|(_, g)| g.iter().map(estimate_grain_tokens).sum::<u32>())
+            .sum();
+        if pinned_cost > budget_tokens {
+            let mut names: Vec<String> = source_results
+                .iter()
+                .filter(|(l, _)| pinned_labels.contains(l.as_str()))
+                .map(|(l, _)| l.clone())
+                .collect();
+            names.sort();
+            return Err(CalError::AssemblePinnedBudgetExceeded {
+                labels: names,
+                required: pinned_cost,
+                budget: budget_tokens,
+                span: stmt.span,
+            });
+        }
+        let free_budget = budget_tokens - pinned_cost;
+        let free_labels: Vec<&str> = labels
+            .iter()
+            .copied()
+            .filter(|l| !pinned_labels.contains(l))
+            .collect();
+        let allocations = allocate_budget(&free_labels, free_budget, &stmt.priority);
         // Snapshot per-source allocations in source order so the trim loop can
         // take ownership of the grains: `allocations` borrows `labels`, which
         // borrows `source_results`.
@@ -254,14 +294,28 @@ impl<'a> AssembleEngine<'a> {
         let mut dropped = 0usize; // grains the budget forced us to omit
 
         for (i, (label, mut grains)) in source_results.into_iter().enumerate() {
-            let allocated = per_source
-                .get(i)
-                .copied()
-                .flatten()
-                .unwrap_or(remaining_budget / source_count.max(1) as u32);
+            // A pinned source was already costed in full and reserved off the
+            // top, so it is handed exactly what it needs and `budget_prefix`
+            // keeps all of it. `remaining_budget` still has the reservation in
+            // it at this point, so this cannot underflow.
+            let is_pinned = pinned_labels.contains(label.as_str());
+            let allocated = if is_pinned {
+                grains.iter().map(estimate_grain_tokens).sum::<u32>()
+            } else {
+                per_source
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(remaining_budget / source_count.max(1) as u32)
+            };
 
-            // Use the smaller of allocated or remaining budget.
-            let effective_allocation = allocated.min(remaining_budget);
+            // Use the smaller of allocated or remaining budget — except for a
+            // pin, which is never reduced.
+            let effective_allocation = if is_pinned {
+                allocated
+            } else {
+                allocated.min(remaining_budget)
+            };
 
             // Split rather than copy: the kept grains and the omitted tail are
             // both already in `grains`, and cloning either would hold a second
@@ -317,6 +371,29 @@ impl<'a> AssembleEngine<'a> {
         query: &CalQuery,
         warnings: &mut Vec<String>,
     ) -> Result<Vec<CalGrainResult>, CalError> {
+        // A LITERAL source is host text, not a query — nothing to execute, no
+        // store access, no timeout. It becomes ONE synthetic result so it
+        // flows through dedup, budgeting and rendering exactly like any other
+        // section, and therefore lands at its authored position (sources
+        // render in FROM-clause order).
+        //
+        // The empty hash is load-bearing: this text was never stored, has no
+        // content address, and must never be mistaken for a grain — dedup
+        // keys on the hash and skips it explicitly.
+        if let Some(text) = &source.literal {
+            return Ok(vec![CalGrainResult {
+                hash: String::new(),
+                grain_type: "literal".to_string(),
+                score: 1.0,
+                fields: serde_json::json!({ "content": text }),
+                score_breakdown: None,
+                explanation: None,
+                relative_time: None,
+                is_deterministic: true,
+                contested_by: None,
+            }]);
+        }
+
         // Use per-source WITH options if present, otherwise fall back to parent query's.
         let with_options = if source.with_options.is_empty() {
             query.with_options.clone()
@@ -483,7 +560,10 @@ impl<'a> AssembleEngine<'a> {
             .map(|(label, grains)| {
                 let deduped: Vec<_> = grains
                     .into_iter()
-                    .filter(|g| seen.insert(g.hash.clone()))
+                    // A LITERAL section has no content address, so every
+                    // literal carries the empty hash — deduping on it would
+                    // drop every literal after the first.
+                    .filter(|g| g.hash.is_empty() || seen.insert(g.hash.clone()))
                     .collect();
                 (label, deduped)
             })

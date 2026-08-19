@@ -157,6 +157,9 @@ macro_rules! impl_substrate {
             fn validate_cal(&self, cal: &str) -> WResult<()> {
                 validate_cal(cal)
             }
+            fn definition_inverse(&self, statement: &str) -> WResult<Option<String>> {
+                definition_inverse(self.facade_ref(), statement)
+            }
             fn load_state(&self) -> WResult<Value> {
                 load_state(self.facade_ref())
             }
@@ -573,6 +576,73 @@ fn execute_cal(f: &AreevFacade, cal: &str) -> WResult<Vec<Value>> {
         }
     }
     Ok(rows)
+}
+
+/// The CAL that restores the definition a `DEFINE QUERY` / `DEFINE TEMPLATE`
+/// is about to replace — the rollback inverse for a change that writes no
+/// grain (issue #28).
+///
+/// Reconstructed from the registry rather than remembered anywhere: the
+/// `qry:`/`tpl:` rows travel with the file, so the inverse is derived from the
+/// same state the apply is about to overwrite. When nothing is defined under
+/// that name the inverse is a `DROP`, which restores "no such definition" —
+/// the correct prior state, not a no-op.
+///
+/// A BUILT-IN definition has no inverse and returns `None`, which the engine
+/// turns into a refusal: built-ins are immutable, so a proposal to redefine
+/// one could not be rolled back and must not be applied.
+fn definition_inverse(f: &AreevFacade, statement: &str) -> WResult<Option<String>> {
+    let up = statement.trim_start().to_ascii_uppercase();
+    let (kind, after) = if let Some(rest) = up.strip_prefix("DEFINE QUERY") {
+        ("QUERY", &statement.trim_start()[statement.trim_start().len() - rest.len()..])
+    } else if let Some(rest) = up.strip_prefix("DEFINE TEMPLATE") {
+        ("TEMPLATE", &statement.trim_start()[statement.trim_start().len() - rest.len()..])
+    } else {
+        return Ok(None);
+    };
+    // The name is the first token, bare or quoted — both spellings parse.
+    let name = after
+        .trim_start()
+        .trim_start_matches('"')
+        .split(['"', '(', ' ', '\t'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if kind == "QUERY" {
+        match f.get_query(&name) {
+            // Built-ins are immutable; a rewrite of one is unapplicable.
+            Some(e) if e.builtin => Ok(None),
+            Some(e) => {
+                let params = if e.params.is_empty() {
+                    String::new()
+                } else {
+                    let list: Vec<String> =
+                        e.params.iter().map(|p| format!("${}", p.name)).collect();
+                    format!("({})", list.join(", "))
+                };
+                Ok(Some(format!(
+                    "DEFINE QUERY \"{name}\"{params} DESCRIPTION \"{}\" AS {{ {} }}",
+                    e.description.replace('"', "'"),
+                    e.body
+                )))
+            }
+            None => Ok(Some(format!("DROP QUERY \"{name}\""))),
+        }
+    } else {
+        match f.get_template(&name) {
+            Some(t) if t.builtin => Ok(None),
+            Some(t) => Ok(Some(format!(
+                "DEFINE TEMPLATE \"{name}\" DESCRIPTION \"{}\" AS {{ {} }}",
+                t.description.replace('"', "'"),
+                t.source
+            ))),
+            None => Ok(Some(format!("DROP TEMPLATE \"{name}\""))),
+        }
+    }
 }
 
 fn validate_cal(cal: &str) -> WResult<()> {

@@ -75,8 +75,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-android-arm64')
-        const bindingPackageVersion = require('areev-android-arm64/package.json').version
+        const binding = require('@areev/areev-android-arm64')
+        const bindingPackageVersion = require('@areev/areev-android-arm64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -91,8 +91,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-android-arm-eabi')
-        const bindingPackageVersion = require('areev-android-arm-eabi/package.json').version
+        const binding = require('@areev/areev-android-arm-eabi')
+        const bindingPackageVersion = require('@areev/areev-android-arm-eabi/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -112,8 +112,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-win32-x64-gnu')
-        const bindingPackageVersion = require('areev-win32-x64-gnu/package.json').version
+        const binding = require('@areev/areev-win32-x64-gnu')
+        const bindingPackageVersion = require('@areev/areev-win32-x64-gnu/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -128,8 +128,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-win32-x64-msvc')
-        const bindingPackageVersion = require('areev-win32-x64-msvc/package.json').version
+        const binding = require('@areev/areev-win32-x64-msvc')
+        const bindingPackageVersion = require('@areev/areev-win32-x64-msvc/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -145,8 +145,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-win32-ia32-msvc')
-        const bindingPackageVersion = require('areev-win32-ia32-msvc/package.json').version
+        const binding = require('@areev/areev-win32-ia32-msvc')
+        const bindingPackageVersion = require('@areev/areev-win32-ia32-msvc/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -161,8 +161,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-win32-arm64-msvc')
-        const bindingPackageVersion = require('areev-win32-arm64-msvc/package.json').version
+        const binding = require('@areev/areev-win32-arm64-msvc')
+        const bindingPackageVersion = require('@areev/areev-win32-arm64-msvc/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -180,8 +180,8 @@ function requireNative() {
       loadErrors.push(e)
     }
     try {
-      const binding = require('areev-darwin-universal')
-      const bindingPackageVersion = require('areev-darwin-universal/package.json').version
+      const binding = require('@areev/areev-darwin-universal')
+      const bindingPackageVersion = require('@areev/areev-darwin-universal/package.json').version
       if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
         throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
       }
@@ -196,8 +196,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-darwin-x64')
-        const bindingPackageVersion = require('areev-darwin-x64/package.json').version
+        const binding = require('@areev/areev-darwin-x64')
+        const bindingPackageVersion = require('@areev/areev-darwin-x64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -212,8 +212,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-darwin-arm64')
-        const bindingPackageVersion = require('areev-darwin-arm64/package.json').version
+        const binding = require('@areev/areev-darwin-arm64')
+        const bindingPackageVersion = require('@areev/areev-darwin-arm64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -232,8 +232,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-freebsd-x64')
-        const bindingPackageVersion = require('areev-freebsd-x64/package.json').version
+        const binding = require('@areev/areev-freebsd-x64')
+        const bindingPackageVersion = require('@areev/areev-freebsd-x64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -248,8 +248,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-freebsd-arm64')
-        const bindingPackageVersion = require('areev-freebsd-arm64/package.json').version
+        const binding = require('@areev/areev-freebsd-arm64')
+        const bindingPackageVersion = require('@areev/areev-freebsd-arm64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -269,8 +269,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-x64-musl')
-          const bindingPackageVersion = require('areev-linux-x64-musl/package.json').version
+          const binding = require('@areev/areev-linux-x64-musl')
+          const bindingPackageVersion = require('@areev/areev-linux-x64-musl/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -285,8 +285,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-x64-gnu')
-          const bindingPackageVersion = require('areev-linux-x64-gnu/package.json').version
+          const binding = require('@areev/areev-linux-x64-gnu')
+          const bindingPackageVersion = require('@areev/areev-linux-x64-gnu/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -303,8 +303,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-arm64-musl')
-          const bindingPackageVersion = require('areev-linux-arm64-musl/package.json').version
+          const binding = require('@areev/areev-linux-arm64-musl')
+          const bindingPackageVersion = require('@areev/areev-linux-arm64-musl/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -319,8 +319,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-arm64-gnu')
-          const bindingPackageVersion = require('areev-linux-arm64-gnu/package.json').version
+          const binding = require('@areev/areev-linux-arm64-gnu')
+          const bindingPackageVersion = require('@areev/areev-linux-arm64-gnu/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -337,8 +337,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-arm-musleabihf')
-          const bindingPackageVersion = require('areev-linux-arm-musleabihf/package.json').version
+          const binding = require('@areev/areev-linux-arm-musleabihf')
+          const bindingPackageVersion = require('@areev/areev-linux-arm-musleabihf/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -353,8 +353,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-arm-gnueabihf')
-          const bindingPackageVersion = require('areev-linux-arm-gnueabihf/package.json').version
+          const binding = require('@areev/areev-linux-arm-gnueabihf')
+          const bindingPackageVersion = require('@areev/areev-linux-arm-gnueabihf/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -371,8 +371,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-loong64-musl')
-          const bindingPackageVersion = require('areev-linux-loong64-musl/package.json').version
+          const binding = require('@areev/areev-linux-loong64-musl')
+          const bindingPackageVersion = require('@areev/areev-linux-loong64-musl/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -387,8 +387,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-loong64-gnu')
-          const bindingPackageVersion = require('areev-linux-loong64-gnu/package.json').version
+          const binding = require('@areev/areev-linux-loong64-gnu')
+          const bindingPackageVersion = require('@areev/areev-linux-loong64-gnu/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -405,8 +405,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-riscv64-musl')
-          const bindingPackageVersion = require('areev-linux-riscv64-musl/package.json').version
+          const binding = require('@areev/areev-linux-riscv64-musl')
+          const bindingPackageVersion = require('@areev/areev-linux-riscv64-musl/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -421,8 +421,8 @@ function requireNative() {
           loadErrors.push(e)
         }
         try {
-          const binding = require('areev-linux-riscv64-gnu')
-          const bindingPackageVersion = require('areev-linux-riscv64-gnu/package.json').version
+          const binding = require('@areev/areev-linux-riscv64-gnu')
+          const bindingPackageVersion = require('@areev/areev-linux-riscv64-gnu/package.json').version
           if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
             throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
@@ -438,8 +438,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-linux-ppc64-gnu')
-        const bindingPackageVersion = require('areev-linux-ppc64-gnu/package.json').version
+        const binding = require('@areev/areev-linux-ppc64-gnu')
+        const bindingPackageVersion = require('@areev/areev-linux-ppc64-gnu/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -454,8 +454,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-linux-s390x-gnu')
-        const bindingPackageVersion = require('areev-linux-s390x-gnu/package.json').version
+        const binding = require('@areev/areev-linux-s390x-gnu')
+        const bindingPackageVersion = require('@areev/areev-linux-s390x-gnu/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -474,8 +474,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-openharmony-arm64')
-        const bindingPackageVersion = require('areev-openharmony-arm64/package.json').version
+        const binding = require('@areev/areev-openharmony-arm64')
+        const bindingPackageVersion = require('@areev/areev-openharmony-arm64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -490,8 +490,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-openharmony-x64')
-        const bindingPackageVersion = require('areev-openharmony-x64/package.json').version
+        const binding = require('@areev/areev-openharmony-x64')
+        const bindingPackageVersion = require('@areev/areev-openharmony-x64/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -506,8 +506,8 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        const binding = require('areev-openharmony-arm')
-        const bindingPackageVersion = require('areev-openharmony-arm/package.json').version
+        const binding = require('@areev/areev-openharmony-arm')
+        const bindingPackageVersion = require('@areev/areev-openharmony-arm/package.json').version
         if (bindingPackageVersion !== '1.2.2' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
           throw new Error(`Native binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
@@ -643,16 +643,16 @@ if (!nativeBinding || forceWasi) {
     let candidateError = null
     let candidateFailed = false
     try {
-      candidateError = __napiWasiResolveCandidate('areev-wasm32-wasi', true, undefined)
+      candidateError = __napiWasiResolveCandidate('@areev/areev-wasm32-wasi', true, undefined)
       candidateFailed = candidateError !== null
       if (!candidateFailed) {
         if (process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          const bindingPackageVersion = require('areev-wasm32-wasi/package.json').version
+          const bindingPackageVersion = require('@areev/areev-wasm32-wasi/package.json').version
           if (bindingPackageVersion !== '1.2.2') {
             throw new Error(`WASI binding package version mismatch, expected 1.2.2 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
         }
-        wasiBinding = require('areev-wasm32-wasi')
+        wasiBinding = require('@areev/areev-wasm32-wasi')
         nativeBinding = wasiBinding
         wasiBindingLoaded = true
       }

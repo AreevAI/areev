@@ -390,8 +390,29 @@ pub struct AssembleStmt {
 pub struct NamedSource {
     /// The label for this source (e.g. `"recent"`, `"context"`).
     pub label: String,
-    /// The sub-query producing this source's grains.
+    /// The sub-query producing this source's grains. Ignored when
+    /// [`literal`](Self::literal) is set (which parks a placeholder here so
+    /// the serialized AST shape stays unchanged for every existing consumer).
     pub query: Box<CalStatement>,
+    /// `LITERAL "…"` — host-supplied text rendered at this source's authored
+    /// position instead of grains from a query.
+    ///
+    /// A production system prompt is grains INTERLEAVED with fixed text, and
+    /// some of that text is contractually mandatory. Without this the host has
+    /// to write the instruction into the memory as a grain first, which turns
+    /// a compliance-critical string into a mutable row; with it the string
+    /// lives in the statement, i.e. in code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub literal: Option<String>,
+    /// `PIN` — this source is non-degradable.
+    ///
+    /// The budget allocator satisfies pinned sources FIRST, at their full
+    /// cost, and the trim loop never truncates them; if the budget cannot hold
+    /// them the statement fails with `CAL-E122` rather than quietly
+    /// summarising the one section that had to survive verbatim. Orthogonal to
+    /// `PRIORITY`, which only weights how the REMAINING budget is shared.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// Per-source WITH options (e.g. `WITH exhaustive`). When non-empty,
     /// these override the parent query's with_options for this source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

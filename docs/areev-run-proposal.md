@@ -1,8 +1,12 @@
 # `areev run` — an agent runtime whose execution history is memory
 
-**Status:** proposal, **partially superseded**. Nothing built. Written
+**Status:** proposal, **partially superseded — and now BUILT**. Written
 2026-08-07, after the graph-engineering audit (PR #56) landed the substrate this
-would sit on. **2026-08-14:** the phasing here (§7) and the two open decisions
+would sit on. **2026-08-19:** the runtime shipped — `areev-run-core` (the pure
+scheduler) and `areev-run` (the driver) are in the workspace, with the CLI
+`areev run …` verbs, the six MCP `areev_run_*` tools, and the console Runs tab.
+`docs/run.md` is the reference; this file is kept for the design rationale, not
+as a statement of what exists. **2026-08-14:** the phasing here (§7) and the two open decisions
 (§10) are superseded by
 [`areev-governed-agents-proposal.md`](areev-governed-agents-proposal.md), which
 records the decided answers (LangGraph-parity bar; Bet B on Hermes; the §8

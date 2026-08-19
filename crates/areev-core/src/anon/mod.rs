@@ -168,6 +168,32 @@ fn default_min_confidence() -> f32 {
     0.5
 }
 
+/// "Redact category A when category B appears within N characters."
+///
+/// Expressed as a RE-CATEGORIZATION rather than a bare action override: the
+/// matching detection takes `as_category`, and the policy's ordinary
+/// `categories` map then decides what happens to it. That keeps one place
+/// where actions are decided, and it makes the output self-explaining — the
+/// placeholder says `[PHI_1]` rather than `[PERSON_1]`, so a reader can see
+/// WHY the span was treated more strictly than a bare name would be.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CoOccurrence {
+    /// The category to escalate (e.g. `person`).
+    pub when: String,
+    /// The category whose nearby presence triggers it (e.g. `condition`,
+    /// usually supplied via [`AnonPolicy::term_sets`]).
+    pub near: String,
+    /// Proximity window in characters, measured between span edges.
+    #[serde(default = "default_within_chars")]
+    pub within_chars: usize,
+    /// The category the `when` detection takes on when the rule fires.
+    pub as_category: String,
+}
+
+fn default_within_chars() -> usize {
+    120
+}
+
 /// The declarative anonymization policy (proposal §8.1). Serialized as the
 /// JSON value of an `anon:<ns>` meta row from P1 on; in P0 it is supplied
 /// explicitly to the text APIs.
@@ -190,6 +216,23 @@ pub struct AnonPolicy {
     /// User dictionary; matches become category `custom`.
     #[serde(default)]
     pub custom_terms: Vec<String>,
+    /// Named dictionaries: `category -> terms`. Each set's matches carry that
+    /// category, so the policy can act on them separately and — the reason
+    /// they exist — so a [`CoOccurrence`] rule can NAME one side of the
+    /// relationship. The single `custom_terms` bucket cannot express
+    /// "a person near a condition" because both halves land in `custom`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub term_sets: BTreeMap<String, Vec<String>>,
+    /// Context-sensitive escalation: re-categorize a detection when another
+    /// category appears close to it.
+    ///
+    /// This is the rule healthcare actually needs and no per-category action
+    /// can express. A name alone may be acceptable in a prompt; a name
+    /// *together with* a condition, medication or procedure in the same span
+    /// is health data under most privacy regimes. The distinction is not a
+    /// property of either detection — it is a property of the pair.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub co_occurrence: Vec<CoOccurrence>,
     /// Pseudonym stability scope. P0 supports `context` only (per-call
     /// numbering); `session`/`memory` arrive with the store boundary.
     #[serde(default = "default_scope")]
@@ -250,6 +293,8 @@ impl Default for AnonPolicy {
             categories: BTreeMap::new(),
             default_action: default_action(),
             custom_terms: Vec::new(),
+            term_sets: BTreeMap::new(),
+            co_occurrence: Vec::new(),
             scope: default_scope(),
             placeholder: default_placeholder(),
             min_confidence: default_min_confidence(),
@@ -453,7 +498,7 @@ pub fn scan_with(
     policy.validate()?;
     let text = nfc(text).into_owned();
     let mut detections = if policy.detectors.iter().any(|d| d == "tier0") {
-        detect::run_tier0(&text, &policy.custom_terms, known_identities)?
+        detect::run_tier0(&text, &policy.custom_terms, known_identities, &policy.term_sets)?
     } else {
         Vec::new()
     };
@@ -489,9 +534,60 @@ pub fn scan_with(
         }
     }
     detections.retain(|d| d.confidence >= policy.min_confidence);
+    apply_co_occurrence(&mut detections, policy);
     let mut survivors = resolve_overlaps(detections, policy);
     survivors.retain(|d| policy.action_for(&d.category) != Action::Allow);
     Ok(ScanOutcome { text, detections: survivors })
+}
+
+/// Re-categorize detections whose neighbours make them more sensitive.
+///
+/// Runs BEFORE overlap resolution and before the `Allow` drop, which is the
+/// whole point: `person` is frequently mapped to `allow`, and the rule exists
+/// to stop that drop when a condition/medication/procedure sits beside the
+/// name. Running it afterwards would find the detection already gone.
+///
+/// Proximity is edge-to-edge in characters, so "Jane Doe — type 2 diabetes"
+/// counts the gap between the two spans rather than their start offsets, and a
+/// long name does not push its own neighbour out of range.
+///
+/// Categories are read from a snapshot taken up front, so one rule firing can
+/// never cascade into another rule's `near` test — the escalation is decided
+/// by the ORIGINAL detections, which keeps the result independent of rule
+/// order.
+fn apply_co_occurrence(detections: &mut [Detection], policy: &AnonPolicy) {
+    if policy.co_occurrence.is_empty() {
+        return;
+    }
+    let snapshot: Vec<(String, usize, usize)> = detections
+        .iter()
+        .map(|d| (d.category.clone(), d.start, d.end))
+        .collect();
+    for (i, d) in detections.iter_mut().enumerate() {
+        for rule in &policy.co_occurrence {
+            if d.category != rule.when {
+                continue;
+            }
+            let hit = snapshot.iter().enumerate().any(|(j, (cat, start, end))| {
+                if i == j || cat != &rule.near {
+                    return false;
+                }
+                // Edge-to-edge gap; overlapping spans have gap 0.
+                let gap = if *start >= d.end {
+                    start - d.end
+                } else if d.start >= *end {
+                    d.start - end
+                } else {
+                    0
+                };
+                gap <= rule.within_chars
+            });
+            if hit {
+                d.category = rule.as_category.clone();
+                break;
+            }
+        }
+    }
 }
 
 /// Detect, then apply the policy's actions, producing prompt-safe text plus
@@ -1116,5 +1212,75 @@ mod tests {
         let c = anonymize("mail me at a@b.co", &policy, &[], Some(b"k1")).unwrap();
         assert_ne!(a.mapping_id, b.mapping_id); // key changes the id
         assert_eq!(b.mapping_id, c.mapping_id); // same inputs + key → same id
+    }
+}
+
+#[cfg(test)]
+mod co_occurrence_tests {
+    use super::*;
+
+    /// A name alone is fine; the same name beside a condition is health data.
+    /// No per-category action can express that, because the sensitivity is a
+    /// property of the PAIR, not of either detection.
+    fn policy() -> AnonPolicy {
+        let mut p = AnonPolicy {
+            mode: "egress".into(),
+            default_action: "allow".into(),
+            ..Default::default()
+        };
+        p.categories.insert("person".into(), "allow".into());
+        p.categories.insert("condition".into(), "allow".into());
+        p.categories.insert("phi".into(), "pseudonym".into());
+        p.term_sets.insert(
+            "condition".into(),
+            vec!["type 2 diabetes".into(), "hypertension".into()],
+        );
+        p.co_occurrence.push(CoOccurrence {
+            when: "person".into(),
+            near: "condition".into(),
+            within_chars: 40,
+            as_category: "phi".into(),
+        });
+        p
+    }
+
+    fn run(text: &str) -> String {
+        let known = vec![KnownIdentity {
+            value: "Jane Doe".into(),
+            category: "person".into(),
+        }];
+        let p = AnonPolicy { known, ..policy() };
+        anonymize(text, &p, &[], None).unwrap().text
+    }
+
+    #[test]
+    fn a_bare_name_passes_but_a_name_near_a_condition_does_not() {
+        // `person` is mapped to allow, so on its own the name survives.
+        let alone = run("Jane Doe called about the invoice.");
+        assert!(alone.contains("Jane Doe"), "bare name stays: {alone}");
+
+        // Same name, a condition within the window: escalated to `phi`, which
+        // the policy pseudonymizes. The placeholder names the ESCALATED
+        // category, so the reason is visible in the output.
+        let together = run("Jane Doe was diagnosed with type 2 diabetes.");
+        assert!(
+            !together.contains("Jane Doe"),
+            "a name beside a condition must not survive: {together}"
+        );
+        assert!(
+            together.contains("[PHI_1]"),
+            "the placeholder should say why it was escalated: {together}"
+        );
+    }
+
+    #[test]
+    fn the_proximity_window_bounds_the_rule() {
+        // Same two categories, far apart: not the same claim about a patient.
+        let far = format!(
+            "Jane Doe called about the invoice.{} Separately, type 2 diabetes rates rose.",
+            " ".repeat(60)
+        );
+        let out = run(&far);
+        assert!(out.contains("Jane Doe"), "outside the window: {out}");
     }
 }

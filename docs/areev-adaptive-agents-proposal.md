@@ -1,6 +1,9 @@
 # Areev for adaptive agents — the runtime, the governance plane, and the distillation path
 
-**Status:** proposal, 2026-08-11. Nothing built. Supersedes and absorbs
+**Status:** proposal, 2026-08-11. **Partially built:** the runtime and the
+governance plane shipped (`areev-run-core`/`areev-run`, the loop's gates and
+recommendation lifecycle). The distillation / small-language-model path in §5
+onward remains unbuilt. Supersedes and absorbs
 [`areev-run-proposal.md`](areev-run-proposal.md) (2026-08-07), whose §4 replay
 recommendation survives and whose §2 cost estimate does not. Sits alongside
 [`areev-enterprise-proposal.md`](areev-enterprise-proposal.md), whose adoption

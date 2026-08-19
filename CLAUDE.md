@@ -9,9 +9,12 @@ with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
-`areev` on PyPI, and **`@areev/areev`** on npm (the unscoped `areev` npm name
-and `areev-win32-x64-msvc` are pending an npm similarity/spam-filter
-exception; when granted, publish unscoped and deprecate the scoped one).
+`areev` on PyPI, and **`@areev/areev`** on npm — main package *and* every
+per-platform addon (`@areev/areev-win32-x64-msvc`, …) are scoped, because npm's
+similarity/spam filter rejects the unscoped `areev-*` names and a rejected
+platform package left the manifest promising a Windows addon that did not
+exist. An unscoped-`areev` exception is still user-tracked with npm support but
+is no longer on the release path.
 `areev-py`, `areev-bench`, and `areev-conformance` stay `publish = false`;
 `areev-js` ships to npm, not crates.io.
 The version lives in `[workspace.package]` in the root `Cargo.toml` (all crates
@@ -241,8 +244,9 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 ## Naming
 
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`, npm package `@areev/areev` (unscoped
-`areev` pending npm approval). Formerly published as DejaDB
+"areevd", Python module `areev`, npm packages `@areev/areev` +
+`@areev/areev-<platform>` (all scoped; unscoped `areev` pending npm approval,
+not required by the release). Formerly published as DejaDB
 (github.com/AreevAI/dejadb, frozen at 1.2.0 and archived). The OMS spec
 itself is external (CC0); OMS conformance is the compatibility mechanism
 with other implementations.

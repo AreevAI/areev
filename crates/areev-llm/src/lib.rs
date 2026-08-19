@@ -27,6 +27,7 @@
 //! text passed to `remember()` into Fact drafts, so the extraction seam is
 //! reachable from the CLI and the bindings and not just from in-process Rust.
 
+pub mod cred;
 pub mod extract;
 pub mod llm_detect;
 pub mod pseudonymize;
@@ -181,13 +182,30 @@ fn op_schema(op: &str) -> Option<Value> {
 
 pub struct OpenAiCompat {
     pub(crate) base_url: String,
-    pub(crate) api_key: String,
+    /// Minted per request, so a short-lived cloud token works here as well as
+    /// a static key — see [`crate::cred`].
+    pub(crate) cred: Box<dyn crate::cred::Credential>,
     pub(crate) model: String,
 }
 
 impl OpenAiCompat {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        OpenAiCompat { base_url: base_url.into(), api_key: api_key.into(), model: model.into() }
+        Self::with_credential(
+            base_url,
+            Box::new(crate::cred::StaticKey::new(api_key)),
+            model,
+        )
+    }
+
+    /// The general form: any [`Credential`](crate::cred::Credential), which is
+    /// what lets an in-region Vertex endpoint be reached under Application
+    /// Default Credentials with no key material on disk.
+    pub fn with_credential(
+        base_url: impl Into<String>,
+        cred: Box<dyn crate::cred::Credential>,
+        model: impl Into<String>,
+    ) -> Self {
+        OpenAiCompat { base_url: base_url.into(), cred, model: model.into() }
     }
 
     fn build_body(&self, system: &str, user: &str, op: &str, use_schema: bool) -> Value {
@@ -231,7 +249,7 @@ impl LlmBackend for OpenAiCompat {
         let op = request_op(request);
         let (system, user) = split_request(request);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let auth = format!("Bearer {}", self.api_key);
+        let auth = format!("Bearer {}", self.cred.token()?);
         // Prefer schema-constrained decoding; fall back to plain json_object if
         // the endpoint/model rejects json_schema (gateways/local models vary).
         match post_json(&url, &[("Authorization", &auth)], &self.build_body(&system, &user, &op, true)) {
@@ -248,15 +266,23 @@ impl LlmBackend for OpenAiCompat {
 // ---- Anthropic (native /v1/messages) ---------------------------------------
 
 pub struct Anthropic {
-    pub(crate) api_key: String,
+    pub(crate) cred: Box<dyn crate::cred::Credential>,
     pub(crate) model: String,
     pub(crate) base_url: String,
 }
 
 impl Anthropic {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_credential(Box::new(crate::cred::StaticKey::new(api_key)), model)
+    }
+
+    /// The general form — see [`OpenAiCompat::with_credential`].
+    pub fn with_credential(
+        cred: Box<dyn crate::cred::Credential>,
+        model: impl Into<String>,
+    ) -> Self {
         Anthropic {
-            api_key: api_key.into(),
+            cred,
             model: model.into(),
             base_url: "https://api.anthropic.com".into(),
         }
@@ -303,9 +329,10 @@ impl LlmBackend for Anthropic {
         }
         let (system, user) = split_request(request);
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let key = self.cred.token()?;
         let resp = post_json(
             &url,
-            &[("x-api-key", &self.api_key), ("anthropic-version", "2023-06-01")],
+            &[("x-api-key", key.as_str()), ("anthropic-version", "2023-06-01")],
             &self.build_body(&system, &user),
         )?;
         Ok(Self::extract(&resp))
@@ -422,7 +449,9 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
         return Err(Error::LlmBackend("--model: empty model name".into()));
     }
     match provider.as_str() {
+        #[cfg(feature = "anthropic")]
         "anthropic" | "claude" => Ok(Provider::Anthropic(Anthropic::new(read_key(key_env, "anthropic")?, model))),
+        #[cfg(feature = "openai")]
         "openai" | "gpt" | "openai-compat" | "compat" => {
             let base = base_url
                 .map(str::to_string)
@@ -430,6 +459,7 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
                 .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
             Ok(Provider::OpenAi(OpenAiCompat::new(base, read_key(key_env, "openai")?, model)))
         }
+        #[cfg(feature = "ollama")]
         "ollama" | "local" => {
             let host = base_url
                 .map(str::to_string)
@@ -437,8 +467,83 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
                 .unwrap_or_else(|| "http://localhost:11434".to_string());
             Ok(Provider::Ollama(Ollama::new(host, model)))
         }
+        // Vertex AI, in-region, under Application Default Credentials.
+        //
+        // Reuses `OpenAiCompat` rather than adding a native `generateContent`
+        // adapter: Vertex publishes an OpenAI-compatible chat/completions
+        // endpoint per region, so the whole delta is the URL and the
+        // credential. What matters for a data-residency obligation is that the
+        // host is `{location}-aiplatform.googleapis.com` — the REGIONAL
+        // endpoint, never `global` — and that the token is minted from the
+        // attached service account with no key on disk.
+        //
+        // Spec: `vertex:<model>`, with the project and region from
+        // `--llm-base-url` (`<project>/<location>`) or the standard env vars.
+        #[cfg(feature = "vertex")]
+        "vertex" | "vertexai" => {
+            let (project, location) = match base_url {
+                Some(b) => {
+                    let (p, l) = b.split_once('/').ok_or_else(|| {
+                        Error::LlmBackend(
+                            "vertex: --llm-base-url must be <project>/<location>, e.g. \
+                             my-proj/asia-southeast1"
+                                .into(),
+                        )
+                    })?;
+                    (p.to_string(), l.to_string())
+                }
+                None => {
+                    let p = std::env::var("GOOGLE_CLOUD_PROJECT")
+                        .or_else(|_| std::env::var("GCLOUD_PROJECT"))
+                        .map_err(|_| {
+                            Error::LlmBackend(
+                                "vertex: set $GOOGLE_CLOUD_PROJECT or pass \
+                                 --llm-base-url <project>/<location>"
+                                    .into(),
+                            )
+                        })?;
+                    let l = std::env::var("GOOGLE_CLOUD_LOCATION")
+                        .or_else(|_| std::env::var("GOOGLE_CLOUD_REGION"))
+                        .map_err(|_| {
+                            Error::LlmBackend(
+                                "vertex: set $GOOGLE_CLOUD_LOCATION to the region your data \
+                                 must stay in (there is deliberately no default — picking one \
+                                 for you could move model traffic across a border)"
+                                    .into(),
+                            )
+                        })?;
+                    (p, l)
+                }
+            };
+            if location == "global" {
+                return Err(Error::LlmBackend(
+                    "vertex: location 'global' routes to whichever region Google chooses, \
+                     which defeats the reason for using Vertex under a residency obligation \
+                     — name the region explicitly"
+                        .into(),
+                ));
+            }
+            let base = format!(
+                "https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/\
+                 locations/{location}/endpoints/openapi"
+            )
+            .replace(char::is_whitespace, "");
+            Ok(Provider::OpenAi(OpenAiCompat::with_credential(
+                base,
+                Box::new(cred::GoogleAdc::new()),
+                format!("google/{}", model.trim_start_matches("google/")),
+            )))
+        }
         // OpenRouter is OpenAI-compatible (one key → hundreds of models,
         // named `vendor/model`, e.g. `openrouter:openai/gpt-4o-mini`).
+        //
+        // Feature-gated and OFF by default: a third-party model router is an
+        // intermediary in another jurisdiction with its own upstream defaults,
+        // which can break a "comparable protection" obligation for cross-border
+        // transfer. Even unused, its presence in a built artifact is something
+        // a reviewer asks about — so a regulated build can now compile it out
+        // entirely rather than merely not calling it.
+        #[cfg(feature = "openrouter")]
         "openrouter" => {
             let base = base_url
                 .map(str::to_string)
@@ -447,6 +552,31 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
             let key = read_key(key_env.or(Some("OPENROUTER_API_KEY")), "openai")?;
             Ok(Provider::OpenAi(OpenAiCompat::new(base, key, model)))
         }
+        // A provider that exists in the source but was compiled out says so,
+        // rather than reading as a typo.
+        #[cfg(not(feature = "openrouter"))]
+        "openrouter" => Err(Error::LlmBackend(
+            "openrouter support was not compiled into this build (cargo feature \"openrouter\", \
+             off by default because a third-party router is an extra jurisdiction in the \
+             transfer path)"
+                .into(),
+        )),
+        #[cfg(not(feature = "vertex"))]
+        "vertex" | "vertexai" => Err(Error::LlmBackend(
+            "vertex support was not compiled into this build (cargo feature \"vertex\")".into(),
+        )),
+        #[cfg(not(feature = "anthropic"))]
+        "anthropic" | "claude" => Err(Error::LlmBackend(
+            "anthropic support was not compiled into this build (cargo feature \"anthropic\")".into(),
+        )),
+        #[cfg(not(feature = "openai"))]
+        "openai" | "gpt" | "openai-compat" | "compat" => Err(Error::LlmBackend(
+            "openai support was not compiled into this build (cargo feature \"openai\")".into(),
+        )),
+        #[cfg(not(feature = "ollama"))]
+        "ollama" | "local" => Err(Error::LlmBackend(
+            "ollama support was not compiled into this build (cargo feature \"ollama\")".into(),
+        )),
         other => Err(Error::LlmBackend(format!(
             "unknown provider {other:?} (use anthropic|openai|ollama, or provider:model, or --llm-cmd)"
         ))),
@@ -628,5 +758,60 @@ mod tests {
             Ok(_) => panic!("expected a missing-key error"),
         };
         assert!(e.to_string().contains("DEFINITELY_UNSET_VAR_XYZ"));
+    }
+}
+
+#[cfg(test)]
+mod provider_gate_tests {
+    /// A provider that was compiled out must say so — reading as "unknown
+    /// provider" would send an operator hunting for a typo in their config.
+    #[test]
+    #[cfg(not(feature = "openrouter"))]
+    fn openrouter_is_absent_by_default_and_says_why() {
+        let err = match super::resolve("openrouter:openai/gpt-4o-mini", None, None) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("openrouter must not resolve without its feature"),
+        };
+        assert!(err.contains("not compiled into this build"), "got: {err}");
+        assert!(err.contains("openrouter"), "must name the feature: {err}");
+    }
+
+    #[cfg(feature = "vertex")]
+    mod vertex {
+        /// The region is the whole point under a residency obligation, so it
+        /// is never defaulted and `global` is refused outright.
+        #[test]
+        fn vertex_refuses_the_global_endpoint() {
+            let err = match crate::resolve("vertex:gemini-2.0-flash", Some("proj/global"), None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("the global endpoint must be refused"),
+            };
+            assert!(err.contains("global"), "got: {err}");
+            assert!(err.contains("name the region"), "got: {err}");
+        }
+
+        #[test]
+        fn vertex_requires_a_project_and_location() {
+            let err = match crate::resolve("vertex:gemini-2.0-flash", Some("no-slash"), None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("a base-url without <project>/<location> must be refused"),
+            };
+            assert!(err.contains("<project>/<location>"), "got: {err}");
+        }
+
+        /// The endpoint must be the REGIONAL host, and must carry no key: the
+        /// credential is ADC, so nothing is read from an API-key env var.
+        #[test]
+        fn vertex_builds_an_in_region_endpoint_under_adc() {
+            let b = match crate::resolve(
+                "vertex:gemini-2.0-flash",
+                Some("my-proj/asia-southeast1"),
+                None,
+            ) {
+                Ok(b) => b,
+                Err(e) => panic!("vertex must resolve with no API key present: {e}"),
+            };
+            assert_eq!(b.model(), "google/gemini-2.0-flash");
+        }
     }
 }

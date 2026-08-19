@@ -2,54 +2,66 @@
 //
 // Runs after `napi create-npm-dirs` + `napi artifacts` have populated `npm/<platform>/`.
 // It:
-//   1. stamps every platform package with the main package's release version,
-//   2. wires the main package's `optionalDependencies` to *all* platform packages
-//      (including any deferred one, so a later same-version publish resolves for
-//      existing installs), and
-//   3. prints — one per line on stdout — the platform package dirs that should be
-//      published now (everything except the deferred names).
+//   1. asserts that every target declared in `napi.targets` produced a package
+//      directory holding a built `.node` — a declared-but-missing target is a
+//      failed release, not a warning,
+//   2. stamps every platform package with the main package's release version,
+//   3. wires the main package's `optionalDependencies` to all platform packages, and
+//   4. prints — one per line on stdout — the platform package dirs to publish.
 //
-// DEFER lists platform package names to skip on this publish run (e.g. a name
-// currently tripping npm's spam filter). A deferred package's build still
-// runs and its binary is collected, so once the name is unblocked it can be
-// published at the same version by removing it from DEFER and re-running
-// release-npm (the publish step skips packages already on the registry, so
-// only the newly-undeferred one goes out).
-//
-// History, corrected 2026-08-17: the 2026-07-17 whitelist was granted for
-// this package's FORMER name — `dejadb-win32-x64-msvc` (published at 1.2.0,
-// the frozen pre-rename release). `areev-win32-x64-msvc` has never been
-// whitelisted; the v1.1.0 publish 403 is a fresh spam-filter rejection of a
-// new name, not a regression. Exception request for the areev-* names is
-// user-tracked with npm support; the release-npm workflow skips this one
-// name loudly until it lands.
+// Why the packages are SCOPED (`@areev/areev-win32-x64-msvc`, …): npm's
+// similarity/spam filter rejects the unscoped `areev-*` names — it 403'd
+// `areev-win32-x64-msvc` on every release since the rename, so `@areev/areev`
+// shipped declaring an optionalDependency that did not exist. npm silently
+// skips a missing optional dependency at install and napi then fails at
+// `require()` with its misleading "Cannot find native binding … npm optional
+// dependencies bug" — i.e. Windows was broken by a *registry-name* problem
+// reported as a build problem. Scoping the main package makes
+// `napi create-npm-dirs` derive scoped platform names from it and makes the
+// generated `index.js` require those names, so nothing hits the filter.
+// (The 2026-07-17 whitelist covered only the FORMER `dejadb-win32-x64-msvc`;
+// the unscoped `areev-*` exception is still user-tracked with npm support and
+// is no longer on the release path.)
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
-
-const DEFER = new Set();
 
 const mainPath = 'package.json';
 const main = JSON.parse(readFileSync(mainPath, 'utf8'));
 const version = main.version;
+const declared = main.napi?.targets ?? [];
 
 const npmDir = 'npm';
 const optionalDependencies = {};
 const toPublish = [];
+const built = [];
 
 for (const entry of existsSync(npmDir) ? readdirSync(npmDir).sort() : []) {
   const pkgPath = `${npmDir}/${entry}/package.json`;
   if (!existsSync(pkgPath)) continue;
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  // `napi artifacts` drops the built addon in beside the manifest. An empty
+  // dir means the matrix leg produced nothing for this target.
+  const addon = readdirSync(`${npmDir}/${entry}`).find((f) => f.endsWith('.node'));
+  if (!addon) {
+    console.error(`::error::${pkg.name}@${version} has no .node artifact — the ${entry} build leg produced nothing`);
+    process.exit(1);
+  }
   pkg.version = version;
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-  // Every platform package is referenced by the main package, even a deferred
-  // one — npm silently ignores a missing optional dependency at install time and
-  // picks it up once it exists.
   optionalDependencies[pkg.name] = version;
-  if (DEFER.has(pkg.name)) {
-    console.error(`defer ${pkg.name}@${version} (npm name blocked; publish once unblocked)`);
-    continue;
-  }
   toPublish.push(`${npmDir}/${entry}`);
+  built.push(entry);
+}
+
+// Every declared target must have produced a package. Without this the release
+// publishes a main package whose optionalDependencies promise a platform that
+// was never built — the exact silent-install / loud-require failure above.
+if (built.length !== declared.length) {
+  console.error(
+    `::error::napi.targets declares ${declared.length} targets (${declared.join(', ')}) ` +
+      `but only ${built.length} package dirs were built (${built.join(', ') || 'none'}). ` +
+      `Fix the build or remove the target from napi.targets — the manifest must not promise a platform that does not ship.`,
+  );
+  process.exit(1);
 }
 
 main.optionalDependencies = optionalDependencies;

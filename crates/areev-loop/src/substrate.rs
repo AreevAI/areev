@@ -209,6 +209,23 @@ pub trait OmsSubstrate: SubstrateRead {
     /// [`Error::CalUnsupported`]: crate::error::Error::CalUnsupported
     fn execute_cal(&mut self, cal: &str) -> Result<Vec<Value>>;
 
+    /// The CAL that would restore the CURRENT definition named by a
+    /// `DEFINE QUERY` / `DEFINE TEMPLATE` statement — the rollback inverse,
+    /// captured before the definition is replaced.
+    ///
+    /// Returns `Ok(None)` when the substrate cannot produce one, which the
+    /// engine treats as "this definition rewrite is not applicable": a
+    /// definition change with no recorded inverse is one that `ROLLBACK`
+    /// would silently fail to undo, and a rollback that reports success
+    /// without restoring anything is worse than a refusal.
+    ///
+    /// The default implementation returns `None`, so a substrate that does
+    /// not model saved definitions simply cannot execute definition
+    /// rewrites — fail closed, no opt-out needed.
+    fn definition_inverse(&self, _statement: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Validate a CAL batch without executing it (statement classification,
     /// destructive-op detection). Delegated to the substrate — the engine
     /// contains a CAL *writer*, never a parser.

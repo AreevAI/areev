@@ -55,7 +55,7 @@ while True:
 ### Node
 
 ```js
-const { Areev } = require('areev')
+const { Areev } = require('@areev/areev')
 const m = new Areev('agent.db', 'assistant')
 
 // inside your tool loop (every method returns a promise):

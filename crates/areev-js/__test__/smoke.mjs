@@ -939,3 +939,59 @@ test('readBlobOffline works WHILE a handle is open, and refuses bad addresses', 
   assert.throws(() => readBlobOffline(path, 'cas://sha256:' + 'a'.repeat(HEX64)), /STO-E001/)
   m.close()
 })
+
+test('threadTail reads one conversation past the default page (#49)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-thread-'))
+  const m = new Areev(join(dir, 'thread.db'), 'caller')
+
+  // The session we want, then far more than default_limit newer events on
+  // other sessions burying it.
+  const wanted = []
+  for (let i = 0; i < 5; i++) {
+    wanted.push({ type: 'event', fields: { content: `call-7 turn ${i}`, session_id: 'call-7' } })
+  }
+  await m.addBatch(JSON.stringify(wanted))
+  const noise = []
+  for (let i = 0; i < 200; i++) {
+    noise.push({ type: 'event', fields: { content: `noise ${i}`, session_id: `other-${i}` } })
+  }
+  await m.addBatch(JSON.stringify(noise))
+
+  const tail = JSON.parse(await m.threadTail('call-7', 20))
+  assert.equal(tail.session, 'call-7')
+  assert.equal(tail.grains.length, 5, 'the whole session, not the part inside a page')
+  // Transcript order: oldest first.
+  assert.equal(tail.grains[0].fields.content, 'call-7 turn 0')
+  assert.equal(tail.grains[4].fields.content, 'call-7 turn 4')
+
+  // The CAL spelling of the same read is pushed into the thread index too, so
+  // it is not bounded by the newest-50 page either.
+  const viaCal = JSON.parse(await m.cal('RECALL events WHERE session_id = "call-7"'))
+  assert.equal(viaCal.grains.length, 5, 'WHERE session_id must push down')
+
+  m.close()
+})
+
+test('calPrepare validates and warms a statement (#44)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-prepare-'))
+  const m = new Areev(join(dir, 'prep.db'), 'caller')
+  await m.addFact('amy', 'likes', 'rust')
+
+  const first = JSON.parse(await m.calPrepare('RECALL facts RECENT 5'))
+  assert.equal(first.statement, 'RECALL facts RECENT 5')
+  assert.equal(first.cached, 1, 'one plan held')
+
+  // A second distinct statement is its own entry; the executor lives on the
+  // handle, so plans survive between calls.
+  const second = JSON.parse(await m.calPrepare('RECALL facts RECENT 9'))
+  assert.equal(second.cached, 2)
+
+  // A bad statement fails at prepare time — a startup error, not a
+  // first-turn error.
+  await assert.rejects(() => m.calPrepare('RECALL facts FORMAT []'))
+
+  // The prepared statement still executes normally.
+  const res = JSON.parse(await m.cal('RECALL facts RECENT 5'))
+  assert.equal(res.grains.length, 1)
+  m.close()
+})

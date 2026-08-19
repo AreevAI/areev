@@ -169,6 +169,21 @@ export declare class Areev {
    * (absent when the query raised none).
    */
   cal(query: string): Promise<string>
+  /**
+   * Parse and validate a statement now, and keep the plan, so the first
+   * real turn does not pay for it.
+   *
+   * The handle is the statement TEXT — there is no opaque handle object to
+   * leak or invalidate, because the executor already keys its plan cache on
+   * exactly that. Call this at startup for each statement your agent runs
+   * on the hot path: it turns a bad statement into a startup error instead
+   * of a first-turn error, and guarantees the plan is warm rather than
+   * hoping it is.
+   *
+   * Returns `{statement, cached}` where `cached` is the number of plans
+   * held.
+   */
+  calPrepare(query: string): Promise<string>
   /** Supersession-chain history for (subject, relation), newest first. */
   history(subject: string, relation: string, ns?: string | undefined | null): Promise<string>
   /**
@@ -273,6 +288,18 @@ export declare class Areev {
    * mutating it — retries show up as several records for one node.
    */
   stepActions(workflow: string, node?: string | undefined | null, limit?: number | undefined | null, ns?: string | undefined | null): Promise<string>
+  /**
+   * Last `n` grains of one conversation, oldest→newest (transcript order).
+   *
+   * The read a chat or voice agent makes on every single turn. Backed by
+   * `idx_thread(ns, session, seq)`, so the bound is n turns of THIS session
+   * rather than n rows of the namespace — unlike a namespace scan filtered
+   * afterwards, which can miss the conversation entirely on a busy
+   * namespace. Exact namespace only: a session lives in one by construction.
+   *
+   * Returns `{ns, session, grains: [{hash, type, fields}]}`.
+   */
+  threadTail(session: string, n?: number | undefined | null, ns?: string | undefined | null): Promise<string>
   /**
    * Record a tool call as a Tool grain — the flagship analyzer's food.
    *

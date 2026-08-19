@@ -388,6 +388,18 @@ pub enum Token {
     #[token("PRIORITY", ignore(ascii_case))]
     Priority,
 
+    /// `LITERAL "…"` — an ASSEMBLE source that is host-supplied text rather
+    /// than a query over grains. Lets a compliance-mandated instruction live
+    /// in the statement as code instead of as a mutable row.
+    #[token("LITERAL", ignore(ascii_case))]
+    Literal,
+
+    /// `PIN` — an ASSEMBLE source modifier marking the source non-degradable:
+    /// it is disclosed in full or the statement errors, never summarised or
+    /// dropped to fit the budget.
+    #[token("PIN", ignore(ascii_case))]
+    Pin,
+
     #[token("FORMAT", ignore(ascii_case))]
     Format,
 
@@ -878,6 +890,8 @@ impl Token {
             Token::Cal => "CAL".into(),
             Token::Recall => "RECALL".into(),
             Token::Assemble => "ASSEMBLE".into(),
+            Token::Literal => "LITERAL".into(),
+            Token::Pin => "PIN".into(),
             Token::Where => "WHERE".into(),
             Token::And => "AND".into(),
             Token::Or => "OR".into(),

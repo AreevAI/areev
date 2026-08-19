@@ -2121,3 +2121,525 @@ fn warnings_survive_into_the_wire_payload() {
         "no warnings means no key, not an empty array"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #49 — `WHERE session_id` is pushed into the thread index, not post-filtered
+// ---------------------------------------------------------------------------
+
+/// Add `n` events on `session`, through the store directly (CAL text `ADD`
+/// covers fact/observation/goal/skill only).
+fn add_events(facade: &AreevFacade, session: &str, prefix: &str, n: usize) {
+    use areev_core::types::Event;
+    for i in 0..n {
+        let mut e = Event::new(&format!("{prefix} {i}"));
+        e.session_id = Some(session.to_string());
+        e.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+}
+
+#[test]
+fn recall_by_session_id_is_not_bounded_by_the_default_page() {
+    let (ex, facade, _d) = setup();
+    // The conversation we want, then far more than `default_limit` (50) newer
+    // events on other conversations burying it.
+    add_events(&facade, "call-7", "wanted", 5);
+    for i in 0..200 {
+        add_events(&facade, &format!("other-{i}"), "noise", 1);
+    }
+
+    let res = ex
+        .execute(r#"RECALL events WHERE session_id = "call-7""#, &facade)
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => {
+            // Before the pushdown this was 0: the recent-by-type scan returned
+            // a page of the newest 50 events, none of which were this session's,
+            // and the post-filter then had nothing to keep.
+            assert_eq!(
+                grains.len(),
+                5,
+                "the whole session must come back, not the part that fell in the page"
+            );
+            for g in &grains {
+                let v = serde_json::to_value(g).unwrap();
+                assert_eq!(v["fields"]["session_id"], "call-7");
+            }
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+#[test]
+fn recall_by_session_id_needs_no_grain_type() {
+    let (ex, facade, _d) = setup();
+    add_events(&facade, "s1", "turn", 3);
+    // A session is an anchor, so the bare form is bounded and allowed.
+    let res = ex
+        .execute(r#"RECALL WHERE session_id = "s1""#, &facade)
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => assert_eq!(grains.len(), 3),
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+#[test]
+fn recall_by_session_id_respects_recent_bound() {
+    let (ex, facade, _d) = setup();
+    add_events(&facade, "s1", "turn", 20);
+    let res = ex
+        .execute(r#"RECALL events WHERE session_id = "s1" RECENT 5"#, &facade)
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => {
+            assert_eq!(grains.len(), 5, "RECENT bounds turns of THIS session");
+            let v = serde_json::to_value(&grains[0]).unwrap();
+            assert_eq!(v["fields"]["content"], "turn 19", "newest first");
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #43 — post-retrieval stages see the whole matching set, not a page of it
+// ---------------------------------------------------------------------------
+
+/// `n` facts whose confidence DESCENDS with insertion order, so the
+/// highest-confidence grains are the OLDEST — outside any newest-first page.
+fn add_ranked_facts(facade: &AreevFacade, n: usize) {
+    use areev_core::types::Fact;
+    for i in 0..n {
+        let mut f = Fact::new(&format!("subj{i}"), "rates", "thing");
+        f.common.namespace = Some("caller".to_string());
+        f.common.confidence = 1.0 - (i as f64) / (n as f64);
+        facade.with_store(|m| m.add(&f)).unwrap();
+    }
+}
+
+#[test]
+fn order_by_ranks_the_whole_set_not_the_default_page() {
+    let (ex, facade, _d) = setup();
+    // 200 facts: the top-confidence ones are the first inserted, so a
+    // newest-first page of `default_limit` (50) contains none of them.
+    add_ranked_facts(&facade, 200);
+
+    let res = ex
+        .execute(
+            r#"RECALL facts ORDER BY confidence DESC LIMIT 5"#,
+            &facade,
+        )
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => {
+            assert_eq!(grains.len(), 5);
+            let top = serde_json::to_value(&grains[0]).unwrap();
+            // Before the widening this returned the top 5 of the newest 50 —
+            // i.e. subj150-ish, confidence ~0.25 — and looked exactly like a
+            // correct answer.
+            assert_eq!(
+                top["fields"]["subject"], "subj0",
+                "ORDER BY must rank the whole matching set, got: {top}"
+            );
+            let confs: Vec<f64> = grains
+                .iter()
+                .map(|g| {
+                    serde_json::to_value(g).unwrap()["fields"]["confidence"]
+                        .as_f64()
+                        .unwrap()
+                })
+                .collect();
+            assert!(
+                confs.windows(2).all(|w| w[0] >= w[1]),
+                "descending, got {confs:?}"
+            );
+            assert!(confs[0] > 0.99, "true top-k, got {confs:?}");
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+#[test]
+fn order_by_on_a_multi_source_assemble_warns_instead_of_vanishing() {
+    let (ex, facade, _d) = setup();
+    add_ranked_facts(&facade, 3);
+
+    let res = ex
+        .execute(
+            r#"ASSEMBLE "ctx" FROM a: (RECALL facts RECENT 2), b: (RECALL facts RECENT 1) ORDER BY confidence DESC"#,
+            &facade,
+        )
+        .unwrap();
+    // The stage cannot act on an assembly, but it must not disappear in
+    // silence — that was the "wrong answer with no signal" the report named.
+    assert!(
+        res.warnings.iter().any(|w| w.contains("CAL-W016")),
+        "expected CAL-W016, got: {:?}",
+        res.warnings
+    );
+    assert!(
+        res.warnings
+            .iter()
+            .any(|w| w.contains("FROM-clause order")),
+        "the warning should say what DOES control section order, got: {:?}",
+        res.warnings
+    );
+}
+
+#[test]
+fn post_retrieval_where_filter_searches_past_the_page() {
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Goal;
+    // `description` is a Goal-specific field, so it cannot be pushed into
+    // RecallParams and is applied as a post-filter — the second half of the
+    // same defect as ORDER BY. The goal we want is the OLDEST; 200 newer ones
+    // bury it well past the default page.
+    let mut wanted = Goal::new("the needle");
+    wanted.common.namespace = Some("caller".to_string());
+    facade.with_store(|m| m.add(&wanted)).unwrap();
+    for i in 0..200 {
+        let mut g = Goal::new(&format!("hay {i}"));
+        g.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&g)).unwrap();
+    }
+
+    let res = ex
+        .execute(r#"RECALL goals WHERE description = "the needle""#, &facade)
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => {
+            assert_eq!(
+                grains.len(),
+                1,
+                "the post-filter must search the widened scan, not the newest page"
+            );
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+#[test]
+fn recency_weight_actually_reranks() {
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Event;
+    // Three events, oldest first. Fusion order is newest-first, so without
+    // weighting "old" ranks last; with w=1.0 freshness dominates and the
+    // ordering is purely by age — the same direction, but now a real score.
+    for label in ["old", "mid", "new"] {
+        let mut e = Event::new(label);
+        e.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+
+    let weighted = ex
+        .execute(
+            r#"RECALL events RECENT 3 WITH recency_weight(0.9)"#,
+            &facade,
+        )
+        .unwrap();
+    match weighted.result {
+        CalResultPayload::Grains { grains, .. } => {
+            assert_eq!(grains.len(), 3);
+            // Every grain carries a real score now; before this the option
+            // parsed, ran, and left all three at the 1.0 sentinel.
+            let scores: Vec<f64> = grains
+                .iter()
+                .map(|g| serde_json::to_value(g).unwrap()["score"].as_f64().unwrap_or(1.0))
+                .collect();
+            assert!(
+                scores.windows(2).all(|w| w[0] >= w[1]),
+                "ranked descending, got {scores:?}"
+            );
+            assert!(
+                scores.iter().any(|s| (*s - 1.0).abs() > f64::EPSILON),
+                "recency_weight must produce real scores, not the 1.0 sentinel: {scores:?}"
+            );
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zero_recency_weight_still_honours_the_limit() {
+    // `recency_weight` widens the candidate scan so the re-ranking sees the
+    // whole set instead of a page, then truncates back to the caller's bound.
+    // The widening was gated on `is_some()` and the truncation on `> 0.0`, so
+    // a weight of exactly zero — "no recency component", i.e. the same answer
+    // as no option at all — took the wide path and never came back: `RECENT 3`
+    // answered with 3 * RECALL_OVERFETCH grains. A bound that a no-op option
+    // can lift is not a bound.
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Event;
+    for i in 0..12 {
+        let mut e = Event::new(&format!("turn {i}"));
+        e.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+
+    let n = |stmt: &str| match ex.execute(stmt, &facade).unwrap().result {
+        CalResultPayload::Grains { grains, .. } => grains.len(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+
+    let baseline = n("RECALL events RECENT 3");
+    assert_eq!(baseline, 3);
+    // Zero, negative and NaN all mean "no recency component" — every one of
+    // them must answer exactly like the bare statement.
+    for stmt in [
+        "RECALL events RECENT 3 WITH recency_weight(0)",
+        "RECALL events RECENT 3 WITH recency_weight(0.0)",
+    ] {
+        assert_eq!(n(stmt), baseline, "{stmt} must respect RECENT 3");
+    }
+    // A real weight still bounds the answer too — the widening is internal.
+    assert_eq!(n("RECALL events RECENT 3 WITH recency_weight(0.5)"), baseline);
+}
+
+#[test]
+fn order_by_created_at_is_pushed_down_and_exact() {
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Event;
+    // Backdated: insertion order and created_at disagree, so seq-order and
+    // created_at-order are genuinely different answers. The oldest-by-clock
+    // grain is inserted LAST.
+    for (i, age_days) in [1_i64, 2, 3, 400].iter().enumerate() {
+        let mut e = Event::new(&format!("e{i}"));
+        e.common.namespace = Some("caller".to_string());
+        e.common.created_at = Some(now_ms() - age_days * 86_400_000);
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+
+    let res = ex
+        .execute(r#"RECALL events ORDER BY created_at ASC LIMIT 1"#, &facade)
+        .unwrap();
+    match res.result {
+        CalResultPayload::Grains { grains, .. } => {
+            let g = serde_json::to_value(&grains[0]).unwrap();
+            assert_eq!(g["fields"]["content"], "e3", "oldest by clock, not by seq");
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+// ---------------------------------------------------------------------------
+// #42 — pinned literal sections, and a render order that is a contract
+// ---------------------------------------------------------------------------
+
+const GUARDRAIL: &str = "Never diagnose, never interpret results, never recommend medication — route clinical questions to staff.";
+
+/// Enough events to blow any small budget several times over.
+fn add_bulk_events(facade: &AreevFacade, n: usize) {
+    use areev_core::types::Event;
+    for i in 0..n {
+        let mut e = Event::new(&format!(
+            "turn {i}: a long conversational message that costs a meaningful number of tokens all by itself"
+        ));
+        e.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+}
+
+fn rendered(res: &CalResultPayload) -> String {
+    match res {
+        CalResultPayload::Formatted { text, .. } => text.clone(),
+        other => panic!("expected Formatted, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pinned_literal_survives_a_budget_far_below_the_assembled_size() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 300);
+
+    // 60 tokens is far below what 300 events cost; without PIN the guardrail
+    // would be degraded or dropped like any other source.
+    let res = ex
+        .execute(
+            &format!(
+                r#"ASSEMBLE "turn" FROM guardrail: PIN LITERAL "{GUARDRAIL}", messages: (RECALL events RECENT 300) BUDGET 60 FORMAT markdown"#
+            ),
+            &facade,
+        )
+        .unwrap();
+    let text = rendered(&res.result);
+    assert!(
+        text.contains(GUARDRAIL),
+        "the pinned literal must survive verbatim, got:\n{text}"
+    );
+}
+
+#[test]
+fn a_pin_that_cannot_fit_errors_instead_of_degrading() {
+    let (ex, facade, _d) = setup();
+    // A budget smaller than the pinned text itself. There is no honest
+    // degraded answer here, so it must fail loudly.
+    let err = ex
+        .execute(
+            &format!(
+                r#"ASSEMBLE "turn" FROM guardrail: PIN LITERAL "{GUARDRAIL}", messages: (RECALL events RECENT 5) BUDGET 3 FORMAT markdown"#
+            ),
+            &facade,
+        )
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.starts_with("CAL-E122"), "expected CAL-E122, got: {msg}");
+    assert!(msg.contains("guardrail"), "names the offending source: {msg}");
+}
+
+#[test]
+fn a_literal_renders_at_its_authored_position() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 3);
+
+    // The literal is authored SECOND, between two grain sources.
+    let res = ex
+        .execute(
+            r#"ASSEMBLE "turn" FROM head: (RECALL events RECENT 1), mid: LITERAL "=== MIDDLE MARKER ===", tail: (RECALL events RECENT 1) BUDGET 4000 FORMAT markdown"#,
+            &facade,
+        )
+        .unwrap();
+    let text = rendered(&res.result);
+    let marker = text.find("=== MIDDLE MARKER ===").expect("literal must render");
+    let first_turn = text.find("turn 2").expect("grain sections must render");
+    assert!(
+        first_turn < marker,
+        "the literal renders at its authored index, after the first source:\n{text}"
+    );
+}
+
+#[test]
+fn render_order_is_from_clause_order_not_priority_order() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 2);
+
+    // PRIORITY deliberately names the sources in the REVERSE of FROM order.
+    // Section order must still follow FROM — PRIORITY weights the budget, it
+    // does not reorder. This test pins that contract.
+    let res = ex
+        .execute(
+            r#"ASSEMBLE "turn" FROM alpha: LITERAL "SECTION-ALPHA", beta: LITERAL "SECTION-BETA" BUDGET 4000 PRIORITY beta: 0.9, alpha: 0.1 FORMAT markdown"#,
+            &facade,
+        )
+        .unwrap();
+    let text = rendered(&res.result);
+    let a = text.find("SECTION-ALPHA").expect("alpha renders");
+    let b = text.find("SECTION-BETA").expect("beta renders");
+    assert!(
+        a < b,
+        "FROM-clause order wins over PRIORITY order:\n{text}"
+    );
+}
+
+#[test]
+fn budget_after_format_is_a_parse_error_not_a_silent_detach() {
+    let (ex, facade, _d) = setup();
+    // Before this, the BUDGET simply detached and the assembly ran at the
+    // 4000-token default — the guard you wrote was not the guard that ran.
+    let err = ex
+        .execute(
+            r#"ASSEMBLE "turn" FROM a: (RECALL events RECENT 5) FORMAT markdown BUDGET 900"#,
+            &facade,
+        )
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("BUDGET clause out of order"),
+        "must name the misordered clause, got: {msg}"
+    );
+    assert!(
+        msg.contains("ASSEMBLE clauses are ordered") || msg.contains("order"),
+        "must state the canonical order, got: {msg}"
+    );
+}
+
+#[test]
+fn priority_before_budget_is_also_refused() {
+    let (ex, facade, _d) = setup();
+    // The other half of the same footgun, recorded in
+    // docs/facts/context-assembly.md §12.
+    let err = ex
+        .execute(
+            r#"ASSEMBLE "turn" FROM a: (RECALL events RECENT 5) PRIORITY a: 1.0 BUDGET 900"#,
+            &facade,
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("BUDGET clause out of order"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn a_pinned_query_source_is_not_degraded_either() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 200);
+
+    // PIN is not literal-only: the last 3 turns can be made non-degradable too.
+    let res = ex
+        .execute(
+            r#"ASSEMBLE "turn" FROM turns: PIN (RECALL events RECENT 3), history: (RECALL events RECENT 200) BUDGET 300 FORMAT markdown"#,
+            &facade,
+        )
+        .unwrap();
+    let text = rendered(&res.result);
+    for i in 197..200 {
+        assert!(
+            text.contains(&format!("turn {i}")),
+            "pinned turn {i} must survive the budget:\n{text}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #44 — the same statement text is parsed once, not once per turn
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_statements_reuse_a_parsed_plan() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 3);
+
+    assert_eq!(ex.plan_cache_len(), 0, "cold");
+    let stmt = r#"RECALL events RECENT 3"#;
+    for _ in 0..10 {
+        ex.execute(stmt, &facade).unwrap();
+    }
+    // Ten executions, one parse — the win a real-time turn actually needs,
+    // and it applies to every surface without an API change.
+    assert_eq!(ex.plan_cache_len(), 1, "one entry for one statement text");
+
+    // A different statement is its own entry; the cache keys on exact text.
+    ex.execute(r#"RECALL events RECENT 2"#, &facade).unwrap();
+    assert_eq!(ex.plan_cache_len(), 2);
+}
+
+#[test]
+fn a_cached_plan_is_not_mutated_by_execution() {
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Fact;
+    for who in ["amy", "bo"] {
+        let mut f = Fact::new(who, "likes", "rust");
+        f.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&f)).unwrap();
+    }
+    // LET values are bound INTO the query at execution, so a cached AST that
+    // was handed out by reference would carry one call's bindings into the
+    // next. Same statement twice must give the same answer.
+    let stmt = r#"LET $who = SUBJECTS OF (RECALL facts WHERE relation = "likes");
+                  RECALL facts WHERE subject IN $who"#;
+    let first = ex.execute(stmt, &facade).unwrap();
+    let second = ex.execute(stmt, &facade).unwrap();
+    let n = |r: &areev_cal::executor::CalExecResult| match &r.result {
+        CalResultPayload::Grains { grains, .. } => grains.len(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+    assert_eq!(n(&first), n(&second), "a cached plan must stay pristine");
+    assert_eq!(n(&first), 2);
+}

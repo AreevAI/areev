@@ -33,6 +33,44 @@ costs ~5x the in-process path — transport, not storage, is the latency
 budget, which is the whole architectural argument. (c) MCP stdio at ~129µs
 p50 is the Claude Code / agent-host number.
 
+### 1b. Binding-level latency — what a real-time turn actually pays
+
+*Run: 2026-08-19 · Apple M4 Max · `@areev/areev` release addon, driven from
+Node 22 · 2,200 grains (2,000 Events across 50 sessions + 200 Facts) · 300
+iterations after 30 warmup · statements pre-warmed with `calPrepare`.*
+
+§1 measures the Rust store. A real-time voice or chat turn does not call the
+Rust store — it calls a **binding**, with a statement **string**, and pays
+lexing, parsing and planning unless something reuses the plan. These rows
+close that gap: same process, same machine, measured from JavaScript.
+
+| statement (from Node) | backend | p50 ms | p95 ms | p99 ms |
+|---|---|---|---|---|
+| `RECALL events RECENT 20` | embedded (Turso file) | 0.17 | 0.48 | 0.86 |
+| `ASSEMBLE` (3 sources, BUDGET 900, FORMAT markdown) | embedded (Turso file) | 0.20 | 0.65 | 0.93 |
+| `thread_tail` 20 events | embedded (Turso file) | 0.08 | 0.28 | 0.58 |
+| `RECALL events RECENT 20` | Postgres 16, loopback Docker | 1.06 | 1.82 | 3.39 |
+| `ASSEMBLE` (3 sources, BUDGET 900, FORMAT markdown) | Postgres 16, loopback Docker | 4.29 | 13.72 | 32.55 |
+| `thread_tail` 20 events | Postgres 16, loopback Docker | 1.68 | 3.35 | 6.36 |
+
+**Can the Postgres backend meet a ~100 ms real-time memory budget?**
+On loopback, comfortably — the worst row here is a 32.6 ms p99 for a
+three-source assembly, a third of the budget. Off loopback it depends on one
+number: **round trips × added RTT**. A three-source `ASSEMBLE` is tens of
+statements (see the round-trip table in
+[`docs/postgres-backend-proposal.md`](../../docs/postgres-backend-proposal.md)),
+so a same-region managed Postgres at ~1 ms RTT adds tens of milliseconds and
+the budget gets tight at p99; a cross-region hop does not fit at all.
+
+*Not measured here:* managed Cloud SQL. These are loopback-Docker figures on
+one machine and are labelled as such — extrapolate with the round-trip count,
+do not quote them as managed-database numbers.
+
+The embedded rows are the ones to design a voice turn around: `thread_tail` at
+0.08 ms p50 is the read every conversational turn makes, and it is
+**index-backed** (`idx_thread(ns, session, seq)`) rather than a namespace scan
+filtered afterwards.
+
 ## 2. Trust suite — durability + integrity artifacts
 
 `cargo run --release -p areev-bench --bin trust_suite` (exit 0 = all pass;
