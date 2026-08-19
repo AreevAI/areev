@@ -2105,10 +2105,30 @@ fn drop_postgres_schema(_py: Python<'_>, _url: String, _schema: String) -> PyRes
     Err(err("this build lacks the postgres backend (rebuild with the `postgres` feature)"))
 }
 
+/// Read one CAS blob from a memory's `.blobs` sidecar without opening the
+/// database.
+///
+/// The embedded backend's lock is exclusive, so a `--tool-cmd` subprocess
+/// cannot open the memory its own run is holding. No lock is needed: a blob is
+/// immutable and its address is its checksum, re-verified here. `None` means
+/// the blob is sealed — open the memory with its passphrase for that.
+#[pyfunction]
+fn read_blob_offline<'py>(
+    py: Python<'py>,
+    db_path: String,
+    uri: String,
+) -> PyResult<Option<Bound<'py, PyBytes>>> {
+    let bytes = py
+        .detach(|| areev_store::read_blob_offline(&db_path, &uri))
+        .map_err(err)?;
+    Ok(bytes.map(|b| PyBytes::new(py, &b)))
+}
+
 #[pymodule]
 fn areev(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Areev>()?;
     m.add_function(pyo3::wrap_pyfunction!(drop_postgres_schema, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(read_blob_offline, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

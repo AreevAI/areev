@@ -1155,3 +1155,30 @@ def test_blob_bad_uris_raise(tmp_path):
         m.get_blob("cas://sha256:abc")
     with pytest.raises(ValueError, match="STO-E001"):
         m.get_blob("cas://sha256:" + "a" * 64)
+
+
+def test_read_blob_offline_needs_no_open_handle(tmp_path):
+    """A tool subprocess cannot open the memory its run holds, so an
+    attachment must be readable with the database closed."""
+    path = str(tmp_path / "blob.db")
+    db = areev.Areev(path)
+    uri = db.put_blob(b"invoice bytes")
+    del db  # release the handle
+
+    assert areev.read_blob_offline(path, uri) == b"invoice bytes"
+
+    for bad in ("http://x", "cas://sha256:abc", "cas://sha256:" + "z" * 64):
+        with pytest.raises(ValueError):
+            areev.read_blob_offline(path, bad)
+
+    with pytest.raises(ValueError):
+        areev.read_blob_offline(path, "cas://sha256:" + "a" * 64)
+
+
+def test_read_blob_offline_works_while_a_handle_is_open(tmp_path):
+    """It takes no lock, so it reads during a run, not only after one."""
+    path = str(tmp_path / "live.db")
+    db = areev.Areev(path)
+    uri = db.put_blob(b"during a run")
+    assert areev.read_blob_offline(path, uri) == b"during a run"
+    assert db.get_blob(uri) == b"during a run"

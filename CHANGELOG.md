@@ -11,6 +11,14 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ### Added
 
+- **`read_blob_offline` in the Python and Node bindings.** The lock-free CAS
+  read added in 1.2.1 reached only the CLI, so a `--tool-cmd` subprocess
+  written in Python or Node — the common case for a binding host — still had
+  no way to fetch an attachment while its own run held the memory. It had to
+  shell out to the `areev` binary (a second artifact to ship, pin and sign per
+  deployment) or hand-roll the read and risk skipping the content-address
+  verification. Same contract as the Rust and CLI paths: no database open, no
+  lock, hash re-verified on read, `None`/`null` for a sealed blob.
 - **`run_inspect`/`run_oversight_report` in the Python and Node bindings**
   (#34): the two read-only run reports — the frozen manifest, budgets,
   phase, spend, pending asks, and fork lineage; and the EU AI Act Article

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-import { Areev } from '../index.js'
+import { Areev, readBlobOffline } from '../index.js'
 
 const HEX64 = 64 // length of a SHA-256 content address in hex
 
@@ -907,5 +907,35 @@ test('malformed cas uris reject rather than panic', async () => {
   // Short/truncated addresses must error, never panic on a byte slice.
   await assert.rejects(() => m.getBlob('cas://sha256:abc'), /VAL-E001/)
   await assert.rejects(() => m.getBlob('cas://sha256:' + 'a'.repeat(64)), /STO-E001/)
+  m.close()
+})
+
+test('readBlobOffline reads an attachment with no open handle', async () => {
+  // A tool subprocess cannot open the memory its run holds, so this must
+  // work unlocked.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-offline-'))
+  const path = join(dir, 'blob.db')
+  const m = new Areev(path)
+  const payload = Buffer.from('invoice bytes')
+  const uri = await m.putBlob(payload)
+  m.close()
+
+  const got = readBlobOffline(path, uri)
+  assert.ok(Buffer.isBuffer(got), 'returns a Buffer')
+  assert.deepEqual(Buffer.from(got), payload)
+})
+
+test('readBlobOffline works WHILE a handle is open, and refuses bad addresses', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-offline-live-'))
+  const path = join(dir, 'live.db')
+  const m = new Areev(path)
+  const uri = await m.putBlob(Buffer.from('during a run'))
+
+  assert.deepEqual(Buffer.from(readBlobOffline(path, uri)), Buffer.from('during a run'))
+
+  for (const bad of ['not-a-cas-uri', 'cas://sha256:abc', 'cas://sha256:' + 'z'.repeat(HEX64)]) {
+    assert.throws(() => readBlobOffline(path, bad), /VAL-E001/, `must reject ${bad}`)
+  }
+  assert.throws(() => readBlobOffline(path, 'cas://sha256:' + 'a'.repeat(HEX64)), /STO-E001/)
   m.close()
 })

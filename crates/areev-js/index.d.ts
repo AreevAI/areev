@@ -450,10 +450,19 @@ export declare class Areev {
   runOversightReport(runId?: string | undefined | null, plan?: string | undefined | null): Promise<string>
 }
 
+export declare function dropPostgresSchema(url: string, schema: string): void
+
 /**
  * Drop a memory schema entirely — the postgres backend's memory-level
  * erasure primitive (`DROP SCHEMA … CASCADE`), the analogue of deleting a
  * memory file. Destroys the memory AND its telemetry/blobs. Admin surface:
  * gate it like any destructive operation in your host.
+ * Read one CAS blob from a memory's `.blobs` sidecar without opening the
+ * database.
+ *
+ * The embedded backend's lock is exclusive, so a `--tool-cmd` subprocess
+ * cannot open the memory its own run is holding. No lock is needed: a blob is
+ * immutable and its address is its checksum, re-verified here. `null` means
+ * the blob is sealed — open the memory with its passphrase for that.
  */
-export declare function dropPostgresSchema(url: string, schema: string): void
+export declare function readBlobOffline(dbPath: string, uri: string): Buffer | null
