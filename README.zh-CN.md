@@ -2,7 +2,7 @@
 
 > 中文 · [English](README.md)
 
-**面向 AI 智能体的嵌入式记忆引擎** —— 不腐化、不过期、每条事实都能证明来源的记忆。
+**自适应智能体 (adaptive agents) 的底座** —— 让智能体的行为依据证据改变，在人的授权之下进行，每一步都可审查、可撤销、可重新度量。
 
 [![CI](https://github.com/AreevAI/areev/actions/workflows/ci.yml/badge.svg)](https://github.com/AreevAI/areev/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -16,6 +16,12 @@
 > 给智能体记忆的 git：日志 (log)、差异 (diff)、时间回溯、带显式合并的分叉，
 > 以及加密增量同步 —— 全部内建于数据模型之中，因为 grain *本身就是*
 > 内容寻址的不可变对象。
+
+因为记录是内容寻址、按主体建立索引的，而不是烧进模型权重里的，**擦除是一个真实的
+操作**：`FORGET SUBJECT` 从活动存储中移除某个人，并以普通 tombstone 的形式复制出去，
+在副本上同样执行删除；数据主体报告与它共用**同一个选择器**，因此披露的范围恰好等于
+擦除的范围。其覆盖边界（以及它并不覆盖的归档保留窗口）在
+[`docs/gdpr.md`](docs/gdpr.md) 与 [`docs/erasure.md`](docs/erasure.md) 中如实写明。
 
 *`.mg` 格式与 CAL 已稳定并有完整文档（符合开放记忆规范 Open Memory Spec，
 OMS），已发布到 crates.io / PyPI / npm。当前版本见
@@ -69,12 +75,10 @@ Areev 是另一种形态：一个**由你嵌入的引擎**，从结构上让记�
   后端适配器](docs/memory-tool.md)、预算感知的上下文渲染
   （SML / Markdown / TOON / JSON）、面向 9 种厂商格式的工具 schema 渲染、
   Python 与 Node 绑定。
-- **格式归你所有，迁入有铺好的路**：`.mg` 格式完整成文，并与
+- **格式归你所有**：`.mg` 格式完整成文，并与
   [OMS](https://github.com/openmemoryspec/oms) 规范一致（字节级测试向量），
-  你的记忆比引擎活得更久 —— 而 [`areev migrate`](docs/migrate.md) 能把你
-  现有的记忆导入进来：**mem0**（完整编辑历史保留为版本演替链）、
-  **Zep/Graphiti**、**Letta**、**LangMem/LangGraph**、**Basic Memory**，
-  或任意存储经由通用 JSONL。
+  这份记录比这个引擎活得更久 —— 也比我们活得更久。若要带着历史迁入，
+  导入工具见 [`docs/migrate.md`](docs/migrate.md)。
 
 ## 安装
 
@@ -130,21 +134,6 @@ claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
 
 `areev serve --mcp` 在 stdio 上讲以换行分隔的 JSON-RPC 2.0，可与任意 MCP
 客户端配合使用 —— 参见 [`docs/mcp-reference.md`](docs/mcp-reference.md)。
-
-### 已经在用 mem0、Zep、Letta 或 LangMem？
-
-把你的记忆连同编辑历史一起带过来：
-
-```bash
-areev migrate --from mem0 --file export.json --history history.json --db mine.db
-areev migrate --from basic-memory --file ~/basic-memory --db mine.db
-```
-
-mem0 的历史事件会重放为真正的版本演替链（ADD → add、UPDATE → supersede、
-DELETE → forget），并保留**原始时间戳**，`HISTORY` 能看到导入前的演化轨迹；
-笔记形态的来源会落成 `/memories` 下可直接编辑的 memory-tool 文件。
-重复运行导入会跳过已有内容。各来源的导出一行命令见
-[`docs/migrate.md`](docs/migrate.md)。
 
 ### 构建一个会学习 —— 也能“反学习”的智能体
 
@@ -249,7 +238,7 @@ grain 都能溯源到它们何时、如何进入。
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Areev 的工作原理：grain、`.mg` 格式、CAL、召回、同步 |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | CAL 查询语言参考 |
 | [`docs/mcp-reference.md`](docs/mcp-reference.md) | MCP 服务器及其 6 个工具 |
-| [`docs/migrate.md`](docs/migrate.md) | 从 mem0、Zep、Letta、LangMem、Basic Memory、JSONL 迁移 |
+| [`docs/migrate.md`](docs/migrate.md) | 从其他存储或 JSONL 导入既有语料，并保留其编辑历史 |
 | [`docs/memory-tool.md`](docs/memory-tool.md) | Anthropic memory-tool 后端（Python / Node / CLI） |
 | [`docs/cookbook.md`](docs/cookbook.md) | 面向任务的实用配方 |
 | [`FAQ.md`](FAQ.md) | 常见问答（也对 LLM 友好） |

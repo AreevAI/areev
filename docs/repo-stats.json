@@ -2,16 +2,16 @@
   "version": "1.2.2",
   "crates": 17,
   "rust": {
-    "files": 261,
-    "physical_lines": 148667,
-    "source_code": 73601,
-    "test_code": 41140,
-    "unit_test_code": 20918,
-    "integration_test_code": 20222,
+    "files": 265,
+    "physical_lines": 151041,
+    "source_code": 74491,
+    "test_code": 41986,
+    "unit_test_code": 21036,
+    "integration_test_code": 20950,
     "example_code": 585,
-    "test_functions": 2104,
+    "test_functions": 2132,
     "test_ratio": 0.56,
-    "test_share": 35.9
+    "test_share": 36.0
   },
   "per_crate": [
     {
@@ -25,26 +25,26 @@
     {
       "name": "areev-store",
       "files": 39,
-      "physical": 20418,
-      "source_code": 9432,
+      "physical": 20455,
+      "source_code": 9450,
       "test_code": 5136,
       "tests": 248
     },
     {
       "name": "areev-core",
       "files": 47,
-      "physical": 15416,
-      "source_code": 8004,
+      "physical": 15432,
+      "source_code": 8011,
       "test_code": 3827,
       "tests": 251
     },
     {
       "name": "areev-cli",
-      "files": 12,
-      "physical": 11015,
-      "source_code": 4915,
-      "test_code": 4110,
-      "tests": 135
+      "files": 13,
+      "physical": 11323,
+      "source_code": 5091,
+      "test_code": 4179,
+      "tests": 137
     },
     {
       "name": "areev-loop",
@@ -56,11 +56,11 @@
     },
     {
       "name": "areev-run",
-      "files": 15,
-      "physical": 6039,
-      "source_code": 3027,
-      "test_code": 1756,
-      "tests": 45
+      "files": 20,
+      "physical": 8545,
+      "source_code": 3972,
+      "test_code": 2613,
+      "tests": 85
     },
     {
       "name": "areev-context",
@@ -71,20 +71,20 @@
       "tests": 90
     },
     {
-      "name": "areev-trigger",
-      "files": 12,
-      "physical": 4099,
-      "source_code": 1588,
-      "test_code": 1333,
-      "tests": 102
-    },
-    {
       "name": "areev-run-core",
       "files": 8,
-      "physical": 3760,
-      "source_code": 1918,
-      "test_code": 967,
+      "physical": 3793,
+      "source_code": 1934,
+      "test_code": 969,
       "tests": 31
+    },
+    {
+      "name": "areev-trigger",
+      "files": 10,
+      "physical": 3573,
+      "source_code": 1316,
+      "test_code": 1251,
+      "tests": 88
     },
     {
       "name": "areev-llm",
@@ -152,10 +152,10 @@
     }
   ],
   "docs": {
-    "files": 47,
-    "lines": 18205
+    "files": 48,
+    "lines": 19113
   },
-  "error_codes": 87,
+  "error_codes": 89,
   "bindings": {
     "python_files": 26,
     "node_test_files": 4

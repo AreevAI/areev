@@ -6,8 +6,8 @@ Command-line interface for Areev, the embedded memory engine for AI agents.
 layers where one memory is one file. It offers verbs for the full lifecycle:
 adding grains, structural and hybrid recall, running CAL queries, inspecting
 history and the op-log, moving data with bundles, streaming, and restore, and
-migrating in from other memory systems (`areev migrate` — mem0, Zep, Letta,
-LangMem, Basic Memory, generic JSONL). It also drives the MCP server and the
+importing an existing corpus with its edit history (`areev migrate`; see
+`docs/migrate.md` for the supported sources). It also drives the MCP server and the
 local web console, so it is the primary hands-on entry point to an Areev
 memory.
 

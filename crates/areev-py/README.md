@@ -17,7 +17,7 @@ h = mem.add_fact("john", "prefers", "tea", confidence=0.95)
 print(mem.recall("john"))  # JSON string, newest-first
 
 mem.set_embedder(my_model.encode, model="bge-m3")      # vector recall via a callback
-mem.migrate("mem0", export_json, history_json)         # import from mem0/Zep/Letta/… (docs/migrate.md)
+mem.migrate("mem0", export_json, history_json)         # import an existing corpus (docs/migrate.md)
 mem.memory_tool('{"command": "view", "path": "/memories"}')  # Anthropic memory-tool backend
 ```
 

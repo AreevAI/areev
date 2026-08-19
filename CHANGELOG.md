@@ -31,6 +31,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **README repositioned around adaptive agents.** The pitch led with "embedded
+  memory engine" and carried a migration section comparing Areev to other memory
+  stores; being another memory player is not the position. It now leads with the
+  substrate for agents whose behaviour changes on evidence, under human
+  authority, in steps that can be inspected, undone and re-measured — and
+  explains the three systems that make that possible (graph engineering, context
+  engineering, governance) plus the loop that closes them. Competitor comparisons
+  are gone from the README, the package READMEs, and `README.zh-CN.md`;
+  `areev migrate` remains documented in `docs/migrate.md` as a capability rather
+  than a positioning. Added an Examples section linking the runnable material in
+  `examples/`.
+
+  Claim discipline follows the strategy docs' own rules: "self-improving" is
+  scoped to the agent's **memory**, never to model outputs; `verify` is named by
+  the tier that actually ships (**journal-consistent**) rather than the two that
+  do not; `runs_touching` is stated with its limit (a run that merely *read* a
+  grain leaves no grain, so nothing can attest to it); erasure reach is stated
+  with the archive window it does not cover; and nothing anywhere claims to be
+  "compliant".
+
 - **`workflow_dispatch` is now a safe dry run on all three release workflows.**
   `release-npm` and `release-pypi` published to the registries for real on a
   manual dispatch from any branch; their publish jobs are now guarded on
