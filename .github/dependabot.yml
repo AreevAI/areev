@@ -24,6 +24,18 @@ updates:
           - "getrandom"
           - "digest"
 
+  # Node bindings (napi) — Rust side. areev-js is a DETACHED cargo workspace
+  # with its own Cargo.lock, so the "/" entry above does not reach it and its
+  # lockfile drifts every time a crate it depends on gains a dependency.
+  # release-npm.yml builds `--locked`, so that drift breaks a RELEASE.
+  - package-ecosystem: cargo
+    directory: "/crates/areev-js"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+
   # Node bindings (napi) — standalone package, not in the Cargo workspace.
   - package-ecosystem: npm
     directory: "/crates/areev-js"
