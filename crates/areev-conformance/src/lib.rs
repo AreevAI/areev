@@ -31,6 +31,13 @@ pub trait Backend {
     /// isolation unit.
     fn open_named(&self, name: &str) -> Areev;
 
+    /// [`open_named`](Self::open_named) with explicit host options — the seam
+    /// for capabilities that are host config rather than file-truths (an
+    /// `anon_key`, an embedder). Each backend routes to its own
+    /// `open_with`-family constructor, so a case can assert that a capability
+    /// behaves identically whether the memory is a file or a schema.
+    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev;
+
     /// A scratch directory for interchange files (bundles). Backend-neutral:
     /// bundles are files regardless of where the store lives.
     fn scratch(&self) -> &Path;
@@ -59,6 +66,11 @@ impl Backend for TursoBackend {
     fn open_named(&self, name: &str) -> Areev {
         let path = self.dir.path().join(format!("{name}.db"));
         Areev::open(path.to_str().expect("utf8 path")).expect("open turso store")
+    }
+
+    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev {
+        let path = self.dir.path().join(format!("{name}.db"));
+        Areev::open_with(path.to_str().expect("utf8 path"), opts).expect("open turso store")
     }
 
     fn scratch(&self) -> &Path {
@@ -114,6 +126,12 @@ impl Backend for PgBackend {
         let schema = format!("{}_{}", self.prefix, name);
         self.opened.borrow_mut().insert(schema.clone());
         Areev::open_postgres(&self.url, &schema).expect("open postgres store")
+    }
+
+    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev {
+        let schema = format!("{}_{}", self.prefix, name);
+        self.opened.borrow_mut().insert(schema.clone());
+        Areev::open_postgres_with(&self.url, &schema, opts).expect("open postgres store")
     }
 
     fn scratch(&self) -> &Path {
@@ -186,7 +204,8 @@ macro_rules! for_each_conformance_case {
         $per_case!(vault_rows_never_replicate);
         $per_case!(trigger_state_never_replicates);
         $per_case!(meta_cas_admits_one_claimer_and_fences_the_loser);
-        $per_case!(value_derived_anon_refuses_without_page_key);
+        $per_case!(value_derived_anon_refuses_without_key_material);
+        $per_case!(host_anon_key_unlocks_the_vault);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(forget_reclaims_sole_referenced_blob);

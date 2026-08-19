@@ -255,3 +255,89 @@ fn file_only_capabilities_are_rejected() {
     };
     assert!(err.to_string().contains("file-backend capability"), "{err}");
 }
+
+/// A managed database restarts under a long-lived handle.
+///
+/// This is the finding that would have caused a production incident: `PgDb`
+/// held ONE `tokio_postgres::Client` with no reconnect, so a routine Cloud SQL
+/// maintenance restart (`57P01 terminating connection due to administrator
+/// command`) permanently poisoned the handle — the process stayed alive and
+/// every later call failed until the instance happened to be recycled.
+///
+/// The contract asserted here is deliberately asymmetric:
+///   * a READ is replayed transparently — it had no effect, so running it
+///     twice is running it once;
+///   * a WRITE is NOT replayed — the connection may have died AFTER the server
+///     committed it, and replaying would risk applying it twice. It reports the
+///     failure and reconnects for the next call.
+///
+/// The kill is scoped by `application_name` to THIS handle's connection.
+/// Terminating every backend on the database (the obvious way to write it)
+/// also kills the connections of every other test sharing the server, since
+/// cargo runs them in parallel.
+#[test]
+fn a_handle_recovers_from_a_database_outage() {
+    let Some(b) = backend() else { return };
+    let base = pg_url().unwrap();
+    let schema = b.schema_for("outage");
+    const APP: &str = "areev_outage_probe";
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let tagged = format!("{base}{sep}application_name={APP}");
+
+    let mut m = areev_store::Areev::open_postgres(&tagged, &schema).unwrap();
+    m.add(&areev_conformance::fact("ns", "before", "wrote", "ok"))
+        .unwrap();
+    assert_eq!(m.count().unwrap(), 1);
+
+    // What a restart or failover looks like from the client's side.
+    let kill = |url: &str| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (client, conn) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            client
+                .simple_query(&format!(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND application_name = '{APP}' \
+                       AND pid <> pg_backend_pid()"
+                ))
+                .await
+                .unwrap();
+        });
+    };
+
+    // ── A read survives the outage ───────────────────────────────────────
+    kill(&base);
+    assert_eq!(
+        m.count().unwrap(),
+        1,
+        "a read must reconnect and replay — before this it failed forever"
+    );
+
+    // ── Reads keep working afterwards (the statement cache was rebuilt) ──
+    // A reconnect that kept the old session's prepared statements would fail
+    // here with 26000 invalid_sql_statement_name instead.
+    assert_eq!(
+        m.recall("ns", "before", Some("wrote"), 4).unwrap().len(),
+        1,
+        "hot/prepared paths must work on the new session"
+    );
+
+    // ── A write is not silently replayed, but the handle recovers ────────
+    kill(&base);
+    // This call may fail (its connection is gone) — what must NOT happen is
+    // the handle staying dead.
+    let _ = m.add(&areev_conformance::fact("ns", "during", "wrote", "maybe"));
+    m.add(&areev_conformance::fact("ns", "after", "wrote", "ok"))
+        .expect("the handle must be usable again after an outage");
+
+    // And it is a real, queryable write on the same memory.
+    assert_eq!(m.recall("ns", "after", Some("wrote"), 4).unwrap().len(), 1);
+}

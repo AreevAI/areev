@@ -142,10 +142,27 @@ pub(crate) const PG_SEED: &[&str] = &[
 
 pub(crate) struct PgDb {
     rt: tokio::runtime::Runtime,
-    client: tokio_postgres::Client,
+    /// Kept so a dead session can be replaced in place. A managed Postgres
+    /// restarts, fails over, and drops idle connections as ROUTINE
+    /// maintenance, not as an incident — before this, one such event
+    /// permanently poisoned a long-lived handle and every later call failed
+    /// until the process was recycled.
+    url: String,
+    schema: String,
+    client: RefCell<tokio_postgres::Client>,
     /// Prepared statements keyed by the ORIGINAL (untranslated) SQL, so hot
     /// callers hit the cache without re-translating.
+    ///
+    /// MUST be cleared on reconnect: a `tokio_postgres::Statement` names a
+    /// server-side prepared statement belonging to ONE session, so carrying
+    /// the cache across a reconnect makes every hot call fail forever with
+    /// `26000 invalid_sql_statement_name` — a reconnect that reconnects and
+    /// still cannot serve a query.
     cache: RefCell<HashMap<String, tokio_postgres::Statement>>,
+    /// Whether a transaction is open on this handle. Nothing is replayed while
+    /// it is: the transaction died with the connection, so silently re-running
+    /// one statement would apply it outside the atomic unit it was written for.
+    in_txn: std::cell::Cell<bool>,
     /// Cached BM25 collection stats — a COUNT/SUM over fts_doc is O(corpus)
     /// and would otherwise run on EVERY text query. Invalidated on this
     /// handle's own writes (reserve_write); other writers' documents stay
@@ -220,7 +237,87 @@ impl PgDb {
                 .await;
             boot
         })?;
-        Ok(Self { rt, client, cache: RefCell::new(HashMap::new()), stats: RefCell::new(None) })
+        Ok(Self {
+            rt,
+            url: url.to_string(),
+            schema: schema.to_string(),
+            client: RefCell::new(client),
+            cache: RefCell::new(HashMap::new()),
+            in_txn: std::cell::Cell::new(false),
+            stats: RefCell::new(None),
+        })
+    }
+
+    /// Is this error the CONNECTION dying, as opposed to the statement failing?
+    ///
+    /// Only these justify replacing the client: an ordinary constraint
+    /// violation must stay an ordinary error. Covers the client noticing the
+    /// socket is gone (`is_closed`), SQLSTATE class 08 (connection exception),
+    /// and the three 57Pnn shutdown codes a managed Postgres sends on
+    /// restart/failover — `57P01 terminating connection due to administrator
+    /// command` is the one a Cloud SQL maintenance window produces.
+    fn is_connection_dead(e: &AreevError) -> bool {
+        let AreevError::Storage(msg) = e else {
+            return false;
+        };
+        msg.contains("57P01")
+            || msg.contains("57P02")
+            || msg.contains("57P03")
+            || msg.contains("postgres error 08")
+            || msg.contains("connection closed")
+            || msg.contains("connection unexpectedly closed")
+    }
+
+    /// Replace the dead session with a fresh one.
+    ///
+    /// Deliberately does NOT re-run the bootstrap DDL: the schema already
+    /// exists, and re-taking the bootstrap advisory lock on every blip would
+    /// serialise recovery across every handle on the database. Only the
+    /// session-local state has to be restored — `search_path` — and the two
+    /// caches that belonged to the old session have to go.
+    fn reconnect(&self) -> Result<()> {
+        let (client, connection) = self
+            .rt
+            .block_on(tokio_postgres::connect(&self.url, tokio_postgres::NoTls))
+            .map_err(pg_err)?;
+        self.rt.spawn(async move {
+            let _ = connection.await;
+        });
+        self.rt.block_on(client.batch_execute(&format!(
+            "SET search_path TO \"{}\", public, ext",
+            self.schema
+        )))
+        .map_err(pg_err)?;
+        // Order matters only in that both must happen before the next call:
+        // a Statement from the old session is invalid, and the BM25 collection
+        // stats were cached against a connection that can no longer confirm them.
+        self.cache.borrow_mut().clear();
+        *self.stats.borrow_mut() = None;
+        *self.client.borrow_mut() = client;
+        Ok(())
+    }
+
+    /// Reconnect after a connection-level failure, and report whether the
+    /// failed call may be replayed.
+    ///
+    /// `replayable` is the whole safety argument. A READ outside a transaction
+    /// can be re-run: it had no effect, so running it twice is running it
+    /// once. A WRITE cannot — the connection may have died AFTER the server
+    /// committed it, and nothing on this side can tell the difference, so
+    /// replaying risks applying it twice. Those calls get the fresh connection
+    /// for NEXT time and this error now, which is the honest outcome: the host
+    /// learns its unit of work did not complete.
+    fn recover(&self, e: &AreevError, replayable: bool) -> bool {
+        if !Self::is_connection_dead(e) || self.in_txn.get() {
+            return false;
+        }
+        // A failed reconnect leaves the handle dead-but-retryable rather than
+        // erroring here: the caller's original error is the more useful one,
+        // and the next call tries again.
+        if self.reconnect().is_err() {
+            return false;
+        }
+        replayable
     }
 
     /// Prepare-and-cache. ONLY the `_hot` calls come through here: their SQL
@@ -233,41 +330,72 @@ impl PgDb {
             return Ok(st.clone());
         }
         let translated = translate(sql)?;
-        let st = self.rt.block_on(self.client.prepare(&translated)).map_err(|e| {
+        let st = self.rt.block_on(self.client.borrow().prepare(&translated)).map_err(|e| {
             AreevError::Storage(format!("prepare failed: {e} — translated SQL: {translated}"))
         })?;
         self.cache.borrow_mut().insert(sql.to_string(), st.clone());
         Ok(st)
     }
 
-    fn run_query(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<Vec<Row>> {
+    fn query_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<Vec<Row>> {
         let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
         let refs: Vec<&(dyn ToSql + Sync)> =
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
         let rows = if hot {
             let st = self.prepared(sql)?;
-            self.rt.block_on(self.client.query(&st, &refs))
+            self.rt.block_on(self.client.borrow().query(&st, &refs))
         } else {
             // Uncached path: the temporary statement is closed on drop, so
             // dynamic SQL leaves nothing behind on either side.
             let translated = translate(sql)?;
-            self.rt.block_on(self.client.query(translated.as_str(), &refs))
+            self.rt.block_on(self.client.borrow().query(translated.as_str(), &refs))
         }
         .map_err(pg_err)?;
         rows.iter().map(row_to_row).collect()
     }
 
+    /// A read, replayed once if the connection died under it.
+    ///
+    /// Replay is safe here precisely because it is a read: no effect to
+    /// duplicate. This is what turns a routine managed-Postgres restart from
+    /// "this handle is dead until the process is recycled" into one slow call.
+    fn run_query(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<Vec<Row>> {
+        match self.query_once(sql, params.clone(), hot) {
+            Ok(rows) => Ok(rows),
+            Err(e) => {
+                if self.recover(&e, true) {
+                    self.query_once(sql, params, hot)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// A write. Reconnects for the NEXT call but never replays this one — see
+    /// [`recover`](Self::recover) for why a possibly-committed write must not
+    /// be re-run.
     fn run_execute(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
+        match self.execute_once(sql, params, hot) {
+            Ok(n) => Ok(n),
+            Err(e) => {
+                self.recover(&e, false);
+                Err(e)
+            }
+        }
+    }
+
+    fn execute_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
         let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
         let refs: Vec<&(dyn ToSql + Sync)> =
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
         if hot {
             let st = self.prepared(sql)?;
-            self.rt.block_on(self.client.execute(&st, &refs)).map_err(pg_err)
+            self.rt.block_on(self.client.borrow().execute(&st, &refs)).map_err(pg_err)
         } else {
             let translated = translate(sql)?;
             self.rt
-                .block_on(self.client.execute(translated.as_str(), &refs))
+                .block_on(self.client.borrow().execute(translated.as_str(), &refs))
                 .map_err(pg_err)
         }
     }
@@ -291,15 +419,45 @@ impl Db for PgDb {
     }
 
     fn begin(&self) -> Result<()> {
-        self.rt.block_on(self.client.batch_execute("BEGIN")).map_err(pg_err)
+        let r = self
+            .rt
+            .block_on(self.client.borrow().batch_execute("BEGIN"))
+            .map_err(pg_err);
+        // Set only on success, so a failed BEGIN does not wedge the handle
+        // into "a transaction is open" and block every later recovery.
+        if r.is_ok() {
+            self.in_txn.set(true);
+        } else {
+            self.recover(r.as_ref().unwrap_err(), false);
+        }
+        r
     }
 
     fn commit(&self) -> Result<()> {
-        self.rt.block_on(self.client.batch_execute("COMMIT")).map_err(pg_err)
+        let r = self
+            .rt
+            .block_on(self.client.borrow().batch_execute("COMMIT"))
+            .map_err(pg_err);
+        // Cleared either way: a failed COMMIT ends the transaction just as
+        // surely as a successful one, and leaving the flag set would suppress
+        // reconnects forever after a single outage mid-transaction.
+        self.in_txn.set(false);
+        if let Err(ref e) = r {
+            self.recover(e, false);
+        }
+        r
     }
 
     fn rollback(&self) -> Result<()> {
-        self.rt.block_on(self.client.batch_execute("ROLLBACK")).map_err(pg_err)
+        let r = self
+            .rt
+            .block_on(self.client.borrow().batch_execute("ROLLBACK"))
+            .map_err(pg_err);
+        self.in_txn.set(false);
+        if let Err(ref e) = r {
+            self.recover(e, false);
+        }
+        r
     }
 
     fn prefers_batched_reads(&self) -> bool {
@@ -416,9 +574,11 @@ impl Db for PgDb {
             // erasure.
             let _ = self
                 .client
+                .borrow()
                 .batch_execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
                 .await;
             self.client
+                .borrow()
                 .batch_execute(&format!(
                     "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})"
                 ))
@@ -432,6 +592,7 @@ impl Db for PgDb {
             // fail mid-transaction — refuse the embedder up front instead.
             let row = self
                 .client
+                .borrow()
                 .query_one(
                     "SELECT a.atttypmod FROM pg_attribute a
                       JOIN pg_class c ON a.attrelid = c.oid

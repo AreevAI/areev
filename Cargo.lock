@@ -185,6 +185,8 @@ dependencies = [
  "areev-store",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

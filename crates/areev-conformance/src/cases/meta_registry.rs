@@ -210,7 +210,7 @@ pub fn vault_rows_never_replicate(b: &dyn Backend) {
 /// unencrypted file, or ANY Postgres schema (the page cipher is
 /// file-backend-only) — must refuse those declarations loudly at `set`,
 /// never degrade to unkeyed derivation. Plain egress stays available.
-pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
+pub fn value_derived_anon_refuses_without_key_material(b: &dyn Backend) {
     let mut m = b.open_named("anon_nokey");
     for policy in [
         r#"{"mode": "ingress"}"#,
@@ -220,8 +220,8 @@ pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
     ] {
         let err = m.set_anon_policy("ns", policy).unwrap_err().to_string();
         assert!(
-            err.contains("encrypted"),
-            "expected an encrypted-memory refusal for {policy}, got: {err}"
+            err.contains("anon_key"),
+            "the refusal must name the fix that works on EVERY backend, got: {err}"
         );
     }
     // The keyless-safe modes still work end to end.
@@ -229,6 +229,47 @@ pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
     m.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
     let got = m.recall("ns", "caller:john", None, 4).unwrap();
     assert_eq!(got[0].fields["subject"], "[PERSON_1]", "egress must work keyless");
+}
+
+/// A host-supplied `anon_key` unlocks value-derived tokens and the mapping
+/// vault on EVERY backend — the gap that made reversible pseudonymisation
+/// unusable exactly where it was most wanted.
+///
+/// The Postgres backend refuses `encryption_key` (it is a page-cipher
+/// capability), and the vault key used to be HKDF-derived from that page key
+/// alone. So on a stateless host — Cloud Run, ECS, Kubernetes, i.e. the
+/// deployments the Postgres backend exists to serve — mappings could not
+/// persist and deterministic tokens were unavailable entirely. The key is
+/// host-supplied and never persisted, so this case also pins that the vault
+/// rows survive a REOPEN with the same key: that is what makes de-anonymisation
+/// work across processes and instances rather than within one lifetime.
+pub fn host_anon_key_unlocks_the_vault(b: &dyn Backend) {
+    let key = [7u8; 32];
+    let opts = || areev_store::AreevOptions {
+        anon_key: Some(key),
+        ..Default::default()
+    };
+
+    let mut m = b.open_named_with("anon_hostkey", opts());
+    // A vault-enabled policy is accepted with no page cipher in sight.
+    m.set_anon_policy("ns", r#"{"mode": "egress", "scope": "memory", "vault": true}"#)
+        .expect("a host-supplied anon_key must satisfy a vault-enabled policy");
+    m.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let first = m.recall("ns", "caller:john", None, 4).unwrap();
+    let token = first[0].fields["subject"].as_str().unwrap().to_string();
+    assert_ne!(token, "caller:john", "the identity must not reach the caller");
+    drop(m);
+
+    // Reopened with the SAME key: the token is reproducible, which is the
+    // property counter tokens cannot give and the whole reason for HMAC-derived
+    // ones. Vault rows written before the drop are still readable.
+    let mut m2 = b.open_named_with("anon_hostkey", opts());
+    m2.add(&fact("ns", "caller:john", "drinks", "coffee")).unwrap();
+    let again = m2.recall("ns", "caller:john", None, 8).unwrap();
+    assert!(
+        again.iter().all(|g| g.fields["subject"] == serde_json::json!(token)),
+        "the same identity must map to the same pseudonym across processes"
+    );
 }
 
 // ---- trigger evaluation state (`trg:`) -----------------------------------

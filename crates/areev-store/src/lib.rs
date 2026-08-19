@@ -1078,6 +1078,31 @@ pub struct AreevOptions {
     /// sidecar. Attachments written before blob encryption landed stay
     /// plaintext until [`Areev::encrypt_blobs`] migrates them.
     pub encryption_key: Option<[u8; 32]>,
+    /// Host-supplied 32-byte root for the anonymization keys, independent of
+    /// the page cipher.
+    ///
+    /// The pseudonymise → LLM → rehydrate round trip needs stable key material
+    /// so the same identity maps to the same token across processes and
+    /// instances, and so the vault's sealed mapping rows can be reopened
+    /// later. That material used to come only from `encryption_key`, which the
+    /// Postgres backend refuses outright (it is a page-cipher capability) —
+    /// so the backend built for stateless hosts could not use the egress
+    /// control built for untrusted egress. Supplying the root directly fixes
+    /// that, and also unblocks value-derived tokens on a PLAINTEXT file, where
+    /// the same gap existed.
+    ///
+    /// Trust model: whoever holds this key can re-identify every pseudonym in
+    /// the vault, so it belongs in a KMS or secret manager (Cloud KMS, AWS
+    /// KMS, Vault) and is never persisted in the memory — not in `meta`, not
+    /// in a bundle, not in the file. Rotating it makes existing vault rows
+    /// permanently unreadable and changes every derived token, which is a
+    /// crypto-erasure lever as much as an operational hazard: rotate
+    /// deliberately, not on a schedule.
+    ///
+    /// Takes precedence over `encryption_key` when both are set, so a file can
+    /// be encrypted at rest under one key and pseudonymised under another —
+    /// which is what separating the two roles is for.
+    pub anon_key: Option<[u8; 32]>,
     /// Recall-telemetry retention for the `<file>.telemetry.db` sidecar.
     /// Host-only capability (never persisted in the file, like the embedder):
     /// a bare `open()` leaves it `Off`, so the library default records nothing;
@@ -1104,6 +1129,7 @@ impl Default for AreevOptions {
             entity_relations: ents.iter().map(|s| s.to_string()).collect(),
             index_text: true,
             encryption_key: None,
+            anon_key: None,
             telemetry: TelemetryMode::Off,
         }
     }
@@ -1855,7 +1881,11 @@ impl Areev {
             if o.encryption_key.is_some() {
                 return Err(AreevError::Validation(
                     "encryption_key is a file-backend capability (page cipher); on the postgres \
-                     backend use TDE/pgcrypto at the deployment layer"
+                     backend use TDE/pgcrypto at the deployment layer. If you wanted it for \
+                     ANONYMIZATION — deterministic value-derived pseudonyms and the mapping \
+                     vault — use AreevOptions::anon_key instead: a host-supplied 32-byte key \
+                     (from your KMS) that works on every backend and is independent of \
+                     encryption at rest"
                         .into(),
                 ));
             }
@@ -1897,7 +1927,14 @@ impl Areev {
         // has no memory key and refuses them at `set` time (Q5 resolved
         // conservatively). Neither key is ever persisted.
         let page_key = explicit.as_ref().and_then(|o| o.encryption_key.as_ref());
-        let anon_memory_key: Option<[u8; 32]> = page_key.map(|pk| {
+        // The anonymization root: the host-supplied key when given, else the
+        // page key. Same HKDF domain separations either way, so a file that
+        // was using the page-derived keys keeps exactly the tokens it had.
+        let anon_root = explicit
+            .as_ref()
+            .and_then(|o| o.anon_key.as_ref())
+            .or(page_key);
+        let anon_memory_key: Option<[u8; 32]> = anon_root.map(|pk| {
             let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
             let mut out = [0u8; 32];
             hk.expand(b"areev.anon.memory.v1", &mut out).expect("32-byte HKDF output");
@@ -1906,13 +1943,13 @@ impl Areev {
         // The vault subkey (proposal §7): destroying the page key destroys
         // the sealed mapping rows with it — crypto-erasure reaches the vault
         // by construction. Its own domain-separation string, like blobcrypt.
-        let anon_vault_key: Option<[u8; 32]> = page_key.map(|pk| {
+        let anon_vault_key: Option<[u8; 32]> = anon_root.map(|pk| {
             let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
             let mut out = [0u8; 32];
             hk.expand(b"areev.vault.v1", &mut out).expect("32-byte HKDF output");
             out
         });
-        let anon_session_key: [u8; 32] = match page_key {
+        let anon_session_key: [u8; 32] = match anon_root {
             Some(pk) => {
                 let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, pk);
                 let mut out = [0u8; 32];
@@ -1979,6 +2016,7 @@ impl Areev {
                 entity_relations: declared_rels
                     .unwrap_or_else(|| AreevOptions::default().entity_relations),
                 encryption_key: None,
+                anon_key: None,
                 // Telemetry is host config, not a file-truth: a bare `open()`
                 // never turns it on.
                 telemetry: TelemetryMode::Off,
@@ -2456,9 +2494,11 @@ impl Areev {
             || policy.vault;
         if needs_memory_key && !self.anon.has_memory_key() {
             return Err(AreevError::Validation(format!(
-                "anonymization mode \"{}\" / scope \"{}\" needs an encrypted memory: \
-                 value-derived pseudonym tokens are keyed from the page key \
-                 (open with --passphrase-env / open_encrypted first)",
+                "anonymization mode \"{}\" / scope \"{}\" needs key material: \
+                 value-derived pseudonym tokens and the mapping vault are keyed from \
+                 either AreevOptions::anon_key (a host-supplied 32-byte key from your \
+                 KMS — works on every backend, including postgres) or, on the file \
+                 backend, the page key (open with --passphrase-env / open_encrypted)",
                 policy.mode, policy.scope
             )));
         }
