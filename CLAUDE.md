@@ -260,7 +260,5 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
 "areevd", Python module `areev`, npm packages `@areev/areev` +
 `@areev/areev-<platform>` (all scoped; unscoped `areev` pending npm approval,
-not required by the release). Formerly published as DejaDB
-(github.com/AreevAI/dejadb, frozen at 1.2.0 and archived). The OMS spec
-itself is external (CC0); OMS conformance is the compatibility mechanism
-with other implementations.
+not required by the release). The OMS spec itself is external (CC0); OMS
+conformance is the compatibility mechanism with other implementations.

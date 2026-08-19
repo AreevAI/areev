@@ -4,9 +4,6 @@ All notable changes to Areev are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Areev descends from **DejaDB** (github.com/AreevAI/dejadb, frozen at 1.2.0);
-the pre-rename release history lives in that repository's `CHANGELOG.md`.
-
 ## [Unreleased]
 
 ### Added
@@ -54,7 +51,7 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 - **Release workflows carry `concurrency` groups** keyed on the tag, so a
   re-run cannot race a manual dispatch.
 - **README**: added a Quality section with the generated metrics chart; removed
-  the DejaDB rename notice and the placeholder overview video; the status line
+  the legacy rename notice and the placeholder overview video; the status line
   no longer restates a version number that goes stale (it points at this file).
   `README.zh-CN.md` kept in sync.
 
@@ -649,10 +646,9 @@ before it was fixed.
 
 ## [1.0.0] - 2026-08-16
 
-The first release under the Areev name — the complete engine formerly
-published as DejaDB 1.2.0, plus the governed-agents program (the `areev run`
-runtime, agent-grade capture, the ecosystem adapters, and the enterprise
-plane), renamed on every surface.
+The first Areev release — the complete memory engine, plus the
+governed-agents program: the `areev run` runtime, agent-grade capture, the
+ecosystem adapters, and the enterprise plane.
 
 ### The memory engine
 
