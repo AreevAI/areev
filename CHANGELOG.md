@@ -9,6 +9,19 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Added
+
+- **`run_inspect`/`run_oversight_report` in the Python and Node bindings**
+  (#34): the two read-only run reports — the frozen manifest, budgets,
+  phase, spend, pending asks, and fork lineage; and the EU AI Act Article
+  14 answers, measured from the journal — were CLI-only. Both are now
+  thin `Runner` methods (`Runner::inspect`, `Runner::oversight_report`)
+  the CLI's `areev run inspect`/`areev run oversight-report` call too, so
+  a tenant-deployed Python/Node agent service renders them in-process
+  instead of shelling out to the CLI binary for two read-only reports.
+  `GET /api/run/inspect` on the hub/console now returns the same full
+  report instead of a smaller, independently hand-rolled subset.
+
 ### Fixed
 
 - **Known-identity propagation now reaches `scan_text`/`anonymize_text`**

@@ -1153,38 +1153,19 @@ impl UiServer {
                 let Some(run_id) = q("run_id") else {
                     return run_api_err("run_id required");
                 };
-                let manifest = self
-                    .facade
-                    .with_store(|m| areev_run::RunManifest::load(m, &run_id));
-                let manifest = match manifest {
-                    Ok(m) => m,
-                    Err(e) => return run_api_err(&e.to_string()),
-                };
-                let ns = self.facade.default_namespace().unwrap_or("shared").to_string();
-                let view = self
-                    .facade
-                    .with_store(|m| areev_run::journal::load(m, &ns, &run_id));
-                let (checkpoints, entries, scheduler) = match view {
-                    Ok(v) => {
-                        let sched = v
-                            .checkpoints
-                            .last()
-                            .map(|c| c.scheduler.clone())
-                            .unwrap_or(Value::Null);
-                        (v.checkpoints.len(), v.entries.len(), sched)
+                // Same Runner::inspect the CLI and bindings call (issue
+                // #34) — this used to hand-roll a divergent, smaller subset
+                // (no pinned/budgets/fork_of/superstep/phase).
+                match self.runner("console:read").inspect(&run_id) {
+                    Ok(report) => {
+                        let mut v = serde_json::to_value(&report).unwrap_or(Value::Null);
+                        if let Some(o) = v.as_object_mut() {
+                            o.insert("ok".into(), Value::Bool(true));
+                        }
+                        ok_json(v)
                     }
-                    Err(_) => (0, 0, Value::Null),
-                };
-                ok_json(serde_json::json!({
-                    "ok": true,
-                    "run_id": run_id,
-                    "plan_hash": manifest.plan_hash,
-                    "principal": manifest.principal,
-                    "checkpoints": checkpoints,
-                    "journal_entries": entries,
-                    "spent": scheduler.get("spent"),
-                    "pending_asks": scheduler.get("pending_asks"),
-                }))
+                    Err(e) => run_api_err(&e.to_string()),
+                }
             }
             ("POST", "/api/run/respond") => {
                 // [R3] SHARED-TOKEN APPROVALS ARE REFUSED: an approval whose

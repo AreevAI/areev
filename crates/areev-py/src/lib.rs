@@ -1420,6 +1420,36 @@ impl Areev {
         serde_json::to_string(&ids).map_err(|e| err(e.to_string()))
     }
 
+    /// One run's full picture — manifest, budgets, phase, spend, pending
+    /// asks, fork lineage. JSON report; same shape as `areev run inspect`.
+    fn run_inspect(&self, py: Python<'_>, run_id: String) -> PyResult<String> {
+        let runner = self.runner(None);
+        let report = py.detach(|| runner.inspect(&run_id)).map_err(err)?;
+        serde_json::to_string(&report).map_err(|e| err(e.to_string()))
+    }
+
+    /// The EU AI Act Article 14 report — measured from the journal, not
+    /// asserted. `run_id` takes precedence; `plan` (a hex hash) resolves to
+    /// that plan's newest run; neither given reports on the newest run
+    /// overall. JSON report; same shape as `areev run oversight-report`.
+    #[pyo3(signature = (run_id = None, plan = None))]
+    fn run_oversight_report(
+        &self,
+        py: Python<'_>,
+        run_id: Option<String>,
+        plan: Option<String>,
+    ) -> PyResult<String> {
+        let plan_hash = match plan {
+            Some(p) => Some(areev_core::error::Hash::from_hex(&p).map_err(err)?),
+            None => None,
+        };
+        let runner = self.runner(None);
+        let report = py
+            .detach(|| runner.oversight_report(run_id.as_deref(), plan_hash.as_ref()))
+            .map_err(err)?;
+        serde_json::to_string(&report).map_err(|e| err(e.to_string()))
+    }
+
     /// Op-log cursor read — the change feed the audit/evidence story rides
     /// (same shape as `areev changes-since` and `GET /api/changes`). Returns
     /// `[{op_seq, hlc, op, hash}...]`, ascending; pass the last `op_seq`
