@@ -3799,7 +3799,9 @@ impl Parser {
                     found: format!("{clause} clause out of order"),
                     span: Some(st.span),
                     suggestion: Some(
-                        "ASSEMBLE clauses are ordered: ASSEMBLE \"name\" FOR \"…\" FROM …                          [WHERE …] BUDGET n PRIORITY … FORMAT … WITH dedup. A clause written                          out of order used to be dropped silently — put it in this order."
+                        "ASSEMBLE clauses are ordered: ASSEMBLE \"name\" FOR \"…\" FROM … \
+                         [WHERE …] BUDGET n PRIORITY … FORMAT … WITH dedup. A clause written \
+                         out of order used to be dropped silently — put it in this order."
                             .into(),
                     ),
                 });

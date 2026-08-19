@@ -2360,6 +2360,42 @@ fn recency_weight_actually_reranks() {
 }
 
 #[test]
+fn a_zero_recency_weight_still_honours_the_limit() {
+    // `recency_weight` widens the candidate scan so the re-ranking sees the
+    // whole set instead of a page, then truncates back to the caller's bound.
+    // The widening was gated on `is_some()` and the truncation on `> 0.0`, so
+    // a weight of exactly zero — "no recency component", i.e. the same answer
+    // as no option at all — took the wide path and never came back: `RECENT 3`
+    // answered with 3 * RECALL_OVERFETCH grains. A bound that a no-op option
+    // can lift is not a bound.
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Event;
+    for i in 0..12 {
+        let mut e = Event::new(&format!("turn {i}"));
+        e.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&e)).unwrap();
+    }
+
+    let n = |stmt: &str| match ex.execute(stmt, &facade).unwrap().result {
+        CalResultPayload::Grains { grains, .. } => grains.len(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+
+    let baseline = n("RECALL events RECENT 3");
+    assert_eq!(baseline, 3);
+    // Zero, negative and NaN all mean "no recency component" — every one of
+    // them must answer exactly like the bare statement.
+    for stmt in [
+        "RECALL events RECENT 3 WITH recency_weight(0)",
+        "RECALL events RECENT 3 WITH recency_weight(0.0)",
+    ] {
+        assert_eq!(n(stmt), baseline, "{stmt} must respect RECENT 3");
+    }
+    // A real weight still bounds the answer too — the widening is internal.
+    assert_eq!(n("RECALL events RECENT 3 WITH recency_weight(0.5)"), baseline);
+}
+
+#[test]
 fn order_by_created_at_is_pushed_down_and_exact() {
     let (ex, facade, _d) = setup();
     use areev_core::types::Event;

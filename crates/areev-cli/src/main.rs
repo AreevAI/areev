@@ -4811,13 +4811,39 @@ fn seed_demo(m: &mut Areev, ns: &str) -> Result<usize, String> {
     Ok(grains.len())
 }
 
+/// The stack `run` is given, independent of the platform default.
+///
+/// Windows hands a process's main thread 1 MiB; Linux and macOS hand it 8.
+/// The deepest CLI paths — `loop apply`, which threads the giant `run`
+/// dispatcher frame through the engine, the substrate adapter, the CAL facade
+/// and the store — sit just over that 1 MiB in a debug build, so the same
+/// command that works everywhere else aborted on Windows with
+/// STATUS_STACK_OVERFLOW and no message. Depending on the host default meant
+/// depending on a number the platform picks; this picks it.
+const CLI_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+    // Run the whole CLI on a thread whose stack size we chose. Cheap (one
+    // spawn per process) and it makes stack headroom identical on every
+    // platform instead of 8x smaller on one of them.
+    let worker = std::thread::Builder::new()
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(run);
+    let result = match worker {
+        Ok(h) => h.join(),
+        // Spawning failed (a resource limit, not a bug in `run`): fall back to
+        // this thread rather than refusing to run at all.
+        Err(_) => Ok(run()),
+    };
+    match result {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
             eprintln!("areev: {e}");
             ExitCode::FAILURE
         }
+        // The worker panicked. Its own hook has already printed the panic;
+        // adding a second message would just bury it.
+        Err(_) => ExitCode::FAILURE,
     }
 }
 

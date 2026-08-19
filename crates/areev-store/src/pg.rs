@@ -315,7 +315,19 @@ impl PgDb {
     /// for NEXT time and this error now, which is the honest outcome: the host
     /// learns its unit of work did not complete.
     fn recover(&self, e: &AreevError, replayable: bool) -> bool {
-        if !Self::is_connection_dead(e) || self.in_txn.get() {
+        if self.in_txn.get() {
+            return false;
+        }
+        // Two independent signals, because neither alone is complete. The
+        // SQLSTATE match reads the message `pg_err` formatted, which only
+        // exists when the SERVER got far enough to send an error; when the
+        // socket simply vanished there is no SQLSTATE to match and the client
+        // is the only witness. Asking the client directly also means a change
+        // to `pg_err`'s wording degrades recovery rather than silently
+        // disabling it. The borrow is dropped before `reconnect` takes its
+        // `borrow_mut`.
+        let socket_gone = self.client.borrow().is_closed();
+        if !socket_gone && !Self::is_connection_dead(e) {
             return false;
         }
         // A failed reconnect leaves the handle dead-but-retryable rather than

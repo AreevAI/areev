@@ -1811,6 +1811,15 @@ impl CalStoreFacade for AreevFacade {
         // would silently WIDEN a result set — the worst failure shape here —
         // so membership is re-asserted per grain when the scope is a set.
         let ns_filter: HashSet<&str> = ns_list.iter().map(String::as_str).collect();
+        // ONE predicate for "recency re-ranking is active", read by both the
+        // widened `take` below and the re-rank block after it. They used to
+        // test it differently — `is_some()` for the widening, `> 0.0` for the
+        // re-rank — so `WITH recency_weight(0)` widened the scan and then
+        // never truncated it back, and a `RECENT 3` answered with
+        // `3 * RECALL_OVERFETCH` grains. A weight of zero means "no recency
+        // component", which is the SAME answer as no option at all; so does a
+        // negative or NaN weight, and all three now take the unwidened path.
+        let recency_weight = params.recency_weight.filter(|w| *w > 0.0);
         let mut hits: Vec<SearchHit> = raw
             .into_iter()
             .filter(|g| {
@@ -1859,11 +1868,7 @@ impl CalStoreFacade for AreevFacade {
             // the same truncated-window mistake ORDER BY made. Without the
             // option the take stays exactly where it was, so the hot path is
             // unchanged.
-            .take(if params.recency_weight.is_some() {
-                usize::MAX
-            } else {
-                k
-            })
+            .take(if recency_weight.is_some() { usize::MAX } else { k })
             .map(Self::hit)
             .collect();
 
@@ -1886,7 +1891,7 @@ impl CalStoreFacade for AreevFacade {
         // State facts are exempt, as documented: "lives in Berlin" does not
         // become less true with age, so decaying it would push a current fact
         // below a stale event.
-        if let Some(w) = params.recency_weight.filter(|w| *w > 0.0) {
+        if let Some(w) = recency_weight {
             let w = w.clamp(0.0, 1.0);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

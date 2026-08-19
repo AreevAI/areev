@@ -888,7 +888,9 @@ impl Engine {
             // inverse and no human BECAUSE — refuse instead.
             if cal.lines().map(str::trim).any(is_definition_statement) {
                 return Err(Error::InvalidProposal(
-                    "a definition rewrite (DEFINE QUERY / DEFINE TEMPLATE) is never                      auto-applied: it changes what every future context contains, so it                      requires a human APPROVE + APPLY with BECAUSE"
+                    "a definition rewrite (DEFINE QUERY / DEFINE TEMPLATE) is never \
+                     auto-applied: it changes what every future context contains, so it \
+                     requires a human APPROVE + APPLY with BECAUSE"
                         .into(),
                 ));
             }

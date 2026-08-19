@@ -5496,7 +5496,10 @@ fn inert_stage_reason(payload: &CalResultPayload) -> &'static str {
         // ASSEMBLE is FROM-clause order by contract (docs/cal-reference.md),
         // deliberately independent of PRIORITY, which weights the budget.
         CalResultPayload::Assembled { .. } => {
-            "an assembly is a list of named sections, not a flat grain list —              section order is FROM-clause order (PRIORITY weights the budget,              it does not reorder); to order WITHIN a section, put the stage on              that source's sub-query"
+            "an assembly is a list of named sections, not a flat grain list — \
+             section order is FROM-clause order (PRIORITY weights the budget, \
+             it does not reorder); to order WITHIN a section, put the stage on \
+             that source's sub-query"
         }
         CalResultPayload::Count { .. } => "a count is a scalar; stage it before | COUNT",
         CalResultPayload::Formatted { .. } => {

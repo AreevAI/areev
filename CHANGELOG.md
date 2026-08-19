@@ -53,6 +53,20 @@ before it was fixed.
   names, which the filter does not reject — Windows works rather than being
   dropped. `prepare-npm.mjs` now hard-fails a release when a declared target
   produced no artifact. Three stale proposal headers corrected.
+- **The CLI aborted with no message on Windows.** Windows gives a process's
+  main thread 1 MiB where Linux and macOS give 8, and the deepest paths —
+  `areev loop apply` threading the argument dispatcher through the engine, the
+  substrate adapter, the CAL facade and the store — sat just over it, so the
+  command died with `STATUS_STACK_OVERFLOW` and no output. `main` now runs the
+  CLI on a thread whose stack size it chooses, making headroom identical on
+  every platform instead of depending on a number the platform picks.
+- **`WITH recency_weight(0)` returned more grains than the statement asked
+  for.** The re-ranking widens its candidate scan and truncates back to the
+  caller's bound afterwards; the widening tested "is the option present" and
+  the truncation "is the weight above zero", so a weight of exactly zero — the
+  same answer as no option at all — widened and never came back, and
+  `RECENT 3` answered with twelve. Both now read one predicate; zero, negative
+  and NaN weights all take the unwidened path.
 
 ### Added
 
