@@ -224,7 +224,15 @@ impl Evaluator {
         let mut report = EvalReport::default();
         let now = self.clock.now_ms();
 
-        for (hash, trigger) in self.declarations()? {
+        let declarations = self.declarations()?;
+        // Composites are settled after their members, so a gate can be
+        // satisfied in the same pass that completes it rather than waiting a
+        // whole heartbeat. Declaration order is newest-first and says nothing
+        // about dependency, so the split is explicit.
+        let (composites, members): (Vec<_>, Vec<_>) =
+            declarations.into_iter().partition(|(_, t)| t.kind == TriggerKind::Composite);
+
+        for (hash, trigger) in members.into_iter().chain(composites) {
             if opts.only.as_ref().is_some_and(|only| only != &hash) {
                 continue;
             }
@@ -266,6 +274,12 @@ impl Evaluator {
                 // be counted as work done.
                 Ok(outcome) if outcome.skipped_locked => report.skipped_locked += 1,
                 Ok(outcome) => {
+                    if !outcome.fired_items.is_empty() {
+                        if let Err(e) = self.record_for_composites(&hash, &outcome.fired_items, now)
+                        {
+                            report.errors.push(e.to_string());
+                        }
+                    }
                     report.claimed += 1;
                     report.items += outcome.items;
                     report.duplicates += outcome.duplicates;
@@ -330,6 +344,18 @@ impl Evaluator {
                 if let Some(c) = &outcome.cursor {
                     released.cursor = Some(c.clone());
                 }
+                if let Some(c) = outcome.op_cursor {
+                    released.op_cursor = Some(c);
+                }
+                // A satisfied gate consumes its correlation key. Leaving it
+                // would re-fire the same set on every pass; Flink calls this
+                // the after-match skip strategy, and the conservative choice —
+                // clear only the key that fired — is the one that cannot
+                // swallow an unrelated in-flight match.
+                for k in &outcome.settled_keys {
+                    released.partials.remove(k);
+                }
+                prune_partials(&mut released, trigger, now);
                 released.next_due_at = if outcome.draining {
                     // A backlog drains at once rather than waiting out the
                     // interval — a cold start should not take a day.
@@ -393,10 +419,29 @@ impl Evaluator {
             TriggerKind::Interval | TriggerKind::Schedule | TriggerKind::Once => {
                 vec![PollItem { id: now.to_string(), payload: serde_json::json!({ "at_ms": now }) }]
             }
-            // Land in later phases; a declaration is accepted now so the
-            // vocabulary is stable, but nothing fires it yet.
-            TriggerKind::Memory | TriggerKind::Webhook | TriggerKind::Manual
-            | TriggerKind::Composite => Vec::new(),
+            TriggerKind::Memory => {
+                // Recorded so the journal says "seeded" rather than leaving a
+                // firing that produced nothing looking like a quiet memory.
+                outcome.seeded = state.op_cursor.is_none();
+                let (found, cursor) = self.scan_memory(hash, trigger, state, opts)?;
+                outcome.op_cursor = Some(cursor);
+                found
+            }
+            TriggerKind::Composite => {
+                let keys = self.satisfied_keys(hash, trigger, now)?;
+                outcome.settled_keys = keys.clone();
+                keys.into_iter()
+                    .map(|k| PollItem {
+                        // The correlation value IS the identity: one firing per
+                        // correlated set, however many members contributed.
+                        id: k.clone(),
+                        payload: serde_json::json!({ "correlation": k }),
+                    })
+                    .collect()
+            }
+            // Land in a later phase; declarations are accepted now so the
+            // vocabulary is stable, but nothing fires them yet.
+            TriggerKind::Webhook | TriggerKind::Manual => Vec::new(),
         };
 
         outcome.items = items.len();
@@ -405,6 +450,7 @@ impl Evaluator {
                 outcome.unidentifiable += 1;
                 continue;
             };
+            outcome.fired_items.push(item.payload.clone());
             let run_id = run_id_for(hash, trigger.connector.as_deref(), &value);
             match self.start_run(trigger, &run_id, &item, hash) {
                 StartOutcome::Started => outcome.runs_started += 1,
@@ -414,6 +460,178 @@ impl Evaluator {
             }
         }
         Ok(outcome)
+    }
+
+    /// Note a member firing against every composite that declares it.
+    ///
+    /// The correlation value comes from the composite's own `correlate`
+    /// pointer applied to the member's item — so two composites may correlate
+    /// the same member on different fields, which is why this is resolved per
+    /// composite rather than once per member.
+    fn record_for_composites(
+        &self,
+        member: &str,
+        items: &[serde_json::Value],
+        now: i64,
+    ) -> Result<()> {
+        for (chash, composite) in self.declarations()? {
+            let Some(alias) = composite.member_alias(member).map(str::to_string) else {
+                continue;
+            };
+            if composite.kind != TriggerKind::Composite {
+                continue;
+            }
+            let (mut state, raw) = self
+                .facade
+                .with_store(|m| m.trigger_state(&chash))
+                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+                .map(|(s, r)| (s, Some(r)))
+                .unwrap_or_default();
+
+            for item in items {
+                // No correlate pointer means one global match — every member
+                // firing counts toward the same gate.
+                let key = match &composite.correlate {
+                    Some(ptr) => match item.pointer(ptr) {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(other) => other.to_string(),
+                        // An item that cannot be correlated cannot join a
+                        // correlated gate. Dropping it is right: attributing it
+                        // to an arbitrary key would pair unrelated work.
+                        None => continue,
+                    },
+                    None => String::new(),
+                };
+                let entry = state.partials.entry(key).or_insert_with(|| {
+                    areev_store::PartialMatch { members: Default::default(), started_ms: now }
+                });
+                // Recorded under the ALIAS, because that is what the gate
+                // expression names.
+                entry.members.insert(alias.clone(), now);
+            }
+            prune_partials(&mut state, &composite, now);
+            self.facade
+                .with_store(|m| m.put_trigger_state(&chash, raw.as_deref(), &state))
+                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+        }
+        Ok(())
+    }
+
+    /// Which correlation keys currently satisfy this composite's gate.
+    fn satisfied_keys(&self, hash: &str, trigger: &Trigger, now: i64) -> Result<Vec<String>> {
+        let predicate = trigger
+            .predicate
+            .as_ref()
+            .ok_or_else(|| TriggerError::Malformed {
+                what: format!("composite trigger {hash} has no predicate"),
+            })
+            .and_then(crate::predicate::from_value)?;
+
+        // Refuse a gate that names a member the declaration does not carry: it
+        // could never be satisfied, so the trigger would be silently dead.
+        for referenced in crate::predicate::referenced_members(&predicate) {
+            if !trigger.members.contains_key(&referenced) {
+                return Err(TriggerError::UnknownMember {
+                    trigger: hash.to_string(),
+                    member: referenced,
+                });
+            }
+        }
+
+        let (state, _) = self
+            .facade
+            .with_store(|m| m.trigger_state(hash))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+            .unwrap_or_default();
+
+        let mut out = Vec::new();
+        for (key, partial) in &state.partials {
+            if let Some(w) = trigger.window_ms {
+                if now - partial.started_ms > w {
+                    continue;
+                }
+            }
+            let fired: Vec<String> = partial.members.keys().cloned().collect();
+            if crate::predicate::gate_satisfied(&predicate, &fired) {
+                out.push(key.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Grains matching the predicate that appeared since the stored op cursor.
+    ///
+    /// Built on the op-log rather than a scan: `changes_since` is an indexed
+    /// primary-key range read with a monotonic exclusive cursor, so cost is
+    /// proportional to what changed rather than to how much the memory holds.
+    ///
+    /// Considered and rejected: `PRAGMA data_version` as a cheap "did anything
+    /// change" pre-check. It is documented as unchanged for commits made on the
+    /// same connection — and Areev is single-writer with one connection, so our
+    /// own writes are exactly what it cannot see.
+    fn scan_memory(
+        &self,
+        hash: &str,
+        trigger: &Trigger,
+        state: &TriggerState,
+        opts: &EvalOptions,
+    ) -> Result<(Vec<PollItem>, i64)> {
+        let predicate = trigger
+            .predicate
+            .as_ref()
+            .ok_or_else(|| TriggerError::Malformed {
+                what: format!("memory trigger {hash} has no predicate"),
+            })
+            .and_then(crate::predicate::from_value)?;
+
+        // First contact seeds at the head of the log and matches nothing.
+        // Otherwise declaring a memory trigger on an established memory fires
+        // once for every historical grain that matches — the same reason a
+        // polling trigger primes rather than replaying a mailbox.
+        let Some(after) = state.op_cursor else {
+            let head = self
+                .facade
+                .with_store(|m| m.head_op_seq())
+                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+            return Ok((Vec::new(), head));
+        };
+        let ops = self
+            .facade
+            .with_store(|m| m.changes_since(after, opts.max_items))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+
+        let mut items = Vec::new();
+        let mut cursor = after;
+        for op in ops {
+            cursor = cursor.max(op.op_seq);
+            // Additions and supersessions both mean "this is true now".
+            // A tombstone means the grain is gone, so there is nothing to match.
+            if op.op == areev_store::OP_FORGET {
+                continue;
+            }
+            let Ok(grain) = self.facade.with_store(|m| m.get(&op.hash)) else {
+                // A grain that vanished between the op-log read and the fetch
+                // (erasure, retention) is not an error — it simply no longer
+                // matches anything.
+                continue;
+            };
+            if !crate::predicate::grain_matches(&grain, &predicate) {
+                continue;
+            }
+            let hex = op.hash.to_hex();
+            items.push(PollItem {
+                // The content address IS the identity: the same grain can never
+                // fire twice, and two evaluators seeing it agree without
+                // coordinating.
+                id: hex.clone(),
+                payload: serde_json::json!({
+                    "hash": hex,
+                    "grain_type": grain.grain_type.as_str(),
+                    "op_seq": op.op_seq,
+                }),
+            });
+        }
+        Ok((items, cursor))
     }
 
     fn poll(
@@ -541,6 +759,18 @@ impl Evaluator {
     }
 }
 
+/// Drop partial matches past their window.
+///
+/// Without this, a composite that never completes accumulates keys forever and
+/// a stale half-match eventually pairs with unrelated work — the exact failure
+/// Argo Events' reset cron exists to paper over.
+fn prune_partials(state: &mut TriggerState, trigger: &Trigger, now: i64) {
+    let Some(window) = trigger.window_ms else {
+        return;
+    };
+    state.partials.retain(|_, p| now - p.started_ms <= window);
+}
+
 #[derive(Debug, Default, Clone)]
 struct FireOutcome {
     items: usize,
@@ -550,6 +780,12 @@ struct FireOutcome {
     unidentifiable: usize,
     failures: Vec<String>,
     cursor: Option<String>,
+    /// The payloads this firing produced, so a composite can pull its
+    /// correlation value out of them.
+    fired_items: Vec<serde_json::Value>,
+    /// Correlation keys a composite consumed, cleared on release.
+    settled_keys: Vec<String>,
+    op_cursor: Option<i64>,
     draining: bool,
     seeded: bool,
     skipped_locked: bool,

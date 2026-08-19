@@ -215,8 +215,15 @@ pub struct Trigger {
     /// than an expression string, which is what keeps this out of the frozen
     /// edge-condition grammar's standing exclusion on expression languages.
     pub predicate: Option<serde_json::Value>,
-    /// Member trigger content addresses, for `Composite`.
-    pub members: Vec<String>,
+    /// Member triggers for a `Composite`, as **alias → content address**.
+    ///
+    /// Aliases exist because a gate expression references its members by name,
+    /// and a 64-hex content address is not a legal identifier in any expression
+    /// grammar — CAL's lexer reads it as a number. Argo Events reached the same
+    /// shape: `dependencies` carry names and `conditions` reference the names.
+    /// Aliases also make an expression readable (`invoice AND purchase_order`)
+    /// and survive a member being re-declared at a new address.
+    pub members: HashMap<String, String>,
     /// JSON pointer whose value correlates member firings — `/thread_id`.
     /// Partial matches are keyed by `(trigger, correlation value)`, which is what
     /// stops Monday's A pairing with Tuesday's B.
@@ -246,7 +253,7 @@ impl Trigger {
             cron: None,
             at_ms: None,
             predicate: None,
-            members: Vec::new(),
+            members: HashMap::new(),
             correlate: None,
             window_ms: None,
             concurrency: Concurrency::default(),
@@ -296,9 +303,20 @@ impl Trigger {
         self
     }
 
-    pub fn member(mut self, hash: &str) -> Self {
-        self.members.push(hash.to_string());
+    /// Declare a member under an alias the gate expression can name.
+    pub fn member(mut self, alias: &str, hash: &str) -> Self {
+        self.members.insert(alias.to_string(), hash.to_string());
         self
+    }
+
+    /// The content address behind an alias.
+    pub fn member_hash(&self, alias: &str) -> Option<&str> {
+        self.members.get(alias).map(String::as_str)
+    }
+
+    /// The alias a member hash was declared under.
+    pub fn member_alias(&self, hash: &str) -> Option<&str> {
+        self.members.iter().find(|(_, h)| h.as_str() == hash).map(|(a, _)| a.as_str())
     }
 
     pub fn correlate(mut self, pointer: &str) -> Self {

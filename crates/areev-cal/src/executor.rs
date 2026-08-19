@@ -6474,7 +6474,7 @@ fn grain_matches_set_condition(grain: &CalGrainResult, cond: &TypeSpecificSetCon
 /// Apply a type-specific field condition to a single grain result.
 ///
 /// Returns `true` if the grain matches the condition.
-fn grain_matches_condition(
+pub fn grain_matches_condition(
     grain: &CalGrainResult,
     field: &str,
     comparator: &Comparator,
@@ -6551,9 +6551,22 @@ fn grain_matches_condition(
 
 /// Evaluate a full `Condition` tree against a single grain result.
 ///
+/// Public because it is the ONE boolean evaluator in the workspace, and a
+/// second implementation would be a second set of semantics. `areev-trigger`
+/// uses it for memory-trigger predicates and composite gates: the `Condition`
+/// AST already has And/Or/Not with parenthesised grouping and the right
+/// precedence, it already serializes, and it is total — a missing field is
+/// false rather than an error. Reusing it also keeps `areev_run_core::cond`'s
+/// standing exclusion on expression languages intact, because nothing new is
+/// parsed.
+///
+/// Note this is the AUTHORITATIVE match. The structural push-down in
+/// `apply_where_clause` drops OR and NOT with a warning, so it *widens*; a
+/// caller that trusts the recall result alone gets more than it asked for.
+///
 /// Used by `PipelineStage::Filter` (post-pipeline WHERE) to filter grains
 /// by conditions after pipeline stages like SELECT have been applied.
-fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {
+pub fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {
     match condition {
         Condition::Comparison {
             field,

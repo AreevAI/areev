@@ -877,6 +877,31 @@ pub struct TriggerState {
     /// trigger is invisible otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// In-flight partial matches for a composite trigger, keyed by correlation
+    /// value.
+    ///
+    /// Keyed by correlation rather than globally on purpose. Argo Events keys
+    /// satisfied dependencies per *sensor*, so Monday's `dep-a` pairs with
+    /// Tuesday's `dep-b`, and its only remedy is a wall-clock reset cron that
+    /// silently does nothing if the process is down at the reset instant. Keying
+    /// by `(trigger, correlation value)` with a per-match expiry makes
+    /// correlation and windowing the same mechanism and removes the need for a
+    /// reset — the decomposition Flink CEP reaches through `keyBy` + `within`
+    /// and Prefect through `for_each` + `within`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub partials: std::collections::BTreeMap<String, PartialMatch>,
+}
+
+/// One in-flight composite match: which members have fired for a correlation
+/// value, and when the match started.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PartialMatch {
+    /// member trigger hash -> epoch-ms it fired.
+    pub members: std::collections::BTreeMap<String, i64>,
+    /// When the first member fired. The window is measured from here, so a
+    /// slow-arriving second member cannot extend the window indefinitely.
+    pub started_ms: i64,
 }
 
 impl TriggerState {
@@ -7687,6 +7712,18 @@ impl Areev {
             ops: one("SELECT COUNT(*) FROM oplog")? as usize,
             events_indexed: one("SELECT COUNT(*) FROM thread_idx")? as usize,
         })
+    }
+
+    /// The highest op-log sequence written so far, or 0 on an empty memory.
+    ///
+    /// Lets a new consumer start from "now" rather than from the beginning of
+    /// history — the seeding read a change-feed subscriber needs so that
+    /// declaring it does not replay everything the memory has ever held.
+    pub fn head_op_seq(&mut self) -> Result<i64> {
+        let rows = self
+            .db
+            .query("SELECT COALESCE(MAX(op_seq), 0) FROM oplog", vec![])?;
+        Ok(rows.first().and_then(|r| r.i64(0)).unwrap_or(0))
     }
 
     /// Op-log cursor read — the change feed (backs sync + UIs).

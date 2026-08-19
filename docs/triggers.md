@@ -122,6 +122,38 @@ only reports "created".
 position and stops. Otherwise declaring a mailbox trigger would start a run for
 every message in history.
 
+## Composing triggers
+
+A `composite` fires when a boolean expression over its members is satisfied.
+Members are declared under **aliases**, and the expression names the aliases —
+a content address is not a legal identifier in any expression grammar, and an
+alias reads better and survives a member being re-declared at a new address.
+
+```
+members:   invoice = <hash-a>, purchase_order = <hash-b>
+predicate: (invoice = true AND purchase_order = true) OR escalation = true
+correlate: /thread_id
+window:    10m
+```
+
+The expression is written in CAL `WHERE` syntax and stored as a `Condition`
+tree — a data structure, not a language. That is deliberate: the runtime's edge
+grammar is frozen with a standing exclusion on expression languages, and new CAL
+syntax is an OMS conformance decision, so Argo Events' `"(a && b) || c"` string
+is the one shape that cannot be copied. Kestra's combinator-node form is the
+compatible alternative, and Knative independently shipped its structural
+filters ahead of its SQL dialect for the same stability reason.
+
+**Correlation and windowing are one mechanism.** Partial matches are keyed by
+`(trigger, correlation value)` and each carries its own expiry. Argo Events keys
+satisfied dependencies per *sensor*, so Monday's `dep-a` can pair with Tuesday's
+`dep-b`, and its only remedy is a wall-clock reset cron that silently does
+nothing if the process is down at the reset instant. Keying by correlation with
+a per-match expiry removes the need for a reset entirely.
+
+A gate that names an undeclared member is refused with `TRG-E008`: it could
+never be satisfied, so the trigger would be silently dead.
+
 ## Missed occurrences
 
 Declared per trigger, using the vocabulary these systems settled on:

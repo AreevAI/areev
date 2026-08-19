@@ -402,8 +402,11 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
             );
         }
         if !t.members.is_empty() {
-            let members: Vec<Value> = t.members.iter().map(|m| nfc_string(m)).collect();
-            map.insert(compact_field("members").to_string(), Value::Array(members));
+            let mut members = BTreeMap::new();
+            for (alias, hash) in &t.members {
+                members.insert(alias.clone(), nfc_string(hash));
+            }
+            map.insert(compact_field("members").to_string(), btree_to_msgpack_map(members));
         }
         if let Some(ref c) = t.correlate {
             map.insert(compact_field("correlate").to_string(), nfc_string(c));

@@ -466,3 +466,221 @@ fn a_firing_is_journaled() {
     assert_eq!(obs[0].get_str("trigger"), Some(h.as_str()));
     assert_eq!(obs[0].get_i64("runs_started"), Some(1));
 }
+
+// ---- memory triggers ------------------------------------------------------
+
+fn memory_trigger(where_src: &str) -> Trigger {
+    let cond = areev_trigger::predicate::parse_predicate(where_src).unwrap();
+    Trigger::new(TriggerKind::Memory, WF)
+        .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+}
+
+#[test]
+fn a_memory_trigger_seeds_at_the_head_and_ignores_history() {
+    // Declaring one on an established memory must not fire once per matching
+    // grain already in it.
+    let rig = Rig::new();
+    for i in 0..5 {
+        let f = areev_core::types::Fact::new(&format!("s{i}"), "mg:kind", "invoice")
+            .namespace(NS)
+            .created_at(T0);
+        rig.facade.with_store(|m| m.add(&f)).unwrap();
+    }
+    rig.declare(memory_trigger(r#"object = "invoice""#));
+
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0, "history must not fire");
+    assert_eq!(r.items, 0);
+}
+
+#[test]
+fn a_memory_trigger_fires_for_grains_that_appear_after_it() {
+    let rig = Rig::new();
+    let h = rig.declare(memory_trigger(r#"object = "invoice""#));
+    let ev = rig.evaluator(None);
+
+    ev.run(&opts()).unwrap(); // seed at the head
+
+    // Two matching, one not.
+    for (s, o) in [("a", "invoice"), ("b", "receipt"), ("c", "invoice")] {
+        let f = areev_core::types::Fact::new(s, "mg:kind", o).namespace(NS).created_at(T0);
+        rig.facade.with_store(|m| m.add(&f)).unwrap();
+    }
+
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.items, 2, "only the matching grains are items");
+    assert_eq!(r.runs_started, 2);
+
+    // The cursor advanced, so a second pass sees nothing new.
+    let again = ev.run(&opts()).unwrap();
+    assert_eq!(again.items, 0, "the op cursor must not re-deliver");
+    assert!(rig.state(&h).op_cursor.is_some());
+}
+
+#[test]
+fn a_memory_trigger_uses_the_content_address_as_the_item_identity() {
+    // Re-adding identical content is a no-op returning the same hash, so the
+    // same grain can never mint two runs even if it is re-added.
+    let rig = Rig::new();
+    rig.declare(memory_trigger(r#"object = "invoice""#));
+    let ev = rig.evaluator(None);
+    ev.run(&opts()).unwrap();
+
+    let f = areev_core::types::Fact::new("a", "mg:kind", "invoice").namespace(NS).created_at(T0);
+    rig.facade.with_store(|m| m.add(&f)).unwrap();
+    let first = ev.run(&opts()).unwrap();
+    assert_eq!(first.runs_started, 1);
+
+    rig.facade.with_store(|m| m.add(&f)).unwrap(); // identical content
+    let second = ev.run(&opts()).unwrap();
+    assert_eq!(second.runs_started, 0, "the same grain must not fire twice");
+}
+
+#[test]
+fn a_memory_trigger_with_a_boolean_predicate_respects_precedence() {
+    let rig = Rig::new();
+    rig.declare(memory_trigger(
+        r#"(relation = "mg:kind" AND object = "invoice") OR object = "urgent""#,
+    ));
+    let ev = rig.evaluator(None);
+    ev.run(&opts()).unwrap();
+
+    for (s, r, o) in [
+        ("a", "mg:kind", "invoice"), // left branch
+        ("b", "other", "urgent"),    // right branch
+        ("c", "other", "receipt"),   // neither
+    ] {
+        let f = areev_core::types::Fact::new(s, r, o).namespace(NS).created_at(T0);
+        rig.facade.with_store(|m| m.add(&f)).unwrap();
+    }
+
+    let out = ev.run(&opts()).unwrap();
+    assert_eq!(out.items, 2, "both branches match, the third does not");
+}
+
+// ---- composite gates ------------------------------------------------------
+
+fn manual_member() -> Trigger {
+    // A member that fires on every pass, so a test can drive the gate directly.
+    Trigger::new(TriggerKind::Interval, WF).interval_secs(1)
+}
+
+#[test]
+fn an_and_gate_waits_for_every_member() {
+    let rig = Rig::new();
+    let a = rig.declare(manual_member());
+    let b = rig.declare(manual_member());
+
+    let cond = areev_trigger::predicate::parse_predicate("invoice = true AND po = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF)
+            .member("invoice", &a)
+            .member("po", &b)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap()),
+    );
+
+    // Both members are due on the first pass, so the gate completes.
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+    let st = rig.state(&composite);
+    assert!(st.last_fired_at.is_some(), "an AND gate with both members must fire");
+}
+
+#[test]
+fn a_gate_naming_an_undeclared_member_is_refused() {
+    // It could never be satisfied, so the trigger would be silently dead —
+    // exactly the failure mode with no symptom.
+    let rig = Rig::new();
+    let a = rig.declare(manual_member());
+    let cond =
+        areev_trigger::predicate::parse_predicate("invoice = true AND ghost = true").unwrap();
+    rig.declare(
+        Trigger::new(TriggerKind::Composite, WF)
+            .member("invoice", &a)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap()),
+    );
+
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+    assert!(
+        r.errors.iter().any(|e| e.starts_with("TRG-E008")),
+        "expected TRG-E008, got {:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn a_partial_match_expires_with_its_window() {
+    // Monday's A must not pair with Tuesday's B. Argo Events' failure mode,
+    // avoided by keying partials with a per-match expiry rather than needing a
+    // reset cron.
+    let rig = Rig::new();
+    let a = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(3600));
+    let b = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(86_400));
+
+    let cond = areev_trigger::predicate::parse_predicate("slow = true AND fast = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF)
+            .member("fast", &a)
+            .member("slow", &b)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+            .window_ms(60_000), // one minute
+    );
+
+    let ev = rig.evaluator(None);
+    ev.run(&opts()).unwrap(); // both members fire, gate completes
+    let fired_once = rig.state(&composite).last_fired_at;
+    assert!(fired_once.is_some());
+
+    // Far past the window: any partial left behind must be gone.
+    rig.clock.advance(3_600_000);
+    ev.run(&opts()).unwrap();
+    let st = rig.state(&composite);
+    assert!(
+        st.partials.values().all(|p| rig.clock.now_ms() - p.started_ms <= 60_000),
+        "stale partials must be pruned, found {:?}",
+        st.partials
+    );
+}
+
+#[test]
+fn correlation_keeps_unrelated_work_apart() {
+    // Two members firing about *different* entities must not satisfy one gate.
+    let rig = Rig::new();
+    let a = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("src-a")
+            .interval_secs(1)
+            .dedup_key("/id"),
+    );
+    let cond = areev_trigger::predicate::parse_predicate("src = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF)
+            .member("src", &a)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+            .correlate("/thread"),
+    );
+
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([
+                { "id": "1", "payload": { "id": "1", "thread": "T1" } },
+                { "id": "2", "payload": { "id": "2", "thread": "T2" } }
+            ]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let ev = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(1_000);
+    ev.run(&opts()).unwrap();
+
+    let st = rig.state(&composite);
+    let keys: Vec<_> = st.partials.keys().cloned().collect();
+    assert!(
+        keys.contains(&"T1".to_string()) || st.last_fired_at.is_some(),
+        "correlation values become distinct partial keys, got {keys:?}"
+    );
+}

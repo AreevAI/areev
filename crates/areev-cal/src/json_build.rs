@@ -332,7 +332,15 @@ fn build_trigger_from_json(
     t.cron = get_str("cron");
     t.at_ms = fields.get("at_ms").and_then(|v| v.as_i64());
     t.predicate = fields.get("predicate").cloned();
-    t.members = strings("members");
+    t.members = fields
+        .get("members")
+        .and_then(|v| v.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
     t.correlate = get_str("correlate");
     t.window_ms = fields.get("window_ms").and_then(|v| v.as_i64());
     if let Some(c) = get_str("concurrency") {

@@ -12,6 +12,7 @@ pub mod clock;
 pub mod connector;
 pub mod error;
 pub mod eval;
+pub mod predicate;
 pub mod schedule;
 
 pub use clock::{Clock, FixedClock, SystemClock};

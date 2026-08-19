@@ -27,8 +27,8 @@ fn every_field_survives_a_round_trip() {
             "left": { "kind": "comparison", "field": "a", "comparator": "eq" },
             "right": { "kind": "comparison", "field": "b", "comparator": "eq" }
         }))
-        .member("aa")
-        .member("bb")
+        .member("invoice", "aa")
+        .member("po", "bb")
         .correlate("/thread_id")
         .window_ms(600_000)
         .concurrency(Concurrency::Replace)
@@ -53,7 +53,8 @@ fn every_field_survives_a_round_trip() {
     assert_eq!(back.cron.as_deref(), Some("0 9 * * 1-5"));
     assert_eq!(back.at_ms, Some(1_755_600_000_000));
     assert_eq!(back.predicate, original.predicate);
-    assert_eq!(back.members, vec!["aa".to_string(), "bb".to_string()]);
+    assert_eq!(back.members.get("invoice").map(String::as_str), Some("aa"));
+    assert_eq!(back.members.get("po").map(String::as_str), Some("bb"));
     assert_eq!(back.correlate.as_deref(), Some("/thread_id"));
     assert_eq!(back.window_ms, Some(600_000));
     assert_eq!(back.concurrency, Concurrency::Replace);
@@ -162,7 +163,7 @@ fn a_trigger_that_could_never_fire_is_refused() {
         (Trigger::new(TriggerKind::Memory, WF), "predicate"),
         (Trigger::new(TriggerKind::Polling, WF).interval_secs(60), "connector"),
         (Trigger::new(TriggerKind::Composite, WF).predicate(serde_json::json!({})), "members"),
-        (Trigger::new(TriggerKind::Composite, WF).member("a").member("b"), "predicate"),
+        (Trigger::new(TriggerKind::Composite, WF).member("a", "h1").member("b", "h2"), "predicate"),
         (Trigger::new(TriggerKind::Interval, "").interval_secs(60), "workflow"),
     ];
     for (t, expected) in cases {

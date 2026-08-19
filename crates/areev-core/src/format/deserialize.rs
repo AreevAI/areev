@@ -1295,7 +1295,16 @@ impl DeserializedGrain {
         t.cron = self.get_str("cron").map(str::to_string);
         t.at_ms = self.get_i64("at_ms");
         t.predicate = self.fields.get("predicate").cloned();
-        t.members = strings("members");
+        t.members = self
+            .fields
+            .get("members")
+            .and_then(|v| v.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
         t.correlate = self.get_str("correlate").map(str::to_string);
         t.window_ms = self.get_i64("window_ms");
         t.concurrency = self
