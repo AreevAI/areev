@@ -2,41 +2,43 @@
 
 > English · [中文](README.zh-CN.md)
 
-**The embedded memory engine for AI agents** — memory that doesn't rot, stays
-current, and proves where every fact came from — plus **Areev Loop**, built-in
-governed self-improvement, and **`areev run`**, a governed runtime that executes
-agent workflows as durable, journaled, replayable runs.
+**The substrate for adaptive agents** — agents whose behaviour changes on
+evidence, under human authority, in steps you can inspect, undo, and re-measure.
 
 [![CI](https://github.com/AreevAI/areev/actions/workflows/ci.yml/badge.svg)](https://github.com/AreevAI/areev/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#install)
 
-*Formerly published as **DejaDB** — the project continues here under the
-Areev name. The old `dejadb` packages are frozen at 1.2.0; install `areev`
-instead.*
+Areev is an engine you **embed**. It holds an agent's memory *and* its execution
+history in one content-addressed store — **raw and lossless, never an LLM
+summary of itself** — so a single substrate answers both questions a serious
+deployment asks: *what should this agent recall right now?* and *what did it do,
+on whose authority, and can we take it back?*
 
-Embed it in-process, store memories as immutable content-addressed grains, query
-them with CAL (the Context Assembly Language), and hand the results straight to a
-model — on the default embedded backend: no server, no sidecars, no network hop
-in the recall path. **Recall in microseconds** — fast enough to run inside a
-real-time **voice agent's** turn, where a network memory call can't. **Your
-agent's memory is a file you own.** And when the deployment has nowhere to put
-a file — stateless containers, multi-instance services — the same engine runs
-over a [PostgreSQL schema](#postgresql-backend-server-tier) instead, same
-semantics, millisecond-class recall.
+Recall is **structural and queryable** — [CAL](docs/cal-reference.md), a real
+query language, not a similarity search you hope lands. It runs **in-process, in
+microseconds**, with no server on the recall path: fast enough inside a
+real-time **voice agent's** turn, where a network memory call cannot go. Your
+agent's memory is **a file you own**. Where a deployment has nowhere to put a
+file — stateless containers, multi-instance services — the same engine runs over
+a [PostgreSQL schema](#postgresql-backend-server-tier) with the same semantics.
 
 > git for your agent's memory: log, diff, time-travel, forks with explicit
 > merges, and encrypted incremental sync — built into the data model, because
 > grains *are* content-addressed immutable objects.
 
-*Status: `1.0.2` — the `.mg` format and CAL are stable and documented (conformant
-with the Open Memory Spec, OMS).*
+And because the record is content-addressed and subject-indexed rather than
+baked into weights, **erasure is a real operation**: `FORGET SUBJECT` removes a
+person from the live store and replicates as ordinary tombstones, which delete
+on replicas too — and the data-subject report shares **one selector** with it, so
+a disclosure describes exactly what an erasure removes. The reach, and the
+archive-retention window it does *not* cover, are stated plainly in
+[`docs/gdpr.md`](docs/gdpr.md) and [`docs/erasure.md`](docs/erasure.md). That is
+the property model-side memory cannot offer, and it is where blast radius is
+actually controlled.
 
-## Watch the 2½-minute overview
-
-[![Areev in 2½ minutes — grains, CAL, and the Areev Loop learning engine](demo/screens/video-cover.png)](https://www.youtube.com/watch?v=HqNcgkTIryQ)
-
-Grains → context assembly → CAL → the agent loop → Areev Loop, in one animated pass.
+*The `.mg` format and CAL are stable and documented, conformant with the Open
+Memory Spec (OMS). See [`CHANGELOG.md`](CHANGELOG.md) for the current release.*
 
 ## Screenshots
 
@@ -48,6 +50,106 @@ grain inspector (click to enlarge):
   <a href="demo/screens/graph.png"><img src="demo/screens/graph.png" width="320" alt="Console — graph"></a>
   <a href="demo/screens/query.png"><img src="demo/screens/query.png" width="320" alt="Console — query + grain inspector"></a>
 </p>
+
+## What "adaptive" means here
+
+An adaptive agent is **not** one that quietly retrains itself. It is one whose
+behaviour changes *deliberately* — on evidence you can inspect, under authority
+you granted, in a step you can undo and then measure again.
+
+Nothing here runs unattended. There is **no daemon and no scheduler**: analysis
+is a cheap idempotent command you put on a hook, a cron, or CI. Autonomy is
+never earned by a metric; it stays an explicit grant from the host.
+
+Getting that right is three engineered systems over one file — and they are
+designed against each other, not bolted together.
+
+### 1. Graph engineering — the record
+
+Every grain is an immutable, content-addressed `(subject, relation, object)`
+assertion with a reverse index, so the store is a **provenance graph**, not a
+pile of embeddings:
+
+- **Traverse it**: `areev related` walks edges, `WITH multi_hop` follows them
+  in reverse — *what points at this?*, not just *what does this point to?*
+- **Time-travel it**: `areev entity-at` reconstructs what the agent believed at
+  a timestamp. Updates are supersessions, so history is never overwritten and
+  the current value is unambiguous.
+- **Annotations stay annotations**: a cross-link between grains never alters its
+  target's supersession state (OMS §15.3), so enriching the graph cannot
+  silently rewrite what the agent currently believes.
+- **Join execution to memory**: `areev run-trace` gives a run's transcript and
+  the durable knowledge it produced; `areev runs-touching` answers the blast-radius
+  question — *this fact is wrong, which runs produced or refined it?* Stated with
+  its limit: a run that merely **read** a grain leaves no grain behind, so an
+  append-only store cannot attest to it.
+- **Concurrent edits become branches**, surfaced with a deterministic
+  provisional head and merged explicitly — never silently lost.
+
+### 2. Context engineering — the turn
+
+Retrieval returns candidates; a turn needs a *budget-shaped* context. That is a
+separate, deterministic system ([`areev-context`](crates/areev-context/)), not a
+`top_k` and a prayer:
+
+- **Progressive disclosure is real**: grains render Full up to ~70% of the token
+  budget, degrade to **Summary** to ~95%, then **Omit** — so the tail of a large
+  result set costs a summary rather than the whole grain or nothing at all.
+  Budgeted `FORMAT TEMPLATE` renders pick their tier the same way, so
+  `ELEMENT_SUMMARY` fires under pressure and `ELEMENT_OMIT` accounts for what the
+  budget dropped. JSON and TOON stay whole-entry on purpose — a prose summary
+  inside a structured dump would corrupt it.
+- **Priority *and* diversity**: a per-type priority table (consent > state >
+  goal > fact) with a reserved minimum per type, so one loud grain type cannot
+  crowd out the consent record or the open goal.
+- **Same inputs, same context** — allocation is deterministic, which is what
+  makes a replay comparable to the original run.
+- **Provider-shaped output**: SML, Markdown, TOON, or JSON, with presets per
+  model family. One renderer backs both this and CAL's `FORMAT`, pinned by a
+  byte-parity test, so the two surfaces cannot drift.
+
+### 3. Governance — the authority
+
+Governance here is not access control bolted onto a store. It is the **shape of
+the operations**:
+
+- **Destruction takes a hash, an identity, or an age — never a predicate.**
+  `DELETE` is not a token in the grammar. The three destructive statements each
+  require an authorization grant plus a recorded reason, write an audit record,
+  and can be capped off entirely per process.
+- **The audit names a fingerprint, not the person.** An immutable, replicating
+  grain naming the erased subject would undo the erasure it records.
+- **One selector, two directions**: `REPORT SUBJECT` (disclose) and
+  `FORGET SUBJECT` (erase) share it, so a DSAR cannot describe more or less than
+  the erasure removes.
+- **Effects are journaled before they happen.** `areev run` writes intent before
+  every dispatch; a crash-window effect is redelivered under the **same
+  idempotency key** — journaled as a redelivery — never minted as a duplicate.
+  `areev run verify` re-drives the run with every effect answered from the
+  journal, writing nothing, and byte-compares every checkpoint — a
+  **journal-consistent** replay, which is what it is called rather than a bare
+  "verified".
+- **Separation of duties is structural**: the principal who triggered an
+  approval gate cannot approve it.
+
+### The loop that closes them
+
+[**Areev Loop**](#areev-loop--governed-self-improvement-built-in) turns the
+agent's own history into **recommendations** — *"this tool failed 71% of its
+calls"*, *"these two facts contradict"* — each citing the grains it was computed
+from. Thirteen deterministic analyzers, **zero model calls required**. Every
+recommendation goes through propose → review → apply → verify, is undoable, and
+is **re-measured after apply**. Attach an LLM and its findings are grounded
+against the evidence and independently verified before a human ever sees them.
+
+**The honest scope, stated plainly**: Areev Loop improves the agent's
+**memory** — not the model's weights, and not by itself the model's outputs.
+Areev never trains, ships no trainer, and takes no training dependency. It is
+the record of how an agent changed and the evidence for whether the change
+helped. One property is worth the whole design: **the gate cannot be weakened by
+the thing it gates** — a `code_revision` recommendation is pinned to the evalset
+it was judged against, and can be applied only through the gating edge that
+judged it (Rule E1).
 
 ## Why
 
@@ -122,13 +224,11 @@ embed**, built so memory *can't* rot silently.
   adapter](docs/memory-tool.md), budget-aware context rendering (SML / Markdown /
   TOON / JSON), tool-schema rendering for 9 provider formats, Python and Node
   bindings.
-- **A format you keep, with a paved road in**: the `.mg` format is fully
-  documented and [OMS](https://github.com/openmemoryspec/oms)-conformant
-  (byte-exact test vectors), so your memory outlives this engine — and
-  [`areev migrate`](docs/migrate.md) imports what you have today from **mem0**
-  (keeping its full edit history as supersession chains), **Zep/Graphiti**,
-  **Letta**, **LangMem/LangGraph**, **Basic Memory**, or any store via generic
-  JSONL.
+- **A format you keep**: the `.mg` format is fully documented and
+  [OMS](https://github.com/openmemoryspec/oms)-conformant (byte-exact test
+  vectors), so the record outlives this engine — and outlives us. Importers
+  exist for the common stores if you are bringing history with you
+  ([`docs/migrate.md`](docs/migrate.md)).
 
 ## Install
 
@@ -194,21 +294,6 @@ claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
 
 `areev serve --mcp` speaks newline-delimited JSON-RPC 2.0 on stdio and works
 with any MCP client — see [`docs/mcp-reference.md`](docs/mcp-reference.md).
-
-### Already using mem0, Zep, Letta, or LangMem?
-
-Bring your memories with you — including their edit history:
-
-```bash
-areev migrate --from mem0 --file export.json --history history.json --db mine.db
-areev migrate --from basic-memory --file ~/basic-memory --db mine.db
-```
-
-mem0 history events replay as real supersession chains (ADD → add, UPDATE →
-supersede, DELETE → forget) with their **original timestamps**, so `HISTORY`
-shows your memory's pre-import evolution; note-shaped sources land as live
-memory-tool files under `/memories`. Re-running an import skips what's already
-there. Per-source export one-liners: [`docs/migrate.md`](docs/migrate.md).
 
 ### Run a governed workflow (`areev run`)
 
@@ -426,6 +511,22 @@ corpus, `areev loop run` proposes across analyzers (`areev loop reflect`
 sweeps the whole memory), and the Areev Loop tab in `areev ui` is the governed
 review queue. Full guide: [docs/loop.md](docs/loop.md) · why the LLM layer
 is verified, never trusted: [docs/loop-reflection.md](docs/loop-reflection.md).
+
+## Examples
+
+Runnable material lives in [`examples/`](examples/) — docs-with-files, cloned
+rather than installed. Every one models **judgment**: approve a recommendation,
+dismiss another with a reason. None of them is a rubber-stamp loop.
+
+| | |
+|---|---|
+| [`colab/`](examples/colab/) | Notebooks: the full self-improving loop, plus five business walkthroughs — wrong-lesson rollback, detect/review/govern, an enterprise architecture. Keyless deterministic floor; the LLM layer is optional |
+| [`ci/`](examples/ci/) | A GitHub Actions job that **fails the build** on pending high-severity recommendations — governance as a merge gate |
+| [`policy/`](examples/policy/) | Three `loop-policy.json` variants: solo, team, locked-down production |
+| [`mcp/`](examples/mcp/) | The multi-agent supervisor pattern — separation of duties enforced over MCP |
+| [`import/`](examples/import/) | Tool-call JSONL → Tool grains → tool-failure clustering |
+| [`analyzers/`](examples/analyzers/) | Bring your own analyzer over the probe/analyze protocol (advisory-only by construction) |
+| [`llm/`](examples/llm/) | Ready-to-run `--llm-cmd` backends, plus the stdin/stdout protocol |
 
 ### Rust
 
@@ -647,6 +748,44 @@ as on day 1. The write path is the one thing to design for (bulk-load at
 with a projection for current Pi hardware:
 [RESULTS.md §6](crates/areev-bench/RESULTS.md).
 
+## Quality
+
+An engine you embed runs inside your process, holds the memory your agent is
+trusted to act on, and — through `FORGET SUBJECT` — destroys data on request.
+That is a lot to ask of a dependency, so the engineering is measured in the
+open and regenerated from the tree on every CI run:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/repo-stats-dark.svg">
+  <img src="docs/assets/repo-stats-light.svg" width="760"
+       alt="Areev repository quality metrics — source and test line counts, test count, and stable error codes, generated from the tree">
+</picture>
+
+- **Tests are about a third of the codebase**, and roughly half of that is
+  *integration* testing — the CLI and MCP suites drive the real binary over
+  real stdio, not mocks. `cargo test --workspace` runs the lot in under a minute.
+- **Every user-facing error has a stable code.** `DOMAIN-Ennn`, **append-only**
+  — a code is never renumbered or reused, so an error you handle today keeps
+  its meaning across upgrades ([`ERROR_CODES.md`](ERROR_CODES.md)).
+- **Both storage backends run the same conformance suite.** One case list —
+  forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL — executed
+  against embedded Turso *and* PostgreSQL, so backend choice cannot quietly
+  change semantics.
+- **CI is the gate, not a formality.** Tests on Linux, macOS and Windows;
+  `clippy -D warnings`; a pinned MSRV build; `cargo doc`; coverage;
+  `cargo deny` for advisories and licences; and the Python and Node bindings
+  built and tested on every commit.
+- **The docs are executable.** The CAL examples in
+  [`cal-reference.md`](docs/cal-reference.md) are parsed by a test that fails
+  CI on a stale one — the reference cannot drift from the language.
+
+Full per-crate breakdown: **[docs/repo-stats.md](docs/repo-stats.md)** (also
+emitted as [`repo-stats.html`](docs/repo-stats.html) and
+[`repo-stats.json`](docs/repo-stats.json)). All of it is produced by
+[`scripts/repo_stats.py`](scripts/repo_stats.py) and regenerated on every CI
+run, which fails the build if the published figures drift from the tree — these
+numbers cannot go stale without turning the build red.
+
 ## Documentation
 
 | Doc | For |
@@ -659,7 +798,7 @@ with a projection for current Pi hardware:
 | [`docs/deployment-profile.md`](docs/deployment-profile.md) | Deploying the runtime + adapters: modes, auth, SSO, what each mode may claim |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
 | [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 23 tools |
-| [`docs/migrate.md`](docs/migrate.md) | Importing from mem0, Zep, Letta, LangMem, Basic Memory, JSONL |
+| [`docs/migrate.md`](docs/migrate.md) | Importing an existing corpus, with its edit history, from other stores or JSONL |
 | [`docs/memory-tool.md`](docs/memory-tool.md) | The Anthropic memory-tool backend (Python / Node / CLI) |
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |
 | [`FAQ.md`](FAQ.md) | Questions & answers (also LLM-friendly) |

@@ -292,3 +292,36 @@ jobs:
         run: cargo test --manifest-path areev-sandbox/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path areev-sandbox/Cargo.toml --all-targets -- -D warnings
+
+  # The version lives in five places and only one of them is inherited
+  # (`version.workspace`). maturin reads pyproject.toml, npm reads
+  # package.json, and the GENERATED areev-js/index.js hard-codes it in every
+  # platform arm. Both drift modes have shipped: a workspace-only bump makes
+  # the publish workflows skip-existing over the released version (a green run
+  # that ships nothing), and a package.json bump without regenerating index.js
+  # breaks require() for anyone with NAPI_RS_ENFORCE_VERSION_CHECK set. Catch
+  # it on the PR that introduces it, not on release day.
+  versions:
+    name: versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_versions.py
+
+  # README.md quotes repository quality numbers (test vs source lines, test
+  # count, error codes) from committed artifacts. Regenerate and diff, so the
+  # published figures cannot quietly drift away from the tree.
+  stats:
+    name: repo stats current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the committed stats match the tree
+        run: python3 scripts/repo_stats.py --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repo-stats
+          path: |
+            docs/repo-stats.html
+            docs/repo-stats.json
+            docs/assets/repo-stats-*.svg

@@ -19,9 +19,9 @@
 // reported as a build problem. Scoping the main package makes
 // `napi create-npm-dirs` derive scoped platform names from it and makes the
 // generated `index.js` require those names, so nothing hits the filter.
-// (The 2026-07-17 whitelist covered only the FORMER `dejadb-win32-x64-msvc`;
-// the unscoped `areev-*` exception is still user-tracked with npm support and
-// is no longer on the release path.)
+// (The 2026-07-17 whitelist covered only the pre-rename package names, so it
+// does not help here; the unscoped `areev-*` exception is still user-tracked
+// with npm support and is no longer on the release path.)
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 
 const mainPath = 'package.json';

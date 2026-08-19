@@ -18,7 +18,7 @@ const h = await mem.addFact('john', 'prefers', 'tea', 0.95)
 console.log(await mem.recall('john')) // JSON string, newest-first
 
 await mem.setEmbedderCommand('python3 embed.py')   // vector recall via a host command
-await mem.migrate('mem0', exportJson, historyJson) // import from mem0/Zep/Letta/… (docs/migrate.md)
+await mem.migrate('mem0', exportJson, historyJson) // import an existing corpus (docs/migrate.md)
 await mem.memoryTool('{"command": "view", "path": "/memories"}') // Anthropic memory-tool backend
 ```
 

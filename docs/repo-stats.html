@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Areev — repository statistics</title>
+<style>
+  :root {
+    --bg:#ffffff; --panel:#f6f7f9;
+    --line:#dfe3e8; --fg:#111418;
+    --muted:#5b6470; --test:#1f6feb;
+    --source:#8250df; --accent:#0a7d55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0d1117; --panel:#161b22;
+      --line:#30363d; --fg:#e6edf3;
+      --muted:#8b949e; --test:#58a6ff;
+      --source:#bc8cff; --accent:#3fb950;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0d1117; --panel:#161b22;
+    --line:#30363d; --fg:#e6edf3;
+    --muted:#8b949e; --test:#58a6ff;
+    --source:#bc8cff; --accent:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:40px 24px;background:var(--bg);color:var(--fg);
+    font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:920px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:28px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+  .l{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:2px}
+  h2{font-size:16px;margin:32px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .wrap{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  .note{color:var(--muted);font-size:13px;margin-top:28px;padding-top:16px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Areev — repository statistics</h1>
+  <p class="sub">v1.2.2 · generated from the tree by
+    <code>scripts/repo_stats.py</code></p>
+
+  <div class="tiles">
+      <div class="tile"><div class="v" style="color:var(--test)">41,986</div><div class="l">lines of test code</div></div>
+      <div class="tile"><div class="v" style="color:var(--source)">74,491</div><div class="l">lines of source code</div></div>
+      <div class="tile"><div class="v" style="color:var(--accent)">2,132</div><div class="l">test functions</div></div>
+      <div class="tile"><div class="v" style="color:var(--fg)">0.56:1</div><div class="l">test to source</div></div>
+      <div class="tile"><div class="v" style="color:var(--fg)">17</div><div class="l">workspace crates</div></div>
+      <div class="tile"><div class="v" style="color:var(--fg)">89</div><div class="l">stable error codes</div></div>
+  </div>
+
+  <h2>By crate</h2>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>Crate</th><th>Files</th><th>Source</th><th>Test</th><th>Tests</th></tr></thead>
+      <tbody>
+      <tr><td><code>areev-cal</code></td><td>38</td><td>23,597</td><td>17,677</td><td>962</td></tr>
+      <tr><td><code>areev-store</code></td><td>39</td><td>9,450</td><td>5,136</td><td>248</td></tr>
+      <tr><td><code>areev-core</code></td><td>47</td><td>8,011</td><td>3,827</td><td>251</td></tr>
+      <tr><td><code>areev-cli</code></td><td>13</td><td>5,091</td><td>4,179</td><td>137</td></tr>
+      <tr><td><code>areev-loop</code></td><td>33</td><td>7,534</td><td>1,079</td><td>129</td></tr>
+      <tr><td><code>areev-run</code></td><td>20</td><td>3,972</td><td>2,613</td><td>85</td></tr>
+      <tr><td><code>areev-context</code></td><td>8</td><td>1,899</td><td>2,421</td><td>90</td></tr>
+      <tr><td><code>areev-run-core</code></td><td>8</td><td>1,934</td><td>969</td><td>31</td></tr>
+      <tr><td><code>areev-trigger</code></td><td>10</td><td>1,316</td><td>1,251</td><td>88</td></tr>
+      <tr><td><code>areev-llm</code></td><td>8</td><td>1,764</td><td>844</td><td>44</td></tr>
+      <tr><td><code>areev-server</code></td><td>3</td><td>1,369</td><td>876</td><td>29</td></tr>
+      <tr><td><code>areev-js</code></td><td>2</td><td>1,947</td><td>0</td><td>0</td></tr>
+      <tr><td><code>areev-conformance</code></td><td>14</td><td>1,371</td><td>343</td><td>12</td></tr>
+      <tr><td><code>areev-py</code></td><td>2</td><td>1,639</td><td>0</td><td>0</td></tr>
+      <tr><td><code>areev-bench</code></td><td>9</td><td>1,696</td><td>36</td><td>3</td></tr>
+      <tr><td><code>areev-loop-adapter</code></td><td>6</td><td>883</td><td>735</td><td>23</td></tr>
+      <tr><td><code>areev-mcp</code></td><td>1</td><td>961</td><td>0</td><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Composition</h2>
+  <div class="wrap">
+    <table>
+      <tbody>
+        <tr><td>Rust files</td><td>265</td></tr>
+        <tr><td>Physical lines (all Rust)</td><td>151,041</td></tr>
+        <tr><td>Source code (no blanks or comments)</td><td>74,491</td></tr>
+        <tr><td>Unit test code (<code>#[cfg(test)]</code> blocks)</td><td>21,036</td></tr>
+        <tr><td>Integration test code (<code>tests/</code>, <code>benches/</code>)</td><td>20,950</td></tr>
+        <tr><td>Example code (<code>examples/</code>)</td><td>585</td></tr>
+        <tr><td>Test functions</td><td>2,132</td></tr>
+        <tr><td>Reference docs</td><td>48 files, 19,113 lines</td></tr>
+        <tr><td>Stable error codes</td><td>89</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">
+    Test code is measured per block, not per file: a source file containing a
+    <code>#[cfg(test)]</code> module contributes its implementation to source
+    and only the module body to tests. Blank and comment lines are excluded
+    throughout. Regenerate with <code>python3 scripts/repo_stats.py</code>;
+    CI runs <code>--check</code> and fails when these artifacts drift from the
+    tree.
+  </p>
+</main>
+</body>
+</html>

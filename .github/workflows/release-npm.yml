@@ -26,9 +26,33 @@ defaults:
 permissions:
   contents: read
 
+concurrency:
+  group: release-npm-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # index.js is GENERATED and hard-codes the expected version in every
+  # platform arm. Bumping package.json without re-running `napi build` leaves
+  # it asserting the previous version, and any consumer with
+  # NAPI_RS_ENFORCE_VERSION_CHECK set then fails at require() against a
+  # correctly installed package — this is exactly how 1.0.3 shipped stuck at
+  # 1.0.1. Seconds here, versus a broken package on the registry.
+  preflight:
+    name: preflight (versions agree)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every version site agrees
+        run: |
+          python3 scripts/check_versions.py \
+            ${{ github.event_name == 'release' && format('--tag {0}', github.ref_name) || '' }}
+
   build:
     name: build ${{ matrix.settings.target }}
+    needs: preflight
     runs-on: ${{ matrix.settings.host }}
     strategy:
       fail-fast: false
@@ -36,10 +60,10 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: npx napi build --platform --release --target x86_64-apple-darwin
+            build: npx napi build --platform --release --target x86_64-apple-darwin -- --locked
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: npx napi build --platform --release --target aarch64-apple-darwin
+            build: npx napi build --platform --release --target aarch64-apple-darwin -- --locked
           # Both Linux legs build NATIVELY, INSIDE a Debian 11 container:
           #   * in a container, because the *build host's* glibc becomes the
           #     addon's runtime floor. Built straight on ubuntu-latest (24.04,
@@ -61,7 +85,7 @@ jobs:
             container: node:20-bullseye
           - host: windows-latest
             target: x86_64-pc-windows-msvc
-            build: npx napi build --platform --release --target x86_64-pc-windows-msvc
+            build: npx napi build --platform --release --target x86_64-pc-windows-msvc -- --locked
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v7
@@ -74,7 +98,7 @@ jobs:
           targets: ${{ matrix.settings.target }}
       - uses: Swatinem/rust-cache@v2
         if: ${{ !matrix.settings.container }}
-      - run: npm install
+      - run: npm ci
         if: ${{ !matrix.settings.container }}
       - name: Build
         if: ${{ !matrix.settings.container }}
@@ -95,8 +119,8 @@ jobs:
               set -eux
               curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
               . "$HOME/.cargo/env"
-              npm install
-              npx napi build --platform --release --target "$TARGET"
+              npm ci
+              npx napi build --platform --release --target "$TARGET" -- --locked
             '
 
       # A too-new glibc floor is invisible until a user require()s the addon on
@@ -105,7 +129,7 @@ jobs:
       - name: Assert the glibc floor
         if: ${{ matrix.settings.container }}
         run: |
-          need=$(grep -aoh 'GLIBC_[0-9]\+\.[0-9]\+' *.node | sort -uV | tail -1)
+          need=$(grep -aoh 'GLIBC_[0-9]\+\.[0-9]\+' ./*.node | sort -uV | tail -1)
           echo "highest glibc symbol required: ${need:-none}"
           if [ "$(printf '%s\nGLIBC_2.31\n' "${need:-GLIBC_2.0}" | sort -V | tail -1)" != "GLIBC_2.31" ]; then
             echo "::error::addon requires $need, above the GLIBC_2.31 floor — it will fail to load on Debian 11/12 and Raspberry Pi OS"
@@ -121,6 +145,10 @@ jobs:
   publish:
     name: publish to npm
     needs: build
+    # Only a real release publishes — see the same guard in release-cli.yml.
+    # Without it a `workflow_dispatch` ships whatever version is in
+    # package.json to the registry, from any branch.
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -128,7 +156,7 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-      - run: npm install
+      - run: npm ci
       - uses: actions/download-artifact@v8
         with:
           path: crates/areev-js/artifacts
