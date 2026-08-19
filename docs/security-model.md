@@ -280,6 +280,21 @@ Not provided: memory or CPU limits, filesystem confinement, network
 restrictions, or privilege reduction. Do not put a command you do not trust
 behind these flags.
 
+### Tier C: sandboxed pure-compute tools
+
+`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen two-function
+import set, a fuel ceiling, a memory-page ceiling, and a module-size cap applied
+before the decoder sees the bytes. A module cannot open a socket, touch the
+filesystem, read an environment variable, see a clock, or run forever.
+
+Be precise about what that buys. Tier C protects **the host from the tool**, and
+it is real isolation for parsing, extraction, classification and scoring. It is
+**not credential protection**: a connector that legitimately holds an OAuth token
+and makes outbound calls is not made safer by isolation, which is why the egress
+allowlist and the credential broker exist. By Tier C's own design a module cannot
+make a network call, so a connector will never be one — the two mechanisms cover
+different threats and neither substitutes for the other.
+
 ## Threats out of scope
 
 - An already-compromised host, physical access, or a malicious local process

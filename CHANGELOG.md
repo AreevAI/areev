@@ -59,6 +59,14 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
   code. This prevents the case rather than noticing it afterwards. An expired
   lease is reclaimable, so a crashed driver does not park its run forever.
 
+- **`areev-sandbox` (Tier C)**: a standalone package that runs a pure `wasm32`
+  module with no WASI, a frozen two-function import set, fuel, a memory ceiling,
+  and a module-size cap applied before decode. Deliberately outside the
+  workspace so `wasmi`'s tree and MSRV never reach workspace `cargo deny`, MSRV
+  checks or test time; it has its own CI job. Protects the host from the tool —
+  explicitly not credential protection, which is what the egress allowlist and
+  broker are for.
+
 ### Security
 
 - **Host command seams no longer inherit named secrets.** No subprocess seam
