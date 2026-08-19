@@ -209,6 +209,11 @@ COMMANDS:
                                       keyword cues, dictionary). Reads stdin
                                       when --text is absent; prints JSON.
                                       Pure text — needs no memory file.
+  anonymize test --fixtures F [--policy-file F]
+                                      Assert a policy against a fixture file
+                                      of must-redact / must-not-redact strings.
+                                      Exits non-zero on any miss or false
+                                      positive — run it in CI.
   anonymize set --ns NS (--policy-file F | --policy JSON)
                                       declare a per-namespace egress/audit
                                       policy (travels with the file; stamps
@@ -1012,6 +1017,77 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             "{}",
             serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
         );
+        return Ok(());
+    }
+
+    // `anonymize test` is pure text processing too: a policy plus a fixture
+    // file, no store. It exists because an untestable egress control is close
+    // to an unusable one — an operator could not assert "this policy must
+    // redact these strings and must not redact those" and have CI fail on a
+    // regression, which is the first artifact an auditor asks to see.
+    if cmd == "anonymize" && positional.first().map(String::as_str) == Some("test") {
+        let path = flag(&flags, "fixtures")
+            .ok_or("anonymize test requires --fixtures <FILE> (JSON)")?;
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("--fixtures {path}: {e}"))?;
+        let fx: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("--fixtures {path}: {e}"))?;
+        let must_redact = fixture_strings(&fx, "must_redact", &path)?;
+        let must_not_redact = fixture_strings(&fx, "must_not_redact", &path)?;
+        // A policy on the CLI overrides the one in the file, so one fixture
+        // set can be run against a candidate policy before it is deployed.
+        let policy = match flag(&flags, "policy-file") {
+            Some(pp) => {
+                let json = std::fs::read_to_string(&pp)
+                    .map_err(|e| format!("--policy-file {pp}: {e}"))?;
+                areev_core::anon::AnonPolicy::from_json(&json).map_err(|e| e.to_string())?
+            }
+            None => match fx.get("policy") {
+                Some(v) => areev_core::anon::AnonPolicy::from_json(&v.to_string())
+                    .map_err(|e| e.to_string())?,
+                None => return Err(format!("{path} has no \"policy\" and no --policy-file given")),
+            },
+        };
+
+        let mut misses: Vec<String> = Vec::new();
+        let mut false_positives: Vec<String> = Vec::new();
+        for want in &must_redact {
+            let got = areev_core::anon::anonymize(want, &policy, &[], None)
+                .map_err(|e| e.to_string())?;
+            // "Redacted" means the text changed: the policy acted on it,
+            // whether by pseudonym, mask or redaction.
+            if got.text == *want {
+                misses.push(want.clone());
+            }
+        }
+        for want in &must_not_redact {
+            let got = areev_core::anon::anonymize(want, &policy, &[], None)
+                .map_err(|e| e.to_string())?;
+            if got.text != *want {
+                false_positives.push(format!("{want}  ->  {}", got.text));
+            }
+        }
+
+        let total = must_redact.len() + must_not_redact.len();
+        let failed = misses.len() + false_positives.len();
+        for m in &misses {
+            eprintln!("MISS (should have been redacted): {m}");
+        }
+        for f in &false_positives {
+            eprintln!("FALSE POSITIVE (should have been left alone): {f}");
+        }
+        println!(
+            "{} fixtures: {} passed, {} failed ({} missed, {} false positive)",
+            total,
+            total - failed,
+            failed,
+            misses.len(),
+            false_positives.len()
+        );
+        if failed > 0 {
+            // Non-zero exit is the point: this runs in CI.
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -2688,6 +2764,37 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
 /// every other bulk erasure. The governed alternative is the loop's
 /// `retention_sweep` analyzer, which proposes the same purge through review
 /// and audit instead of performing it.
+/// A declarative anonymization fixture set (issue #47).
+///
+/// ```json
+/// {
+///   "policy": { "mode": "egress", "categories": { "sg_nric": "redact" } },
+///   "must_redact":     ["NRIC S1234567D", "MRN 00456123"],
+///   "must_not_redact": ["invoice 4471820", "2026-08-19"]
+/// }
+/// ```
+///
+/// Deliberately symmetric: a policy that redacts everything passes
+/// `must_redact` trivially, so the `must_not_redact` half is what stops an
+/// over-broad policy from looking correct.
+///
+/// Read with the `serde_json` value API rather than a derive — this crate
+/// hand-rolls its argument parsing and carries no `serde` derive dependency.
+fn fixture_strings(root: &serde_json::Value, key: &str, path: &str) -> Result<Vec<String>, String> {
+    match root.get(key) {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("{path}: every \"{key}\" entry must be a string"))
+            })
+            .collect(),
+        Some(_) => Err(format!("{path}: \"{key}\" must be an array of strings")),
+    }
+}
+
 /// `areev anonymize <set|list|clear|mappings>` — the per-namespace policy
 /// surface (docs/anonymization-proposal.md P1). `scan` is handled pre-open.
 fn run_anonymize(

@@ -1465,3 +1465,56 @@ fn blob_put_get_roundtrip() {
     assert!(!ok, "an unknown subcommand must fail");
     assert!(err.contains("blob put|get"), "the refusal should name the verbs: {err}");
 }
+
+/// `areev anonymize test --fixtures` — the CI gate for an egress policy
+/// (issue #47). An untestable policy on an egress path is close to an
+/// unusable one; this is the artifact an auditor asks for, so its exit code
+/// is the contract, not its output.
+#[test]
+fn anonymize_fixtures_gate_a_policy_in_both_directions() {
+    let dir = TempDir::new().unwrap();
+    let good = dir.path().join("good.json");
+    std::fs::write(
+        &good,
+        r#"{
+          "policy": {
+            "mode": "egress",
+            "default_action": "allow",
+            "categories": { "sg_nric": "redact", "mrn": "redact", "email": "redact" }
+          },
+          "must_redact": [
+            "NRIC S1234567D on file",
+            "MRN 00456123 admitted",
+            "contact jane@example.com"
+          ],
+          "must_not_redact": [
+            "invoice total 4471820 aed",
+            "S1234567A is not a valid NRIC",
+            "the ward saw 12345678 visitors"
+          ]
+        }"#,
+    )
+    .unwrap();
+    let (ok, out, err) = areev(&["anonymize", "test", "--fixtures", good.to_str().unwrap()]);
+    assert!(ok, "a satisfied fixture set must exit 0\nstdout: {out}\nstderr: {err}");
+    assert!(out.contains("6 passed"), "got: {out}");
+
+    // The negative half is what stops an over-broad policy from looking
+    // correct: redacting everything passes must_redact trivially.
+    let bad = dir.path().join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"{
+          "policy": { "mode": "egress", "default_action": "redact" },
+          "must_redact": ["NRIC S1234567D"],
+          "must_not_redact": ["contact jane@example.com"]
+        }"#,
+    )
+    .unwrap();
+    let (ok, out, err) = areev(&["anonymize", "test", "--fixtures", bad.to_str().unwrap()]);
+    assert!(!ok, "a false positive must fail the run\nstdout: {out}");
+    assert!(
+        err.contains("FALSE POSITIVE"),
+        "the failure must name what went wrong, got: {err}"
+    );
+}
