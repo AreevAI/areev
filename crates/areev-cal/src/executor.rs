@@ -604,13 +604,38 @@ impl Drop for LetScope {
 // CalExecutor
 // ---------------------------------------------------------------------------
 
+/// Maximum parsed statements held in the plan cache.
+///
+/// A production host runs a small, fixed set of statements (its saved queries
+/// and a handful of literals) many times, so a modest cap gets essentially
+/// every hit; the bound exists to stop a host that interpolates values into
+/// statement text from growing the map without limit.
+const PLAN_CACHE_MAX: usize = 256;
+
 /// CAL query executor.
 ///
-/// Stateless aside from configuration. Create once and call `execute()` for
-/// each query. Thread-safe (`Send + Sync` by construction — no interior
-/// mutability).
+/// Stateless aside from configuration and a parse cache. Create once and call
+/// `execute()` for each query. Thread-safe.
 pub struct CalExecutor {
     config: CalExecutorConfig,
+    /// Parsed statements, keyed by exact statement text.
+    ///
+    /// A real-time turn does not call the Rust store — it calls a binding with
+    /// a statement STRING, and used to pay lexing, parsing and validation on
+    /// every single turn. Parsing is pure and deterministic over the text, so
+    /// the result is cacheable with no semantic change whatsoever: the same
+    /// text yields the same AST.
+    ///
+    /// Deliberately internal rather than a `prepare()` the caller must manage:
+    /// every surface — CLI, MCP, the server, both bindings, and `RUN "name"()`
+    /// — gets the saving without an API change and without a handle-lifetime
+    /// bug class. The bindings additionally expose an explicit handle for
+    /// hosts that want the guarantee rather than the heuristic.
+    ///
+    /// Cleared wholesale at the cap rather than evicted LRU: at this size the
+    /// bookkeeping costs more than the occasional re-parse, and the working
+    /// set is refilled by the next few turns.
+    plan_cache: std::sync::Mutex<HashMap<String, crate::ast::CalQuery>>,
     /// The governance seam (CAL 1.3 §8.16): loop lifecycle statements
     /// execute only when a host attached one — `areev-loop-adapter` provides the
     /// real implementation. Absent → those statements return
@@ -621,7 +646,41 @@ pub struct CalExecutor {
 impl CalExecutor {
     /// Create a new executor with the given configuration.
     pub fn new(config: CalExecutorConfig) -> Self {
-        Self { config, governance: None }
+        Self { config, governance: None, plan_cache: Default::default() }
+    }
+
+    /// Parse `input`, reusing a cached AST for identical text.
+    ///
+    /// Returns a clone: `execute` binds LET values into the query, so the
+    /// cached entry must stay pristine. Cloning an AST is still far cheaper
+    /// than lexing + parsing + validating one.
+    ///
+    /// A poisoned lock degrades to a plain parse rather than failing the
+    /// query — the cache is an optimization, and a caller's statement should
+    /// not fail because some other thread panicked.
+    pub fn parse_cached(
+        &self,
+        input: &str,
+    ) -> std::result::Result<crate::ast::CalQuery, CalError> {
+        if let Ok(cache) = self.plan_cache.lock() {
+            if let Some(q) = cache.get(input) {
+                return Ok(q.clone());
+            }
+        }
+        let query = crate::parser::parse(input)?;
+        if let Ok(mut cache) = self.plan_cache.lock() {
+            if cache.len() >= PLAN_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(input.to_string(), query.clone());
+        }
+        Ok(query)
+    }
+
+    /// How many statements the plan cache currently holds. Diagnostics and
+    /// tests; not a stability guarantee.
+    pub fn plan_cache_len(&self) -> usize {
+        self.plan_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
     /// Attach the governance host that backs `RUN LOOP`, `APPROVE`,
@@ -691,8 +750,9 @@ impl CalExecutor {
     ) -> std::result::Result<CalExecResult, CalError> {
         let start = std::time::Instant::now();
 
-        // 1. Parse (validates length, bidi, nesting limits, etc.)
-        let query = crate::parser::parse(input)?;
+        // 1. Parse (validates length, bidi, nesting limits, etc.), reusing an
+        // earlier parse of the identical text when there is one.
+        let query = self.parse_cached(input)?;
 
         // 2. Compute query hash (C-4: SHA-256 of normalized / trimmed input).
         let query_hash = compute_query_hash(input);
@@ -1981,7 +2041,16 @@ impl CalExecutor {
         }
 
         // 3. Parse the substituted body.
-        let parsed = super::parser::parse(&body).map_err(|e| CalError::InvalidQueryBody {
+        //
+        // Cached like any other statement — but note WHAT the key is. Params
+        // are substituted into the body TEXT above, before parsing, so the
+        // cache key is the substituted body: `RUN "triage"($subject: "amy")`
+        // reuses a plan only when called with the same arguments again. A
+        // zero-parameter saved query therefore always hits after its first
+        // call; a parameterized one hits per distinct argument set. This is
+        // the honest answer to "does RUN reuse a compiled plan?" and it is
+        // recorded in docs/cal-reference.md.
+        let parsed = self.parse_cached(&body).map_err(|e| CalError::InvalidQueryBody {
             detail: e.to_string(),
             span: run.span,
         })?;

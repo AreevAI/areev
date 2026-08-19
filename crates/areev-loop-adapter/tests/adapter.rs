@@ -428,3 +428,65 @@ fn destructive_cal_beyond_forget_hash_is_refused() {
     assert!(sub.validate_cal(r#"RECALL facts WHERE subject = "acme""#).is_ok());
     assert!(sub.validate_cal(r#"ADD fact {"subject":"a","relation":"r","object":"o"}"#).is_ok());
 }
+
+/// A saved-query rewrite is executable AND undoable (issue #28).
+///
+/// The loop can already evolve grains; it could not evolve the saved CAL that
+/// assembles a prompt, which is exactly where a self-improving agent's
+/// behaviour lives. What made that unsafe was the missing inverse: `DEFINE
+/// QUERY` writes a `qry:` registry row, not a grain, so a rollback that only
+/// retracts `created_hashes` would report success while the new definition
+/// stayed live. This pins the round trip.
+#[test]
+fn a_definition_rewrite_records_an_inverse_that_restores_the_previous_body() {
+    use areev_cal::facade::CalStoreFacade;
+    let (_d, store) = open_temp();
+    let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+    let sub = BorrowedSubstrate::new(&facade);
+
+    // Nothing defined yet: the inverse is a DROP, which restores "no such
+    // definition" — the correct prior state, not a no-op.
+    let first = r#"DEFINE QUERY "triage_ctx" AS { RECALL facts RECENT 5 }"#;
+    let inv = sub.definition_inverse(first).unwrap().expect("an inverse");
+    assert!(inv.starts_with("DROP QUERY"), "got: {inv}");
+
+    // Define it, then ask for the inverse of a REWRITE: now it must reproduce
+    // the body that is about to be replaced.
+    run_cal(&facade, first);
+    let rewrite = r#"DEFINE QUERY "triage_ctx" AS { RECALL facts RECENT 20 }"#;
+    let inv2 = sub.definition_inverse(rewrite).unwrap().expect("an inverse");
+    assert!(inv2.contains("RECENT 5"), "must carry the OLD body: {inv2}");
+    assert!(inv2.starts_with("DEFINE QUERY"), "got: {inv2}");
+
+    // Applying the inverse really restores the previous definition.
+    run_cal(&facade, rewrite);
+    assert!(facade.get_query("triage_ctx").unwrap().body.contains("RECENT 20"));
+    run_cal(&facade, &inv2);
+    assert!(
+        facade.get_query("triage_ctx").unwrap().body.contains("RECENT 5"),
+        "the inverse must restore the prior body"
+    );
+
+    // And the DROP inverse really removes a definition that did not exist
+    // before the apply.
+    run_cal(&facade, &inv);
+    assert!(
+        facade.get_query("triage_ctx").is_none(),
+        "the DROP inverse must restore 'no such definition'"
+    );
+}
+
+/// A non-definition proposal is untouched: no inverse, nothing to restore.
+#[test]
+fn ordinary_proposals_have_no_definition_inverse() {
+    let (_d, store) = open_temp();
+    let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+    let sub = BorrowedSubstrate::new(&facade);
+    assert!(sub.definition_inverse("ADD fact {}").unwrap().is_none());
+    assert!(sub.definition_inverse("FORGET abc").unwrap().is_none());
+}
+
+fn run_cal(facade: &AreevFacade, cal: &str) {
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(cal, facade).unwrap_or_else(|e| panic!("{cal}: {e}"));
+}

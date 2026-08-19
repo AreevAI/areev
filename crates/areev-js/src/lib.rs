@@ -313,6 +313,15 @@ pub struct Areev {
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
     actor: String,
+    /// ONE executor for the life of the handle, so its parse cache survives
+    /// between calls.
+    ///
+    /// A real-time turn calls this binding with a statement STRING and used to
+    /// build a fresh `CalExecutor` per call — which meant lexing, parsing and
+    /// validating the same statement on every single turn, with a cache that
+    /// could never hit. Hoisting the executor onto the handle is what makes
+    /// the plan cache reachable from JavaScript at all.
+    executor: std::sync::Arc<CalExecutor>,
 }
 
 #[napi]
@@ -412,7 +421,12 @@ impl Areev {
             None => (session, actor),
         };
         let facade = std::sync::Arc::new(std::sync::Mutex::new(Some(std::sync::Arc::new(session))));
-        Ok(Areev { facade, ns, actor })
+        Ok(Areev {
+            facade,
+            ns,
+            actor,
+            executor: std::sync::Arc::new(CalExecutor::new(CalExecutorConfig::default())),
+        })
     }
 
     /// Release this handle's claim on the memory file.
@@ -1079,11 +1093,32 @@ impl Areev {
     #[napi(ts_return_type = "Promise<string>")]
     pub fn cal(&self, query: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
+        let ex = self.executor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let ex = CalExecutor::new(CalExecutorConfig::default());
             let res = ex.execute(&query, &*facade).map_err(err)?;
             serde_json::to_string(&res.payload_json().map_err(err)?).map_err(err)
+        })
+    }
+
+    /// Parse and validate a statement now, and keep the plan, so the first
+    /// real turn does not pay for it.
+    ///
+    /// The handle is the statement TEXT — there is no opaque handle object to
+    /// leak or invalidate, because the executor already keys its plan cache on
+    /// exactly that. Call this at startup for each statement your agent runs
+    /// on the hot path: it turns a bad statement into a startup error instead
+    /// of a first-turn error, and guarantees the plan is warm rather than
+    /// hoping it is.
+    ///
+    /// Returns `{statement, cached}` where `cached` is the number of plans
+    /// held.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn cal_prepare(&self, query: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let ex = self.executor.clone();
+        StringJob::spawn(move || {
+            ex.parse_cached(&query).map_err(err)?;
+            Ok(json!({"statement": query, "cached": ex.plan_cache_len()}).to_string())
         })
     }
 

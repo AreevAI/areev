@@ -81,9 +81,16 @@ impl Policy {
     }
 
     /// Does a grant permit auto-applying this family to `target_class` at
-    /// `severity`? Only `memory`/`query` classes are ever eligible.
+    /// `severity`? Only the `memory` class is ever eligible.
+    ///
+    /// `query` was eligible until definition rewrites became executable
+    /// (issue #28). A grain edit changes one remembered value; a saved-query
+    /// or template rewrite changes what EVERY future context contains — the
+    /// blast radius is every turn from now on, not one fact. So a definition
+    /// rewrite always requires a human APPROVE + APPLY with `BECAUSE`, and
+    /// the class is excluded here by name, exactly as `code`/`evalset` are.
     pub fn grants_auto_apply(&self, family: &str, target_class: &str, severity: Severity) -> bool {
-        if !self.auto_apply_enabled || !matches!(target_class, "memory" | "query") {
+        if !self.auto_apply_enabled || target_class != "memory" {
             return false;
         }
         self.auto_apply.iter().any(|g| {

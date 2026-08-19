@@ -246,6 +246,11 @@ struct Areev {
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
     actor: String,
+    /// ONE executor for the life of the handle, so its parse cache survives
+    /// between calls — see the Node binding's field of the same name. A fresh
+    /// executor per `cal()` re-lexed and re-parsed the same statement on every
+    /// turn and could never hit its own cache.
+    executor: std::sync::Arc<CalExecutor>,
 }
 
 #[pymethods]
@@ -322,7 +327,12 @@ impl Areev {
             }
             None => (facade, actor),
         };
-        Ok(Areev { facade: std::sync::Arc::new(facade), ns, actor })
+        Ok(Areev {
+            facade: std::sync::Arc::new(facade),
+            ns,
+            actor,
+            executor: std::sync::Arc::new(CalExecutor::new(CalExecutorConfig::default())),
+        })
     }
 
     /// Reconciliation warnings from open (file-vs-host declaration changes,
@@ -924,12 +934,24 @@ impl Areev {
     /// (absent when the query raised none).
     fn cal(&self, py: Python<'_>, query: String) -> PyResult<String> {
         let res = py
-            .detach(|| {
-                let ex = CalExecutor::new(CalExecutorConfig::default());
-                ex.execute(&query, &*self.facade)
-            })
+            .detach(|| self.executor.execute(&query, &*self.facade))
             .map_err(err)?;
         serde_json::to_string(&res.payload_json().map_err(err)?).map_err(err)
+    }
+
+    /// Parse and validate a statement now, and keep the plan, so the first
+    /// real turn does not pay for it.
+    ///
+    /// The handle is the statement TEXT — there is no opaque handle object to
+    /// leak or invalidate, because the executor already keys its plan cache on
+    /// exactly that. Call this at startup for each statement on the hot path:
+    /// it turns a bad statement into a startup error rather than a first-turn
+    /// error, and guarantees the plan is warm instead of hoping it is.
+    ///
+    /// Returns `{statement, cached}`.
+    fn cal_prepare(&self, py: Python<'_>, query: String) -> PyResult<String> {
+        py.detach(|| self.executor.parse_cached(&query)).map_err(err)?;
+        Ok(json!({"statement": query, "cached": self.executor.plan_cache_len()}).to_string())
     }
 
     /// Anthropic memory-tool command (LR-13): pass the tool-call dict as

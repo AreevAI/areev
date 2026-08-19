@@ -2560,3 +2560,50 @@ fn a_pinned_query_source_is_not_degraded_either() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #44 — the same statement text is parsed once, not once per turn
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_statements_reuse_a_parsed_plan() {
+    let (ex, facade, _d) = setup();
+    add_bulk_events(&facade, 3);
+
+    assert_eq!(ex.plan_cache_len(), 0, "cold");
+    let stmt = r#"RECALL events RECENT 3"#;
+    for _ in 0..10 {
+        ex.execute(stmt, &facade).unwrap();
+    }
+    // Ten executions, one parse — the win a real-time turn actually needs,
+    // and it applies to every surface without an API change.
+    assert_eq!(ex.plan_cache_len(), 1, "one entry for one statement text");
+
+    // A different statement is its own entry; the cache keys on exact text.
+    ex.execute(r#"RECALL events RECENT 2"#, &facade).unwrap();
+    assert_eq!(ex.plan_cache_len(), 2);
+}
+
+#[test]
+fn a_cached_plan_is_not_mutated_by_execution() {
+    let (ex, facade, _d) = setup();
+    use areev_core::types::Fact;
+    for who in ["amy", "bo"] {
+        let mut f = Fact::new(who, "likes", "rust");
+        f.common.namespace = Some("caller".to_string());
+        facade.with_store(|m| m.add(&f)).unwrap();
+    }
+    // LET values are bound INTO the query at execution, so a cached AST that
+    // was handed out by reference would carry one call's bindings into the
+    // next. Same statement twice must give the same answer.
+    let stmt = r#"LET $who = SUBJECTS OF (RECALL facts WHERE relation = "likes");
+                  RECALL facts WHERE subject IN $who"#;
+    let first = ex.execute(stmt, &facade).unwrap();
+    let second = ex.execute(stmt, &facade).unwrap();
+    let n = |r: &areev_cal::executor::CalExecResult| match &r.result {
+        CalResultPayload::Grains { grains, .. } => grains.len(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+    assert_eq!(n(&first), n(&second), "a cached plan must stay pristine");
+    assert_eq!(n(&first), 2);
+}
