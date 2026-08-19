@@ -2726,6 +2726,13 @@ impl Areev {
         Ok(out)
     }
 
+    /// The placeholder template `ns` mints with. Callers that fail closed on
+    /// unresolved tokens need this: scanning for the default silhouette when
+    /// the policy mints another shape would fail OPEN.
+    pub fn anon_placeholder(&self, ns: &str) -> Result<Option<String>> {
+        self.anon.placeholder(ns)
+    }
+
     /// Reverse-lookup one placeholder token (proposal D9, REQ-ANON-3):
     /// live sessions first, then the sealed vault. NO authorization here —
     /// the facade gates and audits; direct store callers already hold the

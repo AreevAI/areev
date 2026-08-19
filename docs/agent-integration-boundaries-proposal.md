@@ -308,14 +308,16 @@ boundary.
 
 ## 4. Sequencing
 
-All three parts are built. Two follow-ups remain, both recorded rather than
-left implicit.
+All three parts are built. One follow-up remains, recorded rather than left
+implicit.
 
-**`unmatched` detection is silhouette-based.** `rehydrate` recognizes leftover
-tokens in the default `[CATEGORY_ID]` shape, so a policy with a custom
-`placeholder` template weakens the fail-closed check. Either narrow the
-template to a validated shape when the run boundary is active, or teach
-`rehydrate` the policy's own template.
+**`unmatched` detection is silhouette-based.** *Closed.*
+`rehydrate_with_template` now takes the policy's own `placeholder`, and the run
+boundary passes it. Before, a memory minting `<<EMAIL:1>>` was scanned for
+`[EMAIL_1]`, found no leftovers, and dispatched the placeholder — the
+fail-closed check inverted into fail-open, silently, for exactly the users who
+had customized it. `rehydrate` keeps the default for callers that supply a bare
+mapping and have no policy in scope.
 
 **Egress refusals are still not journaled.** refusals are reported to the caller
 as a `403` and printed to stderr when a run ends, but they are **not journaled

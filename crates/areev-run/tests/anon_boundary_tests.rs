@@ -272,3 +272,57 @@ fn with_no_policy_declared_nothing_is_transformed() {
         "without a policy the model sees the text as-is"
     );
 }
+
+#[test]
+fn a_custom_placeholder_template_still_fails_closed() {
+    // Regression: `unmatched` used to be scanned for the DEFAULT
+    // `[CATEGORY_ID]` silhouette regardless of what the policy minted. A
+    // memory using another shape reported no leftovers and dispatched the
+    // placeholder — the fail-closed check inverted into fail-open, silently,
+    // for exactly the users who had customized it.
+    let rig = Rig::new(Some(
+        r#"{"mode": "egress", "scope": "memory", "placeholder": "<<{CATEGORY}:{ID}>>"}"#,
+    ));
+    let plan = rig.plan();
+
+    // A token in the memory's own shape that was never minted.
+    let llm = ScriptedLlm::new(vec![done(
+        &json!({ "vendor": "<<EMAIL:DEADBEEF>>" }).to_string(),
+    )]);
+    let runner = rig.runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>);
+    runner
+        .start(&plan, "r1", json!({ "messages": [
+            { "role": "user", "content": format!("invoice from {SUPPLIER}") }
+        ]}), &opts())
+        .unwrap();
+
+    let seen = rig.exec.seen.lock().unwrap().clone();
+    let body = serde_json::to_string(&seen).unwrap();
+    assert!(
+        !body.contains("DEADBEEF"),
+        "a leftover in the policy's own shape must refuse, not dispatch: {body}"
+    );
+}
+
+#[test]
+fn a_custom_template_round_trips_like_the_default() {
+    // The counterpart: customizing the shape must not break the happy path.
+    let rig = Rig::new(Some(
+        r#"{"mode": "egress", "scope": "memory", "placeholder": "<<{CATEGORY}:{ID}>>"}"#,
+    ));
+    let plan = rig.plan();
+    let llm = ScriptedLlm::new(vec![done(&json!({ "vendor": SUPPLIER }).to_string())]);
+    let runner = rig.runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>);
+    runner
+        .start(&plan, "r1", json!({ "messages": [
+            { "role": "user", "content": format!("invoice from {SUPPLIER}") }
+        ]}), &opts())
+        .unwrap();
+
+    let seen_by_model = llm.transcript();
+    assert!(!seen_by_model.contains(SUPPLIER), "{seen_by_model}");
+    assert!(seen_by_model.contains("<<EMAIL:"), "the custom shape is minted: {seen_by_model}");
+
+    let body = serde_json::to_string(&rig.exec.seen.lock().unwrap().clone()).unwrap();
+    assert!(body.contains(SUPPLIER), "the tool still gets the real value: {body}");
+}

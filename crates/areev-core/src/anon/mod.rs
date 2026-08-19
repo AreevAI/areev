@@ -914,10 +914,27 @@ pub fn derived_token(template: &str, key: &[u8; 32], category: &str, value: &str
         .replace("{ID}", &hex::encode(&digest[..4]))
 }
 
+/// Replace exact placeholder tokens with their mapped originals, reporting
+/// leftovers in the DEFAULT `[CATEGORY_ID]` silhouette.
+///
+/// Prefer [`rehydrate_with_template`] when the policy's `placeholder` is
+/// known: a custom template's leftovers are invisible to this one, and a
+/// caller that fails closed on `unmatched` would fail open instead.
+pub fn rehydrate(text: &str, mapping: &BTreeMap<String, String>) -> Result<RehydrateOutcome> {
+    rehydrate_with_template(text, mapping, &default_placeholder())
+}
+
 /// Replace exact placeholder tokens with their mapped originals. Tokens the
 /// mapping does not cover are left intact and reported in `unmatched`; the
 /// codec never guesses (proposal §6).
-pub fn rehydrate(text: &str, mapping: &BTreeMap<String, String>) -> Result<RehydrateOutcome> {
+///
+/// `template` is the policy's own `placeholder`, so leftovers are recognized
+/// in the shape this memory actually mints rather than only the default one.
+pub fn rehydrate_with_template(
+    text: &str,
+    mapping: &BTreeMap<String, String>,
+    template: &str,
+) -> Result<RehydrateOutcome> {
     let text = nfc(text).into_owned();
     for k in mapping.keys() {
         if k.is_empty() {
@@ -953,11 +970,10 @@ pub fn rehydrate(text: &str, mapping: &BTreeMap<String, String>) -> Result<Rehyd
     }
     out.push_str(&text[cursor..]);
 
-    // Best-effort report of leftover tokens in the *default* shape; a custom
-    // template's leftovers are only recognized when they share the bracketed
-    // CATEGORY_ID silhouette.
+    // Leftovers in the caller's own template shape. Callers that fail closed
+    // on `unmatched` depend on this being the minting shape, not a guess.
     let mut unmatched: Vec<String> = Vec::new();
-    for token in template_shaped_tokens(&out, &default_placeholder()) {
+    for token in template_shaped_tokens(&out, template) {
         if !mapping.contains_key(&token) && !unmatched.contains(&token) {
             unmatched.push(token);
         }

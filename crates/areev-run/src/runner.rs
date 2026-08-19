@@ -169,6 +169,15 @@ impl Runner {
             .facade
             .with_store(|m| m.anon_mapping_for(&self.ns))
             .map_err(|e| e.to_string())?;
+        // The policy's OWN template, not the default. Scanning for the default
+        // silhouette while the memory mints another shape would report no
+        // leftovers and fail open — the exact inversion of what this check is
+        // for.
+        let template = self
+            .facade
+            .with_store(|m| m.anon_placeholder(&self.ns))
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "[{CATEGORY}_{ID}]".to_string());
         let mut values = Vec::new();
         collect_strings(input, &mut values);
         if values.is_empty() {
@@ -177,7 +186,8 @@ impl Runner {
         let mut out = Vec::with_capacity(values.len());
         let mut unmatched: Vec<String> = Vec::new();
         for v in values {
-            let r = areev_core::anon::rehydrate(&v, &mapping).map_err(|e| e.to_string())?;
+            let r = areev_core::anon::rehydrate_with_template(&v, &mapping, &template)
+                .map_err(|e| e.to_string())?;
             for u in r.unmatched {
                 if !unmatched.contains(&u) {
                     unmatched.push(u);
