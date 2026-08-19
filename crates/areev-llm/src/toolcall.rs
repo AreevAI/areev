@@ -365,7 +365,7 @@ impl ToolCallLlm for crate::OpenAiCompat {
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = openai_body(req, &self.model)?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let auth = format!("Bearer {}", self.api_key);
+        let auth = format!("Bearer {}", self.cred.token().map_err(|e| terminal(e.to_string()))?);
         openai_parse(&post_json_classified(&url, &[("Authorization", &auth)], &body)?)
     }
     fn call_streaming(
@@ -379,7 +379,7 @@ impl ToolCallLlm for crate::OpenAiCompat {
         // stream is refused (§6.7: budgets need the figures).
         body["stream_options"] = json!({"include_usage": true});
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let auth = format!("Bearer {}", self.api_key);
+        let auth = format!("Bearer {}", self.cred.token().map_err(|e| terminal(e.to_string()))?);
         let lines =
             crate::toolcall_stream::post_stream_lines(&url, &[("Authorization", &auth)], &body)?;
         crate::toolcall_stream::openai_accumulate(lines, on_token)
@@ -515,9 +515,10 @@ impl ToolCallLlm for crate::Anthropic {
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = anthropic_body(req, &self.model)?;
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let key = self.cred.token().map_err(|e| terminal(e.to_string()))?;
         anthropic_parse(&post_json_classified(
             &url,
-            &[("x-api-key", &self.api_key), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
+            &[("x-api-key", key.as_str()), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
             &body,
         )?)
     }
@@ -529,9 +530,10 @@ impl ToolCallLlm for crate::Anthropic {
         let mut body = anthropic_body(req, &self.model)?;
         body["stream"] = json!(true);
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let key = self.cred.token().map_err(|e| terminal(e.to_string()))?;
         let lines = crate::toolcall_stream::post_stream_lines(
             &url,
-            &[("x-api-key", &self.api_key), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
+            &[("x-api-key", key.as_str()), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
             &body,
         )?;
         crate::toolcall_stream::anthropic_accumulate(lines, on_token)

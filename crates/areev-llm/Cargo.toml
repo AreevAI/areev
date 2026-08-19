@@ -12,6 +12,26 @@ homepage.workspace = true
 keywords = ["ai-agents", "llm", "loop", "self-improvement", "areev"]
 categories = ["api-bindings"]
 
+[features]
+# Providers are individually selectable so a regulated build can state exactly
+# which model endpoints its artifact can REACH: a disabled provider's factory
+# arm is compiled out, so no code path can construct it and the spec is
+# refused by name. (`openrouter` has no adapter of its own — it is a factory
+# arm over the OpenAI-compatible client — so disabling it removes it
+# entirely; `openai`/`anthropic`/`ollama` keep their adapter types compiled
+# for the ToolCallLlm seam.) The three defaults are first-party APIs or a
+# local runtime; the opt-ins are the ones a compliance reviewer asks about:
+#   * `openrouter` — a third-party router, i.e. an extra jurisdiction and an
+#     extra set of upstream defaults in the transfer path.
+#   * `vertex` — pulls in the Google ADC credential path (metadata server /
+#     gcloud well-known file).
+default = ["openai", "anthropic", "ollama"]
+openai = []
+anthropic = []
+ollama = []
+openrouter = ["openai"]
+vertex = ["openai"]
+
 [dependencies]
 areev-loop = { path = "../areev-loop", version = "1.2.2" }
 # Wave 0 (governed-agents §6.11): the ToolCallLlm seam renders Tool
@@ -23,3 +43,7 @@ serde_json = "1"
 # A small BLOCKING HTTP client — matches the sync-over-private-runtime / std
 # TcpListener posture of the rest of the tree; no tokio/reqwest enters here.
 ureq = "3"
+
+[dev-dependencies]
+# The ADC credential test writes a fake credentials file.
+tempfile = "3"
