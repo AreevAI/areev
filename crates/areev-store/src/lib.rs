@@ -620,6 +620,26 @@ impl QueryExpander for EnglishExpander {
     }
 }
 
+/// Ordering for the recent-by-type scan (`recent_ordered`).
+///
+/// `Seq` — insertion order, newest first — is the default and what `recent` /
+/// `recent_live` have always returned. The `created_at` variants exist because
+/// that is the ONLY other sort key the `grains` table carries as a column, and
+/// therefore the only one an ORDER BY can be pushed down onto: every other
+/// field a caller might sort by lives inside the immutable, content-addressed
+/// blob. The two differ whenever grains are backdated or imported out of
+/// order, which is exactly when a caller asks for `created_at` explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecentOrder {
+    /// File-global `seq` — insertion recency, newest first.
+    #[default]
+    Seq,
+    /// The grain's own `created_at`, newest first.
+    CreatedAtDesc,
+    /// The grain's own `created_at`, oldest first.
+    CreatedAtAsc,
+}
+
 /// Post-fusion recall refinements. All default off — a bare
 /// `recall_hybrid` behaves exactly as before. Applied inside the recall
 /// deadline; each stage degrades to plain fusion order when its backend or
@@ -4067,6 +4087,52 @@ impl Areev {
         Ok(ids)
     }
 
+    /// [`recent`](Self::recent) / [`recent_live`](Self::recent_live) with an
+    /// explicit ordering.
+    ///
+    /// The scan's ORDER BY *is* the result order on this path, so a caller
+    /// ordering by `created_at` can have it served from the index rather than
+    /// re-sorting a page afterwards. `created_at` is the only non-seq ordering
+    /// available, and deliberately so: it is the only sort key the `grains`
+    /// table carries as a column. Everything else a caller might order by
+    /// (`priority`, `status`, `confidence`, every type-specific field) lives
+    /// inside the immutable blob, where SQL cannot reach it without
+    /// materializing a column per field — CAL ranks those in the executor over
+    /// a widened scan instead (see `RecallParams::order_by`).
+    pub fn recent_ordered(
+        &mut self,
+        ns: &str,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+        order: RecentOrder,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let ids = self.ns_param_ids(ns)?;
+        let hint = (!NsScope::is_pattern(ns)).then_some(ns);
+        self.recent_ids_ordered(&ids, hint, gtype, limit, live_only, order)
+    }
+
+    /// [`recent_ordered`](Self::recent_ordered) over an already-resolved
+    /// namespace list.
+    pub fn recent_ordered_scoped(
+        &mut self,
+        ns_list: &[String],
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+        order: RecentOrder,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let mut ids = Vec::with_capacity(ns_list.len());
+        for ns in ns_list {
+            require_exact_ns("a resolved recall scope element", ns)?;
+            if let Some(id) = self.term_lookup(ns)? {
+                ids.push(id);
+            }
+        }
+        let single = (ns_list.len() == 1).then(|| ns_list[0].as_str());
+        self.recent_ids_ordered(&ids, single, gtype, limit, live_only, order)
+    }
+
     /// Recent grains in a namespace, newest first, bounded by `limit`. With
     /// `gtype = None`, every type is returned. This is the "reflect over recent
     /// experience" read path — recent Events / Observations that have no
@@ -4161,6 +4227,18 @@ impl Areev {
         limit: usize,
         live_only: bool,
     ) -> Result<Vec<DeserializedGrain>> {
+        self.recent_ids_ordered(ns_ids, egress_hint, gtype, limit, live_only, RecentOrder::Seq)
+    }
+
+    fn recent_ids_ordered(
+        &mut self,
+        ns_ids: &[i64],
+        egress_hint: Option<&str>,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+        order: RecentOrder,
+    ) -> Result<Vec<DeserializedGrain>> {
         if ns_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -4172,19 +4250,150 @@ impl Areev {
         // The `gtype` column stores the enum ordinal (see `extract_view`:
         // `view.grain_type as u8`), not the .mg header type-byte.
         let gt_ord = gtype.map(|g| g as u8 as i64);
-        // Per-namespace probes (each already newest-first), merged on the
-        // file-global seq. One namespace — the overwhelmingly common case —
-        // skips the merge entirely.
+        // The sort column doubles as the merge key, so a multi-namespace scan
+        // merges on the SAME ordering each probe was bounded by. `seq` breaks
+        // created_at ties so the order stays total and deterministic.
+        let (sort_col, sort_sql) = match order {
+            RecentOrder::Seq => ("seq", "seq DESC"),
+            RecentOrder::CreatedAtDesc => ("created_at", "created_at DESC, seq DESC"),
+            RecentOrder::CreatedAtAsc => ("created_at", "created_at ASC, seq ASC"),
+        };
+        // Per-namespace probes (each already in the requested order), merged on
+        // the sort key. One namespace — the overwhelmingly common case — skips
+        // the merge entirely.
+        // `(sort key, seq)` — seq is the global tiebreak, so the cross-namespace
+        // merge is a total order even when created_at collides.
+        let mut merged: Vec<((i64, i64), Vec<u8>)> = Vec::new();
+        for ns_id in ns_ids {
+            let rows = match gt_ord {
+                Some(gt) => self.db.query(
+                    &format!("SELECT {sort_col}, seq, blob FROM grains WHERE ns=?1 AND gtype=?2{live} ORDER BY {sort_sql} LIMIT ?3"),
+                    vec![pi(*ns_id), pi(gt), pi(limit as i64)],
+                )?,
+                None => self.db.query(
+                    &format!("SELECT {sort_col}, seq, blob FROM grains WHERE ns=?1{live} ORDER BY {sort_sql} LIMIT ?2"),
+                    vec![pi(*ns_id), pi(limit as i64)],
+                )?,
+            };
+            for row in &rows {
+                if let (Some(key), Some(seq), Some(b)) = (row.i64(0), row.i64(1), row.blob(2)) {
+                    merged.push(((key, seq), b));
+                }
+            }
+        }
+        if ns_ids.len() > 1 {
+            match order {
+                RecentOrder::CreatedAtAsc => merged.sort_unstable_by_key(|(k, _)| *k),
+                _ => merged.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(*k)),
+            }
+            merged.truncate(limit);
+        }
+        let mut out: Vec<DeserializedGrain> = merged
+            .iter()
+            .map(|(_, b)| deserialize_blob(b))
+            .collect::<Result<_>>()?;
+        self.egress_exit(egress_hint, &mut out)?;
+        Ok(out)
+    }
+
+    /// Recent grains of ONE session, newest first — the index-backed form of
+    /// `RECALL … WHERE session_id = "…"`.
+    ///
+    /// `recent`/`recent_live` can only scan a namespace by insertion order, so
+    /// a session filter layered on top of them is a post-filter over whatever
+    /// page the scan returned: on a busy namespace the tail of a specific
+    /// conversation may not be in that page at all, and the query answers
+    /// "nothing" instead of "here are the last N turns". This reads
+    /// `idx_thread(ns, session, seq)` directly, so the bound is N turns *of
+    /// this session* rather than N rows of the namespace.
+    ///
+    /// The session column is populated for ANY grain carrying `session_id`
+    /// (see the `thread_idx` insert on the write path), not just Events, so
+    /// `gtype` narrows rather than defines the result.
+    ///
+    /// Related: [`thread_tail`](Self::thread_tail) is the same index read in
+    /// transcript order (oldest→newest, no type filter, heads and superseded
+    /// alike); this one keeps `recent`'s newest-first contract and its
+    /// `live_only` distinction so the CAL facade can swap it in directly.
+    /// The namespace accepts a `"org.*"` prefix scope like every plural read.
+    pub fn recent_in_session(
+        &mut self,
+        ns: &str,
+        session: &str,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let ids = self.ns_param_ids(ns)?;
+        let hint = (!NsScope::is_pattern(ns)).then_some(ns);
+        self.session_ids(&ids, hint, session, gtype, limit, live_only)
+    }
+
+    /// [`recent_in_session`](Self::recent_in_session) over an already-resolved
+    /// namespace list — the CAL facade's path once scopes have expanded and
+    /// authorization has run per namespace.
+    pub fn recent_in_session_scoped(
+        &mut self,
+        ns_list: &[String],
+        session: &str,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<Vec<DeserializedGrain>> {
+        let mut ids = Vec::with_capacity(ns_list.len());
+        for ns in ns_list {
+            require_exact_ns("a resolved recall scope element", ns)?;
+            if let Some(id) = self.term_lookup(ns)? {
+                ids.push(id);
+            }
+        }
+        let single = (ns_list.len() == 1).then(|| ns_list[0].as_str());
+        self.session_ids(&ids, single, session, gtype, limit, live_only)
+    }
+
+    fn session_ids(
+        &mut self,
+        ns_ids: &[i64],
+        egress_hint: Option<&str>,
+        session: &str,
+        gtype: Option<areev_core::types::GrainType>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<Vec<DeserializedGrain>> {
+        // An unknown session term means no grain ever carried it — an empty
+        // answer, not an error. Same posture as `thread_tail`.
+        let sess_id = match self.term_lookup(session)? {
+            Some(x) => x,
+            None => return Ok(Vec::new()),
+        };
+        if ns_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let live = if live_only {
+            " AND g.superseded_by IS NULL"
+        } else {
+            ""
+        };
+        // `gtype` stores the enum ordinal, matching `recent_ids`.
+        let gt_ord = gtype.map(|g| g as u8 as i64);
         let mut merged: Vec<(i64, Vec<u8>)> = Vec::new();
         for ns_id in ns_ids {
             let rows = match gt_ord {
                 Some(gt) => self.db.query(
-                    &format!("SELECT seq, blob FROM grains WHERE ns=?1 AND gtype=?2{live} ORDER BY seq DESC LIMIT ?3"),
-                    vec![pi(*ns_id), pi(gt), pi(limit as i64)],
+                    &format!(
+                        "SELECT ti.seq, g.blob FROM thread_idx ti JOIN grains g ON g.seq = ti.seq \
+                          WHERE ti.ns=?1 AND ti.session=?2 AND g.gtype=?3{live} \
+                          ORDER BY ti.seq DESC LIMIT ?4"
+                    ),
+                    vec![pi(*ns_id), pi(sess_id), pi(gt), pi(limit as i64)],
                 )?,
                 None => self.db.query(
-                    &format!("SELECT seq, blob FROM grains WHERE ns=?1{live} ORDER BY seq DESC LIMIT ?2"),
-                    vec![pi(*ns_id), pi(limit as i64)],
+                    &format!(
+                        "SELECT ti.seq, g.blob FROM thread_idx ti JOIN grains g ON g.seq = ti.seq \
+                          WHERE ti.ns=?1 AND ti.session=?2{live} \
+                          ORDER BY ti.seq DESC LIMIT ?3"
+                    ),
+                    vec![pi(*ns_id), pi(sess_id), pi(limit as i64)],
                 )?,
             };
             for row in &rows {

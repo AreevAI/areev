@@ -137,7 +137,7 @@ Areev ships on all three registries — install the surface you need:
 ```bash
 cargo install areev          # the `areev` CLI
 pip install areev            # Python bindings
-npm install @areev/areev     # Node bindings (unscoped `areev` pending npm approval)
+npm install @areev/areev     # Node bindings
 ```
 
 No Rust toolchain? Every release also carries prebuilt `areev` binaries for
@@ -488,7 +488,7 @@ transaction; to load another system's export, prefer `migrate()`.
 ### Node
 
 ```js
-const { Areev } = require('areev')
+const { Areev } = require('@areev/areev')
 
 const mem = new Areev('john.db', 'caller')                  // 3rd arg: passphrase for AES-256 at rest
 await mem.addFact('john', 'prefers', 'tea', 0.95)
@@ -721,7 +721,7 @@ stated honestly.
 | `areev-server` | Local web console (memories / graph / query / Areev Loop queue / Runs approval queue / sessions) + areevd hub mode; per-principal auth, optional TLS (`tls` feature) and SSO trusted-header |
 | `areev` | The `areev` binary |
 | `areev-py` | Python bindings (`import areev`) |
-| `areev-js` | Node bindings (napi-rs native addon, `require('areev')`) |
+| `areev-js` | Node bindings (napi-rs native addon, `require('@areev/areev')`) |
 | `adapters/` | pip packages `areev-langgraph` (checkpointer, store, trace mirror) and `areev-crewai` (memory backend, audit listener) |
 
 Built on [Turso Database](https://github.com/tursodatabase/turso) (MIT) — see

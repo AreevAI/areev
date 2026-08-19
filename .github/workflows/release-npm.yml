@@ -1,13 +1,13 @@
-# Publish the Node bindings (crates/areev-js) to npm as `areev`.
+# Publish the Node bindings (crates/areev-js) to npm as `@areev/areev`.
 #
 # napi-rs ships a native addon per platform. This builds the `.node` for each
 # target, then publishes one small platform package per target
-# (`areev-<platform>`) plus the thin main package that loads the right one at
+# (`@areev/areev-<platform>`) plus the thin main package that loads the right one at
 # runtime via optionalDependencies (the layout the review flagged as missing).
 #
 # Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
-# Prerequisite secret: `NPM_TOKEN` (an npm automation token for the `areev`
-# package / the account that owns it).
+# Prerequisite secret: `NPM_TOKEN` (an npm automation token for the `@areev`
+# scope / the account that owns it).
 #
 # NOTE: native cross-platform CI is finicky — watch the first release run and
 # adjust the target matrix / napi flags to your installed @napi-rs/cli (v3) if a
@@ -138,17 +138,22 @@ jobs:
         run: npx napi artifacts
       - name: Publish platform packages + main to npm
         # We do NOT use `napi prepublish` here: it publishes every platform
-        # package in one shot and aborts the whole release if one fails —
-        # useful if any single platform name ever trips npm's spam filter
-        # (403 on publish) and needs to be deferred without taking the whole
-        # release down with it.
+        # package in one shot, and we want the main package to go out LAST so
+        # a half-published release never advertises a platform that is not on
+        # the registry yet.
         #
-        # Instead `prepare-npm.mjs` stamps versions, wires the main package's
-        # optionalDependencies to ALL platforms (incl. any deferred one, so a
-        # later same-version publish resolves for installs), and prints the dirs
-        # to publish now. We publish each, skipping anything already on the
-        # registry so re-runs are idempotent — including a later run that
-        # un-defers a package, which then publishes only the missing one.
+        # `prepare-npm.mjs` asserts that every target in `napi.targets` built,
+        # stamps versions, wires optionalDependencies, and prints the dirs to
+        # publish. Publishes skip anything already on the registry, so re-runs
+        # are idempotent.
+        #
+        # Both the main package and the per-platform packages are SCOPED
+        # (`@areev/areev`, `@areev/areev-win32-x64-msvc`, …). The unscoped
+        # `areev-*` names are rejected by npm's similarity/spam filter; every
+        # release before 1.2.3 worked around that by warning past the Windows
+        # 403 and shipping a manifest that promised a package npm had refused
+        # — which broke `require()` on Windows. Scoping removes the filter from
+        # the release path entirely, so any 403 here is now a real failure.
         run: |
           set -euo pipefail
           publish_if_absent() { # $1 = package name, $2 = version, $3 = dir
@@ -163,38 +168,11 @@ jobs:
           for dir in "${DIRS[@]}"; do
             name=$(node -p "require('./$dir/package.json').name")
             ver=$(node -p "require('./$dir/package.json').version")
-            if ! publish_if_absent "$name" "$ver" "$dir"; then
-              # areev-win32-x64-msvc is blocked by npm's spam filter. The
-              # prior whitelist (2026-07-17) covered the FORMER name
-              # dejadb-win32-x64-msvc only; the areev-* exception is a new
-              # request, user-tracked with npm support (see CLAUDE.md
-              # "Naming"). Windows users build from source meanwhile — the
-              # one blocked platform package must not abort the loop and
-              # leave the MAIN package unpublished (exactly how v1.1.0's
-              # first publish run failed). Any other failure hard-fails.
-              if [ "$name" = "areev-win32-x64-msvc" ]; then
-                echo "::warning::$name@$ver rejected by npm spam filter (pending support exception) — continuing without the Windows prebuild"
-              else
-                exit 1
-              fi
-            fi
+            publish_if_absent "$name" "$ver" "$dir"
           done
           main_name=$(node -p "require('./package.json').name")
           main_ver=$(node -p "require('./package.json').version")
-          if ! publish_if_absent "$main_name" "$main_ver" "."; then
-            # The unscoped main name is still behind npm's similarity filter
-            # ("too similar to existing package argv"; support exception
-            # pending — see CLAUDE.md "Naming"). Ship the scoped package
-            # instead: the shape every release since 1.0.0 actually has on
-            # the registry. The day npm unblocks the unscoped name, the
-            # publish above simply succeeds and this fallback stops firing.
-            # Safe to rename here: prepare-npm.mjs already wired the version
-            # and optionalDependencies, and binary loading keys on
-            # napi.binaryName, not the registry name.
-            echo "::warning::unscoped $main_name@$main_ver rejected by npm similarity filter — publishing @areev/areev instead"
-            node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.name='@areev/areev';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
-            publish_if_absent "@areev/areev" "$main_ver" "."
-          fi
+          publish_if_absent "$main_name" "$main_ver" "."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

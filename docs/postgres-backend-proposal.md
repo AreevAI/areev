@@ -1,6 +1,11 @@
 # Postgres Storage Backend — Proposal
 
-**Status: proposal (2026-08-07). Decision pending.**
+**Status: proposal (2026-08-07) — DECIDED AND BUILT.** The backend shipped as
+`crates/areev-store/src/pg.rs` behind `feature = "postgres"`, one memory = one
+schema, exercised on both backends by `areev-conformance`. Note the decision
+recorded here was later revised: this document's single-writer framing was
+superseded by multi-writer (see `docs/deployment-profile.md`). Kept for the
+latency analysis and the options that were weighed, not as current status.
 
 Driver: enterprise deployments — concretely Atmatic (healthcare front-desk,
 GCP Cloud Run + Cloud SQL Postgres 16) — need Areev's memory model without a

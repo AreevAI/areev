@@ -273,6 +273,11 @@ pub fn render_grain_sml_at(
         .unwrap_or_default();
 
     match view.grain_type {
+        // An ASSEMBLE `LITERAL` section: host-authored text, emitted exactly
+        // as written. No truncation, no disclosure-level body cap, no summary
+        // form — the point of a literal is that a compliance-mandated
+        // instruction reaches the model unaltered.
+        "literal" => view.get_str("content").unwrap_or("").to_string(),
         "fact" => {
             let s = view.get_str("subject").unwrap_or("?");
             let r = view.get_str("relation").unwrap_or("?");
@@ -672,6 +677,9 @@ pub fn render_grain_summary(view: &GrainView) -> String {
 /// unknown type string.
 fn known_type_summary(view: &GrainView) -> Option<String> {
     let summary = match view.grain_type {
+        // Never summarised: a pinned literal that got shortened at 95% budget
+        // would break exactly the guarantee it exists to give.
+        "literal" => view.get_str("content").unwrap_or("").to_string(),
         "fact" => format!(
             "{} {} {}",
             view.get_str("subject").unwrap_or("?"),
@@ -781,6 +789,9 @@ pub fn render_grain_markdown_at(view: &GrainView, disclosure: Option<Disclosure>
     let get = |k: &str| map.get(k).and_then(|v| v.as_str()).unwrap_or("");
 
     let line = match view.grain_type {
+        // Verbatim, and deliberately unadorned — no bold, no prefix: the host
+        // authored this text for the model to read exactly as written.
+        "literal" => get("content").to_string(),
         "state" => format!("**State**: {}", state_label(view)),
         "workflow" => {
             let label = view
@@ -1056,6 +1067,7 @@ pub fn toon_row(view: &GrainView) -> String {
     let get_f64 = |key: &str| -> Option<f64> { fields.get(key).and_then(|v| v.as_f64()) };
 
     let values: Vec<String> = match view.grain_type {
+        "literal" => vec![String::new(), get_str("content"), String::new()],
         "fact" => {
             let subject = get_str("subject");
             let relation = get_str("relation");

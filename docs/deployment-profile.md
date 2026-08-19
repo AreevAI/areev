@@ -22,7 +22,7 @@ partner requires it.
 │  single-tenant: per-team memory FILES (encrypted at rest,        │
 │      open_encrypted / AREEV_PASSPHRASE)                            │
 │  multi-tenant:  PostgreSQL backend — one memory = one schema,    │
-│      advisory-locked single writer, pgvector                     │
+│      CONCURRENT writers per schema, pgvector                     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,9 +46,14 @@ partner requires it.
    verbs) — provisioning is `areev`-CLI statements, auditable in the file
    itself.
 4. **Postgres for multi-tenant.** One memory = one schema keeps tenant
-   isolation at the storage boundary; the advisory lock keeps the single
-   writer honest; pgvector serves recall. Connection credentials are the
-   platform's secret-manager problem (env vars in the service unit).
+   isolation at the storage boundary; pgvector serves recall. Unlike the
+   embedded backend, this one admits **multiple concurrent writers per
+   memory** — `STO-E002` is never raised here, and the advisory lock covers
+   *schema bootstrap only*, not writes. Concurrent writers block and
+   serialise at `reserve_write` rather than erroring. Connection credentials
+   are the platform's secret-manager problem (env vars in the service unit);
+   the connection lifecycle, per-handle cost, and reconnect contract are in
+   [Postgres connection contract](#postgres-connection-contract) below.
 5. **Retention + holds, declared.** `areev retention set` (with
    `--min-days` floors) and `areev hold set` are file-truths that travel
    with the memory; `areev audit export` produces the hash-chain-verified

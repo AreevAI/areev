@@ -1539,7 +1539,57 @@ impl CalStoreFacade for AreevFacade {
         // `WITH superseded` — the caller is asking about the past, so every leg
         // widens from the heads to the whole supersession chain.
         let include_superseded = params.exclude_superseded == Some(false);
-        let raw = if unanchored {
+        // `WHERE session_id = "…"` with nothing else to anchor on: read the
+        // thread index instead of a page of the namespace. Without this, the
+        // `unanchored` arm below scans `recent`/`recent_live` newest-first
+        // across the WHOLE namespace and the session filter is applied
+        // afterwards, so on a busy namespace the tail of one conversation can
+        // sit entirely outside the scanned page and the query answers
+        // "nothing" — the single most common read a chat/voice agent makes,
+        // silently wrong. `idx_thread(ns, session, seq)` bounds the scan by the
+        // session, so k here means k turns of THIS conversation.
+        //
+        // A session IS an anchor, so this branch also lifts the "RECALL needs a
+        // subject filter, a free-text query, or a specific grain type" refusal
+        // for the typed-less form: `RECALL WHERE session_id = "…"` is bounded.
+        //
+        // Only on the unanchored path: with a subject or a free-text query the
+        // hybrid leg is already bounded by that anchor (a far tighter bound
+        // than a namespace page), and the post-filter finishes the job. Kept as
+        // its own branch rather than nested inside the unanchored arm so the
+        // recent-by-type match below stays exactly as it was.
+        let raw = if let Some(session) = params.session_id.as_deref().filter(|_| unanchored) {
+            let n = k.saturating_mul(Self::RECALL_OVERFETCH);
+            if scoped {
+                m.recent_in_session_scoped(&ns_list, session, params.grain_type, n, !include_superseded)?
+            } else {
+                m.recent_in_session(ns, session, params.grain_type, n, !include_superseded)?
+            }
+        } else if let Some(order) = params.order_by.as_ref().and_then(|k| {
+            // `created_at` is the one sort key the `grains` table carries as a
+            // column, so it is the one ORDER BY that can be served from the
+            // scan instead of re-sorting a page afterwards. The executor only
+            // sets `order_by` for it; anything else it ranks itself over a
+            // widened scan (see `RecallParams::order_by`).
+            // `params.grain_type.is_some()` matters: ORDER BY is not an
+            // anchor, so without a type this must still fall through to the
+            // "RECALL needs a subject filter, a free-text query, or a specific
+            // grain type" refusal below rather than scanning the namespace.
+            (unanchored && params.grain_type.is_some() && k.field == "created_at").then(|| {
+                if k.descending {
+                    areev_store::RecentOrder::CreatedAtDesc
+                } else {
+                    areev_store::RecentOrder::CreatedAtAsc
+                }
+            })
+        }) {
+            let n = k.min(1000);
+            if scoped {
+                m.recent_ordered_scoped(&ns_list, params.grain_type, n, !include_superseded, order)?
+            } else {
+                m.recent_ordered(ns, params.grain_type, n, !include_superseded, order)?
+            }
+        } else if unanchored {
             match params.grain_type {
                 // Heads only, unless `WITH superseded` asked otherwise. The
                 // anchored leg already serves heads; this one read the grains
@@ -1804,9 +1854,62 @@ impl CalStoreFacade for AreevFacade {
                 Some(c) => g.get_f64("confidence").unwrap_or(0.0) >= c,
                 None => true,
             })
-            .take(k)
+            // `WITH recency_weight(w)` re-ranks the CANDIDATES, so it has to
+            // see them before this bound — ranking a set already cut to k is
+            // the same truncated-window mistake ORDER BY made. Without the
+            // option the take stays exactly where it was, so the hot path is
+            // unchanged.
+            .take(if params.recency_weight.is_some() {
+                usize::MAX
+            } else {
+                k
+            })
             .map(Self::hit)
             .collect();
+
+        // ── `WITH recency_weight(w)` ─────────────────────────────────────
+        //
+        // Parsed since 1.0, stored on RecallParams, and read by NOTHING — ten
+        // of the built-in saved queries in `queries.rs` pass it, so ten shipped
+        // queries were quietly not doing what they said. Implemented to the
+        // formula the field has always documented:
+        //
+        //     final = (1 - w) * relevance + w * freshness
+        //     freshness = 1 / (1 + age_hours)
+        //
+        // `relevance` comes from FUSION ORDER, not `hit.score`: every hit
+        // leaves `Self::hit` with score 1.0, so the ranking a recall carries is
+        // positional (RRF/structural order), not numeric. Rank i of n therefore
+        // scores `1 - i/n` — order-preserving, and identical to the current
+        // order when w = 0.
+        //
+        // State facts are exempt, as documented: "lives in Berlin" does not
+        // become less true with age, so decaying it would push a current fact
+        // below a stale event.
+        if let Some(w) = params.recency_weight.filter(|w| *w > 0.0) {
+            let w = w.clamp(0.0, 1.0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let n = hits.len().max(1) as f64;
+            for (i, h) in hits.iter_mut().enumerate() {
+                let relevance = 1.0 - (i as f64) / n;
+                let is_state = h.grain.get_str("temporal_type") == Some("state");
+                h.score = if is_state {
+                    relevance
+                } else {
+                    let age_hours =
+                        ((now - h.grain.get_i64("created_at").unwrap_or(now)).max(0) as f64)
+                            / 3_600_000.0;
+                    let freshness = 1.0 / (1.0 + age_hours);
+                    (1.0 - w) * relevance + w * freshness
+                };
+            }
+            // Stable, so equal scores keep fusion order.
+            hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            hits.truncate(k);
+        }
 
         // Label the history. A widened recall returns stale versions next to the
         // heads that replaced them, and nothing in an immutable blob says which

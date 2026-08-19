@@ -274,6 +274,18 @@ export declare class Areev {
    */
   stepActions(workflow: string, node?: string | undefined | null, limit?: number | undefined | null, ns?: string | undefined | null): Promise<string>
   /**
+   * Last `n` grains of one conversation, oldest→newest (transcript order).
+   *
+   * The read a chat or voice agent makes on every single turn. Backed by
+   * `idx_thread(ns, session, seq)`, so the bound is n turns of THIS session
+   * rather than n rows of the namespace — unlike a namespace scan filtered
+   * afterwards, which can miss the conversation entirely on a busy
+   * namespace. Exact namespace only: a session lives in one by construction.
+   *
+   * Returns `{ns, session, grains: [{hash, type, fields}]}`.
+   */
+  threadTail(session: string, n?: number | undefined | null, ns?: string | undefined | null): Promise<string>
+  /**
    * Record a tool call as a Tool grain — the flagship analyzer's food.
    *
    * `callId` is the invocation's own id (the provider's `tool_call_id`),

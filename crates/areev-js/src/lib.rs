@@ -1536,6 +1536,43 @@ impl Areev {
         })
     }
 
+    /// Last `n` grains of one conversation, oldest→newest (transcript order).
+    ///
+    /// The read a chat or voice agent makes on every single turn. Backed by
+    /// `idx_thread(ns, session, seq)`, so the bound is n turns of THIS session
+    /// rather than n rows of the namespace — unlike a namespace scan filtered
+    /// afterwards, which can miss the conversation entirely on a busy
+    /// namespace. Exact namespace only: a session lives in one by construction.
+    ///
+    /// Returns `{ns, session, grains: [{hash, type, fields}]}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn thread_tail(
+        &self,
+        session: String,
+        n: Option<u32>,
+        ns: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
+        let n = n.unwrap_or(20) as usize;
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            check_verb(&facade, areev_core::authz::Verb::Read, &ns)?;
+            let tail = facade.with_store(|m| m.thread_tail(&ns, &session, n)).map_err(err)?;
+            let grains: Vec<serde_json::Value> = tail
+                .iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "hash": g.hash.to_hex(),
+                        "type": g.grain_type.as_str(),
+                        "fields": g.fields.clone().into_iter().collect::<serde_json::Map<_, _>>(),
+                    })
+                })
+                .collect();
+            Ok(json!({"ns": ns, "session": session, "grains": grains}).to_string())
+        })
+    }
+
     // ── Areev Loop: the governed self-improvement loop (§6.6) ────────────────────
 
     /// Record a tool call as a Tool grain — the flagship analyzer's food.
