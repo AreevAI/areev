@@ -100,6 +100,7 @@ impl Rig {
             clock: Arc::clone(&self.clock) as Arc<dyn areev_trigger::Clock>,
             connector,
             starter: Some(Arc::clone(&self.starter) as Arc<dyn RunStarter>),
+            credentials: Default::default(),
             ns: NS.into(),
             principal: "user:test".into(),
         }
@@ -163,6 +164,7 @@ fn ingest_only_mode_is_still_idempotent() {
         clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
         connector: Some(conn as Arc<dyn HostToolExecutor>),
         starter: None, // ingest-only
+        credentials: Default::default(),
         ns: NS.into(),
         principal: "user:test".into(),
     };

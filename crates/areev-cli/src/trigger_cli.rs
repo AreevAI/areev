@@ -96,11 +96,26 @@ fn evaluator(facade: Arc<AreevFacade>, ns: &str, flags: &HashMap<String, String>
             as Arc<dyn RunStarter>
     });
 
+    // Credentials are named on the command line and READ here, so a value
+    // never appears in a grain, in shell history, or in the connector's
+    // environment: `--credential gmail=GMAIL_TOKEN_VAR` names the variable.
+    let mut credentials = std::collections::BTreeMap::new();
+    if let Some(spec) = flag(flags, "credential") {
+        for pair in spec.split(',') {
+            if let Some((name, var)) = pair.split_once('=') {
+                if let Ok(c) = areev_trigger::broker::Credential::bearer_from_env(var.trim()) {
+                    credentials.insert(name.trim().to_string(), c);
+                }
+            }
+        }
+    }
+
     Evaluator {
         facade,
         clock: Arc::new(SystemClock),
         connector,
         starter,
+        credentials,
         ns: ns.to_string(),
         principal: flag(flags, "as").unwrap_or_else(|| "user:local".into()),
     }
@@ -174,14 +189,7 @@ fn add(
 }
 
 fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), String> {
-    let ev = Evaluator {
-        facade: Arc::clone(facade),
-        clock: Arc::new(SystemClock),
-        connector: None,
-        starter: None,
-        ns: ns.to_string(),
-        principal: "user:local".into(),
-    };
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let declarations = ev.declarations().map_err(|e| e.to_string())?;
     if json_out {
         let rows: Vec<_> = declarations
@@ -215,14 +223,7 @@ fn show(
     json_out: bool,
 ) -> Result<(), String> {
     let id = id.ok_or("usage: areev trigger show <TRIGGER>")?;
-    let ev = Evaluator {
-        facade: Arc::clone(facade),
-        clock: Arc::new(SystemClock),
-        connector: None,
-        starter: None,
-        ns: ns.to_string(),
-        principal: "user:local".into(),
-    };
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let found = ev
         .status()
         .map_err(|e| e.to_string())?
@@ -256,14 +257,7 @@ fn show(
 }
 
 fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), String> {
-    let ev = Evaluator {
-        facade: Arc::clone(facade),
-        clock: Arc::new(SystemClock),
-        connector: None,
-        starter: None,
-        ns: ns.to_string(),
-        principal: "user:local".into(),
-    };
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let rows = ev.status().map_err(|e| e.to_string())?;
     if json_out {
         println!(
@@ -369,14 +363,7 @@ fn set_paused(
     let id = id.ok_or_else(|| format!("usage: areev trigger {verb} <TRIGGER> --because \"...\""))?;
     need(flags, "because")?;
 
-    let ev = Evaluator {
-        facade: Arc::clone(facade),
-        clock: Arc::new(SystemClock),
-        connector: None,
-        starter: None,
-        ns: ns.to_string(),
-        principal: "user:local".into(),
-    };
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let target = ev
         .declarations()
         .map_err(|e| e.to_string())?

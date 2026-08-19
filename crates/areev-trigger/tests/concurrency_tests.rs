@@ -40,6 +40,7 @@ fn evaluator(facade: &Arc<AreevFacade>, clock: &Arc<FixedClock>, node: &str) -> 
         clock: Arc::clone(clock) as Arc<dyn Clock>,
         connector: None,
         starter: None,
+        credentials: Default::default(),
         ns: NS.into(),
         principal: "user:test".into(),
     }

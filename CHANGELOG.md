@@ -32,6 +32,12 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
     and they inherit its timeout, output cap and secret scrub.
   - Cron is **UTC only**; a non-UTC timezone is refused with `TRG-E006` rather
     than mishandled across a DST boundary.
+  - **Outbound allowlisting** (`int:allowed_outbound_hosts`, Fermyon Spin
+    semantics) and **credential brokering**: `--credential NAME=ENV_VAR` gives
+    the connector `AREEV_EGRESS_URL` instead of a token, and a loopback broker
+    checks the destination and attaches the credential on the way out. A
+    destination outside the allowlist is refused with `TRG-E009` before any
+    request is made.
   - New docs: [`docs/triggers.md`](docs/triggers.md).
 
 - **Run leases** (`RUN-E021`): a run is leased while a driver advances it, taken

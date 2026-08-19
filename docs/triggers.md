@@ -187,6 +187,52 @@ the occurrence, Vixie cron fires it immediately — and they only agree on the
 fall-back fold. Firing at the wrong local hour and being believed is worse than
 refusing, so the choice is being made explicitly rather than guessed.
 
+## Outbound control and credentials
+
+Two controls, neither of which needs an isolation runtime — and which together
+address the thing a sandbox does not.
+
+**A deny-by-default allowlist.** Declare `int:allowed_outbound_hosts` in a
+trigger's config, using Fermyon Spin's semantics:
+
+```json
+{ "int:allowed_outbound_hosts": ["https://gmail.googleapis.com",
+                                 "https://*.googleapis.com"] }
+```
+
+Scheme, host and port all take part in the match. `*.example.com` covers
+subdomains but not the apex and not `evil-example.com`. A bare `*` is refused:
+it would let a declaration look policed while permitting the whole internet.
+Omitting the key entirely is unrestricted — and reported as such, so "no policy"
+never masquerades as a policy.
+
+**Credential brokering.** Pass `--credential gmail=GMAIL_TOKEN_VAR` and the
+connector gets `AREEV_EGRESS_URL` in its environment instead of a token. It
+posts the call it wants:
+
+```json
+{ "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+  "method": "GET", "credential": "gmail" }
+```
+
+and the broker checks the allowlist, attaches the credential, and makes the
+request. The token never enters the connector's process. Posta's CB4A calls this
+Model A; Cloudflare shipped it in April 2026, Deno in February, and it is the
+whole of Nango's product.
+
+Why this rather than a sandbox: a polling connector legitimately needs the
+network *and* the credential, so isolation does not constrain what actually goes
+wrong. The January 2026 n8n community-node compromise exfiltrated decrypted
+OAuth tokens, and the malicious node never violated a sandbox — it read a
+credential it was given and made a request it was allowed to make. Zapier runs
+each task in a Firecracker microVM and that attack still works.
+
+**The honest limits.** This raises the bar; it is not a boundary. Exfiltration
+*through* an allowed host still works — encode data into a draft, a label, a
+filename. Hostname allowlisting cannot see through DNS tricks or domain
+fronting. And a brokered connector cannot use a vendor SDK, because the SDK
+wants its own sockets; that is the same trade Nango makes.
+
 ## What a trigger cannot do
 
 A connector runs **as you, with your privileges**, exactly like `--tool-cmd`.

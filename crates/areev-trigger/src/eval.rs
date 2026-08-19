@@ -157,11 +157,31 @@ pub struct Evaluator {
     /// firing without starting anything — what `--no-start` is for, and what
     /// the ingest-only tests use.
     pub starter: Option<Arc<dyn RunStarter>>,
+    /// Credentials the broker may attach, by name. Values live here and never
+    /// in a grain or a connector's environment: a declaration names a
+    /// credential, it never carries one.
+    pub credentials: std::collections::BTreeMap<String, crate::broker::Credential>,
     pub ns: String,
     pub principal: String,
 }
 
 impl Evaluator {
+    /// An evaluator that can inspect but not act: no connector, no runtime, no
+    /// credentials. What `list`, `show` and `status` want, and the shape that
+    /// makes "reading cannot fire anything" true by construction rather than by
+    /// remembering to pass `None` four times.
+    pub fn read_only(facade: Arc<AreevFacade>, clock: Arc<dyn Clock>, ns: &str) -> Evaluator {
+        Evaluator {
+            facade,
+            clock,
+            connector: None,
+            starter: None,
+            credentials: Default::default(),
+            ns: ns.to_string(),
+            principal: "user:local".into(),
+        }
+    }
+
     /// Every trigger declaration in the memory, newest first.
     pub fn declarations(&self) -> Result<Vec<(String, Trigger)>> {
         let ns = self.ns.clone();
@@ -648,6 +668,13 @@ impl Evaluator {
                 connector: connector_name.to_string(),
             });
         };
+        // Start a broker for this call, scoped to this trigger's allowlist. The
+        // connector is handed its URL — never a token — so a compromised
+        // connector has nothing to exfiltrate and nowhere undeclared to send
+        // it. The broker stops when this call returns.
+        let policy = crate::egress::EgressPolicy::from_config(trigger.config.as_ref())?;
+        let broker = crate::broker::Broker::start(policy, self.credentials.clone())?;
+
         let request = PollRequest {
             trigger: hash,
             connector: connector_name,
@@ -663,7 +690,24 @@ impl Evaluator {
         // The idempotency key ties this call to this occurrence, so a connector
         // that deduplicates on it sees a retry as a retry.
         let idem = format!("{hash}:{}", state.fence);
-        match exec.execute(connector_name, hash, &payload, &idem) {
+        // The connector reads AREEV_EGRESS_URL out of its environment. The
+        // spawn seam scrubs whatever `--passphrase-env` and `--token-env` name,
+        // so this is the only network affordance it has from us.
+        std::env::set_var("AREEV_EGRESS_URL", broker.url());
+        let result = exec.execute(connector_name, hash, &payload, &idem);
+        std::env::remove_var("AREEV_EGRESS_URL");
+
+        // Surface a refused destination as its own error rather than letting it
+        // read as a generic connector failure — a connector reaching somewhere
+        // undeclared is a different problem from one that crashed.
+        let refused = broker.refusals();
+        if !refused.is_empty() {
+            return Err(TriggerError::EgressRefused {
+                trigger: hash.to_string(),
+                host: refused.join(", "),
+            });
+        }
+        match result {
             areev_run::ExecResult::Ok(v) => {
                 serde_json::from_value(v).map_err(|e| TriggerError::ConnectorFailed {
                     trigger: hash.to_string(),

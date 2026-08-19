@@ -90,12 +90,15 @@ COMMANDS:
                                       travels with the memory and is enforced
                                       separately
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
-           [--lease SECS] [--max-items N]
+           [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
                                       Without --tool-cmd it ingests without
-                                      executing; --dry-run touches nothing
+                                      executing; --dry-run touches nothing.
+                                      --credential names an env var whose value
+                                      the egress broker attaches on the way out,
+                                      so the connector never holds the token
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
                                       reported, not silent)
