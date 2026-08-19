@@ -15,6 +15,7 @@ pub mod egress;
 pub mod error;
 pub mod eval;
 pub mod predicate;
+pub mod render;
 pub mod schedule;
 
 pub use clock::{Clock, FixedClock, SystemClock};

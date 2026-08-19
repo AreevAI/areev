@@ -38,6 +38,16 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
     checks the destination and attaches the credential on the way out. A
     destination outside the allowlist is refused with `TRG-E009` before any
     request is made.
+  - `areev trigger render --target cron|launchd|systemd|k8s-cronjob` emits
+    heartbeat config for infrastructure you already run and creates nothing. The
+    rendered interval is the GCD of declared intervals floored at 60s, not the
+    shortest one — the memory owns the cadence.
+  - `areev trigger deliver` ingests a webhook or manual payload. Areev never
+    opens a port: the host owns the listener and hands the payload over.
+  - A read-only Triggers tab in the console, on the existing `/api/browse`
+    surface with no new server route.
+  - CAL: `RECALL triggers WHERE kind = "polling" AND enabled = true` — the
+    grain-type plural set grows to 13, which is what typed queryable fields buy.
   - New docs: [`docs/triggers.md`](docs/triggers.md).
 
 - **Run leases** (`RUN-E021`): a run is leased while a driver advances it, taken

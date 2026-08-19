@@ -37,9 +37,8 @@ Eight declared kinds over four irreducible primitives.
 | `manual` | an operator fires it | Push |
 | `composite` | a boolean expression over other triggers is satisfied | meta |
 
-`webhook` and `manual` are accepted and validated but do not fire yet — a host
-delivery path lands in a later release. Declaring one today records intent
-without doing anything, which `trigger status` reports rather than hiding.
+`webhook` and `manual` fire through `areev trigger deliver` rather than
+`trigger run`: the host owns the listener and hands Areev the payload.
 
 **Rate drifts, cron does not.** `--interval` anchors to the *last firing*, so a
 three-minute job on a five-minute interval leaves a two-minute gap and the
@@ -232,6 +231,52 @@ each task in a Firecracker microVM and that attack still works.
 filename. Hostname allowlisting cannot see through DNS tricks or domain
 fronting. And a brokered connector cannot use a vendor SDK, because the SDK
 wants its own sockets; that is the same trade Nango makes.
+
+## Webhooks without a listener
+
+Areev never opens a port. The host already terminates TLS and authenticates the
+sender — it is far better at both than a memory engine would be — and hands the
+payload over:
+
+```bash
+areev trigger deliver --db accounting.db --ns accounting --id <TRIGGER> < payload.json
+```
+
+Idempotent on the same terms as a poll: the payload's dedup value mints the run
+id, so a webhook delivered twice — which every provider does — produces one run
+and one recorded skip.
+
+Note `--payload -` does *not* mean stdin here. The argument parser treats a
+following token beginning with `-` as another flag, so omit the flag and pipe
+instead.
+
+## Putting it on a heartbeat
+
+```bash
+areev trigger render --db accounting.db --ns accounting --target cron
+areev trigger render --db accounting.db --ns accounting --target k8s-cronjob
+```
+
+Targets: `cron`, `launchd`, `systemd`, `k8s-cronjob`. These are **templates,
+not API clients** — Areev holds no cloud credentials and creates no cloud
+resources. You apply the output with whatever you already use.
+
+The rendered interval is the **greatest common divisor** of your declared
+intervals, floored at 60s — deliberately coarser than your shortest trigger.
+The memory owns the real cadence; rendering a 30-second cron because one trigger
+asked for 30 seconds would put the schedule back in the crontab, which is the
+thing this feature exists to stop.
+
+## In the console
+
+A read-only Triggers tab lists what is declared. Firing stays in the CLI on
+purpose: it spends budgets and executes effects, so the actor's identity is the
+audit record, and "whoever holds the console token" is not an identity — the
+same reason `run.respond` refuses a shared-token caller.
+
+Whether a trigger has actually fired is per-host state that does not replicate,
+so a console cannot know it for another machine. Use `areev trigger status` on
+the machine that evaluates them.
 
 ## What a trigger cannot do
 

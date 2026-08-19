@@ -99,6 +99,13 @@ COMMANDS:
                                       --credential names an env var whose value
                                       the egress broker attaches on the way out,
                                       so the connector never holds the token
+  trigger  render --target cron|launchd|systemd|k8s-cronjob
+                                      emit heartbeat config for infrastructure
+                                      you already run; never creates anything
+  trigger  deliver --id T [< payload.json]
+                                      hand a webhook/manual payload to Areev.
+                                      The host owns the listener — Areev never
+                                      opens a port. Idempotent on the dedup key
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
                                       reported, not silent)

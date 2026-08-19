@@ -693,6 +693,11 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="18.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="12" cy="18" r="2.3" stroke-width="1.7"/><path d="M7.6 7.2L11 16M16.4 7.2L13 16M7.8 6h8.4" stroke-width="1.7" stroke-linecap="round"/></svg>
         <span class="grow">Workflows</span>
       </button>
+      <button class="nav-item" data-page="triggers">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.2" stroke-width="1.7"/><path d="M12 7.4V12l3 1.8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="grow">Triggers</span>
+        <span class="pill" id="trgPill" hidden>0</span>
+      </button>
       <button class="nav-item" data-page="suggestions">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
         <span class="grow">Suggestions</span>
@@ -844,6 +849,18 @@
     <!-- ── WORKFLOWS: plans as an editable graph ──
          One action slot, top right, for whatever this view's primary act is:
          "New workflow" on the list, "Save as new plan" in the editor. -->
+    <!-- Triggers: what this memory is supposed to be doing on its own. Read
+         only here on purpose — firing spends budgets and executes effects, so
+         it belongs to `areev trigger run` and its audit trail, not to a click
+         in a console whose identity may be a shared token. -->
+    <section class="page" id="page-triggers" hidden>
+      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
+        <div id="trgCrumb" style="flex:1;min-width:0"></div>
+        <span id="trgNsHost"></span>
+      </div>
+      <div class="wide" id="trgBody"></div>
+    </section>
+
     <section class="page" id="page-workflows" hidden>
       <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
         <div id="wfCrumb" style="flex:1;min-width:0"></div>
@@ -1563,7 +1580,7 @@ function applyHash() {
   if (!raw) return false;
   const [head, tail] = raw.split('/');
   if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
-  if (['memory', 'analytics', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
+  if (['memory', 'analytics', 'activity', 'runs', 'triggers', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
     if (head === 'settings' && ['agent', 'sync', 'general'].includes(tail)) CONTAB = tail;
@@ -1854,6 +1871,7 @@ function render() {
   if (PAGE === 'analytics') renderAnalytics();
   if (PAGE === 'activity') renderActivity();
   if (PAGE === 'runs') renderRuns();
+  if (PAGE === 'triggers') renderTriggers();
   if (PAGE === 'workflows') renderWorkflows();
   if (PAGE === 'suggestions') { renderSuggestions(); lock($('runLoop')); }
   if (PAGE === 'settings') renderSettingsPage();
@@ -3795,6 +3813,84 @@ function renderWorkflowHeader() {
     : !stmtSupported('ADD') ? 'This build has no ADD workflow support'
     : 'Write a new plan grain with these steps';
 }
+/* ---------- Triggers ----------------------------------------------------
+   What this memory is supposed to be doing on its own. Built on /api/browse
+   like the Workflows tab, so there is no new server route.
+
+   Read-only on purpose. Firing a trigger spends budgets and executes effects,
+   which is the same reason `run.respond` refuses a shared-token caller: the
+   actor's identity IS the audit record, and "whoever holds the console token"
+   is not an identity. Declaring and firing stay in the CLI, where the principal
+   is real. */
+function triggerGrains() {
+  // BROWSE is the array itself, rows are keyed `type`, and `isCurrent` filters
+  // out tombstoned and superseded grains — the same three facts
+  // `workflowGrains()` relies on.
+  return (WF_ROWS || BROWSE).filter(g => g.type === 'trigger' && isCurrent(g));
+}
+
+/** Seconds as something a person reads. */
+function everyPhrase(n) {
+  n = Number(n);
+  if (!isFinite(n) || n <= 0) return null;
+  if (n % 86400 === 0) return 'every ' + (n / 86400) + 'd';
+  if (n % 3600 === 0) return 'every ' + (n / 3600) + 'h';
+  if (n % 60 === 0) return 'every ' + (n / 60) + 'm';
+  return 'every ' + n + 's';
+}
+
+function trgCard(g) {
+  const f = g.fields || {};
+  const b = el('button', 'starter');
+  // The kind and what it watches, which is what someone is scanning for.
+  const title = f.scope || f.connector || (f.kind || 'trigger');
+  b.appendChild(el('b', '', String(title)));
+
+  const bits = [String(f.kind || 'interval')];
+  if (f.cron) bits.push('cron ' + f.cron);
+  const every = everyPhrase(f.interval_secs);
+  if (every) bits.push(every);
+  if (f.enabled === false) bits.push('disabled');
+  if (WF_NS && f.namespace) bits.push(f.namespace);
+  bits.push(relTime(createdMs(f)));
+  b.appendChild(el('span', 'meta', bits.join(' · ')));
+
+  // The rationale the declaration was required to carry.
+  if (f.because) b.appendChild(el('code', '', String(f.because)));
+  b.onclick = () => { location.hash = '#workflows/' + String(f.workflow || ''); };
+  return b;
+}
+
+function renderTriggers() {
+  renderCrumbHeader('trgCrumb', [{ label: 'Triggers' }], null);
+  const host = $('trgBody');
+  if (!host) return;
+
+  const rows = triggerGrains();
+  const pill = $('trgPill');
+  if (pill) { pill.textContent = String(rows.length); pill.hidden = rows.length === 0; }
+
+  host.textContent = '';
+  if (!rows.length) {
+    host.innerHTML = '<div class="empty">No triggers yet. A trigger is a standing rule that '
+      + 'starts a workflow — an interval, a schedule, a mailbox to watch. Declare one with '
+      + '<code>areev trigger add</code>, then evaluate on a heartbeat with '
+      + '<code>areev trigger run</code>.</div>';
+    return;
+  }
+  const items = rows.slice().sort((a, b) => createdMs(b.fields) - createdMs(a.fields));
+  for (const g of items) host.appendChild(trgCard(g));
+
+  // Whether these have actually fired is per-host state that deliberately does
+  // not replicate, so this console cannot know it for another machine. Say so
+  // rather than showing a blank column that reads as "never fired".
+  const note = el('div', 'empty');
+  note.innerHTML = 'Whether these have fired lives in per-host state, which does not travel with '
+    + 'the memory — run <code>areev trigger status</code> on the machine that evaluates them.';
+  note.style.marginTop = '14px';
+  host.appendChild(note);
+}
+
 function renderWorkflows() {
   const listHost = $('wfList');
   listHost.hidden = !!WF_DRAFT;

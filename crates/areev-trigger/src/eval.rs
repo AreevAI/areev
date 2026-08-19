@@ -239,6 +239,78 @@ impl Evaluator {
         Ok(out)
     }
 
+    /// Ingest a payload delivered by the host for a `webhook` or `manual`
+    /// trigger.
+    ///
+    /// Areev never opens a port. The host already terminates TLS and
+    /// authenticates the sender — it is far better at both than a memory engine
+    /// would be — and hands the payload to a one-shot invocation. That keeps the
+    /// useful half of webhooks without a listening daemon.
+    ///
+    /// Idempotent on the same terms as a poll: the payload's dedup value mints
+    /// the run id, so a webhook delivered twice (which every provider does)
+    /// produces one run and one recorded skip.
+    pub fn deliver(&self, trigger_hash: &str, payload: serde_json::Value) -> Result<EvalReport> {
+        let now = self.clock.now_ms();
+        let (hash, trigger) = self
+            .declarations()?
+            .into_iter()
+            .find(|(h, _)| h.starts_with(trigger_hash))
+            .ok_or_else(|| TriggerError::Malformed {
+                what: format!("no trigger matching '{trigger_hash}'"),
+            })?;
+
+        if !matches!(trigger.kind, TriggerKind::Webhook | TriggerKind::Manual) {
+            return Err(TriggerError::Malformed {
+                what: format!(
+                    "trigger {} is a {} trigger — only webhook and manual triggers accept a \
+                     delivery; a clocked or polling trigger fires from `trigger run`",
+                    &hash[..12],
+                    trigger.kind.as_str()
+                ),
+            });
+        }
+        if !trigger.enabled {
+            return Err(TriggerError::Malformed {
+                what: format!("trigger {} is disabled", &hash[..12]),
+            });
+        }
+        let (state, _) = self
+            .facade
+            .with_store(|m| m.trigger_state(&hash))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+            .unwrap_or_default();
+        if state.paused {
+            return Err(TriggerError::Malformed {
+                what: format!("trigger {} is paused", &hash[..12]),
+            });
+        }
+
+        let mut report = EvalReport::default();
+        let item = PollItem { id: String::new(), payload };
+        let Some(value) = dedup_value(&item, &trigger.dedup_key) else {
+            report.unidentifiable = 1;
+            return Ok(report);
+        };
+        report.items = 1;
+        let run_id = run_id_for(&hash, trigger.connector.as_deref(), &value);
+        match self.start_run(&trigger, &run_id, &item, &hash) {
+            StartOutcome::Started => report.runs_started = 1,
+            StartOutcome::Ingested => report.ingested = 1,
+            StartOutcome::Duplicate => report.duplicates = 1,
+            StartOutcome::Failed(why) => report.errors.push(why),
+        }
+
+        let outcome = FireOutcome {
+            items: 1,
+            runs_started: report.runs_started,
+            duplicates: report.duplicates,
+            ..Default::default()
+        };
+        self.journal(&hash, &trigger, &outcome, Some("delivered"), now)?;
+        Ok(report)
+    }
+
     /// Run one evaluation pass.
     pub fn run(&self, opts: &EvalOptions) -> Result<EvalReport> {
         let mut report = EvalReport::default();

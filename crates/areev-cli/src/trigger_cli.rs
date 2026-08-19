@@ -63,9 +63,11 @@ pub fn run_trigger(
         "pause" => set_paused(&facade, ns, positional.get(1), flags, true, json_out),
         "resume" => set_paused(&facade, ns, positional.get(1), flags, false, json_out),
         "status" => status(&facade, ns, json_out),
+        "render" => render_target(&facade, ns, flags, positional.get(1)),
+        "deliver" => deliver(facade, ns, flags, json_out),
         other => Err(format!(
             "unknown trigger subcommand '{other}' \
-             (add|list|show|status|run|pause|resume)"
+             (add|list|show|status|run|render|deliver|pause|resume)"
         )),
     }
 }
@@ -349,6 +351,88 @@ fn evaluate(
     } else {
         Err(format!("{} trigger(s) failed", report.errors.len()))
     }
+}
+
+/// `areev trigger render` — emit scheduler config, never create it.
+fn render_target(
+    facade: &Arc<AreevFacade>,
+    ns: &str,
+    flags: &HashMap<String, String>,
+    positional_target: Option<&String>,
+) -> Result<(), String> {
+    let target = flag(flags, "target")
+        .or_else(|| positional_target.cloned())
+        .ok_or_else(|| {
+            format!(
+                "usage: areev trigger render --target <{}>",
+                areev_trigger::render::TARGETS.join("|")
+            )
+        })?;
+
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
+    let declarations: Vec<_> =
+        ev.declarations().map_err(|e| e.to_string())?.into_iter().map(|(_, t)| t).collect();
+    let heartbeat = areev_trigger::render::heartbeat_secs(&declarations);
+
+    let db = flag(flags, "db").unwrap_or_else(|| "memory.db".into());
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "areev".into());
+    let extra = flag(flags, "extra-args").unwrap_or_default();
+
+    let ctx = areev_trigger::render::RenderContext {
+        exe: &exe,
+        db: &db,
+        ns,
+        heartbeat_secs: heartbeat,
+        extra_args: &extra,
+    };
+    print!("{}", areev_trigger::render::render(&target, &ctx).map_err(|e| e.to_string())?);
+    eprintln!(
+        "areev: heartbeat {heartbeat}s — the memory owns the real cadence, so this is \
+         deliberately coarser than your shortest interval"
+    );
+    Ok(())
+}
+
+/// `areev trigger deliver` — the host received something; hand it over.
+fn deliver(
+    facade: Arc<AreevFacade>,
+    ns: &str,
+    flags: &HashMap<String, String>,
+    json_out: bool,
+) -> Result<(), String> {
+    let id = need(flags, "id")?;
+    let raw = match flag(flags, "payload").as_deref() {
+        // Read stdin when no literal was given. Note `--payload -` cannot mean
+        // stdin here the way it does in other tools: `parse_args` treats a
+        // following token that starts with `-` as another flag, so `--payload -`
+        // arrives as the valueless-flag sentinel `"true"`. Both spellings, and
+        // omitting the flag entirely, mean stdin.
+        Some("-") | Some("true") | None => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                .map_err(|e| format!("reading payload from stdin: {e}"))?;
+            buf
+        }
+        Some(literal) => literal.to_string(),
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(raw.trim()).map_err(|e| format!("payload is not JSON: {e}"))?;
+
+    let ev = evaluator(facade, ns, flags);
+    let report = ev.deliver(&id, payload).map_err(|e| e.to_string())?;
+    if json_out {
+        println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?);
+    } else if report.duplicates > 0 {
+        println!("already delivered — no new run started");
+    } else if report.unidentifiable > 0 {
+        println!("payload carries no value at the declared dedup key — nothing started");
+    } else {
+        println!("delivered · runs {} · ingested {}", report.runs_started, report.ingested);
+    }
+    Ok(())
 }
 
 fn set_paused(

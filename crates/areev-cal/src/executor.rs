@@ -3356,6 +3356,17 @@ impl CalExecutor {
             DescribeTarget::GrainType(gt) => {
                 let type_name = gt.as_str();
                 let specific_fields: &[&str] = match gt {
+                    // OMS 1.6 §8.13. Typed and queryable — the reason a trigger
+                    // is its own grain rather than an Observation carrying
+                    // `int:` keys in a context map, which no query can filter.
+                    GrainTypePlural::Triggers => &[
+                        "kind",
+                        "workflow",
+                        "connector",
+                        "scope",
+                        "enabled",
+                        "cron",
+                    ],
                     GrainTypePlural::Facts => {
                         &["subject", "relation", "object", "confidence", "session_id"]
                     }
