@@ -18,9 +18,30 @@ on:
 permissions:
   contents: read
 
+# One release at a time. A re-run racing a manual dispatch would otherwise
+# publish two builds of the same version concurrently.
+concurrency:
+  group: release-pypi-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Version drift is silent and has shipped before: maturin reads
+  # pyproject.toml, NOT Cargo's `version.workspace`, so a workspace-only bump
+  # produces a green run that uploads nothing (skip-existing over the already
+  # published version). Fail here, in seconds, instead.
+  preflight:
+    name: preflight (versions agree)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every version site agrees
+        run: |
+          python3 scripts/check_versions.py \
+            ${{ github.event_name == 'release' && format('--tag {0}', github.ref_name) || '' }}
+
   wheels:
     name: wheels (${{ matrix.platform.runner }} ${{ matrix.platform.target }})
+    needs: preflight
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -44,7 +65,10 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           # abi3-py39 is set in Cargo.toml, so one wheel covers CPython >= 3.9.
-          args: --release --out dist -m crates/areev-py/Cargo.toml
+          # --locked: publish exactly the dependency graph CI tested. Without
+          # it the release resolves fresh semver-compatible versions that no
+          # test run ever saw.
+          args: --release --locked --out dist -m crates/areev-py/Cargo.toml
           manylinux: ${{ matrix.platform.manylinux }}
       - uses: actions/upload-artifact@v4
         with:
@@ -53,6 +77,7 @@ jobs:
 
   sdist:
     name: sdist
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +94,10 @@ jobs:
   publish:
     name: publish to PyPI
     needs: [wheels, sdist]
+    # Only a real release publishes. release-cli.yml already guards this way;
+    # without it a `workflow_dispatch` from any branch uploads to PyPI for
+    # real, which makes the dispatch unusable as a dry run.
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     # For Trusted Publishing, tie this to a `pypi` environment on the repo.
     permissions:

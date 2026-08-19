@@ -8,9 +8,6 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#install)
 
-*前身为 **DejaDB** —— 项目已更名为 **Areev** 并在此仓库继续开发。旧的
-`dejadb` 包冻结在 1.2.0，请改用 `areev`。*
-
 进程内嵌入，把记忆存为不可变的内容寻址 (content-addressed) grain，用 CAL（上下文
 组装语言，Context Assembly Language）查询，结果直接交给模型 —— 召回路径上没有
 服务器、没有 sidecar、没有网络跳转。**微秒级召回** —— 快到能在实时**语音智能体**
@@ -20,8 +17,9 @@
 > 以及加密增量同步 —— 全部内建于数据模型之中，因为 grain *本身就是*
 > 内容寻址的不可变对象。
 
-*状态：`1.0.0` —— `.mg` 格式与 CAL 已稳定并有完整文档（符合开放记忆规范
-Open Memory Spec，OMS）。已发布到 crates.io / PyPI / npm。*
+*`.mg` 格式与 CAL 已稳定并有完整文档（符合开放记忆规范 Open Memory Spec，
+OMS），已发布到 crates.io / PyPI / npm。当前版本见
+[`CHANGELOG.md`](CHANGELOG.md)。*
 
 ## 截图
 

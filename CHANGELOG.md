@@ -9,6 +9,55 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Added
+
+- **Repository quality metrics, generated and gated** — `scripts/repo_stats.py`
+  measures the tree (source vs test lines, test count, error codes, per-crate
+  breakdown) and emits five artifacts: a light and dark SVG for the README, a
+  GitHub-renderable `docs/repo-stats.md`, a standalone `docs/repo-stats.html`
+  report, and `docs/repo-stats.json`. Test code is counted **per block, not per
+  file**, so a source file with a `#[cfg(test)]` module contributes its
+  implementation to source and only the module body to tests — file-granularity
+  counting inflates the ratio roughly 4x. A new `stats` CI job runs `--check`
+  and fails the build when the published figures drift more than 2% from the
+  tree, so the README's numbers cannot go quietly stale.
+- **`scripts/check_versions.py`** — asserts that all five version sites agree
+  (`[workspace.package]`, `areev-py/pyproject.toml`, `areev-js/package.json`,
+  `areev-js/Cargo.toml`, and the ~54 literals baked into the generated
+  `areev-js/index.js`), optionally pinned to the release tag. Run as a
+  `versions` job on every CI run and as a `preflight` gate in the PyPI and npm
+  release workflows. Both drift modes it catches have shipped before: a
+  workspace-only bump makes the publish workflows skip-existing over the
+  released version (a green run that ships nothing), and a `package.json` bump
+  without regenerating `index.js` breaks `require()` for anyone with
+  `NAPI_RS_ENFORCE_VERSION_CHECK` set.
+
+### Changed
+
+- **`workflow_dispatch` is now a safe dry run on all three release workflows.**
+  `release-npm` and `release-pypi` published to the registries for real on a
+  manual dispatch from any branch; their publish jobs are now guarded on
+  `github.event_name == 'release'`, matching the guard `release-cli` already
+  had.
+- **Release builds are `--locked`.** The maturin and napi builds resolved a
+  fresh dependency graph at release time, so published wheels and native addons
+  could contain a dependency set no test run had ever seen. Both now build from
+  the committed lockfile, and `npm ci` replaces `npm install` where a
+  `package-lock.json` is committed.
+- **The release runbook publishes the GitHub Release *before* crates.io.** The
+  PyPI, npm and CLI workflows build from local `path` dependencies and never
+  read crates.io, so they had no reason to wait behind the twelve-crate publish
+  chain — they now start immediately and run concurrently with it.
+  `cargo publish --workspace` replaces the hand-maintained bottom-up tier list
+  (which went stale twice and failed mid-publish), with
+  `cargo publish --workspace --dry-run` moved into pre-flight.
+- **Release workflows carry `concurrency` groups** keyed on the tag, so a
+  re-run cannot race a manual dispatch.
+- **README**: added a Quality section with the generated metrics chart; removed
+  the DejaDB rename notice and the placeholder overview video; the status line
+  no longer restates a version number that goes stale (it points at this file).
+  `README.zh-CN.md` kept in sync.
+
 ### Fixed
 
 Nine findings from an external evaluation of 1.2.2 as the context assembler

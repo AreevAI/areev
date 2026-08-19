@@ -11,10 +11,6 @@ agent workflows as durable, journaled, replayable runs.
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#install)
 
-*Formerly published as **DejaDB** — the project continues here under the
-Areev name. The old `dejadb` packages are frozen at 1.2.0; install `areev`
-instead.*
-
 Embed it in-process, store memories as immutable content-addressed grains, query
 them with CAL (the Context Assembly Language), and hand the results straight to a
 model — on the default embedded backend: no server, no sidecars, no network hop
@@ -29,14 +25,8 @@ semantics, millisecond-class recall.
 > merges, and encrypted incremental sync — built into the data model, because
 > grains *are* content-addressed immutable objects.
 
-*Status: `1.0.2` — the `.mg` format and CAL are stable and documented (conformant
-with the Open Memory Spec, OMS).*
-
-## Watch the 2½-minute overview
-
-[![Areev in 2½ minutes — grains, CAL, and the Areev Loop learning engine](demo/screens/video-cover.png)](https://www.youtube.com/watch?v=HqNcgkTIryQ)
-
-Grains → context assembly → CAL → the agent loop → Areev Loop, in one animated pass.
+*The `.mg` format and CAL are stable and documented, conformant with the Open
+Memory Spec (OMS). See [`CHANGELOG.md`](CHANGELOG.md) for the current release.*
 
 ## Screenshots
 
@@ -646,6 +636,44 @@ as on day 1. The write path is the one thing to design for (bulk-load at
 0.4–4 ms/grain vs 24–201 ms with a live FTS index). Clock-certified per phase,
 with a projection for current Pi hardware:
 [RESULTS.md §6](crates/areev-bench/RESULTS.md).
+
+## Quality
+
+An engine you embed runs inside your process, holds the memory your agent is
+trusted to act on, and — through `FORGET SUBJECT` — destroys data on request.
+That is a lot to ask of a dependency, so the engineering is measured in the
+open and regenerated from the tree on every CI run:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/repo-stats-dark.svg">
+  <img src="docs/assets/repo-stats-light.svg" width="760"
+       alt="Areev repository quality metrics — source and test line counts, test count, and stable error codes, generated from the tree">
+</picture>
+
+- **Tests are about a third of the codebase**, and roughly half of that is
+  *integration* testing — the CLI and MCP suites drive the real binary over
+  real stdio, not mocks. `cargo test --workspace` runs the lot in under a minute.
+- **Every user-facing error has a stable code.** `DOMAIN-Ennn`, **append-only**
+  — a code is never renumbered or reused, so an error you handle today keeps
+  its meaning across upgrades ([`ERROR_CODES.md`](ERROR_CODES.md)).
+- **Both storage backends run the same conformance suite.** One case list —
+  forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL — executed
+  against embedded Turso *and* PostgreSQL, so backend choice cannot quietly
+  change semantics.
+- **CI is the gate, not a formality.** Tests on Linux, macOS and Windows;
+  `clippy -D warnings`; a pinned MSRV build; `cargo doc`; coverage;
+  `cargo deny` for advisories and licences; and the Python and Node bindings
+  built and tested on every commit.
+- **The docs are executable.** The CAL examples in
+  [`cal-reference.md`](docs/cal-reference.md) are parsed by a test that fails
+  CI on a stale one — the reference cannot drift from the language.
+
+Full per-crate breakdown: **[docs/repo-stats.md](docs/repo-stats.md)** (also
+emitted as [`repo-stats.html`](docs/repo-stats.html) and
+[`repo-stats.json`](docs/repo-stats.json)). All of it is produced by
+[`scripts/repo_stats.py`](scripts/repo_stats.py) and regenerated on every CI
+run, which fails the build if the published figures drift from the tree — these
+numbers cannot go stale without turning the build red.
 
 ## Documentation
 

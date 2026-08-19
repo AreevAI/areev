@@ -26,11 +26,15 @@ exists; `crates/areev-bench/RESULTS.md` has the benchmark numbers.
 ## Commands
 
 ```bash
-cargo test --workspace            # full suite (~1,800 tests, fast)
+cargo test --workspace            # full suite (2,100+ tests, ~1 min)
 cargo test -p areev-cal          # per-crate
 cargo run --release -p areev-store --example bench       # latency gates
 cargo run --release -p areev-store --example voice_loop  # 50ms-cadence gate
 cargo run -p areev -- recall --db demo.db --ns caller --subject john
+
+python3 scripts/check_versions.py   # all five version sites agree
+python3 scripts/repo_stats.py       # regenerate the README quality metrics
+python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
 ```
 
 - **Do not run blanket `cargo fmt`** — the tree is not uniformly rustfmt-clean
@@ -42,8 +46,16 @@ cargo run -p areev -- recall --db demo.db --ns caller --subject john
   Fix: `touch crates/areev-cli/tests/*.rs` and re-run.
 - CI (`.github/workflows/ci.yml`): test on ubuntu/macos/windows, clippy
   (`-D warnings`), MSRV build, `cargo doc`, coverage, Python (maturin + pytest),
-  and Node (napi build + `node --test`). `security.yml` runs `cargo deny`.
-  Still run tests locally before pushing.
+  and Node (napi build + `node --test`), plus `versions` (every version site
+  agrees) and `stats` (the README quality figures still match the tree).
+  `security.yml` runs `cargo deny`. Still run tests locally before pushing.
+- **The README quotes generated numbers.** `scripts/repo_stats.py` emits
+  `docs/repo-stats.{json,md,html}` and the two SVGs the README embeds; the
+  `stats` job fails the build if they drift >2% from the tree. If CI flags it,
+  run the script and commit the result — do not hand-edit the artifacts.
+- **The version lives in five places**, only one of which is inherited. The
+  `versions` job runs `scripts/check_versions.py`; the release runbook
+  (`.claude/skills/areev-release`) is the source of truth for the order.
 
 ## Workspace (dependency order)
 

@@ -12,6 +12,14 @@ must publish bottom-up.
 ## 1. Pre-flight
 
 - Working tree clean; on an up-to-date `main`.
+- `python3 scripts/check_versions.py` — every version site agrees (CI runs
+  this too, as the `versions` job).
+- `python3 scripts/repo_stats.py --check` — the quality figures in README.md
+  still match the tree; regenerate and commit if not.
+- `cargo publish --workspace --dry-run` — catches the failures that actually
+  happen (a bumped crate whose internal dependency requirement still permits
+  the old version, a missing `include`) BEFORE anything is tagged. This is
+  what makes the publish order below safe to parallelise.
 - `cargo test --workspace` green; `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - `cargo deny check` passes (advisories, licenses, sources, bans).
 - Fuzz smoke: `cargo +nightly fuzz build`.
@@ -28,7 +36,9 @@ must publish bottom-up.
   - `crates/areev-js/package.json` → `"version"` (standalone npm package).
   - `crates/areev-py/pyproject.toml` → `[project] version` (maturin reads this,
     NOT Cargo's `version.workspace`).
-  After a release, verify the registries actually flipped:
+  `scripts/check_versions.py` asserts all of this mechanically — run it
+  instead of eyeballing the four files. After a release, verify the registries
+  actually flipped:
   `npm view areev version`, `curl -s https://pypi.org/pypi/areev/json | jq -r .info.version` —
   a green workflow is not proof the version changed. **PyPI's JSON API is
   CDN-cached and can serve the previous version for minutes after a
@@ -50,32 +60,56 @@ must publish bottom-up.
   heading; add a fresh empty `[Unreleased]`.
 - Commit: `Release vX.Y.Z`. Tag: `git tag vX.Y.Z`.
 
-## 3. Publish crates.io (bottom-up dependency order)
+## 3. Tag and publish the GitHub Release FIRST
+
+This is the step that used to come last, and moving it is the single biggest
+win in the runbook.
+
+```bash
+git push origin main --tags
+gh release create vX.Y.Z --notes-file <(sed -n '/## \[X.Y.Z\]/,/## \[/p' CHANGELOG.md)
+```
+
+Publishing the Release fires `release-pypi`, `release-npm` and `release-cli`
+**concurrently**, and each of those builds its five-platform matrix in
+parallel. None of them read crates.io — they build from the local `path`
+dependencies in the checkout — so they have no reason to wait for step 4, and
+under the old ordering they sat idle behind it for twenty to forty minutes.
+
+Each workflow now starts with a `preflight` job running
+`scripts/check_versions.py --tag vX.Y.Z`, so a tag that disagrees with the
+tree fails in seconds instead of after a full matrix build.
+
+`workflow_dispatch` on any of the three is a **safe dry run**: the publish
+jobs are guarded on `github.event_name == 'release'`, so a manual run builds
+and uploads artifacts but ships nothing.
+
+## 4. Publish crates.io — while step 3 runs
 
 `publish = false` is set on exactly four crates and they should **stay** that
 way: `areev-bench` and `areev-conformance` (internal harnesses),
-`areev-js` (ships to npm) and `areev-py` (ships to PyPI). Everything else
-publishes, in this order — a crate can only publish once its path dependencies
-are on crates.io:
+`areev-js` (ships to npm) and `areev-py` (ships to PyPI).
 
-```
-areev-core, areev-loop          (no internal deps)
-  → areev-run-core          (core)
-  → areev-store             (core)
-  → areev-cal               (core, store)
-  → areev-context           (cal, core)
-  → areev-llm               (areev-loop, core)
-  → areev-loop-adapter      (cal, core, store, areev-loop)
-  → areev-run               (core, store, cal, run-core, llm)
-  → areev-server, areev-mcp, areev
-```
-
-**Twelve publishable crates** — this list has gone stale before (it once
-omitted the loop tier and failed at `areev-mcp`). Recompute rather than
-trust it:
+Cargo resolves the dependency order itself — the hand-maintained tier list
+this runbook used to carry went stale twice and failed mid-publish:
 
 ```bash
-# topological order from the manifests
+cargo publish --workspace          # --dry-run already run in pre-flight
+```
+
+**Bump the internal dependency requirements too.** Crates declare each other
+as `version = "1.0.0"`; on a minor/major release that requirement still
+permits the OLD version, so cargo can resolve new-crate + old-dep from a
+lockfile and fail to compile while the manifest claims the pair is supported.
+1.1.0 hit exactly this (`areev-cal` used `GrainType::Recommendation`, absent
+from `areev-core` 1.0.5). `cargo publish --workspace --dry-run` in pre-flight
+is what catches it now.
+
+If `--workspace` is unavailable or a leg fails partway, fall back to
+publishing bottom-up, recomputing the order from the manifests rather than
+trusting a written list:
+
+```bash
 python3 - <<'EOF'
 import glob, tomllib
 pkgs = {}
@@ -92,53 +126,30 @@ while len(done) < len(pkgs):
 EOF
 ```
 
-**Bump the internal dependency requirements too.** Crates declare each other
-as `version = "1.0.0"`; on a minor/major release that requirement still
-permits the OLD version, so cargo can resolve new-crate + old-dep from a
-lockfile and fail to compile while the manifest claims the pair is supported.
-1.1.0 hit exactly this (`areev-cal` used `GrainType::Recommendation`, absent
-from `areev-core` 1.0.5).
+## 5. What the workflows do (no manual step needed)
 
-```bash
-cargo publish -p areev-core
-# wait for it to index, then the next tier, etc.
-```
+- **PyPI** (`release-pypi.yml`) — maturin builds abi3 wheels `--locked` for
+  linux x86_64/aarch64, macOS x86_64/aarch64 and windows x64, plus an sdist,
+  then uploads. One wheel covers CPython >= 3.9.
+- **npm** (`release-npm.yml`) — `napi build --locked` per platform; the Linux
+  legs build inside `node:20-bullseye` so the addon's glibc floor stays at
+  2.31, asserted by a grep over the `.node`. Platform packages publish first,
+  the main `@areev/areev` package last, so a half-published release never
+  advertises a platform that is not on the registry yet.
+- **CLI** (`release-cli.yml`) — five prebuilt `areev` binaries, smoke-tested
+  (`--version`, `add`, `recall`) before upload, attached to the Release with
+  a combined `SHA256SUMS`.
 
-`areev-bench` stays unpublished (internal harness). `areev-py` is not published
-to crates.io — it ships to PyPI.
+## 6. Verify
 
-## 4. Publish PyPI (areev-py)
-
-Build abi3 wheels with maturin (cibuildwheel or maturin-action in CI for the
-full platform matrix), then upload:
-
-```bash
-maturin build --release -m crates/areev-py/Cargo.toml
-# CI builds linux/macos/windows abi3 wheels; then:
-maturin upload target/wheels/*   # or twine upload
-```
-
-The package name is `areev` (reserved). Requires-Python `>=3.9` (abi3-py39).
-
-## 5. Publish npm (areev-js, napi)
-
-`areev-js` is a **native Node addon built with napi-rs (not wasm)** and is a
-standalone package — it is not a `cargo` workspace member, so it publishes
-independently of the crates.io tier. Build the per-platform prebuilds and
-publish (name `areev`, reserved):
-
-```bash
-# from crates/areev-js — CI builds the platform matrix via `napi build --release`
-cd crates/areev-js
-npm publish --access public
-```
-
-## 6. Post-release
-
-- Push the tag: `git push origin main --tags`.
-- Create a GitHub Release from the tag with the changelog section.
-- Verify install paths work: `cargo install areev`, `pip install areev`,
-  `npx areev` / `npm i areev`.
+- `npm view @areev/areev version`
+- `curl -s https://pypi.org/pypi/areev/json | jq -r .info.version` — **PyPI's
+  JSON API is CDN-cached** and can serve the previous version for minutes
+  after a successful upload; confirm with
+  `curl -o /dev/null -w '%{http_code}' https://pypi.org/pypi/areev/<ver>/json`
+  (200 = published) before chasing a phantom failure.
+- `cargo search areev`
+- A green workflow is not proof the version changed.
 
 ## Notes
 
@@ -153,3 +164,13 @@ npm publish --access public
   landed ("already exists on index" on retry means it did).
 - Keep `rust-version` (MSRV) in `[workspace.package]` accurate — CI has an MSRV job.
 - Never reuse or renumber error codes across releases (append-only).
+- **The ordering trade-off, stated plainly**: cutting the Release before
+  crates.io means a crates.io failure lands *after* npm and PyPI have already
+  shipped. That is the right trade because the failure modes are not
+  symmetric — `cargo publish --workspace --dry-run` in pre-flight catches
+  essentially every real crates.io failure while nothing tags yet, whereas the
+  cost of the old ordering was paid on every single release. If crates.io does
+  fail, fix forward: the registries are independent and a patch release is
+  cheap.
+- The three release workflows carry `concurrency` groups keyed on the tag, so
+  a re-run cannot race a manual dispatch.
