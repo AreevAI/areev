@@ -37,9 +37,9 @@ Eight declared kinds over four irreducible primitives.
 | `manual` | an operator fires it | Push |
 | `composite` | a boolean expression over other triggers is satisfied | meta |
 
-`memory`, `webhook` and `composite` are accepted and validated now; they fire in
-a later release. Declaring one today records intent without doing anything,
-which `trigger status` reports rather than hiding.
+`webhook` and `manual` are accepted and validated but do not fire yet — a host
+delivery path lands in a later release. Declaring one today records intent
+without doing anything, which `trigger status` reports rather than hiding.
 
 **Rate drifts, cron does not.** `--interval` anchors to the *last firing*, so a
 three-minute job on a five-minute interval leaves a two-minute gap and the
