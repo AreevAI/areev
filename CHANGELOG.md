@@ -29,6 +29,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without regenerating `index.js` breaks `require()` for anyone with
   `NAPI_RS_ENFORCE_VERSION_CHECK` set.
 
+### Fixed
+
+- **`crates/areev-js/Cargo.lock` had drifted, and nothing would have caught it
+  until a release failed.** areev-js is a detached cargo workspace, so a
+  dependency added to a crate it depends on never reaches its lockfile —
+  `areev-run` gained `getrandom` and `ureq` for the egress broker and this
+  lockfile did not follow. Dependabot's `cargo` entry for `/` does not cover it
+  either. Because `release-npm.yml` now builds `--locked`, that drift would have
+  surfaced as a failed **release** rather than a failed build. Lockfile
+  regenerated, plus two guards so it cannot recur: the `node` CI job asserts
+  `cargo metadata --locked` and now builds with the same `npm ci` /
+  `--locked` flags the release uses, and `dependabot.yml` gains a `cargo` entry
+  for `/crates/areev-js`.
+
 ### Changed
 
 - **README repositioned around adaptive agents.** The pitch led with "embedded
