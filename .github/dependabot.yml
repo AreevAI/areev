@@ -8,6 +8,21 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
+    groups:
+      # The RustCrypto crates version in lockstep around `digest`: sha2 0.11 /
+      # hkdf 0.13 / aes-gcm 0.11 are digest-0.11, and mixing generations does
+      # not compile (see PRs #12, #8, #13). One grouped PR keeps the migration
+      # atomic — and it should wait until turso leaves the digest-0.10 line,
+      # or the tree carries two copies of the AES/GCM stack.
+      rustcrypto:
+        patterns:
+          - "sha2"
+          - "hkdf"
+          - "hmac"
+          - "aes-gcm"
+          - "argon2"
+          - "getrandom"
+          - "digest"
 
   # Node bindings (napi) — standalone package, not in the Cargo workspace.
   - package-ecosystem: npm
