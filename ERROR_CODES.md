@@ -135,7 +135,7 @@ in source.
 | `RUN-E015` | `CheckpointTooLarge` | A checkpoint exceeded its size bound |
 | `RUN-E016` | `Tainted` | Duplicate run id, fork collision, or an ask with no journaled intent |
 | `RUN-E017` | `RetentionRefused` | Retention policy refused the write |
-| `RUN-E018` | `CodeExecRefused` | Code-carrying execution is not enabled |
+| `RUN-E018` | `CodeExecRefused` | A code-carrying tool was refused: the host has not pinned its address (`--allow-executor`), the `executor_uri` is not a `cas://sha256:` content address, or a client tool named an executor |
 | `RUN-E019` | `InvalidPlan` | The plan failed structural validation |
 | `RUN-E020` | `Storage` | The store failed underneath the driver |
 | `RUN-E021` | `LeaseLost` | Another driver took this run over mid-flight; this driver's writes are refused |

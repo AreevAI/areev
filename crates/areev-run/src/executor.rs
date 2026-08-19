@@ -29,6 +29,40 @@ pub trait HostToolExecutor: Send + Sync {
         input: &Value,
         idempotency_key: &str,
     ) -> ExecResult;
+
+    /// May this host execute the code blob at `uri`, pinned by a Definition
+    /// with address `tool_hash`?
+    ///
+    /// Checked at run start so an unpinned executor refuses before the run
+    /// takes a lease, not three supersteps in. **The default is `false`** —
+    /// a Definition can arrive by bundle import from an author nobody
+    /// vouched for, so the authorization to execute has to come from the
+    /// host, not from the memory. See [`CodeExecutor`].
+    fn code_allowed(&self, _tool_hash: &str, _uri: &str) -> bool {
+        false
+    }
+
+    /// Execute a content-addressed code blob. `bytes` were read and
+    /// hash-verified on the driver thread; this runs on a pool worker.
+    ///
+    /// The default refuses, so a host that never opted in cannot be handed
+    /// code by a plan.
+    fn execute_code(
+        &self,
+        _tool_name: &str,
+        _tool_hash: &str,
+        uri: &str,
+        _bytes: &[u8],
+        _input: &Value,
+        _idempotency_key: &str,
+    ) -> ExecResult {
+        ExecResult::Err {
+            cause: FailCause::ExecutorError,
+            detail: format!(
+                "this host does not run code-carrying tools, so {uri} was not executed"
+            ),
+        }
+    }
 }
 
 /// A registry-backed executor: tools dispatch by name; unknown names fail
@@ -171,6 +205,188 @@ impl HostToolExecutor for CommandExecutor {
     }
 }
 
+/// Runs code-carrying tools, and refuses every address the host did not pin.
+///
+/// ## Why the allowlist is here and not in the memory
+///
+/// A `Tool` Definition can name its executor by content address
+/// (`executor_uri: "cas://sha256:..."`), and the blob travels with the memory
+/// — bundles carry blobs, so importing a peer's memory imports their
+/// connector code. Auto-executing it would be remote code execution by
+/// design, and the failure is not hypothetical: the January 2026 n8n
+/// community-node compromise exfiltrated decrypted OAuth tokens, and the
+/// malicious node never violated a sandbox. It read a credential it was
+/// given and made a request it was allowed to make.
+///
+/// So this follows the split the codebase already makes twice — trigger
+/// evaluation state does not replicate, and host config never lands in the
+/// file:
+///
+/// > **The declaration replicates. The authorization to execute never does.**
+///
+/// An operator pins addresses with `--allow-executor`. An address that is
+/// not pinned is refused at run start (`RUN-E018`) naming the address, so
+/// the fix is a copy-paste. There is deliberately no grant form: `mg:permits`
+/// Facts live in the file and replicate, and a permission that arrives in
+/// the same bundle as the code it authorizes is not a permission.
+///
+/// ## Materialization
+///
+/// The blob is written to `<cache>/<hex>` once and reused. The path IS the
+/// content address, so a poisoned cache entry cannot masquerade as another
+/// executor, and `get_blob` re-verifies the digest on every dispatch anyway.
+pub struct CodeExecutor {
+    inner: Arc<dyn HostToolExecutor>,
+    allowed: std::collections::BTreeSet<String>,
+    cache_dir: std::path::PathBuf,
+    timeout: Option<std::time::Duration>,
+}
+
+impl CodeExecutor {
+    /// Wrap `inner`, which still handles every tool that names no executor.
+    pub fn new(inner: Arc<dyn HostToolExecutor>) -> Self {
+        CodeExecutor {
+            inner,
+            allowed: Default::default(),
+            cache_dir: std::env::temp_dir().join("areev-executors"),
+            timeout: Some(std::time::Duration::from_secs(300)),
+        }
+    }
+
+    /// Pin one content address (64 hex, or a full `cas://sha256:` URI).
+    pub fn allow(mut self, addr: &str) -> Self {
+        self.allowed.insert(strip_cas(addr).to_ascii_lowercase());
+        self
+    }
+
+    pub fn cache_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.cache_dir = dir.into();
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Write the blob to the cache if absent and return its path.
+    fn materialize(&self, hex: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+        let path = self.cache_dir.join(hex);
+        if path.exists() {
+            return Ok(path);
+        }
+        std::fs::create_dir_all(&self.cache_dir)?;
+        // Write-then-rename: a concurrent driver must never see a half-written
+        // executor, and two of them racing must not corrupt one file. The
+        // temp name carries the pid so the two do not collide either.
+        let tmp = self.cache_dir.join(format!("{hex}.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        Ok(path)
+    }
+}
+
+/// `cas://sha256:<hex>` -> `<hex>`; anything else is returned unchanged.
+pub(crate) fn strip_cas(uri: &str) -> &str {
+    uri.strip_prefix("cas://sha256:").unwrap_or(uri)
+}
+
+impl HostToolExecutor for CodeExecutor {
+    fn execute(
+        &self,
+        tool_name: &str,
+        tool_hash: &str,
+        input: &Value,
+        idempotency_key: &str,
+    ) -> ExecResult {
+        self.inner.execute(tool_name, tool_hash, input, idempotency_key)
+    }
+
+    fn code_allowed(&self, _tool_hash: &str, uri: &str) -> bool {
+        self.allowed.contains(&strip_cas(uri).to_ascii_lowercase())
+    }
+
+    fn execute_code(
+        &self,
+        tool_name: &str,
+        tool_hash: &str,
+        uri: &str,
+        bytes: &[u8],
+        input: &Value,
+        idempotency_key: &str,
+    ) -> ExecResult {
+        // Checked at start too. Re-checked here because a pool worker must
+        // not depend on a caller having done it — the same reason the
+        // destructive-ops cap is re-applied rather than trusted.
+        if !self.code_allowed(tool_hash, uri) {
+            return ExecResult::Err {
+                cause: FailCause::ExecutorError,
+                detail: format!("{uri} is not pinned by this host"),
+            };
+        }
+        let hex = strip_cas(uri).to_ascii_lowercase();
+        let path = match self.materialize(&hex, bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                return ExecResult::Err {
+                    cause: FailCause::ExecutorError,
+                    detail: format!("could not materialize {uri}: {e}"),
+                }
+            }
+        };
+        // Spawned directly rather than through a shell: the path is ours and
+        // contains no metacharacters, and going direct means no quoting bug
+        // can turn a cache path into an argument. A unix blob interprets its
+        // own shebang; on Windows the OS decides, which is why a code-carrying
+        // executor is platform-specific and the operator pins per platform.
+        use areev_core::proc::{self, SpawnPolicy};
+        let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        let out = match proc::run(
+            std::process::Command::new(&path),
+            Some(input.to_string().as_bytes()),
+            &[
+                ("AREEV_TOOL_NAME", tool_name),
+                ("AREEV_TOOL_HASH", tool_hash),
+                ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
+                ("AREEV_EXECUTOR_URI", uri),
+            ],
+            &policy,
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                return ExecResult::Err {
+                    cause: FailCause::ExecutorError,
+                    detail: format!("spawn {}: {e}", path.display()),
+                }
+            }
+        };
+        if out.timed_out {
+            return ExecResult::Err {
+                cause: FailCause::Timeout,
+                detail: format!(
+                    "executor {uri} exceeded its {}s ceiling and was killed",
+                    policy.timeout.map(|d| d.as_secs()).unwrap_or(0)
+                ),
+            };
+        }
+        if let Some(why) = out.failure("executor") {
+            return ExecResult::Err { cause: FailCause::ExecutorError, detail: why };
+        }
+        match serde_json::from_slice::<Value>(&out.stdout) {
+            Ok(v) => ExecResult::Ok(v),
+            Err(e) => ExecResult::Err {
+                cause: FailCause::ExecutorError,
+                detail: format!("executor output is not JSON: {e}"),
+            },
+        }
+    }
+}
+
 /// A §6.10 TokenChunk sink: text deltas stream into it as they arrive.
 pub type TokenSink = Box<dyn FnMut(&str) + Send>;
 
@@ -195,6 +411,19 @@ pub struct DispatchJob {
     pub idempotency_key: String,
     /// Present exactly when this is an LLM effect of an abstract node.
     pub llm: Option<PreparedLlm>,
+    /// Present exactly when the pinned Definition named a `cas://` executor.
+    /// Read and hash-verified on the driver thread, like `llm`'s pinned
+    /// Definitions — the pool never touches a store handle.
+    pub code: Option<PreparedCode>,
+}
+
+/// A code blob, read off the driver thread and ready to execute.
+pub struct PreparedCode {
+    /// The `cas://sha256:` address the Definition named.
+    pub uri: String,
+    /// The blob's bytes. `get_blob` verified the digest on read, so these
+    /// bytes ARE the address — that is the whole integrity story.
+    pub bytes: Vec<u8>,
 }
 
 /// A completed dispatch coming back to the driver thread. Carries the
@@ -287,7 +516,22 @@ impl Pool {
                 // panic message survives in the failure detail; retryability
                 // follows the normal §6.3 table (ExecutorError → retryable).
                 let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    executor.execute(&tool_name, &tool_hash, &job.input, &job.idempotency_key)
+                    match &job.code {
+                        Some(c) => executor.execute_code(
+                            &tool_name,
+                            &tool_hash,
+                            &c.uri,
+                            &c.bytes,
+                            &job.input,
+                            &job.idempotency_key,
+                        ),
+                        None => executor.execute(
+                            &tool_name,
+                            &tool_hash,
+                            &job.input,
+                            &job.idempotency_key,
+                        ),
+                    }
                 }))
                 .unwrap_or_else(|p| {
                     let msg = p

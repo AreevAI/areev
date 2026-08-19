@@ -180,7 +180,12 @@ COMMANDS:
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--llm-max-tokens N]
-           [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...];
+           [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
+           [--allow-executor ADDR,...] [--executor-cache DIR];
+           --allow-executor pins the content address of a code-carrying tool
+           (a Definition whose executor_uri names a cas:// blob). Nothing
+           code-carrying runs unpinned, because the blob travels with the
+           memory and the authorization must not;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof
@@ -3093,9 +3098,26 @@ fn run_run(
 
     let sub_cmd = positional.first().map(|s| s.as_str()).unwrap_or("");
     let principal = flag(flags, "as").unwrap_or_else(|| "user:local".to_string());
-    let executor: Arc<dyn HostToolExecutor> = match flag(flags, "tool-cmd") {
+    let base: Arc<dyn HostToolExecutor> = match flag(flags, "tool-cmd") {
         Some(cmd) => Arc::new(CommandExecutor::new(&cmd)),
         None => Arc::new(NoExecutor),
+    };
+    // Code-carrying tools: a Definition may name its executor by content
+    // address, and the blob travels with the memory. Nothing runs unless the
+    // operator pinned the address HERE — a grant in the file would arrive in
+    // the same bundle as the code it authorizes.
+    let executor: Arc<dyn HostToolExecutor> = match flag(flags, "allow-executor") {
+        None => base,
+        Some(list) => {
+            let mut ce = areev_run::CodeExecutor::new(base);
+            for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                ce = ce.allow(addr);
+            }
+            if let Some(dir) = flag(flags, "executor-cache") {
+                ce = ce.cache_dir(dir);
+            }
+            Arc::new(ce)
+        }
     };
     // Abstract nodes need a tool-calling model (--model, same spec grammar
     // and env-key discipline as `areev loop run --model`). Without one,

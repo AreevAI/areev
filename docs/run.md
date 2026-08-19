@@ -158,6 +158,50 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+### Code-carrying tools (`executor_uri`)
+
+A Definition may name its executor by content address instead of relying on
+whatever `--tool-cmd` happens to be:
+
+```json
+{ "tool_name": "zoho_post", "kind": "definition",
+  "executor_uri": "cas://sha256:<64 hex>" }
+```
+
+The blob is an ordinary CAS blob, so it travels in bundles and `get_blob`
+verifies its digest on every read. The contract inside is identical to
+`--tool-cmd`: JSON on stdin, JSON on stdout, `AREEV_TOOL_NAME` /
+`AREEV_TOOL_HASH` / `AREEV_IDEMPOTENCY_KEY` in the environment (plus
+`AREEV_EXECUTOR_URI`).
+
+**Nothing code-carrying runs unless the host pinned its address:**
+
+```bash
+areev run start --workflow <WF> --run-id r1 \
+  --allow-executor <64 hex>[,<64 hex>...] [--executor-cache DIR]
+```
+
+Because bundles carry blobs, importing a peer's memory imports their connector
+code — so the authorization to execute it deliberately does **not** live in the
+file. There is no grant form; a permission arriving in the same bundle as the
+code it authorizes is not a permission. An unpinned address is refused at start
+with `RUN-E018`, before the run takes a lease, naming the address so pinning it
+is a copy-paste.
+
+Two more refusals, both `RUN-E018` at resolve: an `executor_uri` this build
+cannot dispatch (anything but `cas://sha256:<64 hex>`), and an `executor_uri` on
+a **client** tool, which is answered by a person through `respond` and has no
+executor to name. Every value either dispatches or is refused — a value that is
+silently ignored is the failure this runtime exists to refuse.
+
+The address is pinned into the manifest at start, so superseding the Definition
+mid-run cannot change what executes. The blob is materialized to
+`<cache>/<hex>` (mode 0700) and reused; the path *is* the content address.
+
+A pinned executor is **not sandboxed** — it runs as you, exactly like
+`--tool-cmd`. The pin is a judgement about provenance, not a container. It is
+also platform-specific: a blob is bytes, so pin per platform.
+
 ## What a run writes (the journal)
 
 Runs live in the reserved `agent:harness` namespace, as ordinary grains:

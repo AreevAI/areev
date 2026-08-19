@@ -302,6 +302,24 @@ impl Runner {
                 opts.llm_max_tokens,
             )
         })?;
+        // Refuse an unpinned code executor before the run exists: it would
+        // otherwise take a lease, write a manifest, and fail on first
+        // dispatch, leaving a terminal run to explain. The address is named
+        // so pinning it is a copy-paste.
+        for p in &manifest.pinned {
+            if let Some(uri) = &p.executor_uri {
+                if !self.executor.code_allowed(&p.tool_hash, uri) {
+                    return Err(RunError::CodeExecRefused {
+                        condition: format!(
+                            "node '{}' names executor {uri}, which this host has not \
+                             pinned — pass --allow-executor {} to run it",
+                            p.node,
+                            crate::executor::strip_cas(uri)
+                        ),
+                    });
+                }
+            }
+        }
         self.facade
             .with_store(|m| manifest.persist(m))
             .map_err(err_run)?;
@@ -1149,6 +1167,30 @@ impl Runner {
                         } else {
                             None
                         };
+                        // A code-carrying tool: read and hash-verify the blob
+                        // HERE, on the driver thread, for the same reason the
+                        // LLM branch resolves its Definitions here — the pool
+                        // touches no store handle. `get_blob` verifies the
+                        // digest on every read, so the bytes handed to the
+                        // pool always are the address the manifest pinned.
+                        let code_prepared = match manifest
+                            .pinned
+                            .iter()
+                            .find(|p| p.node == key.node)
+                            .and_then(|p| p.executor_uri.as_deref())
+                        {
+                            Some(uri) => {
+                                let bytes = self
+                                    .facade
+                                    .with_store(|m| m.get_blob(uri))
+                                    .map_err(err_run)?;
+                                Some(crate::executor::PreparedCode {
+                                    uri: uri.to_string(),
+                                    bytes,
+                                })
+                            }
+                            None => None,
+                        };
                         let idem = idempotency_key(&key, &input);
                         wave.push((key.clone(), None));
                         pool.submit(DispatchJob {
@@ -1157,6 +1199,7 @@ impl Runner {
                             input,
                             idempotency_key: idem,
                             llm: llm_prepared,
+                            code: code_prepared,
                         });
                         in_flight += 1;
                     }

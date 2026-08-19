@@ -315,6 +315,39 @@ allowlist and the credential broker exist. By Tier C's own design a module canno
 make a network call, so a connector will never be one — the two mechanisms cover
 different threats and neither substitutes for the other.
 
+### Code that arrives in a memory (`executor_uri`)
+
+A `Tool` Definition may name its executor by content address
+(`executor_uri: "cas://sha256:..."`), and the blob travels in bundles — so
+**importing a peer's memory imports their connector code**. Say this posture
+plainly too:
+
+> **Areev never executes a code blob the host did not pin.** The default is
+> refuse, in the `HostToolExecutor` trait itself.
+
+The authorization deliberately does not live in the file. An operator pins
+addresses with `areev run start --allow-executor <addr>`, which is host
+configuration, never a grain. There is no CAL grant form for this and there
+should not be: `mg:permits` Facts replicate, and a permission that arrives in
+the same bundle as the code it authorizes is not a permission. This is the same
+split that keeps trigger evaluation state and host config out of the file.
+
+An unpinned address is refused at run start (`RUN-E018`) before a lease is
+taken, naming the address. An `executor_uri` that is not a `cas://sha256:`
+content address, or one on a `client` tool, is refused at resolve — a value
+that is silently ignored is exactly the failure this refuses.
+
+What the pin buys, and what it does not: a pinned executor **runs as you, with
+your privileges**, exactly like `--tool-cmd`. The pin is a judgement about
+*provenance* — that a human looked at this specific content address — not a
+container. The threat it addresses is the one that actually occurred in the
+January 2026 n8n community-node compromise, where code nobody had vetted ran
+with credentials it was given; isolation did not stop that and would not stop
+it here.
+
+Because the path is `<cache>/<hex>` and `get_blob` verifies the digest on every
+read, a poisoned cache entry cannot impersonate a different executor.
+
 ## Threats out of scope
 
 - An already-compromised host, physical access, or a malicious local process

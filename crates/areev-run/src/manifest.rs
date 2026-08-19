@@ -41,6 +41,13 @@ pub struct PinnedTool {
     pub tool_name: String,
     /// "host" | "client" (the definition's `executor_kind`, default host).
     pub executor: String,
+    /// The definition's `executor_uri`, when it names a `cas://sha256:` code
+    /// blob. Pinned here so a run executes the address it resolved at start
+    /// even if the Definition is superseded mid-run — the same resolution
+    /// freeze the bindings get. Absent for every ordinary tool, so existing
+    /// manifests serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_uri: Option<String>,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -137,6 +144,7 @@ impl RunManifest {
                             tool_hash: h.to_hex(),
                             tool_name: node.clone(),
                             executor: "subgraph".into(),
+                            executor_uri: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -154,6 +162,7 @@ impl RunManifest {
                             tool_hash: String::new(),
                             tool_name: node.clone(),
                             executor: "abstract".into(),
+                            executor_uri: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -340,11 +349,42 @@ fn pin_from_definition(
         Some("client") => "client",
         _ => "host",
     };
+    // `executor_uri` used to be written, parsed, CAL-buildable — and read by
+    // nothing, so a Definition naming `executor://crm.lookup@v3` executed
+    // whatever `--tool-cmd` happened to be. That is the failure with no
+    // symptom this runtime exists to refuse, so every value now either
+    // dispatches or is refused by name.
+    let executor_uri = match g.get_str("executor_uri") {
+        None => None,
+        Some(uri) if executor == "client" => {
+            return Err(RunError::CodeExecRefused {
+                condition: format!(
+                    "node '{node}' binds a client tool carrying executor_uri {uri:?} — a \
+                     client tool is answered by a person through `run respond`, so it has \
+                     no executor to name"
+                ),
+            })
+        }
+        Some(uri) => {
+            let hex = crate::executor::strip_cas(uri);
+            if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(RunError::CodeExecRefused {
+                    condition: format!(
+                        "node '{node}' names executor_uri {uri:?}, which this build cannot \
+                         dispatch — the only executable form is a content address, \
+                         cas://sha256:<64 hex>"
+                    ),
+                });
+            }
+            Some(format!("cas://sha256:{}", hex.to_ascii_lowercase()))
+        }
+    };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
         tool_name,
         executor: executor.into(),
+        executor_uri,
     })
 }
 

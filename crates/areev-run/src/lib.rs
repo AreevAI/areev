@@ -26,7 +26,7 @@ pub mod runner;
 pub mod stream;
 
 pub use clock::{Clock, ScriptedClock, SystemClock};
-pub use executor::{CommandExecutor, ExecResult, ExecutorRegistry, HostToolExecutor};
+pub use executor::{CodeExecutor, CommandExecutor, ExecResult, ExecutorRegistry, HostToolExecutor};
 pub use manifest::{BudgetsSpec, ForkBase, PinnedTool, RunManifest};
 pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
