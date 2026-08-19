@@ -10,7 +10,7 @@ v1.2.2 · 17 crates · 261 Rust files
 | Test code | **41,140** lines (35.9% of all code) |
 | Test functions | **2,104** |
 | Stable error codes | **87** |
-| Reference docs | 48 files, 18,265 lines |
+| Reference docs | 47 files, 18,205 lines |
 
 ## By crate
 

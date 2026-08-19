@@ -48,6 +48,18 @@ SKIP_DIRS = {
     ".claude", "areev-sandbox",
 }
 
+# This script's own outputs. They live under docs/ but are not reference
+# documentation, and counting them makes the docs figure both wrong and
+# unstable: the run that first creates repo-stats.md reports the count from
+# before it existed, and the next run reports one more.
+GENERATED = {
+    "docs/repo-stats.json",
+    "docs/repo-stats.md",
+    "docs/repo-stats.html",
+    "docs/assets/repo-stats-light.svg",
+    "docs/assets/repo-stats-dark.svg",
+}
+
 
 # ---------------------------------------------------------------------------
 # Rust scanning
@@ -301,9 +313,12 @@ def collect() -> dict:
         })
     per_crate.sort(key=lambda c: c["physical"], reverse=True)
 
-    docs = walk(REPO / "docs", {".md"}) + [
-        p for p in REPO.glob("*.md")
-        if not any(part in SKIP_DIRS for part in p.parts)
+    docs = [
+        p for p in walk(REPO / "docs", {".md"}) + [
+            q for q in REPO.glob("*.md")
+            if not any(part in SKIP_DIRS for part in q.parts)
+        ]
+        if p.relative_to(REPO).as_posix() not in GENERATED
     ]
     doc_lines = sum(
         len(p.read_text(encoding="utf-8", errors="replace").splitlines()) for p in docs
