@@ -8,10 +8,8 @@
 //! already establishes, and the same one anacron and systemd's
 //! `Persistent=true` take — a persisted watermark plus catch-up on the next
 //! invocation, rather than a resident process holding a timer.
-pub mod broker;
 pub mod clock;
 pub mod connector;
-pub mod egress;
 pub mod error;
 pub mod eval;
 pub mod predicate;

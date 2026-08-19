@@ -109,12 +109,42 @@ impl HostToolExecutor for ExecutorRegistry {
 /// (retryable per the §6.3 table). The subprocess NEVER opens the memory
 /// file — the parent journals on its behalf (§4's single-writer rule, and
 /// the process-wide open-path registry would refuse it anyway).
+/// The broker a tool reaches instead of holding a token.
+///
+/// Held by the executor rather than the driver because the grants are host
+/// configuration, not plan data — the same reason the code-executor allowlist
+/// lives here. Cloning is cheap; the broker itself is shared.
+#[derive(Clone)]
+pub struct EgressHandle {
+    broker: Arc<crate::broker::Broker>,
+}
+
+impl EgressHandle {
+    pub fn new(broker: Arc<crate::broker::Broker>) -> Self {
+        EgressHandle { broker }
+    }
+    /// The env a tool named `tool_name` gets. Empty when it has no grant, so
+    /// a tool nobody authorized cannot even see the broker.
+    fn env_for(&self, tool_name: &str) -> Vec<(&'static str, String)> {
+        match self.broker.token_for(tool_name) {
+            Some(tok) => vec![
+                ("AREEV_EGRESS_URL", self.broker.url().to_string()),
+                ("AREEV_EGRESS_TOKEN", tok.to_string()),
+            ],
+            None => Vec::new(),
+        }
+    }
+}
+
 pub struct CommandExecutor {
     cmd: String,
     /// Wall-clock ceiling per invocation. Before 1.3 there was none, and a tool
     /// that never exited held its pool worker — then the whole driver at the
     /// next wave boundary — indefinitely.
     timeout: Option<std::time::Duration>,
+    /// When set, tools reach the network through the broker instead of
+    /// holding credentials themselves.
+    egress: Option<EgressHandle>,
 }
 
 impl CommandExecutor {
@@ -122,7 +152,14 @@ impl CommandExecutor {
         CommandExecutor {
             cmd: cmd.to_string(),
             timeout: Some(areev_core::proc::DEFAULT_TIMEOUT),
+            egress: None,
         }
+    }
+
+    /// Route this executor's tools through a credential broker.
+    pub fn with_egress(mut self, egress: EgressHandle) -> Self {
+        self.egress = Some(egress);
+        self
     }
 
     /// Override the per-invocation ceiling. `None` restores the pre-1.3
@@ -158,14 +195,19 @@ impl HostToolExecutor for CommandExecutor {
             shell.raw_arg("/C").raw_arg(&self.cmd);
         }
         let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        let mut env: Vec<(&str, &str)> = vec![
+            ("AREEV_TOOL_NAME", tool_name),
+            ("AREEV_TOOL_HASH", tool_hash),
+            ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
+        ];
+        // A tool never receives a credential value — it receives the broker's
+        // address and a capability token, and posts the call it wants.
+        let brokered = self.egress.as_ref().map(|e| e.env_for(tool_name)).unwrap_or_default();
+        env.extend(brokered.iter().map(|(k, v)| (*k, v.as_str())));
         let out = match proc::run(
             shell,
             Some(input.to_string().as_bytes()),
-            &[
-                ("AREEV_TOOL_NAME", tool_name),
-                ("AREEV_TOOL_HASH", tool_hash),
-                ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
-            ],
+            &env,
             &policy,
         ) {
             Ok(o) => o,

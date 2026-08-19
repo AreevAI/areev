@@ -31,7 +31,37 @@
 //! Claude Code is candid that its own proxy decides from the client-supplied
 //! hostname without inspecting TLS. Saying so is part of shipping it.
 
-use crate::error::{Result, TriggerError};
+/// Why a destination or method was refused. Deliberately code-free: this
+/// module is shared by the trigger evaluator and the run driver, and each
+/// reports the refusal under its own domain (`TRG-E009` / `RUN-E022`) the same
+/// way a storage failure is `TRG-E010` in one and `RUN-E020` in the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressDenied {
+    /// The destination is outside the declared allowlist.
+    Host { destination: String },
+    /// The HTTP method is not one this caller may issue.
+    Method { method: String },
+}
+
+impl std::fmt::Display for EgressDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EgressDenied::Host { destination } => write!(
+                f,
+                "tried to reach '{destination}', which is outside its declared \
+                 allowed_outbound_hosts"
+            ),
+            EgressDenied::Method { method } => write!(
+                f,
+                "tried to issue {method}, which it is not permitted — a caller that \
+                 declares no methods may only read"
+            ),
+        }
+    }
+}
+
+/// Config errors are plain messages; the host wraps them in its own error.
+type Result<T> = std::result::Result<T, String>;
 
 /// One entry of a connector's outbound allowlist.
 ///
@@ -48,9 +78,7 @@ pub struct AllowedHost {
 
 impl AllowedHost {
     pub fn parse(spec: &str) -> Result<AllowedHost> {
-        let bad = |why: &str| TriggerError::Malformed {
-            what: format!("allowed_outbound_hosts entry {spec:?}: {why}"),
-        };
+        let bad = |why: &str| format!("allowed_outbound_hosts entry {spec:?}: {why}");
         let (scheme, rest) = spec.split_once("://").ok_or_else(|| {
             bad("must be a URL with a scheme, e.g. https://api.example.com")
         })?;
@@ -138,14 +166,14 @@ impl EgressPolicy {
         let Some(list) = config.and_then(|c| c.get(key)) else {
             return Ok(EgressPolicy::unrestricted());
         };
-        let entries = list.as_array().ok_or_else(|| TriggerError::Malformed {
-            what: format!("{key} must be an array of URL prefixes"),
-        })?;
+        let entries = list
+            .as_array()
+            .ok_or_else(|| format!("{key} must be an array of URL prefixes"))?;
         let mut allowed = Vec::new();
         for e in entries {
-            let s = e.as_str().ok_or_else(|| TriggerError::Malformed {
-                what: format!("{key} entries must be strings"),
-            })?;
+            let s = e
+                .as_str()
+                .ok_or_else(|| format!("{key} entries must be strings"))?;
             allowed.push(AllowedHost::parse(s)?);
         }
         // An empty list is a real policy: allow nothing. Distinct from an
@@ -157,23 +185,24 @@ impl EgressPolicy {
         self.unrestricted
     }
 
-    /// May this connector reach `url`?
-    pub fn permits(&self, url: &str) -> Result<()> {
+    /// May this caller reach `url`?
+    pub fn permits(&self, url: &str) -> std::result::Result<(), EgressDenied> {
         if self.unrestricted {
             return Ok(());
         }
-        let (scheme, host, port) = split_url(url)?;
+        let (scheme, host, port) =
+            split_url(url).map_err(|_| EgressDenied::Host { destination: url.to_string() })?;
         if self.allowed.iter().any(|a| a.matches(&scheme, &host, port)) {
             Ok(())
         } else {
-            Err(TriggerError::EgressRefused { trigger: String::new(), host: format!("{scheme}://{host}:{port}") })
+            Err(EgressDenied::Host { destination: format!("{scheme}://{host}:{port}") })
         }
     }
 }
 
 /// Scheme, host, port from an absolute URL.
 fn split_url(url: &str) -> Result<(String, String, u16)> {
-    let bad = |why: &str| TriggerError::Malformed { what: format!("url {url:?}: {why}") };
+    let bad = |why: &str| format!("url {url:?}: {why}");
     let (scheme, rest) = url.split_once("://").ok_or_else(|| bad("not an absolute URL"))?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     // Strip userinfo: `https://evil.com@allowed.com/` is the classic way to
@@ -274,8 +303,8 @@ mod tests {
             "int:allowed_outbound_hosts": ["https://*"]
         })))
         .unwrap_err();
-        assert_eq!(e.code(), "TRG-E001");
-        assert!(e.to_string().contains("whole internet"));
+        // The message is the contract now; the host attaches its own code.
+        assert!(e.contains("whole internet"), "{e}");
     }
 
     #[test]
@@ -291,10 +320,19 @@ mod tests {
     }
 
     #[test]
-    fn refusal_carries_the_code_and_names_the_destination() {
+    fn refusal_names_the_destination() {
         let p = policy(&["https://api.github.com"]);
         let e = p.permits("https://evil.com/x").unwrap_err();
-        assert_eq!(e.code(), "TRG-E009");
+        assert!(matches!(e, EgressDenied::Host { .. }));
         assert!(e.to_string().contains("evil.com"), "{e}");
+    }
+
+    #[test]
+    fn a_url_that_does_not_parse_is_refused_rather_than_allowed() {
+        // Fail closed: an unparseable destination must not slip past a policy
+        // because the parser could not decide what it was.
+        let p = policy(&["https://api.github.com"]);
+        assert!(p.permits("not-a-url").is_err());
+        assert!(p.permits("").is_err());
     }
 }

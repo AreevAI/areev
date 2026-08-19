@@ -44,8 +44,10 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::egress::EgressPolicy;
-use crate::error::{Result, TriggerError};
+use crate::egress::{EgressDenied, EgressPolicy};
+
+/// Config errors are plain messages; each host wraps them in its own error.
+type Result<T> = std::result::Result<T, String>;
 
 /// Largest request body the broker will read, mirroring the console's cap.
 const MAX_BODY: usize = 1024 * 1024;
@@ -66,16 +68,106 @@ impl Credential {
     /// `--token-env` use: a value that appears on a command line is a value in
     /// shell history and in `ps` output.
     pub fn bearer_from_env(var: &str) -> Result<Credential> {
-        let v = std::env::var(var).map_err(|_| TriggerError::Malformed {
-            what: format!("credential env var {var} is not set"),
-        })?;
+        let v = std::env::var(var)
+            .map_err(|_| format!("credential env var {var} is not set"))?;
         if v.trim().is_empty() {
-            return Err(TriggerError::Malformed {
-                what: format!("credential env var {var} is empty"),
-            });
+            return Err(format!("credential env var {var} is empty"));
         }
         Ok(Credential::Bearer(v))
     }
+}
+
+/// What one caller may do through the broker.
+///
+/// Deny by default in both directions: a caller with no grant may do nothing,
+/// and a grant that names no methods may only read. Connectors read; tools
+/// write, and the write verb is exactly the one worth making deliberate.
+#[derive(Debug, Clone, Default)]
+pub struct CallerGrant {
+    /// Credential names this caller may ask for. Empty = none.
+    pub credentials: std::collections::BTreeSet<String>,
+    /// Methods it may issue. Empty = `GET`/`HEAD` only.
+    pub methods: std::collections::BTreeSet<String>,
+}
+
+impl CallerGrant {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn credential(mut self, name: &str) -> Self {
+        self.credentials.insert(name.to_string());
+        self
+    }
+    pub fn method(mut self, m: &str) -> Self {
+        self.methods.insert(m.trim().to_ascii_uppercase());
+        self
+    }
+    fn permits_method(&self, method: &str) -> bool {
+        if self.methods.is_empty() {
+            return matches!(method, "GET" | "HEAD");
+        }
+        self.methods.contains(method)
+    }
+}
+
+/// Who may do what, keyed by caller name (a tool name, or a connector name).
+///
+/// ## Why the grant is host config and not a grain
+///
+/// A `Tool` Definition declaring "I may reach api.example.com with credential
+/// X" would be a permission arriving in the same bundle as the code it
+/// authorizes — the exact thing [`crate::executor::CodeExecutor`] refuses for
+/// code. The tool says which credential it wants *at call time*, by name; the
+/// host decides whether it may have it. Intent travels; authority does not.
+#[derive(Debug, Clone, Default)]
+pub struct EgressGrants {
+    by_caller: BTreeMap<String, CallerGrant>,
+    /// Applied to a caller with no entry of its own. `None` = such a caller
+    /// gets nothing. The connector path sets this, because one connector runs
+    /// per pass and there is no second caller to tell it apart from.
+    default_grant: Option<CallerGrant>,
+}
+
+impl EgressGrants {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Grant `caller` (a tool name) a specific scope.
+    pub fn grant(mut self, caller: &str, g: CallerGrant) -> Self {
+        self.by_caller.insert(caller.to_string(), g);
+        self
+    }
+
+    /// Give every unlisted caller this scope. Spelled out so it cannot be
+    /// reached by writing `default()`.
+    pub fn default_for_all(mut self, g: CallerGrant) -> Self {
+        self.default_grant = Some(g);
+        self
+    }
+
+    fn for_caller(&self, caller: &str) -> Option<&CallerGrant> {
+        self.by_caller.get(caller).or(self.default_grant.as_ref())
+    }
+
+    fn callers(&self) -> Vec<String> {
+        self.by_caller.keys().cloned().collect()
+    }
+}
+
+/// An unguessable per-caller capability token.
+///
+/// The broker binds to loopback, and loopback is not an authorization: any
+/// process on the box could otherwise post to it and spend the credentials it
+/// holds. The token also makes per-caller scoping possible at all — without
+/// it the broker cannot tell which tool is calling, and N pool workers share
+/// one port.
+fn mint_token() -> String {
+    let mut b = [0u8; 24];
+    // A broker that cannot get randomness must not fall back to something
+    // guessable; the caller turns this into a refusal to start.
+    getrandom::getrandom(&mut b).expect("OS randomness for the egress token");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// A running broker. Dropping it stops the listener.
@@ -85,22 +177,42 @@ pub struct Broker {
     handle: Option<std::thread::JoinHandle<()>>,
     /// Destinations refused during this pass, for journalling.
     refusals: Arc<std::sync::Mutex<Vec<String>>>,
+    /// caller -> its capability token.
+    tokens: BTreeMap<String, String>,
+    /// The token an unlisted caller presents, when a default grant exists.
+    default_token: Option<String>,
 }
 
 impl Broker {
     /// Start a broker on an ephemeral loopback port.
-    pub fn start(policy: EgressPolicy, credentials: BTreeMap<String, Credential>) -> Result<Broker> {
+    pub fn start(
+        policy: EgressPolicy,
+        credentials: BTreeMap<String, Credential>,
+        grants: EgressGrants,
+        refusal_code: &'static str,
+    ) -> Result<Broker> {
         // 127.0.0.1 explicitly, never 0.0.0.0: a broker that holds credentials
         // and is reachable off-box is a credential server.
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| TriggerError::Storage {
-            detail: format!("egress broker cannot bind loopback: {e}"),
-        })?;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("egress broker cannot bind loopback: {e}"))?;
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
         listener.set_nonblocking(true).ok();
 
         let stop = Arc::new(AtomicBool::new(false));
         let refusals = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (stop_t, refusals_t) = (Arc::clone(&stop), Arc::clone(&refusals));
+
+        // One token per caller, minted before the listener serves anything.
+        let mut tokens = BTreeMap::new();
+        for c in grants.callers() {
+            tokens.insert(c, mint_token());
+        }
+        let default_token = grants.default_grant.as_ref().map(|_| mint_token());
+        let by_token: BTreeMap<String, String> = tokens
+            .iter()
+            .map(|(c, t)| (t.clone(), c.clone()))
+            .chain(default_token.iter().map(|t| (t.clone(), String::new())))
+            .collect();
 
         let handle = std::thread::spawn(move || {
             while !stop_t.load(Ordering::Relaxed) {
@@ -117,7 +229,15 @@ impl Broker {
                         // Served one at a time, matching the console's
                         // one-request-per-connection posture: this brokers for
                         // a single connector subprocess, not for a fleet.
-                        let _ = serve_one(stream, &policy, &credentials, &refusals_t);
+                        let _ = serve_one(
+                            stream,
+                            &policy,
+                            &credentials,
+                            &refusals_t,
+                            &grants,
+                            &by_token,
+                            refusal_code,
+                        );
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -132,7 +252,17 @@ impl Broker {
             stop,
             handle: Some(handle),
             refusals,
+            tokens,
+            default_token,
         })
+    }
+
+    /// The capability token `caller` presents, if it has a grant.
+    pub fn token_for(&self, caller: &str) -> Option<&str> {
+        self.tokens
+            .get(caller)
+            .or(self.default_token.as_ref())
+            .map(String::as_str)
     }
 
     /// What to put in the connector's `AREEV_EGRESS_URL`.
@@ -171,11 +301,15 @@ struct EgressRequest {
     body: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_one(
     mut stream: TcpStream,
     policy: &EgressPolicy,
     credentials: &BTreeMap<String, Credential>,
     refusals: &Arc<std::sync::Mutex<Vec<String>>>,
+    grants: &EgressGrants,
+    by_token: &BTreeMap<String, String>,
+    refusal_code: &'static str,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -184,15 +318,51 @@ fn serve_one(
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut content_length = 0usize;
+    let mut presented: Option<String> = None;
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
             break;
         }
-        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = h.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
         }
+        // Read off the ORIGINAL line: lowercasing the header name must not
+        // lowercase the token's value.
+        if lower.starts_with("x-areev-egress-token:") {
+            presented = h.split_once(':').map(|(_, v)| v.trim().to_string());
+        }
     }
+
+    // Loopback is not an authorization: without this, any process on the box
+    // could post here and spend the credentials the broker holds. It is also
+    // what lets one port serve N pool workers and still tell them apart.
+    let caller = match presented.and_then(|t| by_token.get(&t).cloned()) {
+        Some(c) => c,
+        None => {
+            return respond(
+                &mut stream,
+                401,
+                &serde_json::json!({
+                    "error": "missing or unknown X-Areev-Egress-Token",
+                    "code": refusal_code
+                })
+                .to_string(),
+            )
+        }
+    };
+    let Some(grant) = grants.for_caller(&caller) else {
+        return respond(
+            &mut stream,
+            403,
+            &serde_json::json!({
+                "error": format!("caller '{caller}' has no egress grant"),
+                "code": refusal_code
+            })
+            .to_string(),
+        );
+    };
     if content_length > MAX_BODY {
         return respond(&mut stream, 413, r#"{"error":"body too large"}"#);
     }
@@ -217,18 +387,53 @@ fn serve_one(
         return respond(
             &mut stream,
             403,
-            &serde_json::json!({ "error": e.to_string(), "code": "TRG-E009" }).to_string(),
+            &serde_json::json!({
+                "error": format!("caller '{caller}' {e}"),
+                "code": refusal_code
+            })
+            .to_string(),
         );
     }
 
     let method = if req.method.trim().is_empty() { "GET" } else { req.method.trim() };
     let method = method.to_ascii_uppercase();
 
+    // Connectors read; tools write. A grant that names no method may only
+    // read, so the write verb is always something someone decided to allow.
+    if !grant.permits_method(&method) {
+        let denied = EgressDenied::Method { method: method.clone() };
+        if let Ok(mut r) = refusals.lock() {
+            r.push(format!("{method} {}", req.url));
+        }
+        return respond(
+            &mut stream,
+            403,
+            &serde_json::json!({
+                "error": format!("caller '{caller}' {denied}"),
+                "code": refusal_code
+            })
+            .to_string(),
+        );
+    }
+
     // Resolve the credential to a header pair before dispatch. The connector
     // chooses WHICH credential by name; it can never name a value it was not
     // given, and no value ever crosses back to it.
     let mut headers: Vec<(String, String)> = Vec::new();
     if let Some(name) = &req.credential {
+        // Scoped per caller: naming a credential is not the same as being
+        // allowed to use it, which is the whole of the RBAC story here.
+        if !grant.credentials.contains(name) {
+            return respond(
+                &mut stream,
+                403,
+                &serde_json::json!({
+                    "error": format!("caller '{caller}' may not use credential '{name}'"),
+                    "code": refusal_code
+                })
+                .to_string(),
+            );
+        }
         match credentials.get(name) {
             Some(Credential::Bearer(v)) => {
                 headers.push(("Authorization".into(), format!("Bearer {v}")))
@@ -321,11 +526,26 @@ mod tests {
     use super::*;
 
     fn call(broker: &Broker, req: serde_json::Value) -> (u16, serde_json::Value) {
+        call_as(broker, "connector", req)
+    }
+
+    /// Call presenting `caller`'s token, or a bogus one if it has no grant.
+    fn call_as(broker: &Broker, caller: &str, req: serde_json::Value) -> (u16, serde_json::Value) {
+        let token = broker.token_for(caller).unwrap_or("not-a-real-token").to_string();
+        call_with_token(broker, &token, req)
+    }
+
+    fn call_with_token(
+        broker: &Broker,
+        token: &str,
+        req: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
         let addr = broker.url().trim_start_matches("http://").to_string();
         let mut s = TcpStream::connect(addr).unwrap();
         let body = req.to_string();
         let head = format!(
-            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: localhost\r\nX-Areev-Egress-Token: {token}\r\n\
+             Content-Length: {}\r\n\r\n",
             body.len()
         );
         s.write_all(head.as_bytes()).unwrap();
@@ -343,6 +563,16 @@ mod tests {
         (status, serde_json::from_str(body).unwrap_or(serde_json::Value::Null))
     }
 
+    /// The connector-shaped setup the existing cases assume: one caller, all
+    /// methods, every configured credential.
+    fn grants(creds: &[&str]) -> EgressGrants {
+        let g = creds.iter().fold(
+            CallerGrant::new().method("GET").method("POST").method("DELETE"),
+            |g, c| g.credential(c),
+        );
+        EgressGrants::new().default_for_all(g)
+    }
+
     fn policy(entries: &[&str]) -> EgressPolicy {
         EgressPolicy::from_config(Some(&serde_json::json!({
             "int:allowed_outbound_hosts": entries
@@ -354,7 +584,7 @@ mod tests {
     fn a_disallowed_destination_is_refused_before_any_request_is_made() {
         // The point: refusal happens here, so a connector aiming somewhere it
         // should not never gets a socket to that host at all.
-        let b = Broker::start(policy(&["https://api.github.com"]), BTreeMap::new()).unwrap();
+        let b = Broker::start(policy(&["https://api.github.com"]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         let (status, body) = call(&b, serde_json::json!({ "url": "https://evil.com/steal" }));
         assert_eq!(status, 403);
         assert_eq!(body["code"], "TRG-E009");
@@ -362,36 +592,144 @@ mod tests {
     }
 
     #[test]
-    fn the_connector_cannot_name_a_credential_it_was_not_given() {
-        let b = Broker::start(policy(&["https://api.github.com"]), BTreeMap::new()).unwrap();
+    fn a_caller_cannot_name_a_credential_its_grant_does_not_cover() {
+        // Naming a credential is not the same as being allowed to use it.
+        let b = Broker::start(
+            policy(&["https://api.github.com"]),
+            BTreeMap::new(),
+            grants(&[]),
+            "TRG-E009",
+        )
+        .unwrap();
+        let (status, body) = call(
+            &b,
+            serde_json::json!({ "url": "https://api.github.com/x", "credential": "gmail" }),
+        );
+        assert_eq!(status, 403);
+        assert!(body["error"].as_str().unwrap().contains("may not use credential"), "{body}");
+    }
+
+    #[test]
+    fn a_granted_credential_that_the_host_never_configured_is_a_client_error() {
+        // Distinct from the case above: the grant permits the name, but no
+        // value was configured. That is the host's mistake, not the caller's
+        // overreach, and the status says which.
+        let b = Broker::start(
+            policy(&["https://api.github.com"]),
+            BTreeMap::new(),
+            grants(&["gmail"]),
+            "TRG-E009",
+        )
+        .unwrap();
         let (status, body) = call(
             &b,
             serde_json::json!({ "url": "https://api.github.com/x", "credential": "gmail" }),
         );
         assert_eq!(status, 400);
-        assert!(body["error"].as_str().unwrap().contains("no credential named"));
+        assert!(body["error"].as_str().unwrap().contains("no credential named"), "{body}");
     }
 
     #[test]
     fn a_malformed_request_is_a_client_error_not_a_panic() {
-        let b = Broker::start(policy(&[]), BTreeMap::new()).unwrap();
+        let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
+        let (status, _) = call(&b, serde_json::json!("not an egress request"));
+        assert_eq!(status, 400);
+    }
+
+    #[test]
+    fn a_caller_with_no_token_is_refused_before_its_body_is_parsed() {
+        // Loopback is not an authorization: without a token, any process on
+        // the box could spend the credentials this broker holds.
+        let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         let addr = b.url().trim_start_matches("http://").to_string();
         let mut s = TcpStream::connect(addr).unwrap();
         let body = "not json";
         s.write_all(
-            format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+            format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                .as_bytes(),
         )
         .unwrap();
         s.flush().unwrap();
         let mut raw = String::new();
         s.read_to_string(&mut raw).unwrap();
-        assert!(raw.contains("400"), "{raw}");
+        assert!(raw.contains("401"), "{raw}");
+    }
+
+    #[test]
+    fn a_forged_token_is_refused() {
+        let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
+        let (status, _) =
+            call_with_token(&b, "0".repeat(48).as_str(), serde_json::json!({ "url": "https://x/" }));
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn a_grant_naming_no_method_may_only_read() {
+        // Connectors read; tools write. The write verb is always something
+        // someone decided to allow.
+        let b = Broker::start(
+            EgressPolicy::unrestricted(),
+            BTreeMap::new(),
+            EgressGrants::new().grant("reader", CallerGrant::new()),
+            "TRG-E009",
+        )
+        .unwrap();
+        let (status, body) = call_as(
+            &b,
+            "reader",
+            serde_json::json!({ "url": "https://example.com/x", "method": "POST" }),
+        );
+        assert_eq!(status, 403);
+        assert!(body["error"].as_str().unwrap().contains("not permitted"), "{body}");
+    }
+
+    #[test]
+    fn one_callers_token_does_not_buy_anothers_scope() {
+        // Two tools, one broker, one port: the token is what tells them apart.
+        let b = Broker::start(
+            EgressPolicy::unrestricted(),
+            BTreeMap::new(),
+            EgressGrants::new()
+                .grant("writer", CallerGrant::new().method("POST").credential("zoho"))
+                .grant("reader", CallerGrant::new()),
+            "TRG-E009",
+        )
+        .unwrap();
+        assert_ne!(b.token_for("writer").unwrap(), b.token_for("reader").unwrap());
+
+        // The reader presenting its own token cannot POST...
+        let (status, _) = call_as(
+            &b,
+            "reader",
+            serde_json::json!({ "url": "https://example.com/x", "method": "POST" }),
+        );
+        assert_eq!(status, 403);
+
+        // ...and cannot reach for the writer's credential either.
+        let (status, _) = call_as(
+            &b,
+            "reader",
+            serde_json::json!({ "url": "https://example.com/x", "credential": "zoho" }),
+        );
+        assert_eq!(status, 403);
+    }
+
+    #[test]
+    fn a_caller_with_no_grant_at_all_gets_no_token() {
+        let b = Broker::start(
+            EgressPolicy::unrestricted(),
+            BTreeMap::new(),
+            EgressGrants::new().grant("writer", CallerGrant::new()),
+            "TRG-E009",
+        )
+        .unwrap();
+        assert!(b.token_for("nobody").is_none(), "an ungranted caller must not see the broker");
     }
 
     #[test]
     fn the_broker_binds_loopback_only() {
         // A service that holds credentials must not be reachable off-box.
-        let b = Broker::start(policy(&[]), BTreeMap::new()).unwrap();
+        let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         assert!(b.url().starts_with("http://127.0.0.1:"), "{}", b.url());
     }
 
@@ -414,7 +752,7 @@ mod tests {
     fn an_unrestricted_policy_still_brokers_rather_than_handing_over_the_token() {
         // Even with no allowlist, the credential stays here — the connector
         // gets a URL, not a secret.
-        let b = Broker::start(EgressPolicy::unrestricted(), BTreeMap::new()).unwrap();
+        let b = Broker::start(EgressPolicy::unrestricted(), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         let (status, _) = call(&b, serde_json::json!({ "url": "https://anywhere.example/" }));
         assert_ne!(status, 403, "an absent allowlist does not refuse");
     }

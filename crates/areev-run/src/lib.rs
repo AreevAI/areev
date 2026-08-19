@@ -15,7 +15,9 @@
 //! intent re-delivers under the same idempotency key and the redelivery is
 //! journaled as an Observation — recorded, never silent.
 
+pub mod broker;
 pub mod clock;
+pub mod egress;
 pub mod executor;
 pub mod journal;
 pub mod lease;
@@ -26,7 +28,9 @@ pub mod runner;
 pub mod stream;
 
 pub use clock::{Clock, ScriptedClock, SystemClock};
-pub use executor::{CodeExecutor, CommandExecutor, ExecResult, ExecutorRegistry, HostToolExecutor};
+pub use broker::{Broker, CallerGrant, Credential, EgressGrants};
+pub use egress::{EgressDenied, EgressPolicy};
+pub use executor::{CodeExecutor, CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor};
 pub use manifest::{BudgetsSpec, ForkBase, PinnedTool, RunManifest};
 pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;

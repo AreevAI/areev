@@ -144,7 +144,7 @@ fn evaluator(facade: Arc<AreevFacade>, ns: &str, flags: &HashMap<String, String>
     if let Some(spec) = flag(flags, "credential") {
         for pair in spec.split(',') {
             if let Some((name, var)) = pair.split_once('=') {
-                if let Ok(c) = areev_trigger::broker::Credential::bearer_from_env(var.trim()) {
+                if let Ok(c) = areev_run::Credential::bearer_from_env(var.trim()) {
                     credentials.insert(name.trim().to_string(), c);
                 }
             }

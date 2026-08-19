@@ -139,6 +139,7 @@ in source.
 | `RUN-E019` | `InvalidPlan` | The plan failed structural validation |
 | `RUN-E020` | `Storage` | The store failed underneath the driver |
 | `RUN-E021` | `LeaseLost` | Another driver took this run over mid-flight; this driver's writes are refused |
+| `RUN-E022` | `EgressRefused` | A host command's outbound call was refused: destination outside the run's allowlist, a method its grant does not permit, or a credential it may not spend (the trigger evaluator reports the same condition as `TRG-E009`) |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 

@@ -173,7 +173,7 @@ pub struct Evaluator {
     /// Credentials the broker may attach, by name. Values live here and never
     /// in a grain or a connector's environment: a declaration names a
     /// credential, it never carries one.
-    pub credentials: std::collections::BTreeMap<String, crate::broker::Credential>,
+    pub credentials: std::collections::BTreeMap<String, areev_run::Credential>,
     pub ns: String,
     pub principal: String,
 }
@@ -789,8 +789,30 @@ impl Evaluator {
         // connector is handed its URL — never a token — so a compromised
         // connector has nothing to exfiltrate and nowhere undeclared to send
         // it. The broker stops when this call returns.
-        let policy = crate::egress::EgressPolicy::from_config(trigger.config.as_ref())?;
-        let broker = crate::broker::Broker::start(policy, self.credentials.clone())?;
+        let policy = areev_run::EgressPolicy::from_config(trigger.config.as_ref())
+            .map_err(|what| TriggerError::Malformed { what })?;
+        // One connector runs per pass, so there is no second caller to tell it
+        // apart from: a default grant covers it. Its methods are whatever the
+        // connector needs to poll, and the credentials are the ones this host
+        // configured — naming one it was not given still fails.
+        let grants = areev_run::EgressGrants::new().default_for_all(
+            self.credentials.keys().fold(
+                areev_run::CallerGrant::new()
+                    .method("GET")
+                    .method("POST")
+                    .method("PUT")
+                    .method("PATCH")
+                    .method("DELETE"),
+                |g, name| g.credential(name),
+            ),
+        );
+        let broker = areev_run::Broker::start(
+            policy,
+            self.credentials.clone(),
+            grants,
+            "TRG-E009",
+        )
+        .map_err(|detail| TriggerError::Storage { detail })?;
 
         let request = PollRequest {
             trigger: hash,
@@ -822,8 +844,14 @@ impl Evaluator {
         let result = {
             let _guard = EGRESS_ENV.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("AREEV_EGRESS_URL", broker.url());
+            // The broker authenticates its callers: loopback is not an
+            // authorization, and without the token every call would 401.
+            if let Some(t) = broker.token_for(connector_name) {
+                std::env::set_var("AREEV_EGRESS_TOKEN", t);
+            }
             let r = exec.execute(connector_name, hash, &payload, &idem);
             std::env::remove_var("AREEV_EGRESS_URL");
+            std::env::remove_var("AREEV_EGRESS_TOKEN");
             r
         };
 

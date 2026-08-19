@@ -158,6 +158,56 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+### Brokered egress (`--credential`, `--allow-host`, `--tool-egress`)
+
+A tool that posts to a vendor API does not need to hold the token:
+
+```bash
+areev run start --workflow <WF> --run-id r1 --tool-cmd ./tools.sh \
+  --credential zoho=ZOHO_TOKEN,graph=GRAPH_TOKEN \
+  --allow-host 'https://books.zoho.com,https://graph.microsoft.com' \
+  --tool-egress 'zoho_post:zoho:POST,send_email:graph:POST,parse_pdf::'
+```
+
+The tool gets `AREEV_EGRESS_URL` and `AREEV_EGRESS_TOKEN` in its environment —
+**never a credential value** — and posts the call it wants:
+
+```json
+{ "url": "https://books.zoho.com/api/v3/bills", "method": "POST",
+  "credential": "zoho", "body": "{...}" }
+```
+
+The broker checks the destination against `--allow-host`, the method and
+credential against that tool's grant, attaches the credential, and makes the
+request. The token never enters the tool's process, so a compromised tool has
+nothing to exfiltrate.
+
+`--tool-egress tool:credentials:methods` is the grant, `+`-separated within a
+field. Three rules are deliberate:
+
+- **A tool with no grant gets nothing** — not even the broker's address.
+- **A grant naming no method may only read.** Connectors read; tools write, and
+  the write verb is the one worth making deliberate. `parse_pdf::` above grants
+  nothing at all.
+- **Naming a credential is not being allowed to use it.** The tool chooses
+  *which* by name; the host decides whether it may. One tool's token buys
+  nothing of another's scope.
+
+The grant is host configuration, never a grain — a Definition declaring its own
+reach would be a permission arriving in the same bundle as the code it
+authorizes. Refusals are reported to the tool as a `403` carrying `RUN-E022`,
+and printed to stderr when the run ends so a refusal the tool swallowed is
+still visible.
+
+Omitting all three flags leaves tools exactly as they were: no broker, and
+whatever credentials your tool script already reads for itself.
+
+**Honest limits.** Exfiltration *through* an allowed host still works (encode
+data into a draft, a label, a filename); hostname allowlisting cannot see
+through DNS tricks or domain fronting; and a brokered tool cannot use a vendor
+SDK, because the SDK wants its own sockets. This raises the bar; it is not a
+boundary.
+
 ### Code-carrying tools (`executor_uri`)
 
 A Definition may name its executor by content address instead of relying on

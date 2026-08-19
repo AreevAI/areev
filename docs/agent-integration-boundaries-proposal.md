@@ -5,8 +5,8 @@ three real workloads onto the existing primitives: invoice intake from an
 Outlook mailbox into Zoho Books, NDA review conducted over email, and
 contact-form lead enrichment into a CRM.
 
-**Part 1 (`executor_uri`) is BUILT** and landed with this document. Parts 2 and
-3 are decided-in-principle and unbuilt; each names what it costs.
+**Parts 1 (`executor_uri`) and 3 (egress) are BUILT.** Part 2 is
+decided-in-principle and unbuilt; it names what it costs.
 
 The review's conclusion was that the primitives compose — `Trigger` for
 ingress, `Workflow` for the plan, `Tool` Definitions for effects, the journal
@@ -203,6 +203,29 @@ constrains it only somewhat.
 
 ## 3. Egress — brokering the write side
 
+**Built.** What shipped differs from the sketch below in one way worth
+recording: the per-tool grant is **host configuration, not a field on the Tool
+Definition**. Writing it on the grain would have made it a permission arriving
+in the same bundle as the code it authorizes — the exact thing §1 refuses for
+code — so the tool names which credential it wants *at call time* and the host
+decides whether it may have it. Intent travels; authority does not. That also
+avoided touching canonical serialization, which was a bonus rather than the
+reason.
+
+Two things the sketch missed and the implementation needed:
+
+- **The broker had to start authenticating its callers.** It binds loopback,
+  and loopback is not an authorization — any process on the box could post to
+  it and spend the credentials it holds. Each caller now presents an
+  unguessable per-caller capability token. That token is also the only way one
+  port can serve N pool workers and still tell them apart, so per-tool scoping
+  was impossible without it. The connector path gained the same protection for
+  free.
+- **`TRG-E009` needed a sibling, not a rename.** The same condition reported by
+  two subsystems takes one code each, exactly as a storage failure is
+  `TRG-E010` in one and `RUN-E020` in the other. Egress refusal is now
+  `TRG-E009` from the evaluator and `RUN-E022` from the driver.
+
 ### The gap
 
 `AREEV_EGRESS_URL` credential brokering and the `int:allowed_outbound_hosts`
@@ -226,16 +249,16 @@ Mostly relocation. The mechanism is 721 lines that already work.
    posts a description of the call it wants; the broker attaches the
    credential. Identical contract to the connector — one contract to learn,
    which was the original argument for the connector using the tool's shape.
-3. **Per-tool scoping — the RBAC part.** Declare reach on the **Tool Definition
-   grain**: which credentials it may use, which hosts it may reach, which
-   methods it may issue. The run manifest pins that at start, so a plan cannot
-   widen its own reach mid-run.
+3. **Per-tool scoping — the RBAC part.** Declared host-side, per tool name:
+   which credentials it may spend and which methods it may issue, against a
+   run-wide host allowlist.
 
+   ```bash
+   --allow-host 'https://books.zoho.com,https://graph.microsoft.com' \
+   --tool-egress 'zoho_post:zoho:POST,send_email:graph:POST,parse_pdf::'
    ```
-   zoho_post   → credential: zoho,  hosts: books.zoho.com,      methods: [POST]
-   send_email  → credential: graph, hosts: graph.microsoft.com, methods: [POST]
-   parse_pdf   → no credential, no egress
-   ```
+
+   A tool with no grant never receives the broker's address at all.
 
 4. **Deny writes by default.** Connectors read; tools write. A definition that
    does not declare `POST` cannot POST. Deny-by-default on the write verb is
@@ -264,16 +287,20 @@ boundary.
 
 ## 4. Sequencing
 
-1. **Part 1 (`executor_uri`)** — built, landed with this document.
-2. **Part 3 (egress)** — mechanism exists, mostly relocation, closes the
-   largest blast-radius gap. Smallest remaining risk.
-3. **Part 2 (LLM boundary)** — mechanism exists; needs two wiring points, the
-   fail-closed rule, and care with verify and replay.
+1. **Part 1 (`executor_uri`)** — built.
+2. **Part 3 (egress)** — built.
+3. **Part 2 (LLM boundary)** — remaining. The mechanism exists; it needs two
+   wiring points, the fail-closed rule on unmatched placeholders, and care with
+   verify and replay. It is also the part that makes [`gdpr.md`](gdpr.md) and
+   [`eu-ai-act.md`](eu-ai-act.md) true for agent workloads, which is what a
+   procurement reviewer asks about first.
 
-That order optimizes for risk. **If enterprise or compliance work is driving,
-invert 2 and 3**: the LLM boundary is what makes [`gdpr.md`](gdpr.md) and
-[`eu-ai-act.md`](eu-ai-act.md) true for agent workloads, and it is the thing a
-procurement reviewer asks about first.
+One follow-up the egress work leaves open: refusals are reported to the caller
+as a `403` and printed to stderr when a run ends, but they are **not journaled
+into the run record**. The executor holds the broker and runs on a pool thread,
+so journaling from there would need driver plumbing the rest of this did not.
+Worth closing, because a refusal a tool swallowed should be recoverable from
+the memory rather than from a terminal that has scrolled.
 
 ## 5. What this document does not propose
 

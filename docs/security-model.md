@@ -315,6 +315,37 @@ allowlist and the credential broker exist. By Tier C's own design a module canno
 make a network call, so a connector will never be one — the two mechanisms cover
 different threats and neither substitutes for the other.
 
+### Credentials a host command never holds
+
+`areev run`'s `--credential` / `--allow-host` / `--tool-egress` and the trigger
+evaluator's connector path share one credential broker. A brokered command gets
+`AREEV_EGRESS_URL` and `AREEV_EGRESS_TOKEN` and nothing else; credential values
+are read from host-named environment variables in the driver's process and
+never enter a grain, a bundle, or the child's environment.
+
+Three properties are worth stating because each closes a specific hole:
+
+- **The broker authenticates its callers.** It binds loopback on an ephemeral
+  port, and loopback is not an authorization — any process on the box could
+  otherwise post to it and spend the credentials it holds. Each caller
+  presents an unguessable per-caller capability token.
+- **Scope is per caller.** The token is also what lets one port serve N pool
+  workers and still tell them apart, so one tool's grant buys nothing of
+  another's. A caller with no grant never receives the broker's address.
+- **Writes are deny-by-default.** A grant naming no method may only `GET`/
+  `HEAD`.
+
+Grants are host configuration, never grains, for the same reason the
+code-executor allowlist is: a Definition declaring its own reach would be a
+permission arriving in the same bundle as the code it authorizes.
+
+The limits are unchanged and worth repeating: exfiltration through an *allowed*
+host still works, hostname allowlisting cannot see through DNS tricks or domain
+fronting, and a brokered command cannot use a vendor SDK. This is why the
+brokering exists alongside — not instead of — the sandbox discussion above: a
+connector legitimately needs the network *and* the credential, so isolation
+does not constrain what actually goes wrong.
+
 ### Code that arrives in a memory (`executor_uri`)
 
 A `Tool` Definition may name its executor by content address
