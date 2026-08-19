@@ -22,6 +22,18 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
   (an email's From header, a CRM row, a project codename), each with its
   own detection category. Both APIs' signatures are unchanged; the
   bindings pick this up with no code changes.
+- **A cycle's back-edge can now close on any node, not only the plan's
+  entry** (#33): a bounded cycle whose re-entry point was a mid-graph node
+  (e.g. `analyze -> notify -> gate -> converse -> gate`, the back-edge
+  targeting `gate`) validated cleanly and then stalled the run at the
+  entry on superstep 1, because the scheduler's AND-join gate required
+  that not-yet-resolvable back-edge before the node could ever go Ready —
+  a rule only the entry node's unconditional bootstrap sidestepped.
+  `PlanGraph` now classifies every edge as a DFS back-edge or not (from
+  the same entry-rooted Tarjan traversal that already computes `scc_of`),
+  and a node's first activation only gates on edges that could possibly
+  have resolved by then. `run oversight-report`'s stall diagnosis also no
+  longer blames the entry node when its own edge fired correctly.
 
 ## [1.2.2] — 2026-08-18
 

@@ -112,7 +112,10 @@ What each piece means:
 - **`max_cycles`** — the loop-authoring primitive. Cycles are legal, but
   every cycle must carry at least one `max_cycles`-bounded edge or the plan
   is refused at load (`RUN-E002` — an unbounded loop is a bug, not a
-  feature).
+  feature). The cycle's re-entry point can be **any** node in the loop —
+  above, the back-edge closes on `fetch`, the entry, but a mid-graph gate
+  (`notify -> gate -> converse -> gate`, the back-edge targeting `gate`,
+  not the entry) works identically.
 - **`reducers`** — per-state-key merge functions, frozen into the manifest:
   `lww` (the default for undeclared keys), `append`, `sum`, `max`, `min`.
   They are law-tested for batching invariance, which is what makes fan-out
