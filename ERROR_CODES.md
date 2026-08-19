@@ -40,6 +40,8 @@ structured logging and interface envelopes.
 | `SYS` | Internal / unexpected engine faults | `AreevError` |
 | `LOP` | Areev Loop self-improvement engine: analyzers, recommendation lifecycle, governance gates | `areev_loop::Error` — `crates/areev-loop/src/error.rs` |
 | `AUT` | Authorization: principals, verbs, grants, the credential map | `AreevError` — `areev-core/src/authz.rs` |
+| `RUN` | The `areev run` scheduler and driver: plan validation, budgets, journal, leases | `RunError` — `crates/areev-run-core/src/error.rs` |
+| `TRG` | Triggers: declaration validity, schedules, claims, connectors | `TriggerError` — `crates/areev-trigger/src/error.rs` |
 
 The MCP server, HTTP console, CLI, and Python binding do not mint their own
 codes — they surface the underlying `AreevError` / `CalError` (and thus its
@@ -107,6 +109,50 @@ errors stay in the substrate's `CAL` domain; `LOP` covers engine semantics
 `MEM-E103` is intentionally unassigned (reserved, matching the upstream OMS
 numbering). `InstanceErrorKind` is an internal `detail` classifier
 (`shape` / `type` / `required` / `size`), not a top-level code.
+
+### `RUN` — the runtime (`areev-run-core/src/error.rs`)
+
+These have existed since the runtime shipped and were missing from this
+registry; recorded here so the domain is discoverable rather than only findable
+in source.
+
+| Code | Variant | Meaning |
+|------|---------|---------|
+| `RUN-E001` | `Stalled` | No node can advance and the run is not finished |
+| `RUN-E002` | `UnboundedCycle` | A cyclic SCC carries no `max_cycles` edge |
+| `RUN-E003` | `Unreachable` | A node cannot be reached from the entry |
+| `RUN-E004` | `UnresolvedRef` | A binding does not resolve to a usable Tool definition |
+| `RUN-E005` | `InvalidCondition` | An edge condition does not parse |
+| `RUN-E006` | `NoToolLlm` | An abstract node has neither a bound tool nor an LLM |
+| `RUN-E007` | `BudgetExhausted` | A budget axis was spent |
+| `RUN-E008` | `DanglingIntent` | An intent has no result and the host refuses redelivery |
+| `RUN-E009` | `ReplayDivergence` | Verify replay did not reproduce the journal |
+| `RUN-E010` | `ManifestMismatch` | The manifest does not match the plan |
+| `RUN-E011` | `UnknownAsk` | No pending ask with that `tool_call_id` |
+| `RUN-E012` | `Unauthorized` | The principal may not perform the run verb |
+| `RUN-E013` | `Canceled` | The run was cancelled |
+| `RUN-E014` | `ReducerLawViolation` | A reducer broke its declared law |
+| `RUN-E015` | `CheckpointTooLarge` | A checkpoint exceeded its size bound |
+| `RUN-E016` | `Tainted` | Duplicate run id, fork collision, or an ask with no journaled intent |
+| `RUN-E017` | `RetentionRefused` | Retention policy refused the write |
+| `RUN-E018` | `CodeExecRefused` | Code-carrying execution is not enabled |
+| `RUN-E019` | `InvalidPlan` | The plan failed structural validation |
+| `RUN-E020` | `Storage` | The store failed underneath the driver |
+
+### `TRG` — triggers (`areev-trigger/src/error.rs`)
+
+| Code | Variant | Meaning |
+|------|---------|---------|
+| `TRG-E001` | `Malformed` | The declaration cannot fire as written (no interval, no cron, a composite with one member) |
+| `TRG-E002` | `UnresolvedWorkflow` | `workflow` does not resolve to a Workflow grain |
+| `TRG-E003` | `NoConnector` | A trigger is due but the host configured no connector command |
+| `TRG-E004` | `ConnectorFailed` | The connector exited non-zero, timed out, or did not emit JSON |
+| `TRG-E005` | `ClaimLost` | The lease expired mid-firing and another evaluator took over; the release was refused |
+| `TRG-E006` | `BadSchedule` | The cron expression is invalid, or names a timezone this release refuses |
+| `TRG-E007` | `UnknownTarget` | Unknown `trigger render` target |
+| `TRG-E008` | `UnknownMember` | A composite predicate references a member it does not declare |
+| `TRG-E009` | `EgressRefused` | The connector tried to reach a host outside its allowlist |
+| `TRG-E010` | `Storage` | The store refused or failed underneath the evaluator |
 
 ## Registry — CAL codes
 
