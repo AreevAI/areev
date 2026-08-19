@@ -268,6 +268,39 @@ a PITR import (meta rows have no HLC). Counted in
 `ImportStats::meta_applied/meta_skipped`. Conformance:
 `cases/meta_registry.rs`, both backends.
 
+## Trigger state (`trg:` meta rows) + `meta_cas`
+
+`meta_cas(key, expected, new) -> bool` is the store's one named conditional
+write: `expected=None` claims a row only if absent (`INSERT OR IGNORE`),
+`Some(prev)` swaps only if the row still holds exactly `prev` (`UPDATE … WHERE
+v = prev`). Rows-affected is the answer. Both shapes already translate for
+Postgres — `meta` has an upsert conflict target and `INSERT OR IGNORE` is
+handled generically — so **no new dialect entry is needed**, which is the reason
+this is a `meta` row rather than a `trg_state` table.
+
+It compares the **whole value**, so a contended row must have exactly one
+writer. That is the intent for a lease row; do not use it where fields are
+independently owned.
+
+`TriggerState` (next_due_at, cursor, op_cursor, claimed_by, lease_until, fence,
+paused, consecutive_failures, last_error) rides `trg:<trigger-hash>`.
+
+- **`trg:` is deliberately NOT in `REPLICABLE_META_PREFIXES`.** The declaration
+  is a grain and replicates; this is per-host usage. Replicating it is wrong
+  twice: two synced hosts ping-pong on each other's watermark, and a dev memory
+  restored from prod inherits prod's cursor and silently skips real work while
+  reporting success. Same rule as a saved query's `last_run_at`.
+- **The fence lives inside the compared value**, which is what makes a lease
+  fence without a token column: a holder whose lease expired carries a stale
+  `v`, so its release matches no row and is refused. Kleppmann's argument, free,
+  because the lock and the data are the same row.
+- **An unparseable state row is an error, never "never fired."** Reading it as
+  absent would re-fire everything — for a polling trigger, the whole backlog.
+  Same fail-closed posture as an unreadable retention policy.
+
+Conformance (both backends): `trigger_state_never_replicates`,
+`meta_cas_admits_one_claimer_and_fences_the_loser`.
+
 ## memory_tool.rs
 
 Anthropic memory-tool backend: `view/create/str_replace/insert/delete/rename`

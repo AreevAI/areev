@@ -230,3 +230,64 @@ pub fn value_derived_anon_refuses_without_page_key(b: &dyn Backend) {
     let got = m.recall("ns", "caller:john", None, 4).unwrap();
     assert_eq!(got[0].fields["subject"], "[PERSON_1]", "egress must work keyless");
 }
+
+// ---- trigger evaluation state (`trg:`) -----------------------------------
+//
+// The declaration is a grain and replicates; the evaluation state must not.
+// Both backends have to agree on that and on the CAS that arbitrates claims —
+// the embedded tier satisfies it through the single writer, Postgres through a
+// real conditional update, and the trigger evaluator runs the same code path on
+// each rather than branching per backend.
+
+pub fn trigger_state_never_replicates(b: &dyn Backend) {
+    let mut src = b.open_named("trg_src");
+    src.add(&fact("ns", "john", "prefers", "tea")).unwrap();
+    // A cursor pointing at a third-party system's position, and a registry row
+    // that is supposed to travel, so the case can tell "nothing replicated"
+    // apart from "trg: specifically did not".
+    src.put_trigger_state(
+        "abc123",
+        None,
+        &areev_store::TriggerState {
+            cursor: Some("prod-1802611".into()),
+            fence: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    src.meta_put("qry:brief", &qry_row("RECALL facts", 100, None)).unwrap();
+
+    let bundle = b.scratch().join("trigger_state.mgb");
+    src.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+
+    let mut dst = b.open_named("trg_dst");
+    dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+
+    assert!(
+        dst.trigger_state("abc123").unwrap().is_none(),
+        "a restored memory must not inherit the source's cursor — it would skip \
+         real work while reporting success"
+    );
+    assert!(
+        dst.meta_get("qry:brief").unwrap().is_some(),
+        "…and the rows that are supposed to replicate still did"
+    );
+}
+
+pub fn meta_cas_admits_one_claimer_and_fences_the_loser(b: &dyn Backend) {
+    let m = b.open_named("trg_cas");
+
+    // Claim-if-absent: first wins, second loses, value untouched.
+    assert!(m.meta_cas("trg:t", None, "A1").unwrap());
+    assert!(!m.meta_cas("trg:t", None, "B1").unwrap());
+    assert_eq!(m.meta_get("trg:t").unwrap().as_deref(), Some("A1"));
+
+    // Swap against a stale expectation loses and changes nothing — this is the
+    // zombie release, refused because the fence rides inside the value.
+    assert!(!m.meta_cas("trg:t", Some("stale"), "Z").unwrap());
+    assert_eq!(m.meta_get("trg:t").unwrap().as_deref(), Some("A1"));
+
+    // Swap against the exact prior value wins.
+    assert!(m.meta_cas("trg:t", Some("A1"), "A2").unwrap());
+    assert_eq!(m.meta_get("trg:t").unwrap().as_deref(), Some("A2"));
+}

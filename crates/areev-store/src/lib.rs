@@ -836,6 +836,64 @@ pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, St
 /// `meta` key prefix for sealed vault rows (`vault:<ns>:<placeholder>`).
 /// Deliberately OUTSIDE `REPLICABLE_META_PREFIXES` — the re-identification
 /// table never rides a bundle (REQ-ANON-2).
+/// One trigger's evaluation state — the mutable half a content-addressed
+/// declaration cannot hold.
+///
+/// Serialized as the JSON value of a `trg:<trigger-hash>` meta row. Never
+/// replicates (see [`TRG_PREFIX`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TriggerState {
+    /// Epoch-ms of the next occurrence. `None` means "compute it from the
+    /// declaration", which is how a never-evaluated trigger is represented.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_fired_at: Option<i64>,
+    /// Opaque and connector-defined — a Gmail `historyId`, an ETag, a
+    /// timestamp. Areev stores it and hands it back, never interprets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Op-log cursor for a `Memory` trigger. Distinct from `cursor` because one
+    /// is ours and monotonic while the other belongs to a third party.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_cursor: Option<i64>,
+    /// Node identity holding the lease, `None` when free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<i64>,
+    /// Bumped on every claim. Lives inside the compared value, which is what
+    /// makes [`Areev::meta_cas`] fence without a separate token column.
+    pub fence: u64,
+    /// Paused by an operator. Distinct from the declaration's `enabled`: that
+    /// is the author's intent and replicates, this is an operational brake and
+    /// stays on the host that pulled it.
+    pub paused: bool,
+    /// Consecutive failures, driving backoff so a broken connector does not
+    /// hot-loop.
+    pub consecutive_failures: u32,
+    /// Last failure text, surfaced by `areev trigger status`. An unfired
+    /// trigger is invisible otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl TriggerState {
+    /// Whether the lease is held by someone else at `now_ms`.
+    pub fn leased(&self, now_ms: i64) -> bool {
+        self.lease_until.is_some_and(|until| until > now_ms)
+    }
+
+    /// Whether this trigger is due at `now_ms`. A never-evaluated trigger is
+    /// due immediately — the same rule the loop's gate uses, where a fresh file
+    /// fires on the first tick rather than waiting out an interval it has no
+    /// baseline for.
+    pub fn due(&self, now_ms: i64) -> bool {
+        !self.paused && self.next_due_at.is_none_or(|due| due <= now_ms)
+    }
+}
+
 const VAULT_PREFIX: &str = "vault:";
 
 const REPLICABLE_META_PREFIXES: [&str; 5] =
@@ -901,6 +959,17 @@ const RETENTION_FLOOR_PREFIX: &str = "retention_floor:";
 /// ALL age-based destruction there refuses, floors notwithstanding
 /// (litigation holds are not a retention parameter, they are a stop).
 const HOLD_PREFIX: &str = "hold:";
+
+/// `meta` key prefix for trigger evaluation state (`trg:<trigger-hash>`).
+///
+/// Deliberately OUTSIDE [`REPLICABLE_META_PREFIXES`]. The declaration is a
+/// grain and replicates; this is per-host *usage* — next-due, cursor, lease,
+/// fence — and replicating it is actively wrong twice over. Two synced hosts
+/// would ping-pong on each other's watermark, each firing because it saw the
+/// other's, or neither firing because both did. And a dev memory restored from
+/// prod would inherit prod's cursor and silently skip real work while reporting
+/// success. Same reasoning that keeps a saved query's `last_run_at` local.
+const TRG_PREFIX: &str = "trg:";
 
 const MIN_READER_VERSION_KEY: &str = "min_reader_version";
 
@@ -2180,6 +2249,102 @@ impl Areev {
     pub fn meta_delete(&self, key: &str) -> Result<()> {
         self.db.execute("DELETE FROM meta WHERE k = ?1", vec![pt(key)])?;
         Ok(())
+    }
+
+    /// Conditional write on a single `meta` row. Returns `true` iff this caller
+    /// won.
+    ///
+    /// `expected == None` claims the row only if it is absent; `Some(prev)`
+    /// swaps it only if it still holds exactly `prev`. Both forms are one
+    /// statement whose rows-affected count *is* the answer, which is the same
+    /// shape `scrub_term_if_unreferenced` already uses — the store has had
+    /// guarded conditional writes for a while, just never a named helper.
+    ///
+    /// This is the whole arbitration primitive for triggers. Because a lease's
+    /// fence lives *inside* the compared value, fencing is automatic: a holder
+    /// whose lease expired carries a stale `v`, so its release matches no row,
+    /// affects nothing, and is refused. That is Kleppmann's fencing-token
+    /// argument obtained without a token column — available precisely because
+    /// the lock and the data are the same row in the same transaction.
+    ///
+    /// Portable by construction: `meta` already has an upsert conflict target
+    /// and `INSERT OR IGNORE` already translates, so neither backend needs a
+    /// new dialect entry.
+    ///
+    /// Compares the WHOLE value, so a row under contention must have exactly
+    /// one writer. That is the intent for lease rows; do not reach for this on a
+    /// row whose fields are independently owned.
+    pub fn meta_cas(&self, key: &str, expected: Option<&str>, new: &str) -> Result<bool> {
+        let affected = match expected {
+            None => self.db.execute(
+                "INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)",
+                vec![pt(key), pt(new)],
+            )?,
+            Some(prev) => self.db.execute(
+                "UPDATE meta SET v = ?3 WHERE k = ?1 AND v = ?2",
+                vec![pt(key), pt(prev), pt(new)],
+            )?,
+        };
+        Ok(affected > 0)
+    }
+
+    /// Read one trigger's evaluation state, with the raw row alongside it.
+    ///
+    /// The raw string is what a later [`Self::meta_cas`] must present as
+    /// `expected`, so it is returned rather than re-serialized — a round trip
+    /// through the struct could differ by key order or float formatting and
+    /// would then never match.
+    pub fn trigger_state(&self, trigger: &str) -> Result<Option<(TriggerState, String)>> {
+        let key = format!("{TRG_PREFIX}{trigger}");
+        let Some(raw) = self.meta_get(&key)? else {
+            return Ok(None);
+        };
+        match serde_json::from_str::<TriggerState>(&raw) {
+            Ok(st) => Ok(Some((st, raw))),
+            // A state row this build cannot parse must not read as "never
+            // fired" — that would re-fire everything and, for a polling
+            // trigger, reprocess the whole backlog. Refuse loudly, the same way
+            // an unreadable retention policy does rather than silently meaning
+            // "keep forever".
+            Err(e) => Err(AreevError::Validation(format!(
+                "unreadable trigger state for {trigger}: {e}"
+            ))),
+        }
+    }
+
+    /// Claim-if-absent, or swap against the exact prior row. Returns whether
+    /// this caller won.
+    pub fn put_trigger_state(
+        &self,
+        trigger: &str,
+        expected_raw: Option<&str>,
+        state: &TriggerState,
+    ) -> Result<bool> {
+        let json = serde_json::to_string(state).map_err(db_err)?;
+        self.meta_cas(&format!("{TRG_PREFIX}{trigger}"), expected_raw, &json)
+    }
+
+    /// Every trigger with state, as `(trigger hash, state)`. Unreadable rows
+    /// are surfaced as an error rather than skipped, for the reason above.
+    pub fn trigger_states(&self) -> Result<Vec<(String, TriggerState)>> {
+        let mut out = Vec::new();
+        for (suffix, raw) in self.meta_scan(TRG_PREFIX)? {
+            match serde_json::from_str::<TriggerState>(&raw) {
+                Ok(st) => out.push((suffix, st)),
+                Err(e) => {
+                    return Err(AreevError::Validation(format!(
+                        "unreadable trigger state for {suffix}: {e}"
+                    )))
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Forget a trigger's evaluation state. Used when its declaration is
+    /// tombstoned; a missing row is not an error.
+    pub fn clear_trigger_state(&self, trigger: &str) -> Result<()> {
+        self.meta_delete(&format!("{TRG_PREFIX}{trigger}"))
     }
 
     /// Declared retention policies (GDPR Art. 5(1)(e), storage limitation),
