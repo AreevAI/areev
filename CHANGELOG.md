@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-20
+
 ### Added
 
 - **Repository quality metrics, generated and gated** — `scripts/repo_stats.py`
@@ -28,127 +30,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   released version (a green run that ships nothing), and a `package.json` bump
   without regenerating `index.js` breaks `require()` for anyone with
   `NAPI_RS_ENFORCE_VERSION_CHECK` set.
-
-### Fixed
-
-- **`crates/areev-js/Cargo.lock` had drifted, and nothing would have caught it
-  until a release failed.** areev-js is a detached cargo workspace, so a
-  dependency added to a crate it depends on never reaches its lockfile —
-  `areev-run` gained `getrandom` and `ureq` for the egress broker and this
-  lockfile did not follow. Dependabot's `cargo` entry for `/` does not cover it
-  either. Because `release-npm.yml` now builds `--locked`, that drift would have
-  surfaced as a failed **release** rather than a failed build. Lockfile
-  regenerated, plus two guards so it cannot recur: the `node` CI job asserts
-  `cargo metadata --locked` and now builds with the same `npm ci` /
-  `--locked` flags the release uses, and `dependabot.yml` gains a `cargo` entry
-  for `/crates/areev-js`.
-
-### Changed
-
-- **README repositioned around adaptive agents.** The pitch led with "embedded
-  memory engine" and carried a migration section comparing Areev to other memory
-  stores; being another memory player is not the position. It now leads with the
-  substrate for agents whose behaviour changes on evidence, under human
-  authority, in steps that can be inspected, undone and re-measured — and
-  explains the three systems that make that possible (graph engineering, context
-  engineering, governance) plus the loop that closes them. Competitor comparisons
-  are gone from the README, the package READMEs, and `README.zh-CN.md`;
-  `areev migrate` remains documented in `docs/migrate.md` as a capability rather
-  than a positioning. Added an Examples section linking the runnable material in
-  `examples/`.
-
-  Claim discipline follows the strategy docs' own rules: "self-improving" is
-  scoped to the agent's **memory**, never to model outputs; `verify` is named by
-  the tier that actually ships (**journal-consistent**) rather than the two that
-  do not; `runs_touching` is stated with its limit (a run that merely *read* a
-  grain leaves no grain, so nothing can attest to it); erasure reach is stated
-  with the archive window it does not cover; and nothing anywhere claims to be
-  "compliant".
-
-- **`workflow_dispatch` is now a safe dry run on all three release workflows.**
-  `release-npm` and `release-pypi` published to the registries for real on a
-  manual dispatch from any branch; their publish jobs are now guarded on
-  `github.event_name == 'release'`, matching the guard `release-cli` already
-  had.
-- **Release builds are `--locked`.** The maturin and napi builds resolved a
-  fresh dependency graph at release time, so published wheels and native addons
-  could contain a dependency set no test run had ever seen. Both now build from
-  the committed lockfile, and `npm ci` replaces `npm install` where a
-  `package-lock.json` is committed.
-- **The release runbook publishes the GitHub Release *before* crates.io.** The
-  PyPI, npm and CLI workflows build from local `path` dependencies and never
-  read crates.io, so they had no reason to wait behind the twelve-crate publish
-  chain — they now start immediately and run concurrently with it.
-  `cargo publish --workspace` replaces the hand-maintained bottom-up tier list
-  (which went stale twice and failed mid-publish), with
-  `cargo publish --workspace --dry-run` moved into pre-flight.
-- **Release workflows carry `concurrency` groups** keyed on the tag, so a
-  re-run cannot race a manual dispatch.
-- **README**: added a Quality section with the generated metrics chart; removed
-  the legacy rename notice and the placeholder overview video; the status line
-  no longer restates a version number that goes stale (it points at this file).
-  `README.zh-CN.md` kept in sync.
-
-### Fixed
-
-Nine findings from an external evaluation of 1.2.2 as the context assembler
-and memory for a regulated healthcare voice + chat agent (#42–#50), plus the
-loop's definition-rewrite gap (#28). Every one was reproduced against the code
-before it was fixed.
-
-- **`ORDER BY` ranked a truncated window, and vanished on `ASSEMBLE`** (#43).
-  A pipeline stage runs over what the statement already returned — a
-  `default_limit` page — so `ORDER BY priority DESC | LIMIT 5` returned the
-  top 5 *of the newest 50* and looked exactly like a correct answer.
-  `CONTRADICTIONS` already widened its scan for this reason; that fix is now
-  generalized to every stage with the same shape (`ORDER BY`, type-specific
-  `WHERE` post-filters, `COUNT`), with the caller's bound re-applied
-  afterwards and **`CAL-W015`** when even the widened scan fills. `ORDER BY
-  created_at` is pushed into the scan and is exact at any size — it is the one
-  sort key the `grains` table carries as a column; the rest live inside the
-  content-addressed blob. `ORDER BY` on a multi-source `ASSEMBLE` now emits
-  **`CAL-W016`** instead of being silently discarded. `WITH recency_weight(w)`
-  is **implemented** — it was parsed, stored, and read by nothing since 1.0,
-  while ten built-in saved queries passed it.
-- **`session_id` was a post-filter over a 50-row page** (#49). It is now pushed
-  into `idx_thread(ns, session, seq)`, so `RECALL events WHERE session_id = …`
-  is bounded by turns of *that conversation* rather than rows of the namespace
-  — on a busy namespace the tail of a conversation could be entirely outside
-  the window and the query answered "nothing". No new CAL syntax: the existing
-  `WHERE session_id` spelling now pushes down. `thread_tail` is exposed on the
-  Node and Python bindings.
-- **A Postgres handle never recovered from a database outage** (#48). One
-  `tokio_postgres` client with no reconnect meant a routine managed-database
-  restart (`57P01`) permanently poisoned a long-lived handle. The session is
-  now replaced in place, clearing the prepared-statement and BM25-stats caches
-  that belonged to it; **reads replay, writes do not** (a write may have
-  committed before the connection died), and nothing replays inside a
-  transaction. `docs/deployment-profile.md` gains the connection contract —
-  connections per handle, open cost, pooling guidance — and its stale
-  "advisory-locked single writer" claim is corrected to multi-writer.
-- **Windows `require()` failed on a package npm had refused** (#50). The
-  Windows leg built fine; npm's spam filter rejected the *name*
-  `areev-win32-x64-msvc`, and the release shipped a manifest promising it
-  anyway. Scoping the package makes napi derive `@areev/areev-<platform>`
-  names, which the filter does not reject — Windows works rather than being
-  dropped. `prepare-npm.mjs` now hard-fails a release when a declared target
-  produced no artifact. Three stale proposal headers corrected.
-- **The CLI aborted with no message on Windows.** Windows gives a process's
-  main thread 1 MiB where Linux and macOS give 8, and the deepest paths —
-  `areev loop apply` threading the argument dispatcher through the engine, the
-  substrate adapter, the CAL facade and the store — sat just over it, so the
-  command died with `STATUS_STACK_OVERFLOW` and no output. `main` now runs the
-  CLI on a thread whose stack size it chooses, making headroom identical on
-  every platform instead of depending on a number the platform picks.
-- **`WITH recency_weight(0)` returned more grains than the statement asked
-  for.** The re-ranking widens its candidate scan and truncates back to the
-  caller's bound afterwards; the widening tested "is the option present" and
-  the truncation "is the weight above zero", so a weight of exactly zero — the
-  same answer as no option at all — widened and never came back, and
-  `RECENT 3` answered with twelve. Both now read one predicate; zero, negative
-  and NaN weights all take the unwidened path.
-
-### Added
 
 - **`ASSEMBLE` literal sections and pinning** (#42). `label: LITERAL "…"`
   renders host-supplied text at its authored position; `label: PIN …` marks a
@@ -256,56 +137,6 @@ before it was fixed.
   explicitly not credential protection, which is what the egress allowlist and
   broker are for.
 
-### Removed
-
-- **`Workflow.trigger`** (breaking). A free-text "activation condition" that
-  nothing ever read — neither `areev-run-core` nor `areev-run` — so it described
-  an activation that could not activate anything, while the console offered to
-  set it. A trigger is now a `Trigger` grain that points *at* a plan, which is
-  the only direction that works: a Workflow is content-addressed and a run's
-  manifest pins its hash, so a plan carrying a list of triggers would change
-  address every time one was added.
-  - CAL's `ADD workflow "n" ON "..."` clause is removed and **refused by name**,
-    with a message pointing at `areev trigger add`. Silently ignoring it would
-    leave an author believing they had scheduled something.
-  - Old blobs still deserialize: an unknown field is preserved and ignored, so
-    this costs a vestigial key in grains already written and nothing else.
-  - The console's plan subtitle becomes a read-only shape summary.
-
-### Security
-
-- **Host command seams no longer inherit named secrets.** No subprocess seam
-  called `env_clear`/`env_remove`, so `--passphrase-env` (the memory's
-  encryption passphrase) and `--token-env` were inherited by every child of
-  `--tool-cmd`, `--embed-cmd`, `--anonymize-cmd`, `--llm-cmd`, `--analyzer-cmd`
-  and `areev eval`. The CLI wrapped its own copy in `Zeroizing` and then handed
-  the raw variable to every child. Both flags name a *variable*, so the names
-  are now registered at argument-parse time and withheld from every spawn. The
-  rest of the environment is still inherited — an `--llm-cmd` that reads its own
-  API key from the environment keeps working.
-- **A plan's `tool_name` is validated before it reaches a child.** It arrives as
-  `$AREEV_TOOL_NAME` and can come from an imported bundle (import verifies
-  content integrity, not authorship). Names outside `[A-Za-z0-9_.-]{1,64}` are
-  refused at `run start` rather than mid-superstep.
-
-### Changed
-
-- **One bounded spawn path for every host command seam** (`areev_core::proc`,
-  mirrored privately in `areev-loop`, which may not depend on an areev-*
-  sibling; `proc_contract.rs` pins the two together). Five hand-rolled copies
-  across six seams are gone, and with them three real defects:
-  - **No wall-clock ceiling.** A tool that never exited held its run-pool worker
-    and then the driver itself, forever. Now 300s by default, then killed —
-    surfacing as a retryable `Timeout` for tool effects rather than a hang.
-    `CommandExecutor::with_timeout(None)` restores the old behaviour.
-  - **No output cap.** stdout was read to EOF into memory unbounded. Now 64 MiB
-    per stream, drained past the cap so the child never blocks on a full pipe.
-  - **A stdin deadlock.** Every seam wrote its whole payload before reading a
-    byte of output, so a child that filled the pipe buffer while still reading
-    its input hung, and so did we. stdin now writes on its own thread.
-
-### Added
-
 - **`read_blob_offline` in the Python and Node bindings.** The lock-free CAS
   read added in 1.2.1 reached only the CLI, so a `--tool-cmd` subprocess
   written in Python or Node — the common case for a binding host — still had
@@ -325,7 +156,152 @@ before it was fixed.
   `GET /api/run/inspect` on the hub/console now returns the same full
   report instead of a smaller, independently hand-rolled subset.
 
+### Changed
+
+- **README repositioned around adaptive agents.** The pitch led with "embedded
+  memory engine" and carried a migration section comparing Areev to other memory
+  stores; being another memory player is not the position. It now leads with the
+  substrate for agents whose behaviour changes on evidence, under human
+  authority, in steps that can be inspected, undone and re-measured — and
+  explains the three systems that make that possible (graph engineering, context
+  engineering, governance) plus the loop that closes them. Competitor comparisons
+  are gone from the README, the package READMEs, and `README.zh-CN.md`;
+  `areev migrate` remains documented in `docs/migrate.md` as a capability rather
+  than a positioning. Added an Examples section linking the runnable material in
+  `examples/`.
+
+  Claim discipline follows the strategy docs' own rules: "self-improving" is
+  scoped to the agent's **memory**, never to model outputs; `verify` is named by
+  the tier that actually ships (**journal-consistent**) rather than the two that
+  do not; `runs_touching` is stated with its limit (a run that merely *read* a
+  grain leaves no grain, so nothing can attest to it); erasure reach is stated
+  with the archive window it does not cover; and nothing anywhere claims to be
+  "compliant".
+
+- **`workflow_dispatch` is now a safe dry run on all three release workflows.**
+  `release-npm` and `release-pypi` published to the registries for real on a
+  manual dispatch from any branch; their publish jobs are now guarded on
+  `github.event_name == 'release'`, matching the guard `release-cli` already
+  had.
+- **Release builds are `--locked`.** The maturin and napi builds resolved a
+  fresh dependency graph at release time, so published wheels and native addons
+  could contain a dependency set no test run had ever seen. Both now build from
+  the committed lockfile, and `npm ci` replaces `npm install` where a
+  `package-lock.json` is committed.
+- **The release runbook publishes the GitHub Release *before* crates.io.** The
+  PyPI, npm and CLI workflows build from local `path` dependencies and never
+  read crates.io, so they had no reason to wait behind the twelve-crate publish
+  chain — they now start immediately and run concurrently with it.
+  `cargo publish --workspace` replaces the hand-maintained bottom-up tier list
+  (which went stale twice and failed mid-publish), with
+  `cargo publish --workspace --dry-run` moved into pre-flight.
+- **Release workflows carry `concurrency` groups** keyed on the tag, so a
+  re-run cannot race a manual dispatch.
+- **README**: added a Quality section with the generated metrics chart; removed
+  the legacy rename notice and the placeholder overview video; the status line
+  no longer restates a version number that goes stale (it points at this file).
+  `README.zh-CN.md` kept in sync.
+
+- **One bounded spawn path for every host command seam** (`areev_core::proc`,
+  mirrored privately in `areev-loop`, which may not depend on an areev-*
+  sibling; `proc_contract.rs` pins the two together). Five hand-rolled copies
+  across six seams are gone, and with them three real defects:
+  - **No wall-clock ceiling.** A tool that never exited held its run-pool worker
+    and then the driver itself, forever. Now 300s by default, then killed —
+    surfacing as a retryable `Timeout` for tool effects rather than a hang.
+    `CommandExecutor::with_timeout(None)` restores the old behaviour.
+  - **No output cap.** stdout was read to EOF into memory unbounded. Now 64 MiB
+    per stream, drained past the cap so the child never blocks on a full pipe.
+  - **A stdin deadlock.** Every seam wrote its whole payload before reading a
+    byte of output, so a child that filled the pipe buffer while still reading
+    its input hung, and so did we. stdin now writes on its own thread.
+
+### Removed
+
+- **`Workflow.trigger`** (breaking). A free-text "activation condition" that
+  nothing ever read — neither `areev-run-core` nor `areev-run` — so it described
+  an activation that could not activate anything, while the console offered to
+  set it. A trigger is now a `Trigger` grain that points *at* a plan, which is
+  the only direction that works: a Workflow is content-addressed and a run's
+  manifest pins its hash, so a plan carrying a list of triggers would change
+  address every time one was added.
+  - CAL's `ADD workflow "n" ON "..."` clause is removed and **refused by name**,
+    with a message pointing at `areev trigger add`. Silently ignoring it would
+    leave an author believing they had scheduled something.
+  - Old blobs still deserialize: an unknown field is preserved and ignored, so
+    this costs a vestigial key in grains already written and nothing else.
+  - The console's plan subtitle becomes a read-only shape summary.
+
 ### Fixed
+
+- **`crates/areev-js/Cargo.lock` had drifted, and nothing would have caught it
+  until a release failed.** areev-js is a detached cargo workspace, so a
+  dependency added to a crate it depends on never reaches its lockfile —
+  `areev-run` gained `getrandom` and `ureq` for the egress broker and this
+  lockfile did not follow. Dependabot's `cargo` entry for `/` does not cover it
+  either. Because `release-npm.yml` now builds `--locked`, that drift would have
+  surfaced as a failed **release** rather than a failed build. Lockfile
+  regenerated, plus two guards so it cannot recur: the `node` CI job asserts
+  `cargo metadata --locked` and now builds with the same `npm ci` /
+  `--locked` flags the release uses, and `dependabot.yml` gains a `cargo` entry
+  for `/crates/areev-js`.
+
+Nine findings from an external evaluation of 1.2.2 as the context assembler
+and memory for a regulated healthcare voice + chat agent (#42–#50), plus the
+loop's definition-rewrite gap (#28). Every one was reproduced against the code
+before it was fixed.
+
+- **`ORDER BY` ranked a truncated window, and vanished on `ASSEMBLE`** (#43).
+  A pipeline stage runs over what the statement already returned — a
+  `default_limit` page — so `ORDER BY priority DESC | LIMIT 5` returned the
+  top 5 *of the newest 50* and looked exactly like a correct answer.
+  `CONTRADICTIONS` already widened its scan for this reason; that fix is now
+  generalized to every stage with the same shape (`ORDER BY`, type-specific
+  `WHERE` post-filters, `COUNT`), with the caller's bound re-applied
+  afterwards and **`CAL-W015`** when even the widened scan fills. `ORDER BY
+  created_at` is pushed into the scan and is exact at any size — it is the one
+  sort key the `grains` table carries as a column; the rest live inside the
+  content-addressed blob. `ORDER BY` on a multi-source `ASSEMBLE` now emits
+  **`CAL-W016`** instead of being silently discarded. `WITH recency_weight(w)`
+  is **implemented** — it was parsed, stored, and read by nothing since 1.0,
+  while ten built-in saved queries passed it.
+- **`session_id` was a post-filter over a 50-row page** (#49). It is now pushed
+  into `idx_thread(ns, session, seq)`, so `RECALL events WHERE session_id = …`
+  is bounded by turns of *that conversation* rather than rows of the namespace
+  — on a busy namespace the tail of a conversation could be entirely outside
+  the window and the query answered "nothing". No new CAL syntax: the existing
+  `WHERE session_id` spelling now pushes down. `thread_tail` is exposed on the
+  Node and Python bindings.
+- **A Postgres handle never recovered from a database outage** (#48). One
+  `tokio_postgres` client with no reconnect meant a routine managed-database
+  restart (`57P01`) permanently poisoned a long-lived handle. The session is
+  now replaced in place, clearing the prepared-statement and BM25-stats caches
+  that belonged to it; **reads replay, writes do not** (a write may have
+  committed before the connection died), and nothing replays inside a
+  transaction. `docs/deployment-profile.md` gains the connection contract —
+  connections per handle, open cost, pooling guidance — and its stale
+  "advisory-locked single writer" claim is corrected to multi-writer.
+- **Windows `require()` failed on a package npm had refused** (#50). The
+  Windows leg built fine; npm's spam filter rejected the *name*
+  `areev-win32-x64-msvc`, and the release shipped a manifest promising it
+  anyway. Scoping the package makes napi derive `@areev/areev-<platform>`
+  names, which the filter does not reject — Windows works rather than being
+  dropped. `prepare-npm.mjs` now hard-fails a release when a declared target
+  produced no artifact. Three stale proposal headers corrected.
+- **The CLI aborted with no message on Windows.** Windows gives a process's
+  main thread 1 MiB where Linux and macOS give 8, and the deepest paths —
+  `areev loop apply` threading the argument dispatcher through the engine, the
+  substrate adapter, the CAL facade and the store — sat just over it, so the
+  command died with `STATUS_STACK_OVERFLOW` and no output. `main` now runs the
+  CLI on a thread whose stack size it chooses, making headroom identical on
+  every platform instead of depending on a number the platform picks.
+- **`WITH recency_weight(0)` returned more grains than the statement asked
+  for.** The re-ranking widens its candidate scan and truncates back to the
+  caller's bound afterwards; the widening tested "is the option present" and
+  the truncation "is the weight above zero", so a weight of exactly zero — the
+  same answer as no option at all — widened and never came back, and
+  `RECENT 3` answered with twelve. Both now read one predicate; zero, negative
+  and NaN weights all take the unwidened path.
 
 - **Known-identity propagation now reaches `scan_text`/`anonymize_text`**
   (#32): these free-text APIs read the store's known-identity table for the
@@ -350,6 +326,22 @@ before it was fixed.
   and a node's first activation only gates on edges that could possibly
   have resolved by then. `run oversight-report`'s stall diagnosis also no
   longer blames the entry node when its own edge fired correctly.
+
+### Security
+
+- **Host command seams no longer inherit named secrets.** No subprocess seam
+  called `env_clear`/`env_remove`, so `--passphrase-env` (the memory's
+  encryption passphrase) and `--token-env` were inherited by every child of
+  `--tool-cmd`, `--embed-cmd`, `--anonymize-cmd`, `--llm-cmd`, `--analyzer-cmd`
+  and `areev eval`. The CLI wrapped its own copy in `Zeroizing` and then handed
+  the raw variable to every child. Both flags name a *variable*, so the names
+  are now registered at argument-parse time and withheld from every spawn. The
+  rest of the environment is still inherited — an `--llm-cmd` that reads its own
+  API key from the environment keeps working.
+- **A plan's `tool_name` is validated before it reaches a child.** It arrives as
+  `$AREEV_TOOL_NAME` and can come from an imported bundle (import verifies
+  content integrity, not authorship). Names outside `[A-Za-z0-9_.-]{1,64}` are
+  refused at `run start` rather than mid-superstep.
 
 ## [1.2.2] — 2026-08-18
 
@@ -757,7 +749,9 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/AreevAI/areev/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/AreevAI/areev/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/AreevAI/areev/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/AreevAI/areev/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AreevAI/areev/compare/v1.0.2...v1.1.0
