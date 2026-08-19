@@ -61,6 +61,27 @@ pub fn validate(trigger: &Trigger) -> Result<()> {
             }
         }
     }
+    if trigger.kind == TriggerKind::Composite {
+        // Refuse at authoring time exactly what firing refuses later. A gate
+        // naming a member the declaration does not carry can never be
+        // satisfied, so the trigger is dead on arrival -- and a dead trigger's
+        // only symptom is nothing happening, which is the whole category this
+        // validation exists to catch. Same TRG-E008 either way: the code names
+        // the defect, not the moment it was noticed.
+        //
+        // `incoherence()` has already established the predicate is present.
+        if let Some(raw) = trigger.predicate.as_ref() {
+            let predicate = crate::predicate::from_value(raw)?;
+            for referenced in crate::predicate::referenced_members(&predicate) {
+                if !trigger.members.contains_key(&referenced) {
+                    return Err(TriggerError::UnknownMember {
+                        trigger: "being declared".into(),
+                        member: referenced,
+                    });
+                }
+            }
+        }
+    }
     Ok(())
 }
 

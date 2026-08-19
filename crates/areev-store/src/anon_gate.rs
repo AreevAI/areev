@@ -200,6 +200,12 @@ impl AnonGate {
         Ok(self.effective(ns)?.map(|p| p.mode))
     }
 
+    /// The placeholder template `ns` actually mints with, from the cached
+    /// policy. `None` when no policy covers it.
+    pub(crate) fn placeholder(&self, ns: &str) -> Result<Option<String>> {
+        Ok(self.effective(ns)?.map(|p| p.placeholder))
+    }
+
     pub(crate) fn declared(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> =
             self.policies.iter().map(|(ns, p)| (ns.clone(), p.mode.clone())).collect();

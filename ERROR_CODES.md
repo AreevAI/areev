@@ -135,10 +135,12 @@ in source.
 | `RUN-E015` | `CheckpointTooLarge` | A checkpoint exceeded its size bound |
 | `RUN-E016` | `Tainted` | Duplicate run id, fork collision, or an ask with no journaled intent |
 | `RUN-E017` | `RetentionRefused` | Retention policy refused the write |
-| `RUN-E018` | `CodeExecRefused` | Code-carrying execution is not enabled |
+| `RUN-E018` | `CodeExecRefused` | A code-carrying tool was refused: the host has not pinned its address (`--allow-executor`), the `executor_uri` is not a `cas://sha256:` content address, or a client tool named an executor |
 | `RUN-E019` | `InvalidPlan` | The plan failed structural validation |
 | `RUN-E020` | `Storage` | The store failed underneath the driver |
 | `RUN-E021` | `LeaseLost` | Another driver took this run over mid-flight; this driver's writes are refused |
+| `RUN-E023` | `AnonReplayUnsafe` | An anonymization policy covers the run's namespace with a scope whose placeholders are not value-derived, so an abstract node's model boundary would make `verify` diverge |
+| `RUN-E022` | `EgressRefused` | A host command's outbound call was refused: destination outside the run's allowlist, a method its grant does not permit, or a credential it may not spend (the trigger evaluator reports the same condition as `TRG-E009`) |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 

@@ -1,7 +1,7 @@
 # Areev
 
 Embedded memory engine for AI agents — reference implementation of OMS (Open
-Memory Spec). Rust workspace of 15 crates (plus `areev-js`, a standalone napi
+Memory Spec). Rust workspace of 16 crates (plus `areev-js`, a standalone napi
 package built outside the workspace, and `adapters/` — the pip packages
 `areev-langgraph` and `areev-crewai`, see `adapters/CLAUDE.md`). Memories
 are immutable content-addressed grains in per-file Turso databases, queried
@@ -51,6 +51,7 @@ cargo run -p areev -- recall --db demo.db --ns caller --subject john
 memory stack:  areev-core ← areev-store ← areev-cal ← areev-context ┐
 loop engine: areev-loop ← areev-loop-adapter (adapter) · areev-llm (providers) ┤
 runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
+triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
                               all feed the leaf crates ↓                  ↓
              areev-mcp, areev-server, areev-py, areev (binary), areev-bench
 ```
@@ -66,7 +67,8 @@ runtime:     areev-run-core (pure scheduler) ← areev-run (driver)     ┤
 | `areev-loop-adapter` | Areev substrate adapter for Areev Loop (`areev_loop::OmsSubstrate` over `AreevFacade`) + recall-telemetry sidecar | — |
 | `areev-llm` | Out-of-box LLM backends (OpenAI-compatible/Anthropic/Ollama over a small blocking HTTP client) for Areev Loop, the `remember()` free-text→Fact extraction (`extract.rs`), and the `ToolCallLlm` tool-calling seam (`toolcall.rs`) for the runtime | — |
 | `areev-run-core` | The PURE `areev run` scheduler: sans-IO `step(env, state, events) → (commands, state)`, frozen condition grammar, plan validation (Tarjan + cycle bounds), re-entry generations, `RUN-Ennn` errors. No clock/rand/IO in its dep tree — CI-enforced | yes |
-| `areev-run` | The `areev run` driver (a host, peer of areev-mcp): journal (intent=Pending Tool grain, result=supersession re-stating identity), checkpoints, resume with same-key crash redelivery, HITL respond with separation of duties, budgets, cancel, journal-consistent `verify` | yes |
+| `areev-run` | The `areev run` driver (a host, peer of areev-mcp): journal (intent=Pending Tool grain, result=supersession re-stating identity), checkpoints, resume with same-key crash redelivery, HITL respond with separation of duties, budgets, cancel, journal-consistent `verify`; plus the two host-boundary controls shared with `areev-trigger` — the content-addressed code executor (`executor_uri` behind a host-side pin) and the credential broker + outbound allowlist | yes |
+| `areev-trigger` | Standing rules that start workflows: the `Trigger` grain's eight kinds over four primitives, the one-shot `trigger run` evaluator (claim, cursor, backoff, catch-up), the connector contract (same JSON-on-stdio shape as `--tool-cmd`), composite gates with correlation windows, and heartbeat rendering (the egress broker moved to `areev-run` so tools could share it). No daemon: cadence is data, evaluation is a command — `docs/triggers.md` | — |
 | `areev-mcp` | Stdio MCP server (see below) | — |
 | `areev-server` | Web console + areevd hub (see below) | — |
 | `areev` | The `areev` binary (see below) | — |

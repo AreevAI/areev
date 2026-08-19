@@ -315,6 +315,103 @@ allowlist and the credential broker exist. By Tier C's own design a module canno
 make a network call, so a connector will never be one — the two mechanisms cover
 different threats and neither substitutes for the other.
 
+### What reaches a model
+
+An `egress` anonymization policy now covers the run path as well as store
+reads. Before, it did not: a trigger hands its payload into `run start` in
+process, so an abstract node's prompt never passed a read exit, and the one
+place a model was called was the one place the policy missed. An operator who
+declared `egress` and ran abstract nodes had a reasonable belief that was
+false, which is the worst shape a security control can take.
+
+The boundary is the model, not the tool — a host tool must receive real values
+or it writes corrupt records — and it is deliberately narrow:
+
+- It is **not DLP**. The tool gets real data, so a compromised tool
+  exfiltrates real data. Brokered egress is what constrains that, and only
+  somewhat.
+- It replaces **only what the detectors catch**: `email` and `phone` by
+  pattern, `person` by interned known identities and the policy's
+  `custom_terms`. A bare personal name the memory has never seen as a subject
+  is not pseudonymized.
+- Rehydration **fails closed** — an unresolvable placeholder fails the node
+  rather than sending the placeholder to a vendor — but `unmatched` detection
+  recognizes the default `[CATEGORY_ID]` silhouette, so a custom `placeholder`
+  template weakens that check.
+- It requires `scope: memory`, and therefore an encrypted memory, because only
+  value-derived tokens replay identically (`RUN-E023` refuses the rest at
+  start).
+
+### Credentials a host command never holds
+
+`areev run`'s `--credential` / `--allow-host` / `--tool-egress` and the trigger
+evaluator's connector path share one credential broker. A brokered command gets
+`AREEV_EGRESS_URL` and `AREEV_EGRESS_TOKEN` and nothing else; credential values
+are read from host-named environment variables in the driver's process and
+never enter a grain, a bundle, or the child's environment.
+
+Three properties are worth stating because each closes a specific hole:
+
+- **The broker authenticates its callers.** It binds loopback on an ephemeral
+  port, and loopback is not an authorization — any process on the box could
+  otherwise post to it and spend the credentials it holds. Each caller
+  presents an unguessable per-caller capability token.
+- **Scope is per caller.** The token is also what lets one port serve N pool
+  workers and still tell them apart, so one tool's grant buys nothing of
+  another's. A caller with no grant never receives the broker's address.
+- **Writes are deny-by-default.** A grant naming no method may only `GET`/
+  `HEAD`.
+
+Grants are host configuration, never grains, for the same reason the
+code-executor allowlist is: a Definition declaring its own reach would be a
+permission arriving in the same bundle as the code it authorizes.
+
+**Refusals are evidence, so they are journaled.** Each distinct `(caller,
+destination, reason)` a run is refused lands as an Observation in
+`agent:harness` alongside the stderr line. A refusal is an agent reaching for
+somewhere it was not allowed — the event a reviewer asks about — and evidence
+that lives only in a terminal is evidence until the terminal scrolls.
+
+The limits are unchanged and worth repeating: exfiltration through an *allowed*
+host still works, hostname allowlisting cannot see through DNS tricks or domain
+fronting, and a brokered command cannot use a vendor SDK. This is why the
+brokering exists alongside — not instead of — the sandbox discussion above: a
+connector legitimately needs the network *and* the credential, so isolation
+does not constrain what actually goes wrong.
+
+### Code that arrives in a memory (`executor_uri`)
+
+A `Tool` Definition may name its executor by content address
+(`executor_uri: "cas://sha256:..."`), and the blob travels in bundles — so
+**importing a peer's memory imports their connector code**. Say this posture
+plainly too:
+
+> **Areev never executes a code blob the host did not pin.** The default is
+> refuse, in the `HostToolExecutor` trait itself.
+
+The authorization deliberately does not live in the file. An operator pins
+addresses with `areev run start --allow-executor <addr>`, which is host
+configuration, never a grain. There is no CAL grant form for this and there
+should not be: `mg:permits` Facts replicate, and a permission that arrives in
+the same bundle as the code it authorizes is not a permission. This is the same
+split that keeps trigger evaluation state and host config out of the file.
+
+An unpinned address is refused at run start (`RUN-E018`) before a lease is
+taken, naming the address. An `executor_uri` that is not a `cas://sha256:`
+content address, or one on a `client` tool, is refused at resolve — a value
+that is silently ignored is exactly the failure this refuses.
+
+What the pin buys, and what it does not: a pinned executor **runs as you, with
+your privileges**, exactly like `--tool-cmd`. The pin is a judgement about
+*provenance* — that a human looked at this specific content address — not a
+container. The threat it addresses is the one that actually occurred in the
+January 2026 n8n community-node compromise, where code nobody had vetted ran
+with credentials it was given; isolation did not stop that and would not stop
+it here.
+
+Because the path is `<cache>/<hex>` and `get_blob` verifies the digest on every
+read, a poisoned cache entry cannot impersonate a different executor.
+
 ## Threats out of scope
 
 - An already-compromised host, physical access, or a malicious local process

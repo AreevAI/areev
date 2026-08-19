@@ -67,6 +67,23 @@ pub enum RunError {
     /// Note the code: the design proposal called this RUN-E017, but that is
     /// `RetentionRefused` and codes are append-only.
     LeaseLost { run_id: String },
+    /// RUN-E022 — a host command's outbound call was refused: a destination
+    /// outside the run's allowlist, a method its grant does not permit, or a
+    /// credential it may not spend.
+    ///
+    /// The trigger evaluator reports the same condition as `TRG-E009`, the way
+    /// a storage failure is `TRG-E010` there and `RUN-E020` here. One
+    /// condition, one code per subsystem that reports it.
+    EgressRefused { destination: String },
+    /// RUN-E023 — an anonymization policy covers this run's namespace but
+    /// cannot replay, so the model boundary would make `verify` diverge.
+    ///
+    /// Session scope numbers tokens by order of appearance, so the same input
+    /// yields different placeholders on a replay. Only value-derived (HMAC)
+    /// tokens are stable across handles and processes — that is D8 — and the
+    /// key for them is HKDF-derived from the page key, which is why this also
+    /// means an encrypted memory.
+    AnonReplayUnsafe { ns: String, scope: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -118,6 +135,8 @@ impl RunError {
             Self::InvalidPlan { .. } => "RUN-E019",
             Self::Storage { .. } => "RUN-E020",
             Self::LeaseLost { .. } => "RUN-E021",
+            Self::EgressRefused { .. } => "RUN-E022",
+            Self::AnonReplayUnsafe { .. } => "RUN-E023",
         }
     }
 }
@@ -206,6 +225,18 @@ impl fmt::Display for RunError {
             ),
             Self::InvalidPlan { why } => write!(f, "{code}: invalid workflow: {why}"),
             Self::Storage { detail } => write!(f, "{code}: store failure: {detail}"),
+            Self::EgressRefused { destination } => write!(
+                f,
+                "{code}: outbound call to '{destination}' was refused by this run's egress policy"
+            ),
+            Self::AnonReplayUnsafe { ns, scope } => write!(
+                f,
+                "{code}: namespace '{ns}' has an anonymization policy with scope \
+                 '{scope}', which cannot be replayed — an abstract node would \
+                 pseudonymize differently on every run and verify would diverge. \
+                 Use scope \"memory\" (value-derived tokens, which needs an \
+                 encrypted memory), or run this plan without abstract nodes"
+            ),
             Self::LeaseLost { run_id } => write!(
                 f,
                 "{code}: lease on run '{run_id}' was lost — another driver took it over \
@@ -246,6 +277,8 @@ mod tests {
             RunError::InvalidPlan { why: "w".into() },
             RunError::Storage { detail: "d".into() },
             RunError::LeaseLost { run_id: "r".into() },
+            RunError::EgressRefused { destination: "https://x/".into() },
+            RunError::AnonReplayUnsafe { ns: "n".into(), scope: "session".into() },
         ]
     }
 
@@ -266,6 +299,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 21);
+        assert_eq!(seen.len(), 23);
     }
 }

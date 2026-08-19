@@ -769,3 +769,121 @@ fn display_helpers_do_not_panic_on_a_short_or_non_ascii_workflow() {
     let status = rig.evaluator(None).status().unwrap();
     assert!(!status.is_empty());
 }
+
+// ---- what a firing record has to explain ----------------------------------
+
+/// Every Observation this evaluator has written, newest first.
+fn firings(rig: &Rig) -> Vec<areev_core::format::deserialize::DeserializedGrain> {
+    rig.facade
+        .with_store(|m| {
+            m.recent_live_scoped(
+                &[areev_trigger::eval::TRIGGER_NS.to_string()],
+                Some(areev_core::types::GrainType::Observation),
+                10,
+            )
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_firing_that_identified_nothing_records_why() {
+    // Regression: the record carried items/runs_started/duplicates and dropped
+    // every count that explains them. "items 5, runs_started 0, duplicates 0"
+    // reads as a mystery, and the zero duplicates actively misleads — it says
+    // the items were not skipped as duplicates without saying why they were
+    // skipped at all.
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/message_id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([
+                { "id": "a", "payload": { "subject": "one" } },
+                { "id": "b", "payload": { "subject": "two" } }
+            ]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let ev = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    ev.run(&opts()).unwrap();
+
+    let obs = firings(&rig);
+    let latest = &obs[0];
+    assert_eq!(latest.get_i64("items"), Some(2));
+    assert_eq!(latest.get_i64("runs_started"), Some(0));
+    assert_eq!(
+        latest.get_i64("unidentifiable"),
+        Some(2),
+        "the record must say why two items produced no runs"
+    );
+}
+
+#[test]
+fn an_ordinary_firing_does_not_carry_the_diagnostic_counts() {
+    // The counterpart to the above: emitted only when non-zero, so a healthy
+    // firing's record stays exactly as small as it was.
+    let rig = Rig::new();
+    rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    rig.evaluator(None).run(&opts()).unwrap();
+
+    let obs = firings(&rig);
+    assert_eq!(obs[0].get_i64("runs_started"), Some(1));
+    assert_eq!(obs[0].get_i64("unidentifiable"), None);
+    assert_eq!(obs[0].get_i64("ingested"), None);
+}
+
+#[test]
+fn a_delivery_that_names_nothing_is_still_journaled() {
+    // Regression: `deliver` returned before reaching the journal, so a webhook
+    // whose payload shape had drifted left no evidence it had ever arrived.
+    // That is the case the record is most needed for.
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Webhook, WF).dedup_key("/message_id"));
+    let ev = rig.evaluator(None);
+
+    let report = ev.deliver(&h, json!({ "subject": "no message_id here" })).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert_eq!(report.unidentifiable, 1);
+
+    let obs = firings(&rig);
+    assert_eq!(obs.len(), 1, "an unusable delivery still has to leave a record");
+    assert_eq!(obs[0].get_str("trigger"), Some(h.as_str()));
+    assert_eq!(obs[0].get_i64("unidentifiable"), Some(1));
+    assert_eq!(obs[0].get_str("note"), Some("delivered"));
+}
+
+#[test]
+fn a_composite_naming_an_undeclared_member_is_refused_at_declaration() {
+    // Firing already refused this with TRG-E008, but only once the trigger was
+    // due — so the declaration sat in the memory looking live. A gate that
+    // names a member it does not declare can never be satisfied, and a dead
+    // trigger's only symptom is nothing happening.
+    let cond =
+        areev_trigger::predicate::parse_predicate("invoice = true AND ghost = true").unwrap();
+    let t = Trigger::new(TriggerKind::Composite, WF)
+        .member("invoice", WF)
+        .member("purchase_order", WF)
+        .predicate(areev_trigger::predicate::to_value(&cond).unwrap());
+
+    let err = areev_trigger::schedule::validate(&t).unwrap_err();
+    assert_eq!(err.code(), "TRG-E008");
+    assert!(err.to_string().contains("ghost"), "{err}");
+
+    // The same declaration with every member declared is accepted.
+    let ok_cond =
+        areev_trigger::predicate::parse_predicate("invoice = true AND purchase_order = true")
+            .unwrap();
+    let good = Trigger::new(TriggerKind::Composite, WF)
+        .member("invoice", WF)
+        .member("purchase_order", WF)
+        .predicate(areev_trigger::predicate::to_value(&ok_cond).unwrap());
+    assert!(areev_trigger::schedule::validate(&good).is_ok());
+}

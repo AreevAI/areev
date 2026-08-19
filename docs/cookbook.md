@@ -802,7 +802,11 @@ change them.
 
 Declare a per-namespace policy once and every model-facing read — recall,
 search, CAL, MCP, the graph reads — returns typed placeholders
-(`[PERSON_1]`, `[PHONE_1]`) instead of identities. The placeholder→value
+(`[PERSON_1]`, `[PHONE_1]`) instead of identities. An `egress` policy also
+covers `areev run`'s abstract nodes, which never were a read: the prompt is
+pseudonymized and the model's tool-call arguments are rehydrated before the
+tool runs, so the model sees a placeholder and the tool still gets the real
+value ([`run.md`](run.md)). The placeholder→value
 mapping stays in your process; the model's reply is rehydrated by exact
 token replacement. This is pseudonymization, not anonymity — the honest
 scope is the egress channel (provider logs, prompt retention).
@@ -1048,11 +1052,87 @@ URI from a grain's `content_refs` and shell out to `areev blob get`.
 
 ---
 
+## 18. Start a workflow when something happens (triggers)
+
+A trigger is a standing rule that starts a workflow. The cadence lives in the
+memory rather than in someone's crontab, so a synced file can say what it was
+supposed to be doing — and **there is still no daemon**: `areev trigger run` is
+a one-shot command that asks the memory what is due.
+
+Poll a mailbox and start a workflow per message:
+
+```bash
+areev trigger add --db ap.db --ns accounting \
+  --type polling --observer outlook \
+  --scope 'mailbox:accounts@acme.com' --interval 120 \
+  --workflow <WF_HASH> --dedup-key /message_id \
+  --because "poll the AP mailbox for invoices"
+
+areev trigger run --db ap.db --ns accounting --dry-run    # safe first command
+areev trigger run --db ap.db --ns accounting \
+  --connector-cmd ./outlook.sh --tool-cmd ./tools.sh
+```
+
+`--dedup-key` mints the run id from the item's identity, so a redelivered
+webhook, an overlapping cursor, and two nodes racing all produce **one run and
+one recorded skip**. The first poll seeds the cursor and fires nothing, so you
+do not process the mailbox's history on day one.
+
+Fire on the memory's own contents instead of an external source:
+
+```bash
+areev trigger add --db crm.db --ns sales \
+  --type memory --workflow <WF_HASH> \
+  --where 'grain_type = "fact" AND relation = "signed_nda"' \
+  --because "kick off onboarding when an NDA is recorded"
+```
+
+Wait for two things to arrive before starting anything — an invoice and its
+purchase order, correlated by thread and windowed:
+
+```bash
+areev trigger add --db ap.db --ns accounting \
+  --type composite --workflow <WF_HASH> \
+  --members 'invoice=<HASH_A>,purchase_order=<HASH_B>' \
+  --where 'invoice = true AND purchase_order = true' \
+  --correlate /thread_id --window 10m \
+  --because "match an invoice to its purchase order before posting"
+```
+
+A gate naming a member the declaration does not carry is refused when you
+declare it (`TRG-E008`), not when it first comes due — a trigger that can never
+fire has no symptom except silence.
+
+Webhooks arrive through your own listener; Areev never opens a port:
+
+```bash
+areev trigger deliver --db crm.db --ns sales --id <TRIGGER> < payload.json
+```
+
+Then put evaluation on whatever heartbeat you already run. The rendered
+interval is the GCD of your declared intervals, floored at 60s — deliberately
+coarser than your shortest trigger, because the memory owns the real cadence:
+
+```bash
+areev trigger render --db ap.db --ns accounting --target cron   # or launchd,
+                                                                # systemd,
+                                                                # k8s-cronjob
+areev trigger status --db ap.db --ns accounting   # what fired, what is due
+```
+
+`trigger status` is per-host: evaluation state deliberately does not replicate,
+so a dev memory restored from prod cannot inherit prod's cursor and silently
+skip real work. Full reference: [`triggers.md`](triggers.md).
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
 - [`cal-reference.md`](cal-reference.md) — the CAL query language
 - [`mcp-reference.md`](mcp-reference.md) — the MCP tools
+- [`triggers.md`](triggers.md) — the eight trigger kinds, in full
+- [`run.md`](run.md) — the governed workflow runtime
 - [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)
 - [`../FAQ.md`](../FAQ.md) — concepts and comparisons
 - [`../SECURITY.md`](../SECURITY.md) — trust model and hardening

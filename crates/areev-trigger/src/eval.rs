@@ -173,7 +173,7 @@ pub struct Evaluator {
     /// Credentials the broker may attach, by name. Values live here and never
     /// in a grain or a connector's environment: a declaration names a
     /// credential, it never carries one.
-    pub credentials: std::collections::BTreeMap<String, crate::broker::Credential>,
+    pub credentials: std::collections::BTreeMap<String, areev_run::Credential>,
     pub ns: String,
     pub principal: String,
 }
@@ -304,11 +304,22 @@ impl Evaluator {
 
         let mut report = EvalReport::default();
         let item = PollItem { id: String::new(), payload };
+        report.items = 1;
         let Some(value) = dedup_value(&item, &trigger.dedup_key) else {
             report.unidentifiable = 1;
+            // Journal before returning. A delivery naming nothing is precisely
+            // the case the record exists for: the sender's payload shape
+            // changed under us, and stdout of whatever invoked this is not an
+            // audit record -- the replicating Observation is.
+            self.journal(
+                &hash,
+                &trigger,
+                &FireOutcome { items: 1, unidentifiable: 1, ..Default::default() },
+                Some("delivered"),
+                now,
+            )?;
             return Ok(report);
         };
-        report.items = 1;
         let run_id = run_id_for(&hash, trigger.connector.as_deref(), &value);
         match self.start_run(&trigger, &run_id, &item, &hash) {
             StartOutcome::Started => report.runs_started = 1,
@@ -564,8 +575,9 @@ impl Evaluator {
                     })
                     .collect()
             }
-            // Land in a later phase; declarations are accepted now so the
-            // vocabulary is stable, but nothing fires them yet.
+            // These do not poll. The host owns the listener and hands the
+            // payload to `deliver`, which fires them on the same idempotency
+            // terms; an evaluation pass simply has nothing to do for one.
             TriggerKind::Webhook | TriggerKind::Manual => Vec::new(),
         };
 
@@ -777,8 +789,30 @@ impl Evaluator {
         // connector is handed its URL — never a token — so a compromised
         // connector has nothing to exfiltrate and nowhere undeclared to send
         // it. The broker stops when this call returns.
-        let policy = crate::egress::EgressPolicy::from_config(trigger.config.as_ref())?;
-        let broker = crate::broker::Broker::start(policy, self.credentials.clone())?;
+        let policy = areev_run::EgressPolicy::from_config(trigger.config.as_ref())
+            .map_err(|what| TriggerError::Malformed { what })?;
+        // One connector runs per pass, so there is no second caller to tell it
+        // apart from: a default grant covers it. Its methods are whatever the
+        // connector needs to poll, and the credentials are the ones this host
+        // configured — naming one it was not given still fails.
+        let grants = areev_run::EgressGrants::new().default_for_all(
+            self.credentials.keys().fold(
+                areev_run::CallerGrant::new()
+                    .method("GET")
+                    .method("POST")
+                    .method("PUT")
+                    .method("PATCH")
+                    .method("DELETE"),
+                |g, name| g.credential(name),
+            ),
+        );
+        let broker = areev_run::Broker::start(
+            policy,
+            self.credentials.clone(),
+            grants,
+            "TRG-E009",
+        )
+        .map_err(|detail| TriggerError::Storage { detail })?;
 
         let request = PollRequest {
             trigger: hash,
@@ -810,8 +844,14 @@ impl Evaluator {
         let result = {
             let _guard = EGRESS_ENV.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("AREEV_EGRESS_URL", broker.url());
+            // The broker authenticates its callers: loopback is not an
+            // authorization, and without the token every call would 401.
+            if let Some(t) = broker.token_for(connector_name) {
+                std::env::set_var("AREEV_EGRESS_TOKEN", t);
+            }
             let r = exec.execute(connector_name, hash, &payload, &idem);
             std::env::remove_var("AREEV_EGRESS_URL");
+            std::env::remove_var("AREEV_EGRESS_TOKEN");
             r
         };
 
@@ -822,7 +862,11 @@ impl Evaluator {
         if !refused.is_empty() {
             return Err(TriggerError::EgressRefused {
                 trigger: hash.to_string(),
-                host: refused.join(", "),
+                host: refused
+                    .iter()
+                    .map(|r| format!("{} ({})", r.destination, r.reason))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             });
         }
         match result {
@@ -908,6 +952,20 @@ impl Evaluator {
             .extra_field("items", serde_json::json!(outcome.items))
             .extra_field("runs_started", serde_json::json!(outcome.runs_started))
             .extra_field("duplicates", serde_json::json!(outcome.duplicates));
+        // Without these, a firing where every item lacked the dedup key reads
+        // as "items 5, runs_started 0, duplicates 0" -- and that last zero
+        // actively misleads, saying the items were not skipped as duplicates
+        // without saying why they were skipped at all. Emitted only when
+        // non-zero, so an ordinary firing stays as small as it was.
+        if outcome.unidentifiable > 0 {
+            obs = obs.extra_field("unidentifiable", serde_json::json!(outcome.unidentifiable));
+        }
+        if outcome.ingested > 0 {
+            obs = obs.extra_field("ingested", serde_json::json!(outcome.ingested));
+        }
+        if !outcome.failures.is_empty() {
+            obs = obs.extra_field("failures", serde_json::json!(outcome.failures));
+        }
         if outcome.seeded {
             obs = obs.extra_field("seeded", serde_json::json!(true));
         }
