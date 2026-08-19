@@ -45,6 +45,32 @@ against the stored chain. Divergence verdicts name the differing fields
 (`diff_fields`). Parked spans replay by feeding the stored close reading
 before `ResponseSettled` — see run-core's wall/elapsed pin for why.
 
+## The clock-reading contract on cancellation
+
+`step()`'s doc comment: "any call that may open or close a superstep
+includes a fresh `ClockReading`." The live `drive()` loop's cancel poll used
+to violate this — it pushed `CancelSeen` alone when `cancel_marker` first
+found the operator's Fact, so a freshly-detected cancel (which closes the
+run's FINAL superstep) journaled `clock_close_ms` from whatever the last
+**completed wave** happened to read, which can predate the cancel Fact's own
+`created_at` when the cancel lands in the gap between one wave finishing and
+the next loop iteration noticing it — inverting the audit trail
+`oversight-report`'s <5-minute kill-switch measurement reads (it already
+silently drops inverted samples rather than trusting them, which is how this
+went unnoticed). The fix: take a fresh reading in the SAME batch as
+`CancelSeen`, mirroring what `verify()`'s own replay already does at both its
+`cancel_peek` call sites (a `ClockReading` immediately preceding
+`CancelSeen`). `cancel_marker` only returns once its store read has observed
+the write `cancel()` performed, so a reading taken right after is monotone
+at or after it. Pinned two ways: `wave6_tests.rs`'s
+`kill_switch_drill_measures_cancel_to_drain_under_the_clause` under real
+concurrency (the shape that caught it), and the deterministic, non-racy pair
+in `areev-run-core/tests/scheduler_tests.rs` —
+`cancel_drains_without_new_dispatches` (now also asserts `clock_close_ms`
+takes the batch's reading) and `cancel_without_a_fresh_reading_journals_a_stale_close`
+(pins the contract's negative: skip the reading, get a stale close — the
+exact shape the old driver code produced).
+
 ## HITL (§6.6)
 
 `respond` validates in order (pausable → known ask by `tool_call_id`, NEVER

@@ -94,3 +94,40 @@ pub struct ShadowReport {
     /// the artifact, not implied by the code.
     pub effect_dispatches: u64,
 }
+
+/// One run's full picture: the frozen manifest, pinned resolutions, spend,
+/// journal size, pending asks, fork lineage. What `areev run inspect`
+/// prints (issue #34) — a tenant-deployed Python/Node service needs it
+/// in-process, since installing the CLI purely to shell out for a
+/// read-only report is a second artifact to ship and sign per deployment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InspectReport {
+    pub run_id: String,
+    pub plan_hash: String,
+    pub principal: String,
+    pub pinned: Vec<serde_json::Value>,
+    pub budgets: serde_json::Value,
+    pub fork_of: Option<serde_json::Value>,
+    pub checkpoints: usize,
+    pub journal_entries: usize,
+    pub superstep: Option<serde_json::Value>,
+    pub phase: Option<String>,
+    pub spent: Option<serde_json::Value>,
+    pub pending_asks: serde_json::Value,
+}
+
+/// The EU AI Act Article 14 answers for one run, measured from the journal
+/// rather than asserted: where a human can intervene, who is authorized to,
+/// what expires when, and how fast the kill switch actually drained. What
+/// `areev run oversight-report` prints (issue #34) — a compliance artifact
+/// customers ask for by name, wanted in-process (a governance console, a
+/// quarterly pack) rather than reconstructed from CLI stdout.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OversightReport {
+    pub run_id: String,
+    pub plan_hash: String,
+    pub human_gates: serde_json::Value,
+    pub authorized_responders: serde_json::Value,
+    pub budgets: serde_json::Value,
+    pub kill_switch: serde_json::Value,
+}

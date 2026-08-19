@@ -2285,6 +2285,48 @@ impl Areev {
             serde_json::to_string(&ids).map_err(err)
         })
     }
+
+    /// One run's full picture — manifest, budgets, phase, spend, pending
+    /// asks, fork lineage. JSON report; same shape as `areev run inspect`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_inspect(&self, run_id: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let runner = js_runner(facade, ns, actor, None);
+            let report = runner.inspect(&run_id).map_err(run_err)?;
+            serde_json::to_string(&report).map_err(err)
+        })
+    }
+
+    /// The EU AI Act Article 14 report — measured from the journal, not
+    /// asserted. `runId` takes precedence; `plan` (a hex hash) resolves to
+    /// that plan's newest run; neither given reports on the newest run
+    /// overall. JSON report; same shape as `areev run oversight-report`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_oversight_report(
+        &self,
+        run_id: Option<String>,
+        plan: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let plan_hash = match plan {
+                Some(p) => Some(areev_core::error::Hash::from_hex(&p).map_err(err)?),
+                None => None,
+            };
+            let runner = js_runner(facade, ns, actor, None);
+            let report = runner
+                .oversight_report(run_id.as_deref(), plan_hash.as_ref())
+                .map_err(run_err)?;
+            serde_json::to_string(&report).map_err(err)
+        })
+    }
 }
 
 

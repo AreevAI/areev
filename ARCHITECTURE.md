@@ -849,6 +849,31 @@ are exempt with the reason stated in code: `subject_report` (the DSAR must
 disclose what is stored), `run_grains` (the runtime's machine replay), and
 the authz engine's grant recall (a pseudonymized principal would fail every
 check). The vocabulary is *pseudonymize* — no anonymity claim, anywhere.
+The free-text APIs (`scan_text`/`anonymize_text`) sit one layer up, on the
+facade, and stay pure-text-in/JSON-out — no store *writes* — but now read
+the store's known-identity table for the facade's default namespace, the
+same propagation table the grain-egress boundary builds: a subject already
+interned by an intake step is detectable in prose passed to these APIs too,
+not only in grain reads (issue #32). `AnonPolicy.known` is the
+caller-supplied complement — identities a host holds but never interned as
+a grain subject (a CRM row, an email header), each with its own category.
+
+### A cycle's back-edge gates a node's own first activation, not the entry's
+
+A bounded cycle's re-entry point can be **any** node, not only the plan's
+entry — `PlanGraph::build` classifies every edge as a DFS back-edge (via
+the entry-rooted Tarjan traversal already computing `scc_of`) or not, and
+`refresh_readiness` excludes an in-edge from a node's *generation-0*
+AND-join exactly when it's a back-edge: such an edge closes a cycle through
+that very node, so it cannot possibly have resolved before the node's own
+first run. Node 0 needed no such rule — it bootstraps unconditionally
+(`apply_event`'s `Start` handler) — but nothing generalized the idea to a
+non-entry cycle head, so a plan like `a -> g -> c -> g` (back-edge to `g`,
+not `a`) validated cleanly and then deadlocked at superstep 1 (issue #33).
+Removing exactly the DFS back-edges of an entry-rooted traversal always
+leaves an acyclic graph — a standard theorem — which is what makes the
+generalization safe for arbitrary cycle shapes, not just the single-node
+self-loop or entry-targeted back-edge the original scheduler handled.
 
 ### Portability and provenance over lock-in
 

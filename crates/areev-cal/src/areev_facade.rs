@@ -461,12 +461,24 @@ impl AreevFacade {
 
     // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------
     //
-    // The explicit front door: pure text in, JSON out, no store access. From
-    // P1 on these same signatures grow policy-row lookup (`anon:<ns>`) and
-    // the session mapping table; the P0 caller supplies the policy explicitly
-    // and holds the mapping (D5 custody: an in-process caller already holds
-    // the raw file, so no gate applies here — the vaulted `reveal` path is
-    // the gated one).
+    // Text in, JSON out — no store WRITES, but reads the store's
+    // known-identity table for the facade's default namespace (issue #32):
+    // a subject already interned by an intake step (grain egress) is
+    // detectable in free text too, the same propagation table, one
+    // matcher. `policy_json` is still supplied explicitly by the caller
+    // (P0's contract; the declared `anon:<ns>` policy row is not
+    // auto-loaded here) and may carry its own `known` entries for
+    // identities the caller holds but never interned as a grain subject.
+
+    /// The facade's default namespace's accumulated known-identity list —
+    /// same table `egress_grains` builds for grain reads (issue #32). Empty
+    /// when the facade has no default namespace (bare `AreevFacade::new`).
+    fn known_identities(&self) -> Vec<String> {
+        match &self.namespace {
+            Some(ns) => self.with_store(|m| m.anon_known_identities(ns)),
+            None => Vec::new(),
+        }
+    }
 
     /// Run the Tier-0 detector chain over `text`. Returns JSON
     /// `{"text": <nfc text>, "detections": [{start, end, category,
@@ -477,7 +489,7 @@ impl AreevFacade {
             Some(j) => areev_core::anon::AnonPolicy::from_json(j)?,
             None => areev_core::anon::AnonPolicy::default(),
         };
-        let out = areev_core::anon::scan(text, &policy, &[])?;
+        let out = areev_core::anon::scan(text, &policy, &self.known_identities())?;
         serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
     }
 
@@ -502,7 +514,8 @@ impl AreevFacade {
             })?),
             None => None,
         };
-        let out = areev_core::anon::anonymize(text, &policy, &[], key.as_deref())?;
+        let out =
+            areev_core::anon::anonymize(text, &policy, &self.known_identities(), key.as_deref())?;
         serde_json::to_string(&out).map_err(|e| AreevError::Internal(e.to_string()))
     }
 

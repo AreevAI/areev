@@ -757,6 +757,24 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.equal(shadow.all_consistent, true)
   assert.equal(shadow.effect_dispatches, 0)
 
+  // Inspect: manifest, budgets, phase, spend, pending asks, fork lineage —
+  // same report `areev run inspect` prints, now in-process (issue #34).
+  const inspected = JSON.parse(await m.runInspect('js-1'))
+  assert.equal(inspected.run_id, 'js-1')
+  assert.equal(inspected.plan_hash, wf)
+  assert.deepEqual(new Set(inspected.pinned.map(p => p.node)), new Set(['greet', 'approve']))
+  assert.ok(inspected.checkpoints >= 1)
+  assert.equal(inspected.fork_of, null)
+
+  // Oversight report: the Art. 14 answers, measured from the journal.
+  const oversight = JSON.parse(await m.runOversightReport('js-1'))
+  assert.equal(oversight.run_id, 'js-1')
+  assert.ok(oversight.human_gates.client_gated_nodes.some(n => n.node === 'approve'))
+  assert.equal(oversight.human_gates.every_client_ask_is_an_approval, true)
+  // Neither runId nor plan given → the newest run overall.
+  const newestOversight = JSON.parse(await m.runOversightReport())
+  assert.equal(newestOversight.run_id, 'js-1')
+
   // §5.4 time-travel fork: seed a new run from js-1's superstep-1 checkpoint.
   const seed = await m.runFork('js-1', 'js-1-fork', 1)
   assert.equal(seed.length, HEX64)

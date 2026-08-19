@@ -71,6 +71,66 @@ fn policy_errors_are_hard_val_errors() {
 }
 
 #[test]
+fn known_identities_propagate_from_the_store_into_free_text() {
+    // GitHub issue #32: a subject interned as a grain (the same way
+    // egress-grain reads build their propagation table) must now also be
+    // detectable/pseudonymizable through the free-text APIs, not only
+    // through recall/CAL — same matcher, same category assignment.
+    use areev_cal::{CalExecutor, CalExecutorConfig};
+
+    let (facade, _d) = setup();
+    facade
+        .with_store(|m| m.set_anon_policy("caller", r#"{"mode": "egress"}"#))
+        .unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    ex.execute(
+        r#"ADD fact SET subject = "Kenneth Shea" SET relation = "role" SET object = "sell-side banker" SET namespace = "caller" REASON "test""#,
+        &facade,
+    )
+    .unwrap();
+
+    let scanned = facade
+        .scan_text("Kenneth Shea sent the Project Falcon NDA.", None)
+        .unwrap();
+    let scanned: serde_json::Value = serde_json::from_str(&scanned).unwrap();
+    let cats: Vec<&str> = scanned["detections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["category"].as_str().unwrap())
+        .collect();
+    assert!(cats.contains(&"person"), "scan missed the propagated subject: {cats:?}");
+
+    let out = facade
+        .anonymize_text("Kenneth Shea sent the Project Falcon NDA.", None, None)
+        .unwrap();
+    let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let anon_text = out["text"].as_str().unwrap();
+    assert!(!anon_text.contains("Kenneth Shea"), "raw identity leaked: {anon_text}");
+    assert!(anon_text.contains("[PERSON_1]"), "expected pseudonym: {anon_text}");
+    // Project Falcon was never interned as a subject and the policy carried
+    // no `known` entry for it — it must be left alone.
+    assert!(anon_text.contains("Project Falcon"));
+}
+
+#[test]
+fn policy_known_lets_callers_inject_identities_the_store_never_interned() {
+    // Issue #32's suggested option 2: identities from outside the store
+    // (an email header, a CRM row) without writing them as grains first.
+    let (facade, _d) = setup();
+    let policy = r#"{"known": [{"value": "Project Falcon", "category": "custom"}]}"#;
+    let out = facade
+        .anonymize_text("Kenneth Shea sent the Project Falcon NDA.", Some(policy), None)
+        .unwrap();
+    let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let anon_text = out["text"].as_str().unwrap();
+    assert!(!anon_text.contains("Project Falcon"), "{anon_text}");
+    assert!(anon_text.contains("[CUSTOM_1]"), "{anon_text}");
+    // Kenneth Shea is neither interned nor listed in `known` — untouched.
+    assert!(anon_text.contains("Kenneth Shea"));
+}
+
+#[test]
 fn cal_payload_carries_the_egress_flag_and_transformed_fields() {
     use areev_cal::{CalExecutor, CalExecutorConfig};
 

@@ -436,6 +436,18 @@ export declare class Areev {
   changesSince(afterOpSeq?: number | undefined | null, limit?: number | undefined | null): Promise<string>
   /** Recent run ids, newest first. JSON list string. */
   runList(limit?: number | undefined | null): Promise<string>
+  /**
+   * One run's full picture — manifest, budgets, phase, spend, pending
+   * asks, fork lineage. JSON report; same shape as `areev run inspect`.
+   */
+  runInspect(runId: string): Promise<string>
+  /**
+   * The EU AI Act Article 14 report — measured from the journal, not
+   * asserted. `runId` takes precedence; `plan` (a hex hash) resolves to
+   * that plan's newest run; neither given reports on the newest run
+   * overall. JSON report; same shape as `areev run oversight-report`.
+   */
+  runOversightReport(runId?: string | undefined | null, plan?: string | undefined | null): Promise<string>
 }
 
 export declare function dropPostgresSchema(url: string, schema: string): void

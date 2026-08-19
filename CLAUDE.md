@@ -199,10 +199,12 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   Basic is hand-rolled (no dep). Body cap 1 MiB. Cross-origin POSTs are
   rejected via Origin check (drive-by protection). The console is
   one embedded HTML file (`console.html`, vanilla JS, no build step) — a
-  plain-language memory browser with an interactive graph, the loop review
-  queue, and a Developer-mode toggle that reveals hashes/op-log/CAL; design
-  source of truth is the Paper file "DejaDB" (kept under its pre-rename
-  name), page "Console v2 — Redesign".
+  plain-language memory browser with an interactive graph, an Analytics tab
+  (grain-type census across all 12 types, namespace breakdown, a growth
+  trend, and recall-leg status — the Query page's "WHAT'S IN THIS MEMORY"
+  on-ramp, generalized), the loop review queue, and a Developer-mode toggle
+  that reveals hashes/op-log/CAL; design source of truth is the Paper file
+  "Areev", page "Console v2 — Redesign".
   Read-only `GET /api/config` reports effective config + file-vs-host
   reconciliation warnings.
   `tests/multichannel_tests.rs` is the §8 acceptance test (voice + WhatsApp +

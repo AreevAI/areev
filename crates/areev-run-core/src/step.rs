@@ -1299,12 +1299,30 @@ fn deliver(env: &StepEnv<'_>, st: &mut SchedulerState, ei: usize, fired: bool) -
 
 /// Waiting → Ready when no in-edge is Pending and ≥1 Fired; → Dead when all
 /// resolved and none Fired (§6.2: edges must RESOLVE, not fire).
+///
+/// A node's FIRST generation (`node_gen[i] == 0`) only gates on in-edges
+/// that could possibly have resolved by then: a back-edge that closes a
+/// cycle through this very node (`env.plan.cycle_edge`) cannot fire before
+/// the node's own first run, so requiring it here would deadlock any cycle
+/// whose re-entry point isn't the plan's entry node (RUN issue #33) — every
+/// OTHER in-edge into a reachable non-root node is guaranteed non-back (the
+/// DFS tree edge that first discovered it, at minimum), so this never
+/// starves a node of every gating edge. The entry node sidesteps this rule
+/// entirely via an unconditional bootstrap (`apply_event`'s `Start`
+/// handler), since it may have zero in-edges at all. Once a node is
+/// re-entered (generation ≥ 1), `deliver`'s re-entry branch already
+/// resolves every other in-edge from concrete current node state, so the
+/// full AND-join applies again from generation 1 onward.
 fn refresh_readiness(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize) {
     if st.node_state[i] != NodeState::Waiting {
         return;
     }
     let ins = &env.plan.in_edges[i];
-    if !ins.iter().all(|e| st.in_res[i].contains_key(e)) {
+    let gen0 = st.node_gen[i] == 0;
+    let all_gated_resolved = ins
+        .iter()
+        .all(|&e| (gen0 && env.plan.cycle_edge[e]) || st.in_res[i].contains_key(&e));
+    if !all_gated_resolved {
         return;
     }
     let any_fired = ins.iter().any(|e| st.in_res[i].get(e) == Some(&EdgeRes::Fired));
@@ -1345,6 +1363,15 @@ fn stalled_culprit(env: &StepEnv<'_>, st: &SchedulerState) -> String {
             && !env.plan.out_edges[i].is_empty()
             && env.plan.out_edges[i].iter().all(|&ei| st.edge_fired[ei] == 0)
         {
+            return env.plan.nodes[i].clone();
+        }
+    }
+    // No completed node's own out-edges explain it (every completed node
+    // fired something downstream) — name the lowest-index node that never
+    // got a chance to run at all, the actual culprit, rather than blaming
+    // the entry unconditionally when its own edge fired correctly.
+    for i in 0..env.plan.nodes.len() {
+        if st.node_state[i] == NodeState::Waiting {
             return env.plan.nodes[i].clone();
         }
     }

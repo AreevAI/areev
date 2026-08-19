@@ -366,6 +366,14 @@ impl AnonGate {
         }
     }
 
+    /// The ns's accumulated identity list — the read side of the same
+    /// propagation table `egress_grains` builds, exposed so callers that
+    /// aren't reading grains (issue #32's free-text APIs) can consult it
+    /// too. Empty for an ns with no declared policy and no floor.
+    pub(crate) fn known_for(&self, ns: &str) -> Vec<String> {
+        self.known.get(ns).cloned().unwrap_or_default()
+    }
+
     pub(crate) fn install_backend(&mut self, backend: Box<dyn DetectorBackend>) {
         self.backends.insert(backend.kind().to_string(), backend);
     }

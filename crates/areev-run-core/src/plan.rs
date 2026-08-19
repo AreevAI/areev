@@ -38,6 +38,16 @@ pub struct PlanGraph {
     pub in_edges: Vec<Vec<usize>>,
     /// Per node: SCC id (condensation vertex).
     pub scc_of: Vec<usize>,
+    /// Per edge: true iff it is a DFS back-edge in the entry-rooted
+    /// traversal (its destination is an ancestor on the recursion path
+    /// when the edge is walked) — i.e. it closes a cycle. Removing exactly
+    /// the back-edges always leaves an acyclic graph (a standard DFS
+    /// edge-classification theorem), which is what lets the scheduler
+    /// treat a cycle's re-entry point as ANY node, not only the plan's
+    /// entry: a back-edge into node `i` cannot possibly have resolved
+    /// before `i`'s own first run, so `step.rs::refresh_readiness` excludes
+    /// it from `i`'s generation-0 AND-join (RUN issue #33).
+    pub cycle_edge: Vec<bool>,
     /// Per node: re-attempt budget (`retries[n] = n` re-attempts, so up to
     /// n+1 executions — §6.3's pinned reading of the field).
     pub retries: Vec<u32>,
@@ -146,7 +156,7 @@ impl PlanGraph {
         // cycle (size > 1, or a self-loop), at least one intra-SCC edge must
         // set max_cycles. Tarjan, iterative (plans are small, but a deep
         // chain must not blow the stack).
-        let scc_of = tarjan_scc(n, &out_edges, &edges);
+        let (scc_of, cycle_edge) = tarjan_scc(n, &out_edges, &edges);
         let mut scc_nodes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (v, &c) in scc_of.iter().enumerate() {
             scc_nodes.entry(c).or_default().push(v);
@@ -182,6 +192,7 @@ impl PlanGraph {
             out_edges,
             in_edges,
             scc_of,
+            cycle_edge,
             retries,
             bindings,
         })
@@ -195,14 +206,28 @@ impl PlanGraph {
     }
 }
 
-/// Iterative Tarjan SCC. Returns the SCC id per vertex (ids are arbitrary
-/// but deterministic for a given graph).
-fn tarjan_scc(n: usize, out_edges: &[Vec<usize>], edges: &[PlanEdge]) -> Vec<usize> {
+/// Iterative Tarjan SCC, plus the entry-rooted DFS back-edge classification
+/// (see `PlanGraph::cycle_edge`'s doc). Returns (SCC id per vertex, back-edge
+/// flag per edge); SCC ids are arbitrary but deterministic for a given
+/// graph.
+///
+/// The back-edge flag rides the same traversal via one extra array,
+/// `in_frame`: true while a vertex is on the *current DFS recursion path*
+/// (pushed when a frame opens, cleared when it closes) — a strictly
+/// narrower set than `on_stack`, which also holds vertices whose frame
+/// already closed but whose SCC hasn't (the cross-edge case, e.g. a
+/// diamond's second incoming arm into an SCC member). An edge whose target
+/// is `in_frame` is a genuine ancestor edge (a back-edge); an edge whose
+/// target is merely `on_stack` but not `in_frame` is a cross/forward edge
+/// and must stay a normal AND-join requirement.
+fn tarjan_scc(n: usize, out_edges: &[Vec<usize>], edges: &[PlanEdge]) -> (Vec<usize>, Vec<bool>) {
     const UNSET: usize = usize::MAX;
     let mut idx = vec![UNSET; n];
     let mut low = vec![0usize; n];
     let mut on_stack = vec![false; n];
+    let mut in_frame = vec![false; n];
     let mut scc_of = vec![UNSET; n];
+    let mut back_edge = vec![false; edges.len()];
     let mut stack: Vec<usize> = Vec::new();
     let mut next_index = 0usize;
     let mut next_scc = 0usize;
@@ -218,6 +243,7 @@ fn tarjan_scc(n: usize, out_edges: &[Vec<usize>], edges: &[PlanEdge]) -> Vec<usi
         next_index += 1;
         stack.push(root);
         on_stack[root] = true;
+        in_frame[root] = true;
 
         while let Some(&mut (v, ref mut ei_pos)) = frames.last_mut() {
             if *ei_pos < out_edges[v].len() {
@@ -230,12 +256,19 @@ fn tarjan_scc(n: usize, out_edges: &[Vec<usize>], edges: &[PlanEdge]) -> Vec<usi
                     next_index += 1;
                     stack.push(w);
                     on_stack[w] = true;
+                    in_frame[w] = true;
                     frames.push((w, 0));
-                } else if on_stack[w] {
-                    low[v] = low[v].min(idx[w]);
+                } else {
+                    if on_stack[w] {
+                        low[v] = low[v].min(idx[w]);
+                    }
+                    if in_frame[w] {
+                        back_edge[ei] = true;
+                    }
                 }
             } else {
                 frames.pop();
+                in_frame[v] = false;
                 if let Some(&mut (parent, _)) = frames.last_mut() {
                     low[parent] = low[parent].min(low[v]);
                 }
@@ -253,7 +286,7 @@ fn tarjan_scc(n: usize, out_edges: &[Vec<usize>], edges: &[PlanEdge]) -> Vec<usi
             }
         }
     }
-    scc_of
+    (scc_of, back_edge)
 }
 
 #[cfg(test)]
