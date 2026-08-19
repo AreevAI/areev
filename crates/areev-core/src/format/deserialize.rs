@@ -594,11 +594,7 @@ impl DeserializedGrain {
                             .collect()
                     })
                     .unwrap_or_default();
-                let mut wf = Workflow::new(nodes);
-                if let Some(t) = self.get_str("trigger") {
-                    wf = wf.trigger(t);
-                }
-                Box::new(wf)
+                Box::new(Workflow::new(nodes))
             }
             GrainType::Trigger => {
                 let kind = self
@@ -1332,10 +1328,6 @@ impl DeserializedGrain {
             })
             .unwrap_or_default();
         let mut wf = Workflow::new(nodes);
-
-        if let Some(t) = self.get_str("trigger") {
-            wf.trigger = Some(t.to_string());
-        }
         if let Some(arr) = self.fields.get("edges").and_then(|v| v.as_array()) {
             for e in arr {
                 let (Some(src), Some(dst)) = (
@@ -1470,8 +1462,8 @@ mod tests {
         assert_parity(State::new(
             serde_json::json!({ "label": "checkpoint-7", "extra": 42 }),
         ));
-        // 4. Workflow — "trigger | n1 -> n2".
-        assert_parity(Workflow::new(vec!["plan".into(), "execute".into()]).trigger("on_request"));
+        // 4. Workflow — "n1 -> n2".
+        assert_parity(Workflow::new(vec!["plan".into(), "execute".into()]));
         // 5. Tool — "tool_name content" (current base_text drops tool_name).
         assert_parity(Tool::new("calculator").content("computed 42"));
         // 6. Observation — "observer_id observer_type subject object".

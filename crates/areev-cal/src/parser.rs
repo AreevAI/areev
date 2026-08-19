@@ -4534,13 +4534,24 @@ impl Parser {
         // Positional name: `ADD workflow "name"`
         let name = self.parse_string_literal()?;
 
-        // Optional `ON "trigger"`
-        let trigger = if self.at_exact(&Token::On) {
-            self.advance();
-            Some(self.parse_string_literal()?)
-        } else {
-            None
-        };
+        // `ON "trigger"` was removed in 1.3. It set a free-text field that
+        // nothing ever read — neither the scheduler nor the driver — so it
+        // described an activation condition that could not activate anything.
+        // Refuse it by name rather than silently ignoring it, so anyone with the
+        // old syntax is told where triggers actually live now.
+        if self.at_exact(&Token::On) {
+            return Err(CalError::UnexpectedToken {
+                expected: "the plan's graph — `ON \"...\"` was removed in 1.3; a trigger is now \
+                           its own grain that points at this plan (see `areev trigger add`)"
+                    .into(),
+                found: "ON".into(),
+                span: Some(self.current_span()),
+                suggestion: Some(
+                    "declare a trigger with `areev trigger add --workflow <this plan's hash>`"
+                        .into(),
+                ),
+            });
+        }
 
         // Parse graph lines (edges).
         let (nodes, edges) = self.parse_workflow_graph()?;
@@ -4564,7 +4575,6 @@ impl Parser {
         let span_end = self.prev_span();
         Ok(CalStatement::AddWorkflow(AddWorkflowStmt {
             name,
-            trigger,
             nodes,
             edges,
             bindings,
@@ -5139,10 +5149,11 @@ impl Parser {
 
         let hash = self.parse_hash_literal()?;
 
-        // Detect workflow graph supersede: after hash, if we see ON or a
-        // graph line start (identifier, string, paren) instead of SET,
-        // it's a workflow supersede.
-        if self.at_exact(&Token::On) || self.is_graph_line_start() {
+        // Detect workflow graph supersede: after the hash, a graph line start
+        // (identifier, string, paren) instead of SET means a workflow
+        // supersede. `ON` no longer participates — see the note in
+        // `parse_add_workflow`.
+        if self.is_graph_line_start() {
             return self.parse_supersede_workflow(span_start, hash);
         }
 
@@ -5204,14 +5215,6 @@ impl Parser {
         span_start: Span,
         hash: String,
     ) -> CalResult<CalStatement> {
-        // Optional `ON "trigger"`
-        let trigger = if self.at_exact(&Token::On) {
-            self.advance();
-            Some(self.parse_string_literal()?)
-        } else {
-            None
-        };
-
         let (nodes, edges) = self.parse_workflow_graph()?;
 
         let mut bindings = vec![];
@@ -5224,7 +5227,6 @@ impl Parser {
         let span_end = self.prev_span();
         Ok(CalStatement::SupersedeWorkflow(SupersedeWorkflowStmt {
             hash,
-            trigger,
             nodes,
             edges,
             bindings,
@@ -7591,12 +7593,11 @@ mod tests {
     #[test]
     fn test_add_workflow_simple_linear() {
         let q = p(
-            r#"ADD workflow "CI pipeline" ON "deploy" build -> test -> deploy REASON "standard pipeline""#,
+            r#"ADD workflow "CI pipeline" build -> test -> deploy REASON "standard pipeline""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
                 assert_eq!(wf.name, "CI pipeline");
-                assert_eq!(wf.trigger, Some("deploy".into()));
                 assert_eq!(wf.nodes, vec!["build", "test", "deploy"]);
                 assert_eq!(wf.edges.len(), 2);
                 assert_eq!(wf.edges[0].src, "build");
@@ -7612,7 +7613,7 @@ mod tests {
     #[test]
     fn test_add_workflow_parallel() {
         let q = p(
-            r#"ADD workflow "review" ON "PR opened" lint -> (security, compliance) -> evaluate REASON "parallel review""#,
+            r#"ADD workflow "review" lint -> (security, compliance) -> evaluate REASON "parallel review""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7636,7 +7637,7 @@ mod tests {
     #[test]
     fn test_add_workflow_conditional() {
         let q = p(
-            r#"ADD workflow "gate" ON "review" evaluate -> implement WHEN "approved" evaluate -> reject WHEN "rejected" REASON "approval routing""#,
+            r#"ADD workflow "gate" evaluate -> implement WHEN "approved" evaluate -> reject WHEN "rejected" REASON "approval routing""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7652,7 +7653,7 @@ mod tests {
     #[test]
     fn test_add_workflow_retry() {
         let q = p(
-            r#"ADD workflow "deploy" ON "release" build -> deploy * 3 -> notify REASON "retry deploy""#,
+            r#"ADD workflow "deploy" build -> deploy * 3 -> notify REASON "retry deploy""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7673,7 +7674,7 @@ mod tests {
     #[test]
     fn test_add_workflow_with_bindings() {
         let q = p(
-            r#"ADD workflow "pipeline" ON "merge" build -> test BIND build = sha256:def11111 BIND test = sha256:def22222 REASON "bound pipeline""#,
+            r#"ADD workflow "pipeline" build -> test BIND build = sha256:def11111 BIND test = sha256:def22222 REASON "bound pipeline""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7693,7 +7694,6 @@ mod tests {
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
                 assert_eq!(wf.name, "checklist");
-                assert_eq!(wf.trigger, None);
                 assert_eq!(wf.nodes, vec!["review", "test", "merge"]);
             }
             other => panic!("expected AddWorkflow, got {:?}", other),
@@ -7703,7 +7703,7 @@ mod tests {
     #[test]
     fn test_add_workflow_quoted_node_names() {
         let q = p(
-            r#"ADD workflow "onboarding" ON "new hire" "send welcome email" -> "schedule orientation" REASON "onboard""#,
+            r#"ADD workflow "onboarding" "send welcome email" -> "schedule orientation" REASON "onboard""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7716,7 +7716,7 @@ mod tests {
     #[test]
     fn test_add_workflow_mixed_pipeline() {
         let q = p(
-            r#"ADD workflow "release" ON "merge to main" build -> (unit_test, lint) -> integration_test integration_test -> stage_deploy * 3 stage_deploy -> approval approval -> prod_deploy WHEN "approved" approval -> rollback WHEN "rejected" REASON "release pipeline""#,
+            r#"ADD workflow "release" build -> (unit_test, lint) -> integration_test integration_test -> stage_deploy * 3 stage_deploy -> approval approval -> prod_deploy WHEN "approved" approval -> rollback WHEN "rejected" REASON "release pipeline""#,
         );
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
@@ -7753,7 +7753,6 @@ mod tests {
         match &q.statement {
             CalStatement::AddWorkflow(wf) => {
                 assert_eq!(wf.name, "x");
-                assert_eq!(wf.trigger, None);
                 assert_eq!(wf.nodes, vec!["build"]);
                 assert!(wf.edges.is_empty());
                 assert_eq!(wf.reason, "y");
@@ -7950,7 +7949,7 @@ mod tests {
     #[test]
     fn test_add_workflow_many_bind_clauses() {
         let q = p(concat!(
-            r#"ADD workflow "x" ON "t" a -> b -> c "#,
+            r#"ADD workflow "x" a -> b -> c "#,
             "BIND a = sha256:aaa11111 ",
             "BIND b = sha256:bbb22222 ",
             "BIND c = sha256:ccc33333 ",
@@ -7975,16 +7974,19 @@ mod tests {
         }
     }
 
-    /// ON with special characters in trigger: ON "cron * * * * *".
+    /// `ON "..."` was removed in 1.3, and is refused by name.
+    ///
+    /// It set a free-text field nothing ever read — not the scheduler, not the
+    /// driver — so it described an activation condition that could not activate
+    /// anything. Silently ignoring the clause would leave an author believing
+    /// they had scheduled something, which is the failure with no symptom.
     #[test]
-    fn test_add_workflow_special_trigger() {
-        let q = p(r#"ADD workflow "cron" ON "cron * * * * *" run_job REASON "scheduled""#);
-        match &q.statement {
-            CalStatement::AddWorkflow(wf) => {
-                assert_eq!(wf.trigger, Some("cron * * * * *".into()));
-            }
-            other => panic!("expected AddWorkflow, got {:?}", other),
-        }
+    fn add_workflow_refuses_the_removed_on_clause_and_says_where_triggers_live() {
+        let e = parse(r#"ADD workflow "cron" ON "cron * * * * *" run_job REASON "scheduled""#)
+            .expect_err("ON must be refused, not ignored");
+        let msg = e.to_string();
+        assert!(msg.contains("removed in 1.3"), "{msg}");
+        assert!(msg.contains("trigger"), "the message must point at the replacement: {msg}");
     }
 
     /// Self-loop: a -> a — parser should accept (cycle detection is engine's job).
@@ -8489,11 +8491,10 @@ mod tests {
     /// Basic SUPERSEDE workflow.
     #[test]
     fn test_supersede_workflow_basic() {
-        let q = p(r#"SUPERSEDE sha256:abc12345 ON "trigger" a -> b REASON "updated""#);
+        let q = p(r#"SUPERSEDE sha256:abc12345 a -> b REASON "updated""#);
         match &q.statement {
             CalStatement::SupersedeWorkflow(wf) => {
                 assert_eq!(wf.hash, "abc12345");
-                assert_eq!(wf.trigger, Some("trigger".into()));
                 assert_eq!(wf.nodes, vec!["a", "b"]);
                 assert_eq!(wf.edges.len(), 1);
                 assert_eq!(wf.reason, "updated");
@@ -8509,7 +8510,6 @@ mod tests {
         match &q.statement {
             CalStatement::SupersedeWorkflow(wf) => {
                 assert_eq!(wf.hash, "def45678");
-                assert_eq!(wf.trigger, None);
                 assert_eq!(wf.nodes, vec!["a", "b"]);
             }
             other => panic!("expected SupersedeWorkflow, got {:?}", other),
@@ -8541,7 +8541,7 @@ mod tests {
     #[test]
     fn test_supersede_workflow_complex_graph() {
         let q = p(concat!(
-            r#"SUPERSEDE sha256:aaaa1111 ON "deploy" "#,
+            r#"SUPERSEDE sha256:aaaa1111 "#,
             r#"build -> (test, lint) -> deploy WHEN "pass" * 3 "#,
             r#"REASON "complex supersede""#,
         ));
@@ -8743,16 +8743,15 @@ mod tests {
         }
     }
 
-    /// Trigger with special chars: ON "webhook:github/push".
+    /// A `SUPERSEDE` of a plan also refuses the removed `ON` clause, rather
+    /// than treating it as the start of a graph line and failing obscurely.
     #[test]
-    fn test_add_workflow_trigger_special_chars() {
-        let q = p(r#"ADD workflow "x" ON "webhook:github/push" build -> test REASON "y""#);
-        match &q.statement {
-            CalStatement::AddWorkflow(wf) => {
-                assert_eq!(wf.trigger, Some("webhook:github/push".into()));
-            }
-            other => panic!("expected AddWorkflow, got {:?}", other),
-        }
+    fn supersede_workflow_refuses_the_removed_on_clause() {
+        let e = parse(
+            r#"SUPERSEDE sha256:1111111111111111111111111111111111111111111111111111111111111111 ON "x" a -> b REASON "y""#,
+        )
+        .expect_err("ON must not be accepted on a supersede either");
+        assert!(!e.to_string().is_empty());
     }
 
     /// Workflow name with unicode.

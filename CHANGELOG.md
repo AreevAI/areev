@@ -67,6 +67,22 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
   explicitly not credential protection, which is what the egress allowlist and
   broker are for.
 
+### Removed
+
+- **`Workflow.trigger`** (breaking). A free-text "activation condition" that
+  nothing ever read — neither `areev-run-core` nor `areev-run` — so it described
+  an activation that could not activate anything, while the console offered to
+  set it. A trigger is now a `Trigger` grain that points *at* a plan, which is
+  the only direction that works: a Workflow is content-addressed and a run's
+  manifest pins its hash, so a plan carrying a list of triggers would change
+  address every time one was added.
+  - CAL's `ADD workflow "n" ON "..."` clause is removed and **refused by name**,
+    with a message pointing at `areev trigger add`. Silently ignoring it would
+    leave an author believing they had scheduled something.
+  - Old blobs still deserialize: an unknown field is preserved and ignored, so
+    this costs a vestigial key in grains already written and nothing else.
+  - The console's plan subtitle becomes a read-only shape summary.
+
 ### Security
 
 - **Host command seams no longer inherit named secrets.** No subprocess seam

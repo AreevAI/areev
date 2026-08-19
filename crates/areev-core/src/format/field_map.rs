@@ -298,7 +298,6 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     // "consolidated" stays as "consolidated"
     // "plan" stays as "plan"
     // "history" stays as "history"
-    // "trigger" stays as "trigger"
     // "nodes" stays as "nodes"
     // "edges" stays as "edges"
     // "retries" stays as "retries"

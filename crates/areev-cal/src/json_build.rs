@@ -132,7 +132,10 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
         // top level, where the templates' `{{name}}`/`{{status}}` can find them.
         // Listing them here routed both into `common.context`, where `field_str`
         // (top-level only) never looked.
-        "workflow" => &["nodes", "edges", "bindings", "retries", "trigger"],
+        // `trigger` is gone as of 1.3 — it set a field nothing read. A stray
+        // one now falls through to `extra_fields` rather than being silently
+        // accepted as meaningful.
+        "workflow" => &["nodes", "edges", "bindings", "retries"],
         "trigger" => &[
             "kind",
             "workflow",
@@ -363,7 +366,7 @@ fn build_trigger_from_json(
 
 fn build_workflow_from_json(
     fields: &serde_json::Map<String, serde_json::Value>,
-    get_str: &dyn Fn(&str) -> Option<String>,
+    _get_str: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Workflow> {
     // nodes — required, array of strings
     let nodes: Vec<String> = fields
@@ -458,11 +461,6 @@ fn build_workflow_from_json(
                 wf.retries.insert(key.clone(), max as u32);
             }
         }
-    }
-
-    // trigger — optional string
-    if let Some(trigger) = get_str("trigger") {
-        wf = wf.trigger(&trigger);
     }
 
     Ok(wf)

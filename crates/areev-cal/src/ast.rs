@@ -140,7 +140,7 @@ pub enum CalStatement {
     #[serde(alias = "SUPERSEDE", alias = "Supersede")]
     Supersede(SupersedeStmt),
 
-    /// `SUPERSEDE <hash> [ON "trigger"] graph... [BIND ...] REASON "..."`
+    /// `SUPERSEDE <hash> graph... [BIND ...] REASON "..."`
     #[serde(alias = "SUPERSEDE_WORKFLOW", alias = "SupersedeWorkflow")]
     SupersedeWorkflow(SupersedeWorkflowStmt),
 
@@ -668,8 +668,6 @@ pub struct BindClause {
 pub struct AddWorkflowStmt {
     /// Workflow name (positional string after `ADD workflow`).
     pub name: String,
-    /// Optional trigger (`ON "..."`).
-    pub trigger: Option<String>,
     /// All nodes discovered during parsing (unique, in declaration order).
     pub nodes: Vec<String>,
     /// Graph edges parsed from arrow chains.
@@ -690,8 +688,6 @@ pub struct AddWorkflowStmt {
 pub struct SupersedeWorkflowStmt {
     /// Hash of the grain to supersede.
     pub hash: String,
-    /// Optional trigger (`ON "..."`).
-    pub trigger: Option<String>,
     /// All nodes discovered during parsing.
     pub nodes: Vec<String>,
     /// Graph edges parsed from arrow chains.

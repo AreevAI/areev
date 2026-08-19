@@ -360,9 +360,6 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
             }
             map.insert("retries".to_string(), btree_to_msgpack_map(retry_map));
         }
-        if let Some(ref trigger) = wf.trigger {
-            map.insert("trigger".to_string(), nfc_string(trigger));
-        }
     } else if let Some(t) = any.downcast_ref::<Trigger>() {
         // `kind` is not omit-default here (unlike Tool's): a Trigger has no
         // sensible "absent means interval" reading — the kind decides which
@@ -375,11 +372,15 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         if let Some(ref sc) = t.scope {
             map.insert(compact_field("scope").to_string(), nfc_string(sc));
         }
-        // Omit-when-true: a live trigger is the overwhelming case, so the wire
-        // carries the flag only when it is off.
-        if !t.enabled {
-            map.insert(compact_field("enabled").to_string(), Value::Boolean(false));
-        }
+        // ALWAYS emitted, unlike most bools here. Omit-when-default exists to
+        // keep *legacy* blobs byte-identical across a rollout, and this type is
+        // new so there are none — while omitting it would break the most
+        // natural query anyone writes: `RECALL triggers WHERE enabled = true`
+        // matches nothing if the field is absent on every live trigger. The
+        // whole reason a trigger is its own grain type rather than an
+        // Observation carrying `int:` keys is that its fields are queryable, so
+        // saving one byte at the cost of that would be the wrong trade.
+        map.insert(compact_field("enabled").to_string(), Value::Boolean(t.enabled));
         if !t.dedup_key.is_empty() {
             let keys: Vec<Value> = t.dedup_key.iter().map(|k| nfc_string(k)).collect();
             map.insert(compact_field("dedup_key").to_string(), Value::Array(keys));

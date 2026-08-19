@@ -832,6 +832,41 @@ run is a command a host triggers, so improvement never runs unattended. That is
 the difference between "an LLM edits your memory" and self-improvement you can
 put in production.
 
+### Cadence is data; evaluation is a command
+
+A trigger is a standing rule that starts a workflow, declared as a `Trigger`
+grain (0x0D) and evaluated by `areev trigger run`. This **extends** the
+no-daemon decision above rather than retracting it: there is still no resident
+process, no timer thread, no `tokio::time`. What changes is that the *cadence*
+lives in the memory instead of in someone's crontab, so a synced memory can say
+what it was supposed to be doing, and changing an interval is a grain write
+rather than a redeploy.
+
+The OS scheduler stays a dumb heartbeat and the memory decides what is due —
+the pattern `areev loop run --if-stale` already established, and the one anacron
+and systemd's `Persistent=true` take.
+
+Three decisions inside it are worth stating because each has a losing
+alternative that looks reasonable:
+
+- **Trigger → plan, never the reverse.** A Workflow is content-addressed and a
+  run's manifest pins its hash, so a plan carrying a list of triggers would
+  change address every time one was added and orphan its own run history.
+- **Correctness rests on occurrence identity, not on the lease.** The run id is
+  derived from `(trigger, connector, dedup value)` and the runtime already
+  refuses a duplicate run id, so two evaluators racing produce one run and one
+  recorded skip — no lease duration to guess, no fencing token, no clock-skew
+  window. The lease only prevents duplicate *connector calls*, so losing it
+  costs an API call rather than correctness.
+- **The declaration replicates; the evaluation state does not.** Cursor, lease
+  and watermark are per-host usage. Replicating them would have two synced
+  hosts ping-pong on each other's watermark, and would let a dev memory restored
+  from prod inherit prod's cursor and silently skip real work.
+
+`Workflow.trigger` was removed in the same change. It was a free-text field that
+nothing read — not the scheduler, not the driver — so it described an activation
+condition that could not activate anything, and the console offered to set it.
+
 ### Anonymization is a store-boundary transform, gated by file policy
 
 Egress pseudonymization runs at the **store read boundary** — below even the

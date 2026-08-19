@@ -88,8 +88,10 @@ fn defaults_are_omitted_and_read_back_as_defaults() {
     let (blob, _) = serialize_grain(&minimal).unwrap();
     let raw = deserialize_blob(&blob).unwrap();
 
-    // Omit-when-default keeps the wire small and legacy blobs stable.
-    assert!(!raw.fields.contains_key("enabled"), "a live trigger should not carry the flag");
+    // `enabled` is the deliberate exception to omit-when-default: it is always
+    // on the wire so `RECALL triggers WHERE enabled = true` can match, which is
+    // the query the grain type exists to make possible.
+    assert_eq!(raw.fields.get("enabled"), Some(&serde_json::json!(true)));
     assert!(!raw.fields.contains_key("concurrency"));
     assert!(!raw.fields.contains_key("catchup"));
 

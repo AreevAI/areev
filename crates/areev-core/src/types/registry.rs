@@ -137,9 +137,9 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         host_addable: true,
         required_add_fields: &["nodes"],
         queryable_fields: &[
-            "trigger", "node", "binding", "nodes", "edges", "bindings", "name", "retries",
+            "node", "binding", "nodes", "edges", "bindings", "name", "retries",
         ],
-        toon_columns: &["trigger", "content"],
+        toon_columns: &["name", "content"],
     },
     GrainTypeMeta {
         ty: GrainType::Tool,

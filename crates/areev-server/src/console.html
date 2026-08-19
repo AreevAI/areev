@@ -3472,7 +3472,6 @@ function toolDefs() { return wfRows().filter(g => g.type === 'tool' && (g.fields
 function wfLabel(g) {
   const f = g.fields || {};
   if (f.name) return f.name;
-  if (f.trigger) return f.trigger;
   if (Array.isArray(f.nodes) && f.nodes.length) return f.nodes.slice(0, 3).join(' → ') + (f.nodes.length > 3 ? ' …' : '');
   return shortHash(g.hash);
 }
@@ -3538,7 +3537,6 @@ function wfOpen(hash) {
   WF_LOCKED = !wfIsCalEditable(g) || !!WF_NS;
   WF_DRAFT = {
     name: f.name || '',
-    trigger: f.trigger || '',
     nodes: Array.isArray(f.nodes) ? f.nodes.slice() : [],
     edges: (Array.isArray(f.edges) ? f.edges : []).map(e => ({
       src: e.src, dst: e.dst, cond: e.cond || null,
@@ -3553,7 +3551,7 @@ function wfOpen(hash) {
 function wfNew() {
   if (WF_NS) { toast('Switch back to "' + boundNamespace() + '" to create a plan — a save always writes there'); return; }
   WF_SEL = null; WF_LOCKED = false;
-  WF_DRAFT = { name: '', trigger: '', nodes: ['start'], edges: [], bindings: {} };
+  WF_DRAFT = { name: '', nodes: ['start'], edges: [], bindings: {} };
   WF_PICK = { kind: 'node', id: 'start' };
   WFGraph.resetOverrides();
   renderWorkflows();
@@ -3747,6 +3745,13 @@ function renderInspect() {
   WFGraph.draw();
 }
 
+/** "3 steps · 2 edges" — what the subtitle slot shows now that it is not an
+    invitation to set something inert. */
+function wfShape(d) {
+  const n = (d.nodes || []).length, e = (d.edges || []).length;
+  return n + (n === 1 ? ' step' : ' steps') + ' · ' + e + (e === 1 ? ' edge' : ' edges');
+}
+
 function wfCard(g) {
   const f = g.fields || {};
   const nodesN = Array.isArray(f.nodes) ? f.nodes.length : 0;
@@ -3758,7 +3763,6 @@ function wfCard(g) {
   if (WF_NS === '*' && f.namespace) bits.push(f.namespace);   // "All namespaces" — say which one each card is
   bits.push(relTime(createdMs(f)));
   b.appendChild(el('span', 'meta', bits.join(' · ')));
-  if (f.trigger) b.appendChild(el('code', '', f.trigger));
   b.onclick = () => wfOpen(g.hash);
   return b;
 }
@@ -3800,9 +3804,12 @@ function renderWorkflowHeader() {
       value: WF_DRAFT.name || '', placeholder: fallbackName, disabled: WF_LOCKED,
       onCommit: v => { WF_DRAFT.name = v; renderWorkflowHeader(); },
     },
+    // Read-only: a plan is its graph. The editable field here used to write
+    // `trigger`, which nothing ever read — so it invited someone to "set a
+    // trigger" and then quietly did nothing. Real triggers are their own grains
+    // that point at this plan; see the Triggers tab.
     editDesc: {
-      value: WF_DRAFT.trigger || '', placeholder: 'No trigger set — click to add one', disabled: WF_LOCKED,
-      onCommit: v => { WF_DRAFT.trigger = v; renderWorkflowHeader(); },
+      value: wfShape(WF_DRAFT), disabled: true,
     },
     lockHint: WF_LOCKED ? wfLockReason() : null,
   });
@@ -3952,7 +3959,6 @@ function wfDiffSummary() {
   if (removedEdges.length) bits.push('disconnected ' + removedEdges.join('; '));
   if (changedConds.length) bits.push('updated the condition on ' + changedConds.join('; '));
   if (rebound.length) bits.push('rebound ' + rebound.join(', '));
-  if ((orig.trigger || '') !== (d.trigger || '')) bits.push('changed the trigger');
   if ((orig.name || '') !== d.name.trim()) bits.push('renamed the plan');
   if (!bits.length) return 'Resaved "' + name + '" with no structural change.';
   const s = bits.join('; ') + '.';
@@ -4007,7 +4013,6 @@ async function wfSave(reason) {
   }
   for (const n of d.nodes) if (!seen.has(n)) body += '"' + calEsc(n) + '" ';
   let stmt = 'ADD workflow "' + calEsc(d.name.trim()) + '"';
-  if (d.trigger && d.trigger.trim()) stmt += ' ON "' + calEsc(d.trigger.trim()) + '"';
   stmt += ' ' + body.trim();
   /* Every other interpolated value here (node names, WHEN, trigger, reason,
      the BIND key itself) goes through calEsc() into a quoted string —

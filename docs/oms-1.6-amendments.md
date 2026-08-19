@@ -1,5 +1,9 @@
 # OMS 1.6 amendments — the compliance batch
 
+> Companion: [`oms-1.6-amendments-triggers.md`](oms-1.6-amendments-triggers.md)
+> covers the trigger batch (new grain type, the §27.6 removal, the execution
+> contract).
+
 **Status:** amendment proposal, written 2026-08-11. One revision covering
 every spec-level change the GDPR compliance work needs, so conformance moves
 once rather than four times.

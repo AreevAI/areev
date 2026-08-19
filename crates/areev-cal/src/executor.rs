@@ -1071,9 +1071,6 @@ impl CalExecutor {
                 // Build JSON fields for the workflow grain.
                 let mut fields = serde_json::Map::new();
                 fields.insert("name".into(), serde_json::Value::String(wf.name.clone()));
-                if let Some(ref trigger) = wf.trigger {
-                    fields.insert("trigger".into(), serde_json::Value::String(trigger.clone()));
-                }
                 // nodes: array of strings
                 fields.insert(
                     "nodes".into(),
@@ -1169,9 +1166,6 @@ impl CalExecutor {
                 };
                 // Build workflow fields for supersession.
                 let mut fields = serde_json::Map::new();
-                if let Some(ref trigger) = wf.trigger {
-                    fields.insert("trigger".into(), serde_json::Value::String(trigger.clone()));
-                }
                 fields.insert(
                     "nodes".into(),
                     serde_json::Value::Array(
