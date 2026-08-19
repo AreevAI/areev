@@ -129,6 +129,7 @@ dependencies = [
  "areev-run-core",
  "areev-server",
  "areev-store",
+ "areev-trigger",
  "chrono",
  "hex",
  "serde_json",

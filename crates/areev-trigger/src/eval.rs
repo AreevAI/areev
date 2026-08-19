@@ -89,6 +89,10 @@ pub struct EvalReport {
     pub items: usize,
     pub duplicates: usize,
     pub runs_started: usize,
+    /// Items recorded without starting a workflow, because no runtime is wired
+    /// in. Counted apart from `runs_started` so the report never claims a run
+    /// happened when none did.
+    pub ingested: usize,
     /// Items the connector returned that carry no usable identity, so no run
     /// could be minted for them. Reported rather than silently dropped: an item
     /// nobody can name is a connector bug, and it should be visible as one.
@@ -266,6 +270,7 @@ impl Evaluator {
                     report.items += outcome.items;
                     report.duplicates += outcome.duplicates;
                     report.runs_started += outcome.runs_started;
+                    report.ingested += outcome.ingested;
                     report.unidentifiable += outcome.unidentifiable;
                     for why in &outcome.failures {
                         report.errors.push(format!("{hash}: {why}"));
@@ -403,6 +408,7 @@ impl Evaluator {
             let run_id = run_id_for(hash, trigger.connector.as_deref(), &value);
             match self.start_run(trigger, &run_id, &item, hash) {
                 StartOutcome::Started => outcome.runs_started += 1,
+                StartOutcome::Ingested => outcome.ingested += 1,
                 StartOutcome::Duplicate => outcome.duplicates += 1,
                 StartOutcome::Failed(why) => outcome.failures.push(why),
             }
@@ -460,6 +466,20 @@ impl Evaluator {
         item: &PollItem,
         trigger_hash: &str,
     ) -> StartOutcome {
+        // Idempotency has to hold whether or not a runtime is wired in. With a
+        // starter, the runtime's duplicate-run-id refusal is the guard; without
+        // one, nothing else would stop the same item being re-ingested on every
+        // poll forever, because an Event's `created_at` differs per firing and
+        // so content addressing does not collapse them.
+        let seen = self
+            .facade
+            .with_store(|m| m.run_grains(&self.ns, run_id, 0, 1))
+            .map(|g| !g.is_empty())
+            .unwrap_or(false);
+        if seen {
+            return StartOutcome::Duplicate;
+        }
+
         let mut event = Event::new(&item.payload.to_string())
             .namespace(&self.ns)
             .extra_field("trigger", serde_json::json!(trigger_hash))
@@ -471,8 +491,10 @@ impl Evaluator {
             return StartOutcome::Failed(format!("ingest: {e}"));
         }
         let Some(starter) = &self.starter else {
-            // Ingest-only: the item is recorded, nothing is executed.
-            return StartOutcome::Started;
+            // Ingest-only: the item is recorded, nothing is executed. Reported
+            // as ingested rather than as a run, because claiming a run started
+            // when none did would make the report lie.
+            return StartOutcome::Ingested;
         };
         let input = serde_json::json!({
             "trigger": trigger_hash,
@@ -523,6 +545,7 @@ impl Evaluator {
 struct FireOutcome {
     items: usize,
     runs_started: usize,
+    ingested: usize,
     duplicates: usize,
     unidentifiable: usize,
     failures: Vec<String>,
@@ -534,6 +557,8 @@ struct FireOutcome {
 
 enum StartOutcome {
     Started,
+    /// Recorded but not executed — no runtime is wired in.
+    Ingested,
     Duplicate,
     Failed(String),
 }

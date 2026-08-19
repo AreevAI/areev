@@ -9,6 +9,31 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+### Added
+
+- **Triggers** (#36): a standing rule that starts a workflow, declared as a
+  `Trigger` grain (type `0x0D`) and evaluated by `areev trigger run` — a
+  one-shot idempotent command safe to invoke concurrently. There is still no
+  daemon and no scheduler; what changes is that the cadence is data in the
+  memory instead of a fact buried in someone's crontab.
+  - Eight kinds over four primitives: `interval`/`schedule`/`once` (Time),
+    `polling` (Time + Poll), `memory` (state predicate), `webhook`/`manual`
+    (Push), and `composite`. The last three are declared and validated now and
+    fire in a later release.
+  - Idempotency by construction: the run id is derived from
+    `(trigger, connector, dedup value)`, so a re-delivered item is one run and
+    one recorded skip. Correctness does not rest on the lease — the lease only
+    prevents duplicate connector calls.
+  - The first poll seeds the cursor and fires nothing, so declaring a mailbox
+    trigger does not replay history.
+  - `--catchup last|none|all` and `--concurrency forbid|allow|replace` for
+    missed occurrences and overrun.
+  - Connectors reuse the `--tool-cmd` seam, so there is one subprocess contract
+    and they inherit its timeout, output cap and secret scrub.
+  - Cron is **UTC only**; a non-UTC timezone is refused with `TRG-E006` rather
+    than mishandled across a DST boundary.
+  - New docs: [`docs/triggers.md`](docs/triggers.md).
+
 ### Security
 
 - **Host command seams no longer inherit named secrets.** No subprocess seam

@@ -43,6 +43,7 @@ areev-loop = { path = "../areev-loop", version = "1.2.2" }
 areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.2.2" }
 areev-llm = { path = "../areev-llm", version = "1.2.2" }
 areev-run = { path = "../areev-run", version = "1.2.2" }
+areev-trigger = { path = "../areev-trigger", version = "1.2.2" }
 areev-run-core = { path = "../areev-run-core", version = "1.2.2" }
 
 [dev-dependencies]

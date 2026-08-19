@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod trigger_cli;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -81,6 +82,27 @@ COMMANDS:
                                       policy is a file-truth that travels
                                       with the memory; `set` declares,
                                       `sweep --yes` enforces (audited)
+  trigger  add --type KIND --workflow HASH --because \"why\"
+           [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
+           [--scope S] [--dedup-key PTR] [--catchup last|none|all]
+                                      declare a trigger. Like retention, the
+                                      declaration is a file-truth that
+                                      travels with the memory and is enforced
+                                      separately
+  trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
+           [--lease SECS] [--max-items N]
+                                      evaluate once and exit — the cadence is
+                                      data in the memory, so the heartbeat can
+                                      be coarse. Safe to invoke concurrently.
+                                      Without --tool-cmd it ingests without
+                                      executing; --dry-run touches nothing
+  trigger  list | show <T> | status   what is declared, and what has actually
+                                      fired (a trigger that never fired is
+                                      reported, not silent)
+  trigger  pause <T> --because \"why\" | resume <T> --because \"why\"
+                                      operational brake; unlike the
+                                      declaration's own enabled flag it stays
+                                      on this host and does not replicate
   blob     put <FILE> | put --stdin   store bytes in the content-addressed
                                       blob store; prints the cas:// URI
                                       (idempotent — the address IS the content)
@@ -2562,6 +2584,9 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             run_audit(&mut m, &flags, &positional)?;
         }
         "anonymize" => run_anonymize(m, &flags, &positional)?,
+        "trigger" => {
+            return trigger_cli::run_trigger(m, &ns, &flags, &positional);
+        }
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;
         }

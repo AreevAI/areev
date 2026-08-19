@@ -144,6 +144,42 @@ fn an_interval_trigger_fires_then_schedules_its_next() {
 }
 
 #[test]
+fn ingest_only_mode_is_still_idempotent() {
+    // Without a runtime wired in nothing executes, but the same item must still
+    // not be re-ingested on every poll — an Event's created_at differs per
+    // firing, so content addressing alone does not collapse them.
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let item = json!([{ "id": "dup", "payload": { "id": "m-1" } }]);
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(item.clone(), Some("c2"), false),
+        ok(item, Some("c3"), false),
+    ]);
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: None, // ingest-only
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    let first = ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let second = ev.run(&opts()).unwrap();
+
+    assert_eq!(first.ingested, 1);
+    assert_eq!(first.runs_started, 0, "nothing executes without a runtime");
+    assert_eq!(second.ingested, 0, "the replay must not be re-ingested");
+    assert_eq!(second.duplicates, 1);
+}
+
+#[test]
 fn a_disabled_declaration_never_fires() {
     let rig = Rig::new();
     rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60).enabled(false));
