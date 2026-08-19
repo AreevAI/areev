@@ -344,6 +344,7 @@ dependencies = [
  "areev-cal",
  "areev-core",
  "areev-run",
+ "areev-run-core",
  "areev-store",
  "chrono",
  "croner",

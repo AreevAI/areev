@@ -9,8 +9,12 @@
 //! `Persistent=true` take — a persisted watermark plus catch-up on the next
 //! invocation, rather than a resident process holding a timer.
 pub mod clock;
+pub mod connector;
 pub mod error;
+pub mod eval;
 pub mod schedule;
 
 pub use clock::{Clock, FixedClock, SystemClock};
+pub use connector::{PollItem, PollRequest, PollResponse};
+pub use eval::{EvalOptions, EvalReport, Evaluator, RunStarter, StartResult, TriggerStatus};
 pub use error::{Result, TriggerError};
