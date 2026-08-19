@@ -34,6 +34,15 @@ the pre-rename release history lives in that repository's `CHANGELOG.md`.
     than mishandled across a DST boundary.
   - New docs: [`docs/triggers.md`](docs/triggers.md).
 
+- **Run leases** (`RUN-E021`): a run is leased while a driver advances it, taken
+  at start/resume, renewed at each superstep boundary, and released when the run
+  finishes **or parks**. Two drivers on one run previously last-write-wins in
+  the journal, silently — `journal::ingest` overwrites a second result for the
+  same key and the owner-nonce check is a documented gap, so the `Tainted` doc
+  comment's claim that forked tips were detected was not true of the shipped
+  code. This prevents the case rather than noticing it afterwards. An expired
+  lease is reclaimable, so a crashed driver does not park its run forever.
+
 ### Security
 
 - **Host command seams no longer inherit named secrets.** No subprocess seam

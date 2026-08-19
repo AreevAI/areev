@@ -507,3 +507,77 @@ fn malformed_tool_name_is_refused_at_resolve_time() {
         other => panic!("expected UnresolvedRef, got {other:?}"),
     }
 }
+
+/// A driver that has lost its run lease is refused (`RUN-E021`) rather than
+/// writing behind whoever took over.
+///
+/// This is the case that used to fail *silently*: `journal::ingest`
+/// last-write-wins a second result for a key, and the owner-nonce check is a
+/// documented gap, so two drivers on one run quietly interleaved. The
+/// `Tainted` doc comment claimed forked tips were detected; nothing detected
+/// them. Prevention replaces the detection that was never there.
+#[test]
+fn a_driver_that_lost_its_lease_is_refused() {
+    use areev_run::lease::RunLease;
+
+    let rig = Rig::new();
+    let plan = rig.plan(&["only"], &[], &[]);
+    rig.exec.on("only", |_i, _n| ExecResult::Ok(json!({"ok": true})));
+
+    // Someone else holds the run's lease with plenty of time left.
+    let _held =
+        RunLease::acquire(&rig.facade, "run-contended", "other-driver", 1_000, 600_000).unwrap();
+
+    let err = rig
+        .runner(vec![1_000, 1_001, 1_002])
+        .start(&plan, "run-contended", json!({}), &opts())
+        .unwrap_err();
+
+    assert_eq!(err.code(), "RUN-E021", "{err}");
+    assert!(err.to_string().contains("run-contended"), "{err}");
+}
+
+/// An expired lease does not park a run forever — a crashed driver must not
+/// take its run down with it.
+#[test]
+fn an_expired_run_lease_is_taken_over() {
+    use areev_run::lease::RunLease;
+
+    let rig = Rig::new();
+    let plan = rig.plan(&["only"], &[], &[]);
+    rig.exec.on("only", |_i, _n| ExecResult::Ok(json!({"ok": true})));
+
+    // A driver claimed this run and died; its lease was short.
+    let _dead = RunLease::acquire(&rig.facade, "run-orphan", "dead-driver", 1, 1).unwrap();
+
+    let session = rig
+        .runner(vec![1_000_000, 1_000_001, 1_000_002])
+        .start(&plan, "run-orphan", json!({}), &opts())
+        .expect("an expired lease must be reclaimable");
+    assert!(matches!(session, RunSession::Finished { .. }));
+}
+
+/// A parked run releases its lease, so a *different* process can resume it.
+///
+/// A parked run is not a process — it is a journaled checkpoint waiting on a
+/// human — so holding the lease across a park would make the next
+/// `areev run resume`, which runs under a different holder id, wait out a full
+/// lease TTL for a run nobody is advancing. The CLI smoke test caught this;
+/// pinning it here so it fails closer to the cause next time.
+#[test]
+fn a_parked_run_releases_its_lease_for_the_next_driver() {
+    use areev_run::lease::RunLease;
+
+    let rig = Rig::new();
+    let plan = rig.plan(&["ask"], &[], &["ask"]); // a client node parks
+
+    let session = rig
+        .runner(vec![1_000, 1_001, 1_002])
+        .start(&plan, "run-parks", json!({}), &opts())
+        .unwrap();
+    assert!(matches!(session, RunSession::Parked { .. }), "expected a park");
+
+    // A different holder must be able to take the run immediately.
+    RunLease::acquire(&rig.facade, "run-parks", "some-other-driver", 2_000, 600_000)
+        .expect("a parked run must not hold its lease");
+}

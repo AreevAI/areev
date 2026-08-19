@@ -138,6 +138,7 @@ in source.
 | `RUN-E018` | `CodeExecRefused` | Code-carrying execution is not enabled |
 | `RUN-E019` | `InvalidPlan` | The plan failed structural validation |
 | `RUN-E020` | `Storage` | The store failed underneath the driver |
+| `RUN-E021` | `LeaseLost` | Another driver took this run over mid-flight; this driver's writes are refused |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 

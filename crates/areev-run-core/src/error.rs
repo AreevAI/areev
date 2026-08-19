@@ -56,6 +56,17 @@ pub enum RunError {
     /// RUN-E020 — a store operation failed under the runtime (wraps the
     /// underlying `DOMAIN-Ennn` message, which stays in the detail).
     Storage { detail: String },
+    /// RUN-E021 — the run lease was lost mid-flight: another driver took this
+    /// run over while we were advancing it.
+    ///
+    /// Before this existed, two drivers advancing one run last-write-wins in
+    /// the journal — silently. The doc comment on `Tainted` claimed forked tips
+    /// were detected; they were not. Refusing here fails safe *by prevention*
+    /// rather than by after-the-fact detection.
+    ///
+    /// Note the code: the design proposal called this RUN-E017, but that is
+    /// `RetentionRefused` and codes are append-only.
+    LeaseLost { run_id: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -106,6 +117,7 @@ impl RunError {
             Self::CodeExecRefused { .. } => "RUN-E018",
             Self::InvalidPlan { .. } => "RUN-E019",
             Self::Storage { .. } => "RUN-E020",
+            Self::LeaseLost { .. } => "RUN-E021",
         }
     }
 }
@@ -194,6 +206,11 @@ impl fmt::Display for RunError {
             ),
             Self::InvalidPlan { why } => write!(f, "{code}: invalid workflow: {why}"),
             Self::Storage { detail } => write!(f, "{code}: store failure: {detail}"),
+            Self::LeaseLost { run_id } => write!(
+                f,
+                "{code}: lease on run '{run_id}' was lost — another driver took it over \
+                 while this one was advancing it; this driver's writes are refused"
+            ),
         }
     }
 }
@@ -228,6 +245,7 @@ mod tests {
             RunError::CodeExecRefused { condition: "c".into() },
             RunError::InvalidPlan { why: "w".into() },
             RunError::Storage { detail: "d".into() },
+            RunError::LeaseLost { run_id: "r".into() },
         ]
     }
 
@@ -248,6 +266,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 20);
+        assert_eq!(seen.len(), 21);
     }
 }
