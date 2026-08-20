@@ -376,6 +376,11 @@ fn serve_one(
     let caller = match presented.and_then(|t| by_token.get(&t).cloned()) {
         Some(c) => c,
         None => {
+            // The caller may still be mid-write on a body we are about to
+            // refuse to read for its own sake; drain it so closing the
+            // connection sends a clean FIN, not an RST that could clobber
+            // their view of this very response.
+            drain_body(&mut reader, content_length);
             return respond(
                 &mut stream,
                 401,
@@ -388,6 +393,7 @@ fn serve_one(
         }
     };
     let Some(grant) = grants.for_caller(&caller) else {
+        drain_body(&mut reader, content_length);
         return respond(
             &mut stream,
             403,
@@ -399,6 +405,11 @@ fn serve_one(
         );
     };
     if content_length > MAX_BODY {
+        // Deliberately NOT drained: the whole point of this refusal is that
+        // the caller claims a body large enough that reading it is the
+        // resource-exhaustion risk. An abrupt reset here is the acceptable
+        // side of that trade, unlike the two refusals above where the body is
+        // always small and legitimate.
         return respond(&mut stream, 413, r#"{"error":"body too large"}"#);
     }
     let mut body = vec![0u8; content_length];
@@ -564,6 +575,23 @@ fn serve_one(
     }
 }
 
+/// Best-effort: read and discard up to `content_length` bytes (capped at
+/// [`MAX_BODY`]) still pending on the socket.
+///
+/// A refusal that writes its response and drops the connection WITHOUT
+/// reading a body the caller already started sending leaves those bytes
+/// queued in the kernel receive buffer. Closing a socket over unread data
+/// sends an RST instead of a clean FIN — which can surface to the caller as a
+/// raw `ConnectionReset` on their own write, burying the 401/403 JSON body
+/// under an opaque I/O error instead of a readable refusal. Draining first
+/// turns that into an ordinary, parseable response every time. The cap
+/// matters even here: a caller presenting a bad token gets no free pass to
+/// make us read an unbounded body.
+fn drain_body(reader: &mut BufReader<TcpStream>, content_length: usize) {
+    let mut discard = vec![0u8; content_length.min(MAX_BODY)];
+    let _ = reader.read_exact(&mut discard);
+}
+
 fn respond(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -716,6 +744,34 @@ mod tests {
         let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         let (status, _) =
             call_with_token(&b, "0".repeat(48).as_str(), serde_json::json!({ "url": "https://x/" }));
+        assert_eq!(status, 401);
+    }
+
+    /// A refusal must not corrupt the caller's own write with an RST (found
+    /// while releasing 1.3.1: a `ConnectionReset` here once, under heavy
+    /// concurrent-build load).
+    ///
+    /// The tiny bodies elsewhere in this file fit entirely inside the OS
+    /// socket buffers, so `write_all` never blocks and completes before the
+    /// server has a chance to close — the race that causes an RST only shows
+    /// up under enough scheduling delay to matter, which is exactly why it
+    /// took heavy system load to surface and why a normal CI run would not
+    /// reliably catch a regression here. A body large enough to force real
+    /// TCP backpressure reproduces the same race on every run, load or not:
+    /// with the server closing before draining, this `write_all` fails with
+    /// `ConnectionReset`; with it draining first, the write always completes
+    /// and the 401 is always readable. Verified: this test fails
+    /// deterministically (no stress needed) against the code before the
+    /// `drain_body` fix, on the very first run.
+    #[test]
+    fn a_refusal_drains_the_body_so_a_large_write_never_resets() {
+        let b = Broker::start(policy(&[]), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
+        // Comfortably under MAX_BODY (drain_body covers the whole thing) and
+        // comfortably over typical default OS socket buffer sizes, so the
+        // write backpressures for real rather than completing instantly.
+        let pad = "a".repeat(900_000);
+        let (status, _) =
+            call_with_token(&b, "0".repeat(48).as_str(), serde_json::json!({ "pad": pad }));
         assert_eq!(status, 401);
     }
 

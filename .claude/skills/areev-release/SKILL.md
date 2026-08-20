@@ -16,10 +16,6 @@ must publish bottom-up.
   this too, as the `versions` job).
 - `python3 scripts/repo_stats.py --check` — the quality figures in README.md
   still match the tree; regenerate and commit if not.
-- `cargo publish --workspace --dry-run` — catches the failures that actually
-  happen (a bumped crate whose internal dependency requirement still permits
-  the old version, a missing `include`) BEFORE anything is tagged. This is
-  what makes the publish order below safe to parallelise.
 - `cargo test --workspace` green; `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - `cargo deny check` passes (advisories, licenses, sources, bans).
 - Fuzz smoke: `cargo +nightly fuzz build`.
@@ -58,7 +54,33 @@ must publish bottom-up.
   ```
 - Move the `[Unreleased]` section of `CHANGELOG.md` under a new dated version
   heading; add a fresh empty `[Unreleased]`.
-- Commit: `Release vX.Y.Z`. Tag: `git tag vX.Y.Z`.
+- Commit: `Release vX.Y.Z`. **Do not tag here** — step 3 tags the merge
+  commit on `main`, not this branch tip, and tagging twice on two different
+  commits is how a release ships from the wrong SHA.
+
+**Dry-run now, on this commit — not in pre-flight, before the bump.**
+`cargo publish --workspace --dry-run` verifies each crate's package by
+resolving its dependencies against a local staging registry keyed on
+`(name, version)`. Before this commit, every crate's manifest `version` still
+matches what's already on crates.io, so cargo treats local content as
+identical to the published copy and links the **stale registry version**
+instead of your source — even though the two now disagree. 1.3.1 hit exactly
+this: `areev-trigger`'s Cargo.toml still said `1.3.0` when a pre-bump dry-run
+ran, so `areev-cli`'s verification build linked the OLD `areev-trigger` and
+failed with `unknown field` errors on code that had, in fact, already shipped
+— a false failure pointing at nothing wrong. The check only means anything
+once the version genuinely diverges from the registry, which starts here:
+
+```bash
+cargo publish --workspace --dry-run
+```
+
+This is what actually catches the failures that happen for real (a bumped
+crate whose internal dependency requirement still permits the old version, a
+missing `include`) BEFORE anything is tagged or pushed — the whole reason to
+run it at all — and what makes the publish order in step 4 safe to
+parallelise. `cargo publish` refuses a dirty tree, which is exactly why this
+runs after the commit above rather than before it.
 
 ## 3. Tag and publish the GitHub Release FIRST
 
@@ -109,16 +131,18 @@ Cargo resolves the dependency order itself — the hand-maintained tier list
 this runbook used to carry went stale twice and failed mid-publish:
 
 ```bash
-cargo publish --workspace          # --dry-run already run in pre-flight
+cargo publish --workspace          # --dry-run already run in step 2, on this exact commit
 ```
 
-**Bump the internal dependency requirements too.** Crates declare each other
-as `version = "1.0.0"`; on a minor/major release that requirement still
-permits the OLD version, so cargo can resolve new-crate + old-dep from a
-lockfile and fail to compile while the manifest claims the pair is supported.
-1.1.0 hit exactly this (`areev-cal` used `GrainType::Recommendation`, absent
-from `areev-core` 1.0.5). `cargo publish --workspace --dry-run` in pre-flight
-is what catches it now.
+**Bump the internal dependency requirements too — on a minor/major only.**
+Crates declare each other as `version = "1.0.0"`; on a minor/major release
+that requirement still permits the OLD version, so cargo can resolve
+new-crate + old-dep from a lockfile and fail to compile while the manifest
+claims the pair is supported. 1.1.0 hit exactly this (`areev-cal` used
+`GrainType::Recommendation`, absent from `areev-core` 1.0.5). A patch release
+doesn't have this problem — `^1.3.0` already permits `1.3.1` — which is why
+1.3.1 needed no change here; the dry-run in step 2 is what tells you which
+case you're in.
 
 If `--workspace` is unavailable or a leg fails partway, fall back to
 publishing bottom-up, recomputing the order from the manifests rather than
@@ -182,10 +206,9 @@ EOF
 - **The ordering trade-off, stated plainly**: cutting the Release before
   crates.io means a crates.io failure lands *after* npm and PyPI have already
   shipped. That is the right trade because the failure modes are not
-  symmetric — `cargo publish --workspace --dry-run` in pre-flight catches
-  essentially every real crates.io failure while nothing tags yet, whereas the
-  cost of the old ordering was paid on every single release. If crates.io does
-  fail, fix forward: the registries are independent and a patch release is
-  cheap.
+  symmetric — the dry-run in step 2 catches essentially every real crates.io
+  failure while nothing is tagged yet, whereas the cost of the old ordering
+  was paid on every single release. If crates.io does fail, fix forward: the
+  registries are independent and a patch release is cheap.
 - The three release workflows carry `concurrency` groups keyed on the tag, so
   a re-run cannot race a manual dispatch.

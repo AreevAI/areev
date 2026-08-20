@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused egress-broker call could reset the caller's own connection
+  instead of delivering its 401/403 JSON body.** `serve_one` read the
+  request's token, decided to refuse it (unknown token, or a caller with no
+  grant), wrote the response and dropped the connection — all without
+  reading the request body the caller had already started sending. Closing a
+  socket with unread data queued sends an RST rather than a clean FIN, so
+  under enough scheduling delay the caller's own `write` could fail with a
+  raw `ConnectionReset` and never see the refusal at all — a security-
+  relevant "why was I denied" path degrading to an opaque I/O error under
+  load. Found as a one-off `ConnectionReset` in the test suite during the
+  1.3.1 release, confirmed as a real, reproducible defect (not test
+  flakiness) by isolating it: 5/60 failures on the pre-fix code under
+  verified CPU load, 0/60 after. The two refusal paths whose bodies are
+  always small and legitimate (bad token, no grant) now drain the request
+  body before responding; the "body too large" refusal deliberately does
+  not, since draining an oversized claimed body is the resource-exhaustion
+  risk that refusal exists to avoid. A regression test forces the same race
+  deterministically, without needing artificial system load, by making the
+  body large enough to force real TCP backpressure rather than fit entirely
+  inside OS socket buffers — verified to fail on the very first run against
+  the pre-fix code.
+
 ## [1.3.1] — 2026-08-20
 
 ### Added
