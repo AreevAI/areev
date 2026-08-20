@@ -1,0 +1,12 @@
+{
+  "message_id": "INV-CC-88602",
+  "thread": "thr-ap-4306",
+  "sender": "ar@cobaltcloud.example",
+  "attachment": "photo-88602.jpg",
+  "scanned": true,
+  "vendor": "cobalt_cloud",
+  "amount": 980,
+  "currency": "USD",
+  "category": "Software",
+  "confidence": 0.44
+}

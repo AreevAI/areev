@@ -1,0 +1,131 @@
+{
+  "line_coverage": 80.1,
+  "lines_covered": 41964,
+  "lines_total": 52407,
+  "files": 149,
+  "global_floor": 75.0,
+  "per_crate": [
+    {
+      "name": "areev-conformance",
+      "line_coverage": 98.1,
+      "lines_covered": 1059,
+      "lines_total": 1079,
+      "floor": 95.0
+    },
+    {
+      "name": "areev-loop",
+      "line_coverage": 93.1,
+      "lines_covered": 5269,
+      "lines_total": 5660,
+      "floor": 90.0
+    },
+    {
+      "name": "areev-run-core",
+      "line_coverage": 91.9,
+      "lines_covered": 1265,
+      "lines_total": 1377,
+      "floor": 89.0
+    },
+    {
+      "name": "areev-trigger",
+      "line_coverage": 91.0,
+      "lines_covered": 875,
+      "lines_total": 962,
+      "floor": 89.0
+    },
+    {
+      "name": "areev-store",
+      "line_coverage": 85.8,
+      "lines_covered": 6310,
+      "lines_total": 7355,
+      "floor": 83.0
+    },
+    {
+      "name": "areev-core",
+      "line_coverage": 82.6,
+      "lines_covered": 5014,
+      "lines_total": 6068,
+      "floor": 80.0
+    },
+    {
+      "name": "areev-run",
+      "line_coverage": 81.7,
+      "lines_covered": 2571,
+      "lines_total": 3147,
+      "floor": 79.0
+    },
+    {
+      "name": "areev-context",
+      "line_coverage": 81.4,
+      "lines_covered": 1254,
+      "lines_total": 1541,
+      "floor": 79.0
+    },
+    {
+      "name": "areev-loop-adapter",
+      "line_coverage": 80.6,
+      "lines_covered": 603,
+      "lines_total": 748,
+      "floor": 78.0
+    },
+    {
+      "name": "areev-server",
+      "line_coverage": 77.0,
+      "lines_covered": 791,
+      "lines_total": 1027,
+      "floor": 75.0
+    },
+    {
+      "name": "areev-llm",
+      "line_coverage": 75.8,
+      "lines_covered": 991,
+      "lines_total": 1307,
+      "floor": 73.0
+    },
+    {
+      "name": "areev-mcp",
+      "line_coverage": 73.0,
+      "lines_covered": 619,
+      "lines_total": 848,
+      "floor": 71.0
+    },
+    {
+      "name": "areev-cli",
+      "line_coverage": 72.3,
+      "lines_covered": 2988,
+      "lines_total": 4134,
+      "floor": 70.0
+    },
+    {
+      "name": "areev-cal",
+      "line_coverage": 72.0,
+      "lines_covered": 12355,
+      "lines_total": 17154,
+      "floor": 70.0
+    }
+  ],
+  "comparisons": {
+    "same_scope_with_test_code": 84.4,
+    "whole_unfiltered_trace": 80.3
+  },
+  "excluded_from_scope": [
+    {
+      "path": "crates/areev-py/",
+      "reason": "PyO3 bindings \u2014 exercised by pytest in the `python` CI job, which this trace cannot see"
+    },
+    {
+      "path": "crates/areev-bench/",
+      "reason": "benchmark harnesses \u2014 explicit tools you run on purpose (`--bin honesty_metrics`), the same category as examples/"
+    },
+    {
+      "path": "crates/areev-js/",
+      "reason": "Node (napi) bindings \u2014 a STANDALONE package, not a cargo workspace member, so `--workspace` never builds it and it cannot appear in this trace at all; the `node` CI job builds and tests it separately"
+    },
+    {
+      "path": "crates/areev-store/src/pg.rs",
+      "reason": "PostgreSQL backend \u2014 needs a live DATABASE_URL; the conformance runner covers it separately. Present in this build only because areev-py sets `default = [\"postgres\"]` and Cargo unifies features workspace-wide"
+    }
+  ],
+  "measured_by": "cargo llvm-cov --workspace --lcov",
+  "scope": "Instrumented first-party lines under crates/ and fuzz/, excluding tests/, benches/, #[cfg(test)] blocks, and the paths in excluded_from_scope. The denominator is executable lines, so it is smaller than the source-line count in repo-stats.json."
+}

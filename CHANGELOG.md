@@ -8,6 +8,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Line coverage is measured, published and gated per crate.**
+  `scripts/coverage.py` turns the `coverage` job's LCOV trace into
+  `docs/coverage.json`, which the README chart renders alongside the line
+  counts. It scores source lines only — `tests/`, `benches/` and
+  `#[cfg(test)]` blocks are excluded, because a test body is executed by
+  definition — and excludes what that job structurally cannot run (`areev-py`,
+  which pytest drives; the benchmark harnesses; the Postgres backend, which
+  needs a live server), each exclusion carrying its reason in the JSON.
+  Enforcement is **per crate plus a global floor**, not one workspace target:
+  a single number lets a regression in one crate hide behind a gain in
+  another, and these crates do not carry the same risk. The per-crate floors
+  are the tight gate — regression ratchets a couple of points under each
+  crate's measurement — with a looser aggregate floor under the whole set,
+  deliberately given headroom because a gate that fails on cross-platform
+  noise gets lowered, and a lowered floor protects nothing.
+- **Tests for the CLI and MCP surfaces that had none** — the `areev trigger`
+  read and lifecycle verbs (`show`, `status`, `pause`/`resume`, `render`,
+  `deliver`), the `areev hold` and `areev retention floor` guards over
+  age-based destruction, and the three MCP tools `mcp_smoke.rs` never called
+  (`areev_supersede`, `areev_runs_touching`, `areev_recommendations`,
+  including the recommendation lifecycle and every argument refusal). Plus a
+  CAL error-contract test that pins the leading-token rule (every `Display`
+  begins with its `DOMAIN-Ennn` code), keeps `DELETE`/`ERASE`/`TRUNCATE`/
+  `DROP TABLE` rejected at the lexer as repros rather than as a claim, and
+  checks that every one of the 78 emitted `CAL-Ennn` codes falls inside a
+  range `ERROR_CODES.md` documents. Together these lifted `areev-cli`
+  62.1% → 72.3%, `areev-mcp` 65.2% → 73.0%, and the workspace to 80.1%.
+- **A real demo memory, committed to the repo** — `data/demo.db` (~800 KB,
+  466 grains) holds one coherent story end to end: an accounts-payable
+  agent's vendor knowledge and category rules, nine governed runs (six
+  posted, one a person refused, one waiting on a person, one honest
+  failure), a real open fork
+  from two channels editing offline, a declared polling trigger, saved CAL
+  queries, and thirteen recommendations that `areev loop run` actually
+  computed from that history. Nothing in it is hand-written to look
+  convincing; `scripts/build_demo.sh` regenerates the whole artifact from
+  `crates/areev-store/examples/seed_accounting_demo.rs`, and
+  `scripts/shoot_console.mjs` re-shoots the README's screenshots against it.
+- **`examples/agents/invoice-to-accounting/` is runnable**, replacing the
+  placeholder README. `./smoke.sh` imports the plan from a portable bundle,
+  runs three fixtures through it — one auto-posted, one parked for a human,
+  one photographed page that fails rather than posting a blank row — and
+  asserts the outcomes, including that the principal who *started* a run is
+  refused when it tries to approve it. Keyless: no credential, no network,
+  no model key — and CI now runs it (`agent-example`), so the keyless floor
+  is enforced rather than claimed.
+- **`areev_search` and `areev_nearest` join the MCP tool surface (23 → 25
+  tools), and `serve --mcp` gained `--profile memory|full`.** Both bindings
+  and the CLI have had hybrid free-text recall (`search`) and the
+  embedding-similarity novelty check (`nearest`) since early on, but MCP —
+  the surface an LLM agent actually calls — only ever got structural
+  `areev_recall`, which needs the caller to already know the exact
+  `(subject, relation)` pair. The natural agent query ("what do we know
+  about the Johnson account") is free text, and without `nearest` an agent
+  had no cheap way to check "do I already know something like this" before
+  `areev_add`, so long-lived sessions tended to accumulate near-duplicate
+  facts reworded slightly across turns. Both fail loudly (never a silent
+  empty list) when their prerequisite is missing — `areev_search` needs a
+  text index or an embedder, `areev_nearest` needs an embedder — naming the
+  MCP-specific remedy (`--index-text true` + `reindex`, or `--embed-cmd`),
+  not a bindings-only one that doesn't apply to this surface. Separately,
+  `--profile memory` narrows both `tools/list` and `tools/call` to the
+  twelve read/write/query tools, dropping the thirteen-tool workflow-runtime
+  family (`areev_run_*`, `areev_loop`, `areev_recommendations`,
+  `areev_tool_provenance`, `areev_record_tool_call`, `areev_run_manifest`) —
+  a host that only wants Areev as chat memory no longer hands its agent a
+  dozen governed-run tools it will never call; `--profile full` (the
+  default) is unaffected. See [`docs/mcp-reference.md`](docs/mcp-reference.md).
+
 - **The console draws a workflow's whole picture on one canvas.** A `Trigger`
   grain names the plan it starts (`trigger.workflow`), and the binding points
   trigger → plan and never the reverse — a plan that grew a list of triggers
@@ -41,6 +110,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **README is visual-first**: real console screenshots (light and dark, via
+  `<picture>`) instead of design exports, an architecture diagram, a
+  sixty-second runnable path, and the problem stated as a table before any
+  of the mechanism. The stale `dejadb`-branded assets are gone.
+
 - **Console navigation follows the order you meet things in**: Workflows →
   Runs → Tools. The standalone Triggers tab is gone (folded into the canvas
   above); `#triggers` redirects to Workflows rather than dead-ending a
@@ -56,7 +130,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   everything else. The Runs page and the canvas overlay read ONE shared run
   index, so the two surfaces cannot drift apart.
 
+### Removed
+
+- **`README.zh-CN.md`.** A translation that lags the README is worse than no
+  translation — it was still describing the pre-Console-v2 shape and pointing
+  at screenshots that no longer exist.
+- **`seed_support_demo.rs` / `seed_workflow_demo.rs`.** Both seeded a
+  different fictional company than anything the README now shows.
+  `seed_accounting_demo.rs` replaces them, and it is the single source for
+  both `data/demo.db` and the example's `plan.mgb`.
+
 ### Fixed
+
+- **`areev_recommendations` silently ignored `status: "all"`** over MCP,
+  returning only the pending queue. `docs/mcp-reference.md` documents `all` as
+  one of the four accepted filters, so an agent asking for every
+  recommendation was told — with no error — that nothing had ever been
+  approved or applied. The cause was a filter chain that could not tell "the
+  caller said `all`" from "the caller said nothing", since both arrive as
+  `None`; a dropped filter fails **open**, and the wrong answer goes straight
+  into a model's context. Now pinned by `mcp_smoke.rs`, which asserts `all` is
+  a superset of `pending`.
+- **Run checkpoints read as "A state with no readable text" in the console's
+  memory browser.** A checkpoint's body is the scheduler's serialized state,
+  which has no sentence in it, so every one of them fell through to the
+  type-name fallback — on any file with governed runs in it, the browser's
+  default page was a wall of identical unreadable rows. They now say which
+  run and which step they belong to. (What remains is a design question, not
+  a bug: whether runtime bookkeeping belongs in the plain memory browser at
+  all.)
 
 - **The console's Triggers tab rendered into a pane that never became
   visible.** Every page section ships `hidden` in the markup and is revealed

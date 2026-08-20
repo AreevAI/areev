@@ -1,80 +1,392 @@
 # Areev
 
-> English · [中文](README.zh-CN.md)
-
-**The substrate for adaptive agents** — agents whose behaviour changes on
-evidence, under human authority, in steps you can inspect, undo, and re-measure.
+**The substrate for governed self-improving agents** — agents that get better
+from their own history, under human authority, in steps you can inspect, undo,
+and re-measure.
 
 [![CI](https://github.com/AreevAI/areev/actions/workflows/ci.yml/badge.svg)](https://github.com/AreevAI/areev/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#install)
 
-Areev is an engine you **embed**. It holds an agent's memory *and* its execution
-history in one content-addressed store — **raw and lossless, never an LLM
-summary of itself** — so a single substrate answers both questions a serious
-deployment asks: *what should this agent recall right now?* and *what did it do,
-on whose authority, and can we take it back?*
+<p align="center">
+  <img src="docs/assets/areev-hero.png" width="900"
+       alt="How Areev works: typed grains — facts, goals, skills, workflows, tools, events, recommendations — in one store, assembled by the context graph (hybrid recall, rerank, knowledge graph) into a budget-shaped pseudonymized context for the LLM provider; the host executes the actions under human-in-the-loop governance, and the Areev learning loop (propose, review, apply, verify) feeds what happened back into the store">
+</p>
 
-Recall is **structural and queryable** — [CAL](docs/cal-reference.md), a real
-query language, not a similarity search you hope lands. It runs **in-process, in
-microseconds**, with no server on the recall path: fast enough inside a
-real-time **voice agent's** turn, where a network memory call cannot go. Your
-agent's memory is **a file you own**. Where a deployment has nowhere to put a
-file — stateless containers, multi-instance services — the same engine runs over
-a [PostgreSQL schema](#postgresql-backend-server-tier) with the same semantics.
+<p align="center">
+  <em>One substrate: typed grains in, a budget-shaped pseudonymized context out, a person on the gate —<br>
+  and what the agent did comes back as the evidence its next improvement is proposed from.</em>
+</p>
 
-> git for your agent's memory: log, diff, time-travel, forks with explicit
+Every enterprise wants an agent that gets better at its job. Almost none will
+accept one that changes itself. That is not irrational — an agent that quietly
+rewrites what it believes is one you cannot audit, cannot roll back, and cannot
+defend in a review.
+
+Areev's answer is to make improvement an **operation with a gate on it** rather
+than a property of the model. The agent proposes; a named person disposes; the
+change carries a written reason and a stored inverse; and afterwards the system
+re-measures whether the change actually helped.
+
+Areev is a memory engine you **embed**. It holds an agent's knowledge *and* its
+execution history in one content-addressed file — raw and lossless, never an LLM
+summary of itself — so a single substrate answers both questions a serious
+deployment asks: **what should this agent recall right now?** and **what did it
+do, on whose authority, and can we take it back?**
+
+Recall is structural and queryable — [CAL](docs/cal-reference.md), a real query
+language, not a similarity search you hope lands. It runs in-process in
+**microseconds**, with no server anywhere near the recall path: fast enough
+inside a real-time voice agent's turn, where a network call cannot go.
+
+### What "self-improving" does and does not mean here
+
+Three limits, stated before the features, because they are the reason this is
+deployable:
+
+| It does | It does not |
+|---|---|
+| Improve the agent's **memory** — lessons, facts, routing rules, flagged plans | Touch model weights. Areev never trains, ships no trainer, and takes no training dependency |
+| Propose, with the grains it computed from cited by hash | Change anything on its own authority. Every apply goes through the gates; auto-apply is **off** unless a host policy file grants it, and never for destructive or LLM-originated changes |
+| Run when you run it: a hook, a cron, CI, an MCP call | Run a daemon. There is no scheduler and no background process |
+
+The scary version of self-improvement is an agent that changes itself between
+your reviews. This one cannot: **autonomy is never earned by a metric, it stays
+an explicit grant from the host.**
+
+---
+
+## The problem
+
+Agent memory today is a vector store plus an extraction pipeline. Audited
+deployments keep finding the same three failures, and none of them announce
+themselves — the agent just gets quietly worse.
+
+| What usually happens | What happens here |
+|---|---|
+| **The store fills with near-duplicates.** The same fact, written eleven slightly different ways, all ranked, all in the prompt. | Memories are content-addressed. A byte-identical rewrite collapses to **one** grain — not a duplicate, not an error. |
+| **Stale values out-rank current ones.** The agent learned the price twice and cites the old number, and nothing in the store says which is which. | An edit is a **supersession**. Recall returns 1 current value and 0 stale ones; the old value stays in history, retrievable on purpose. |
+| **Nobody can say where a belief came from.** "Why does it think that?" ends in a log grep, if the log still exists. | **100%** of grains trace to when and how they entered — and to the run that produced them. |
+| **A crash pays the invoice twice.** Retry logic hopes the vendor deduplicates. | Intent is journaled **before** the effect. A crash-window redelivery reuses the same idempotency key and is journaled as a redelivery. |
+| **"Delete this person's data" is a project.** | `FORGET SUBJECT` is one operation, it replicates as ordinary tombstones so replicas delete too, and a disclosure shares **one selector** with it. |
+
+None of that is a promise you have to take on faith. It is a deterministic
+benchmark with no LLM in the loop:
+`cargo run -p areev-bench --bin honesty_metrics`.
+
+---
+
+## Three systems, one file
+
+<p align="center">
+  <img src="docs/assets/arch-three-systems.png" width="900"
+       alt="Areev's architecture: Graph (the record — traverse, replay, assemble), Loop (the learning — detect, verify, measure) and Governance (the authority — intent-first, separation of duties, audit trail), all converging on one file that is immutable, content-addressed, versioned and tombstoned">
+</p>
+
+Designed *against* each other, not merely alongside: the graph is shaped so an
+erasure can reach every copy of a fact, the loop is shaped so it cannot apply
+its own advice, and governance is shaped so neither of them can be talked out
+of it. That is why the record can be erased, the turn can be budgeted, and the
+change can be undone.
+
+> **git for your agent's memory**: log, diff, time-travel, forks with explicit
 > merges, and encrypted incremental sync — built into the data model, because
 > grains *are* content-addressed immutable objects.
 
-And because the record is content-addressed and subject-indexed rather than
-baked into weights, **erasure is a real operation**: `FORGET SUBJECT` removes a
-person from the live store and replicates as ordinary tombstones, which delete
-on replicas too — and the data-subject report shares **one selector** with it, so
-a disclosure describes exactly what an erasure removes. The reach, and the
-archive-retention window it does *not* cover, are stated plainly in
-[`docs/gdpr.md`](docs/gdpr.md) and [`docs/erasure.md`](docs/erasure.md). That is
-the property model-side memory cannot offer, and it is where blast radius is
-actually controlled.
+---
 
-*The `.mg` format and CAL are stable and documented, conformant with the Open
-Memory Spec (OMS). See [`CHANGELOG.md`](CHANGELOG.md) for the current release.*
+## Sixty seconds
 
-## Screenshots
+An accounts-payable agent — the job every agent builder has been asked for.
+Invoices arrive, get extracted, and land in the expense sheet, except the ones a
+person has to look at first, which park until somebody says yes.
 
-The web console — browse memories, inspect the graph, and run CAL with a live
-grain inspector (click to enlarge):
+```bash
+cargo install areev
+git clone https://github.com/AreevAI/areev && cd areev/examples/agents/invoice-to-accounting
+./smoke.sh        # week one — it does the job, under governance
+```
+
+No credentials. No network. No model key. Seconds later:
+
+```
+3a. an invoice under the threshold posts itself
+{"finished":"Completed","run_id":"small"}
+
+3b. one over the threshold parks for a person
+   waiting on ask e65803012896e8dc…
+   the starter cannot approve its own run (refused, as designed)
+{"finished":"Completed","run_id":"large"}
+
+3c. a scanned page fails loudly rather than posting a blank row
+{"finished":"Failed { node: \"parse_attachments\", detail: \"pdftotext produced 0 characters\" }"}
+
+OK — 2 posted, 1 refused, 1 approval recorded against a named person.
+```
+
+That third one is worth staring at. A pipeline that "handles" an unreadable
+attachment by extracting nothing writes a row of nulls into your books. This one
+stops, and says why.
+
+### Then the part that makes it adaptive
+
+```bash
+./improve.sh      # week two — it proposes its own fix, you decide
+```
+
+Five more invoices. Three of them are photographs, because a new vendor emails
+scans and a photograph has no text layer. Read one at a time those are three
+unlucky days; nobody files a ticket for a single stuck invoice. Counted, they
+are a pattern with a cause — and the agent counts them, over its **own run
+journals**, with no model key:
+
+```
+2. the agent looks at its own record
+loop: ran — proposed 1 (0 deduped, 0 auto-applied) across 11 analyzer(s)
+
+3. what it found
+   HIGH  Workflow fc991baf5ead failed 4/8 recent runs (50%): parse_attachments:
+         pdftotext produced 0 characters - attachment is a scanned image
+   analyzer   loop.run_outcome/1  (confidence 0.8)
+   evidence   8 grains cited, by hash
+   origin     builtin — deterministic, no model was called
+
+4. what the loop is NOT allowed to do
+   the engine cannot execute its own advice — it is advisory (LOP-E011)
+   a decision with no written reason is refused
+
+5. a person decides, and signs it
+approved 776d33d9e246
+
+6. run the loop again
+loop: ran — proposed 0 (1 deduped, 0 auto-applied) across 11 analyzer(s)
+   deduped — the same evidence does not become a second recommendation
+```
+
+**That is the whole product in one screen.** It found a real pattern in its own
+history; it refused to act on it; a named person approved it with a written
+reason; and it does not raise it twice. An agent that nags is an agent you
+switch off.
+
+Both scripts assert their own results and exit non-zero on drift, so
+[CI runs them on every release](.github/workflows/ci.yml) — an example that
+rots between releases is wrong at exactly the moment somebody is evaluating.
+
+**[→ the full walkthrough](examples/agents/invoice-to-accounting/)** — five files
+and eight fixtures, one of which you'd replace to make it real.
+
+---
+
+## The five moving parts
+
+Each one is a thing other stacks either don't have or solve with a service you
+have to run.
+
+| | What it is | Why it's unusual |
+|---|---|---|
+| **[Areev Loop](#areev-loop--governed-self-improvement-built-in)** — the learning | Thirteen deterministic analyzers read the agent's history and propose changes, each citing the grains it computed from | It **proposes; a named person disposes**. Four gates, a mandatory written reason, a stored inverse, and a re-measurement afterwards that can propose its own revert. Starts at **zero model calls** |
+| **[Areev Trigger](#triggers--the-cadence-is-data-not-a-daemon)** — the cadence | Standing rules that start workflows — eight kinds: interval, cron, once, polling, memory-predicate, webhook, manual, composite | The rule is a **grain**, so the cadence travels with the memory instead of living in someone's crontab. **No daemon** — evaluation is a one-shot command, safe to run concurrently |
+| **[CAL](docs/cal-reference.md)** — the context | A real query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit degradation, per-type priorities | Retrieval gives you candidates; a turn needs a *budget-shaped* prompt. Deterministic allocation is what makes a replay comparable to the original run |
+| **[The graph](#1-the-record--and-the-turn)** — the record | Every grain is an immutable `(subject, relation, object)` assertion with a reverse index and full provenance | It's a **provenance graph, not a pile of embeddings**: traverse it, time-travel it, ask *which runs produced this fact* — and erase a person from it as one operation |
+| **[The storage](#storage-a-plain-sqlite-file-or-a-postgres-schema)** — where it lives | A plain **SQLite file** on the embedded [Turso](https://github.com/tursodatabase/turso) engine, or a **PostgreSQL** schema for the server tier | **~30 µs** structural recall in-process, no server in the recall path. Same semantics on both backends, pinned by one conformance suite run against each |
+
+---
+
+## Triggers — the cadence is data, not a daemon
+
+An agent that only runs when you type a command is a demo. Making it a product
+usually means a scheduler service: something else to deploy, monitor, and keep
+in sync with what the agent is supposed to be watching.
+
+Areev makes the standing rule a **grain**. What to watch, how often, and what to
+start live in the memory, so they replicate with it and survive a restore:
+
+```bash
+areev trigger add --db accounting.db --ns accounting \
+  --type polling --observer mailbox --scope 'mailbox:ap@northwind.example' \
+  --interval 120 --workflow <WF_HASH> --dedup-key /message_id \
+  --because "poll the accounts-payable mailbox for invoices"
+
+areev trigger run --db accounting.db --dry-run   # touches nothing — the safe first command
+areev trigger run --db accounting.db --connector-cmd ./mailbox.sh --tool-cmd ./tools.py
+```
+
+Then put `trigger run` on whatever heartbeat you already have — cron, launchd,
+systemd, a Kubernetes CronJob. It can be much **coarser** than your shortest
+interval, because the command is cheap and the *memory* decides what is actually
+due. Claims are leased, cursors are local (a dev memory restored from prod does
+not inherit prod's watermark and skip real work), and `--dedup-key` means the
+same invoice does not get processed twice.
+
+**The loop rides the same posture.** `areev loop run` is likewise a cheap,
+idempotent command with watermark gates (`--min-new`, `--if-stale`) — put it on
+the same heartbeat, a Claude Code `SessionEnd` hook, or a CI job where
+`areev loop list --fail-on high` exits 2 and turns governance into a merge gate.
+Neither of them is a background process that can drift while you aren't looking.
+
+Eight kinds over four primitives, the connector contract, composite gates and
+correlation windows: [`docs/triggers.md`](docs/triggers.md).
+
+---
+
+## Storage: a plain SQLite file or a Postgres schema
+
+The memory is not a proprietary blob. On the embedded backend — the
+[Turso](https://github.com/tursodatabase/turso) engine, SQLite rewritten in Rust
+— **a memory is a SQLite file**, and you can prove it against the demo memory
+committed to this repo without installing anything of ours:
+
+```console
+$ file data/demo.db
+data/demo.db: SQLite 3.x database, ...
+$ sqlite3 data/demo.db "SELECT count(*) FROM grains"
+466
+```
+
+That is the anti-lock-in property. Your agent's memory opens in every SQLite
+tool on earth, backs up with `cp`, and outlives this engine — and the `.mg`
+format inside it is documented and
+[OMS](https://github.com/openmemoryspec/oms)-conformant with byte-exact test
+vectors, so the *contents* outlive it too.
+
+Because it is in-process, recall is **microseconds, not milliseconds** — there
+is no server in the recall path:
+
+| recall operation | p50 |
+|---|---|
+| `entity_latest` (in-process) | **~9 µs** |
+| structural recall (in-process) | **~30 µs** |
+| inside a 50 ms voice frame, live write-back | **79 µs** (152 µs p99) |
+| the same recall via a localhost HTTP sidecar | 158 µs |
+
+The last row is the argument for embedding: the cost is the network hop, not the
+store. It is also why the same engine runs on a **$35 Raspberry Pi 3 from 2016**
+at ~361 µs, flat from 500 to 8,000 grains ([full
+methodology](crates/areev-bench/RESULTS.md)).
+
+One memory = one file is the edge story. Where there is no durable disk —
+Cloud Run, autoscaled containers, a multi-instance service — the same store runs
+over **one PostgreSQL schema per memory** instead, behind a cargo feature, with
+multiple concurrent writers and pgvector. The two backends are held to identical
+semantics by **one conformance suite executed against both**, so the choice
+cannot quietly change behaviour: [details and the deliberate
+differences](#postgresql-backend-server-tier).
+
+---
+
+## What a governed run actually is
+
+Every agent framework executes graphs. Almost none can *prove* an execution
+afterwards. Here the plan is a grain, the run is a journal in the same file, and
+the person who has to say yes is a node in the graph — not a Slack message
+somebody remembered to send.
+
+An effect is written down **before** it is allowed to happen: intent is
+journaled, the tool runs, the result supersedes the intent. That ordering is
+what makes a crash-window effect redeliverable under the same idempotency key
+instead of paid twice, and what lets `areev run verify` re-drive the whole run
+from its journal and byte-compare every checkpoint.
 
 <p align="center">
-  <a href="demo/screens/memories.png"><img src="demo/screens/memories.png" width="320" alt="Console — memories"></a>
-  <a href="demo/screens/graph.png"><img src="demo/screens/graph.png" width="320" alt="Console — graph"></a>
-  <a href="demo/screens/query.png"><img src="demo/screens/query.png" width="320" alt="Console — query + grain inspector"></a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/workflow-dark.png">
+    <img src="demo/screens/workflow-light.png" width="900"
+         alt="The invoice workflow in the Areev console: eight steps, conditional edges, and a human-approval node picked out in orange">
+  </picture>
 </p>
 
-## What "adaptive" means here
+<p align="center"><em>The plan itself — conditional edges in a frozen grammar, and the one node that requires a person.</em></p>
 
-An adaptive agent is **not** one that quietly retrains itself. It is one whose
-behaviour changes *deliberately* — on evidence you can inspect, under authority
-you granted, in a step you can undo and then measure again.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/runs-dark.png">
+    <img src="demo/screens/runs-light.png" width="900"
+         alt="The Runs page: nine governed runs grouped as Waiting on you and Finished — six posted, one refused by a person, one failed, one waiting with Approve and Refuse buttons">
+  </picture>
+</p>
 
-Nothing here runs unattended. There is **no daemon and no scheduler**: analysis
-is a cheap idempotent command you put on a hook, a cron, or CI. Autonomy is
-never earned by a metric; it stays an explicit grant from the host.
+<p align="center"><em>…and nine real runs of it: six posted, one a person <strong>refused</strong> — replied to, never written to the sheet — one that failed honestly, and one still waiting.<br>
+Approving requires <strong>your own</strong> sign-in: a shared console token is refused, because the approver's identity <em>is</em> the audit record.</em></p>
 
-Getting that right is three engineered systems over one file — and they are
-designed against each other, not bolted together.
+---
 
-### 1. Graph engineering — the record
+## The loop that closes it
+
+[**Areev Loop**](#areev-loop--governed-self-improvement-built-in) reads the
+agent's own history back as evidence and proposes changes — *"this tool failed
+40% of its calls"*, *"these two facts contradict"* — each citing the grains it
+was computed from. Thirteen deterministic analyzers, **zero model calls
+required**.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/suggestions-dark.png">
+    <img src="demo/screens/suggestions-light.png" width="900"
+         alt="The review queue: a contradiction and a fork surfaced by the loop, each with the conflicting values and an Apply or Dismiss decision">
+  </picture>
+</p>
+
+<p align="center"><em>Thirteen findings from the demo memory, in plain language, each undoable.<br>
+Nothing here applies itself.</em></p>
+
+Every recommendation goes through **propose → review → apply → verify**, carries
+a written reason and a stored inverse, and is **re-measured after apply**. Attach
+an LLM and its findings are grounded against the evidence and independently
+verified before a human ever sees them.
+
+**The honest scope, stated plainly**: Areev Loop improves the agent's
+**memory** — not the model's weights, and not by itself the model's outputs.
+Areev never trains, ships no trainer, and takes no training dependency. One
+property is worth the whole design: **the gate cannot be weakened by the thing
+it gates** — a `code_revision` recommendation is pinned to the evalset it was
+judged against, and can be applied only through the gating edge that judged it
+(Rule E1).
+
+---
+
+## Erasure is a real operation
+
+Because the record is content-addressed and subject-indexed rather than baked
+into weights, removing a person is an operation rather than a project.
+`FORGET SUBJECT` removes them from the live store and replicates as ordinary
+tombstones, which delete on replicas too — and the data-subject report shares
+**one selector** with it, so a disclosure describes exactly what an erasure
+removes. The reach, and the archive-retention window it does *not* cover, are
+stated plainly in [`docs/gdpr.md`](docs/gdpr.md) and
+[`docs/erasure.md`](docs/erasure.md).
+
+That is the property model-side memory cannot offer, and it is where blast
+radius is actually controlled.
+
+---
+
+## The three systems, in detail
+
+The record, the learning and the authority — designed against each other, as
+[above](#three-systems-one-file). This is what each one actually gives you.
+
+### 1. The record — and the turn
 
 Every grain is an immutable, content-addressed `(subject, relation, object)`
 assertion with a reverse index, so the store is a **provenance graph**, not a
-pile of embeddings:
+pile of embeddings — and the same system decides what reaches the model:
 
 - **Traverse it**: `areev related` walks edges, `WITH multi_hop` follows them
   in reverse — *what points at this?*, not just *what does this point to?*
 - **Time-travel it**: `areev entity-at` reconstructs what the agent believed at
   a timestamp. Updates are supersessions, so history is never overwritten and
   the current value is unambiguous.
+- **Assemble it into the prompt**: retrieval returns candidates; a turn needs a
+  *budget-shaped* context. Grains render Full up to ~70% of the token budget,
+  degrade to **Summary** to ~95%, then **Omit** — so the tail of a large result
+  set costs a summary rather than the whole grain or nothing at all. A per-type
+  priority table (consent > state > goal > fact) with a reserved minimum per
+  type means one loud grain type cannot crowd out the consent record or the
+  open goal. ([`areev-context`](crates/areev-context/), not a `top_k` and a prayer.)
+- **Reproduce it**: same inputs, same context — allocation is deterministic,
+  which is what makes a replay comparable to the original run. One renderer
+  backs both this and CAL's `FORMAT`, pinned by a byte-parity test, so the two
+  surfaces cannot drift.
 - **Annotations stay annotations**: a cross-link between grains never alters its
   target's supersession state (OMS §15.3), so enriching the graph cannot
   silently rewrite what the agent currently believes.
@@ -86,29 +398,13 @@ pile of embeddings:
 - **Concurrent edits become branches**, surfaced with a deterministic
   provisional head and merged explicitly — never silently lost.
 
-### 2. Context engineering — the turn
+### 2. The learning — Areev Loop
 
-Retrieval returns candidates; a turn needs a *budget-shaped* context. That is a
-separate, deterministic system ([`areev-context`](crates/areev-context/)), not a
-`top_k` and a prayer:
+Thirteen deterministic analyzers over the agent's own history, four gates, and
+an outcome measurement afterwards. Covered [above](#the-loop-that-closes-it);
+the full guide is [`docs/loop.md`](docs/loop.md).
 
-- **Progressive disclosure is real**: grains render Full up to ~70% of the token
-  budget, degrade to **Summary** to ~95%, then **Omit** — so the tail of a large
-  result set costs a summary rather than the whole grain or nothing at all.
-  Budgeted `FORMAT TEMPLATE` renders pick their tier the same way, so
-  `ELEMENT_SUMMARY` fires under pressure and `ELEMENT_OMIT` accounts for what the
-  budget dropped. JSON and TOON stay whole-entry on purpose — a prose summary
-  inside a structured dump would corrupt it.
-- **Priority *and* diversity**: a per-type priority table (consent > state >
-  goal > fact) with a reserved minimum per type, so one loud grain type cannot
-  crowd out the consent record or the open goal.
-- **Same inputs, same context** — allocation is deterministic, which is what
-  makes a replay comparable to the original run.
-- **Provider-shaped output**: SML, Markdown, TOON, or JSON, with presets per
-  model family. One renderer backs both this and CAL's `FORMAT`, pinned by a
-  byte-parity test, so the two surfaces cannot drift.
-
-### 3. Governance — the authority
+### 3. The authority — governance
 
 Governance here is not access control bolted onto a store. It is the **shape of
 the operations**:
@@ -132,82 +428,19 @@ the operations**:
 - **Separation of duties is structural**: the principal who triggered an
   approval gate cannot approve it.
 
-### The loop that closes them
+---
 
-[**Areev Loop**](#areev-loop--governed-self-improvement-built-in) turns the
-agent's own history into **recommendations** — *"this tool failed 71% of its
-calls"*, *"these two facts contradict"* — each citing the grains it was computed
-from. Thirteen deterministic analyzers, **zero model calls required**. Every
-recommendation goes through propose → review → apply → verify, is undoable, and
-is **re-measured after apply**. Attach an LLM and its findings are grounded
-against the evidence and independently verified before a human ever sees them.
+## The rest of the case
 
-**The honest scope, stated plainly**: Areev Loop improves the agent's
-**memory** — not the model's weights, and not by itself the model's outputs.
-Areev never trains, ships no trainer, and takes no training dependency. It is
-the record of how an agent changed and the evidence for whether the change
-helped. One property is worth the whole design: **the gate cannot be weakened by
-the thing it gates** — a `code_revision` recommendation is pinned to the evalset
-it was judged against, and can be applied only through the gating edge that
-judged it (Rule E1).
-
-## Why
-
-Agent memory today is a vector store plus an extraction pipeline — and audited
-deployments keep finding the same failure: the store fills with duplicates and
-stale values nobody can trace. Areev is a different shape: an **engine you
-embed**, built so memory *can't* rot silently.
-
-- **Doesn't rot — measured, not promised**: memories are immutable,
-  content-addressed grains, so byte-identical re-writes collapse to **one**
-  grain; updates are supersessions, so recall returns **1 current value, 0
-  stale** with the full history kept; **100%** of grains trace to when and how
-  they entered. All deterministic, no LLM in the loop:
-  `cargo run -p areev-bench --bin honesty_metrics`.
-- **Safe for agents that learn**: in a self-improvement loop, rot *compounds*
-  — an agent that keeps stale lessons and duplicates gets worse, not better.
-  Supersession (revisions replace, never co-rank), lessons structurally linked
-  to the experience that taught them, replay-idempotent sync, and
-  point-in-time rollback of the memory file make the loop auditable and
-  reversible:
-  [build an agent that learns](docs/cookbook.md#10-build-an-agent-that-learns-and-can-unlearn--by-hand).
-- **Self-improvement with governance — [Areev Loop](#areev-loop--governed-self-improvement-built-in),
-  built in**: thirteen deterministic analyzers turn the agent's own history into
-  recommendations — *"this tool failed 71% of its calls"*, *"these two facts
-  contradict"* — each citing the grains it was computed from, gated
-  propose → review → apply → verify, undoable, and re-measured after apply.
-  Zero model calls required; attach an LLM and its findings are grounded
-  against the evidence and independently verified before a human ever sees
-  them.
-- **A runtime that can prove what it ran —
-  [`areev run`](#run-a-governed-workflow-areev-run)**: every agent framework
-  executes graphs; almost none can *prove* an execution afterwards. Crash
-  recovery duplicates side effects, "who approved this?" is a Slack search,
-  and "what did the agent actually do?" is a log grep. `areev run` executes a
-  Workflow grain as a governed run whose journal lives in the same memory
-  file: the intent is written *before* every dispatch and the result
-  supersedes it, so a crash-window effect is redelivered under the **same
-  idempotency key** — journaled as a redelivery — never minted as a
-  duplicate; `areev run verify` replays the whole run from its
-  journal and byte-compares every checkpoint; human approval gates enforce
-  separation of duties (the principal who triggered an ask structurally
-  cannot approve it); budgets (tokens / USD / wall-clock) are enforced
-  per-superstep; and `areev run cancel` is a kill switch whose
-  cancel-to-drain time is **measured** into the oversight report, not
-  asserted. LangGraph-grade execution — Send fan-out, subgraphs, typed
-  reducers, streaming, time-travel forks — with an audit story the
-  frameworks don't have ([EU AI Act Art. 12/14 map](docs/eu-ai-act.md)).
-- **CAL-native**: `RECALL` / `ASSEMBLE` / `EXISTS` / `HISTORY` / `ADD` /
-  `SUPERSEDE` — a query language where destruction is **shaped**: it takes a
-  hash, an identity, or an age, **never a predicate**. `DELETE` isn't a token
-  in the grammar; the three destructive statements each require an
-  authorization grant and a recorded reason, write an audit record, and can be
-  capped off per process. The right-to-erasure pair (`REPORT SUBJECT` /
-  `FORGET SUBJECT`) shares one selector, so what a data-subject request
-  discloses is exactly what an erasure removes — see [`docs/gdpr.md`](docs/gdpr.md).
 - **Fast where it matters** (measured, Apple M4 Max): structural recall **~30µs**,
   `entity_latest` **~9µs**, 50ms-cadence voice loop with live write-back
   **79µs p50 / 152µs p99** per frame recall.
+- **A runtime that can prove what it ran** — [`areev run`](#run-a-governed-workflow-areev-run)
+  gives you LangGraph-grade execution (Send fan-out, subgraphs, typed reducers,
+  streaming, time-travel forks) with an audit story the frameworks don't have:
+  budgets enforced per-superstep, a kill switch whose cancel-to-drain time is
+  **measured** into the oversight report rather than asserted
+  ([EU AI Act Art. 12/14 map](docs/eu-ai-act.md)).
 - **Hybrid recall**: structural + BM25 + vector legs fused with RRF; multilingual
   by construction (Arabic and English ride every leg; unspaced CJK rides the
   vector leg). Bring any embedder: the `EmbedBackend` trait in Rust, a callback
@@ -224,11 +457,56 @@ embed**, built so memory *can't* rot silently.
   adapter](docs/memory-tool.md), budget-aware context rendering (SML / Markdown /
   TOON / JSON), tool-schema rendering for 9 provider formats, Python and Node
   bindings.
+- **Keep your stack**: [LangGraph and CrewAI adapters](#keep-your-langgraph-or-crewai-stack--govern-its-state)
+  put your existing agent's state in a memory file you can diff, sync, and erase.
+- **Runs where a file cannot**: stateless containers and multi-instance services
+  get the same engine over a [PostgreSQL schema](#postgresql-backend-server-tier)
+  with the same semantics, pinned by one conformance suite run against both.
 - **A format you keep**: the `.mg` format is fully documented and
   [OMS](https://github.com/openmemoryspec/oms)-conformant (byte-exact test
   vectors), so the record outlives this engine — and outlives us. Importers
   exist for the common stores if you are bringing history with you
   ([`docs/migrate.md`](docs/migrate.md)).
+
+*The `.mg` format and CAL are stable and documented, conformant with the Open
+Memory Spec (OMS). See [`CHANGELOG.md`](CHANGELOG.md) for the current release.*
+
+---
+
+## See it yourself
+
+The demo memory behind every screenshot above is committed to this repo — 466
+grains, 9 governed runs, 13 pending recommendations, one open fork:
+
+```bash
+areev ui --db data/demo.db --ns accounting     # → http://127.0.0.1:7437
+```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
+    <img src="demo/screens/graph-light.png" width="900"
+         alt="The Areev console: an agent's memory as a provenance graph, with a rewind scrubber along the bottom">
+  </picture>
+</p>
+
+<p align="center"><em>Every memory the agent holds, as a graph you can walk — and rewind.<br>
+A real console over the real <a href="data/demo.db"><code>demo.db</code></a> in this repo. Nothing here is a mockup.</em></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/analytics-dark.png">
+    <img src="demo/screens/analytics-light.png" width="900"
+         alt="The Analytics page: a census across all 12 grain types, a namespace breakdown, and which recall legs are active on this file">
+  </picture>
+</p>
+
+<p align="center"><em>All twelve grain types this format can hold, and how many of each are in there.<br>
+Click one and it writes the CAL that returns it.</em></p>
+
+Rebuild it from scratch with [`scripts/build_demo.sh`](scripts/build_demo.sh):
+every run in it is a real journal and every recommendation is a real analyzer
+output, not rows written to look convincing.
 
 ## Install
 
@@ -520,7 +798,7 @@ dismiss another with a reason. None of them is a rubber-stamp loop.
 
 | | |
 |---|---|
-| [`agents/`](examples/agents/) | **Vertical agents**, end to end: a polling trigger wakes a workflow, a human approves what spends money, a system of record gets written once. Every vendor leg is a JSON-on-stdio connector, so they add **no dependencies** to this repo |
+| [`agents/`](examples/agents/) | **Vertical agents**, end to end: a polling trigger wakes a workflow, a human approves what spends money, a system of record gets written once — then the loop reads those runs back and proposes a fix a person approves. Every vendor leg is a JSON-on-stdio connector, so they add **no dependencies** to this repo |
 | [`colab/`](examples/colab/) | Notebooks: the full self-improving loop, plus five business walkthroughs — wrong-lesson rollback, detect/review/govern, an enterprise architecture. Keyless deterministic floor; the LLM layer is optional |
 | [`ci/`](examples/ci/) | A GitHub Actions job that **fails the build** on pending high-severity recommendations — governance as a merge gate |
 | [`policy/`](examples/policy/) | Three `loop-policy.json` variants: solo, team, locked-down production |
@@ -759,12 +1037,36 @@ open and regenerated from the tree on every CI run:
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/repo-stats-dark.svg">
   <img src="docs/assets/repo-stats-light.svg" width="760"
-       alt="Areev repository quality metrics — source and test line counts, test count, and stable error codes, generated from the tree">
+       alt="Areev repository quality metrics — source and test line counts, test count, line coverage, and stable error codes, generated from the tree">
 </picture>
 
 - **Tests are about a third of the codebase**, and roughly half of that is
   *integration* testing — the CLI and MCP suites drive the real binary over
   real stdio, not mocks. `cargo test --workspace` runs the lot in under a minute.
+- **Line coverage is 80.1%, and it is the lowest of the three numbers we could
+  have quoted.** It counts *source* lines only: `tests/` and `benches/` are
+  excluded outright and `#[cfg(test)]` blocks line-by-line, because a test body
+  is executed by definition and counting it scores the suite against itself. On
+  the same scope with test code counted back in, the trace reads **84.4%**;
+  unfiltered — every instrumented line, which is what a naive `cargo llvm-cov`
+  summary prints — it reads **80.3%**. **We publish the one that is hardest on
+  us.** The scope leaves out only code this job structurally cannot execute —
+  the PyO3 bindings pytest drives, the Node addon that is not a cargo workspace
+  member, the benchmark harnesses, the Postgres backend that needs a live
+  server — and each exclusion carries its reason in
+  [`docs/coverage.json`](docs/coverage.json) rather than being quietly
+  convenient.
+- **Coverage is enforced per crate, not as one workspace target.** A single
+  number lets a regression in the loop engine hide behind a gain in the CAL
+  parser, and those crates do not carry the same risk — so each has its own
+  floor and CI fails the build when any one slips below it: `areev-conformance`
+  **98.1%**, `areev-loop` **93.1%**, `areev-run-core` **91.9%**, `areev-trigger`
+  **91.0%**, `areev-store` **85.8%**, `areev-core` **82.6%**. Those per-crate
+  floors are the tight gate — each within a couple of points of its crate, which
+  is where a regression actually gets caught — with a looser aggregate backstop
+  under the whole set. The lowest crates, `areev-cli` and `areev-mcp`, are named
+  as the next testing work rather than quietly averaged away. Full per-crate
+  table: [`docs/repo-stats.md`](docs/repo-stats.md#coverage).
 - **Every user-facing error has a stable code.** `DOMAIN-Ennn`, **append-only**
   — a code is never renumbered or reused, so an error you handle today keeps
   its meaning across upgrades ([`ERROR_CODES.md`](ERROR_CODES.md)).
@@ -773,19 +1075,24 @@ open and regenerated from the tree on every CI run:
   against embedded Turso *and* PostgreSQL, so backend choice cannot quietly
   change semantics.
 - **CI is the gate, not a formality.** Tests on Linux, macOS and Windows;
-  `clippy -D warnings`; a pinned MSRV build; `cargo doc`; coverage;
-  `cargo deny` for advisories and licences; and the Python and Node bindings
-  built and tested on every commit.
+  `clippy -D warnings`; a pinned MSRV build; `cargo doc`; coverage measured,
+  checked against the published figure and floored per crate; `cargo deny` for advisories and
+  licences; the Python and Node bindings built and tested on every commit; and
+  the flagship agent example run end to end, keyless, both chapters.
 - **The docs are executable.** The CAL examples in
   [`cal-reference.md`](docs/cal-reference.md) are parsed by a test that fails
   CI on a stale one — the reference cannot drift from the language.
 
-Full per-crate breakdown: **[docs/repo-stats.md](docs/repo-stats.md)** (also
-emitted as [`repo-stats.html`](docs/repo-stats.html) and
-[`repo-stats.json`](docs/repo-stats.json)). All of it is produced by
-[`scripts/repo_stats.py`](scripts/repo_stats.py) and regenerated on every CI
-run, which fails the build if the published figures drift from the tree — these
-numbers cannot go stale without turning the build red.
+Full per-crate breakdown — lines, tests and coverage against each crate's
+floor: **[docs/repo-stats.md](docs/repo-stats.md)**. (The same report is also
+written as `docs/repo-stats.html` for a browser and `docs/repo-stats.json` for
+a machine; GitHub renders neither, so the Markdown is the one to click.)
+All of it is produced by
+[`scripts/repo_stats.py`](scripts/repo_stats.py) (line counts, from a pass over
+the tree) and [`scripts/coverage.py`](scripts/coverage.py) (coverage, from the
+`cargo llvm-cov` trace CI already produces), and regenerated on every CI run,
+which fails the build if the published figures drift — these numbers cannot go
+stale without turning the build red.
 
 ## Documentation
 
@@ -798,7 +1105,7 @@ numbers cannot go stale without turning the build red.
 | [`docs/eu-ai-act.md`](docs/eu-ai-act.md) · [`docs/procurement.md`](docs/procurement.md) | EU AI Act article→capability→command map, and the procurement/security questionnaire answers |
 | [`docs/deployment-profile.md`](docs/deployment-profile.md) | Deploying the runtime + adapters: modes, auth, SSO, what each mode may claim |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
-| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 23 tools |
+| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 25 tools |
 | [`docs/migrate.md`](docs/migrate.md) | Importing an existing corpus, with its edit history, from other stores or JSONL |
 | [`docs/memory-tool.md`](docs/memory-tool.md) | The Anthropic memory-tool backend (Python / Node / CLI) |
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |
@@ -857,7 +1164,7 @@ stated honestly.
 | `areev-llm` | Out-of-box LLM backends: Areev Loop reflection, `remember` extraction, and the runtime's tool-calling seam (OpenAI-compatible / Anthropic / Ollama) |
 | `areev-run-core` | The pure `areev run` scheduler — sans-IO BSP step function, plan validation, frozen condition grammar; no clock/rand/IO in its dependency tree (CI-enforced) |
 | `areev-run` | The `areev run` driver — journal, checkpoints, crash-resume, HITL respond, budgets, cancel, journal-consistent `verify`, shadow eval, OTel export |
-| `areev-mcp` | Stdio MCP server — 23 tools: memory (`areev_recall/add/…`), the loop pair, DSAR/provenance reads, and the runtime six (`areev_run_*`) |
+| `areev-mcp` | Stdio MCP server — 25 tools (12-tool `--profile memory` subset available): memory (`areev_recall/search/nearest/add/…`), the loop pair, DSAR/provenance reads, and the runtime six (`areev_run_*`) |
 | `areev-server` | Local web console (memories / graph / query / Areev Loop queue / Runs approval queue / sessions) + areevd hub mode; per-principal auth, optional TLS (`tls` feature) and SSO trusted-header |
 | `areev` | The `areev` binary |
 | `areev-py` | Python bindings (`import areev`) |
@@ -879,3 +1186,10 @@ Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option. Unless you explicitly state otherwise,
 any contribution you intentionally submit for inclusion is dual-licensed as
 above, with no additional terms. The OMS specification itself is CC0.
+
+---
+
+<p align="center">
+  Areev is built and backed by
+  <strong><a href="https://mindgryd.com">MindGryd Software Private Limited</a></strong>.
+</p>

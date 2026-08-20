@@ -9,6 +9,14 @@ m0-data/
 demo*.db*
 name-reservation/
 
+# ...except the committed demo memory the README screenshots are taken from.
+# Rebuild it with scripts/build_demo.sh; it is ~800 KB and travels as one file.
+!data/demo.db
+!data/demo.db.telemetry.db
+
+# example scratch output (smoke.sh writes the "posted" sheet and outbox here)
+examples/agents/*/out/
+
 # python bytecode
 __pycache__/
 *.pyc

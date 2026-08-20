@@ -33,10 +33,14 @@ partner requires it.
    `Authorization: Bearer`); `areev hub` makes `--token-env` mandatory.
    Tokens come from the environment — never the command line, never a
    file in the repo.
-2. **TLS at a terminating proxy.** The console and hub are std-only
-   HTTP/1.1 on loopback; production exposure goes through caddy/nginx
-   with TLS and the loopback bind left as-is. (Native TLS is Wave 6;
-   the proxy is not a workaround, it is the profile.)
+2. **TLS at a terminating proxy, or native TLS where there's nowhere to put
+   one.** The console and hub are std-only HTTP/1.1 on loopback; this
+   profile's default is production exposure through caddy/nginx with TLS
+   and the loopback bind left as-is — the proxy is not a workaround, it is
+   the profile. Both `areev ui` and `areev hub` can also terminate TLS
+   natively (`--tls-cert`/`--tls-key`, the non-default `tls` build feature,
+   rustls) for deployments with nowhere to run a proxy — the exception path,
+   not a replacement for the documented default.
 3. **The multi-principal credential map.** One OS process = one
    principal. Governed deployments bind a principal per service
    (`facade.bind_principal` / `--as`), grants live IN the file as
@@ -128,6 +132,7 @@ cannot tell a real IdP assertion from a forged one once the secret leaks.
 
 ## Explicitly not in this profile
 
-Native TLS, OIDC/SSO, RBAC beyond the grant vocabulary, org-level audit
-aggregation — all Wave 6. A partner who requires them signs first; the
+Native OIDC (SSO v0 trusted-header mode, above, is in this profile — full
+OIDC/SAML integration is not), RBAC beyond the grant vocabulary, org-level
+audit aggregation — all Wave 6. A partner who requires them signs first; the
 profile above is what design-partner pilots run on.

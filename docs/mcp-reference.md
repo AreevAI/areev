@@ -51,7 +51,7 @@ per line to stdout. It handles these methods:
 |---|---|
 | `initialize` | Returns `protocolVersion`, `capabilities.tools`, and `serverInfo` |
 | `ping` | Returns an empty result |
-| `tools/list` | Returns the twenty-three tool definitions (with input schemas) |
+| `tools/list` | Returns the twenty-five tool definitions (with input schemas), narrowed by `--profile` when set |
 | `tools/call` | Invokes a tool by `name` with `arguments` |
 
 Conventions:
@@ -96,9 +96,31 @@ name any namespace. To make it a boundary, start the server with
 agent handed the session cannot read or write outside `<NS>`. Use this when a
 multi-tenant host gives an agent a session it must not escape.
 
+### Tool profiles
+
+By default (`--profile full`, the implicit setting) a session advertises and
+accepts all twenty-five tools. `--profile memory` narrows both `tools/list`
+and `tools/call` to the twelve read/write/query tools (`areev_recall`,
+`areev_search`, `areev_nearest`, `areev_add`, `areev_supersede`,
+`areev_forget`, `areev_remember`, `areev_cal`, `areev_subject_report`,
+`areev_related`, `areev_entity_at`, `areev_step_actions`) and drops the
+thirteen-tool workflow-runtime family (`areev_run_*`, `areev_loop`,
+`areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
+`areev_run_manifest`). Use this when a host wants Areev purely as chat
+memory — an agent that will never start or approve a governed run doesn't
+need those tools cluttering its tool list. A client that calls a run-family
+tool anyway under `--profile memory` (a stale tool cache, a hand-rolled
+request) gets a named `isError: true` refusal, not a crash or a silent
+no-op. `--profile` gates the MCP surface only; the CLI, Python, and Node
+bindings are unaffected.
+
+```bash
+areev serve --mcp --db memory.db --profile memory
+```
+
 ---
 
-## The twenty-three tools
+## The twenty-five tools
 
 ### `areev_recall`
 
@@ -124,6 +146,53 @@ payload; the host process rehydrates via `anon_mappings()`.
 ```json
 { "name": "areev_recall",
   "arguments": { "subject": "john", "relation": "prefers", "k": 8 } }
+```
+
+### `areev_search`
+
+Free-text recall — BM25, plus a vector leg when the server has an embedder
+installed (`--embed-cmd`) — fused with the structural leg when `subject` or
+`relation` is given. Use this over `areev_recall` for a natural-language
+query rather than an exact subject you already know; it is the MCP twin of
+CAL's `RECALL ... ABOUT "..."` and the CLI's `areev search`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `query` | string | **yes** | Free-text query, e.g. `"what do we know about the Johnson account"` |
+| `subject` | string | no | Narrows the structural leg |
+| `relation` | string | no | Narrows the structural leg |
+| `namespace` | string | no | Defaults to the session namespace; accepts an `"org.*"` prefix scope |
+| `k` | integer | no | Max results (default 10) |
+
+Returns the same `{ hash, type, fields }` shape as `areev_recall`. Fails
+loudly — not an empty list — when the memory has neither a text index nor an
+embedder: restart the server with `--index-text true` and `reindex`, or with
+`--embed-cmd`.
+
+```json
+{ "name": "areev_search", "arguments": { "query": "refund policy for enterprise accounts" } }
+```
+
+### `areev_nearest`
+
+Advise-mode novelty check: nearest existing grains to `text` by embedding
+similarity, most similar first. Call this before `areev_add` when unsure
+whether a fact is already stored under different wording — cheap, read-only,
+never writes. Requires an installed embedder (`--embed-cmd`); without one it
+fails with a named remedy rather than returning an empty list.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `text` | string | **yes** | Candidate fact text to check for near-duplicates |
+| `subject` | string | no | Narrows the search |
+| `relation` | string | no | Narrows the search |
+| `namespace` | string | no | Defaults to the session namespace |
+| `k` | integer | no | Max results (default 5) |
+
+Returns a JSON array of `{ hash, similarity }`, most similar first.
+
+```json
+{ "name": "areev_nearest", "arguments": { "text": "john prefers a window seat" } }
 ```
 
 ### `areev_add`

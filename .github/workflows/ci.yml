@@ -172,6 +172,12 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Measure coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      # Three gates: the committed figure has not drifted (the README quotes
+      # it), the scored set is above its global floor, and no individual crate
+      # has slipped below its own floor. Per-crate is the point — one workspace
+      # number lets a regression in one crate hide behind a gain in another.
+      - name: Coverage figure is current and every crate is above its floor
+        run: python3 scripts/coverage.py --lcov lcov.info --check
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
@@ -228,6 +234,33 @@ jobs:
         run: |
           . .venv/bin/activate
           python examples/hermes/test_provider.py
+
+  agent-example:
+    # The keyless floor, enforced. `examples/agents/` promises every agent
+    # example runs end to end with no credential, no network and no model key
+    # — an untested example in the flagship repo is wrong at exactly the
+    # moment somebody is evaluating, so the promise is a job, not a README
+    # claim.
+    name: agent example (keyless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: Swatinem/rust-cache@v2
+      - name: invoice → accounting, end to end
+        run: |
+          cargo build --release -p areev
+          AREEV="$PWD/target/release/areev" examples/agents/invoice-to-accounting/smoke.sh
+      # The second chapter: the loop reads those runs back, finds the failure
+      # pattern, and a person decides. Asserts the two refusals that make it
+      # safe to leave on — the engine cannot apply its own finding, and no
+      # decision is recorded without a written reason.
+      - name: the loop proposes, a person decides
+        run: |
+          AREEV="$PWD/target/release/areev" examples/agents/invoice-to-accounting/improve.sh
 
   tls:
     # The non-default native-TLS feature (the recorded rustls exception):

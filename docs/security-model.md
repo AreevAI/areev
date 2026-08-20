@@ -171,13 +171,19 @@ top of that.
 
 ### Known limitations in transit
 
-- ⚠️ **No TLS.** All HTTP is plaintext. For any non-loopback deployment, front
-  the console/hub with a **TLS-terminating reverse proxy**. Both `areev ui` and
-  `areev hub` refuse to bind a non-loopback address unless you pass
-  `--allow-remote` (and even then warn loudly). `--token-env` authentication
-  is **not** a substitute for TLS: the token and all memory still cross the
-  wire in the clear, so `--token-env` guards against unauthorized clients but
-  not against a network eavesdropper — use it *with* a TLS proxy off-loopback.
+- ⚠️ **TLS is optional and non-default; plaintext is what you get if you don't
+  ask for it.** Both `areev ui` and `areev hub` can terminate TLS natively via
+  the non-default `tls` build feature (`--tls-cert`/`--tls-key`, rustls — no
+  plaintext downgrade, tested), or you can front either with a
+  **TLS-terminating reverse proxy**, which stays the documented default
+  deployment shape (see `docs/deployment-profile.md`) — native TLS exists for
+  deployments with nowhere to run one, not as a replacement for the proxy
+  profile. A plain build/run of either surface is plaintext HTTP either way.
+  Both refuse to bind a non-loopback address unless you pass `--allow-remote`
+  (and even then warn loudly). `--token-env` authentication is **not** a
+  substitute for TLS: without it (native or proxied), the token and all
+  memory still cross the wire in the clear, so `--token-env` guards against
+  unauthorized clients but not against a network eavesdropper.
 - ⚠️ **Integrity, not authenticity.** Content addressing detects corruption and
   tampering, but does **not** verify *who* authored a grain. There is dormant
   scaffolding for COSE signing, but signature verification is not yet enforced
@@ -466,8 +472,8 @@ boundary. See [`loop.md`](loop.md) for the surfaces; the invariants:
 
 ## Roadmap
 
-- Enforced grain signing / authenticity verification on import (COSE).
-- First-class TLS for the hub.
+- Enforced grain signing / authenticity verification on import (COSE) —
+  tracked in [#77](https://github.com/AreevAI/areev/issues/77).
 
 If you find something that contradicts this document, that is itself worth
 reporting — see [SECURITY.md](../SECURITY.md).

@@ -35,6 +35,12 @@ cargo run -p areev -- recall --db demo.db --ns caller --subject john
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
+cargo llvm-cov --workspace --lcov --output-path lcov.info   # then:
+python3 scripts/coverage.py --lcov lcov.info             # regenerate docs/coverage.json
+python3 scripts/coverage.py --lcov lcov.info --check      # what CI asserts (2-point tolerance)
+
+scripts/build_demo.sh               # rebuild data/demo.db (the README's demo memory)
+node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot its screenshots
 ```
 
 - **Do not run blanket `cargo fmt`** — the tree is not uniformly rustfmt-clean
@@ -51,8 +57,20 @@ python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
   `security.yml` runs `cargo deny`. Still run tests locally before pushing.
 - **The README quotes generated numbers.** `scripts/repo_stats.py` emits
   `docs/repo-stats.{json,md,html}` and the two SVGs the README embeds; the
-  `stats` job fails the build if they drift >2% from the tree. If CI flags it,
-  run the script and commit the result — do not hand-edit the artifacts.
+  `stats` job fails the build if they drift >2% from the tree. Line coverage is
+  a separate input: `scripts/coverage.py` turns the `coverage` job's LCOV trace
+  into `docs/coverage.json`, which `repo_stats.py` renders into the same chart.
+  Coverage scores **source lines only** (no `tests/`, no `benches/`, no
+  `#[cfg(test)]` blocks) and excludes what that job cannot execute
+  (`areev-py` — pytest's job; `areev-bench` — explicit tools; `store/src/pg.rs`
+  — needs `DATABASE_URL`), each exclusion carrying its reason in the JSON.
+  Enforcement is **per crate** (`FLOORS` in `coverage.py`) plus a global floor,
+  NOT one workspace target — a single number lets one crate's regression hide
+  behind another's gain. Floors are a regression ratchet ~2 points under
+  measured; raise one when real work lands, and lower one only with a reason.
+  `areev-cli` and `areev-mcp` are the known-lowest and the next testing work.
+  If CI flags either script, run it and commit the result — do not hand-edit
+  the artifacts.
 - **The version lives in five places**, only one of which is inherited. The
   `versions` job runs `scripts/check_versions.py`; the release runbook
   (`.claude/skills/areev-release`) is the source of truth for the order.
@@ -71,11 +89,11 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | Crate | What | CLAUDE.md |
 |---|---|---|
 | `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering, the `anon` pseudonymization engine (Tier-0 detectors, policy, session tokens, keyed derivations) | yes |
-| `areev-store` | The store: dictionary-encoded triples, hybrid recall, namespace prefix scoping (`"org.*"` on every plural read, backed by the `ns_reg` registry; writes/destruction stay exact-namespace), heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, advisory-locked single writer, pgvector) | yes |
+| `areev-store` | The store: dictionary-encoded triples, hybrid recall, namespace prefix scoping (`"org.*"` on every plural read, backed by the `ns_reg` registry; writes/destruction stay exact-namespace), heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, concurrent writers serialized at `reserve_write` — the advisory lock is bootstrap-only, pgvector) | yes |
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
 | `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
 | `areev-context` | Budget-aware orchestration over `areev_cal::render`: policies/presets, priority + diversity allocation with progressive disclosure (Full→Summary→Omit), timeline/census modes. Renders nothing itself — parity with CAL is test-pinned (`tests/render_parity.rs`) | yes |
-| `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 13 analyzers (incl. default-off `retention_sweep` and `run_outcome` over run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier, outcome measurement (no Areev deps) — `docs/loop.md` | — |
+| `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 13 analyzers (11 default-on; `retention_sweep` and `goal_stagnation` are default-off, `run_outcome` reads run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier, outcome measurement (no Areev deps) — `docs/loop.md` | — |
 | `areev-loop-adapter` | Areev substrate adapter for Areev Loop (`areev_loop::OmsSubstrate` over `AreevFacade`) + recall-telemetry sidecar | — |
 | `areev-llm` | Out-of-box LLM backends (OpenAI-compatible/Anthropic/Ollama over a small blocking HTTP client) for Areev Loop, the `remember()` free-text→Fact extraction (`extract.rs`), and the `ToolCallLlm` tool-calling seam (`toolcall.rs`) for the runtime | — |
 | `areev-run-core` | The PURE `areev run` scheduler: sans-IO `step(env, state, events) → (commands, state)`, frozen condition grammar, plan validation (Tarjan + cycle bounds), re-entry generations, `RUN-Ennn` errors. No clock/rand/IO in its dep tree — CI-enforced | yes |
@@ -126,13 +144,16 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
    without a spec-level decision.
 5. **One memory = one isolation unit** — a file on the embedded backend, a
    Postgres schema on the `postgres` backend; either way it is the unit of
-   erasure, sync, portability, and write parallelism. Single writer per
-   memory — enforced on BOTH backends: an advisory lock on Postgres, and on
-   the embedded backend a process-wide open-path registry so a second handle
-   on one file fails at open (`STO-E002`) instead of silently drifting its
-   cached allocators and corrupting the first handle's writes. Rust/Python
-   release on drop; Node calls `close()`. Adding a grain that is already
-   stored is a no-op returning the existing hash, not an error.
+   erasure, sync, and portability. Write concurrency is backend-specific:
+   the embedded backend is single-writer, enforced by a process-wide
+   open-path registry so a second handle on one file fails at open
+   (`STO-E002`) instead of silently drifting its cached allocators and
+   corrupting the first handle's writes; the `postgres` backend admits
+   multiple concurrent writers per schema (`STO-E002` is never raised
+   there), serialized at `reserve_write`'s row lock — the advisory lock
+   covers schema bootstrap only, not writes (`docs/deployment-profile.md`).
+   Rust/Python release on drop; Node calls `close()`. Adding a grain that is
+   already stored is a no-op returning the existing hash, not an error.
    Cross-memory queries go through
    ASSEMBLE with facade mounts, not shared connections. Files are
    self-describing: the `meta` table carries file-truths (`text_index`,
@@ -191,14 +212,18 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 
 ## Smaller crates
 
-- **areev-mcp**: 23 tools (`areev_recall/add/supersede/forget/remember/cal`,
+- **areev-mcp**: 25 tools (`areev_recall/search/nearest/add/supersede/forget/remember/cal`,
+  the trajectory logger `areev_record_tool_call`,
   the DSAR read `areev_subject_report`,
   the graph/time reads `areev_related/entity_at/step_actions`, the
   run<->memory join `areev_run_trace/runs_touching`, the §7.4 forensics
   `areev_tool_provenance`, the loop pair `areev_loop/recommendations`,
-  and the runtime six `areev_run_start/resume/respond/cancel/verify/list`
+  the runtime six `areev_run_start/resume/respond/cancel/verify/list`,
+  and `areev_run_manifest` (persists a reproducible run config)
   — host tools execute only via `$AREEV_RUN_TOOL_CMD`, respond REQUIRES a
-  `responder` principal)
+  `responder` principal. `--profile memory|full` (default full) narrows
+  `tools/list`+`tools/call` to the 12-tool read/write/query set, dropping
+  the 13-tool workflow-runtime family, for hosts that only want chat memory)
   over newline-delimited JSON-RPC 2.0 on stdio, protocol rev `2025-06-18`.
   Convention: tool failures are `isError: true` *results*; only protocol
   errors are JSON-RPC errors. Notifications (no id) get no response. No
@@ -212,11 +237,16 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   carries `WWW-Authenticate: Basic` so browsers prompt. `into_hub(token, dir)`
   is the separate hub mode (CLI `areev hub`, where `--token-env` is
   **mandatory**): bearer auth on POSTs + the `/api/segment*` surface, which is
-  gated on **reads too** — only the non-segment reads are open. Base64 for
-  Basic is hand-rolled (no dep). Body cap 1 MiB. Cross-origin POSTs are
-  rejected via Origin check (drive-by protection). The console is
-  one embedded HTML file (`console.html`, vanilla JS, no build step) — a
-  plain-language memory browser with an interactive graph, an Analytics tab
+  gated on **reads too** — only the non-segment reads are open. Both `ui` and
+  `hub` can also terminate TLS natively (`--tls-cert`/`--tls-key`, the
+  non-default `tls` build feature, rustls) — the documented default remains a
+  TLS-terminating reverse proxy in front of the loopback bind
+  (`docs/deployment-profile.md`); native TLS is for deployments with nowhere
+  to run one. Base64 for Basic is hand-rolled (no dep). Body cap 1 MiB.
+  Cross-origin POSTs are rejected via Origin check (drive-by protection).
+  The console is one embedded HTML file (`console.html`, vanilla JS, no
+  build step) — a plain-language memory browser with an interactive graph,
+  an Analytics tab
   (grain-type census across all 12 types, namespace breakdown, a growth
   trend, and recall-leg status — the Query page's "WHAT'S IN THIS MEMORY"
   on-ramp, generalized), the loop review queue, and a Developer-mode toggle
@@ -259,6 +289,19 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   wasm). Standalone package — **not** a `cargo` workspace member, so
   `cargo test --workspace` skips it; CI's `node` job builds it with
   `napi build --release` and runs `node --test __test__/smoke.mjs`.
+
+## The demo memory + README screenshots
+
+`data/demo.db` is **committed** (the one `.db` exception in `.gitignore`) and
+is what every README screenshot is taken from: one accounts-payable story —
+knowledge, nine governed runs, a real open fork, a declared trigger, and
+thirteen recommendations `areev loop run` genuinely computed. Rebuild it with
+`scripts/build_demo.sh` (seeder → saved queries → fork → trigger → runs →
+loop → WAL checkpoint), then re-shoot with `scripts/shoot_console.mjs`
+against a running `areev ui`. **A console change means re-shooting** — the
+README quotes the UI, so a stale screenshot is a stale claim. The seeder's
+`--plan-only` mode is on a fixed clock so the example's committed `plan.mgb`
+keeps its content address.
 
 ## Local artifacts (gitignored, don't commit or rely on)
 

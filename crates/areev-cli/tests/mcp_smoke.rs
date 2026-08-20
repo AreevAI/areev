@@ -74,6 +74,15 @@ fn mcp_round_trip() {
         // the MCP surface).
         rpc(16, "tools/call", serde_json::json!({"name": "areev_record_tool_call", "arguments": {
             "tool_name": "x", "result": "r", "status": "done"}})),
+        // Free-text recall must find the alice/tea fact by BM25 alone — a
+        // fresh file indexes text by default, so this needs no embedder.
+        rpc(17, "tools/call", serde_json::json!({"name": "areev_search", "arguments": {
+            "query": "tea"}})),
+        // No --embed-cmd was given to this server, so the novelty check must
+        // fail loudly (never a silent empty list) naming the MCP-specific
+        // remedy.
+        rpc(18, "tools/call", serde_json::json!({"name": "areev_nearest", "arguments": {
+            "text": "alice prefers tea"}})),
     ];
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -88,14 +97,20 @@ fn mcp_round_trip() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    // 16 requests (the notification gets no response)
-    assert_eq!(lines.len(), 16, "one response per request");
+    // 18 requests (the notification gets no response)
+    assert_eq!(lines.len(), 18, "one response per request");
 
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 23);
+    assert_eq!(tools.len(), 25);
+    for memory_tool in ["areev_search", "areev_nearest"] {
+        assert!(
+            tools.iter().any(|t| t["name"] == memory_tool),
+            "missing the free-text query pair {memory_tool}"
+        );
+    }
     for run_tool in [
         "areev_run_start",
         "areev_run_resume",
@@ -197,6 +212,22 @@ fn mcp_round_trip() {
     let manifest: serde_json::Value = serde_json::from_str(manifest_text).unwrap();
     assert_eq!(manifest["config_hash"].as_str().map(str::len), Some(64));
     assert_eq!(manifest["link_hash"].as_str().map(str::len), Some(64));
+
+    // areev_search finds the alice/tea fact by BM25 alone.
+    assert_eq!(by_id(17)["result"]["isError"], false);
+    let search_text = by_id(17)["result"]["content"][0]["text"].as_str().unwrap();
+    let search: serde_json::Value = serde_json::from_str(search_text).unwrap();
+    assert!(
+        search.as_array().unwrap().iter().any(|g| g["fields"]["object"] == "tea"),
+        "expected the alice/tea fact in search results: {search_text}"
+    );
+
+    // areev_nearest fails loudly with no embedder installed, naming the
+    // MCP-specific remedy (not Python's set_embedder(), which doesn't exist
+    // on this surface).
+    assert_eq!(by_id(18)["result"]["isError"], true);
+    let nearest_err = by_id(18)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(nearest_err.contains("--embed-cmd"), "{nearest_err}");
 }
 
 /// `--lock-ns` pins the session: a caller-supplied `namespace` in tool
@@ -486,4 +517,266 @@ fn mcp_exposes_graph_and_temporal_tools() {
     // A workflow exists; a malformed hash is refused as a tool error.
     assert_eq!(by_id(8)["result"]["isError"], false);
     assert_eq!(by_id(9)["result"]["isError"], true);
+}
+
+/// Run one scripted MCP session against `db` and return the responses.
+///
+/// The protocol writes every request up front and reads afterwards, so a value
+/// produced by one call (a grain hash, a recommendation hash) can only be used
+/// by a *later session*. Sequential sessions on one file are the supported
+/// shape — one memory, one writer, one at a time.
+fn session(db: &str, calls: &[(&str, serde_json::Value)]) -> Vec<serde_json::Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", db, "--ns", "caller"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            rpc(1, "initialize", serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}))
+        )
+        .unwrap();
+        for (i, (name, arguments)) in calls.iter().enumerate() {
+            let req = rpc(
+                i as u64 + 2,
+                "tools/call",
+                serde_json::json!({"name": name, "arguments": arguments}),
+            );
+            writeln!(stdin, "{req}").unwrap();
+        }
+    } // drop stdin → EOF → server exits
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "the MCP server exited non-zero");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The three tools `mcp_round_trip` never calls — `areev_supersede`,
+/// `areev_runs_touching` and `areev_recommendations` — plus the argument
+/// refusals on each and the recommendation lifecycle over MCP.
+///
+/// Every refusal below is asserted as an `isError` *result*, not a JSON-RPC
+/// error: that convention is what lets an agent read the failure instead of
+/// the transport swallowing it.
+#[test]
+fn mcp_supersede_runs_touching_and_recommendations() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db");
+    let db = db.to_str().unwrap();
+
+    let field = |obj: &str| {
+        serde_json::json!({"subject": "alice", "relation": "prefers", "object": obj})
+    };
+
+    // ── seed: one fact, and enough tool failures for an analyzer to cluster ──
+    let mut seed: Vec<(&str, serde_json::Value)> =
+        vec![("areev_add", serde_json::json!({"fields": field("tea")}))];
+    for i in 0..4 {
+        seed.push((
+            "areev_record_tool_call",
+            serde_json::json!({"tool_name": "stripe_refund", "result": "rate limited",
+                               "is_error": true, "call_id": format!("toolu_{i}")}),
+        ));
+    }
+    seed.push((
+        "areev_record_tool_call",
+        serde_json::json!({"tool_name": "stripe_refund", "result": "ok",
+                           "is_error": false, "call_id": "toolu_ok"}),
+    ));
+    seed.push(("areev_loop", serde_json::json!({})));
+
+    let out = session(db, &seed);
+    let payload = |lines: &[serde_json::Value], id: u64| -> serde_json::Value {
+        let v = lines.iter().find(|v| v["id"] == id).unwrap();
+        assert_eq!(v["result"]["isError"], false, "call {id} failed: {v}");
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+
+    let fact_hash = payload(&out, 2)["hash"].as_str().unwrap().to_string();
+    assert_eq!(fact_hash.len(), 64);
+
+    // The deterministic tool-failure analyzer clustered 4 failures of 5 calls.
+    let pending = payload(&out, 8)["pending"].clone();
+    let pending = pending.as_array().unwrap();
+    assert!(!pending.is_empty(), "the loop proposed nothing to act on");
+    let rec_hash = pending[0]["hash"].as_str().unwrap().to_string();
+
+    // ── exercise ────────────────────────────────────────────────────────────
+    let calls: Vec<(&str, serde_json::Value)> = vec![
+        // 2: supersede the fact — an edit is a new grain naming the old one
+        ("areev_supersede", serde_json::json!({
+            "old_hash": fact_hash, "fields": field("coffee")})),
+        // 3: recall must now return ONE current value, and it must be the new
+        //    one. Asserting only "contains coffee" would pass even if the
+        //    supersession left the stale grain co-ranked beside it.
+        ("areev_recall", serde_json::json!({"subject": "alice"})),
+        // 4-5: supersede's two required arguments
+        ("areev_supersede", serde_json::json!({"old_hash": fact_hash})),
+        ("areev_supersede", serde_json::json!({
+            "old_hash": "not-a-hash", "fields": field("cocoa")})),
+        // 6-8: the reverse join, then its refusals
+        ("areev_runs_touching", serde_json::json!({"hash": fact_hash})),
+        ("areev_runs_touching", serde_json::json!({})),
+        ("areev_runs_touching", serde_json::json!({"hash": "zz"})),
+        // 9: listing defaults to pending
+        ("areev_recommendations", serde_json::json!({})),
+        // 10-12: an action needs a hash, a reason, and a known verb
+        ("areev_recommendations", serde_json::json!({"action": "approve"})),
+        ("areev_recommendations", serde_json::json!({
+            "action": "approve", "hash": rec_hash})),
+        ("areev_recommendations", serde_json::json!({
+            "action": "sudo", "hash": rec_hash, "because": "trying it on"})),
+        // 13: the real transition, with its written reason
+        ("areev_recommendations", serde_json::json!({
+            "action": "approve", "hash": rec_hash,
+            "because": "retries belong in the client"})),
+        // 14-15: it moved, so `pending` no longer holds it and `approved` does
+        ("areev_recommendations", serde_json::json!({})),
+        ("areev_recommendations", serde_json::json!({"status": "approved"})),
+        // 16: `all` means NO filter — documented in mcp-reference.md, and it
+        //     used to collapse back to `pending`, hiding everything decided.
+        ("areev_recommendations", serde_json::json!({"status": "all"})),
+    ];
+    let out = session(db, &calls);
+    let err = |id: u64| -> bool {
+        out.iter().find(|v| v["id"] == id).unwrap()["result"]["isError"] == true
+    };
+
+    // supersede returns the new head and names what it replaced
+    let sup = payload(&out, 2);
+    assert_eq!(sup["supersedes"].as_str().unwrap(), fact_hash);
+    assert_eq!(sup["hash"].as_str().unwrap().len(), 64);
+
+    let recalled = payload(&out, 3);
+    let recalled = recalled.as_array().unwrap();
+    assert_eq!(recalled.len(), 1, "one current value, not two");
+    assert_eq!(recalled[0]["fields"]["object"], "coffee");
+
+    assert!(err(4), "supersede without 'fields' must be refused");
+    assert!(err(5), "supersede with a malformed hash must be refused");
+
+    let touching = payload(&out, 6);
+    assert_eq!(touching["hash"].as_str().unwrap(), fact_hash);
+    assert!(touching["runs"].is_array(), "runs_touching returns an array");
+    assert!(err(7), "runs_touching without 'hash' must be refused");
+    assert!(err(8), "runs_touching with a malformed hash must be refused");
+
+    let listed = payload(&out, 9);
+    assert!(
+        listed.as_array().unwrap().iter().any(|r| r["hash"] == rec_hash.as_str()),
+        "the pending queue should hold the clustered failure"
+    );
+
+    assert!(err(10), "an action without 'hash' must be refused");
+    assert!(err(11), "an action without 'because' must be refused");
+    assert!(err(12), "an unknown action must be refused");
+
+    // The transition itself. A builtin analyzer's finding has no human author
+    // (creator is `engine:<analyzer>`), so the agent reviewing it is not
+    // approving its own proposal — the self-approval block would fire here if
+    // the loop had recorded `agent:mcp` as the creator.
+    assert_eq!(payload(&out, 13)["action"], "approve");
+
+    let still_pending = payload(&out, 14);
+    assert!(
+        !still_pending.as_array().unwrap().iter().any(|r| r["hash"] == rec_hash.as_str()),
+        "an approved recommendation must leave the pending queue"
+    );
+    let approved = payload(&out, 15);
+    assert!(
+        approved.as_array().unwrap().iter().any(|r| r["hash"] == rec_hash.as_str()),
+        "…and appear under `approved`"
+    );
+
+    // `all` must be a superset of a single-status view, never a silent alias
+    // for `pending` — which is what it was.
+    let all = payload(&out, 16);
+    let all = all.as_array().unwrap();
+    assert!(
+        all.iter().any(|r| r["hash"] == rec_hash.as_str()),
+        "status=all must include decided recommendations"
+    );
+    assert!(
+        all.len() >= still_pending.as_array().unwrap().len(),
+        "status=all must not return fewer rows than status=pending"
+    );
+}
+
+/// `--profile memory` narrows both what `tools/list` advertises and what
+/// `tools/call` will execute — a host that only wants Areev as chat memory
+/// shouldn't hand its agent a dozen workflow-runtime tools it will never use,
+/// and a client that calls one anyway (stale tool cache, hand-rolled request)
+/// gets a named refusal, not a crash or a silent no-op. `--profile full`
+/// (the default) is unaffected, so this only checks the narrowed side —
+/// `mcp_round_trip` above already exercises the full 25-tool surface.
+#[test]
+fn mcp_profile_memory_hides_run_tools() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("p.db");
+    let db = db.to_str().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", db, "--ns", "caller", "--profile", "memory"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let script = [
+        rpc(1, "initialize", serde_json::json!({"protocolVersion": "2025-06-18",
+            "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})),
+        rpc(2, "tools/list", serde_json::json!({})),
+        // Calling a run tool anyway (never advertised) must be a named
+        // refusal, not the generic "unknown tool" — a client that still has
+        // it in a stale cache should learn why, not just that it failed.
+        rpc(3, "tools/call", serde_json::json!({"name": "areev_run_start", "arguments": {
+            "workflow": "0".repeat(64), "run_id": "r1"}})),
+        // The memory-profile surface itself still works.
+        rpc(4, "tools/call", serde_json::json!({"name": "areev_add", "arguments": {
+            "fields": {"subject": "x", "relation": "r", "object": "o"}}})),
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in &script {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
+
+    let tools = by_id(2)["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 12, "memory profile: 25 minus the 13-tool run/loop family");
+    for run_tool in ["areev_run_start", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
+        assert!(
+            !tools.iter().any(|t| t["name"] == run_tool),
+            "{run_tool} must not be advertised under --profile memory"
+        );
+    }
+    for memory_tool in ["areev_recall", "areev_search", "areev_nearest", "areev_add", "areev_cal"] {
+        assert!(
+            tools.iter().any(|t| t["name"] == memory_tool),
+            "{memory_tool} must still be advertised under --profile memory"
+        );
+    }
+
+    assert_eq!(by_id(3)["result"]["isError"], true);
+    let refusal = by_id(3)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(refusal.contains("memory") && refusal.contains("--profile full"), "{refusal}");
+
+    assert_eq!(by_id(4)["result"]["isError"], false);
 }
