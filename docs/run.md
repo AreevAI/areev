@@ -373,10 +373,15 @@ resume:
 - Refusing an ask is a first-class answer: `--is-error true` journals the
   refusal and fails the node as user-aborted.
 
-The web console (`areev ui`) surfaces pending asks in its **Runs tab** — and
-`run.respond` over HTTP refuses shared-token and anonymous callers outright.
-Only a per-principal credential may approve, because the approver's identity
-*is* the audit record. Cancel deliberately keeps the low bar.
+The web console (`areev ui`) surfaces pending asks in its **Runs tab**, which
+groups runs as *Waiting on you* / *In flight* / *Finished* so an ask cannot be
+buried under finished history. Each card carries a per-step strip in plan order,
+tinted by what that step did — the same join the Workflows canvas draws as a
+status rail, read from one shared index so the two surfaces cannot disagree.
+`run.respond` over HTTP refuses shared-token and anonymous callers outright:
+only a per-principal credential may approve, because the approver's identity
+*is* the audit record, and the Approve/Refuse buttons say so when they are
+unavailable. Cancel deliberately keeps the low bar.
 
 ## Budgets
 
@@ -514,7 +519,7 @@ The same runtime on every surface — one journal, one set of rules:
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
 | Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
 | Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out |
-| HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves (not runs of them) — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
+| HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other
 ([CAL DCL](cal-reference.md)): `run.execute` (start/resume), `run.respond`
