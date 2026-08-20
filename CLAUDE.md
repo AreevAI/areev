@@ -191,14 +191,18 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 
 ## Smaller crates
 
-- **areev-mcp**: 23 tools (`areev_recall/add/supersede/forget/remember/cal`,
+- **areev-mcp**: 25 tools (`areev_recall/search/nearest/add/supersede/forget/remember/cal`,
+  the trajectory logger `areev_record_tool_call`,
   the DSAR read `areev_subject_report`,
   the graph/time reads `areev_related/entity_at/step_actions`, the
   run<->memory join `areev_run_trace/runs_touching`, the §7.4 forensics
   `areev_tool_provenance`, the loop pair `areev_loop/recommendations`,
-  and the runtime six `areev_run_start/resume/respond/cancel/verify/list`
+  the runtime six `areev_run_start/resume/respond/cancel/verify/list`,
+  and `areev_run_manifest` (persists a reproducible run config)
   — host tools execute only via `$AREEV_RUN_TOOL_CMD`, respond REQUIRES a
-  `responder` principal)
+  `responder` principal. `--profile memory|full` (default full) narrows
+  `tools/list`+`tools/call` to the 12-tool read/write/query set, dropping
+  the 13-tool workflow-runtime family, for hosts that only want chat memory)
   over newline-delimited JSON-RPC 2.0 on stdio, protocol rev `2025-06-18`.
   Convention: tool failures are `isError: true` *results*; only protocol
   errors are JSON-RPC errors. Notifications (no id) get no response. No

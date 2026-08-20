@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`areev_search` and `areev_nearest` join the MCP tool surface (23 → 25
+  tools), and `serve --mcp` gained `--profile memory|full`.** Both bindings
+  and the CLI have had hybrid free-text recall (`search`) and the
+  embedding-similarity novelty check (`nearest`) since early on, but MCP —
+  the surface an LLM agent actually calls — only ever got structural
+  `areev_recall`, which needs the caller to already know the exact
+  `(subject, relation)` pair. The natural agent query ("what do we know
+  about the Johnson account") is free text, and without `nearest` an agent
+  had no cheap way to check "do I already know something like this" before
+  `areev_add`, so long-lived sessions tended to accumulate near-duplicate
+  facts reworded slightly across turns. Both fail loudly (never a silent
+  empty list) when their prerequisite is missing — `areev_search` needs a
+  text index or an embedder, `areev_nearest` needs an embedder — naming the
+  MCP-specific remedy (`--index-text true` + `reindex`, or `--embed-cmd`),
+  not a bindings-only one that doesn't apply to this surface. Separately,
+  `--profile memory` narrows both `tools/list` and `tools/call` to the
+  twelve read/write/query tools, dropping the thirteen-tool workflow-runtime
+  family (`areev_run_*`, `areev_loop`, `areev_recommendations`,
+  `areev_tool_provenance`, `areev_record_tool_call`, `areev_run_manifest`) —
+  a host that only wants Areev as chat memory no longer hands its agent a
+  dozen governed-run tools it will never call; `--profile full` (the
+  default) is unaffected. See [`docs/mcp-reference.md`](docs/mcp-reference.md).
+
 ### Fixed
 
 - **A refused egress-broker call could reset the caller's own connection
