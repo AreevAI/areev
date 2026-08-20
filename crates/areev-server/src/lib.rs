@@ -2434,6 +2434,62 @@ mod tls_tests {
         );
         handle.join().unwrap();
     }
+
+    /// `with_tls` composes with `into_hub` the same way it does with plain
+    /// `ui` mode — `into_hub` only sets the token/segment-dir/allow-remote
+    /// fields, not the connection layer, so a hub server terminates TLS
+    /// identically. Pins the CLI wiring that lets `areev hub --tls-cert
+    /// ... --tls-key ...` work, not just `areev ui`.
+    #[test]
+    fn hub_mode_terminates_tls_the_same_way_as_ui_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((cert, key)) = self_signed(dir.path()) else {
+            eprintln!("skipping: no openssl binary");
+            return;
+        };
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        let segments = dir.path().join("segments");
+        let server = UiServer::new(facade, "hub-tls-test".into())
+            .into_hub(Some("hub-token".into()), segments.to_str().unwrap())
+            .unwrap()
+            .with_tls(&cert, &key)
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((s, _)) = listener.accept() {
+                let _ = server.handle(s);
+            }
+        });
+
+        let mut roots = rustls::RootCertStore::empty();
+        {
+            use rustls::pki_types::pem::PemObject;
+            for c in rustls::pki_types::CertificateDer::pem_file_iter(&cert).unwrap() {
+                roots.add(c.unwrap()).unwrap();
+            }
+        }
+        let config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let session = rustls::ClientConnection::new(config, name).unwrap();
+        let tcp = std::net::TcpStream::connect(addr).unwrap();
+        let mut tls = rustls::StreamOwned::new(session, tcp);
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        let _ = tls.read_to_string(&mut response);
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "hub should terminate TLS the same way ui does: {}",
+            &response[..response.len().min(120)]
+        );
+        handle.join().unwrap();
+    }
 }
 
 #[cfg(test)]

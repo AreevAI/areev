@@ -247,8 +247,10 @@ COMMANDS:
                                       install a Tier-1 NER detector (JSON
                                       probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
-  ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]  web console (default 127.0.0.1:7437)
+  ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]
+           [--tls-cert PATH --tls-key PATH]  web console (default 127.0.0.1:7437)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
+           [--tls-cert PATH --tls-key PATH]
            [--retain 30d]             sync hub: many apps, one shared memory
                                       (segment push/pull; default 127.0.0.1:7438);
                                       --retain checkpoints at startup and drops
@@ -2429,9 +2431,40 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             let facade = areev_cal::AreevFacade::with_session(m, Some(ns), None);
             report_meta_warnings(&facade);
-            let server = areev_server::UiServer::new(facade, db.clone())
+            // `mut` is only exercised when the `tls` build feature is on
+            // (the sole reassignment below is the TLS wiring) — unlike the
+            // `ui` branch, hub has no other builder call in between.
+            #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
+            let mut server = areev_server::UiServer::new(facade, db.clone())
                 .into_hub(Some(token), &dir)
                 .map_err(|e| format!("hub segment dir '{dir}': {e}"))?;
+            // Native TLS (`tls` build feature): --tls-cert/--tls-key PEM
+            // paths, identically to `ui` — the hub is the surface most
+            // likely to be deployed with nowhere to put a fronting proxy,
+            // since it exists specifically to be written to by other
+            // machines. `with_tls` composes with `into_hub` unchanged: TLS
+            // termination lives below the auth/segment fields `into_hub`
+            // sets, not inside them.
+            match (flag(&flags, "tls-cert"), flag(&flags, "tls-key")) {
+                (Some(cert), Some(key)) => {
+                    #[cfg(feature = "tls")]
+                    {
+                        server = server.with_tls(&cert, &key).map_err(|e| e.to_string())?;
+                        eprintln!("areev: native TLS enabled (cert {cert})");
+                    }
+                    #[cfg(not(feature = "tls"))]
+                    {
+                        let _ = (&cert, &key);
+                        return Err(
+                            "this build has no native TLS — rebuild with `--features tls`, \
+                             or use the documented TLS-terminating proxy"
+                                .into(),
+                        );
+                    }
+                }
+                (None, None) => {}
+                _ => return Err("--tls-cert and --tls-key must be given together".into()),
+            }
             let listener = areev_server::UiServer::bind(&addr).map_err(|e| e.to_string())?;
             eprintln!(
                 "areev: hub writes require the token in ${var} (Authorization: Bearer …); \

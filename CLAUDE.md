@@ -89,7 +89,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | Crate | What | CLAUDE.md |
 |---|---|---|
 | `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering, the `anon` pseudonymization engine (Tier-0 detectors, policy, session tokens, keyed derivations) | yes |
-| `areev-store` | The store: dictionary-encoded triples, hybrid recall, namespace prefix scoping (`"org.*"` on every plural read, backed by the `ns_reg` registry; writes/destruction stay exact-namespace), heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, advisory-locked single writer, pgvector) | yes |
+| `areev-store` | The store: dictionary-encoded triples, hybrid recall, namespace prefix scoping (`"org.*"` on every plural read, backed by the `ns_reg` registry; writes/destruction stay exact-namespace), heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, concurrent writers serialized at `reserve_write` — the advisory lock is bootstrap-only, pgvector) | yes |
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
 | `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
 | `areev-context` | Budget-aware orchestration over `areev_cal::render`: policies/presets, priority + diversity allocation with progressive disclosure (Full→Summary→Omit), timeline/census modes. Renders nothing itself — parity with CAL is test-pinned (`tests/render_parity.rs`) | yes |
@@ -144,13 +144,16 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
    without a spec-level decision.
 5. **One memory = one isolation unit** — a file on the embedded backend, a
    Postgres schema on the `postgres` backend; either way it is the unit of
-   erasure, sync, portability, and write parallelism. Single writer per
-   memory — enforced on BOTH backends: an advisory lock on Postgres, and on
-   the embedded backend a process-wide open-path registry so a second handle
-   on one file fails at open (`STO-E002`) instead of silently drifting its
-   cached allocators and corrupting the first handle's writes. Rust/Python
-   release on drop; Node calls `close()`. Adding a grain that is already
-   stored is a no-op returning the existing hash, not an error.
+   erasure, sync, and portability. Write concurrency is backend-specific:
+   the embedded backend is single-writer, enforced by a process-wide
+   open-path registry so a second handle on one file fails at open
+   (`STO-E002`) instead of silently drifting its cached allocators and
+   corrupting the first handle's writes; the `postgres` backend admits
+   multiple concurrent writers per schema (`STO-E002` is never raised
+   there), serialized at `reserve_write`'s row lock — the advisory lock
+   covers schema bootstrap only, not writes (`docs/deployment-profile.md`).
+   Rust/Python release on drop; Node calls `close()`. Adding a grain that is
+   already stored is a no-op returning the existing hash, not an error.
    Cross-memory queries go through
    ASSEMBLE with facade mounts, not shared connections. Files are
    self-describing: the `meta` table carries file-truths (`text_index`,
@@ -234,11 +237,16 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   carries `WWW-Authenticate: Basic` so browsers prompt. `into_hub(token, dir)`
   is the separate hub mode (CLI `areev hub`, where `--token-env` is
   **mandatory**): bearer auth on POSTs + the `/api/segment*` surface, which is
-  gated on **reads too** — only the non-segment reads are open. Base64 for
-  Basic is hand-rolled (no dep). Body cap 1 MiB. Cross-origin POSTs are
-  rejected via Origin check (drive-by protection). The console is
-  one embedded HTML file (`console.html`, vanilla JS, no build step) — a
-  plain-language memory browser with an interactive graph, an Analytics tab
+  gated on **reads too** — only the non-segment reads are open. Both `ui` and
+  `hub` can also terminate TLS natively (`--tls-cert`/`--tls-key`, the
+  non-default `tls` build feature, rustls) — the documented default remains a
+  TLS-terminating reverse proxy in front of the loopback bind
+  (`docs/deployment-profile.md`); native TLS is for deployments with nowhere
+  to run one. Base64 for Basic is hand-rolled (no dep). Body cap 1 MiB.
+  Cross-origin POSTs are rejected via Origin check (drive-by protection).
+  The console is one embedded HTML file (`console.html`, vanilla JS, no
+  build step) — a plain-language memory browser with an interactive graph,
+  an Analytics tab
   (grain-type census across all 12 types, namespace breakdown, a growth
   trend, and recall-leg status — the Query page's "WHAT'S IN THIS MEMORY"
   on-ramp, generalized), the loop review queue, and a Developer-mode toggle

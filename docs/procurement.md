@@ -26,7 +26,7 @@ deployment), [`gdpr.md`](gdpr.md), [`eu-ai-act.md`](eu-ai-act.md),
 | Re-acceptance after model swap | ✅ | `areev eval run --baseline RUN --tolerance N` — pass-rate comparison within tolerance bands, recorded as a grain, non-zero exit on failure |
 | Reproducibility of executions | ✅ | `areev run verify` re-derives every checkpoint from the journal (labeled tiers; cross-arch caveat stated); `areev run shadow` replays with zero dispatches |
 | Observability / OTel | ✅ | OTLP/HTTP JSON span export (`--otel-endpoint`) — one trace per run, resumes join the same trace; §6.10 event stream (`--events`) |
-| Multi-tenant isolation | ✅ | One memory = one isolation unit (file, or Postgres schema with advisory-locked single writer); no cross-memory queries without explicit mounts |
+| Multi-tenant isolation | ✅ | One memory = one isolation unit — a file (single-writer) or a Postgres schema (concurrent writers, serialized at `reserve_write`; the advisory lock covers schema bootstrap only); no cross-memory queries without explicit mounts |
 | Supply-chain posture | ✅ | Dependency-light by policy (no HTTP framework/CLI framework/MCP SDK); `cargo deny` in CI; the two recorded exceptions (rustls; erasure) documented in ARCHITECTURE.md |
 | Certifications (SOC 2, ISO 27001) | N/A — self-hosted | Areev is a library + self-hosted binaries; certifications attach to a hosted offering, which is a separate business decision (stated in the proposal, unchanged) |
 | Penetration testing | Operator's scope | Self-hosted software: the deployment's pen test covers it; `SECURITY.md` has the vulnerability-report channel; the threat model is `security-model.md` |
