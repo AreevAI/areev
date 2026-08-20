@@ -6,30 +6,30 @@ v1.3.0 · 17 crates · 265 Rust files
 
 | | |
 |---|---|
-| Source code | **74,491** lines |
-| Test code | **41,986** lines (36.0% of all code) |
-| Test functions | **2,132** |
+| Source code | **75,351** lines |
+| Test code | **42,080** lines (35.8% of all code) |
+| Test functions | **2,136** |
 | Stable error codes | **89** |
-| Reference docs | 48 files, 19,107 lines |
+| Reference docs | 48 files, 19,347 lines |
 
 ## By crate
 
 | Crate | Files | Source | Test | Tests |
 |---|---:|---:|---:|---:|
-| `areev-cal` | 38 | 23,597 | 17,677 | 962 |
-| `areev-store` | 39 | 9,450 | 5,136 | 248 |
+| `areev-cal` | 38 | 23,616 | 17,677 | 962 |
+| `areev-store` | 39 | 9,452 | 5,136 | 248 |
 | `areev-core` | 47 | 8,011 | 3,827 | 251 |
-| `areev-cli` | 13 | 5,091 | 4,179 | 137 |
+| `areev-cli` | 13 | 5,135 | 4,220 | 139 |
 | `areev-loop` | 33 | 7,534 | 1,079 | 129 |
 | `areev-run` | 20 | 3,972 | 2,613 | 85 |
 | `areev-context` | 8 | 1,899 | 2,421 | 90 |
 | `areev-run-core` | 8 | 1,934 | 969 | 31 |
-| `areev-trigger` | 10 | 1,316 | 1,251 | 88 |
+| `areev-trigger` | 10 | 1,340 | 1,304 | 90 |
 | `areev-llm` | 8 | 1,764 | 844 | 44 |
+| `areev-js` | 2 | 2,369 | 0 | 0 |
 | `areev-server` | 3 | 1,369 | 876 | 29 |
-| `areev-js` | 2 | 1,947 | 0 | 0 |
+| `areev-py` | 2 | 1,988 | 0 | 0 |
 | `areev-conformance` | 14 | 1,371 | 343 | 12 |
-| `areev-py` | 2 | 1,639 | 0 | 0 |
 | `areev-bench` | 9 | 1,696 | 36 | 3 |
 | `areev-loop-adapter` | 6 | 883 | 735 | 23 |
 | `areev-mcp` | 1 | 961 | 0 | 0 |
@@ -38,12 +38,12 @@ v1.3.0 · 17 crates · 265 Rust files
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 151,041 |
-| Source code (no blanks or comments) | 74,491 |
-| Unit test code (`#[cfg(test)]` blocks) | 21,036 |
-| Integration test code (`tests/`, `benches/`) | 20,950 |
+| Physical lines (all Rust) | 152,472 |
+| Source code (no blanks or comments) | 75,351 |
+| Unit test code (`#[cfg(test)]` blocks) | 21,060 |
+| Integration test code (`tests/`, `benches/`) | 21,020 |
 | Example code (`examples/`) | 585 |
-| Test functions | 2,132 |
+| Test functions | 2,136 |
 
 ## Method
 

@@ -1006,6 +1006,12 @@ under another — which is what separating those two roles is for. The key is
 never persisted; rotating it is a crypto-erasure of the mapping table. Trust
 model in [`docs/security-model.md`](docs/security-model.md).
 
+The root reaches every host surface, not just the Rust API: `--anon-key-env VAR`
+on the CLI and `anon_key=`/`anonKey` on the Python and Node constructors. That
+matters more than it sounds — a capability whose whole purpose is serving
+stateless Postgres deployments is worthless if it is settable only from the one
+surface those deployments do not use.
+
 ### Credentials are minted per request, not read once
 
 **Decision (2026-08-19, issue #45):** LLM backends hold a

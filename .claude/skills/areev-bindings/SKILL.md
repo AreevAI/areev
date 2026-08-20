@@ -49,6 +49,15 @@ python -m pytest tests/    # or: pytest test_areev.py
 `build.rs` adds macOS `-undefined dynamic_lookup` so a bare `cargo build` links
 without a Python lib present (extension-module resolves symbols at load time).
 
+> **`maturin develop` leaves `crates/areev-py/python/areev/areev.abi3.so` behind,
+> and Python prefers `.abi3.so` over a plain `.so`.** So a stale extension from
+> an earlier version keeps being imported — `pytest` runs green against code
+> that is weeks old, and `areev.__version__` quietly reports the OLD version.
+> Same failure class as the napi `--platform` trap below. If a change appears to
+> have no effect, check `python -c "import areev; print(areev.__version__)"`
+> against `[workspace.package]` FIRST; re-run `maturin develop` (or delete the
+> stale `.abi3.so`) before believing any result.
+
 **Node** (napi-rs, native addon — **not** wasm):
 ```bash
 cd crates/areev-js

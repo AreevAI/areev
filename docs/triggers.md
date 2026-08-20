@@ -310,6 +310,43 @@ Note `--payload -` does *not* mean stdin here. The argument parser treats a
 following token beginning with `-` as another flag, so omit the flag and pipe
 instead.
 
+## A declaration that cannot fire
+
+A trigger is refused at authoring time when it can never fire — an unparseable
+cron, a timezone this build does not support, a composite gate naming a member
+the declaration does not carry. That check runs on `areev trigger add`, on both
+bindings' `trigger_add`, and on the generic `add("trigger", …)`.
+
+Authoring-time refusal cannot be the only defence, though: a declaration can
+arrive by **bundle import** from an implementation that validated differently,
+or predate the check. So the evaluator reports one rather than assuming it was
+caught:
+
+```bash
+$ areev trigger status --db ap.db --ns accounting
+a32027ab5633  due      interval  4cb34f1a2c9d
+599423634b3d  unusable schedule  4cb34f1a2c9d
+              cannot fire: TRG-E006: schedule "0 9 * * *" is unusable: timezone
+              "Asia/Kolkata" is not supported in this release — cron is evaluated in UTC. …
+
+$ areev trigger run --db ap.db --ns accounting
+claimed 1 · items 1 · runs 1 · duplicates 0 · not due 0 · locked 0 · unusable 1
+error: 599423634b3d: TRG-E006: schedule "0 9 * * *" is unusable: timezone …
+$ echo $?
+1
+```
+
+The pass exits non-zero while an unusable declaration exists, so a heartbeat
+surfaces it instead of succeeding quietly every tick. Fix the declaration or
+disable it.
+
+`unusable` is counted **apart from `not due`** on purpose. Folded in there it is
+indistinguishable from a healthy trigger waiting its turn, which is the failure
+mode with no symptom: the work simply never happens and every report looks
+green. `trigger_status()` carries the same reason as an `unusable` field, absent
+when the declaration is fine, and such a trigger is never reported as `due` —
+saying otherwise would promise a firing that cannot happen.
+
 ## Putting it on a heartbeat
 
 ```bash
@@ -321,18 +358,84 @@ Targets: `cron`, `launchd`, `systemd`, `k8s-cronjob`. These are **templates,
 not API clients** — Areev holds no cloud credentials and creates no cloud
 resources. You apply the output with whatever you already use.
 
+The host targets (`cron`, `launchd`, `systemd`) genuinely run on the machine
+that produced the render, so they name that machine's binary by absolute path.
+`k8s-cronjob` runs the *image's* binary instead, so its `command[0]` is plain
+`areev` — the name on `PATH` inside the image. The `--db` path is still the one
+you wrote: mount the memory and make that path resolve inside the container,
+because a heartbeat pointed at a path that does not exist fails every tick,
+which looks exactly like nothing being due.
+
 The rendered interval is the **greatest common divisor** of your declared
 intervals, floored at 60s — deliberately coarser than your shortest trigger.
 The memory owns the real cadence; rendering a 30-second cron because one trigger
 asked for 30 seconds would put the schedule back in the crontab, which is the
 thing this feature exists to stop.
 
+## From Python and Node
+
+Every `areev trigger` subcommand has a binding method, so a host that already
+embeds Areev does not have to ship, pin and sign the `areev` binary alongside it
+just to fire a rule it can already declare. Names mirror the CLI
+(`trigger_add`/`triggerAdd`, `trigger_run`/`triggerRun`, …), the FFI convention
+is unchanged — scalars in, JSON strings out — and the returned reports are the
+same `EvalReport` and `TriggerStatus` shapes the CLI prints under
+`--format json`.
+
+```python
+m = areev.Areev("accounting.db", ns="accounting")
+m.trigger_add(json.dumps({
+    "kind": "polling", "workflow": plan_hash,
+    "connector": "gmail", "scope": "label:invoices",
+    "dedup_key": ["message_id"],
+    "interval_secs": 300,
+}), because="invoices arrive by email")
+
+# One idempotent pass — safe to call concurrently from several nodes.
+report = json.loads(m.trigger_run(
+    connector_cmd="./gmail.sh",
+    tool_cmd="./tools.sh",
+    credentials_json=json.dumps({"gmail": "GMAIL_TOKEN"}),
+))
+```
+
+```javascript
+const report = JSON.parse(await m.triggerRun(
+  null, false, null, null, './gmail.sh', './tools.sh',
+  JSON.stringify({ gmail: 'GMAIL_TOKEN' }),
+))
+```
+
+Both `trigger_add` and the generic `add("trigger", …)` validate the schedule —
+the cron expression is parsed, a non-UTC timezone is refused (`TRG-E006`), and
+a composite's gate is checked against its own members — so the path you reach
+for first is not the unvalidated one. `trigger_add` additionally requires
+`because`.
+
+One deliberate difference from the CLI:
+
+- **An unset credential variable is an error, not a skip.** The CLI drops a
+  `--credential` whose variable is unset; the binding refuses, because a host
+  wiring this up programmatically has no console on which to notice the
+  omission, and the failure would otherwise surface as an unexplained 401 from
+  someone else's API.
+
+`credentials_json` maps a credential **name** to the **environment variable**
+its value is read from, never to the value itself — the same discipline as
+`--credential NAME=ENV_VAR`, so a secret never crosses the FFI boundary as a
+literal.
+
+There is still no daemon. `trigger_run` is a call the host makes on its own
+heartbeat, and `trigger_render` writes the config for one.
+
 ## In the console
 
-A read-only Triggers tab lists what is declared. Firing stays in the CLI on
-purpose: it spends budgets and executes effects, so the actor's identity is the
-audit record, and "whoever holds the console token" is not an identity — the
-same reason `run.respond` refuses a shared-token caller.
+A read-only Triggers tab lists what is declared. Firing stays out of the console
+on purpose: it spends budgets and executes effects, so the actor's identity is
+the audit record, and "whoever holds the console token" is not an identity — the
+same reason `run.respond` refuses a shared-token caller. The CLI and the
+bindings both carry a real principal, which is why they may fire and the console
+may not.
 
 Whether a trigger has actually fired is per-host state that does not replicate,
 so a console cannot know it for another machine. Use `areev trigger status` on

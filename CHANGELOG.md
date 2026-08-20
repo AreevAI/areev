@@ -6,6 +6,94 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Triggers reach the Python and Node bindings.** 1.3.0 shipped the trigger
+  evaluator to the CLI only — `areev-trigger` was a dependency of `areev-cli`
+  and nothing else, and there is no MCP tool either — so a binding host could
+  *declare* a standing rule (the `Trigger` grain has always been authorable
+  through `add("trigger", …)` and queryable through `RECALL triggers`) but had
+  no way to **fire** one. It had to shell out to the `areev` binary: a second
+  artifact to ship, pin and sign per deployment, for a rule the process was
+  already holding the memory for. All nine subcommands are now methods —
+  `trigger_add`/`list`/`show`/`status`/`run`/`deliver`/`pause`/`resume`/`render`
+  (camelCase on Node) — returning the same `EvalReport`/`TriggerStatus` JSON the
+  CLI prints under `--format json`. Two deliberate differences from the CLI:
+  `trigger_add` also runs the schedule validation `add("trigger", …)`
+  structurally cannot (cron parsing, the UTC-only refusal, a composite's gate
+  against its own members — that check lives in `areev-trigger`, above the CAL
+  grain builder), and an unset `--credential` variable is refused rather than
+  silently dropped, because a host wiring this up programmatically has no
+  console on which to notice, and the omission would otherwise surface as an
+  unexplained 401 from someone else's API. Still no daemon: `trigger_run` is a
+  call the host makes on its own heartbeat.
+- **`anon_key` is reachable outside Rust.** The host-supplied anonymization
+  root added in 1.3.0 (#46) was settable only through `AreevOptions` — not from
+  the CLI, and not from either binding — so the feature whose whole purpose is
+  making the mapping vault and value-derived tokens work on **Postgres** (which
+  refuses `encryption_key`, a page-cipher capability) and on plaintext files
+  was unreachable from the two surfaces those deployments actually use. Now
+  `--anon-key-env VAR` on any CLI command and `anon_key=`/`anonKey` on both
+  constructors, as 64 hex characters. The CLI takes the variable *name*, never
+  the key, so it stays out of shell history and `ps`, and that variable joins
+  `--passphrase-env`/`--token-env` in the deny-list every subprocess seam
+  scrubs. A malformed key is refused at open rather than deriving a different
+  token space — the failure mode that looks like working software right up
+  until a rehydrate comes back empty.
+- **Abstract nodes can run from a binding.** `run_start`/`run_resume` (and
+  their camelCase twins) take `model`, `base_url`, `key_env` and
+  `llm_max_tokens`. Both bindings hard-coded `llm: None` when building the
+  `Runner`, so a plan with an abstract node refused at load with `RUN-E006` and
+  there was no argument that could have prevented it — all of #45's provider
+  and credential work (Vertex under workload identity, the feature-gated
+  providers) was unreachable from the Python or Node agent service the bindings
+  exist for. The spec is resolved *before* the run is journaled, so a bad
+  provider or a missing key fails without leaving behind a run that can never
+  advance. `trigger_run`/`trigger_deliver` take the same arguments, so a
+  trigger may start a plan with abstract nodes.
+
+### Fixed
+
+- **A trigger that could never fire was stored, and then looked healthy**
+  (#67). `areev trigger add` validated a declaration and refused a bad one, but
+  `add("trigger", …)` — the path a host authoring programmatically actually
+  reaches for — performed no equivalent check. The evaluator then counted the
+  result under `not due`, which is indistinguishable from a healthy trigger
+  waiting its turn, so the symptom was work silently not happening on whatever
+  schedule was supposed to be running, with a green `trigger status`. Both
+  binding write paths now run the schedule check (cron parse, the UTC-only
+  refusal, a composite's gate against its own members). Because authoring-time
+  validation cannot be the only defence — a declaration can arrive by bundle
+  import from an implementation that validated differently, or predate the
+  check — the evaluator also reports one rather than assuming it was caught: a
+  new `unusable` counter on the run report, counted **apart from**
+  `skipped_not_due`, an `unusable` reason on `trigger_status()`, and an
+  `unusable` state in `areev trigger status` instead of `waiting`. Such a
+  trigger is never reported as `due`.
+- **A top-level `timezone` on a JSON trigger declaration was silently
+  discarded** (found while reproducing #67). The evaluator reads
+  `config["int:timezone"]`, which is where the CLI's `--timezone` writes, but a
+  hand-written declaration naturally spells it `"timezone"` at top level — and
+  that landed in `extra_fields`, where nothing reads it. The trigger was
+  stored, reported healthy, and fired in UTC while its author believed it was
+  on local time: silence, on a schedule. It now maps to the config key, and a
+  declaration that sets both to *different* values is refused rather than
+  resolved by a precedence rule nobody would remember.
+- **`trigger render --target k8s-cronjob` emitted the authoring host's local
+  binary path into a container spec** (#69). The manifest paired
+  `image: areev:latest` with `command[0]` set to `std::env::current_exe()` —
+  an absolute path from the machine that ran the render, guaranteed wrong
+  inside the container, and sitting next to a right-looking `image:` line so it
+  was not obvious which half the operator was meant to fix. Container targets
+  now use the name on `PATH` in the image (`areev`); the host targets
+  (`cron`, `launchd`, `systemd`) keep the absolute path, which is correct for
+  them because they run on the machine that produced the render. The rendered
+  `--db` path carries a comment saying it must resolve inside the container.
+  The regression survived because the render test's context already used
+  `exe: "areev"` — the same string the fix produces — so a render that spliced
+  in `current_exe()` looked identical to one that did not; the new test uses a
+  path that could only have come from the authoring machine.
+
 ## [1.3.0] — 2026-08-20
 
 ### Added

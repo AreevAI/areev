@@ -93,3 +93,61 @@ fn a_declaration_that_could_never_fire_is_refused_rather_than_stored() {
     assert!(!ok, "a unitless --window must be refused, not guessed");
     assert!(err.contains("--window"), "{err}");
 }
+
+/// The k8s manifest must not carry the authoring machine's binary path (#69).
+///
+/// Driven through the real binary on purpose: the defect was
+/// `std::env::current_exe()` reaching the render, which only has a wrong value
+/// when a real process produced it. A unit test supplying `exe: "areev"` cannot
+/// see it — that is exactly why this shipped.
+#[test]
+fn k8s_render_uses_the_image_binary_not_the_authoring_hosts_path() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "interval",
+        "--workflow", WF, "--interval", "900", "--because", "heartbeat",
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, out, err) =
+        areev(&["trigger", "render", "--db", db, "--ns", "ops", "--target", "k8s-cronjob"]);
+    assert!(ok, "{err}");
+
+    let exe = env!("CARGO_BIN_EXE_areev");
+    assert!(
+        !out.contains(exe),
+        "a path from this machine cannot be right inside a container:\n{out}"
+    );
+    assert!(out.contains("\n            - areev\n"), "command[0] must be the PATH name:\n{out}");
+
+    // The host targets run where they were rendered, so for them it IS right.
+    for target in ["cron", "launchd", "systemd"] {
+        let (ok, out, err) =
+            areev(&["trigger", "render", "--db", db, "--ns", "ops", "--target", target]);
+        assert!(ok, "{err}");
+        assert!(out.contains(exe), "{target} runs locally and must name the local binary:\n{out}");
+    }
+}
+
+/// A schedule this build cannot evaluate is refused at declaration (#67).
+#[test]
+fn a_non_utc_timezone_is_refused_when_declared() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "schedule", "--workflow", WF,
+        "--cron", "0 9 * * *", "--timezone", "Asia/Kolkata", "--because", "probe",
+    ]);
+    assert!(!ok, "a non-UTC timezone must be refused");
+    assert!(err.contains("TRG-E006"), "{err}");
+
+    // Nothing was stored, so `status` cannot report it as healthy.
+    let (ok, out, _err) = areev(&["trigger", "status", "--db", db, "--ns", "ops"]);
+    assert!(ok);
+    assert!(out.contains("no triggers declared"), "{out}");
+}

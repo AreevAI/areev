@@ -1122,7 +1122,17 @@ areev trigger status --db ap.db --ns accounting   # what fired, what is due
 
 `trigger status` is per-host: evaluation state deliberately does not replicate,
 so a dev memory restored from prod cannot inherit prod's cursor and silently
-skip real work. Full reference: [`triggers.md`](triggers.md).
+skip real work.
+
+If your host already embeds Areev, skip the binary — every subcommand above is a
+binding method, so the process holding the memory can fire its own rules:
+
+```python
+m = areev.Areev("ap.db", ns="accounting")
+report = json.loads(m.trigger_run(connector_cmd="./gmail.sh", tool_cmd="./tools.sh"))
+```
+
+Full reference: [`triggers.md`](triggers.md).
 
 ---
 

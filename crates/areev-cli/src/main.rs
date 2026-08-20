@@ -272,6 +272,12 @@ Encryption at rest: add --passphrase-env <VAR> to any command to derive an
 AES-256 key (Argon2id) from the passphrase in environment variable VAR. The
 non-secret salt is kept in a <memory.db>.kdf sidecar — back it up with the db.
 
+Anonymization key: add --anon-key-env <VAR> to any command to supply the
+32-byte root (64 hex characters in VAR) the pseudonym session/memory/vault
+subkeys are derived from. Independent of the page cipher, so the mapping vault
+and value-derived tokens also work on postgres and on plaintext files. Never
+persisted; rotating it is a crypto-erasure of the mapping table.
+
 Vector recall: add --embed-cmd 'CMD' [--embed-model NAME] to any command to
 install a command embedder — CMD gets the text on stdin and must print a JSON
 array of numbers. Turns on the vector leg for search/serve, and embeds grains
@@ -317,6 +323,28 @@ fn need(args: &HashMap<String, String>, k: &str) -> Result<String, String> {
 /// `ui`) pass this: silently serving the personal default memory — over MCP or
 /// an unauthenticated HTTP console — risks exposing or mutating the wrong file,
 /// so those commands must name their memory explicitly.
+/// A host-supplied 32-byte anonymization root, as 64 hex characters.
+///
+/// Wrong length or a stray non-hex character has to fail here, loudly. The key
+/// derives the token space, so a silently different key looks like working
+/// software right up until a rehydrate comes back empty — and by then the
+/// tokens it wrote are already in the file.
+fn parse_anon_key(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!(
+            "expected 64 hex characters (a 32-byte key), got {}",
+            hex.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let pair = &hex[i * 2..i * 2 + 2];
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| format!("not hex: {pair:?} at byte {i}"))?;
+    }
+    Ok(out)
+}
+
 /// Open a memory on the postgres backend from a `postgres://…?schema=<name>`
 /// DSN, mirroring the file-backend branches (explicit options re-stamp;
 /// telemetry rides the memory's schema). Encryption keys don't apply here —
@@ -327,11 +355,19 @@ fn open_postgres_store(
     db: &str,
     tel_mode: areev_store::TelemetryMode,
     explicit_index: Option<&str>,
+    anon_key: Option<[u8; 32]>,
 ) -> Result<Areev, String> {
     let (url, schema) = areev_store::pg::split_schema_url(db).map_err(|e| e.to_string())?;
-    if let Some(v) = explicit_index {
+    // An --anon-key-env key is the whole reason the mapping vault and
+    // value-derived tokens are reachable on this backend at all: Postgres
+    // refuses `encryption_key` (a page-cipher capability), so without a
+    // host-supplied root there is no key material to derive them from.
+    if explicit_index.is_some() || anon_key.is_some() {
         let o = areev_store::AreevOptions {
-            index_text: !matches!(v, "false" | "0" | "off" | "no"),
+            index_text: explicit_index
+                .map(|v| !matches!(v, "false" | "0" | "off" | "no"))
+                .unwrap_or(areev_store::AreevOptions::default().index_text),
+            anon_key,
             telemetry: tel_mode,
             ..Default::default()
         };
@@ -349,6 +385,7 @@ fn open_postgres_store(
     _db: &str,
     _tel_mode: areev_store::TelemetryMode,
     _explicit_index: Option<&str>,
+    _anon_key: Option<[u8; 32]>,
 ) -> Result<Areev, String> {
     Err("this build lacks the postgres backend — reinstall with \
          `cargo install areev --features postgres` (or build with --features postgres)"
@@ -957,7 +994,7 @@ fn run() -> Result<(), String> {
     // have leaked it.
     // Both registries: areev-loop owns the `--llm-cmd` and `--analyzer-cmd`
     // seams and cannot depend on an areev-* sibling, so it keeps its own.
-    for var_flag in ["passphrase-env", "token-env"] {
+    for var_flag in ["passphrase-env", "token-env", "anon-key-env"] {
         if let Some(var) = flag(&flags, var_flag) {
             areev_core::proc::deny_env_var(&var);
             areev_loop::proc::deny_env_var(&var);
@@ -1133,6 +1170,24 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         None => None,
     };
 
+    // The anonymization root (--anon-key-env VAR, 64 hex characters in that
+    // variable). Independent of the page cipher: it is the HKDF root for the
+    // session/memory/vault subkeys when supplied, which is what makes the
+    // mapping vault and deterministic value-derived tokens work on Postgres
+    // (no page cipher there) and on plaintext files. Named by variable, never
+    // taken on the command line, so it stays out of shell history and `ps`.
+    // Never persisted — rotating it is a crypto-erasure of the mapping table,
+    // so it belongs in a KMS.
+    let anon_key = match flag(&flags, "anon-key-env") {
+        Some(var) => {
+            let raw = zeroize::Zeroizing::new(std::env::var(&var).map_err(|_| {
+                format!("--anon-key-env {var}: environment variable is not set")
+            })?);
+            Some(parse_anon_key(raw.trim()).map_err(|e| format!("--anon-key-env {var}: {e}"))?)
+        }
+        None => None,
+    };
+
     // Recall-telemetry sidecar (host capability, §8): the agent-host default is
     // `aggregate`; `--telemetry off|aggregate|full` overrides. It is NOT a
     // file-truth, so it never re-stamps the file's declarations.
@@ -1166,9 +1221,9 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // host-supplied capability that also requires open_with.
     let explicit_index = flag(&flags, "index-text");
     let mut m = if is_pg_url {
-        open_postgres_store(&db, tel_mode, explicit_index.as_deref())?
+        open_postgres_store(&db, tel_mode, explicit_index.as_deref(), anon_key)?
     } else {
-        if explicit_index.is_some() || enc_key.is_some() {
+        if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() {
             let mut o = areev_store::AreevOptions::default();
             if let Some(v) = &explicit_index {
                 o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
@@ -1176,6 +1231,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             if let Some(key) = &enc_key {
                 o.encryption_key = Some(**key);
             }
+            o.anon_key = anon_key;
             o.telemetry = tel_mode;
             Areev::open_with(&db, o)
         } else if tel_mode != areev_store::TelemetryMode::Off {

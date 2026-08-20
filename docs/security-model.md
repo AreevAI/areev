@@ -69,6 +69,14 @@ top of that.
   changes, so a rotation is a crypto-erasure of the mapping table and a break
   in pseudonym continuity, not a routine hygiene step. Rotate deliberately —
   to revoke re-identification — and re-derive nothing.
+- **How a host supplies it.** `AreevOptions::anon_key` in Rust; `--anon-key-env
+  VAR` on any CLI command; `anon_key=`/`anonKey` on the Python and Node
+  constructors (64 hex characters — the scalars-in FFI convention). The CLI
+  takes the **variable name**, never the key itself, so it stays out of shell
+  history and `ps`, and that variable joins `--passphrase-env`/`--token-env` in
+  the deny-list every subprocess seam scrubs. Supplying a key makes the open
+  explicit, which re-stamps the file's declarations and is reported through
+  `open_warnings()` — the same trade `--passphrase-env` has always made.
 - **Why it exists.** The Postgres backend refuses `encryption_key` outright (it
   is a page-cipher capability), so when the page key was the only possible root
   the mapping vault and deterministic tokens were unavailable on exactly the

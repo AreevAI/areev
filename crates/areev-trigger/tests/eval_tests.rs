@@ -595,17 +595,25 @@ fn a_gate_naming_an_undeclared_member_is_refused() {
     // exactly the failure mode with no symptom.
     let rig = Rig::new();
     let a = rig.declare(manual_member());
+    let b = rig.declare(manual_member());
     let cond =
         areev_trigger::predicate::parse_predicate("invoice = true AND ghost = true").unwrap();
+    // TWO members declared, so the composite is otherwise coherent and the
+    // undeclared `ghost` in the gate is the only thing wrong with it. With one
+    // member it was ALSO "needs at least two members" (TRG-E001), so the test
+    // could pass while the gate check it names never ran.
     rig.declare(
         Trigger::new(TriggerKind::Composite, WF)
             .member("invoice", &a)
+            .member("po", &b)
             .predicate(areev_trigger::predicate::to_value(&cond).unwrap()),
     );
 
     let r = rig.evaluator(None).run(&opts()).unwrap();
+    // `contains`, not `starts_with`: the report names which declaration is
+    // unusable before the reason, which matters once more than one exists.
     assert!(
-        r.errors.iter().any(|e| e.starts_with("TRG-E008")),
+        r.errors.iter().any(|e| e.contains("TRG-E008")),
         "expected TRG-E008, got {:?}",
         r.errors
     );
@@ -886,4 +894,49 @@ fn a_composite_naming_an_undeclared_member_is_refused_at_declaration() {
         .member("purchase_order", WF)
         .predicate(areev_trigger::predicate::to_value(&ok_cond).unwrap());
     assert!(areev_trigger::schedule::validate(&good).is_ok());
+}
+
+/// A declaration that can never fire is reported as such, not as "waiting".
+///
+/// #67: an unusable trigger was folded into `not due`, where it is
+/// indistinguishable from a healthy one waiting its turn — so the work simply
+/// never happened and every report stayed green. Write-path validation alone
+/// cannot close this: `Rig::declare` writes straight through the store, which
+/// is exactly the shape of a declaration arriving by bundle import from an
+/// implementation that validated differently, or one written before the check
+/// existed. The evaluator has to notice on its own.
+#[test]
+fn an_unusable_declaration_is_reported_distinctly_not_as_waiting() {
+    let rig = Rig::new();
+
+    // Stored without validation, as a bundle import would be.
+    let bad = rig.declare(
+        Trigger::new(TriggerKind::Schedule, WF)
+            .cron("0 9 * * *")
+            .config(json!({ "int:timezone": "Asia/Kolkata" })),
+    );
+    let good = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+
+    let ev = rig.evaluator(None);
+
+    let status = ev.status().unwrap();
+    let bad_row = status.iter().find(|s| s.trigger == bad).unwrap();
+    let why = bad_row.unusable.as_deref().expect("the reason must be reported, not inferred");
+    assert!(why.contains("TRG-E006"), "the reason must name the code: {why}");
+    assert!(!bad_row.due, "an unusable declaration must never be reported as due");
+
+    // The healthy one is unaffected — this must not become a blanket alarm.
+    let good_row = status.iter().find(|s| s.trigger == good).unwrap();
+    assert!(good_row.unusable.is_none());
+    assert!(good_row.due);
+
+    // And the pass counts it apart from `not due`, with the reason surfaced.
+    let report = ev.run(&opts()).unwrap();
+    assert_eq!(report.unusable, 1, "an unusable trigger must not hide in not-due");
+    assert_eq!(report.claimed, 1, "only the healthy trigger fires");
+    assert!(
+        report.errors.iter().any(|e| e.contains("TRG-E006")),
+        "the reason must reach the operator: {:?}",
+        report.errors
+    );
 }

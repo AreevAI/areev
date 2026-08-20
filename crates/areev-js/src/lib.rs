@@ -47,6 +47,218 @@ fn err<E: std::fmt::Display>(e: E) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 
+/// A host-supplied 32-byte anonymization root, given as 64 hex characters.
+///
+/// The FFI convention is scalars in, so the key arrives as hex rather than as
+/// a Buffer. It is the HKDF root for the session/memory/vault subkeys, it is
+/// never persisted, and rotating it is a crypto-erasure of the mapping table —
+/// so a malformed or wrong-length value has to fail here, loudly, at open.
+/// Silently deriving a *different* token space would look like working
+/// software right up until a rehydrate came back empty.
+fn parse_anon_key(hex: &str) -> napi::Result<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return Err(err(format!(
+            "anonKey must be 64 hex characters (a 32-byte key); got {} characters",
+            hex.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let pair = &hex[i * 2..i * 2 + 2];
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| err(format!("anonKey is not hex: {pair:?} at byte {i}")))?;
+    }
+    Ok(out)
+}
+
+/// Resolve the **tool-calling** model an abstract workflow node needs, the same
+/// spec grammar and env-key discipline as the CLI's `areev run --model`.
+///
+/// A different seam from [`resolve_llm`]: the loop's reflection wants a
+/// completion backend, while the runtime's abstract nodes want a model that can
+/// emit tool calls. Without one, a plan carrying an abstract node refuses at
+/// load with `RUN-E006` — which is exactly what a binding host used to get,
+/// unavoidably, because the binding hard-coded `llm: None`.
+fn resolve_toolcall_llm(
+    model: Option<String>,
+    base_url: Option<String>,
+    key_env: Option<String>,
+) -> napi::Result<Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>> {
+    match model {
+        Some(spec) => Ok(Some(
+            areev_llm::resolve_toolcall(&spec, base_url.as_deref(), key_env.as_deref())
+                .map_err(err)?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Build through CAL's one grain builder and validate the schedule, storing
+/// nothing.
+///
+/// `add("trigger", …)` already refuses an *incoherent* declaration, but the
+/// cron parse, the UTC-only refusal and the composite gate-vs-members check
+/// live in `areev-trigger`, which sits ABOVE `areev-cal` — so the builder
+/// itself cannot call them. Running the check through a *validate-only* sink
+/// keeps one builder as the source of truth for what a trigger's fields mean,
+/// and leaves the actual write to `cal_add`, so a trigger picks up the
+/// authorization check, `author_did` attribution and ingress transform every
+/// other grain type gets rather than a second, drifting write path.
+struct ValidateTriggerOnly;
+
+impl areev_cal::json_build::GrainSink for ValidateTriggerOnly {
+    type Out = ();
+    fn consume<G: areev_core::types::Grain + Clone + 'static>(
+        self,
+        grain: &G,
+    ) -> areev_core::error::Result<()> {
+        if let Some(t) =
+            (grain as &dyn std::any::Any).downcast_ref::<areev_core::types::Trigger>()
+        {
+            areev_trigger::schedule::validate(t)
+                .map_err(|e| AreevError::Validation(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Bridges the trigger evaluator to the real runtime.
+///
+/// The duplicate rule is the whole idempotency story: `Runner::start` refuses
+/// an existing run id, and that refusal — not a lease, not a lock — is what
+/// makes a re-delivered item a skip instead of a second run.
+struct RunnerStarter {
+    runner: areev_run::Runner,
+    opts: areev_run::RunOptions,
+}
+
+impl areev_trigger::RunStarter for RunnerStarter {
+    fn start(
+        &self,
+        workflow: &str,
+        run_id: &str,
+        input: serde_json::Value,
+    ) -> areev_trigger::StartResult {
+        let hash = match Hash::from_hex(workflow) {
+            Ok(h) => h,
+            Err(e) => {
+                return areev_trigger::StartResult::Failed(format!("workflow {workflow}: {e}"))
+            }
+        };
+        match self.runner.start(&hash, run_id, input, &self.opts) {
+            Ok(_) => areev_trigger::StartResult::Started,
+            Err(areev_run::CoreRunError::Tainted { why }) if why.contains("already exists") => {
+                areev_trigger::StartResult::Duplicate
+            }
+            Err(e) => areev_trigger::StartResult::Failed(e.to_string()),
+        }
+    }
+}
+
+/// `cal_add`, with the schedule check `add("trigger", …)` used to skip.
+///
+/// The CAL grain builder refuses an *incoherent* trigger, but the cron parse,
+/// the UTC-only rule and the composite gate-vs-members check live in
+/// `areev-trigger`, which sits ABOVE `areev-cal` — so the builder cannot call
+/// them and every write through it stored declarations that could never fire
+/// (#67). Routing BOTH `add` and `triggerAdd` through here means the generic
+/// authoring path a host actually reaches for is not the unvalidated one.
+///
+/// Validate first, store second, and let `cal_add` do the write so a trigger
+/// keeps the authorization check, `author_did` attribution and ingress
+/// transform every other grain type gets.
+fn validated_cal_add(
+    facade: &AreevFacade,
+    grain_type: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> areev_core::error::Result<Hash> {
+    if grain_type == "trigger" {
+        areev_cal::json_build::build_grain_from_json(grain_type, fields, ValidateTriggerOnly)?;
+    }
+    facade.cal_add(grain_type, fields)
+}
+
+/// An evaluator that can inspect but not act — no connector, no runtime, no
+/// credentials. What `list`, `show`, `status` and `render` want, and the shape
+/// that makes "reading cannot fire anything" true by construction rather than
+/// by remembering to pass `None` four times.
+fn js_read_only_evaluator(
+    facade: std::sync::Arc<AreevFacade>,
+    ns: &str,
+) -> areev_trigger::Evaluator {
+    areev_trigger::Evaluator::read_only(
+        facade,
+        std::sync::Arc::new(areev_trigger::SystemClock),
+        ns,
+    )
+}
+
+/// The acting evaluator. Mirrors the CLI's construction, including the two
+/// deliberate `None`s: without a connector a due polling trigger fails loudly
+/// (`TRG-E003`) rather than looking healthy while doing nothing, and without a
+/// `toolCmd` the pass ingests items and records firings but starts nothing.
+fn js_evaluator(
+    facade: std::sync::Arc<AreevFacade>,
+    ns: String,
+    principal: String,
+    connector_cmd: Option<String>,
+    tool_cmd: Option<String>,
+    credentials_json: Option<String>,
+    llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+) -> napi::Result<areev_trigger::Evaluator> {
+    // A connector IS a tool — JSON in, JSON out, one process per invocation —
+    // so there is one subprocess contract to learn and connectors inherit its
+    // timeout, output cap and secret scrub.
+    let connector: Option<std::sync::Arc<dyn areev_run::HostToolExecutor>> = connector_cmd
+        .clone()
+        .or_else(|| tool_cmd.clone())
+        .map(|cmd| {
+            std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
+                as std::sync::Arc<dyn areev_run::HostToolExecutor>
+        });
+
+    let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = tool_cmd.map(|cmd| {
+        std::sync::Arc::new(RunnerStarter {
+            runner: js_runner_with_llm(
+                std::sync::Arc::clone(&facade),
+                ns.clone(),
+                principal.clone(),
+                Some(cmd),
+                llm,
+            ),
+            opts: areev_run::RunOptions::default(),
+        }) as std::sync::Arc<dyn areev_trigger::RunStarter>
+    });
+
+    // Credentials are named here and READ here, so a value never appears in a
+    // grain, in the host's arguments, or in the connector's environment.
+    // Unlike the CLI, an unset variable is an error rather than a silent drop:
+    // a dropped credential surfaces downstream as an unexplained 401 from
+    // someone else's API.
+    let mut credentials = std::collections::BTreeMap::new();
+    if let Some(raw) = credentials_json {
+        let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
+            .map_err(|e| err(format!("credentialsJson: expected {{\"name\": \"ENV_VAR\"}}: {e}")))?;
+        for (name, var) in map {
+            let c = areev_run::Credential::bearer_from_env(&var).map_err(|e| {
+                err(format!("credential {name:?} names ${var}, which is not set: {e}"))
+            })?;
+            credentials.insert(name, c);
+        }
+    }
+
+    Ok(areev_trigger::Evaluator {
+        facade,
+        clock: std::sync::Arc::new(areev_trigger::SystemClock),
+        connector,
+        starter,
+        credentials,
+        ns,
+        principal,
+    })
+}
+
 /// Resolve an LLM backend the same two ways the CLI does: a subprocess
 /// (`llmCmd`, the zero-dependency escape hatch) or a built-in HTTP provider
 /// (`model`, key read from the environment). The subprocess wins when both are
@@ -327,6 +539,7 @@ pub struct Areev {
 #[napi]
 impl Areev {
     #[napi(constructor)]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn new(
         path: String,
         ns: Option<String>,
@@ -335,6 +548,7 @@ impl Areev {
         telemetry: Option<String>,
         principal: Option<String>,
         index_text: Option<bool>,
+        anon_key: Option<String>,
     ) -> napi::Result<Self> {
         let ns = ns.unwrap_or_else(|| "shared".to_string());
         let actor = actor.unwrap_or_else(|| "user:local".to_string());
@@ -356,6 +570,18 @@ impl Areev {
         // `index_text=`: left unset, the file's own declaration wins; passed
         // explicitly it is a deliberate re-stamp, reported via
         // `openWarnings()`.
+        // `anonKey` is the host-supplied HKDF root for the anonymization
+        // session/memory/vault subkeys, used instead of the page key when
+        // given. It is what makes the mapping vault and deterministic
+        // value-derived tokens work on the Postgres backend (which refuses
+        // `encryptionKey` outright, a page-cipher capability) and on plaintext
+        // files. Never persisted: rotating it is a crypto-erasure of the
+        // mapping table, so it belongs in a KMS, not in the memory.
+        //
+        // Parsed BEFORE the store is opened, so a malformed key fails without
+        // leaving a handle behind — which on Node would need an explicit
+        // close() nobody has a reference to.
+        let anon = anon_key.as_deref().map(parse_anon_key).transpose()?;
         let is_pg = path.starts_with("postgres://") || path.starts_with("postgresql://");
         let store = match (is_pg, passphrase) {
             (true, Some(_)) => {
@@ -367,29 +593,38 @@ impl Areev {
             (true, None) => {
                 let (url, schema) =
                     areev_store::pg::split_schema_url(&path).map_err(err)?;
-                match index_text {
-                    Some(want_text) => RustAreev::open_postgres_with(
+                // An `anonKey` is the whole reason the vault and
+                // value-derived tokens are reachable on this backend at all:
+                // there is no page key here to derive them from.
+                match (index_text, anon) {
+                    (None, None) if tel != TelemetryMode::Off => {
+                        RustAreev::open_postgres_with_telemetry(&url, &schema, tel).map_err(err)?
+                    }
+                    (None, None) => RustAreev::open_postgres(&url, &schema).map_err(err)?,
+                    (want_text, anon) => RustAreev::open_postgres_with(
                         &url,
                         &schema,
                         areev_store::AreevOptions {
-                            index_text: want_text,
+                            index_text: want_text
+                                .unwrap_or(areev_store::AreevOptions::default().index_text),
+                            anon_key: anon,
                             telemetry: tel,
                             ..areev_store::AreevOptions::default()
                         },
                     )
                     .map_err(err)?,
-                    None if tel != TelemetryMode::Off => {
-                        RustAreev::open_postgres_with_telemetry(&url, &schema, tel).map_err(err)?
-                    }
-                    None => RustAreev::open_postgres(&url, &schema).map_err(err)?,
                 }
             }
-            (false, pass) => match (index_text, pass) {
-                (None, Some(p)) => {
+            // Supplying key material makes the open explicit, which re-stamps
+            // the file's declarations — the same trade `passphrase` alone has
+            // always made (it routes through `open_with` too), reported either
+            // way by `openWarnings()`.
+            (false, pass) => match (index_text, anon, pass) {
+                (None, None, Some(p)) => {
                     RustAreev::open_with_passphrase_telemetry(&path, &p, tel).map_err(err)?
                 }
-                (None, None) => RustAreev::open_with_telemetry(&path, tel).map_err(err)?,
-                (Some(want_text), pass) => {
+                (None, None, None) => RustAreev::open_with_telemetry(&path, tel).map_err(err)?,
+                (want_text, anon, pass) => {
                     let key = match pass {
                         Some(p) => Some(*RustAreev::derive_key_for(&path, &p).map_err(err)?),
                         None => None,
@@ -397,8 +632,10 @@ impl Areev {
                     RustAreev::open_with(
                         &path,
                         areev_store::AreevOptions {
-                            index_text: want_text,
+                            index_text: want_text
+                                .unwrap_or(areev_store::AreevOptions::default().index_text),
                             encryption_key: key,
+                            anon_key: anon,
                             telemetry: tel,
                             ..areev_store::AreevOptions::default()
                         },
@@ -741,7 +978,7 @@ impl Areev {
             fields
                 .entry("namespace".to_string())
                 .or_insert_with(|| json!(default_ns));
-            Ok(facade.cal_add(&grain_type, &fields).map_err(err)?.to_hex())
+            Ok(validated_cal_add(&facade, &grain_type, &fields).map_err(err)?.to_hex())
         })
     }
 
@@ -2158,6 +2395,7 @@ impl Areev {
     /// `{"finished": …}` or `{"parked": envelope}`.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn run_start(
         &self,
         workflow: String,
@@ -2168,6 +2406,10 @@ impl Areev {
         max_usd_micros: Option<i64>,
         max_wall_ms: Option<i64>,
         ask_ttl_sec: Option<i64>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+        llm_max_tokens: Option<u32>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2180,27 +2422,45 @@ impl Areev {
                 None => json!({}),
             };
             let h = areev_core::error::Hash::from_hex(&workflow).map_err(err)?;
-            let runner = js_runner(facade, ns, actor, tool_cmd);
-            let opts = js_run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec)?;
+            // Resolved before the run starts, so a bad model spec or a missing
+            // key fails without journaling a run that cannot advance.
+            let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let opts = js_run_options_full(
+                max_tokens,
+                max_usd_micros,
+                max_wall_ms,
+                ask_ttl_sec,
+                llm_max_tokens,
+            )?;
             let session = runner.start(&h, &run_id, input, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
         })
     }
 
     /// Resume a parked/interrupted run from its latest checkpoint.
+    ///
+    /// Takes `model` for the same reason `runStart` does: resuming a plan with
+    /// abstract nodes still has to execute them, and the backend is host config
+    /// that is deliberately not journaled with the run.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn run_resume(
         &self,
         run_id: String,
         tool_cmd: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+        llm_max_tokens: Option<u32>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let runner = js_runner(facade, ns, actor, tool_cmd);
-            let opts = js_run_options(None, None, None, None)?;
+            let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
         })
@@ -2399,6 +2659,324 @@ impl Areev {
             serde_json::to_string(&report).map_err(err)
         })
     }
+
+    // ── triggers: standing rules that start workflows ────────────────────
+    //
+    // `areev trigger` in library form. There is still no daemon and no
+    // scheduler: the cadence is data in the memory and evaluation is a call
+    // the host makes on its own heartbeat. `triggerRun` is one-shot and
+    // idempotent, so it is safe to invoke concurrently from several nodes.
+
+    /// Declare a trigger. `fieldsJson` is the same object `add("trigger", …)`
+    /// takes (`kind`, `workflow`, and the kind's own requirements); `because`
+    /// records why the rule exists, which is what makes it auditable.
+    ///
+    /// Prefer this over `add("trigger", …)`: both refuse an incoherent
+    /// declaration, but only this path also parses the cron expression,
+    /// refuses a non-UTC timezone (`TRG-E006`) and checks a composite's gate
+    /// against its own members. A trigger that can never fire has exactly one
+    /// symptom — nothing happening — so it is worth refusing at authoring
+    /// time. Resolves to the content address.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_add(
+        &self,
+        fields_json: String,
+        because: String,
+        ns: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let default_ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let mut fields: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&fields_json).map_err(err)?;
+            fields
+                .entry("namespace".to_string())
+                .or_insert_with(|| json!(ns.unwrap_or(default_ns.clone())));
+            fields.insert("because".to_string(), json!(because));
+            validated_cal_add(&facade, "trigger", &fields).map(|h| h.to_hex()).map_err(err)
+        })
+    }
+
+    /// Every trigger declaration in this namespace, newest first. JSON list.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_list(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let rows = js_read_only_evaluator(facade, &ns).declarations().map_err(err)?;
+            let rows: Vec<_> = rows
+                .iter()
+                .map(|(h, t)| {
+                    json!({
+                        "trigger": h, "kind": t.kind.as_str(), "workflow": t.workflow,
+                        "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
+                    })
+                })
+                .collect();
+            Ok(json!(rows).to_string())
+        })
+    }
+
+    /// Runtime state for every trigger: due, paused, leased, exhausted, the
+    /// last firing and the last error. JSON list, parity with
+    /// `areev trigger status`.
+    ///
+    /// **Answers for THIS host.** Evaluation state lives in `trg:<hash>` meta
+    /// rows that deliberately do not replicate, so a memory restored from
+    /// production cannot inherit production's cursor and silently skip real
+    /// work. A dashboard rendering this is reporting its own machine's
+    /// scheduling health, not the fleet's.
+    ///
+    /// A row carrying `unusable` can never fire as written — a cron that does
+    /// not parse, a timezone this build refuses, a composite gate naming a
+    /// member the declaration does not carry. Reported rather than left to
+    /// look like a healthy trigger waiting its turn.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_status(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let rows = js_read_only_evaluator(facade, &ns).status().map_err(err)?;
+            serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// One trigger's state, by content address or a unique prefix of one.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_show(&self, trigger: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let found = js_read_only_evaluator(facade, &ns)
+                .status()
+                .map_err(err)?
+                .into_iter()
+                .find(|s| s.trigger.starts_with(&trigger))
+                .ok_or_else(|| err(format!("no trigger matching '{trigger}' in {ns}")))?;
+            serde_json::to_string(&found).map_err(err)
+        })
+    }
+
+    /// Evaluate every due trigger once and resolve to the report.
+    ///
+    /// The whole command in one call: claim, poll, dedup, start. `dryRun`
+    /// reports what would happen and touches nothing — the safe first call on
+    /// a new deployment. `connectorCmd` executes polling connectors (without
+    /// one a due polling trigger fails loudly with `TRG-E003` rather than
+    /// looking healthy while doing nothing), and `toolCmd` is what lets a
+    /// firing actually start its workflow — without it the pass ingests items
+    /// and records firings but starts nothing, which is a useful mode rather
+    /// than a broken one.
+    ///
+    /// `credentialsJson` maps a credential name to the **environment
+    /// variable** its value is read from (`{"gmail": "GMAIL_TOKEN"}`), never
+    /// to the value itself: the connector is handed the broker's address and
+    /// never the secret. An unset variable is refused here rather than leaving
+    /// the connector to make an unauthenticated call.
+    #[napi(ts_return_type = "Promise<string>")]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
+    pub fn trigger_run(
+        &self,
+        only: Option<String>,
+        dry_run: Option<bool>,
+        lease_secs: Option<u32>,
+        max_items: Option<u32>,
+        connector_cmd: Option<String>,
+        tool_cmd: Option<String>,
+        credentials_json: Option<String>,
+        node: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let ev = js_evaluator(
+                facade,
+                ns,
+                actor,
+                connector_cmd,
+                tool_cmd,
+                credentials_json,
+                llm,
+            )?;
+            let mut opts = areev_trigger::EvalOptions {
+                dry_run: dry_run.unwrap_or(false),
+                only,
+                ..Default::default()
+            };
+            if let Some(secs) = lease_secs {
+                opts.lease = std::time::Duration::from_secs(secs as u64);
+            }
+            if let Some(n) = max_items {
+                opts.max_items = n as usize;
+            }
+            if let Some(n) = node {
+                opts.node = n;
+            }
+            let report = ev.run(&opts).map_err(err)?;
+            serde_json::to_string(&report).map_err(err)
+        })
+    }
+
+    /// Hand a webhook or manual payload to a trigger. Areev never opens a
+    /// port: the host owns the listener and hands the payload over.
+    #[napi(ts_return_type = "Promise<string>")]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
+    pub fn trigger_deliver(
+        &self,
+        trigger: String,
+        payload_json: String,
+        connector_cmd: Option<String>,
+        tool_cmd: Option<String>,
+        credentials_json: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let payload: serde_json::Value = serde_json::from_str(&payload_json)
+                .map_err(|e| err(format!("payloadJson is not JSON: {e}")))?;
+            let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let ev = js_evaluator(
+                facade,
+                ns,
+                actor,
+                connector_cmd,
+                tool_cmd,
+                credentials_json,
+                llm,
+            )?;
+            let report = ev.deliver(&trigger, payload).map_err(err)?;
+            serde_json::to_string(&report).map_err(err)
+        })
+    }
+
+    /// Stop a trigger firing without deleting it. Mandatory reason.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_pause(
+        &self,
+        trigger: String,
+        because: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        self.set_trigger_paused(trigger, because, true)
+    }
+
+    /// Let a paused trigger fire again. Mandatory reason.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_resume(
+        &self,
+        trigger: String,
+        because: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        self.set_trigger_paused(trigger, because, false)
+    }
+
+    /// Render heartbeat config for infrastructure you already run
+    /// (`cron`, `launchd`, `systemd`, `k8s-cronjob`) and create nothing.
+    ///
+    /// The rendered interval is the GCD of the declared intervals floored at
+    /// 60s, not the shortest one — the memory owns the real cadence, so this
+    /// is deliberately coarser. Resolves to
+    /// `{"target", "heartbeatSecs", "config"}`; `config` is the text to
+    /// install.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn trigger_render(
+        &self,
+        target: String,
+        db: String,
+        exe: Option<String>,
+        extra_args: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let declarations: Vec<_> = js_read_only_evaluator(facade, &ns)
+                .declarations()
+                .map_err(err)?
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect();
+            let heartbeat = areev_trigger::render::heartbeat_secs(&declarations);
+            // The host is not the `areev` binary here, so there is no
+            // current_exe() worth guessing from — name it or get the one on
+            // PATH.
+            let exe = exe.unwrap_or_else(|| "areev".to_string());
+            let extra = extra_args.unwrap_or_default();
+            let ctx = areev_trigger::render::RenderContext {
+                exe: &exe,
+                db: &db,
+                ns: &ns,
+                heartbeat_secs: heartbeat,
+                extra_args: &extra,
+            };
+            let config = areev_trigger::render::render(&target, &ctx).map_err(err)?;
+            Ok(json!({
+                "target": target,
+                "heartbeatSecs": heartbeat,
+                "config": config,
+            })
+            .to_string())
+        })
+    }
+}
+
+impl Areev {
+    /// Pause/resume share one read-modify-write against the exact prior row,
+    /// so toggling must not clobber a cursor a concurrent firing just
+    /// advanced — a lost cursor silently replays or skips a mailbox.
+    fn set_trigger_paused(
+        &self,
+        trigger: String,
+        because: String,
+        paused: bool,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            if because.trim().is_empty() {
+                return Err(err(
+                    "because is required: pausing a standing rule is an auditable act",
+                ));
+            }
+            let facade = take_facade(&slot)?;
+            let target = js_read_only_evaluator(std::sync::Arc::clone(&facade), &ns)
+                .declarations()
+                .map_err(err)?
+                .into_iter()
+                .find(|(h, _)| h.starts_with(&trigger))
+                .ok_or_else(|| err(format!("no trigger matching '{trigger}' in {ns}")))?
+                .0;
+            let (mut state, raw) = facade
+                .with_store(|m| m.trigger_state(&target))
+                .map_err(err)?
+                .map(|(st, r)| (st, Some(r)))
+                .unwrap_or_default();
+            state.paused = paused;
+            let ok = facade
+                .with_store(|m| m.put_trigger_state(&target, raw.as_deref(), &state))
+                .map_err(err)?;
+            if !ok {
+                return Err(err(format!(
+                    "trigger {target} changed underneath this call (a firing is in progress) — retry"
+                )));
+            }
+            Ok(json!({"trigger": target, "paused": paused, "because": because}).to_string())
+        })
+    }
 }
 
 
@@ -2408,11 +2986,25 @@ fn run_err(e: areev_run::CoreRunError) -> napi::Error {
 }
 
 /// The runtime driver over one shared facade (Wave 5 JS parity).
+///
+/// No tool-calling model: the read-only and non-advancing verbs cannot reach
+/// an abstract node, so wiring one would only be misleading.
 fn js_runner(
     facade: std::sync::Arc<AreevFacade>,
     ns: String,
     principal: String,
     tool_cmd: Option<String>,
+) -> areev_run::Runner {
+    js_runner_with_llm(facade, ns, principal, tool_cmd, None)
+}
+
+/// [`js_runner`] with the tool-calling backend abstract nodes need.
+fn js_runner_with_llm(
+    facade: std::sync::Arc<AreevFacade>,
+    ns: String,
+    principal: String,
+    tool_cmd: Option<String>,
+    llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
     let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
         Some(cmd) if !cmd.trim().is_empty() => {
@@ -2441,7 +3033,7 @@ fn js_runner(
         facade,
         clock: std::sync::Arc::new(areev_run::SystemClock),
         executor,
-        llm: None,
+        llm,
         observer: None,
         ns,
         principal,
@@ -2453,6 +3045,16 @@ fn js_run_options(
     max_usd_micros: Option<i64>,
     max_wall_ms: Option<i64>,
     ask_ttl_sec: Option<i64>,
+) -> napi::Result<areev_run::RunOptions> {
+    js_run_options_full(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, None)
+}
+
+fn js_run_options_full(
+    max_tokens: Option<i64>,
+    max_usd_micros: Option<i64>,
+    max_wall_ms: Option<i64>,
+    ask_ttl_sec: Option<i64>,
+    llm_max_tokens: Option<u32>,
 ) -> napi::Result<areev_run::RunOptions> {
     // A negative budget is a caller bug — refusing beats silently treating
     // it as "unlimited" (the failure mode a budget exists to prevent).
@@ -2475,7 +3077,7 @@ fn js_run_options(
         ask_ttl_sec,
         workers: 4,
         on_dangling: Default::default(),
-        llm_max_tokens: None,
+        llm_max_tokens,
         inject_crash: None,
     })
 }

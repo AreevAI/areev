@@ -83,6 +83,7 @@ fn open_postgres_from_dsn(
     tel: TelemetryMode,
     index_text: Option<bool>,
     has_passphrase: bool,
+    anon_key: Option<[u8; 32]>,
 ) -> areev_core::error::Result<RustAreev> {
     if has_passphrase {
         return Err(AreevError::Validation(
@@ -92,20 +93,26 @@ fn open_postgres_from_dsn(
         ));
     }
     let (url, schema) = areev_store::pg::split_schema_url(dsn)?;
-    match index_text {
-        Some(want_text) => RustAreev::open_postgres_with(
+    // An `anon_key` is the whole reason the vault and value-derived tokens are
+    // reachable on this backend at all: Postgres refuses `encryption_key`
+    // (a page-cipher capability), so without a host-supplied root there is no
+    // key material to derive them from. Supplying one takes the explicit-open
+    // path, exactly as an explicit `index_text` does.
+    match (index_text, anon_key) {
+        (None, None) if tel != TelemetryMode::Off => {
+            RustAreev::open_postgres_with_telemetry(&url, &schema, tel)
+        }
+        (None, None) => RustAreev::open_postgres(&url, &schema),
+        (want_text, anon) => RustAreev::open_postgres_with(
             &url,
             &schema,
             areev_store::AreevOptions {
-                index_text: want_text,
+                index_text: want_text.unwrap_or(areev_store::AreevOptions::default().index_text),
+                anon_key: anon,
                 telemetry: tel,
                 ..areev_store::AreevOptions::default()
             },
         ),
-        None if tel != TelemetryMode::Off => {
-            RustAreev::open_postgres_with_telemetry(&url, &schema, tel)
-        }
-        None => RustAreev::open_postgres(&url, &schema),
     }
 }
 
@@ -115,6 +122,7 @@ fn open_postgres_from_dsn(
     _tel: TelemetryMode,
     _index_text: Option<bool>,
     _has_passphrase: bool,
+    _anon_key: Option<[u8; 32]>,
 ) -> areev_core::error::Result<RustAreev> {
     Err(AreevError::Validation(
         "this build lacks the postgres backend (rebuild with the `postgres` feature)".into(),
@@ -151,6 +159,28 @@ fn resolve_llm(
     Ok(None)
 }
 
+/// Resolve the **tool-calling** model an abstract workflow node needs, the same
+/// spec grammar and env-key discipline as the CLI's `areev run --model`.
+///
+/// This is a different seam from [`resolve_llm`]: the loop's reflection wants a
+/// completion backend, while the runtime's abstract nodes want a model that can
+/// emit tool calls. Without one, a plan carrying an abstract node refuses at
+/// load with `RUN-E006` — which is exactly what a binding host used to get,
+/// unavoidably, because the binding hard-coded `llm: None`.
+fn resolve_toolcall_llm(
+    model: Option<String>,
+    base_url: Option<String>,
+    key_env: Option<String>,
+) -> PyResult<Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>> {
+    match model {
+        Some(spec) => Ok(Some(
+            areev_llm::resolve_toolcall(&spec, base_url.as_deref(), key_env.as_deref())
+                .map_err(err)?,
+        )),
+        None => Ok(None),
+    }
+}
+
 /// Run the shared extract → confidence floor → ground pipeline and convert the
 /// survivors to store drafts. An extraction that fails names the Event
 /// the raw text was already stored under, so the caller can retry against it
@@ -180,8 +210,93 @@ fn extract_and_ground(
     Ok((ex.proposed, drafts, Some(status)))
 }
 
+/// Build through CAL's one grain builder and validate the schedule, storing
+/// nothing.
+///
+/// `add("trigger", …)` already refuses an *incoherent* declaration, but the
+/// cron parse, the UTC-only refusal and the composite gate-vs-members check
+/// live in `areev-trigger`, which sits ABOVE `areev-cal` — so the builder
+/// itself cannot call them. Running the check through a *validate-only* sink
+/// keeps one builder as the source of truth for what a trigger's fields mean,
+/// and leaves the actual write to `cal_add`, so a trigger picks up the
+/// authorization check, `author_did` attribution and ingress transform every
+/// other grain type gets rather than a second, drifting write path.
+struct ValidateTriggerOnly;
+
+impl areev_cal::json_build::GrainSink for ValidateTriggerOnly {
+    type Out = ();
+    fn consume<G: areev_core::types::Grain + Clone + 'static>(
+        self,
+        grain: &G,
+    ) -> areev_core::error::Result<()> {
+        if let Some(t) =
+            (grain as &dyn std::any::Any).downcast_ref::<areev_core::types::Trigger>()
+        {
+            areev_trigger::schedule::validate(t)
+                .map_err(|e| AreevError::Validation(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Bridges the trigger evaluator to the real runtime.
+///
+/// The duplicate rule is the whole idempotency story: `Runner::start` refuses
+/// an existing run id, and that refusal — not a lease, not a lock — is what
+/// makes a re-delivered item a skip instead of a second run.
+struct RunnerStarter {
+    runner: areev_run::Runner,
+    opts: areev_run::RunOptions,
+}
+
+impl areev_trigger::RunStarter for RunnerStarter {
+    fn start(
+        &self,
+        workflow: &str,
+        run_id: &str,
+        input: serde_json::Value,
+    ) -> areev_trigger::StartResult {
+        let hash = match Hash::from_hex(workflow) {
+            Ok(h) => h,
+            Err(e) => return areev_trigger::StartResult::Failed(format!("workflow {workflow}: {e}")),
+        };
+        match self.runner.start(&hash, run_id, input, &self.opts) {
+            Ok(_) => areev_trigger::StartResult::Started,
+            Err(areev_run::CoreRunError::Tainted { why }) if why.contains("already exists") => {
+                areev_trigger::StartResult::Duplicate
+            }
+            Err(e) => areev_trigger::StartResult::Failed(e.to_string()),
+        }
+    }
+}
+
 fn parse_hash(hex: &str) -> PyResult<Hash> {
     Hash::from_hex(hex).map_err(err)
+}
+
+/// A host-supplied 32-byte anonymization root, given as 64 hex characters.
+///
+/// The FFI convention is scalars in, so the key arrives as hex rather than as
+/// a bytes object. It is the HKDF root for the session/memory/vault subkeys,
+/// it is never persisted, and rotating it is a crypto-erasure of the mapping
+/// table — so a malformed or wrong-length value has to fail here, loudly, at
+/// open. Silently deriving a *different* token space would look like working
+/// software right up until a rehydrate came back empty.
+fn parse_anon_key(hex: &str) -> PyResult<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return Err(err(format!(
+            "anon_key must be 64 hex characters (a 32-byte key); got {} characters",
+            hex.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let pair = &hex[i * 2..i * 2 + 2];
+        *byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| err(format!("anon_key is not hex: {pair:?} at byte {i}")))?;
+    }
+    Ok(out)
 }
 
 /// [`EmbedBackend`] over a Python callable `embed(text: str) -> list[float]`.
@@ -257,7 +372,7 @@ struct Areev {
 impl Areev {
     #[new]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
-    #[pyo3(signature = (path, ns = "shared".to_string(), passphrase = None, actor = "user:local".to_string(), telemetry = "aggregate".to_string(), index_text = None, principal = None))]
+    #[pyo3(signature = (path, ns = "shared".to_string(), passphrase = None, actor = "user:local".to_string(), telemetry = "aggregate".to_string(), index_text = None, principal = None, anon_key = None))]
     fn new(
         py: Python<'_>,
         path: String,
@@ -267,6 +382,7 @@ impl Areev {
         telemetry: String,
         index_text: Option<bool>,
         principal: Option<String>,
+        anon_key: Option<String>,
     ) -> PyResult<Self> {
         // Recall-telemetry sidecar (host capability, §8): agents are the main
         // telemetry producers, so the binding default is `aggregate`; pass
@@ -286,17 +402,40 @@ impl Areev {
         // Turning it off is how a host trades the BM25 leg for flat write
         // latency — with the index on, every write pays a cost that grows with
         // the file (tursodatabase/turso#8170).
+        // `anon_key` is the host-supplied HKDF root for the anonymization
+        // session/memory/vault subkeys, used instead of the page key when
+        // given. It is what makes the mapping vault and deterministic
+        // value-derived tokens work on the Postgres backend (which refuses
+        // `encryption_key` outright) and on plaintext files. Never persisted:
+        // rotating it is a crypto-erasure of the mapping table, so it belongs
+        // in a KMS, not in the memory.
+        //
+        // Parsed BEFORE the store is opened, so a malformed key fails without
+        // leaving a handle behind.
+        let anon = anon_key.as_deref().map(parse_anon_key).transpose()?;
         let store = py
             .detach(|| {
                 // A postgres://…?schema=<name> DSN selects the server-tier
                 // backend — same API, the memory lives in a Postgres schema.
                 if path.starts_with("postgres://") || path.starts_with("postgresql://") {
-                    return open_postgres_from_dsn(&path, tel, index_text, passphrase.is_some());
+                    return open_postgres_from_dsn(
+                        &path,
+                        tel,
+                        index_text,
+                        passphrase.is_some(),
+                        anon,
+                    );
                 }
-                match (index_text, passphrase) {
-                    (None, Some(p)) => RustAreev::open_with_passphrase_telemetry(&path, &p, tel),
-                    (None, None) => RustAreev::open_with_telemetry(&path, tel),
-                    (Some(want_text), pass) => {
+                // Supplying key material makes the open explicit, which
+                // re-stamps the file's declarations — the same trade
+                // `passphrase` alone has always made (it routes through
+                // `open_with` too), reported either way by `open_warnings()`.
+                match (index_text, anon, passphrase) {
+                    (None, None, Some(p)) => {
+                        RustAreev::open_with_passphrase_telemetry(&path, &p, tel)
+                    }
+                    (None, None, None) => RustAreev::open_with_telemetry(&path, tel),
+                    (want_text, anon, pass) => {
                         let key = match pass {
                             Some(p) => Some(*RustAreev::derive_key_for(&path, &p)?),
                             None => None,
@@ -304,8 +443,10 @@ impl Areev {
                         RustAreev::open_with(
                             &path,
                             areev_store::AreevOptions {
-                                index_text: want_text,
+                                index_text: want_text
+                                    .unwrap_or(areev_store::AreevOptions::default().index_text),
                                 encryption_key: key,
+                                anon_key: anon,
                                 telemetry: tel,
                                 ..areev_store::AreevOptions::default()
                             },
@@ -484,7 +625,7 @@ impl Areev {
         fields
             .entry("namespace".to_string())
             .or_insert_with(|| json!(ns.unwrap_or_else(|| self.ns.clone())));
-        py.detach(|| self.facade.cal_add(&grain_type, &fields).map(|h| h.to_hex()))
+        py.detach(|| self.validated_cal_add(&grain_type, &fields).map(|h| h.to_hex()))
             .map_err(err)
     }
 
@@ -1362,9 +1503,17 @@ impl Areev {
 
     /// Start a governed run of the Workflow at `workflow` (64-hex). Returns
     /// the session JSON: `{"finished": …}` or `{"parked": envelope}`.
+    ///
+    /// `model` attaches a tool-calling backend (`"anthropic:claude-sonnet-5"`,
+    /// `"openai:gpt-4o"`, `"ollama:llama3"`) for the plan's **abstract** nodes
+    /// — the ones bound to neither a tool nor a subgraph. Without it such a
+    /// plan refuses at load with `RUN-E006`; bound and named plans run either
+    /// way. `base_url`/`key_env` override the endpoint and the environment
+    /// variable the key is read from, exactly as on the CLI.
     #[pyo3(signature = (workflow, run_id, input_json = None, tool_cmd = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
-                        ask_ttl_sec = None))]
+                        ask_ttl_sec = None, model = None, base_url = None, key_env = None,
+                        llm_max_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1377,14 +1526,22 @@ impl Areev {
         max_usd_micros: Option<u64>,
         max_wall_ms: Option<u64>,
         ask_ttl_sec: Option<i64>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+        llm_max_tokens: Option<u32>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
             None => json!({}),
         };
         let h = areev_core::error::Hash::from_hex(&workflow).map_err(err)?;
-        let runner = self.runner(tool_cmd);
-        let opts = run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec);
+        // Resolved before the run starts, so a bad model spec or a missing key
+        // fails without journaling a run that cannot advance.
+        let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+        let runner = self.runner(tool_cmd, llm);
+        let opts =
+            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
         let session = py
             .detach(|| runner.start(&h, &run_id, input, &opts))
             .map_err(err)?;
@@ -1392,10 +1549,26 @@ impl Areev {
     }
 
     /// Resume a parked/interrupted run from its latest checkpoint.
-    #[pyo3(signature = (run_id, tool_cmd = None))]
-    fn run_resume(&self, py: Python<'_>, run_id: String, tool_cmd: Option<String>) -> PyResult<String> {
-        let runner = self.runner(tool_cmd);
-        let opts = run_options(None, None, None, None);
+    ///
+    /// Takes `model` for the same reason [`run_start`] does: resuming a plan
+    /// with abstract nodes still has to execute them, and the backend is host
+    /// config that is deliberately not journaled with the run.
+    #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
+                        key_env = None, llm_max_tokens = None))]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
+    fn run_resume(
+        &self,
+        py: Python<'_>,
+        run_id: String,
+        tool_cmd: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+        llm_max_tokens: Option<u32>,
+    ) -> PyResult<String> {
+        let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+        let runner = self.runner(tool_cmd, llm);
+        let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
         Ok(run_session_json(session).to_string())
     }
@@ -1416,7 +1589,7 @@ impl Areev {
     ) -> PyResult<String> {
         let result: serde_json::Value =
             serde_json::from_str(&result_json).map_err(|e| err(format!("result_json: {e}")))?;
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         py.detach(|| runner.respond(&run_id, &tool_call_id, result, is_error, &responder))
             .map_err(err)?;
         Ok(json!({"responded": tool_call_id, "run_id": run_id}).to_string())
@@ -1425,7 +1598,7 @@ impl Areev {
     /// Write the kill-switch marker (the lowest-privilege run verb).
     #[pyo3(signature = (run_id, because = "canceled".to_string()))]
     fn run_cancel(&self, py: Python<'_>, run_id: String, because: String) -> PyResult<String> {
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let actor = self.actor.clone();
         py.detach(|| runner.cancel(&run_id, &actor, &because)).map_err(err)?;
         Ok(json!({"canceled": run_id}).to_string())
@@ -1434,7 +1607,7 @@ impl Areev {
     /// Journal-consistent replay: re-derives every checkpoint, byte-compares
     /// against the stored chain, writes nothing. JSON report.
     fn run_verify(&self, py: Python<'_>, run_id: String) -> PyResult<String> {
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let report = py.detach(|| runner.verify(&run_id)).map_err(err)?;
         serde_json::to_string(&report).map_err(|e| err(e.to_string()))
     }
@@ -1442,7 +1615,7 @@ impl Areev {
     /// Shadow evaluation: replay these runs from their journals with ZERO
     /// effect dispatches (the replay path holds no executor). JSON report.
     fn run_shadow(&self, py: Python<'_>, run_ids: Vec<String>) -> PyResult<String> {
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let report = py.detach(|| runner.shadow_eval(&run_ids));
         serde_json::to_string(&report).map_err(|e| err(e.to_string()))
     }
@@ -1461,8 +1634,8 @@ impl Areev {
             Some(p) => Some(areev_core::error::Hash::from_hex(&p).map_err(err)?),
             None => None,
         };
-        let runner = self.runner(None);
-        let opts = run_options(None, None, None, None);
+        let runner = self.runner(None, None);
+        let opts = run_options(None, None, None, None, None);
         let seed = py
             .detach(|| runner.fork(&base_run_id, at_superstep, &new_run_id, plan_hash.as_ref(), &opts))
             .map_err(err)?;
@@ -1472,7 +1645,7 @@ impl Areev {
     /// Recent run ids, newest first. JSON list string.
     #[pyo3(signature = (limit = 20))]
     fn run_list(&self, py: Python<'_>, limit: usize) -> PyResult<String> {
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let ids = py.detach(|| runner.recent_runs(limit)).map_err(err)?;
         serde_json::to_string(&ids).map_err(|e| err(e.to_string()))
     }
@@ -1480,7 +1653,7 @@ impl Areev {
     /// One run's full picture — manifest, budgets, phase, spend, pending
     /// asks, fork lineage. JSON report; same shape as `areev run inspect`.
     fn run_inspect(&self, py: Python<'_>, run_id: String) -> PyResult<String> {
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let report = py.detach(|| runner.inspect(&run_id)).map_err(err)?;
         serde_json::to_string(&report).map_err(|e| err(e.to_string()))
     }
@@ -1500,7 +1673,7 @@ impl Areev {
             Some(p) => Some(areev_core::error::Hash::from_hex(&p).map_err(err)?),
             None => None,
         };
-        let runner = self.runner(None);
+        let runner = self.runner(None, None);
         let report = py
             .detach(|| runner.oversight_report(run_id.as_deref(), plan_hash.as_ref()))
             .map_err(err)?;
@@ -2068,13 +2241,368 @@ impl Areev {
             .map_err(err)?;
         serde_json::to_string(&outs).map_err(err)
     }
+
+    // ── triggers: standing rules that start workflows ────────────────────
+    //
+    // `areev trigger` in library form. There is still no daemon and no
+    // scheduler: the cadence is data in the memory and evaluation is a call
+    // the host makes on its own heartbeat. `trigger_run` is one-shot and
+    // idempotent, so it is safe to invoke concurrently from several nodes.
+
+    /// Declare a trigger. `fields_json` is the same object `add("trigger", …)`
+    /// takes (`kind`, `workflow`, and the kind's own requirements); `because`
+    /// records why the rule exists, which is what makes it auditable.
+    ///
+    /// Prefer this over `add("trigger", …)`: both refuse an incoherent
+    /// declaration, but only this path also parses the cron expression,
+    /// refuses a non-UTC timezone (`TRG-E006`) and checks a composite's gate
+    /// against its own members. A trigger that can never fire has exactly one
+    /// symptom — nothing happening — so it is worth refusing at authoring
+    /// time. Returns the content address.
+    #[pyo3(signature = (fields_json, because, ns = None))]
+    fn trigger_add(
+        &self,
+        py: Python<'_>,
+        fields_json: String,
+        because: String,
+        ns: Option<String>,
+    ) -> PyResult<String> {
+        let mut fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&fields_json).map_err(err)?;
+        fields
+            .entry("namespace".to_string())
+            .or_insert_with(|| json!(ns.unwrap_or_else(|| self.ns.clone())));
+        fields.insert("because".to_string(), json!(because));
+        py.detach(|| self.validated_cal_add("trigger", &fields))
+            .map(|h| h.to_hex())
+            .map_err(err)
+    }
+
+    /// Every trigger declaration in this namespace, newest first. JSON list.
+    fn trigger_list(&self, py: Python<'_>) -> PyResult<String> {
+        let ev = self.read_only_evaluator();
+        let rows = py.detach(|| ev.declarations()).map_err(err)?;
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(h, t)| {
+                json!({
+                    "trigger": h, "kind": t.kind.as_str(), "workflow": t.workflow,
+                    "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
+                })
+            })
+            .collect();
+        Ok(json!(rows).to_string())
+    }
+
+    /// Runtime state for every trigger: due, paused, leased, exhausted, the
+    /// last firing and the last error. JSON list, parity with
+    /// `areev trigger status`.
+    ///
+    /// **Answers for THIS host.** Evaluation state lives in `trg:<hash>` meta
+    /// rows that deliberately do not replicate, so a memory restored from
+    /// production cannot inherit production's cursor and silently skip real
+    /// work. A dashboard rendering this is reporting its own machine's
+    /// scheduling health, not the fleet's.
+    ///
+    /// A row carrying `unusable` can never fire as written — a cron that does
+    /// not parse, a timezone this build refuses, a composite gate naming a
+    /// member the declaration does not carry. Reported rather than left to
+    /// look like a healthy trigger waiting its turn.
+    fn trigger_status(&self, py: Python<'_>) -> PyResult<String> {
+        let ev = self.read_only_evaluator();
+        let rows = py.detach(|| ev.status()).map_err(err)?;
+        serde_json::to_string(&rows).map_err(err)
+    }
+
+    /// One trigger's state, by content address or a unique prefix of one.
+    fn trigger_show(&self, py: Python<'_>, trigger: String) -> PyResult<String> {
+        let ev = self.read_only_evaluator();
+        let rows = py.detach(|| ev.status()).map_err(err)?;
+        let found = rows
+            .into_iter()
+            .find(|s| s.trigger.starts_with(&trigger))
+            .ok_or_else(|| err(format!("no trigger matching '{trigger}' in {}", self.ns)))?;
+        serde_json::to_string(&found).map_err(err)
+    }
+
+    /// Evaluate every due trigger once and return the report.
+    ///
+    /// The whole command in one call: claim, poll, dedup, start. `dry_run`
+    /// reports what would happen and touches nothing — the safe first call on
+    /// a new deployment. `connector_cmd` executes polling connectors (without
+    /// one a due polling trigger fails loudly with `TRG-E003` rather than
+    /// looking healthy while doing nothing), and `tool_cmd` is what lets a
+    /// firing actually start its workflow — without it the pass ingests items
+    /// and records firings but starts nothing, which is a useful mode rather
+    /// than a broken one.
+    ///
+    /// `credentials_json` maps a credential name to the **environment
+    /// variable** its value is read from (`{"gmail": "GMAIL_TOKEN"}`), never
+    /// to the value itself: the connector is handed the broker's address and
+    /// never the secret. An unset variable is refused here rather than
+    /// leaving the connector to make an unauthenticated call.
+    #[pyo3(signature = (only = None, dry_run = false, lease_secs = None, max_items = None,
+                        connector_cmd = None, tool_cmd = None, credentials_json = None,
+                        node = None, model = None, base_url = None, key_env = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn trigger_run(
+        &self,
+        py: Python<'_>,
+        only: Option<String>,
+        dry_run: bool,
+        lease_secs: Option<u64>,
+        max_items: Option<usize>,
+        connector_cmd: Option<String>,
+        tool_cmd: Option<String>,
+        credentials_json: Option<String>,
+        node: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+    ) -> PyResult<String> {
+        let ev = self.evaluator(connector_cmd, tool_cmd, credentials_json, model, base_url, key_env)?;
+        let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
+        if let Some(secs) = lease_secs {
+            opts.lease = std::time::Duration::from_secs(secs);
+        }
+        if let Some(n) = max_items {
+            opts.max_items = n;
+        }
+        if let Some(n) = node {
+            opts.node = n;
+        }
+        let report = py.detach(|| ev.run(&opts)).map_err(err)?;
+        serde_json::to_string(&report).map_err(err)
+    }
+
+    /// Hand a webhook or manual payload to a trigger. Areev never opens a
+    /// port: the host owns the listener and hands the payload over.
+    #[pyo3(signature = (trigger, payload_json, connector_cmd = None, tool_cmd = None,
+                        credentials_json = None, model = None, base_url = None, key_env = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn trigger_deliver(
+        &self,
+        py: Python<'_>,
+        trigger: String,
+        payload_json: String,
+        connector_cmd: Option<String>,
+        tool_cmd: Option<String>,
+        credentials_json: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+    ) -> PyResult<String> {
+        let payload: serde_json::Value = serde_json::from_str(&payload_json)
+            .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
+        let ev = self.evaluator(connector_cmd, tool_cmd, credentials_json, model, base_url, key_env)?;
+        let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
+        serde_json::to_string(&report).map_err(err)
+    }
+
+    /// Stop a trigger firing without deleting it. Mandatory reason.
+    fn trigger_pause(&self, py: Python<'_>, trigger: String, because: String) -> PyResult<String> {
+        self.set_trigger_paused(py, trigger, because, true)
+    }
+
+    /// Let a paused trigger fire again. Mandatory reason.
+    fn trigger_resume(&self, py: Python<'_>, trigger: String, because: String) -> PyResult<String> {
+        self.set_trigger_paused(py, trigger, because, false)
+    }
+
+    /// Render heartbeat config for infrastructure you already run
+    /// (`cron`, `launchd`, `systemd`, `k8s-cronjob`) and create nothing.
+    ///
+    /// The rendered interval is the GCD of the declared intervals floored at
+    /// 60s, not the shortest one — the memory owns the real cadence, so this
+    /// is deliberately coarser. Returns
+    /// `{"target", "heartbeat_secs", "config"}`; `config` is the text to
+    /// install.
+    #[pyo3(signature = (target, db, exe = None, extra_args = None))]
+    fn trigger_render(
+        &self,
+        py: Python<'_>,
+        target: String,
+        db: String,
+        exe: Option<String>,
+        extra_args: Option<String>,
+    ) -> PyResult<String> {
+        let ev = self.read_only_evaluator();
+        let declarations: Vec<_> = py
+            .detach(|| ev.declarations())
+            .map_err(err)?
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        let heartbeat = areev_trigger::render::heartbeat_secs(&declarations);
+        // The host is not the `areev` binary here, so there is no
+        // `current_exe()` worth guessing from — name it or get the one on PATH.
+        let exe = exe.unwrap_or_else(|| "areev".to_string());
+        let extra = extra_args.unwrap_or_default();
+        let ctx = areev_trigger::render::RenderContext {
+            exe: &exe,
+            db: &db,
+            ns: &self.ns,
+            heartbeat_secs: heartbeat,
+            extra_args: &extra,
+        };
+        let config = areev_trigger::render::render(&target, &ctx).map_err(err)?;
+        Ok(json!({
+            "target": target,
+            "heartbeat_secs": heartbeat,
+            "config": config,
+        })
+        .to_string())
+    }
 }
 
 impl Areev {
+    /// `cal_add`, with the schedule check `add("trigger", …)` used to skip.
+    ///
+    /// The CAL grain builder refuses an *incoherent* trigger, but the cron
+    /// parse, the UTC-only rule and the composite gate-vs-members check live in
+    /// `areev-trigger`, which sits ABOVE `areev-cal` — so the builder cannot
+    /// call them and every write through it stored declarations that could
+    /// never fire (#67). Routing BOTH `add` and `trigger_add` through here
+    /// means the generic authoring path a host actually reaches for is not the
+    /// unvalidated one.
+    ///
+    /// Validate first, store second, and let `cal_add` do the write so a
+    /// trigger keeps the authorization check, `author_did` attribution and
+    /// ingress transform every other grain type gets.
+    fn validated_cal_add(
+        &self,
+        grain_type: &str,
+        fields: &serde_json::Map<String, serde_json::Value>,
+    ) -> areev_core::error::Result<Hash> {
+        if grain_type == "trigger" {
+            areev_cal::json_build::build_grain_from_json(grain_type, fields, ValidateTriggerOnly)?;
+        }
+        self.facade.cal_add(grain_type, fields)
+    }
+
+    /// An evaluator that can inspect but not act — no connector, no runtime,
+    /// no credentials. What `list`, `show`, `status` and `render` want, and
+    /// the shape that makes "reading cannot fire anything" true by
+    /// construction rather than by remembering to pass `None` four times.
+    fn read_only_evaluator(&self) -> areev_trigger::Evaluator {
+        areev_trigger::Evaluator::read_only(
+            std::sync::Arc::clone(&self.facade),
+            std::sync::Arc::new(areev_trigger::SystemClock),
+            &self.ns,
+        )
+    }
+
+    /// The acting evaluator. Mirrors the CLI's construction, including the two
+    /// deliberate `None`s documented on [`Areev::trigger_run`].
+    fn evaluator(
+        &self,
+        connector_cmd: Option<String>,
+        tool_cmd: Option<String>,
+        credentials_json: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
+    ) -> PyResult<areev_trigger::Evaluator> {
+        // A connector IS a tool — JSON in, JSON out, one process per
+        // invocation — so there is one subprocess contract to learn and
+        // connectors inherit its timeout, output cap and secret scrub.
+        let connector: Option<std::sync::Arc<dyn areev_run::HostToolExecutor>> = connector_cmd
+            .clone()
+            .or_else(|| tool_cmd.clone())
+            .map(|cmd| {
+                std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
+                    as std::sync::Arc<dyn areev_run::HostToolExecutor>
+            });
+
+        let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+        let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> =
+            tool_cmd.map(|cmd| {
+                std::sync::Arc::new(RunnerStarter {
+                    runner: self.runner(Some(cmd), llm),
+                    opts: areev_run::RunOptions::default(),
+                }) as std::sync::Arc<dyn areev_trigger::RunStarter>
+            });
+
+        // Credentials are named here and READ here, so a value never appears
+        // in a grain, in the host's arguments, or in the connector's
+        // environment. Unlike the CLI, an unset variable is an error rather
+        // than a silent drop: a dropped credential surfaces downstream as an
+        // unexplained 401 from someone else's API.
+        let mut credentials = std::collections::BTreeMap::new();
+        if let Some(raw) = credentials_json {
+            let map: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(&raw).map_err(|e| {
+                    err(format!("credentials_json: expected {{\"name\": \"ENV_VAR\"}}: {e}"))
+                })?;
+            for (name, var) in map {
+                let c = areev_run::Credential::bearer_from_env(&var).map_err(|e| {
+                    err(format!("credential {name:?} names ${var}, which is not set: {e}"))
+                })?;
+                credentials.insert(name, c);
+            }
+        }
+
+        Ok(areev_trigger::Evaluator {
+            facade: std::sync::Arc::clone(&self.facade),
+            clock: std::sync::Arc::new(areev_trigger::SystemClock),
+            connector,
+            starter,
+            credentials,
+            ns: self.ns.clone(),
+            principal: self.actor.clone(),
+        })
+    }
+
+    /// Pause/resume share one read-modify-write against the exact prior row,
+    /// so toggling must not clobber a cursor a concurrent firing just
+    /// advanced — a lost cursor silently replays or skips a mailbox.
+    fn set_trigger_paused(
+        &self,
+        py: Python<'_>,
+        trigger: String,
+        because: String,
+        paused: bool,
+    ) -> PyResult<String> {
+        if because.trim().is_empty() {
+            return Err(err("because is required: pausing a standing rule is an auditable act"));
+        }
+        let ev = self.read_only_evaluator();
+        py.detach(|| -> PyResult<String> {
+            let target = ev
+                .declarations()
+                .map_err(err)?
+                .into_iter()
+                .find(|(h, _)| h.starts_with(&trigger))
+                .ok_or_else(|| err(format!("no trigger matching '{trigger}' in {}", self.ns)))?
+                .0;
+            let (mut state, raw) = self
+                .facade
+                .with_store(|m| m.trigger_state(&target))
+                .map_err(err)?
+                .map(|(st, r)| (st, Some(r)))
+                .unwrap_or_default();
+            state.paused = paused;
+            let ok = self
+                .facade
+                .with_store(|m| m.put_trigger_state(&target, raw.as_deref(), &state))
+                .map_err(err)?;
+            if !ok {
+                return Err(err(format!(
+                    "trigger {target} changed underneath this call (a firing is in progress) — retry"
+                )));
+            }
+            Ok(json!({"trigger": target, "paused": paused, "because": because}).to_string())
+        })
+    }
+
     /// The runtime driver over this handle's shared facade. Host tools run
     /// through the optional subprocess seam; the session's actor is the
     /// acting principal (respond passes the responder explicitly).
-    fn runner(&self, tool_cmd: Option<String>) -> areev_run::Runner {
+    fn runner(
+        &self,
+        tool_cmd: Option<String>,
+        llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+    ) -> areev_run::Runner {
         let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
                 std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
@@ -2104,7 +2632,7 @@ impl Areev {
             facade: std::sync::Arc::clone(&self.facade),
             clock: std::sync::Arc::new(areev_run::SystemClock),
             executor,
-            llm: None,
+            llm,
             observer: None,
             ns: self.ns.clone(),
             principal: self.actor.clone(),
@@ -2117,6 +2645,7 @@ fn run_options(
     max_usd_micros: Option<u64>,
     max_wall_ms: Option<u64>,
     ask_ttl_sec: Option<i64>,
+    llm_max_tokens: Option<u32>,
 ) -> areev_run::RunOptions {
     areev_run::RunOptions {
         budgets: areev_run::BudgetsSpec {
@@ -2129,7 +2658,7 @@ fn run_options(
         ask_ttl_sec,
         workers: 4,
         on_dangling: Default::default(),
-        llm_max_tokens: None,
+        llm_max_tokens,
         inject_crash: None,
     }
 }

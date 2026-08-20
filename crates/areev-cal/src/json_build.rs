@@ -153,6 +153,7 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
             "concurrency",
             "catchup",
             "config",
+            "timezone",
         ],
         "tool" => &[
             "tool_name",
@@ -357,6 +358,32 @@ fn build_trigger_from_json(
         })?;
     }
     t.config = fields.get("config").cloned();
+    // `timezone` is where a hand-written declaration puts it — the CLI's own
+    // `--timezone` flag is spelled that way — but the evaluator reads
+    // `config["int:timezone"]`. Left unmapped it landed in `extra_fields`,
+    // where nothing reads it: the trigger was stored, reported healthy, and
+    // fired in UTC while its author believed it was on local time. Silence,
+    // on a schedule.
+    if let Some(tz) = get_str("timezone") {
+        let key = areev_core::types::config_keys::TIMEZONE;
+        match t.config.as_ref().and_then(|c| c.get(key)).and_then(|v| v.as_str()) {
+            // An explicit config entry that disagrees is a contradiction, not a
+            // precedence question — refuse rather than pick a winner silently.
+            Some(existing) if existing != tz => {
+                return Err(AreevError::Validation(format!(
+                    "trigger declares timezone {tz:?} but config {key:?} is {existing:?} — \
+                     they must agree (drop one)"
+                )));
+            }
+            Some(_) => {}
+            None => match t.config.as_mut().and_then(|c| c.as_object_mut()) {
+                Some(obj) => {
+                    obj.insert(key.to_string(), serde_json::json!(tz));
+                }
+                None => t.config = Some(serde_json::json!({ key: tz })),
+            },
+        }
+    }
 
     if let Some(why) = t.incoherence() {
         return Err(AreevError::Validation(why));

@@ -2496,9 +2496,11 @@ impl Areev {
             return Err(AreevError::Validation(format!(
                 "anonymization mode \"{}\" / scope \"{}\" needs key material: \
                  value-derived pseudonym tokens and the mapping vault are keyed from \
-                 either AreevOptions::anon_key (a host-supplied 32-byte key from your \
-                 KMS — works on every backend, including postgres) or, on the file \
-                 backend, the page key (open with --passphrase-env / open_encrypted)",
+                 either anon_key (a host-supplied 32-byte key from your KMS — works \
+                 on every backend, including postgres: AreevOptions::anon_key, \
+                 --anon-key-env VAR, or anon_key=/anonKey on the bindings) or, on \
+                 the file backend, the page key (open with --passphrase-env / \
+                 open_encrypted)",
                 policy.mode, policy.scope
             )));
         }

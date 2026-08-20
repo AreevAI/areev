@@ -276,6 +276,7 @@ dependencies = [
  "areev-loop-adapter",
  "areev-run",
  "areev-store",
+ "areev-trigger",
  "pyo3",
  "serde_json",
 ]
