@@ -1,0 +1,11 @@
+{
+  "message_id": "MF-5511",
+  "thread": "thr-ap-4359",
+  "sender": "ar@meridianfreight.example",
+  "attachment": "meridian-5511.pdf",
+  "vendor": "meridian_freight",
+  "amount": 860,
+  "currency": "USD",
+  "category": "Equipments / Machinery",
+  "confidence": 0.93
+}

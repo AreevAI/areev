@@ -35,6 +35,9 @@ cargo run -p areev -- recall --db demo.db --ns caller --subject john
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
+
+scripts/build_demo.sh               # rebuild data/demo.db (the README's demo memory)
+node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot its screenshots
 ```
 
 - **Do not run blanket `cargo fmt`** — the tree is not uniformly rustfmt-clean
@@ -249,6 +252,19 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   wasm). Standalone package — **not** a `cargo` workspace member, so
   `cargo test --workspace` skips it; CI's `node` job builds it with
   `napi build --release` and runs `node --test __test__/smoke.mjs`.
+
+## The demo memory + README screenshots
+
+`data/demo.db` is **committed** (the one `.db` exception in `.gitignore`) and
+is what every README screenshot is taken from: one accounts-payable story —
+knowledge, eight governed runs, a real open fork, a declared trigger, and
+thirteen recommendations `areev loop run` genuinely computed. Rebuild it with
+`scripts/build_demo.sh` (seeder → saved queries → fork → trigger → runs →
+loop → WAL checkpoint), then re-shoot with `scripts/shoot_console.mjs`
+against a running `areev ui`. **A console change means re-shooting** — the
+README quotes the UI, so a stale screenshot is a stale claim. The seeder's
+`--plan-only` mode is on a fixed clock so the example's committed `plan.mgb`
+keeps its content address.
 
 ## Local artifacts (gitignored, don't commit or rely on)
 

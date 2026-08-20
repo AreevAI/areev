@@ -229,6 +229,26 @@ jobs:
           . .venv/bin/activate
           python examples/hermes/test_provider.py
 
+  agent-example:
+    # The keyless floor, enforced. `examples/agents/` promises every agent
+    # example runs end to end with no credential, no network and no model key
+    # — an untested example in the flagship repo is wrong at exactly the
+    # moment somebody is evaluating, so the promise is a job, not a README
+    # claim.
+    name: agent example (keyless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: Swatinem/rust-cache@v2
+      - name: invoice → accounting, end to end
+        run: |
+          cargo build --release -p areev
+          AREEV="$PWD/target/release/areev" examples/agents/invoice-to-accounting/smoke.sh
+
   tls:
     # The non-default native-TLS feature (the recorded rustls exception):
     # round-trip + no-plaintext-downgrade, plus a clean feature build.

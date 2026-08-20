@@ -12,7 +12,7 @@ happened is recallable afterwards.
 
 | Agent | Job | Status |
 |---|---|---|
-| [`invoice-to-accounting/`](invoice-to-accounting/) | Poll an accounting mailbox, extract invoices, park on human approval above a threshold, write to the accounting system | **placeholder** |
+| [`invoice-to-accounting/`](invoice-to-accounting/) | Poll an accounting mailbox, extract invoices, park on human approval above a threshold, write to the accounting system | **runnable** — `./smoke.sh`, keyless |
 | `nda-red-flags/` | Read an inbound NDA, flag clauses against the red flags this memory has accumulated, produce a reviewable summary | planned |
 
 ## What every agent here is made of

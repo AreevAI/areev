@@ -1,0 +1,11 @@
+{
+  "message_id": "INV-CC-88431",
+  "thread": "thr-ap-4401",
+  "sender": "ar@cobaltcloud.example",
+  "attachment": "cobalt-88431.pdf",
+  "vendor": "cobalt_cloud",
+  "amount": 4400,
+  "currency": "USD",
+  "category": "Software",
+  "confidence": 0.91
+}

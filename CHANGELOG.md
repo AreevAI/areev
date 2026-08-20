@@ -6,7 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A real demo memory, committed to the repo** — `data/demo.db` (~800 KB,
+  466 grains) holds one coherent story end to end: an accounts-payable
+  agent's vendor knowledge and category rules, eight governed runs (six
+  posted, one waiting on a person, one honest failure), a real open fork
+  from two channels editing offline, a declared polling trigger, saved CAL
+  queries, and thirteen recommendations that `areev loop run` actually
+  computed from that history. Nothing in it is hand-written to look
+  convincing; `scripts/build_demo.sh` regenerates the whole artifact from
+  `crates/areev-store/examples/seed_accounting_demo.rs`, and
+  `scripts/shoot_console.mjs` re-shoots the README's screenshots against it.
+- **`examples/agents/invoice-to-accounting/` is runnable**, replacing the
+  placeholder README. `./smoke.sh` imports the plan from a portable bundle,
+  runs three fixtures through it — one auto-posted, one parked for a human,
+  one photographed page that fails rather than posting a blank row — and
+  asserts the outcomes, including that the principal who *started* a run is
+  refused when it tries to approve it. Keyless: no credential, no network,
+  no model key — and CI now runs it (`agent-example`), so the keyless floor
+  is enforced rather than claimed.
+
+### Changed
+
+- **README is visual-first**: real console screenshots (light and dark, via
+  `<picture>`) instead of design exports, an architecture diagram, a
+  sixty-second runnable path, and the problem stated as a table before any
+  of the mechanism. The stale `dejadb`-branded assets are gone.
+
+### Removed
+
+- **`README.zh-CN.md`.** A translation that lags the README is worse than no
+  translation — it was still describing the pre-Console-v2 shape and pointing
+  at screenshots that no longer exist.
+- **`seed_support_demo.rs` / `seed_workflow_demo.rs`.** Both seeded a
+  different fictional company than anything the README now shows.
+  `seed_accounting_demo.rs` replaces them, and it is the single source for
+  both `data/demo.db` and the example's `plan.mgb`.
+
 ### Fixed
+
+- **Run checkpoints read as "A state with no readable text" in the console's
+  memory browser.** A checkpoint's body is the scheduler's serialized state,
+  which has no sentence in it, so every one of them fell through to the
+  type-name fallback — on any file with governed runs in it, the browser's
+  default page was a wall of identical unreadable rows. They now say which
+  run and which step they belong to. (What remains is a design question, not
+  a bug: whether runtime bookkeeping belongs in the plain memory browser at
+  all.)
 
 - **A refused egress-broker call could reset the caller's own connection
   instead of delivering its 401/403 JSON body.** `serve_one` read the

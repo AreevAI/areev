@@ -1229,6 +1229,11 @@ function predicate(g) {
     const body = f.tool_content || ctxText(f) || '';
     return name + (f.is_error ? ' failed' : ' ran') + (body ? ' — ' + clampText(body) : '');
   }
+  /* A run checkpoint is the runtime's own bookkeeping — its body is the
+     scheduler's serialized state, which has no sentence in it. Say which run
+     and which step it belongs to instead of calling it unreadable. */
+  if (g.type === 'state' && f.checkpoint && f.run_id != null)
+    return 'Checkpoint of run ' + f.run_id + (f.superstep != null ? ' \u00b7 step ' + f.superstep : '');
   if (g.type === 'observation') return f.content || f.object || ctxText(f) || fallback;
   if (g.type === 'event') return f.content || f.description || preview(f) || fallback;
   if (g.type === 'goal') return f.description || f.content || preview(f) || fallback;
