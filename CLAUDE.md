@@ -244,6 +244,16 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   on-ramp, generalized), the loop review queue, and a Developer-mode toggle
   that reveals hashes/op-log/CAL; design source of truth is the Paper file
   "Areev", page "Console v2 — Redesign".
+  The operations pages are three, not four: **Workflows** (the plan canvas —
+  which also draws the Trigger grains pointing at the open plan, read-only in
+  a "STARTED BY" lane, plus a per-step status rail from a selected run),
+  **Runs** (executions, grouped waiting/in-flight/finished), and **Tools**
+  (definitions + their configuration, and every execution grain). Triggers
+  have NO page: the binding is trigger → plan, so a flat list cannot show that
+  two triggers start one plan — `#triggers` redirects to Workflows. The canvas
+  overlay and the Runs cards read ONE shared run index (`loadRuns`), and
+  trigger nodes live outside `WF_DRAFT` so the Save path structurally cannot
+  serialize them.
   Read-only `GET /api/config` reports effective config + file-vs-host
   reconciliation warnings.
   `tests/multichannel_tests.rs` is the §8 acceptance test (voice + WhatsApp +

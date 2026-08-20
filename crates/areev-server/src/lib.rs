@@ -2517,4 +2517,66 @@ mod sso_tests {
             "wrong proxy secret must not authenticate: {wrong}"
         );
     }
+
+    use crate::CONSOLE_HTML;
+    use std::collections::BTreeSet;
+
+    /// Every `<section class="page" id="page-X">` must be named in the one
+    /// array in `render()` that clears `hidden`, and every sidebar
+    /// `data-page="X"` must have such a section.
+    ///
+    /// The console's page sections ship `hidden` in the markup, so a page is
+    /// visible only if `render()` un-hides it. The Triggers tab shipped
+    /// missing from that array: `renderTriggers()` filled `#trgBody` on every
+    /// render, the nav item highlighted, the hash routed — and the section
+    /// stayed `hidden` while every other page was hidden too, so the tab
+    /// showed a blank pane. Nothing else in the file could catch it: the
+    /// omission is a *missing* string, not a wrong one.
+    #[test]
+    fn every_console_page_is_in_the_visibility_list() {
+        fn all(hay: &str, open: &str) -> BTreeSet<String> {
+            let mut out = BTreeSet::new();
+            let mut rest = hay;
+            while let Some(i) = rest.find(open) {
+                rest = &rest[i + open.len()..];
+                let end = rest.find('"').expect("unterminated attribute");
+                out.insert(rest[..end].to_string());
+                rest = &rest[end..];
+            }
+            out
+        }
+
+        let sections = all(CONSOLE_HTML, "id=\"page-");
+        let nav = all(CONSOLE_HTML, "data-page=\"");
+        for want in ["workflows", "runs", "tools"] {
+            assert!(sections.contains(want), "the {want} section itself went missing");
+        }
+        // Triggers deliberately have no page: a trigger points AT a plan and is
+        // only legible next to it, so they render in the workflow canvas's own
+        // lane. The old deep link must still land somewhere real.
+        assert!(!sections.contains("triggers"), "triggers belong on the canvas, not on a page");
+        assert!(
+            CONSOLE_HTML.contains("if (head === 'triggers')"),
+            "#triggers must still route somewhere — a removed page is not a dead bookmark"
+        );
+
+        // The single array in render() that drives `.hidden`.
+        let head = "for (const p of [";
+        let i = CONSOLE_HTML.find(head).expect("render()'s page-visibility loop");
+        let tail = &CONSOLE_HTML[i + head.len()..];
+        let j = tail.find(']').expect("unterminated page array");
+        let listed: BTreeSet<String> = tail[..j]
+            .split(',')
+            .map(|t| t.trim().trim_matches('\'').to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        assert_eq!(
+            sections, listed,
+            "page sections and render()'s visibility list disagree; a section missing \
+             from the list renders into a pane that never un-hides"
+        );
+        let orphan: Vec<_> = nav.difference(&sections).collect();
+        assert!(orphan.is_empty(), "nav items with no page section: {orphan:?}");
+    }
 }

@@ -76,12 +76,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dozen governed-run tools it will never call; `--profile full` (the
   default) is unaffected. See [`docs/mcp-reference.md`](docs/mcp-reference.md).
 
+- **The console draws a workflow's whole picture on one canvas.** A `Trigger`
+  grain names the plan it starts (`trigger.workflow`), and the binding points
+  trigger → plan and never the reverse — a plan that grew a list of triggers
+  would change content address every time one was added and orphan its own run
+  history. That direction is precisely why a flat list is the wrong surface:
+  it cannot show you that two triggers start the same plan. Triggers now render
+  in a "STARTED BY" lane on the workflow canvas, dashed-bordered and
+  dash-arrowed into the plan's entry steps, with the full declaration in the
+  inspector — including a `memory` trigger's serialized `Condition` tree said
+  out loud (`subject = "globex" AND relation = "open_incidents"`) rather than
+  dumped as JSON. They are read-only, and not by preference: CAL has no
+  `ADD trigger` and `ADD workflow`'s `ON "..."` clause was removed in 1.3, so a
+  console that writes only through `/api/cal` has nothing to write; the panel
+  offers the exact CLI command instead of an input it could not honour. Trigger
+  nodes are held in their own arrays, never in `WF_DRAFT`, so the Save path is
+  structurally incapable of serializing the lane into a plan grain.
+- **A run overlay on the canvas.** Selecting a run tints each step by what it
+  did in that run — a client-side join over the journal's own Tool grains via
+  `mg:step_action:<node>`, with no new endpoint. The journal's Pending-then-
+  supersede shape does the work: `isCurrent()` alone leaves exactly one row per
+  `(run, node)`, which IS that step's current state. A step still Pending in an
+  *open* run is waiting on a person; the same row in a canceled or failed run is
+  simply where it stopped, and is drawn grey rather than orange so the UI never
+  invites an approval that can never arrive.
+- **A Tools page.** Tool definitions and executions are one grain type split by
+  `kind`, so they are two tabs of one page: the catalog (each entry opening its
+  full configuration — executor kind, input schema as a property table, locked
+  params, annotations, and the plans that bind it) and every execution grain,
+  grouped by run, with calls made outside any run given their own group rather
+  than filtered out of existence. Built entirely on `/api/browse`.
+
 ### Changed
 
 - **README is visual-first**: real console screenshots (light and dark, via
   `<picture>`) instead of design exports, an architecture diagram, a
   sixty-second runnable path, and the problem stated as a table before any
   of the mechanism. The stale `dejadb`-branded assets are gone.
+
+- **Console navigation follows the order you meet things in**: Workflows →
+  Runs → Tools. The standalone Triggers tab is gone (folded into the canvas
+  above); `#triggers` redirects to Workflows rather than dead-ending a
+  bookmark, plan cards carry what starts them and how they last ran, and a
+  trigger whose plan is not in the current namespace gets an explicit callout
+  under the list — a standing rule must never silently vanish from the console.
+- **The Runs page groups by what it wants from you** — *Waiting on you* /
+  *In flight* / *Finished* — instead of one flat grid that buried an ask under
+  finished history. Each card resolves its plan's name, and carries the same
+  per-step strip the canvas draws as a rail. The Approve/Refuse buttons now
+  disable when the session cannot use them and say which credential is missing:
+  `run.respond` refuses a shared console token even when that token can write
+  everything else. The Runs page and the canvas overlay read ONE shared run
+  index, so the two surfaces cannot drift apart.
 
 ### Removed
 
@@ -112,6 +158,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run and which step they belong to. (What remains is a design question, not
   a bug: whether runtime bookkeeping belongs in the plain memory browser at
   all.)
+
+- **The console's Triggers tab rendered into a pane that never became
+  visible.** Every page section ships `hidden` in the markup and is revealed
+  only by the one array in `render()` that clears the attribute; `'triggers'`
+  was missing from it. The hash routed, the nav item highlighted and
+  `renderTriggers()` filled its container on every render — while the section
+  stayed hidden along with all eight others, so the tab showed an empty page.
+  Nothing in the file could catch it, because the defect is a *missing* string
+  rather than a wrong one: a test now parses `console.html` and asserts that
+  the set of `id="page-X"` sections, the sidebar's `data-page` values and that
+  array agree.
 
 - **A refused egress-broker call could reset the caller's own connection
   instead of delivering its 401/403 JSON body.** `serve_one` read the
