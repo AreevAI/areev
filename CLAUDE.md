@@ -35,6 +35,9 @@ cargo run -p areev -- recall --db demo.db --ns caller --subject john
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
+cargo llvm-cov --workspace --lcov --output-path lcov.info   # then:
+python3 scripts/coverage.py --lcov lcov.info             # regenerate docs/coverage.json
+python3 scripts/coverage.py --lcov lcov.info --check      # what CI asserts (2-point tolerance)
 
 scripts/build_demo.sh               # rebuild data/demo.db (the README's demo memory)
 node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot its screenshots
@@ -54,8 +57,20 @@ node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot i
   `security.yml` runs `cargo deny`. Still run tests locally before pushing.
 - **The README quotes generated numbers.** `scripts/repo_stats.py` emits
   `docs/repo-stats.{json,md,html}` and the two SVGs the README embeds; the
-  `stats` job fails the build if they drift >2% from the tree. If CI flags it,
-  run the script and commit the result — do not hand-edit the artifacts.
+  `stats` job fails the build if they drift >2% from the tree. Line coverage is
+  a separate input: `scripts/coverage.py` turns the `coverage` job's LCOV trace
+  into `docs/coverage.json`, which `repo_stats.py` renders into the same chart.
+  Coverage scores **source lines only** (no `tests/`, no `benches/`, no
+  `#[cfg(test)]` blocks) and excludes what that job cannot execute
+  (`areev-py` — pytest's job; `areev-bench` — explicit tools; `store/src/pg.rs`
+  — needs `DATABASE_URL`), each exclusion carrying its reason in the JSON.
+  Enforcement is **per crate** (`FLOORS` in `coverage.py`) plus a global floor,
+  NOT one workspace target — a single number lets one crate's regression hide
+  behind another's gain. Floors are a regression ratchet ~2 points under
+  measured; raise one when real work lands, and lower one only with a reason.
+  `areev-cli` and `areev-mcp` are the known-lowest and the next testing work.
+  If CI flags either script, run it and commit the result — do not hand-edit
+  the artifacts.
 - **The version lives in five places**, only one of which is inherited. The
   `versions` job runs `scripts/check_versions.py`; the release runbook
   (`.claude/skills/areev-release`) is the source of truth for the order.
@@ -78,7 +93,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
 | `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
 | `areev-context` | Budget-aware orchestration over `areev_cal::render`: policies/presets, priority + diversity allocation with progressive disclosure (Full→Summary→Omit), timeline/census modes. Renders nothing itself — parity with CAL is test-pinned (`tests/render_parity.rs`) | yes |
-| `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 13 analyzers (incl. default-off `retention_sweep` and `run_outcome` over run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier, outcome measurement (no Areev deps) — `docs/loop.md` | — |
+| `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 13 analyzers (11 default-on; `retention_sweep` and `goal_stagnation` are default-off, `run_outcome` reads run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier, outcome measurement (no Areev deps) — `docs/loop.md` | — |
 | `areev-loop-adapter` | Areev substrate adapter for Areev Loop (`areev_loop::OmsSubstrate` over `AreevFacade`) + recall-telemetry sidecar | — |
 | `areev-llm` | Out-of-box LLM backends (OpenAI-compatible/Anthropic/Ollama over a small blocking HTTP client) for Areev Loop, the `remember()` free-text→Fact extraction (`extract.rs`), and the `ToolCallLlm` tool-calling seam (`toolcall.rs`) for the runtime | — |
 | `areev-run-core` | The PURE `areev run` scheduler: sans-IO `step(env, state, events) → (commands, state)`, frozen condition grammar, plan validation (Tarjan + cycle bounds), re-entry generations, `RUN-Ennn` errors. No clock/rand/IO in its dep tree — CI-enforced | yes |
@@ -195,11 +210,13 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 ## Smaller crates
 
 - **areev-mcp**: 23 tools (`areev_recall/add/supersede/forget/remember/cal`,
+  the trajectory logger `areev_record_tool_call`,
   the DSAR read `areev_subject_report`,
   the graph/time reads `areev_related/entity_at/step_actions`, the
   run<->memory join `areev_run_trace/runs_touching`, the §7.4 forensics
   `areev_tool_provenance`, the loop pair `areev_loop/recommendations`,
-  and the runtime six `areev_run_start/resume/respond/cancel/verify/list`
+  the runtime six `areev_run_start/resume/respond/cancel/verify/list`,
+  and `areev_run_manifest` (persists a reproducible run config)
   — host tools execute only via `$AREEV_RUN_TOOL_CMD`, respond REQUIRES a
   `responder` principal)
   over newline-delimited JSON-RPC 2.0 on stdio, protocol rev `2025-06-18`.

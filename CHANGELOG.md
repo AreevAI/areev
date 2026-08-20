@@ -8,6 +8,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Line coverage is measured, published and gated per crate.**
+  `scripts/coverage.py` turns the `coverage` job's LCOV trace into
+  `docs/coverage.json`, which the README chart renders alongside the line
+  counts. It scores source lines only — `tests/`, `benches/` and
+  `#[cfg(test)]` blocks are excluded, because a test body is executed by
+  definition — and excludes what that job structurally cannot run (`areev-py`,
+  which pytest drives; the benchmark harnesses; the Postgres backend, which
+  needs a live server), each exclusion carrying its reason in the JSON.
+  Enforcement is **per crate plus a global floor**, not one workspace target:
+  a single number lets a regression in one crate hide behind a gain in
+  another, and these crates do not carry the same risk. The per-crate floors
+  are the tight gate — regression ratchets a couple of points under each
+  crate's measurement — with a looser aggregate floor under the whole set,
+  deliberately given headroom because a gate that fails on cross-platform
+  noise gets lowered, and a lowered floor protects nothing.
+- **Tests for the CLI and MCP surfaces that had none** — the `areev trigger`
+  read and lifecycle verbs (`show`, `status`, `pause`/`resume`, `render`,
+  `deliver`), the `areev hold` and `areev retention floor` guards over
+  age-based destruction, and the three MCP tools `mcp_smoke.rs` never called
+  (`areev_supersede`, `areev_runs_touching`, `areev_recommendations`,
+  including the recommendation lifecycle and every argument refusal). Plus a
+  CAL error-contract test that pins the leading-token rule (every `Display`
+  begins with its `DOMAIN-Ennn` code), keeps `DELETE`/`ERASE`/`TRUNCATE`/
+  `DROP TABLE` rejected at the lexer as repros rather than as a claim, and
+  checks that every one of the 78 emitted `CAL-Ennn` codes falls inside a
+  range `ERROR_CODES.md` documents. Together these lifted `areev-cli`
+  62.1% → 72.3%, `areev-mcp` 65.2% → 73.0%, and the workspace to 80.1%.
 - **A real demo memory, committed to the repo** — `data/demo.db` (~800 KB,
   466 grains) holds one coherent story end to end: an accounts-payable
   agent's vendor knowledge and category rules, eight governed runs (six
@@ -46,6 +73,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`areev_recommendations` silently ignored `status: "all"`** over MCP,
+  returning only the pending queue. `docs/mcp-reference.md` documents `all` as
+  one of the four accepted filters, so an agent asking for every
+  recommendation was told — with no error — that nothing had ever been
+  approved or applied. The cause was a filter chain that could not tell "the
+  caller said `all`" from "the caller said nothing", since both arrive as
+  `None`; a dropped filter fails **open**, and the wrong answer goes straight
+  into a model's context. Now pinned by `mcp_smoke.rs`, which asserts `all` is
+  a superset of `pending`.
 - **Run checkpoints read as "A state with no readable text" in the console's
   memory browser.** A checkpoint's body is the scheduler's serialized state,
   which has no sentence in it, so every one of them fell through to the

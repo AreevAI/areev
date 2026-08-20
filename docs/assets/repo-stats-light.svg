@@ -1,24 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="268" viewBox="0 0 760 268" role="img" aria-label="Areev repository quality: 42,080 lines of test code against 75,351 lines of source, 2,136 tests">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="268" viewBox="0 0 820 268" role="img" aria-label="Areev repository quality: 42,755 lines of test code against 75,356 lines of source, 2,149 tests, 80.1% line coverage">
 <style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.l{font-size:11px;letter-spacing:.06em;text-transform:uppercase}</style>
-<rect width="760" height="268" rx="10" fill="#ffffff" stroke="#dfe3e8"/>
+<rect width="820" height="268" rx="10" fill="#ffffff" stroke="#dfe3e8"/>
 <text x="32" y="42" class="n" font-size="16" fill="#111418">Areev — repository quality</text>
-<text x="32" y="62" font-size="12" fill="#5b6470">v1.3.1 · 17 crates · 265 Rust files</text>
-<rect x="32.0" y="80" width="165.0" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
-<text x="44.0" y="106" class="n" font-size="19" fill="#8250df">75,351</text>
+<text x="32" y="62" font-size="12" fill="#5b6470">v1.3.1 · 17 crates · 267 Rust files</text>
+<rect x="32.0" y="80" width="141.6" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
+<text x="44.0" y="106" class="n" font-size="19" fill="#8250df">75,356</text>
 <text x="44.0" y="122" class="l" fill="#5b6470">source code</text>
-<rect x="209.0" y="80" width="165.0" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
-<text x="221.0" y="106" class="n" font-size="19" fill="#1f6feb">42,080</text>
-<text x="221.0" y="122" class="l" fill="#5b6470">test code</text>
-<rect x="386.0" y="80" width="165.0" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
-<text x="398.0" y="106" class="n" font-size="19" fill="#0a7d55">2,136</text>
-<text x="398.0" y="122" class="l" fill="#5b6470">tests</text>
-<rect x="563.0" y="80" width="165.0" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
-<text x="575.0" y="106" class="n" font-size="19" fill="#111418">89</text>
-<text x="575.0" y="122" class="l" fill="#5b6470">stable error codes</text>
-<rect x="32" y="150" width="696" height="34" rx="6" fill="#8250df"/>
-<path d="M32 156a6 6 0 0 1 6-6h243v34h-243a6 6 0 0 1-6-6z" fill="#1f6feb"/>
-<text x="44" y="172" class="n" font-size="12" fill="#ffffff">tests 35.8%</text>
-<text x="716" y="172" class="n" font-size="12" fill="#ffffff" text-anchor="end">source 64.2%</text>
-<text x="32" y="212" font-size="12" fill="#5b6470">21,020 integration · 21,060 unit test lines · 48 reference docs · 17 crates</text>
-<text x="32" y="238" font-size="11" fill="#5b6470">Lines exclude blanks and comments. Test code is counted per block, not per file.</text>
+<rect x="185.6" y="80" width="141.6" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
+<text x="197.6" y="106" class="n" font-size="19" fill="#1f6feb">42,755</text>
+<text x="197.6" y="122" class="l" fill="#5b6470">test code</text>
+<rect x="339.2" y="80" width="141.6" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
+<text x="351.2" y="106" class="n" font-size="19" fill="#0a7d55">2,149</text>
+<text x="351.2" y="122" class="l" fill="#5b6470">tests</text>
+<rect x="492.8" y="80" width="141.6" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
+<text x="504.8" y="106" class="n" font-size="19" fill="#0a7d55">80.1%</text>
+<text x="504.8" y="122" class="l" fill="#5b6470">line coverage</text>
+<rect x="646.4" y="80" width="141.6" height="52" rx="7" fill="#f6f7f9" stroke="#dfe3e8"/>
+<text x="658.4" y="106" class="n" font-size="19" fill="#111418">89</text>
+<text x="658.4" y="122" class="l" fill="#5b6470">error codes</text>
+<rect x="32" y="150" width="756" height="34" rx="6" fill="#8250df"/>
+<path d="M32 156a6 6 0 0 1 6-6h268v34h-268a6 6 0 0 1-6-6z" fill="#1f6feb"/>
+<text x="44" y="172" class="n" font-size="12" fill="#ffffff">tests 36.2%</text>
+<text x="776" y="172" class="n" font-size="12" fill="#ffffff" text-anchor="end">source 63.8%</text>
+<text x="32" y="212" font-size="12" fill="#5b6470">21,687 integration · 21,068 unit test lines · 47 reference docs · 17 crates</text>
+<text x="32" y="238" font-size="11" fill="#5b6470">Lines exclude blanks and comments; test code counted per block, not per file. Coverage scores source lines only, floored per crate.</text>
 </svg>

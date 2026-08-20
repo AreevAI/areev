@@ -1,0 +1,12 @@
+{
+  "message_id": "NG-2201",
+  "thread": "thr-ap-4412",
+  "sender": "billing@northgatesupply.example",
+  "attachment": "scan-2201.jpg",
+  "scanned": true,
+  "vendor": "northgate_supply",
+  "amount": 1240,
+  "currency": "USD",
+  "category": "Facilities",
+  "confidence": 0.38
+}

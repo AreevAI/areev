@@ -35,6 +35,20 @@ WF=$("$AREEV" cal 'RECALL workflows LIMIT 1' --db "$DB" --ns "$NS" \
      | python3 -c 'import json,sys; print(json.load(sys.stdin)["grains"][0]["hash"])')
 echo "   workflow $WF"
 
+# What wakes it up is a declaration too, not a line in somebody's crontab: the
+# cadence is a grain, so it travels with the memory. There is no daemon —
+# `areev trigger run` is a one-shot command you put on whatever heartbeat you
+# already have, and the memory decides what is actually due.
+say "1b. declare what wakes it"
+"$AREEV" trigger add --db "$DB" --ns "$NS" --type polling --observer mailbox \
+  --scope 'mailbox:ap@northwind.example' --interval 120 \
+  --workflow "$WF" --dedup-key /message_id \
+  --because "poll the accounts-payable mailbox for invoices" >/dev/null
+"$AREEV" trigger list --db "$DB" --ns "$NS" | sed 's/^/   /'
+# Dry-run: touches nothing, and with no connector wired there is nothing to
+# ingest. Swapping in a real mailbox connector is the only change needed.
+"$AREEV" trigger run --db "$DB" --ns "$NS" --dry-run | sed 's/^/   /'
+
 # ── 2. what the desk already knows ─────────────────────────────────────────
 # The vendor terms and the routing rule are facts, not constants in a script,
 # which is what lets the loop propose changing them later.

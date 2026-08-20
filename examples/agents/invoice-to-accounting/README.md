@@ -11,13 +11,20 @@ and it cannot rot quietly between them.
 ```bash
 cargo build --release -p areev     # once, from the repo root
 cd examples/agents/invoice-to-accounting
-./smoke.sh
+./smoke.sh        # week one — it does the job, under governance
+./improve.sh      # week two — it proposes its own fix, you decide
 ```
 
 A few seconds later:
 
 ```
 2 posted, 1 refused, 1 approval recorded against a named person.
+```
+
+and then:
+
+```
+1 pattern found in 8 runs, 1 decision recorded against a named person.
 ```
 
 ## What just happened
@@ -65,13 +72,62 @@ route_to human_review` is stored as a fact. That is what makes it something
 run's journal, out of the same file the vendor terms live in. There is no
 separate log to join against.
 
+## Week two: it proposes its own fix
+
+`./improve.sh` runs another five invoices through the same plan. Three of them
+are photographs — a new vendor, Northgate, emails scans of their invoices, and
+a photograph has no text layer.
+
+Read one at a time, those are three unlucky days. Nobody files a ticket for a
+single stuck invoice. Counted, they are a pattern with a cause, and that is
+what `areev loop run` does — over the runs' own journals, with **no model key
+and no training**:
+
+```
+HIGH  Workflow fc991baf5ead failed 4/8 recent runs (50%): parse_attachments:
+      pdftotext produced 0 characters - attachment is a scanned image
+analyzer   loop.run_outcome/1  (confidence 0.8)
+evidence   8 grains cited, by hash
+origin     builtin — deterministic, no model was called
+```
+
+Then it stops, because this is the part that has to be boring. The script
+asserts two refusals:
+
+```
+the engine cannot execute its own advice — it is advisory (LOP-E011)
+a decision with no written reason is refused
+```
+
+A person approves it, signing their name and their reasoning:
+
+```bash
+areev loop approve <REC> --as user:dev_rao \
+  --because "Northgate emails photographs; OCR them before parse instead of failing the run"
+```
+
+and the lesson becomes memory the agent recalls next time it meets that vendor:
+
+```
+<fact confidence="0.90" date="2026-08-20">northgate_supply invoice_delivery
+  photographed pages — OCR before parse</fact>
+```
+
+Run the loop again and it proposes nothing: the same evidence does not become a
+second recommendation. An agent that nags is an agent you turn off.
+
+**What this is not.** The loop did not change the workflow, and it cannot. This
+finding is advisory — it tells a person that a plan is failing and cites the
+runs that prove it. Nothing here retrains a model, and Areev never will.
+
 ## The pieces
 
 ```
 plan.mgb        the workflow + its 7 tool definitions, as a portable bundle
 tools.py        the host tools: JSON on stdin, JSON on stdout, one process per call
-fixtures/       three invoices — one clean, one over the threshold, one unreadable
-smoke.sh        the whole thing, with assertions. Non-zero on drift.
+fixtures/       eight invoices — clean, over-threshold, and unreadable scans
+smoke.sh        week one, with assertions. Non-zero on drift.
+improve.sh      week two: the loop finds the pattern, a person decides. Also asserted.
 ```
 
 `tools.py` is the only file you would replace to make this real. Point

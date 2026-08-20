@@ -60,6 +60,12 @@ GENERATED = {
     "docs/assets/repo-stats-dark.svg",
 }
 
+# Coverage is an *input*, not something this script can compute: it needs a full
+# instrumented build and the whole suite, which is minutes, not milliseconds.
+# `scripts/coverage.py` writes it in the CI job that already pays that cost, and
+# this script renders whatever is committed. Absent, the chart simply omits it.
+COVERAGE = REPO / "docs" / "coverage.json"
+
 
 # ---------------------------------------------------------------------------
 # Rust scanning
@@ -334,6 +340,13 @@ def collect() -> dict:
     py = walk(REPO / "adapters", {".py"}) + walk(REPO / "crates", {".py"})
     ts = walk(REPO / "crates" / "areev-js", {".mjs", ".ts"})
 
+    coverage = None
+    if COVERAGE.exists():
+        try:
+            coverage = json.loads(COVERAGE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            coverage = None
+
     test_code = rust.unit_tests.code + rust.integration.code
     source_code = rust.source.code
     total_code = test_code + source_code
@@ -357,6 +370,7 @@ def collect() -> dict:
         "docs": {"files": len(docs), "lines": doc_lines},
         "error_codes": error_codes,
         "bindings": {"python_files": len(py), "node_test_files": len(ts)},
+        "coverage": coverage,
     }
 
 
@@ -391,7 +405,9 @@ def render_svg(d: dict, theme: str) -> str:
     test, src = r["test_code"], r["source_code"]
     total = test + src or 1
 
-    W, H = 760, 268
+    cov = d.get("coverage")
+
+    W, H = (820, 268) if cov else (760, 268)
     bar_x, bar_y, bar_w, bar_h = 32, 150, W - 64, 34
     test_w = round(bar_w * test / total)
 
@@ -399,15 +415,18 @@ def render_svg(d: dict, theme: str) -> str:
         (_fmt(r["source_code"]), "source code", c["source"]),
         (_fmt(r["test_code"]), "test code", c["test"]),
         (_fmt(r["test_functions"]), "tests", c["accent"]),
-        (_fmt(d["error_codes"]), "stable error codes", c["fg"]),
     ]
-    tile_w = (W - 64 - 3 * 12) / 4
+    if cov:
+        tiles.append((f'{cov["line_coverage"]}%', "line coverage", c["accent"]))
+    tiles.append((_fmt(d["error_codes"]), "error codes", c["fg"]))
+    tile_w = (W - 64 - (len(tiles) - 1) * 12) / len(tiles)
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
         f'viewBox="0 0 {W} {H}" role="img" '
         f'aria-label="Areev repository quality: {_fmt(r["test_code"])} lines of test code '
-        f'against {_fmt(r["source_code"])} lines of source, {_fmt(r["test_functions"])} tests">',
+        f'against {_fmt(r["source_code"])} lines of source, {_fmt(r["test_functions"])} tests'
+        + (f', {cov["line_coverage"]}% line coverage' if cov else '') + '">',
         '<style>'
         'text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}'
         '.n{font-weight:700;font-variant-numeric:tabular-nums}'
@@ -440,7 +459,11 @@ def render_svg(d: dict, theme: str) -> str:
         f'{_fmt(r["integration_test_code"])} integration · {_fmt(r["unit_test_code"])} unit test lines · '
         f'{d["docs"]["files"]} reference docs · {d["crates"]} crates</text>',
         f'<text x="32" y="238" font-size="11" fill="{c["muted"]}">'
-        f'Lines exclude blanks and comments. Test code is counted per block, not per file.</text>',
+        + ('Lines exclude blanks and comments; test code counted per block, not per file. '
+           'Coverage scores source lines only, floored per crate.'
+           if cov else
+           'Lines exclude blanks and comments. Test code is counted per block, not per file.')
+        + '</text>',
         '</svg>',
     ]
     return "\n".join(parts) + "\n"
@@ -458,6 +481,61 @@ def render_md(d: dict) -> str:
         f"| {_fmt(c['test_code'])} | {_fmt(c['tests'])} |"
         for c in d["per_crate"]
     )
+    cov = d.get("coverage")
+    cov_row = (
+        f"| Line coverage | **{cov['line_coverage']}%** of "
+        f"{_fmt(cov['lines_total'])} instrumented source lines |\n"
+        if cov else ""
+    )
+    cov_rows = "\n".join(
+        f"| `{c['name']}` | {c['line_coverage']}% | "
+        f"{_fmt(c['lines_covered'])} / {_fmt(c['lines_total'])} | "
+        f"{c['floor'] if c['floor'] is not None else '—'} |"
+        for c in cov["per_crate"]
+    ) if cov else ""
+    cov_excluded = "\n".join(
+        f"- `{e['path']}` — {e['reason']}" for e in cov["excluded_from_scope"]
+    ) if cov else ""
+    cov_method = (
+        f"""
+## Coverage
+
+**{cov['line_coverage']}%** of {_fmt(cov['lines_total'])} instrumented source
+lines, measured by `cargo llvm-cov --workspace` in CI and committed as
+`docs/coverage.json` for this script to render — it needs a full instrumented
+build and the whole suite, which is minutes rather than milliseconds.
+
+| Crate | Coverage | Lines | Floor |
+|---|---:|---:|---:|
+{cov_rows}
+
+Enforcement is **per crate, not one workspace target**: a single number lets a
+regression in one crate hide behind a gain in another, and these crates do not
+carry the same risk. Each floor sits a couple of points under what the crate
+measures today — a ratchet against regression, not a goal. `areev-cli` and
+`areev-mcp` are deliberately the lowest: they are the user-facing surfaces, and
+the next testing work belongs there. A global floor of
+{cov['global_floor']}% backs the whole scored set.
+
+### What is not scored, and why
+
+{cov_excluded}
+
+Test code is excluded too: files under `tests/` and `benches/` outright, and
+`#[cfg(test)]` blocks line-by-line, because a test body is executed by
+definition and counting it scores the suite against itself.
+
+Both filters are visible in the numbers rather than hidden. On the same scope
+with test code counted back in, the trace reads
+**{cov['comparisons']['same_scope_with_test_code']}%**; unfiltered — every
+instrumented line, which is what a naive `cargo llvm-cov` summary prints — it
+reads **{cov['comparisons']['whole_unfiltered_trace']}%**. The published figure
+is the lowest of the three.
+
+Regenerate with `python3 scripts/coverage.py --lcov lcov.info`.
+"""
+        if cov else ""
+    )
     return f"""# Areev — repository statistics
 
 <!-- GENERATED by scripts/repo_stats.py — do not edit by hand. -->
@@ -469,7 +547,7 @@ v{d['version']} · {d['crates']} crates · {_fmt(r['files'])} Rust files
 | Source code | **{_fmt(r['source_code'])}** lines |
 | Test code | **{_fmt(r['test_code'])}** lines ({r['test_share']}% of all code) |
 | Test functions | **{_fmt(r['test_functions'])}** |
-| Stable error codes | **{_fmt(d['error_codes'])}** |
+{cov_row}| Stable error codes | **{_fmt(d['error_codes'])}** |
 | Reference docs | {_fmt(d['docs']['files'])} files, {_fmt(d['docs']['lines'])} lines |
 
 ## By crate
@@ -488,7 +566,7 @@ v{d['version']} · {d['crates']} crates · {_fmt(r['files'])} Rust files
 | Integration test code (`tests/`, `benches/`) | {_fmt(r['integration_test_code'])} |
 | Example code (`examples/`) | {_fmt(r['example_code'])} |
 | Test functions | {_fmt(r['test_functions'])} |
-
+{cov_method}
 ## Method
 
 Test code is measured **per block, not per file**: a source file containing a
@@ -507,12 +585,75 @@ when these numbers drift from the tree by more than 2%.
 
 def render_html(d: dict) -> str:
     r = d["rust"]
+    cov = d.get("coverage")
+
+    # Per-crate coverage, keyed for the by-crate table. Crates outside the
+    # scored set get their exclusion reason rather than a blank cell — "not
+    # scored" and "0%" must never look the same.
+    cov_by_crate = {c["name"]: c for c in cov["per_crate"]} if cov else {}
+    excluded_reason = {}
+    if cov:
+        for e in cov["excluded_from_scope"]:
+            name = e["path"].split("/")[1] if e["path"].startswith("crates/") else e["path"]
+            excluded_reason.setdefault(name, e["reason"])
+
+    def cov_cells(name: str) -> str:
+        """Two cells: a coverage meter + the floor it is held to."""
+        c = cov_by_crate.get(name)
+        if not c:
+            why = excluded_reason.get(name, "")
+            label = "not scored"
+            title = f' title="{why}"' if why else ""
+            return f'<td class="muted"{title}>{label}</td><td class="muted">—</td>'
+        pct, floor = c["line_coverage"], c["floor"]
+        # Green with room, amber inside two points of the floor, red below it.
+        tone = "bad" if floor is not None and pct < floor else (
+            "warn" if floor is not None and pct - floor < 2 else "good"
+        )
+        floor_cell = f"{floor:g}%" if floor is not None else "—"
+        return (
+            f'<td class="cov"><span class="meter"><i class="{tone}" '
+            f'style="width:{pct:.0f}%"></i></span>{pct}%</td>'
+            f'<td class="muted">{floor_cell}</td>'
+        )
+
     rows = "\n".join(
         f"      <tr><td><code>{c['name']}</code></td><td>{_fmt(c['files'])}</td>"
         f"<td>{_fmt(c['source_code'])}</td><td>{_fmt(c['test_code'])}</td>"
-        f"<td>{_fmt(c['tests'])}</td></tr>"
+        f"<td>{_fmt(c['tests'])}</td>{cov_cells(c['name'])}</tr>"
         for c in d["per_crate"]
     )
+
+    cov_section = ""
+    if cov:
+        cmp_ = cov["comparisons"]
+        excl = "\n".join(
+            f"        <li><code>{e['path']}</code> — {e['reason']}</li>"
+            for e in cov["excluded_from_scope"]
+        )
+        cov_section = f"""
+  <h2>Coverage</h2>
+  <p><strong>{cov['line_coverage']}%</strong> of {_fmt(cov['lines_total'])}
+    instrumented source lines, from <code>{cov['measured_by']}</code>. Enforced
+    <strong>per crate</strong> — the Floor column above — plus a global floor of
+    {cov['global_floor']:g}%. One workspace-wide number would let a regression in
+    one crate hide behind a gain in another, and these crates do not carry the
+    same risk.</p>
+  <p>Both filters are visible rather than hidden. On the same scope with test
+    code counted back in the trace reads <strong>{cmp_['same_scope_with_test_code']}%</strong>;
+    unfiltered — every instrumented line, which is what a naive
+    <code>cargo llvm-cov</code> summary prints — it reads
+    <strong>{cmp_['whole_unfiltered_trace']}%</strong>. The published figure is the
+    lowest of the three.</p>
+  <p>Test code is not scored against itself: <code>tests/</code> and
+    <code>benches/</code> are excluded outright and <code>#[cfg(test)]</code>
+    blocks line-by-line. Out of scope entirely, because this job cannot execute
+    them:</p>
+  <ul class="note">
+{excl}
+  </ul>
+"""
+
     tiles = "\n".join(
         f'      <div class="tile"><div class="v" style="color:{col}">{v}</div>'
         f'<div class="l">{lab}</div></div>'
@@ -520,6 +661,9 @@ def render_html(d: dict) -> str:
             (_fmt(r["test_code"]), "lines of test code", "var(--test)"),
             (_fmt(r["source_code"]), "lines of source code", "var(--source)"),
             (_fmt(r["test_functions"]), "test functions", "var(--accent)"),
+        ] + ([
+            (f"{cov['line_coverage']}%", "line coverage (source only)", "var(--accent)"),
+        ] if cov else []) + [
             (f"{r['test_ratio']}:1", "test to source", "var(--fg)"),
             (_fmt(d["crates"]), "workspace crates", "var(--fg)"),
             (_fmt(d["error_codes"]), "stable error codes", "var(--fg)"),
@@ -569,6 +713,15 @@ def render_html(d: dict) -> str:
   th:first-child,td:first-child{{text-align:left}}
   th{{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}}
   code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}}
+  td.cov{{white-space:nowrap}}
+  .muted{{color:var(--muted)}}
+  .meter{{display:inline-block;width:64px;height:6px;border-radius:3px;
+    background:var(--line);margin-right:8px;vertical-align:middle;overflow:hidden}}
+  .meter i{{display:block;height:100%;border-radius:3px}}
+  .meter i.good{{background:var(--accent)}}
+  .meter i.warn{{background:#bf8700}}
+  .meter i.bad{{background:#d1242f}}
+  ul.note li{{margin-bottom:6px}}
   .note{{color:var(--muted);font-size:13px;margin-top:28px;padding-top:16px;border-top:1px solid var(--line)}}
 </style>
 </head>
@@ -585,12 +738,14 @@ def render_html(d: dict) -> str:
   <h2>By crate</h2>
   <div class="wrap">
     <table>
-      <thead><tr><th>Crate</th><th>Files</th><th>Source</th><th>Test</th><th>Tests</th></tr></thead>
+      <thead><tr><th>Crate</th><th>Files</th><th>Source</th><th>Test</th><th>Tests</th>
+        <th>Coverage</th><th>Floor</th></tr></thead>
       <tbody>
 {rows}
       </tbody>
     </table>
   </div>
+{cov_section}
 
   <h2>Composition</h2>
   <div class="wrap">

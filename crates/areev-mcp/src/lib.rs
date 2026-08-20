@@ -814,12 +814,17 @@ impl McpServer {
                     }
                     Ok(json!({ "hash": hash, "action": action }).to_string())
                 } else {
-                    let status = args
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .filter(|s| *s != "all")
-                        .map(status_or_pending)
-                        .or(Some(RecStatus::Pending));
+                    // `all` means NO status filter. Writing this as
+                    // `.filter(|s| *s != "all").map(...).or(Some(Pending))`
+                    // collapsed `all` back to `pending`, because the `.or`
+                    // could not tell "the caller said all" from "the caller
+                    // said nothing" — both arrive as None. A filter that is
+                    // silently ignored fails open into a model's context.
+                    let status = match args.get("status").and_then(Value::as_str) {
+                        None => Some(RecStatus::Pending),
+                        Some("all") => None,
+                        Some(s) => Some(status_or_pending(s)),
+                    };
                     let sub = BorrowedSubstrate::new(&self.facade);
                     let recs = engine.recommendations(&sub, status).map_err(|e| e.to_string())?;
                     let list: Vec<Value> = recs.iter().map(rec_json).collect();

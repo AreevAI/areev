@@ -11,7 +11,7 @@ live credentials opt-in, so CI can prove them on every release.
 
 | Dir | What |
 |---|---|
-| [`agents/`](agents/) | Vertical agents on triggers + `areev run`: mail in, workflow, human approval, system of record out. Zero repo dependencies — every vendor leg is a JSON-on-stdio connector |
+| [`agents/`](agents/) | Vertical agents on triggers + `areev run`: mail in, workflow, human approval, system of record out — then the loop reads those runs back and proposes a fix a person approves. Zero repo dependencies — every vendor leg is a JSON-on-stdio connector |
 | [`colab/`](colab/) | Runnable Colab/Jupyter notebooks: the full self-improving-agent loop plus five business-scenario walkthroughs (wrong-lesson rollback, detect/review/govern, Hermes comparison, enterprise architecture) — keyless deterministic floor, optional LLM discovery |
 | [`policy/`](policy/) | Three `loop-policy.json` variants (solo / team / locked-down prod) |
 | [`import/`](import/) | A tool-call JSONL sample + walkthrough → Tool grains → tool-failure clustering |
