@@ -520,6 +520,7 @@ dismiss another with a reason. None of them is a rubber-stamp loop.
 
 | | |
 |---|---|
+| [`agents/`](examples/agents/) | **Vertical agents**, end to end: a polling trigger wakes a workflow, a human approves what spends money, a system of record gets written once. Every vendor leg is a JSON-on-stdio connector, so they add **no dependencies** to this repo |
 | [`colab/`](examples/colab/) | Notebooks: the full self-improving loop, plus five business walkthroughs — wrong-lesson rollback, detect/review/govern, an enterprise architecture. Keyless deterministic floor; the LLM layer is optional |
 | [`ci/`](examples/ci/) | A GitHub Actions job that **fails the build** on pending high-severity recommendations — governance as a merge gate |
 | [`policy/`](examples/policy/) | Three `loop-policy.json` variants: solo, team, locked-down production |

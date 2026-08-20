@@ -4,8 +4,14 @@ Copy-paste-runnable material for Areev + Areev Loop. These are docs-with-files,
 not a package — clone the repo (they are not shipped in `pip`/`npm`/`cargo`
 installs). See [`docs/loop.md`](../docs/loop.md) for the full guide.
 
+Two tiers: [`agents/`](agents/) are **vertical agents** — a whole job, end to
+end — and everything else teaches **one seam** (a protocol, a policy file, a
+contract). Agent examples must run keyless against committed fixtures, with
+live credentials opt-in, so CI can prove them on every release.
+
 | Dir | What |
 |---|---|
+| [`agents/`](agents/) | Vertical agents on triggers + `areev run`: mail in, workflow, human approval, system of record out. Zero repo dependencies — every vendor leg is a JSON-on-stdio connector |
 | [`colab/`](colab/) | Runnable Colab/Jupyter notebooks: the full self-improving-agent loop plus five business-scenario walkthroughs (wrong-lesson rollback, detect/review/govern, Hermes comparison, enterprise architecture) — keyless deterministic floor, optional LLM discovery |
 | [`policy/`](policy/) | Three `loop-policy.json` variants (solo / team / locked-down prod) |
 | [`import/`](import/) | A tool-call JSONL sample + walkthrough → Tool grains → tool-failure clustering |
