@@ -9,16 +9,13 @@ and re-measure.
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#install)
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
-    <img src="demo/screens/graph-light.png" width="900"
-         alt="The Areev console: an agent's memory as a provenance graph, with a rewind scrubber along the bottom">
-  </picture>
+  <img src="docs/assets/areev-hero.png" width="900"
+       alt="How Areev works: typed grains — facts, goals, skills, workflows, tools, events, recommendations — in one store, assembled by the context graph (hybrid recall, rerank, knowledge graph) into a budget-shaped pseudonymized context for the LLM provider; the host executes the actions under human-in-the-loop governance, and the Areev learning loop (propose, review, apply, verify) feeds what happened back into the store">
 </p>
 
 <p align="center">
-  <em>Every memory an agent holds, as a graph you can walk — and rewind.<br>
-  This is a real console over the real <a href="data/demo.db"><code>demo.db</code></a> in this repo. Nothing here is a mockup.</em>
+  <em>One substrate: typed grains in, a budget-shaped pseudonymized context out, a person on the gate —<br>
+  and what the agent did comes back as the evidence its next improvement is proposed from.</em>
 </p>
 
 Every enterprise wants an agent that gets better at its job. Almost none will
@@ -484,6 +481,17 @@ grains, 9 governed runs, 13 pending recommendations, one open fork:
 ```bash
 areev ui --db data/demo.db --ns accounting     # → http://127.0.0.1:7437
 ```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
+    <img src="demo/screens/graph-light.png" width="900"
+         alt="The Areev console: an agent's memory as a provenance graph, with a rewind scrubber along the bottom">
+  </picture>
+</p>
+
+<p align="center"><em>Every memory the agent holds, as a graph you can walk — and rewind.<br>
+A real console over the real <a href="data/demo.db"><code>demo.db</code></a> in this repo. Nothing here is a mockup.</em></p>
 
 <p align="center">
   <picture>
