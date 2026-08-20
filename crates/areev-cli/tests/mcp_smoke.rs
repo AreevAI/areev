@@ -74,6 +74,15 @@ fn mcp_round_trip() {
         // the MCP surface).
         rpc(16, "tools/call", serde_json::json!({"name": "areev_record_tool_call", "arguments": {
             "tool_name": "x", "result": "r", "status": "done"}})),
+        // Free-text recall must find the alice/tea fact by BM25 alone — a
+        // fresh file indexes text by default, so this needs no embedder.
+        rpc(17, "tools/call", serde_json::json!({"name": "areev_search", "arguments": {
+            "query": "tea"}})),
+        // No --embed-cmd was given to this server, so the novelty check must
+        // fail loudly (never a silent empty list) naming the MCP-specific
+        // remedy.
+        rpc(18, "tools/call", serde_json::json!({"name": "areev_nearest", "arguments": {
+            "text": "alice prefers tea"}})),
     ];
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -88,14 +97,20 @@ fn mcp_round_trip() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    // 16 requests (the notification gets no response)
-    assert_eq!(lines.len(), 16, "one response per request");
+    // 18 requests (the notification gets no response)
+    assert_eq!(lines.len(), 18, "one response per request");
 
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 23);
+    assert_eq!(tools.len(), 25);
+    for memory_tool in ["areev_search", "areev_nearest"] {
+        assert!(
+            tools.iter().any(|t| t["name"] == memory_tool),
+            "missing the free-text query pair {memory_tool}"
+        );
+    }
     for run_tool in [
         "areev_run_start",
         "areev_run_resume",
@@ -197,6 +212,22 @@ fn mcp_round_trip() {
     let manifest: serde_json::Value = serde_json::from_str(manifest_text).unwrap();
     assert_eq!(manifest["config_hash"].as_str().map(str::len), Some(64));
     assert_eq!(manifest["link_hash"].as_str().map(str::len), Some(64));
+
+    // areev_search finds the alice/tea fact by BM25 alone.
+    assert_eq!(by_id(17)["result"]["isError"], false);
+    let search_text = by_id(17)["result"]["content"][0]["text"].as_str().unwrap();
+    let search: serde_json::Value = serde_json::from_str(search_text).unwrap();
+    assert!(
+        search.as_array().unwrap().iter().any(|g| g["fields"]["object"] == "tea"),
+        "expected the alice/tea fact in search results: {search_text}"
+    );
+
+    // areev_nearest fails loudly with no embedder installed, naming the
+    // MCP-specific remedy (not Python's set_embedder(), which doesn't exist
+    // on this surface).
+    assert_eq!(by_id(18)["result"]["isError"], true);
+    let nearest_err = by_id(18)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(nearest_err.contains("--embed-cmd"), "{nearest_err}");
 }
 
 /// `--lock-ns` pins the session: a caller-supplied `namespace` in tool
@@ -678,4 +709,74 @@ fn mcp_supersede_runs_touching_and_recommendations() {
         all.len() >= still_pending.as_array().unwrap().len(),
         "status=all must not return fewer rows than status=pending"
     );
+}
+
+/// `--profile memory` narrows both what `tools/list` advertises and what
+/// `tools/call` will execute — a host that only wants Areev as chat memory
+/// shouldn't hand its agent a dozen workflow-runtime tools it will never use,
+/// and a client that calls one anyway (stale tool cache, hand-rolled request)
+/// gets a named refusal, not a crash or a silent no-op. `--profile full`
+/// (the default) is unaffected, so this only checks the narrowed side —
+/// `mcp_round_trip` above already exercises the full 25-tool surface.
+#[test]
+fn mcp_profile_memory_hides_run_tools() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("p.db");
+    let db = db.to_str().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", db, "--ns", "caller", "--profile", "memory"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let script = [
+        rpc(1, "initialize", serde_json::json!({"protocolVersion": "2025-06-18",
+            "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})),
+        rpc(2, "tools/list", serde_json::json!({})),
+        // Calling a run tool anyway (never advertised) must be a named
+        // refusal, not the generic "unknown tool" — a client that still has
+        // it in a stale cache should learn why, not just that it failed.
+        rpc(3, "tools/call", serde_json::json!({"name": "areev_run_start", "arguments": {
+            "workflow": "0".repeat(64), "run_id": "r1"}})),
+        // The memory-profile surface itself still works.
+        rpc(4, "tools/call", serde_json::json!({"name": "areev_add", "arguments": {
+            "fields": {"subject": "x", "relation": "r", "object": "o"}}})),
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in &script {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
+
+    let tools = by_id(2)["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 12, "memory profile: 25 minus the 13-tool run/loop family");
+    for run_tool in ["areev_run_start", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
+        assert!(
+            !tools.iter().any(|t| t["name"] == run_tool),
+            "{run_tool} must not be advertised under --profile memory"
+        );
+    }
+    for memory_tool in ["areev_recall", "areev_search", "areev_nearest", "areev_add", "areev_cal"] {
+        assert!(
+            tools.iter().any(|t| t["name"] == memory_tool),
+            "{memory_tool} must still be advertised under --profile memory"
+        );
+    }
+
+    assert_eq!(by_id(3)["result"]["isError"], true);
+    let refusal = by_id(3)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(refusal.contains("memory") && refusal.contains("--profile full"), "{refusal}");
+
+    assert_eq!(by_id(4)["result"]["isError"], false);
 }

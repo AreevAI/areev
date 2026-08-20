@@ -1097,7 +1097,7 @@ stale without turning the build red.
 | [`docs/eu-ai-act.md`](docs/eu-ai-act.md) · [`docs/procurement.md`](docs/procurement.md) | EU AI Act article→capability→command map, and the procurement/security questionnaire answers |
 | [`docs/deployment-profile.md`](docs/deployment-profile.md) | Deploying the runtime + adapters: modes, auth, SSO, what each mode may claim |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
-| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 23 tools |
+| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 25 tools |
 | [`docs/migrate.md`](docs/migrate.md) | Importing an existing corpus, with its edit history, from other stores or JSONL |
 | [`docs/memory-tool.md`](docs/memory-tool.md) | The Anthropic memory-tool backend (Python / Node / CLI) |
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |
@@ -1156,7 +1156,7 @@ stated honestly.
 | `areev-llm` | Out-of-box LLM backends: Areev Loop reflection, `remember` extraction, and the runtime's tool-calling seam (OpenAI-compatible / Anthropic / Ollama) |
 | `areev-run-core` | The pure `areev run` scheduler — sans-IO BSP step function, plan validation, frozen condition grammar; no clock/rand/IO in its dependency tree (CI-enforced) |
 | `areev-run` | The `areev run` driver — journal, checkpoints, crash-resume, HITL respond, budgets, cancel, journal-consistent `verify`, shadow eval, OTel export |
-| `areev-mcp` | Stdio MCP server — 23 tools: memory (`areev_recall/add/…`), the loop pair, DSAR/provenance reads, and the runtime six (`areev_run_*`) |
+| `areev-mcp` | Stdio MCP server — 25 tools (12-tool `--profile memory` subset available): memory (`areev_recall/search/nearest/add/…`), the loop pair, DSAR/provenance reads, and the runtime six (`areev_run_*`) |
 | `areev-server` | Local web console (memories / graph / query / Areev Loop queue / Runs approval queue / sessions) + areevd hub mode; per-principal auth, optional TLS (`tls` feature) and SSO trusted-header |
 | `areev` | The `areev` binary |
 | `areev-py` | Python bindings (`import areev`) |

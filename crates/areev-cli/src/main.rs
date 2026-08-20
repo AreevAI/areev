@@ -201,9 +201,11 @@ COMMANDS:
                                       (walks provenance both ways)
   verify                              integrity + content-address recheck
   stats                               store counters
-  serve    --mcp [--ns NS] [--mount alias=path,...] [--no-destructive-ops] [--lock-ns NS]  MCP server on stdio
+  serve    --mcp [--ns NS] [--mount alias=path,...] [--no-destructive-ops] [--lock-ns NS] [--profile memory|full]  MCP server on stdio
                                       (--mount adds read-only files for
-                                       cross-file ASSEMBLE; ns \"alias.inner\")
+                                       cross-file ASSEMBLE; ns \"alias.inner\";
+                                       --profile memory drops the run/loop
+                                       tool family, default full)
   repl     [--ns NS]                  interactive CAL console in the terminal
   remember --content TEXT [--facts JSON] [--observer ID]
            [--session-id ID] [--run-id ID] [--role user|assistant|system|tool]
@@ -1972,6 +1974,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             if let Some(lock) = flag(&flags, "lock-ns") {
                 server = server.lock_namespace(lock.clone());
                 eprintln!("areev: namespace locked to '{lock}' (per-call namespace ignored)");
+            }
+            if let Some(p) = flag(&flags, "profile") {
+                let profile = areev_mcp::ToolProfile::parse(&p)?;
+                server = server.tool_profile(profile);
+                if profile == areev_mcp::ToolProfile::Memory {
+                    eprintln!("areev: MCP tool profile 'memory' (run/loop tools unavailable)");
+                }
             }
             // Host loop policy (--policy FILE or $AREEV_LOOP_POLICY): the
             // areev_loop tool honors the same grants as the CLI run. Host

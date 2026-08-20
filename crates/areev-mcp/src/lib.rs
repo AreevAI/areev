@@ -2,10 +2,15 @@
 //!
 //! Memory-semantic tools over newline-delimited JSON-RPC 2.0 on stdio —
 //! not SQL-over-MCP. Tool surface is a tag-grouped set:
-//! `areev_recall`, `areev_remember`, `areev_add`, `areev_supersede`,
-//! `areev_forget`, `areev_cal`, plus the graph/time tools
-//! `areev_related`, `areev_entity_at`, `areev_step_actions`, and the
-//! run/memory join `areev_run_trace`, `areev_runs_touching`.
+//! `areev_recall`, `areev_search`, `areev_nearest`, `areev_remember`,
+//! `areev_add`, `areev_supersede`, `areev_forget`, `areev_cal`, plus the
+//! graph/time tools `areev_related`, `areev_entity_at`, `areev_step_actions`,
+//! and the run/memory join `areev_run_trace`, `areev_runs_touching`.
+//!
+//! [`ToolProfile`] narrows the advertised set: `Memory` (the read/write/query
+//! tools above) or `Full` (adds the workflow-runtime family — `run_*`,
+//! `areev_loop`, `areev_recommendations`, and friends). Full is the default,
+//! so existing `areev serve --mcp` invocations are unaffected.
 //!
 //! Protocol errors are JSON-RPC errors; tool-execution failures are
 //! `isError: true` tool results, per the MCP spec.
@@ -54,11 +59,55 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Latest MCP protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
+/// Which slice of the 25-tool surface a session advertises and accepts.
+/// `Full` (the default — unchanged prior behavior) is every tool; `Memory`
+/// drops the workflow-runtime family (`run_*`, `areev_loop`,
+/// `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
+/// `areev_run_manifest`) so a host that only wants Areev as chat memory isn't
+/// handing its agent a dozen governed-workflow tools it will never call —
+/// same motivation as `--lock-ns`: fewer ways for an agent to reach for the
+/// wrong thing, not a capability restriction (the CLI/bindings are unaffected).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolProfile {
+    Memory,
+    Full,
+}
+
+impl ToolProfile {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "memory" => Ok(ToolProfile::Memory),
+            "full" => Ok(ToolProfile::Full),
+            other => Err(format!("unknown --profile '{other}' (expected memory|full)")),
+        }
+    }
+}
+
+/// Tool names in the workflow-runtime family — excluded from
+/// [`ToolProfile::Memory`]. Kept as one list so `tool_defs` (advertise) and
+/// `call_tool` (enforce) can never disagree about the boundary.
+const RUN_FAMILY: &[&str] = &[
+    "areev_run_trace",
+    "areev_runs_touching",
+    "areev_tool_provenance",
+    "areev_run_start",
+    "areev_run_resume",
+    "areev_run_respond",
+    "areev_run_cancel",
+    "areev_run_verify",
+    "areev_run_list",
+    "areev_record_tool_call",
+    "areev_run_manifest",
+    "areev_loop",
+    "areev_recommendations",
+];
+
 pub struct McpServer {
     facade: std::sync::Arc<AreevFacade>,
     executor: CalExecutor,
     default_ns: String,
     allow_destructive_ops: bool,
+    tool_profile: ToolProfile,
     /// When set, the session is pinned to this namespace: per-call `namespace`
     /// arguments are ignored and `areev_cal` queries are namespace-overridden,
     /// so an agent cannot read or write outside its partition.
@@ -84,6 +133,7 @@ impl McpServer {
                 .with_governance(std::sync::Arc::new(areev_loop_adapter::LoopGovernance::new())),
             default_ns,
             allow_destructive_ops: true,
+            tool_profile: ToolProfile::Full,
             locked_ns: None,
             loop_policy: None,
             assembly_manifest_sample_rate: 0.0,
@@ -204,6 +254,15 @@ impl McpServer {
         self
     }
 
+    /// Restrict the advertised + acceptable tool set
+    /// (`areev serve --mcp --profile memory|full`). Rebuilds nothing else —
+    /// unlike `--lock-ns`/`--no-destructive-ops` this doesn't touch the CAL
+    /// executor, since it gates the MCP surface, not CAL's.
+    pub fn tool_profile(mut self, profile: ToolProfile) -> Self {
+        self.tool_profile = profile;
+        self
+    }
+
     /// Pin the session to a single namespace (`areev serve --mcp --lock-ns NS`).
     /// Per-call `namespace` arguments are ignored and CAL queries are
     /// namespace-overridden, so a multi-tenant host can hand an agent a session
@@ -249,7 +308,7 @@ impl McpServer {
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 }}),
                 "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-                "tools/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tool_defs()}}),
+                "tools/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": self.tool_defs()}}),
                 "tools/call" => {
                     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let args = params
@@ -302,7 +361,31 @@ impl McpServer {
         }
     }
 
+    /// The tools this session advertises — [`all_tool_defs`] filtered to
+    /// [`Self::tool_profile`]'s allowed set. `call_tool` enforces the same
+    /// boundary against [`RUN_FAMILY`], so a client cannot call a tool it
+    /// was never shown.
+    fn tool_defs(&self) -> Vec<Value> {
+        match self.tool_profile {
+            ToolProfile::Full => all_tool_defs(),
+            ToolProfile::Memory => all_tool_defs()
+                .into_iter()
+                .filter(|t| {
+                    let name = t.get("name").and_then(Value::as_str).unwrap_or("");
+                    !RUN_FAMILY.contains(&name)
+                })
+                .collect(),
+        }
+    }
+
     fn call_tool(&self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
+        if self.tool_profile == ToolProfile::Memory && RUN_FAMILY.contains(&name) {
+            return Err(format!(
+                "'{name}' is not available under the 'memory' MCP profile this server was \
+                 started with (areev serve --mcp --profile memory) — restart with \
+                 --profile full for workflow-runtime tools"
+            ));
+        }
         match name {
             "areev_recall" => {
                 let subject = args
@@ -340,6 +423,75 @@ impl McpServer {
                     Some(report) => json!({"grains": out, "anonymized": report}),
                     None => json!(out),
                 };
+                Ok(serde_json::to_string(&out).unwrap_or_default())
+            }
+            "areev_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or("areev_search requires 'query'")?;
+                let subject = args.get("subject").and_then(|v| v.as_str());
+                let relation = args.get("relation").and_then(|v| v.as_str());
+                let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let ns = self.ns(args).to_string();
+                let (has_text, has_vec) = self
+                    .facade
+                    .with_store(|m| (m.index_text_enabled(), m.embedder_dim().is_some()));
+                if !has_text && !has_vec {
+                    return Err(
+                        "areev_search needs a text or vector leg: this memory has the BM25 \
+                         index off and no embedder installed — reopen the server with \
+                         --index-text true, or restart it with --embed-cmd to install a \
+                         vector leg"
+                            .to_string(),
+                    );
+                }
+                let grains = self
+                    .facade
+                    .with_store(|m| m.recall_hybrid(&ns, subject, relation, Some(query), k, None))
+                    .map_err(|e| e.to_string())?;
+                let out: Vec<Value> = grains
+                    .iter()
+                    .map(|g| {
+                        json!({
+                            "hash": g.hash.to_hex(),
+                            "type": format!("{:?}", g.grain_type).to_lowercase(),
+                            "fields": g.fields,
+                        })
+                    })
+                    .collect();
+                let out = match self.facade.anon_egress_report() {
+                    Some(report) => json!({"grains": out, "anonymized": report}),
+                    None => json!(out),
+                };
+                Ok(serde_json::to_string(&out).unwrap_or_default())
+            }
+            "areev_nearest" => {
+                let text = args
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .ok_or("areev_nearest requires 'text'")?;
+                let subject = args.get("subject").and_then(|v| v.as_str());
+                let relation = args.get("relation").and_then(|v| v.as_str());
+                let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let ns = self.ns(args).to_string();
+                let matches = self
+                    .facade
+                    .with_store(|m| m.nearest_semantic(&ns, subject, relation, text, k))
+                    .map_err(|e| match e {
+                        areev_core::error::AreevError::Validation(msg)
+                            if msg.contains("requires an installed embedder") =>
+                        {
+                            "areev_nearest requires an embedder; restart the server with \
+                             --embed-cmd to install one"
+                                .to_string()
+                        }
+                        other => other.to_string(),
+                    })?;
+                let out: Vec<Value> = matches
+                    .iter()
+                    .map(|(h, sim)| json!({"hash": h.to_hex(), "similarity": sim}))
+                    .collect();
                 Ok(serde_json::to_string(&out).unwrap_or_default())
             }
             "areev_add" => {
@@ -859,7 +1011,7 @@ fn rec_json(r: &areev_loop::Recommendation) -> Value {
     })
 }
 
-fn tool_defs() -> Vec<Value> {
+fn all_tool_defs() -> Vec<Value> {
     let s = |desc: &str| json!({"type": "string", "description": desc});
     vec![
         json!({
@@ -872,6 +1024,28 @@ fn tool_defs() -> Vec<Value> {
                 "k": {"type": "integer", "description": "max results (default 16)"},
                 "run_id": s("host trajectory id for recall telemetry")
             }, "required": ["subject"]}
+        }),
+        json!({
+            "name": "areev_search",
+            "description": "Free-text recall (BM25, plus a vector leg when the server has an embedder) fused with the structural leg when subject/relation is given. Use this over areev_recall when you have a natural-language query rather than an exact subject you already know. Requires the server to have a text index or an embedder installed; fails loudly (not an empty list) if it has neither.",
+            "inputSchema": {"type": "object", "properties": {
+                "query": s("free-text query, e.g. \"what do we know about the Johnson account\""),
+                "subject": s("optional subject to narrow the structural leg"),
+                "relation": s("optional relation to narrow the structural leg"),
+                "namespace": s("optional namespace (defaults to session namespace); accepts an 'org.*' prefix scope"),
+                "k": {"type": "integer", "description": "max results (default 10)"}
+            }, "required": ["query"]}
+        }),
+        json!({
+            "name": "areev_nearest",
+            "description": "Advise-mode novelty check: nearest existing grains to `text` by embedding similarity, most similar first. Call this before areev_add when you're not sure whether this fact is already stored under different wording — cheap, read-only, never writes. Requires the server to have an embedder installed (areev serve --mcp --embed-cmd ...).",
+            "inputSchema": {"type": "object", "properties": {
+                "text": s("candidate fact text to check for near-duplicates"),
+                "subject": s("optional subject to narrow the search"),
+                "relation": s("optional relation to narrow the search"),
+                "namespace": s("optional namespace (defaults to session namespace)"),
+                "k": {"type": "integer", "description": "max results (default 5)"}
+            }, "required": ["text"]}
         }),
         json!({
             "name": "areev_add",
