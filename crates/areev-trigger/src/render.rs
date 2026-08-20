@@ -60,9 +60,27 @@ pub struct RenderContext<'a> {
     pub extra_args: &'a str,
 }
 
+/// What `command[0]` must be inside a container image.
+///
+/// The host targets (`cron`, `launchd`, `systemd`) genuinely run on the machine
+/// that produced the render, so the authoring binary's absolute path is right
+/// there. A container runs the *image's* binary, so the only correct value is
+/// the name on `PATH` inside it — `current_exe()` is the authoring host's path
+/// and is guaranteed wrong.
+const IMAGE_EXE: &str = "areev";
+
 impl RenderContext<'_> {
     fn command(&self) -> String {
-        let mut c = format!("{} trigger run --db {} --ns {}", self.exe, self.db, self.ns);
+        self.command_as(self.exe)
+    }
+
+    /// [`command`](Self::command) for the container targets. See [`IMAGE_EXE`].
+    fn container_command(&self) -> String {
+        self.command_as(IMAGE_EXE)
+    }
+
+    fn command_as(&self, exe: &str) -> String {
+        let mut c = format!("{} trigger run --db {} --ns {}", exe, self.db, self.ns);
         if !self.extra_args.trim().is_empty() {
             c.push(' ');
             c.push_str(self.extra_args.trim());
@@ -184,7 +202,7 @@ WantedBy=timers.target
 }
 
 fn k8s(ctx: &RenderContext<'_>) -> String {
-    let args: Vec<String> = ctx.command().split_whitespace().map(String::from).collect();
+    let args: Vec<String> = ctx.container_command().split_whitespace().map(String::from).collect();
     let arg_yaml: String =
         args.iter().map(|a| format!("            - {}\n", yaml_scalar(a))).collect();
     format!(
@@ -212,9 +230,15 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: areev
+            # `command` runs THIS image's binary, so it is the name on PATH in
+            # the image — not a path from the machine that rendered this.
             image: areev:latest
             command:
-{arg_yaml}"#,
+{arg_yaml}            # --db above is the path as written when this was
+            # rendered. Mount the memory and make that path resolve INSIDE the
+            # container; a heartbeat pointed at a path that does not exist
+            # fails every tick, which looks exactly like nothing being due.
+"#,
         schedule = cron_expression(ctx.heartbeat_secs),
         deadline = (ctx.heartbeat_secs * 2).max(120),
     )
@@ -317,6 +341,42 @@ mod tests {
             assert!(out.contains("trigger"), "{t} must invoke the evaluator");
             assert!(out.contains("run"), "{t} must invoke the evaluator");
             assert!(out.contains("accounting.db"), "{t} must name the memory");
+        }
+    }
+
+    /// A container runs the image's binary, never the authoring host's.
+    ///
+    /// The regression (#69) shipped because the test context used
+    /// `exe: "areev"` — the same string the fix produces — so a render that
+    /// spliced in `current_exe()` looked identical to one that did not. This
+    /// context uses a path that could only have come from the authoring
+    /// machine, which is the whole defect.
+    #[test]
+    fn container_targets_never_emit_the_authoring_hosts_binary_path() {
+        let local = "/Users/someone/.cargo/bin/areev";
+        let c = RenderContext {
+            exe: local,
+            db: "accounting.db",
+            ns: "accounting",
+            heartbeat_secs: 300,
+            extra_args: "",
+        };
+
+        let k8s = render("k8s-cronjob", &c).unwrap();
+        assert!(
+            !k8s.contains(local),
+            "a local path in a container spec is wrong wherever it is applied:\n{k8s}"
+        );
+        assert!(
+            k8s.contains("- areev\n"),
+            "command[0] must be the name on PATH inside the image:\n{k8s}"
+        );
+
+        // …while the host targets genuinely run on the machine that rendered
+        // them, so for them the absolute path is the correct answer.
+        for t in ["cron", "launchd", "systemd"] {
+            let out = render(t, &c).unwrap();
+            assert!(out.contains(local), "{t} runs locally and must name the local binary");
         }
     }
 

@@ -469,6 +469,12 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   budgets recompute from the journal and **verify never calls the model**.
 - Per-turn token reservation means an un-dispatched turn survives budget
   exhaustion as a need — the raised-budget fork resumes exactly there.
+- **From Python and Node**, `run_start`/`runStart` and `run_resume`/`runResume`
+  take the same `model` (plus `base_url`/`key_env` and `llm_max_tokens`). The
+  spec is resolved *before* the run is journaled, so a bad provider or a
+  missing key fails without leaving behind a run that could never advance. The
+  backend is host config and is deliberately not journaled with the run, which
+  is why `run_resume` takes it too rather than recovering it from the manifest.
 
 ## Fan-out (`Send`)
 

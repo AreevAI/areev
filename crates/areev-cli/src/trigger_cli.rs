@@ -327,6 +327,9 @@ fn show(
         if found.exhausted {
             println!("exhausted    yes — a one-shot past its instant; it will not fire again");
         }
+        if let Some(why) = &found.unusable {
+            println!("cannot fire  {why}");
+        }
         if found.consecutive_failures > 0 {
             println!("failures     {}", found.consecutive_failures);
         }
@@ -354,6 +357,10 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
     for s in &rows {
         let state = if !s.enabled {
             "disabled"
+        } else if s.unusable.is_some() {
+            // The whole point (#67): a declaration that can never fire must not
+            // sit in the same column as one that is merely waiting its turn.
+            "unusable"
         } else if s.exhausted {
             // A one-shot that has fired. Reporting it as "waiting" would be a
             // lie it tells forever.
@@ -374,6 +381,9 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
             s.kind,
             short(&s.workflow, 12)
         );
+        if let Some(why) = &s.unusable {
+            println!("              cannot fire: {why}");
+        }
         if let Some(e) = &s.last_error {
             println!("              last error: {e}");
         }
@@ -421,8 +431,12 @@ fn evaluate(
             // Say what actually happened rather than implying runs executed.
             format!("ingested {} (no --tool-cmd, so nothing was executed)", report.ingested)
         };
+        // `unusable` is printed unconditionally when non-zero: burying it
+        // would recreate the silence this counter exists to break.
+        let unusable =
+            if report.unusable > 0 { format!(" · unusable {}", report.unusable) } else { String::new() };
         println!(
-            "claimed {} · items {} · {started} · duplicates {} · not due {} · locked {}",
+            "claimed {} · items {} · {started} · duplicates {} · not due {} · locked {}{unusable}",
             report.claimed,
             report.items,
             report.duplicates,

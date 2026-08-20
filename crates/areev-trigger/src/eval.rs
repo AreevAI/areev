@@ -108,6 +108,15 @@ pub struct EvalReport {
     /// could be minted for them. Reported rather than silently dropped: an item
     /// nobody can name is a connector bug, and it should be visible as one.
     pub unidentifiable: usize,
+    /// Declarations that cannot fire as written — a cron that does not parse, a
+    /// timezone this build refuses, a composite gate naming a member the
+    /// declaration does not carry.
+    ///
+    /// Counted APART from `skipped_not_due` on purpose. Folded in there, an
+    /// unusable trigger is indistinguishable from a healthy one waiting its
+    /// turn, which is the failure mode with no symptom: the work simply never
+    /// happens and every report looks green. The reason lands in `errors`.
+    pub unusable: usize,
     /// Not fatal to the pass: one broken trigger must not stop the others.
     pub errors: Vec<String>,
     /// A connector reported a backlog, so this trigger is due again at once
@@ -134,6 +143,14 @@ pub struct TriggerStatus {
     /// Never fired and no failure recorded — the state an unnoticed
     /// misconfiguration sits in, so it is reported rather than inferred.
     pub never_fired: bool,
+    /// Why this declaration can never fire, if it cannot.
+    ///
+    /// A trigger can become unusable without ever being written through a
+    /// validating path — it can arrive by bundle import from an implementation
+    /// that validated differently, or predate the check. So the evaluator
+    /// reports it rather than assuming the write path caught everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unusable: Option<String>,
 }
 
 /// Starts the workflow a trigger is bound to.
@@ -234,13 +251,17 @@ impl Evaluator {
                 .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
                 .map(|(s, _)| s)
                 .unwrap_or_default();
+            let unusable = schedule::validate(&t).err().map(|e| e.to_string());
             out.push(TriggerStatus {
                 trigger: hash,
                 kind: t.kind.as_str().to_string(),
                 workflow: t.workflow.clone(),
                 enabled: t.enabled,
                 paused: st.paused,
-                due: t.enabled
+                // An unusable declaration is never due. Saying otherwise would
+                // promise a firing that cannot happen.
+                due: unusable.is_none()
+                    && t.enabled
                     && !st.leased(now)
                     && schedule::is_due(&t, &st, now).unwrap_or(false),
                 leased_by: st.leased(now).then(|| st.claimed_by.clone()).flatten(),
@@ -250,6 +271,7 @@ impl Evaluator {
                 last_error: st.last_error.clone(),
                 exhausted: st.exhausted,
                 never_fired: st.last_fired_at.is_none() && st.consecutive_failures == 0,
+                unusable,
             });
         }
         Ok(out)
@@ -357,6 +379,14 @@ impl Evaluator {
             }
             if !trigger.enabled {
                 report.skipped_not_due += 1;
+                continue;
+            }
+            // Checked BEFORE dueness, so an unusable declaration is reported as
+            // what it is rather than disappearing into `not due` — where it
+            // looks exactly like a healthy trigger waiting its turn.
+            if let Err(why) = schedule::validate(&trigger) {
+                report.unusable += 1;
+                report.errors.push(format!("{}: {why}", short(&hash, 12)));
                 continue;
             }
             let stored = self

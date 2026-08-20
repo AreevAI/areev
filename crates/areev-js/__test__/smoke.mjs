@@ -995,3 +995,244 @@ test('calPrepare validates and warms a statement (#44)', async () => {
   assert.equal(res.grains.length, 1)
   m.close()
 })
+
+// ── triggers (1.3.1): the evaluator reached the CLI in 1.3.0 but not the
+// bindings, so a Node host had to shell out to the `areev` binary to fire a
+// standing rule it could already declare.
+
+test('trigger lifecycle: declare, list, inspect, pause, resume', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-'))
+  const m = new Areev(join(dir, 'trig.db'), 'ops')
+
+  const hash = await m.triggerAdd(
+    JSON.stringify({ kind: 'interval', workflow: 'a'.repeat(HEX64), interval_secs: 3600 }),
+    'nightly reconciliation',
+  )
+  assert.equal(hash.length, HEX64)
+
+  const list = JSON.parse(await m.triggerList())
+  assert.equal(list.length, 1)
+  assert.equal(list[0].kind, 'interval')
+  assert.equal(list[0].enabled, true)
+
+  // status carries the runtime view the declaration alone cannot: an interval
+  // trigger that has never fired is due immediately.
+  const status = JSON.parse(await m.triggerStatus())
+  assert.equal(status.length, 1)
+  assert.equal(status[0].due, true)
+  assert.equal(status[0].paused, false)
+  assert.equal(status[0].never_fired, true)
+
+  // show accepts a prefix, like the CLI
+  const shown = JSON.parse(await m.triggerShow(hash.slice(0, 12)))
+  assert.equal(shown.trigger, hash)
+
+  const paused = JSON.parse(await m.triggerPause(hash, 'upstream API is down'))
+  assert.equal(paused.paused, true)
+  assert.equal(JSON.parse(await m.triggerShow(hash)).paused, true)
+
+  await m.triggerResume(hash, 'upstream API is back')
+  assert.equal(JSON.parse(await m.triggerShow(hash)).paused, false)
+
+  // A reason is not optional: pausing a standing rule is an auditable act.
+  await assert.rejects(() => m.triggerPause(hash, '   '), /because is required/)
+  await assert.rejects(() => m.triggerShow('deadbeef'), /no trigger matching/)
+
+  m.close()
+})
+
+test('triggerAdd refuses a declaration that could never fire', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-bad-'))
+  const m = new Areev(join(dir, 'bad.db'), 'ops')
+  const wf = 'b'.repeat(HEX64)
+
+  // An unparseable cron expression. This is the validation `add("trigger", …)`
+  // structurally cannot do — it lives in areev-trigger, above areev-cal.
+  await assert.rejects(
+    () => m.triggerAdd(JSON.stringify({ kind: 'schedule', workflow: wf, cron: 'not a cron' }), 'x'),
+  )
+
+  // Cron is UTC only; a non-UTC zone is refused rather than mishandled across
+  // a DST boundary.
+  await assert.rejects(
+    () =>
+      m.triggerAdd(
+        JSON.stringify({
+          kind: 'schedule',
+          workflow: wf,
+          cron: '0 3 * * *',
+          config: { 'int:timezone': 'Asia/Kolkata' },
+        }),
+        'x',
+      ),
+    /TRG-E006|timezone/,
+  )
+
+  // …and the same expression in UTC is accepted.
+  const ok = await m.triggerAdd(
+    JSON.stringify({
+      kind: 'schedule',
+      workflow: wf,
+      cron: '0 3 * * *',
+      config: { 'int:timezone': 'UTC' },
+    }),
+    'nightly close',
+  )
+  assert.equal(ok.length, HEX64)
+
+  // Nothing was stored for either refusal.
+  assert.equal(JSON.parse(await m.triggerList()).length, 1)
+  m.close()
+})
+
+test('triggerRun evaluates, and dryRun touches nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-run-'))
+  const m = new Areev(join(dir, 'run.db'), 'ops')
+  await m.triggerAdd(
+    JSON.stringify({ kind: 'interval', workflow: 'c'.repeat(HEX64), interval_secs: 60 }),
+    'heartbeat',
+  )
+
+  const dry = JSON.parse(await m.triggerRun(null, true))
+  assert.equal(dry.claimed, 1, 'the due trigger was considered')
+  assert.equal(dry.items, 0, 'a dry run ingests nothing')
+  // …and it touched nothing, so the trigger is still unfired.
+  assert.equal(JSON.parse(await m.triggerStatus())[0].never_fired, true)
+
+  // A real pass with no toolCmd is the documented ingest-only mode: the firing
+  // is recorded, nothing is started. `ingested` is counted apart from
+  // `runs_started` precisely so the report cannot claim a run that never
+  // happened.
+  const real = JSON.parse(await m.triggerRun())
+  assert.equal(real.claimed, 1)
+  assert.equal(real.ingested, 1)
+  assert.equal(real.runs_started, 0)
+  assert.deepEqual(real.errors, [])
+  assert.equal(JSON.parse(await m.triggerStatus())[0].never_fired, false)
+
+  // An unset credential variable is refused rather than silently dropped —
+  // a dropped credential surfaces downstream as someone else's 401.
+  await assert.rejects(
+    () => m.triggerRun(null, true, null, null, null, null, JSON.stringify({ gmail: 'NOPE_UNSET' })),
+    /not set/,
+  )
+  m.close()
+})
+
+test('triggerRender emits heartbeat config and creates nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-render-'))
+  const m = new Areev(join(dir, 'r.db'), 'ops')
+  await m.triggerAdd(
+    JSON.stringify({ kind: 'interval', workflow: 'd'.repeat(HEX64), interval_secs: 900 }),
+    'poll',
+  )
+
+  const out = JSON.parse(await m.triggerRender('cron', 'r.db'))
+  assert.equal(out.target, 'cron')
+  assert.ok(out.heartbeatSecs >= 60, 'heartbeat is floored at 60s')
+  assert.match(out.config, /trigger run/)
+  assert.match(out.config, /--ns ops/)
+
+  for (const target of ['launchd', 'systemd', 'k8s-cronjob']) {
+    assert.ok(JSON.parse(await m.triggerRender(target, 'r.db')).config.length > 0)
+  }
+  await assert.rejects(() => m.triggerRender('nomad', 'r.db'))
+  m.close()
+})
+
+// ── anonKey (1.3.1): the host-supplied HKDF root was Rust-only in 1.3.0.
+
+test('anonKey is accepted at open and validated as 32 bytes of hex', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-anon-'))
+  const path = join(dir, 'anon.db')
+  const key = 'a1'.repeat(32) // 64 hex characters
+
+  const m = new Areev(path, 'caller', null, null, null, null, null, key)
+  await m.addFact('john', 'email', 'john@example.com')
+  assert.equal(JSON.parse(await m.recall('john')).length, 1)
+  m.close()
+
+  // A malformed key fails at open, loudly, rather than deriving a different
+  // token space that only shows up as an empty rehydrate much later.
+  for (const bad of ['deadbeef', 'z'.repeat(64), '']) {
+    assert.throws(
+      () => new Areev(join(dir, 'bad.db'), 'caller', null, null, null, null, null, bad),
+      /anonKey/,
+    )
+  }
+})
+
+// ── runStart model (1.3.1): abstract nodes used to be unreachable from Node.
+
+test('runStart resolves the tool-calling model before journaling a run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-model-'))
+  const m = new Areev(join(dir, 'm.db'), 'caller')
+  // A bad provider spec must fail at resolve — before a run exists that could
+  // never advance. Previously `model` had nowhere to go at all.
+  await assert.rejects(
+    () => m.runStart('e'.repeat(HEX64), 'r1', null, null, null, null, null, null, 'nosuch:model'),
+  )
+  assert.equal(JSON.parse(await m.runList(10)).length, 0, 'no run was journaled')
+  m.close()
+})
+
+// ── #67: the generic authoring path must validate too. `triggerAdd` alone was
+// not enough — `add("trigger", …)` is what a host actually reaches for, and it
+// stored declarations that could never fire.
+
+test('add("trigger", …) refuses a declaration that can never fire (#67)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-i67-'))
+  const m = new Areev(join(dir, 'i67.db'), 'gtm')
+  const wf = '4c'.repeat(32)
+
+  // The reporter's exact shape: `timezone` at top level, not under `config`.
+  await assert.rejects(
+    () => m.add('trigger', JSON.stringify({
+      name: 'probe-tz', kind: 'schedule', workflow: wf,
+      cron: '0 9 * * *', timezone: 'Asia/Kolkata', enabled: true,
+    })),
+    /TRG-E006/,
+    'a top-level timezone must reach the check, not vanish into extra_fields',
+  )
+
+  // …the config spelling, and a cron that simply does not parse.
+  await assert.rejects(
+    () => m.add('trigger', JSON.stringify({
+      kind: 'schedule', workflow: wf, cron: '0 9 * * *',
+      config: { 'int:timezone': 'Asia/Kolkata' },
+    })), /TRG-E006/)
+  await assert.rejects(
+    () => m.add('trigger', JSON.stringify({ kind: 'schedule', workflow: wf, cron: 'not a cron' })),
+    /TRG-E006/)
+
+  // Nothing was stored: the failure must not be "accepted, then never fires".
+  assert.deepEqual(JSON.parse(await m.triggerList()), [])
+
+  // A valid one still goes through both paths.
+  await m.add('trigger', JSON.stringify({ kind: 'interval', workflow: wf, interval_secs: 900 }))
+  assert.equal(JSON.parse(await m.triggerList()).length, 1)
+
+  // Contradicting itself is refused rather than resolved by precedence.
+  await assert.rejects(
+    () => m.add('trigger', JSON.stringify({
+      kind: 'schedule', workflow: wf, cron: '0 9 * * *',
+      timezone: 'UTC', config: { 'int:timezone': 'Europe/Paris' },
+    })), /must agree/)
+
+  m.close()
+})
+
+test('a top-level timezone reaches the config key the evaluator reads (#67)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-i67tz-'))
+  const m = new Areev(join(dir, 'tz.db'), 'gtm')
+  // UTC is the only supported zone, so this is the case that must be STORED —
+  // and it must land in config, where the evaluator looks, rather than in
+  // extra_fields where nothing reads it.
+  await m.add('trigger', JSON.stringify({
+    kind: 'schedule', workflow: '4c'.repeat(32), cron: '0 9 * * *', timezone: 'UTC',
+  }))
+  const g = JSON.parse(await m.cal('RECALL triggers FORMAT json')).grains[0]
+  assert.equal(g.fields.config['int:timezone'], 'UTC',
+    `timezone must be mapped into config, got ${JSON.stringify(g.fields)}`)
+  m.close()
+})
