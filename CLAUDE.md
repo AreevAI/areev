@@ -286,7 +286,7 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 
 `data/demo.db` is **committed** (the one `.db` exception in `.gitignore`) and
 is what every README screenshot is taken from: one accounts-payable story —
-knowledge, eight governed runs, a real open fork, a declared trigger, and
+knowledge, nine governed runs, a real open fork, a declared trigger, and
 thirteen recommendations `areev loop run` genuinely computed. Rebuild it with
 `scripts/build_demo.sh` (seeder → saved queries → fork → trigger → runs →
 loop → WAL checkpoint), then re-shoot with `scripts/shoot_console.mjs`

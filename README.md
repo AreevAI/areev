@@ -304,11 +304,11 @@ from its journal and byte-compare every checkpoint.
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="demo/screens/runs-dark.png">
     <img src="demo/screens/runs-light.png" width="900"
-         alt="The Runs page: eight governed runs — six completed, one failed, one waiting on a human with Approve and Refuse buttons">
+         alt="The Runs page: nine governed runs grouped as Waiting on you and Finished — six posted, one refused by a person, one failed, one waiting with Approve and Refuse buttons">
   </picture>
 </p>
 
-<p align="center"><em>…and eight real runs of it. One waiting on a person, one that failed honestly, six posted.<br>
+<p align="center"><em>…and nine real runs of it: six posted, one a person <strong>refused</strong> — replied to, never written to the sheet — one that failed honestly, and one still waiting.<br>
 Approving requires <strong>your own</strong> sign-in: a shared console token is refused, because the approver's identity <em>is</em> the audit record.</em></p>
 
 ---
@@ -479,7 +479,7 @@ Memory Spec (OMS). See [`CHANGELOG.md`](CHANGELOG.md) for the current release.*
 ## See it yourself
 
 The demo memory behind every screenshot above is committed to this repo — 466
-grains, 8 governed runs, 13 pending recommendations, one open fork:
+grains, 9 governed runs, 13 pending recommendations, one open fork:
 
 ```bash
 areev ui --db data/demo.db --ns accounting     # → http://127.0.0.1:7437

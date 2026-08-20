@@ -37,8 +37,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   62.1% → 72.3%, `areev-mcp` 65.2% → 73.0%, and the workspace to 80.1%.
 - **A real demo memory, committed to the repo** — `data/demo.db` (~800 KB,
   466 grains) holds one coherent story end to end: an accounts-payable
-  agent's vendor knowledge and category rules, eight governed runs (six
-  posted, one waiting on a person, one honest failure), a real open fork
+  agent's vendor knowledge and category rules, nine governed runs (six
+  posted, one a person refused, one waiting on a person, one honest
+  failure), a real open fork
   from two channels editing offline, a declared polling trigger, saved CAL
   queries, and thirteen recommendations that `areev loop run` actually
   computed from that history. Nothing in it is hand-written to look
