@@ -1,15 +1,15 @@
 {
-  "version": "1.3.1",
+  "version": "1.4.0",
   "crates": 17,
   "rust": {
     "files": 267,
-    "physical_lines": 153626,
-    "source_code": 75356,
-    "test_code": 42755,
-    "unit_test_code": 21068,
-    "integration_test_code": 21687,
+    "physical_lines": 154061,
+    "source_code": 75582,
+    "test_code": 42870,
+    "unit_test_code": 21110,
+    "integration_test_code": 21760,
     "example_code": 669,
-    "test_functions": 2149,
+    "test_functions": 2152,
     "test_ratio": 0.57,
     "test_share": 36.2
   },
@@ -41,10 +41,10 @@
     {
       "name": "areev-cli",
       "files": 15,
-      "physical": 12261,
-      "source_code": 5135,
-      "test_code": 4782,
-      "tests": 148
+      "physical": 12404,
+      "source_code": 5167,
+      "test_code": 4855,
+      "tests": 149
     },
     {
       "name": "areev-loop",
@@ -105,10 +105,10 @@
     {
       "name": "areev-server",
       "files": 3,
-      "physical": 2848,
-      "source_code": 1369,
-      "test_code": 876,
-      "tests": 29
+      "physical": 2966,
+      "source_code": 1418,
+      "test_code": 918,
+      "tests": 31
     },
     {
       "name": "areev-py",
@@ -145,15 +145,15 @@
     {
       "name": "areev-mcp",
       "files": 1,
-      "physical": 1087,
-      "source_code": 960,
+      "physical": 1261,
+      "source_code": 1105,
       "test_code": 0,
       "tests": 0
     }
   ],
   "docs": {
     "files": 47,
-    "lines": 19543
+    "lines": 19776
   },
   "error_codes": 89,
   "bindings": {
