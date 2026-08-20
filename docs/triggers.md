@@ -430,12 +430,30 @@ heartbeat, and `trigger_render` writes the config for one.
 
 ## In the console
 
-A read-only Triggers tab lists what is declared. Firing stays out of the console
-on purpose: it spends budgets and executes effects, so the actor's identity is
-the audit record, and "whoever holds the console token" is not an identity — the
-same reason `run.respond` refuses a shared-token caller. The CLI and the
-bindings both carry a real principal, which is why they may fire and the console
-may not.
+Triggers have no page of their own. They render on the **workflow canvas**, in a
+"STARTED BY" lane to the left of the plan's entry steps, with a dashed arrow into
+each one — because the binding points trigger → plan and never the reverse, a
+trigger is only fully legible next to the plan it starts. A flat list cannot show
+you that two triggers start the same plan; the lane shows it at a glance. Each
+plan card in the Workflows list carries the same fact in miniature (the rule when
+there is one trigger, the count when there are several), and a trigger whose plan
+is not in the current namespace gets an explicit callout under the list rather
+than vanishing from the console.
+
+Clicking a trigger opens its whole declaration in the inspector — the rule said
+out loud (a `memory` trigger's serialized `Condition` tree renders as
+`subject = "globex" AND relation = "open_incidents"`, not as JSON), the
+`because`, the connector and scope, the dedup key, concurrency and catch-up.
+
+Every row is read-only text, and there are no inputs, because the console
+genuinely cannot author one: CAL has no `ADD trigger`, and `ADD workflow`'s
+`ON "..."` clause was removed in 1.3, so a surface that writes only through
+`/api/cal` has nothing to write. Firing stays out for a separate reason: it
+spends budgets and executes effects, so the actor's identity is the audit
+record, and "whoever holds the console token" is not an identity — the same
+reason `run.respond` refuses a shared-token caller. The CLI and the bindings
+both carry a real principal, which is why they may fire and the console may
+not.
 
 Whether a trigger has actually fired is per-host state that does not replicate,
 so a console cannot know it for another machine. Use `areev trigger status` on

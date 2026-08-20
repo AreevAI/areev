@@ -290,6 +290,8 @@
   .nav-item .grow { flex:1; }
   .pill { display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:20px;
           padding:0 6px; border-radius:10px; background:var(--warn); color:#fff; font-size:11px; font-weight:600; }
+  .pill.soft { background:var(--raise); color:var(--dim); }
+  .nav-item.on .pill.soft { background:var(--surface); color:var(--accent); }
   .sec-label { font-size:11.5px; font-weight:600; color:var(--dim); letter-spacing:.09em; }
   #entities { display:flex; flex-direction:column; gap:1px; overflow-y:auto; min-height:0; }
   .ent { display:flex; align-items:center; gap:10px; padding:7px 11px; border-radius:8px; cursor:pointer;
@@ -511,7 +513,6 @@
   /* The plan list reuses .starter (query page's card) — a workflow card is
      the same shape: a bold label plus a code-styled gloss line. */
   #wfList { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; align-items:start; }
-  #runList { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:12px; align-items:start; }
   #wfwrap { background:var(--well); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
   #wfstage { position:relative; }
   /* The canvas is the reason this page exists — give it the room, not a
@@ -520,8 +521,10 @@
   #wfcanvas { display:block; width:100%; height:calc(100vh - 260px); min-height:480px; cursor:default; }
   #wfcanvas.connecting { cursor:crosshair; }
   #wftools { top:16px; left:16px; display:flex; align-items:center; gap:9px; background:none; border:0; box-shadow:none; }
-  #wflegend { bottom:16px; left:16px; display:flex; align-items:center; gap:14px; height:34px; padding:0 14px; border-radius:17px; }
+  #wflegend { bottom:16px; left:16px; display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px;
+              min-height:34px; max-width:min(560px, 62%); padding:7px 14px; border-radius:15px; }
   #wflegend span { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text); white-space:nowrap; }
+  #wflegend .legsep { color:var(--ghost); }
   #wfzoom { bottom:16px; right:16px; display:flex; align-items:center; height:34px; padding:0 4px; border-radius:17px; }
   #wfzoom button { width:30px; height:28px; border:0; background:none; color:var(--text); font-size:16px; border-radius:14px; }
   #wfzoom button.lbl { width:auto; padding:0 10px; font-size:12px; font-weight:600; color:var(--accent); }
@@ -529,6 +532,104 @@
   .wf-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:10px; font-size:11.5px; font-weight:600; width:fit-content; }
   .wf-field { display:flex; flex-direction:column; gap:5px; }
   .wf-field .tiny { color:var(--dim); }
+  /* A read-only inspector row: the trigger panel is all of these, because a
+     trigger cannot be authored through CAL and so must not offer inputs that
+     look editable. */
+  .wf-ro { display:flex; flex-direction:column; gap:3px; }
+  .wf-ro .k { font-size:12.5px; color:var(--dim); }
+  .wf-ro .v { font-size:13.5px; color:var(--ink); overflow-wrap:anywhere; }
+  .wf-ro .v.mono { font-family:var(--mono); font-size:12px; color:var(--text); }
+
+  /* ── the run bar: which run the canvas is tinted by ──
+     It sits in the page header rather than floating over the canvas, where it
+     would collide with the tools (top-left) and the inspector (top-right) at
+     narrow widths. */
+  .runbar { display:flex; align-items:center; gap:10px; height:34px; padding:0 6px 0 12px;
+            border:1px solid var(--line2); border-radius:9px; background:var(--surface); flex-shrink:0; }
+  .runbar .dot { width:8px; height:8px; border-radius:5px; flex-shrink:0; }
+  .runbar .lbl { font-size:12.5px; color:var(--text); white-space:nowrap; }
+  .runbar .lbl b { color:var(--ink); font-weight:600; }
+  .runbar .tally { font-size:12px; color:var(--dim); white-space:nowrap; }
+  .runbar select { height:26px; width:auto; max-width:230px; border:0; background:none; color:var(--ink);
+                   font-size:12.5px; font-weight:600; font-family:inherit; padding:0 24px 0 8px;
+                   line-height:26px; text-overflow:ellipsis; border-radius:7px; }
+  .runbar select:hover { background:var(--raise); }
+  .runbar .sel-wrap { display:flex; align-items:center; width:auto; height:26px; }
+  .runbar .sel-arrow { right:7px; }
+  .runbar .go { border:0; background:none; color:var(--accent); font-size:12.5px; font-weight:600;
+                padding:0 8px; height:26px; border-radius:7px; white-space:nowrap; }
+  .runbar .go:hover { background:var(--accent-soft); }
+
+  /* ── runs ── */
+  /* Grouped, not one flat grid: "waiting on you" is a different kind of thing
+     from "finished last Tuesday", and a single list buries the first in the
+     second. */
+  .rungroup { display:flex; flex-direction:column; gap:12px; }
+  .rungroup + .rungroup { margin-top:30px; }
+  .rungroup > .hd { display:flex; align-items:baseline; gap:10px; }
+  .rungroup > .hd h3 { font-size:13px; font-weight:600; color:var(--dim); letter-spacing:.07em;
+                       text-transform:uppercase; }
+  .rungroup > .hd .tiny { color:var(--faint); }
+  .rungrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(400px, 1fr)); gap:12px; align-items:start; }
+  .runcard { padding:0; overflow:hidden; display:flex; flex-direction:column; }
+  .runcard .top { display:flex; align-items:center; gap:11px; padding:15px 18px 13px; }
+  .runcard .top .plan { flex:1; min-width:0; font-size:15px; font-weight:600; color:var(--ink);
+                        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .runcard .top .plan .rid { display:block; font-size:12px; font-weight:400; color:var(--faint);
+                             font-family:var(--mono); }
+  .runcard .meta { display:flex; flex-wrap:wrap; gap:5px 14px; padding:0 18px 14px; font-size:12.5px; color:var(--dim); }
+  .runcard .steps { display:flex; gap:3px; padding:0 18px 15px; }
+  .runcard .steps i { height:4px; flex:1; border-radius:2px; background:var(--line); }
+  .runcard .foot { display:flex; align-items:center; gap:14px; padding:12px 18px;
+                   border-top:1px solid var(--hair); background:var(--well); }
+  .runcard .foot .grow { flex:1; }
+  .ask { margin:0 18px 16px; padding:13px 15px; border-radius:10px;
+         background:var(--warn-soft); border:1px solid var(--warn-line); }
+  .ask b { color:var(--ink); font-weight:600; font-size:13.5px; }
+  .ask .who { font-size:12.5px; color:var(--muted); margin-top:3px; }
+  .ask .acts { display:flex; gap:14px; align-items:center; margin-top:11px; }
+  .status-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:10px;
+                font-size:11.5px; font-weight:600; flex-shrink:0; }
+
+  /* ── tools ── */
+  #toolBody { display:flex; flex-direction:column; gap:14px; }
+  .toolgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; align-items:start; }
+  .toolcard { text-align:left; background:var(--surface); border:1px solid var(--line); border-radius:14px;
+              box-shadow:var(--card-shadow); padding:16px 18px; display:flex; flex-direction:column; gap:8px;
+              cursor:pointer; font-family:inherit; }
+  .toolcard:hover { border-color:var(--accent-line); }
+  .toolcard .hd { display:flex; align-items:center; gap:10px; }
+  .toolcard .hd b { flex:1; min-width:0; font-size:15px; font-weight:600; color:var(--ink);
+                    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .toolcard .desc { font-size:13.5px; color:var(--text); line-height:19px; }
+  .toolcard .use { font-size:12.5px; color:var(--faint); }
+  /* One execution = one line. A run of 40 calls has to stay scannable, so the
+     detail opens in place rather than each row carrying its payload. */
+  .exec { display:flex; align-items:center; gap:12px; width:100%; padding:11px 16px; border:0; background:none;
+          border-top:1px solid var(--hair); text-align:left; font-family:inherit; cursor:pointer; }
+  .exec:first-child { border-top:0; }
+  .exec:hover { background:var(--raise); }
+  .exec .bar { width:3px; align-self:stretch; border-radius:2px; flex-shrink:0; }
+  .exec .nm { flex:1; min-width:0; font-size:13.5px; color:var(--ink); font-weight:500;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .exec .nm span { color:var(--faint); font-weight:400; }
+  .exec .when { font-size:12px; color:var(--faint); white-space:nowrap; flex-shrink:0; }
+  .execwrap { display:flex; flex-direction:column; }
+  .execdet { padding:2px 16px 16px 31px; display:flex; flex-direction:column; gap:12px; background:var(--well);
+             border-top:1px solid var(--hair); }
+  /* Reuses the query workbench's own JSON block (pre.code.jsonv) — same
+     highlighting, just tighter, because these sit inside a list row. */
+  .execdet pre.code { font-size:11.5px; line-height:17.5px; background:var(--surface);
+                      border:1px solid var(--line); border-radius:9px; padding:11px 13px;
+                      max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .execdet .lab { font-size:11.5px; font-weight:600; color:var(--dim); letter-spacing:.07em; }
+  .schema { display:flex; flex-direction:column; }
+  .schema .r { display:flex; align-items:baseline; gap:12px; padding:7px 0; border-top:1px solid var(--hair); }
+  .schema .r:first-child { border-top:0; }
+  .schema .r .n { width:170px; flex-shrink:0; font-family:var(--mono); font-size:12.5px; color:var(--ink); }
+  .schema .r .t { font-size:12.5px; color:var(--hash); font-family:var(--mono); }
+  .schema .r .req { font-size:11px; font-weight:600; color:var(--warn); }
+  .schema .r .d { flex:1; min-width:0; font-size:12.5px; color:var(--dim); }
 
   /* ── namespace combobox: a real dropdown (known namespaces, click to
      pick) that is also just a text field — type a prefix pattern like
@@ -684,19 +785,22 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12.5h4.2l2.6-7 4.2 13 2.4-6h4.6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="grow">Activity</span>
       </button>
+      <!-- Plan before run before catalog: the order you meet them in. A
+           trigger has no nav item of its own — it is only meaningful next to
+           the plan it starts, so it lives on the workflow canvas. -->
+      <button class="nav-item" data-page="workflows">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="18.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="12" cy="18" r="2.3" stroke-width="1.7"/><path d="M7.6 7.2L11 16M16.4 7.2L13 16M7.8 6h8.4" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="grow">Workflows</span>
+        <span class="pill soft" id="wfTrgPill" hidden>0</span>
+      </button>
       <button class="nav-item" data-page="runs">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 4.5v15l13-7.5-13-7.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
         <span class="grow">Runs</span>
         <span class="pill" id="runPill" hidden>0</span>
       </button>
-      <button class="nav-item" data-page="workflows">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="5.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="18.5" cy="6" r="2.3" stroke-width="1.7"/><circle cx="12" cy="18" r="2.3" stroke-width="1.7"/><path d="M7.6 7.2L11 16M16.4 7.2L13 16M7.8 6h8.4" stroke-width="1.7" stroke-linecap="round"/></svg>
-        <span class="grow">Workflows</span>
-      </button>
-      <button class="nav-item" data-page="triggers">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.2" stroke-width="1.7"/><path d="M12 7.4V12l3 1.8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="grow">Triggers</span>
-        <span class="pill" id="trgPill" hidden>0</span>
+      <button class="nav-item" data-page="tools">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 2.8v5.4M15 2.8v5.4" stroke-width="1.7" stroke-linecap="round"/><path d="M5.8 8.2h12.4v3.2a6.2 6.2 0 01-12.4 0V8.2z" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 17.6v3.6" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="grow">Tools</span>
       </button>
       <button class="nav-item" data-page="suggestions">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9L5.2 10.3l4.9-1.9L12 3.5z" stroke-width="1.7" stroke-linejoin="round"/></svg>
@@ -849,27 +953,35 @@
     <!-- ── WORKFLOWS: plans as an editable graph ──
          One action slot, top right, for whatever this view's primary act is:
          "New workflow" on the list, "Save as new plan" in the editor. -->
-    <!-- Triggers: what this memory is supposed to be doing on its own. Read
-         only here on purpose — firing spends budgets and executes effects, so
-         it belongs to `areev trigger run` and its audit trail, not to a click
-         in a console whose identity may be a shared token. -->
-    <section class="page" id="page-triggers" hidden>
-      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
-        <div id="trgCrumb" style="flex:1;min-width:0"></div>
-        <span id="trgNsHost"></span>
+    <!-- Tools: what a step can call, and every call that was made. Both are
+         Tool grains split by `kind` — one catalog answering two questions
+         ("what can run" / "what did run"), so two tabs rather than two pages.
+         The namespace picker is deliberately the SAME state the Workflows
+         page uses (WF_NS): a plan and the tools it binds are one operations
+         surface, and two independent pickers on the same rows drift. -->
+    <section class="page" id="page-tools" hidden>
+      <div id="toolCrumb" class="wide"></div>
+      <div class="wide" style="display:flex;align-items:center;gap:16px" id="toolTabsRow">
+        <div class="tabs" id="toolTabs" style="flex:1">
+          <button class="on" data-t="catalog">Catalog</button>
+          <button data-t="executions">Executions</button>
+        </div>
+        <span id="toolNsHost"></span>
       </div>
-      <div class="wide" id="trgBody"></div>
+      <div class="wide" id="toolBody"></div>
     </section>
 
     <section class="page" id="page-workflows" hidden>
       <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
         <div id="wfCrumb" style="flex:1;min-width:0"></div>
+        <span id="wfRunHost"></span>
         <span id="wfNsHost"></span>
         <button class="btn sm" id="wfNewBtn">New workflow</button>
         <button class="btn sm" id="wfSave" hidden>Save as new plan</button>
       </div>
 
       <div class="wide" id="wfList"><div class="empty">loading…</div></div>
+      <div class="wide" id="wfOrphans" hidden></div>
 
       <div id="wfEditorWrap" hidden style="display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;">
         <div class="wide" id="wfwrap" style="flex:1;min-height:0;">
@@ -1264,6 +1376,7 @@ const provenance = g => provenanceParts(g).join(' · ');
 /* ══ state ════════════════════════════════════════════════════════════ */
 let BROWSE = [], BYHASH = {}, STATS = {}, CONFIG = null, LOG = [], RECS = {}, TELEMETRY = null;
 let PAGE = 'memory', MVIEW = 'list', SUGTAB = 'pending', CONTAB = 'agent', ACTFILTER = 'all';
+let TOOLTAB = 'catalog', TOOL_SEL = null;
 let ENTITY = null, ANSWER = null, SEL = null, ACTIVE_ENTS = [];
 const isGone = g => !!(g.forgotten || g.missing || g.op === 'forget');
 const isCurrent = g => !isGone(g) && !g.superseded_by && !g._stale;
@@ -1543,6 +1656,7 @@ function wireChrome() {
     b.onclick = async () => { SUGTAB = b.dataset.s; if (!RECS[SUGTAB]) await loadRecs(SUGTAB); render(); };
   });
   $('conTabs').querySelectorAll('button').forEach(b => { b.onclick = () => { CONTAB = b.dataset.c; render(); }; });
+  $('toolTabs').querySelectorAll('button').forEach(b => { b.onclick = () => { TOOLTAB = b.dataset.t; TOOL_SEL = null; render(); }; });
   $('runLoop').onclick = runAnalysis;
   /* the run button is a write too — gate it once config lands */
   $('panelShade').onclick = closePanel;
@@ -1580,11 +1694,19 @@ function applyHash() {
   if (!raw) return false;
   const [head, tail] = raw.split('/');
   if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
-  if (['memory', 'analytics', 'activity', 'runs', 'triggers', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
+  /* #triggers was its own page until triggers moved onto the canvas. Keep
+     the old link alive rather than dead-ending a bookmark: it now means "show
+     me what starts things", which is the plan list. */
+  if (head === 'triggers') { PAGE = 'workflows'; WF_SEL = null; WF_DRAFT = null; WF_PICK = null; return true; }
+  if (['memory', 'analytics', 'activity', 'runs', 'tools', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
     if (head === 'settings' && ['agent', 'sync', 'general'].includes(tail)) CONTAB = tail;
     if (head === 'suggestions' && ['pending', 'applied', 'rejected'].includes(tail)) SUGTAB = tail;
+    if (head === 'tools') {
+      if (['catalog', 'executions'].includes(tail)) TOOLTAB = tail;
+      TOOL_SEL = null;
+    }
     if (head === 'workflows') {
       if (tail && /^[0-9a-f]{8,64}$/i.test(tail)) WF_DEEPLINK = tail;
       else { WF_SEL = null; WF_DRAFT = null; WF_PICK = null; }
@@ -1597,6 +1719,7 @@ function syncHash() {
   const h = PAGE === 'memory' ? (MVIEW === 'graph' ? 'graph' : 'memory')
     : PAGE === 'settings' ? 'settings/' + CONTAB
     : PAGE === 'suggestions' ? 'suggestions/' + SUGTAB
+    : PAGE === 'tools' ? 'tools/' + TOOLTAB
     : PAGE === 'workflows' ? 'workflows' + (WF_SEL ? '/' + WF_SEL : '') : PAGE;
   if (location.hash.replace(/^#/, '') !== h) history.replaceState(null, '', '#' + h);
 }
@@ -1612,58 +1735,249 @@ function go(page) {
   render();
 }
 
-/* ══ runs: the HITL queue ═════════════════════════════════════════════ */
-let RUNS = null;
-async function renderRuns() {
-  renderCrumbHeader('runCrumb', [{ label: 'Runs' }],
-    "Governed workflow runs: journaled, checkpointed, pausable. A run waiting on a person shows its approval "
-    + "below — approving requires your own sign-in (a shared console token is refused: the approver's identity is the audit record).");
-  const box = $('runList');
-  if (RUNS === null) {
-    box.innerHTML = '<div class="empty">loading…</div>';
-    const r = await api('/api/run/list');
-    if (!r.ok) { box.innerHTML = '<div class="empty">' + esc(r.error || 'failed to load runs') + '</div>'; return; }
-    RUNS = r.runs || [];
-  }
-  const open = RUNS.filter(r => r.outcome === 'open');
-  const pill = $('runPill');
-  pill.hidden = open.length === 0; pill.textContent = open.length;
-  if (!RUNS.length) { box.innerHTML = '<div class="empty">No runs recorded in this memory yet. Start one with <code>areev run start</code>.</div>'; return; }
-  box.innerHTML = '';
-  for (const run of RUNS) {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.style.padding = '16px 18px';
-    const color = run.outcome === 'completed' ? 'var(--ok)' : (run.outcome === 'open' ? 'var(--warn)' : 'var(--danger)');
-    card.innerHTML = '<div style="display:flex;align-items:center;gap:12px">'
-      + '<b style="flex:1">' + esc(run.run_id) + '</b>'
-      + '<span style="color:' + color + ';font-weight:600">' + esc(run.outcome) + '</span></div>'
-      + '<div class="run-detail tiny" style="margin-top:8px">…</div>';
-    box.appendChild(card);
-    inspectRun(run.run_id, card.querySelector('.run-detail'));
-  }
-}
-async function inspectRun(id, el) {
-  const d = await api('/api/run/inspect?run_id=' + encodeURIComponent(id));
-  if (!d.ok) { el.textContent = d.error || 'inspect failed'; return; }
-  const asks = d.pending_asks && typeof d.pending_asks === 'object' ? Object.values(d.pending_asks) : [];
-  let html = 'plan <code>' + esc(String(d.plan_hash).slice(0, 12)) + '…</code>'
-    + ' · started by ' + esc(d.principal)
-    + ' · ' + d.checkpoints + ' checkpoints · ' + d.journal_entries + ' journal entries';
-  for (const a of asks) {
-    const ask = a.ask || a;
-    html += '<div style="margin-top:10px;padding:12px;background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:10px">'
-      + '<b>Waiting on a person:</b> ' + esc(ask.node || '') + ' (' + esc(ask.tool_name || '') + ')'
-      + '<div style="display:flex;gap:14px;margin-top:8px;align-items:center">'
-      + '<button class="btn sm" data-run="' + esc(id) + '" data-ask="' + esc(ask.tool_call_id) + '" data-refuse="0">Approve</button>'
-      + '<button class="btn danger" data-run="' + esc(id) + '" data-ask="' + esc(ask.tool_call_id) + '" data-refuse="1">Refuse</button>'
-      + '</div></div>';
-  }
-  el.innerHTML = html;
-  el.querySelectorAll('button[data-ask]').forEach(b => {
-    b.onclick = () => respondRun(b.dataset.run, b.dataset.ask, b.dataset.refuse === '1');
+/* ══ runs: the governed runtime ═══════════════════════════════════════
+   ONE index, loaded once, shared by this page and the workflow canvas's run
+   overlay. Two surfaces asking the server the same question separately is
+   exactly how they drift: the tint on a canvas node and the strip on a card
+   here are the same three facts, so they read them from the same place.
+
+   `/api/run/list` returns id + outcome only, so which plan a run executed
+   comes from `inspect` — one request per run, but also the only place
+   plan_hash, the principal and the pending asks exist. Where inspect can't
+   say (an older journal), the plan is recovered from the run's own step
+   grains, which name it in `related_to`. */
+let RUNIDX = null, RUNIDX_INFLIGHT = null;
+
+/* Run-journal Tool grains: the store's record of what each step actually did.
+   `isCurrent` alone leaves exactly one row per (run, node) — the journal
+   writes the intent as Pending and then SUPERSEDES it with the result, so the
+   superseded intent drops out and what survives IS the step's current state.
+   No head-resolution needed; that is the invariant doing the work. */
+function runStepGrains() {
+  return wfRows().filter(g => {
+    const f = g.fields || {};
+    return g.type === 'tool' && f.kind !== 'definition' && f.run_id && f.node && isCurrent(g);
   });
 }
+/** The plan a step grain was recorded against, via `mg:step_action:<node>`. */
+function stepPlanHash(f) {
+  for (const r of (Array.isArray(f.related_to) ? f.related_to : [])) {
+    if (r && typeof r.relation_type === 'string' && r.relation_type.startsWith('mg:step_action:')) {
+      return String(r.hash || '').replace(/^sha256:/, '');
+    }
+  }
+  return null;
+}
+/* Four states, because "pending" means two different things. A step still
+   Pending in a run that is *open* is waiting on someone; the same row in a
+   run that was canceled or failed is simply where it stopped, and colouring
+   that orange would invite an approval that can never arrive. */
+const STEP_TONE = { done: 'ok', waiting: 'warn', failed: 'danger', stopped: 'ghost' };
+const STEP_WORD = { done: 'done', waiting: 'waiting on a person', failed: 'failed', stopped: 'not finished' };
+function stepState(f, outcome) {
+  if (f.is_error === true) return 'failed';
+  const st = String(f.status || 'completed');
+  if (st === 'failed' || st === 'error') return 'failed';
+  if (st !== 'pending') return 'done';
+  return outcome && outcome !== 'open' ? 'stopped' : 'waiting';
+}
+/** node → { state, grain } for one run. Latest attempt wins. */
+function runStepStates(runId, outcome) {
+  const out = new Map();
+  for (const g of runStepGrains()) {
+    const f = g.fields;
+    if (f.run_id !== runId) continue;
+    const prev = out.get(f.node);
+    const rank = (f.superstep || 0) * 1e13 + (f.attempt || 0) * 1e11 + (createdMs(f) || 0);
+    if (prev && prev.rank >= rank) continue;
+    out.set(f.node, { state: stepState(f, outcome), grain: g, rank });
+  }
+  return out;
+}
+
+async function loadRuns(force) {
+  if (force) { RUNIDX = null; RUNIDX_INFLIGHT = null; }
+  if (RUNIDX) return RUNIDX;
+  if (RUNIDX_INFLIGHT) return RUNIDX_INFLIGHT;
+  RUNIDX_INFLIGHT = (async () => {
+    const idx = { runs: [], byId: new Map(), byPlan: new Map(), error: null };
+    const list = await api('/api/run/list');
+    if (!list || !list.ok) {
+      idx.error = (list && list.error) || 'failed to load runs';
+      RUNIDX = idx; RUNIDX_INFLIGHT = null; return idx;
+    }
+    const rows = Array.isArray(list.runs) ? list.runs : [];
+    const details = await Promise.all(rows.map(r =>
+      api('/api/run/inspect?run_id=' + encodeURIComponent(r.run_id)).catch(() => null)));
+    /* One pass over the step grains rather than a scan per run — a memory
+       with a few thousand executions makes the nested version quadratic. */
+    const firstSeen = new Map(), planFromGrains = new Map();
+    for (const g of runStepGrains()) {
+      const f = g.fields, t = createdMs(f);
+      const cur = firstSeen.get(f.run_id);
+      if (cur == null || (t && t < cur)) firstSeen.set(f.run_id, t);
+      if (!planFromGrains.has(f.run_id)) {
+        const h = stepPlanHash(f);
+        if (h) planFromGrains.set(f.run_id, h);
+      }
+    }
+    rows.forEach((r, i) => {
+      const d = (details[i] && details[i].ok) ? details[i] : {};
+      const run = {
+        run_id: r.run_id,
+        outcome: r.outcome || 'unknown',
+        plan_hash: d.plan_hash ? String(d.plan_hash).replace(/^sha256:/, '') : (planFromGrains.get(r.run_id) || null),
+        principal: d.principal || null,
+        checkpoints: d.checkpoints, journal_entries: d.journal_entries,
+        started_ms: firstSeen.get(r.run_id) || null,
+        asks: (d.pending_asks && typeof d.pending_asks === 'object')
+          ? Object.values(d.pending_asks).map(a => (a && a.ask) ? a.ask : a) : [],
+      };
+      idx.runs.push(run);
+      idx.byId.set(run.run_id, run);
+      if (run.plan_hash) {
+        if (!idx.byPlan.has(run.plan_hash)) idx.byPlan.set(run.plan_hash, []);
+        idx.byPlan.get(run.plan_hash).push(run);
+      }
+    });
+    for (const list2 of idx.byPlan.values()) list2.sort((a, b) => (b.started_ms || 0) - (a.started_ms || 0));
+    RUNIDX = idx; RUNIDX_INFLIGHT = null; return idx;
+  })();
+  return RUNIDX_INFLIGHT;
+}
+
+const OUTCOME_TONE = { completed: 'ok', open: 'warn', canceled: 'ghost', failed: 'danger' };
+function outcomeTone(o) { return OUTCOME_TONE[o] || 'danger'; }
+function statusTag(word, tone) {
+  const t = el('span', 'status-tag', word);
+  t.style.cssText = 'background:var(--' + (tone === 'ghost' ? 'raise' : tone + '-soft') + ');color:var(--'
+    + (tone === 'ghost' ? 'dim' : tone) + ')';
+  return t;
+}
+/** The plan a run executed, by whatever name it has. */
+function planLabel(hash) {
+  const g = hash && wfByHash()[hash];
+  return g ? wfLabel(g) : (hash ? shortHash(hash) : 'unknown plan');
+}
+
+async function renderRuns() {
+  renderCrumbHeader('runCrumb', [{ label: 'Runs' }],
+    'Every execution of a plan: journaled, checkpointed, pausable. A run waiting on a person shows its '
+    + 'approval below — approving requires your own sign-in, because the approver’s identity <em>is</em> '
+    + 'the audit record and a shared console token is not an identity.');
+  const box = $('runList');
+  if (!RUNIDX) box.innerHTML = '<div class="empty">loading…</div>';
+  const idx = await loadRuns();
+  if (PAGE !== 'runs') return;                 // navigated away while loading
+  const open = idx.runs.filter(r => r.outcome === 'open');
+  const pill = $('runPill');
+  pill.hidden = open.length === 0; pill.textContent = open.length;
+
+  box.textContent = '';
+  if (idx.error) { box.innerHTML = '<div class="empty">' + esc(idx.error) + '</div>'; return; }
+  if (!idx.runs.length) {
+    box.innerHTML = '<div class="empty">No runs recorded in this memory yet. A run is one execution of a plan '
+      + '— start one with <code>areev run start</code>, or let a trigger start it.</div>';
+    return;
+  }
+  const waiting = idx.runs.filter(r => r.asks.length);
+  const active = idx.runs.filter(r => !r.asks.length && r.outcome === 'open');
+  const done = idx.runs.filter(r => !r.asks.length && r.outcome !== 'open');
+  const groups = [
+    ['Waiting on you', waiting, 'A step bound to a human-approval tool has paused the run.'],
+    ['In flight', active, 'Started, not finished, nothing asked of you yet.'],
+    ['Finished', done, null],
+  ];
+  for (const [title, rows, gloss] of groups) {
+    if (!rows.length) continue;
+    const grp = el('div', 'rungroup');
+    const hd = el('div', 'hd');
+    hd.appendChild(el('h3', null, title + ' · ' + rows.length));
+    if (gloss) hd.appendChild(el('span', 'tiny', gloss));
+    grp.appendChild(hd);
+    const grid = el('div', 'rungrid');
+    for (const run of rows) grid.appendChild(runCard(run));
+    grp.appendChild(grid);
+    box.appendChild(grp);
+  }
+}
+
+function runCard(run) {
+  const card = el('div', 'card runcard');
+  const top = el('div', 'top');
+  const plan = el('div', 'plan');
+  plan.appendChild(document.createTextNode(planLabel(run.plan_hash)));
+  const rid = el('span', 'rid', run.run_id);
+  plan.appendChild(rid);
+  top.appendChild(plan);
+  top.appendChild(statusTag(run.outcome, outcomeTone(run.outcome)));
+  card.appendChild(top);
+
+  const meta = el('div', 'meta');
+  const bits = [];
+  if (run.principal) bits.push('started by ' + run.principal);
+  if (run.started_ms) bits.push(relTime(run.started_ms));
+  if (run.checkpoints != null) bits.push(run.checkpoints + ' checkpoints');
+  if (run.journal_entries != null) bits.push(run.journal_entries + ' journal entries');
+  for (const b of bits) meta.appendChild(el('span', null, b));
+  card.appendChild(meta);
+
+  /* The same overlay the canvas draws, one bar per step in plan order — so a
+     glance at the card and a glance at the graph agree about where the run
+     got to. */
+  const planG = run.plan_hash && wfByHash()[run.plan_hash];
+  const order = planG && Array.isArray((planG.fields || {}).nodes) ? planG.fields.nodes : [];
+  if (order.length) {
+    const states = runStepStates(run.run_id, run.outcome);
+    const strip = el('div', 'steps');
+    for (const id of order) {
+      const st = states.get(id);
+      const i = el('i');
+      i.title = id + (st ? ' — ' + STEP_WORD[st.state] : ' — not reached');
+      if (st) i.style.background = 'var(--' + STEP_TONE[st.state] + ')';
+      strip.appendChild(i);
+    }
+    card.appendChild(strip);
+  }
+
+  for (const ask of run.asks) card.appendChild(askBlock(run.run_id, ask));
+
+  const foot = el('div', 'foot');
+  foot.appendChild(el('span', 'grow'));
+  if (run.plan_hash) {
+    const b = el('button', 'btn ghost sm', 'Open plan ▸');
+    b.onclick = () => { WF_RUN = run.run_id; location.hash = '#workflows/' + run.plan_hash; };
+    foot.appendChild(b);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+/* Separation of duties is the whole point of this control, so when it is
+   unavailable it has to say WHICH credential is missing. `lock()`'s generic
+   read-only reason is not it: `run.respond` refuses a shared console token
+   even when that token can write everything else. */
+const RESPOND_WHY = 'Approving needs your own sign-in (areev ui --auth). A shared console token '
+  + 'and an anonymous caller are both refused here, because the approver’s identity is the audit record.';
+function askBlock(runId, ask) {
+  const box = el('div', 'ask');
+  box.appendChild(el('b', null, 'Waiting on a person'));
+  const node = ask.node || '';
+  const tool = ask.tool_name || '';
+  box.appendChild(el('div', 'who', node && tool && node !== tool ? node + ' · ' + tool : (node || tool || 'an approval step')));
+  const acts = el('div', 'acts');
+  const btn = (cls, label, refuse) => {
+    const b = lock(el('button', cls, label));
+    b.title = RESPOND_WHY;
+    b.onclick = () => respondRun(runId, ask.tool_call_id, refuse);
+    return b;
+  };
+  acts.appendChild(btn('btn sm', 'Approve', false));
+  acts.appendChild(btn('btn danger', 'Refuse', true));
+  box.appendChild(acts);
+  return box;
+}
+
 async function respondRun(id, ask, refuse) {
   const r = await api('/api/run/respond', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1675,7 +1989,7 @@ async function respondRun(id, ask, refuse) {
   });
   if (!r.ok) { toast(r.error || 'response refused'); return; }
   toast('Recorded as ' + (r.responder || 'you') + ' — resume the run to continue.');
-  RUNS = null; renderRuns();
+  await loadRuns(true); render();
 }
 
 /* ══ analytics ════════════════════════════════════════════════════════
@@ -1859,19 +2173,22 @@ async function renderAnalytics() {
 /* ══ render ═══════════════════════════════════════════════════════════ */
 function render() {
   syncHash();
-  for (const p of ['memory', 'analytics', 'activity', 'runs', 'workflows', 'suggestions', 'settings', 'query']) $('page-' + p).hidden = PAGE !== p;
+  for (const p of ['memory', 'analytics', 'activity', 'runs', 'tools', 'workflows', 'suggestions', 'settings', 'query']) $('page-' + p).hidden = PAGE !== p;
   $('nav').querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === PAGE));
+  const trgN = triggerGrains().length;
+  $('wfTrgPill').hidden = trgN === 0; $('wfTrgPill').textContent = String(trgN);
   $('listView').hidden = MVIEW !== 'list';
   $('graphView').hidden = MVIEW !== 'graph';
   $('mview').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === MVIEW));
   $('sugTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.s === SUGTAB));
+  $('toolTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.t === TOOLTAB));
   $('conTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.c === CONTAB));
   renderRail(); renderHeader(); renderExamples(); renderBanner(); renderFilterBar();
   if (PAGE === 'memory') { renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild(); }
   if (PAGE === 'analytics') renderAnalytics();
   if (PAGE === 'activity') renderActivity();
   if (PAGE === 'runs') renderRuns();
-  if (PAGE === 'triggers') renderTriggers();
+  if (PAGE === 'tools') renderTools();
   if (PAGE === 'workflows') renderWorkflows();
   if (PAGE === 'suggestions') { renderSuggestions(); lock($('runLoop')); }
   if (PAGE === 'settings') renderSettingsPage();
@@ -3511,6 +3828,27 @@ let WF_SEL = null, WF_DRAFT = null, WF_LOCKED = false, WF_PICK = null;
    browseForNamespace); switching pages back to the default is instant and
    never disturbs BROWSE, which the rail/entities/graph still depend on. */
 let WF_NS = null, WF_ROWS = null, WF_BYHASH_NS = null;
+/* Which run the canvas is tinted by. null = whichever ran most recently;
+   '' = the user turned the overlay off and wants structure only. */
+let WF_RUN = null;
+/* The triggers that start the open plan, and the run overlay, resolved once
+   per render rather than per frame — draw() runs on every mouse move. */
+let WF_TRG = [], WF_STEPS = null, WF_RUN_ACTIVE = null;
+
+/* Which run the canvas is tinted by, and what each step did in it.
+   `WF_RUN === ''` is the user asking for structure only; `null` means "the
+   most recent", which is what someone opening a plan cold wants to see. */
+function wfSyncRun() {
+  WF_STEPS = null; WF_RUN_ACTIVE = null;
+  if (!WF_SEL || !RUNIDX || WF_RUN === '') return;
+  const runs = RUNIDX.byPlan.get(bareHash(WF_SEL)) || [];
+  if (!runs.length) return;
+  const pick = WF_RUN ? runs.find(r => r.run_id === WF_RUN) : runs[0];
+  if (!pick) return;
+  WF_RUN_ACTIVE = pick;
+  WF_STEPS = runStepStates(pick.run_id, pick.outcome);
+}
+function wfTriggerClicked(hash) { WF_PICK = { kind: 'trigger', hash }; renderInspect(); }
 const wfRows = () => WF_ROWS || BROWSE;
 const wfByHash = () => WF_BYHASH_NS || BYHASH;
 async function wfSetNamespace(ns) {
@@ -3522,7 +3860,11 @@ async function wfSetNamespace(ns) {
   } else {
     WF_ROWS = null; WF_BYHASH_NS = null;
   }
-  wfClose();   // a namespace switch closes whatever was open — its hash may not even exist here
+  // A namespace switch closes whatever was open — its hash may not even exist
+  // here. render() rather than renderWorkflows(): the Tools page shares this
+  // picker, and it must not re-render the workflow page it isn't on.
+  WF_SEL = null; WF_DRAFT = null; WF_PICK = null; WF_RUN = null;
+  render();
 }
 
 function wfOpen(hash) {
@@ -3663,12 +4005,37 @@ function renderInspect() {
   box.hidden = false; box.textContent = '';
   WFGraph.setSelection(WF_PICK);
 
+  if (WF_PICK.kind === 'trigger') {
+    const g = triggersFor(WF_SEL).find(t => t.hash === WF_PICK.hash);
+    if (!g) { WF_PICK = null; box.hidden = true; WFGraph.setSelection(null); WFGraph.draw(); return; }
+    trgInspect(box, g);
+    WFGraph.draw();
+    return;
+  }
   if (WF_PICK.kind === 'node') {
     const id = WF_PICK.id;
     const ex = wfNodeExecutor(WF_DRAFT.bindings, id);
     const badge = el('span', 'wf-badge', WF_KIND_LABEL[ex.kind]);
     badge.style.cssText = 'background:var(--well);color:' + WFGraph.kindColor(ex.kind);
     box.appendChild(badge);
+
+    /* What this step did in the run the canvas is tinted by. Only while an
+       overlay is on — with no run selected there is no answer, and "not
+       reached" without a run to be un-reached in reads as broken. */
+    if (WF_STEPS && WF_RUN_ACTIVE) {
+      const st = WF_STEPS.get(id);
+      const d = el('div', 'wf-ro');
+      d.appendChild(el('span', 'k', 'In ' + WF_RUN_ACTIVE.run_id));
+      const v = el('span', 'v', st ? STEP_WORD[st.state] : 'not reached');
+      v.style.color = 'var(--' + (st ? STEP_TONE[st.state] : 'faint') + ')';
+      d.appendChild(v);
+      box.appendChild(d);
+      if (st) {
+        const open = el('button', 'btn ghost sm', 'See the call ▸');
+        open.onclick = () => { TOOLTAB = 'executions'; TOOL_SEL = st.grain.hash; go('tools'); };
+        box.appendChild(open);
+      }
+    }
 
     const nameField = el('div', 'wf-field');
     nameField.appendChild(el('span', 'tiny', 'Step name'));
@@ -3763,6 +4130,37 @@ function wfCard(g) {
   if (WF_NS === '*' && f.namespace) bits.push(f.namespace);   // "All namespaces" — say which one each card is
   bits.push(relTime(createdMs(f)));
   b.appendChild(el('span', 'meta', bits.join(' · ')));
+  /* What starts it, and how it last went — the two questions the flat trigger
+     list and the Runs page used to answer separately. Without these the card
+     is a shape with no cause and no history. */
+  const trg = triggersFor(g.hash);
+  const runs = (RUNIDX && RUNIDX.byPlan.get(g.hash)) || [];
+  if (trg.length || runs.length) {
+    const foot = el('span', 'meta');
+    foot.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap';
+    if (trg.length) {
+      const live = trg.filter(t => (t.fields || {}).enabled !== false).length;
+      const t = el('span');
+      t.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--' + (live ? 'ok' : 'dim') + ')';
+      const ring = el('span');
+      ring.style.cssText = 'width:7px;height:7px;border-radius:4px;border:1.6px solid currentColor';
+      t.appendChild(ring);
+      t.appendChild(el('span', null, trg.length === 1 ? trgWhen(trg[0].fields || {})
+        : trg.length + ' triggers'));
+      foot.appendChild(t);
+    }
+    if (runs.length) {
+      const r = runs[0];
+      const rr = el('span');
+      rr.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--' + outcomeTone(r.outcome) + ')';
+      const d = el('span');
+      d.style.cssText = 'width:7px;height:7px;border-radius:4px;background:currentColor';
+      rr.appendChild(d);
+      rr.appendChild(el('span', null, 'last run ' + r.outcome));
+      foot.appendChild(rr);
+    }
+    b.appendChild(foot);
+  }
   b.onclick = () => wfOpen(g.hash);
   return b;
 }
@@ -3782,8 +4180,67 @@ function wfLockReason() {
     + 'only; edit this one via the Rust or Python API.';
   return '';
 }
+/* Which run the canvas is showing, and the switch to change it. In the header
+   rather than floating on the canvas: the tools sit top-left and the inspector
+   top-right, so a third float has nowhere to be at a narrow width. */
+function wfRunBar() {
+  const host = $('wfRunHost'); host.textContent = '';
+  const show = !!WF_DRAFT && !!WF_SEL;
+  host.hidden = !show;
+  if (!show) return;
+  const bar = el('div', 'runbar');
+  if (!RUNIDX) { bar.appendChild(el('span', 'tally', 'checking runs…')); host.appendChild(bar); return; }
+  const runs = RUNIDX.byPlan.get(bareHash(WF_SEL)) || [];
+  if (!runs.length) {
+    const d = el('span', 'dot'); d.style.background = 'var(--ghost)';
+    bar.appendChild(d);
+    bar.appendChild(el('span', 'tally', 'Never run'));
+    host.appendChild(bar); return;
+  }
+  const active = WF_RUN_ACTIVE;
+  const dot = el('span', 'dot');
+  dot.style.background = 'var(--' + (active ? outcomeTone(active.outcome) : 'ghost') + ')';
+  bar.appendChild(dot);
+
+  if (active && WF_STEPS) {
+    const tally = { done: 0, waiting: 0, failed: 0, stopped: 0 };
+    for (const v of WF_STEPS.values()) tally[v.state]++;
+    const total = (WF_DRAFT.nodes || []).length;
+    const parts = [tally.done + ' of ' + total + ' done'];
+    if (tally.waiting) parts.push(tally.waiting + ' waiting');
+    if (tally.failed) parts.push(tally.failed + ' failed');
+    bar.tallyText = parts.join(' · ');
+  }
+
+  const sel = document.createElement('select');
+  sel.title = 'Tint the steps by what happened in a run';
+  const none = document.createElement('option');
+  none.value = '__none__'; none.textContent = 'Structure only';
+  sel.appendChild(none);
+  for (const r of runs) {
+    const o = document.createElement('option');
+    o.value = r.run_id; o.textContent = r.run_id + ' · ' + r.outcome;
+    if (active && active.run_id === r.run_id) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (!active) none.selected = true;
+  bar.appendChild(styledSelect(sel));
+  if (bar.tallyText) bar.appendChild(el('span', 'tally', bar.tallyText));
+  sel.onchange = () => {
+    WF_RUN = sel.value === '__none__' ? '' : sel.value;
+    wfSyncRun(); renderWorkflowHeader(); WFGraph.refresh(); renderInspect();
+  };
+
+  const jump = el('button', 'go', 'Runs ▸');
+  jump.title = 'Open this run on the Runs page';
+  jump.onclick = () => go('runs');
+  bar.appendChild(jump);
+  host.appendChild(bar);
+}
+
 function renderWorkflowHeader() {
   const editing = !!WF_DRAFT;
+  wfRunBar();
   $('wfNsHost').hidden = editing;
   $('wfNewBtn').hidden = editing;
   $('wfNewBtn').disabled = !!WF_NS;
@@ -3807,7 +4264,7 @@ function renderWorkflowHeader() {
     // Read-only: a plan is its graph. The editable field here used to write
     // `trigger`, which nothing ever read — so it invited someone to "set a
     // trigger" and then quietly did nothing. Real triggers are their own grains
-    // that point at this plan; see the Triggers tab.
+    // that point at this plan, and they are drawn in the canvas's own lane.
     editDesc: {
       value: wfShape(WF_DRAFT), disabled: true,
     },
@@ -3821,19 +4278,30 @@ function renderWorkflowHeader() {
     : 'Write a new plan grain with these steps';
 }
 /* ---------- Triggers ----------------------------------------------------
-   What this memory is supposed to be doing on its own. Built on /api/browse
-   like the Workflows tab, so there is no new server route.
+   A trigger is a standing rule that starts a workflow. The binding points
+   trigger → plan and never the reverse — a plan is content-addressed, so one
+   that grew a list of triggers would change address every time a trigger was
+   added and orphan its own run history. That direction is why a trigger is
+   only fully legible NEXT TO the plan it starts, and why these render on the
+   canvas instead of on a page of their own: a flat list of four triggers
+   cannot show you that two of them start the same plan.
 
-   Read-only on purpose. Firing a trigger spends budgets and executes effects,
-   which is the same reason `run.respond` refuses a shared-token caller: the
-   actor's identity IS the audit record, and "whoever holds the console token"
-   is not an identity. Declaring and firing stay in the CLI, where the principal
-   is real. */
+   Read-only, and not by preference. CAL has no `ADD trigger`, and
+   `ADD workflow`'s `ON "..."` clause was removed in 1.3, so a console that
+   writes only through /api/cal has no way to author one. Firing is withheld
+   for the same reason `run.respond` refuses a shared token: it spends budgets
+   and executes effects, and the declaring principal IS the audit record. */
 function triggerGrains() {
-  // BROWSE is the array itself, rows are keyed `type`, and `isCurrent` filters
-  // out tombstoned and superseded grains — the same three facts
-  // `workflowGrains()` relies on.
-  return (WF_ROWS || BROWSE).filter(g => g.type === 'trigger' && isCurrent(g));
+  return wfRows().filter(g => g.type === 'trigger' && isCurrent(g));
+}
+const bareHash = h => String(h == null ? '' : h).replace(/^sha256:/, '');
+/** The triggers that start one plan, newest first. */
+function triggersFor(hash) {
+  if (!hash) return [];
+  const h = bareHash(hash);
+  return triggerGrains()
+    .filter(g => bareHash((g.fields || {}).workflow) === h)
+    .sort((a, b) => createdMs(b.fields) - createdMs(a.fields));
 }
 
 /** Seconds as something a person reads. */
@@ -3846,61 +4314,125 @@ function everyPhrase(n) {
   return 'every ' + n + 's';
 }
 
-function trgCard(g) {
-  const f = g.fields || {};
-  const b = el('button', 'starter');
-  // The kind and what it watches, which is what someone is scanning for.
-  const title = f.scope || f.connector || (f.kind || 'trigger');
-  b.appendChild(el('b', '', String(title)));
-
-  const bits = [String(f.kind || 'interval')];
-  if (f.cron) bits.push('cron ' + f.cron);
-  const every = everyPhrase(f.interval_secs);
-  if (every) bits.push(every);
-  if (f.enabled === false) bits.push('disabled');
-  if (WF_NS && f.namespace) bits.push(f.namespace);
-  bits.push(relTime(createdMs(f)));
-  b.appendChild(el('span', 'meta', bits.join(' · ')));
-
-  // The rationale the declaration was required to carry.
-  if (f.because) b.appendChild(el('code', '', String(f.because)));
-  b.onclick = () => { location.hash = '#workflows/' + String(f.workflow || ''); };
-  return b;
+/* A serialized CAL Condition tree, said out loud. `memory` and `composite`
+   triggers carry their whole rule in here, so rendering it as JSON would hide
+   the one thing the reader came for. Unknown shapes fall back to JSON rather
+   than guessing — a wrong sentence is worse than an honest blob. */
+const PRED_CMP = { eq: '=', ne: '≠', lt: '<', lte: '≤', gt: '>', gte: '≥',
+  contains: 'contains', starts_with: 'starts with', ends_with: 'ends with', in: 'in' };
+function predValueText(v) {
+  if (v == null) return '?';
+  if (typeof v !== 'object') return String(v);
+  if (v.kind === 'string') return '"' + v.value + '"';
+  if (Array.isArray(v.values)) return '[' + v.values.map(predValueText).join(', ') + ']';
+  if ('value' in v) return String(v.value);
+  return JSON.stringify(v);
+}
+function predicateText(p, depth) {
+  depth = depth || 0;
+  if (p == null) return '';
+  if (typeof p !== 'object') return String(p);
+  const k = String(p.kind || '');
+  if (k === 'and' || k === 'or') {
+    const t = predicateText(p.left, depth + 1) + ' ' + k.toUpperCase() + ' ' + predicateText(p.right, depth + 1);
+    return depth ? '(' + t + ')' : t;
+  }
+  if (k === 'not') return 'NOT ' + predicateText(p.inner || p.operand || p.left, depth + 1);
+  if (k === 'comparison' || p.field) {
+    return (p.field || '?') + ' ' + (PRED_CMP[p.comparator] || p.comparator || '=') + ' ' + predValueText(p.value);
+  }
+  return JSON.stringify(p);
 }
 
-function renderTriggers() {
-  renderCrumbHeader('trgCrumb', [{ label: 'Triggers' }], null);
-  const host = $('trgBody');
-  if (!host) return;
-
-  const rows = triggerGrains();
-  const pill = $('trgPill');
-  if (pill) { pill.textContent = String(rows.length); pill.hidden = rows.length === 0; }
-
-  host.textContent = '';
-  if (!rows.length) {
-    host.innerHTML = '<div class="empty">No triggers yet. A trigger is a standing rule that '
-      + 'starts a workflow — an interval, a schedule, a mailbox to watch. Declare one with '
-      + '<code>areev trigger add</code>, then evaluate on a heartbeat with '
-      + '<code>areev trigger run</code>.</div>';
-    return;
+/* What this trigger is actually waiting for, in one line. The kind alone is a
+   category ("memory"); this is the rule. */
+function trgWhen(f) {
+  const kind = String(f.kind || 'interval');
+  if (kind === 'interval') return everyPhrase(f.interval_secs) || 'on an interval';
+  if (kind === 'polling') {
+    const who = (f.connector || 'a connector') + (f.scope ? ' ' + f.scope : '');
+    return 'poll ' + who + (everyPhrase(f.interval_secs) ? ' · ' + everyPhrase(f.interval_secs) : '');
   }
-  const items = rows.slice().sort((a, b) => createdMs(b.fields) - createdMs(a.fields));
-  for (const g of items) host.appendChild(trgCard(g));
+  if (kind === 'schedule') return f.cron ? 'cron ' + f.cron : 'on a schedule';
+  if (kind === 'once') return f.at_ms ? 'once · ' + dayLabel(Number(f.at_ms)) : 'once';
+  if (kind === 'memory') return f.predicate ? 'when ' + predicateText(f.predicate) : 'when memory changes';
+  if (kind === 'webhook') return 'on delivery' + (f.scope ? ' · ' + f.scope : '');
+  if (kind === 'manual') return 'when fired by hand';
+  if (kind === 'composite') return f.predicate ? 'when ' + predicateText(f.predicate) : 'when its members agree';
+  return kind;
+}
+/** The short line drawn under a trigger node on the canvas. */
+function trgSubtitle(f) {
+  const bits = [String(f.kind || 'interval')];
+  if (f.enabled === false) bits.push('disabled');
+  return bits.join(' · ');
+}
 
-  // Whether these have actually fired is per-host state that deliberately does
-  // not replicate, so this console cannot know it for another machine. Say so
-  // rather than showing a blank column that reads as "never fired".
-  const note = el('div', 'empty');
-  note.innerHTML = 'Whether these have fired lives in per-host state, which does not travel with '
-    + 'the memory — run <code>areev trigger status</code> on the machine that evaluates them.';
-  note.style.marginTop = '14px';
-  host.appendChild(note);
+/* The inspector for a trigger node. Every row is read-only text — no inputs,
+   no toggles: an input this console cannot honour is a worse lie than an
+   absent one. The escape hatch is the exact CLI command, ready to copy. */
+function trgInspect(box, g) {
+  const f = g.fields || {};
+  const live = f.enabled !== false;
+  const badge = el('span', 'wf-badge', 'Trigger · ' + String(f.kind || 'interval'));
+  badge.style.cssText = 'background:var(--well);color:var(--' + (live ? 'ok' : 'ghost') + ')';
+  box.appendChild(badge);
+
+  const row = (k, v, mono) => {
+    if (v == null || v === '') return;
+    const d = el('div', 'wf-ro');
+    d.appendChild(el('span', 'k', k));
+    d.appendChild(el('span', 'v' + (mono ? ' mono' : ''), String(v)));
+    box.appendChild(d);
+  };
+  row('Fires', trgWhen(f));
+  if (!live) row('State', 'Disabled in the declaration — it will not fire.');
+  row('Because', f.because);
+  row('Connector', f.connector);
+  row('Watches', f.scope);
+  if (Array.isArray(f.dedup_key) && f.dedup_key.length) row('Same item when', f.dedup_key.join(' + '), true);
+  if (f.correlate) row('Correlated on', f.correlate, true);
+  if (f.window_ms) row('Match window', everyPhrase(Number(f.window_ms) / 1000) || (f.window_ms + 'ms'));
+  if (f.members && Object.keys(f.members).length) {
+    row('Members', Object.keys(f.members).map(a => a + ' → ' + shortHash(bareHash(f.members[a]))).join('\n'), true);
+  }
+  if (f.concurrency) row('If one is still running', f.concurrency);
+  if (f.catchup) row('Missed firings', f.catchup);
+  row('Declared', relTime(createdMs(f)));
+
+  /* Whether it has actually fired is per-host state — a `trg:` row in the
+     meta table that deliberately does NOT replicate, so a dev memory restored
+     from prod cannot inherit prod's cursor. This console genuinely cannot
+     know it for another machine; say so rather than drawing an empty column
+     that reads as "never fired". */
+  const note = el('div', 'wf-ro');
+  note.appendChild(el('span', 'k', 'Has it fired?'));
+  const nv = el('span', 'v'); nv.style.fontSize = '12.5px'; nv.style.color = 'var(--dim)';
+  nv.textContent = 'Per-host state — it does not travel with the memory. Run '
+    + '`areev trigger status` on the machine that evaluates it.';
+  note.appendChild(nv);
+  box.appendChild(note);
+
+  const copy = el('button', 'btn ghost sm', 'Copy `trigger show`');
+  copy.onclick = () => copyText('areev trigger show ' + g.hash, 'command');
+  box.appendChild(copy);
 }
 
 function renderWorkflows() {
   const listHost = $('wfList');
   listHost.hidden = !!WF_DRAFT;
+  WF_TRG = WF_SEL ? triggersFor(WF_SEL) : [];
+  wfSyncRun();
+  /* The list cards and the canvas overlay want the same run index. Fetch it
+     once and repaint whichever is on screen — never block first paint on it,
+     because a plan must be visible without the runtime answering. */
+  if (!RUNIDX && !RUNIDX_INFLIGHT) {
+    loadRuns().then(() => {
+      if (PAGE !== 'workflows') return;
+      if (WF_DRAFT && WF_SEL) { wfSyncRun(); renderWorkflowHeader(); WFGraph.refresh(); renderInspect(); }
+      else renderWorkflows();
+    });
+  }
   if (!WF_DRAFT) {
     const grains = workflowGrains();
     const byLabel = new Map();
@@ -3916,6 +4448,7 @@ function renderWorkflows() {
     } else {
       for (const g of items) listHost.appendChild(wfCard(g));
     }
+    renderOrphanTriggers();
   }
 
   renderWorkflowHeader();
@@ -3926,6 +4459,37 @@ function renderWorkflows() {
   $('wfAddNode').disabled = WF_LOCKED;
   WFGraph.mount();
   renderInspect();
+}
+
+/* A trigger whose plan is not among these rows still fires. It used to be
+   visible on the Triggers tab; with that tab gone, an unreferenced trigger
+   would simply disappear from the console, which is the one thing a standing
+   rule must never do. */
+function renderOrphanTriggers() {
+  const host = $('wfOrphans');
+  if (!host) return;
+  const known = new Set(workflowGrains().map(g => g.hash));
+  const orphans = triggerGrains().filter(t => !known.has(bareHash((t.fields || {}).workflow)));
+  host.textContent = '';
+  host.hidden = !orphans.length;
+  if (!orphans.length) return;
+  const card = el('div', 'card');
+  card.style.cssText = 'padding:16px 18px;display:flex;flex-direction:column;gap:10px';
+  const hd = el('div');
+  hd.style.cssText = 'font-size:13.5px;font-weight:600;color:var(--ink)';
+  hd.textContent = orphans.length === 1 ? '1 trigger points somewhere else'
+    : orphans.length + ' triggers point somewhere else';
+  card.appendChild(hd);
+  card.appendChild(el('div', 'tiny', 'Their plan is not in ' + (WF_NS || boundNamespace())
+    + ' — superseded, forgotten, or in another namespace. They still fire.'));
+  for (const t of orphans) {
+    const f = t.fields || {};
+    const row = el('div', 'tiny');
+    row.style.color = 'var(--text)';
+    row.textContent = trgWhen(f) + ' · ' + String(f.kind || '') + ' → plan ' + shortHash(bareHash(f.workflow));
+    card.appendChild(row);
+  }
+  host.appendChild(card);
 }
 
 /* A plain sentence describing what changed, so saving rarely means typing
@@ -4050,8 +4614,13 @@ async function wfSave(reason) {
 const WFGraph = (() => {
   let cv, ctx, W = 0, H = 0, dpr = 1;
   let nodes = [], byId = new Map(), edgesGeo = [];
+  /* Triggers live in their OWN arrays, never in `nodes`. That is not tidiness:
+     `nodes` is the draft the Save button serializes, and a plan grain has no
+     field for a trigger (the binding points the other way). Keeping them
+     structurally separate makes it impossible for the lane to be saved. */
+  let trgNodes = [], trgEdges = [];
   let scale = 1, tx = 0, ty = 0;
-  let drag = null, panning = null, moved = false, hoverId = null;
+  let drag = null, panning = null, moved = false, hoverId = null, trgDown = null;
   let connectFrom = null, connectPt = null, connectTarget = null;   // live drag-to-connect
   let colors = {};
   let posOverride = {};
@@ -4060,11 +4629,16 @@ const WFGraph = (() => {
   function recolor() {
     colors = { host: cssVar('--accent'), client: cssVar('--warn'), abstract: cssVar('--cat-project'),
       subgraph: cssVar('--hash'), line: cssVar('--line2'), ink: cssVar('--ink'), dim: cssVar('--dim'),
-      faint: cssVar('--faint'), surface: cssVar('--surface'), well: cssVar('--well') };
+      faint: cssVar('--faint'), surface: cssVar('--surface'), well: cssVar('--well'),
+      /* a trigger is armed, not a step — green reads as "live", and it is the
+         one hue the four node kinds do not already use */
+      trg: cssVar('--ok'), ok: cssVar('--ok'), warn: cssVar('--warn'),
+      danger: cssVar('--danger'), ghost: cssVar('--ghost') };
   }
   const clip = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
   const COL_W = 240, ROW_H = 96;
   const HANDLE_R = 7, HANDLE_HIT = 11;
+  const TRG_W = 196, TRG_H = 52, TRG_GAP = 78, TRG_ROW = 76;
 
   function layout() {
     const draft = WF_DRAFT;
@@ -4079,6 +4653,10 @@ const WFGraph = (() => {
     }
     const rank = new Map(ids.map(n => [n, 0]));
     const queue = ids.filter(n => (indeg.get(n) || 0) === 0);
+    /* Snapshot before the topological walk decrements `indeg` out from under
+       us — these are the steps a run actually starts at, and so the steps a
+       trigger points into. */
+    const entryIds = queue.slice();
     const seen = new Set(queue);
     let i = 0, guard = 0;
     while (i < queue.length && guard++ < ids.length * ids.length + 10) {
@@ -4114,6 +4692,47 @@ const WFGraph = (() => {
     }
     byId = new Map(nodes.map(n => [n.id, n]));
     edgesGeo = (draft ? draft.edges : []).map((e, idx) => ({ e, idx, a: byId.get(e.src), b: byId.get(e.dst) }));
+    layoutTriggers(entryIds);
+  }
+  /* The lane sits to the LEFT of wherever the entry steps currently are, not
+     at a fixed x — nodes are draggable, and a lane pinned to the origin ends
+     up behind the plan the moment someone rearranges it. Right-aligned to one
+     shared edge so the dashed arrows all span the same gap. */
+  function layoutTriggers(entryIds) {
+    trgNodes = []; trgEdges = [];
+    const list = WF_TRG || [];
+    if (!list.length || !nodes.length) return;
+    let anchor = (entryIds || []).map(id => byId.get(id)).filter(Boolean);
+    if (!anchor.length) anchor = [nodes.reduce((a, b) => (b.x < a.x ? b : a))];
+    let left = Infinity, cy = 0;
+    for (const n of anchor) { left = Math.min(left, n.x - n.w / 2); cy += n.y; }
+    cy /= anchor.length;
+    trgNodes = list.map((g, i) => ({
+      g, hash: g.hash, w: TRG_W, h: TRG_H,
+      x: 0, y: cy + (i - (list.length - 1) / 2) * TRG_ROW,
+    }));
+    if (ctx) {
+      for (const t of trgNodes) {
+        const f = t.g.fields || {};
+        ctx.font = '600 13px ' + cssVar('--sans');
+        const w1 = ctx.measureText(clip(trgWhen(f), 34)).width;
+        ctx.font = '11.5px ' + cssVar('--sans');
+        const w2 = ctx.measureText(clip(trgSubtitle(f), 28)).width;
+        t.w = Math.max(TRG_W, Math.max(w1, w2) + 46);
+      }
+    }
+    const rightEdge = left - TRG_GAP;
+    for (const t of trgNodes) {
+      t.x = rightEdge - t.w / 2;
+      for (const n of anchor) trgEdges.push({ a: t, b: n });
+    }
+  }
+  function hitTrigger(p) {
+    for (let i = trgNodes.length - 1; i >= 0; i--) {
+      const t = trgNodes[i];
+      if (Math.abs(p.x - t.x) <= t.w / 2 + 3 && Math.abs(p.y - t.y) <= t.h / 2 + 3) return t;
+    }
+    return null;
   }
   function resetOverrides() { posOverride = {}; }
   function renameOverride(oldId, next) { if (posOverride[oldId]) { posOverride[next] = posOverride[oldId]; delete posOverride[oldId]; } }
@@ -4197,6 +4816,24 @@ const WFGraph = (() => {
     ctx.save();
     ctx.translate(W / 2 + tx, H / 2 + ty);
     ctx.scale(scale, scale);
+    /* Under the plan's own edges: a trigger arrow is the cause arriving from
+       outside, not a step in the graph. Dashed for the same reason — the plan
+       does not contain it, and a solid line would read as one more edge you
+       could select and delete. */
+    for (const te of trgEdges) {
+      const live = (te.a.g.fields || {}).enabled !== false;
+      const c = edgeCurve(te.a, te.b, false);
+      ctx.beginPath();
+      ctx.moveTo(c.ax, c.ay);
+      ctx.bezierCurveTo(c.c1x, c.c1y, c.c2x, c.c2y, c.bx, c.by);
+      ctx.strokeStyle = live ? colors.trg : colors.ghost;
+      ctx.lineWidth = 1.6; ctx.setLineDash([6, 5]); ctx.globalAlpha = live ? 0.75 : 0.45;
+      ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+      const end = bezierPoint(te.a, te.b, false, 0.985), near = bezierPoint(te.a, te.b, false, 0.9);
+      ctx.globalAlpha = live ? 0.8 : 0.45;
+      arrow(end.x, end.y, Math.atan2(end.y - near.y, end.x - near.x), live ? colors.trg : colors.ghost);
+      ctx.globalAlpha = 1;
+    }
     for (let i = 0; i < edgesGeo.length; i++) {
       const { a, b, e } = edgesGeo[i];
       if (!a || !b) continue;
@@ -4231,8 +4868,47 @@ const WFGraph = (() => {
       }
     }
     ctx.globalAlpha = 1;
+    if (trgNodes.length) {
+      const topY = Math.min.apply(null, trgNodes.map(t => t.y - t.h / 2));
+      const leftX = Math.min.apply(null, trgNodes.map(t => t.x - t.w / 2));
+      if (scale > 0.45) {
+        ctx.textAlign = 'left';
+        ctx.font = '600 10.5px ' + cssVar('--sans');
+        ctx.fillStyle = colors.faint;
+        ctx.fillText('STARTED BY', leftX + 2, topY - 12);
+      }
+      for (const t of trgNodes) {
+        const f = t.g.fields || {};
+        const live = f.enabled !== false;
+        const c = live ? colors.trg : colors.ghost;
+        const selected = sel && sel.kind === 'trigger' && sel.hash === t.hash;
+        const x0 = t.x - t.w / 2, y0 = t.y - t.h / 2;
+        ctx.beginPath(); roundRect(x0, y0, t.w, t.h, 13);
+        ctx.fillStyle = colors.surface; ctx.fill();
+        ctx.lineWidth = selected ? 2.6 : 1.6;
+        ctx.strokeStyle = selected ? colors.ink : c;
+        ctx.setLineDash(selected ? [] : [5, 4]);
+        ctx.stroke(); ctx.setLineDash([]);
+        /* A ring, where a step draws a filled dot — the shape says "not one of
+           the steps" before the colour or the dashes do. */
+        ctx.beginPath(); ctx.arc(x0 + 15, y0 + 15, 4, 0, 7);
+        ctx.lineWidth = 1.8; ctx.strokeStyle = c; ctx.stroke();
+        ctx.textAlign = 'left';
+        ctx.fillStyle = live ? colors.ink : colors.dim;
+        ctx.font = (selected ? '700 ' : '600 ') + '13px ' + cssVar('--sans');
+        ctx.fillText(clip(trgWhen(f), 34), x0 + 26, y0 + 20);
+        ctx.fillStyle = colors.faint;
+        ctx.font = '11.5px ' + cssVar('--sans');
+        ctx.fillText(clip(trgSubtitle(f), 28), x0 + 26, y0 + 37);
+      }
+    }
     for (const n of nodes) {
       const ex = wfNodeExecutor(WF_DRAFT ? WF_DRAFT.bindings : {}, n.id);
+      /* The run overlay. A step with no row in this run was never reached, so
+         it is dimmed rather than tinted — an absence, not an outcome. */
+      const st = WF_STEPS ? (WF_STEPS.get(n.id) || null) : null;
+      const unreached = !!WF_STEPS && !st;
+      if (unreached) ctx.globalAlpha = 0.5;
       const c = colors[ex.kind] || colors.dim;
       const selected = sel && sel.kind === 'node' && sel.id === n.id;
       const isDropTarget = connectFrom && connectFrom !== n.id && connectTarget === n.id;
@@ -4246,6 +4922,13 @@ const WFGraph = (() => {
       if (isDropTarget) {
         ctx.globalAlpha = 0.08; ctx.fillStyle = colors.ink;
         ctx.beginPath(); roundRect(x0, y0, n.w, n.h, 11); ctx.fill(); ctx.globalAlpha = 1;
+      }
+      if (WF_STEPS) {
+        ctx.save();
+        ctx.beginPath(); roundRect(x0, y0, n.w, n.h, 11); ctx.clip();
+        ctx.fillStyle = st ? colors[STEP_TONE[st.state]] : colors.line;
+        ctx.fillRect(x0, y0, 7, n.h);
+        ctx.restore();
       }
       ctx.beginPath(); ctx.arc(x0 + 14, y0 + 16, 4, 0, 7); ctx.fillStyle = c; ctx.fill();
       ctx.textAlign = 'left';
@@ -4263,6 +4946,7 @@ const WFGraph = (() => {
       ctx.fillStyle = colors.surface; ctx.fill();
       ctx.lineWidth = hot ? 2.2 : 1.6; ctx.strokeStyle = hot ? colors.ink : colors.line; ctx.stroke();
       ctx.beginPath(); ctx.arc(hp.x, hp.y, 2.5, 0, 7); ctx.fillStyle = hot ? colors.ink : colors.faint; ctx.fill();
+      if (unreached) ctx.globalAlpha = 1;
     }
     ctx.restore();
     ctx.globalAlpha = 1;
@@ -4282,7 +4966,7 @@ const WFGraph = (() => {
   function fit() {
     if (!nodes.length) { scale = 1; tx = ty = 0; draw(); return; }
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const n of nodes) {
+    for (const n of nodes.concat(trgNodes)) {
       x0 = Math.min(x0, n.x - n.w / 2 - 30); y0 = Math.min(y0, n.y - n.h / 2 - 40);
       x1 = Math.max(x1, n.x + n.w / 2 + 40); y1 = Math.max(y1, n.y + n.h / 2 + 40);
     }
@@ -4295,16 +4979,28 @@ const WFGraph = (() => {
   }
   function legend() {
     const host = $('wflegend'); host.textContent = '';
-    for (const [k, label] of [['host', 'Host tool'], ['client', 'Human approval'], ['abstract', 'Abstract (LLM)'], ['subgraph', 'Subgraph']]) {
+    const add = (color, label, ring) => {
       const s = el('span');
-      const d = el('span'); d.style.cssText = 'width:8px;height:8px;border-radius:4px;background:' + colors[k];
+      const d = el('span');
+      d.style.cssText = 'width:8px;height:8px;border-radius:4px;flex-shrink:0;'
+        + (ring ? 'border:1.6px solid ' + color : 'background:' + color);
       s.appendChild(d); s.appendChild(el('span', null, label));
       host.appendChild(s);
+    };
+    for (const [k, label] of [['host', 'Host tool'], ['client', 'Human approval'],
+      ['abstract', 'Abstract (LLM)'], ['subgraph', 'Subgraph']]) add(colors[k], label);
+    if (trgNodes.length) add(colors.trg, 'Trigger', true);
+    /* Only while an overlay is on: a key for colours that aren't on screen is
+       just clutter, and this legend has to stay readable at one or two lines. */
+    if (WF_STEPS) {
+      host.appendChild(el('span', 'legsep', '·'));
+      for (const [k, label] of [['ok', 'done'], ['warn', 'waiting'], ['danger', 'failed']]) add(colors[k], label);
     }
   }
   return {
     recolor, resetOverrides, renameOverride, setSelection, kindColor, draw,
     rebuild() { layout(); },
+    refresh() { if (!ctx) return; layout(); legend(); draw(); },
     wire() {
       cv = $('wfcanvas'); ctx = cv.getContext('2d'); recolor();
       window.addEventListener('resize', () => { if (!$('wfEditorWrap').hidden) { resize(); fit(); } });
@@ -4313,8 +5009,16 @@ const WFGraph = (() => {
         const h = hitHandle(p);
         if (h && !WF_LOCKED) { connectFrom = h.id; connectPt = p; connectTarget = null; return; }
         const n = hitNode(p);
-        if (n) drag = { id: n.id, dx: n.x - p.x, dy: n.y - p.y };
-        else { panning = { x: e.clientX - tx, y: e.clientY - ty }; cv.classList.add('grabbing'); }
+        if (n) { drag = { id: n.id, dx: n.x - p.x, dy: n.y - p.y }; return; }
+        /* Triggers are neither draggable nor connectable: the lane is not the
+           user's to arrange, and a plan grain has no field that could record
+           where a trigger sits. Panning still arms, so a drag starting on one
+           pans exactly like a drag on the background; the click only lands if
+           the pointer never moved. */
+        const t = hitTrigger(p);
+        trgDown = t ? t.hash : null;
+        panning = { x: e.clientX - tx, y: e.clientY - ty };
+        if (!t) cv.classList.add('grabbing');
       });
       window.addEventListener('mousemove', e => {
         if (connectFrom) {
@@ -4336,7 +5040,7 @@ const WFGraph = (() => {
         const h = hitHandle(p), n = h ? null : hitNode(p);
         const nextHover = h ? h.id : null;
         if (nextHover !== hoverId) { hoverId = nextHover; draw(); }
-        cv.style.cursor = h ? 'crosshair' : (n || hitEdge(p) >= 0) ? 'pointer' : 'grab';
+        cv.style.cursor = h ? 'crosshair' : (n || hitTrigger(p) || hitEdge(p) >= 0) ? 'pointer' : 'grab';
       });
       window.addEventListener('mouseup', e => {
         if (connectFrom) {
@@ -4348,10 +5052,13 @@ const WFGraph = (() => {
         if (drag) { if (!moved) wfNodeClicked(drag.id); drag = null; return; }
         if (panning) {
           if (!moved) {
-            const p = toWorld(e); const ei = hitEdge(p);
-            if (ei >= 0) wfEdgeClicked(ei); else wfCanvasBgClicked();
+            if (trgDown) wfTriggerClicked(trgDown);
+            else {
+              const p = toWorld(e); const ei = hitEdge(p);
+              if (ei >= 0) wfEdgeClicked(ei); else wfCanvasBgClicked();
+            }
           }
-          panning = null; cv.classList.remove('grabbing');
+          panning = null; trgDown = null; cv.classList.remove('grabbing');
         }
       });
       cv.addEventListener('mouseleave', () => { if (hoverId) { hoverId = null; draw(); } });
@@ -4368,6 +5075,310 @@ const WFGraph = (() => {
     mount() { if (!cv || !cv.clientWidth) { requestAnimationFrame(() => WFGraph.mount()); return; } resize(); layout(); fit(); legend(); draw(); },
   };
 })();
+
+/* ══ tools: the catalog, and every call made against it ═══════════════
+   Definition and execution are the same grain type split by `kind` — "what
+   can run" and "what did run" are two questions about ONE catalog, so they
+   are two tabs here rather than two pages. Configuration is not a third tab:
+   a tool's schema, locked params and executor ARE the catalog entry, and a
+   separate table of the same fields is the kind of duplicate surface that
+   drifts out of agreement with the one beside it.
+
+   Everything comes from /api/browse, which is already loaded — no new server
+   route, the same way the workflow canvas is built. */
+function toolExecs() {
+  return wfRows().filter(g => {
+    const f = g.fields || {};
+    return g.type === 'tool' && f.kind !== 'definition' && isCurrent(g);
+  }).sort((a, b) => createdMs(b.fields) - createdMs(a.fields));
+}
+/** Where a definition is actually wired in: plan → node. */
+function toolBoundIn(hash) {
+  const out = [];
+  for (const g of workflowGrains()) {
+    const b = (g.fields || {}).bindings || {};
+    for (const node of Object.keys(b)) if (bareHash(b[node]) === hash) out.push({ plan: g, node });
+  }
+  return out;
+}
+const toolIsClient = f => (f || {}).executor_kind === 'client';
+const toolKindWord = f => toolIsClient(f) ? 'Human approval' : 'Host tool';
+const toolKindTone = f => toolIsClient(f) ? 'warn' : 'accent';
+
+function renderTools() {
+  const nsHost = $('toolNsHost'); nsHost.textContent = '';
+  nsHost.appendChild(nsCombo('toolNs', WF_NS || boundNamespace(), ns => wfSetNamespace(ns)));
+  const host = $('toolBody');
+  host.textContent = '';
+  /* Execution rows resolve their state against the run's outcome, so without
+     the index a Pending step in a canceled run would read as "waiting on a
+     person" — an approval that can never arrive. Correctness, not a label. */
+  if (!RUNIDX && !RUNIDX_INFLIGHT) loadRuns().then(() => { if (PAGE === 'tools') render(); });
+  if (TOOLTAB === 'catalog' && TOOL_SEL) { renderToolDetail(host); return; }
+  renderCrumbHeader('toolCrumb', [{ label: 'Tools' }],
+    'What a step can call. A <b>definition</b> is the catalog entry a plan binds a node to — its schema is '
+    + 'the contract the model must fill; an <b>execution</b> is one call that was actually made, journaled '
+    + 'as its own immutable grain.');
+  if (TOOLTAB === 'catalog') renderToolCatalog(host); else renderToolExecs(host);
+}
+
+function renderToolCatalog(host) {
+  const defs = toolDefs().slice().sort((a, b) =>
+    String((a.fields || {}).tool_name || '').localeCompare(String((b.fields || {}).tool_name || '')));
+  if (!defs.length) {
+    host.innerHTML = '<div class="empty">No tools defined in this memory. A definition is what a plan node '
+      + 'binds to — write one with <code>bind_tool</code>, or <code>ADD tool</code> in CAL.</div>';
+    return;
+  }
+  const grid = el('div', 'toolgrid');
+  for (const g of defs) grid.appendChild(toolCard(g));
+  host.appendChild(grid);
+}
+
+function toolCard(g) {
+  const f = g.fields || {};
+  const b = el('button', 'toolcard');
+  const hd = el('div', 'hd');
+  hd.appendChild(el('b', null, f.tool_name || shortHash(g.hash)));
+  const badge = el('span', 'wf-badge', toolKindWord(f));
+  badge.style.cssText = 'background:var(--well);color:var(--' + toolKindTone(f) + ')';
+  hd.appendChild(badge);
+  b.appendChild(hd);
+  if (f.tool_description) b.appendChild(el('div', 'desc', f.tool_description));
+
+  const ann = f.annotations || {};
+  const tags = [];
+  if (ann.read_only) tags.push('read-only');
+  if (ann.destructive) tags.push('destructive');
+  if (ann.idempotent) tags.push('idempotent');
+  const bound = toolBoundIn(g.hash);
+  const calls = toolExecs().filter(e => (e.fields || {}).tool_name === f.tool_name).length;
+  const parts = [];
+  if (tags.length) parts.push(tags.join(' · '));
+  parts.push(bound.length ? 'bound in ' + bound.map(x => wfLabel(x.plan)).filter((v, i, a) => a.indexOf(v) === i).join(', ')
+    : 'not bound in any plan');
+  if (calls) parts.push(calls + (calls === 1 ? ' call' : ' calls'));
+  b.appendChild(el('div', 'use', parts.join(' — ')));
+  b.onclick = () => { TOOL_SEL = f.tool_name || g.hash; render(); };
+  return b;
+}
+
+function renderToolDetail(host) {
+  const g = toolDefs().find(t => ((t.fields || {}).tool_name || t.hash) === TOOL_SEL);
+  if (!g) { TOOL_SEL = null; renderTools(); return; }
+  const f = g.fields || {};
+  renderCrumbHeader('toolCrumb', [
+    { label: 'Tools', onClick: () => { TOOL_SEL = null; render(); } },
+    { label: f.tool_name || shortHash(g.hash) },
+  ], f.tool_description ? esc(f.tool_description) : null);
+
+  const card = el('div', 'card');
+  card.style.cssText = 'padding:4px 20px 18px';
+  const row = (k, v, mono) => {
+    if (v == null || v === '') return;
+    const d = el('div', 'kv');
+    d.appendChild(el('span', 'k', k));
+    const val = el('span', 'v', String(v));
+    if (mono) { val.style.fontFamily = 'var(--mono)'; val.style.fontSize = '12.5px'; }
+    d.appendChild(val);
+    card.appendChild(d);
+  };
+  row('Runs as', toolKindWord(f) + (toolIsClient(f)
+    ? ' — the run pauses here until a person responds'
+    : ' — executed by the host through $AREEV_RUN_TOOL_CMD'));
+  const ann = f.annotations || {};
+  const tags = [ann.read_only && 'read-only', ann.destructive && 'destructive', ann.idempotent && 'idempotent']
+    .filter(Boolean);
+  if (tags.length) row('Declared effects', tags.join(' · '));
+  const bound = toolBoundIn(g.hash);
+  if (bound.length) {
+    const d = el('div', 'kv');
+    d.appendChild(el('span', 'k', 'Bound in'));
+    const v = el('span', 'v');
+    v.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:flex-start';
+    for (const x of bound) {
+      const link = el('button', 'link');
+      link.style.cssText = 'border:0;background:none;color:var(--accent);font:inherit;font-size:13.5px;padding:0;text-align:left';
+      link.textContent = wfLabel(x.plan) + ' › ' + x.node;
+      link.onclick = () => { location.hash = '#workflows/' + x.plan.hash; };
+      v.appendChild(link);
+    }
+    d.appendChild(v);
+    card.appendChild(d);
+  } else {
+    row('Bound in', 'No plan binds a node to this tool yet.');
+  }
+  /* An opaque host reference that may carry an endpoint or credentials —
+     SR-F5 keeps it out of logs, so keep it out of the default view too. */
+  if (f.executor_uri) {
+    const d = el('div', 'kv dev-flex');
+    d.appendChild(el('span', 'k', 'Executor'));
+    const v = el('span', 'v'); v.style.fontFamily = 'var(--mono)'; v.style.fontSize = '12.5px';
+    v.textContent = f.executor_uri;
+    d.appendChild(v);
+    card.appendChild(d);
+  }
+  if (f.spec_hash) {
+    const d = el('div', 'kv dev-flex');
+    d.appendChild(el('span', 'k', 'Spec at bind time'));
+    const v = el('span', 'v'); v.style.fontFamily = 'var(--mono)'; v.style.fontSize = '12.5px';
+    v.textContent = bareHash(f.spec_hash);
+    d.appendChild(v);
+    card.appendChild(d);
+  }
+  row('Declared', relTime(createdMs(f)));
+  host.appendChild(card);
+
+  section(host, 'What the model may fill in', schemaBlock(f.input_schema)
+    || el('div', 'tiny', 'No input schema — this tool takes no arguments.'));
+  if (f.output_schema) section(host, 'What it returns', schemaBlock(f.output_schema) || jsonBlock(f.output_schema));
+  if (f.locked_params) section(host, 'Locked parameters (the model may not choose these)', jsonBlock(f.locked_params));
+  if (Array.isArray(f.examples) && f.examples.length) section(host, 'Examples', jsonBlock(f.examples));
+
+  const mine = toolExecs().filter(e => (e.fields || {}).tool_name === (f.tool_name || ''));
+  if (mine.length) {
+    const wrap = el('div', 'card execwrap');
+    for (const e of mine.slice(0, 12)) wrap.appendChild(execRow(e));
+    section(host, 'Recent calls · ' + mine.length, wrap);
+  }
+}
+
+function section(host, title, body) {
+  const h = el('div');
+  h.style.cssText = 'display:flex;flex-direction:column;gap:9px;margin-top:12px';
+  const t = el('div', 'sec-label', title.toUpperCase());
+  h.appendChild(t);
+  h.appendChild(body);
+  host.appendChild(h);
+}
+
+/** A JSON Schema object rendered as a property table, or null if it isn't one. */
+function schemaBlock(schema) {
+  const props = schema && schema.properties;
+  if (!props || typeof props !== 'object') return null;
+  const keys = Object.keys(props);
+  if (!keys.length) return null;
+  const req = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const host = el('div', 'card schema');
+  host.style.padding = '4px 18px';
+  for (const k of keys) {
+    const p = props[k] || {};
+    const r = el('div', 'r');
+    r.appendChild(el('span', 'n', k));
+    r.appendChild(el('span', 't', p.type || (p.enum ? 'enum' : 'any')));
+    if (req.has(k)) r.appendChild(el('span', 'req', 'required'));
+    if (p.description) r.appendChild(el('span', 'd', p.description));
+    host.appendChild(r);
+  }
+  return host;
+}
+
+/* Executions, grouped by the run they belong to. A tool call made outside a
+   run is a real thing too (an agent calling a tool directly), so it gets its
+   own group rather than being filtered out of existence. */
+function renderToolExecs(host) {
+  const all = toolExecs();
+  if (!all.length) {
+    host.innerHTML = '<div class="empty">No tool calls recorded yet. Every call a run makes is journaled '
+      + 'here as its own grain — start one with <code>areev run start --tool-cmd …</code>.</div>';
+    return;
+  }
+  const groups = new Map();
+  for (const g of all) {
+    const k = (g.fields || {}).run_id || '';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(g);
+  }
+  const order = [...groups.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    return createdMs(groups.get(b)[0].fields) - createdMs(groups.get(a)[0].fields);
+  });
+  for (const key of order) {
+    const rows = groups.get(key);
+    const grp = el('div', 'rungroup');
+    const hd = el('div', 'hd');
+    const run = RUNIDX && RUNIDX.byId.get(key);
+    hd.appendChild(el('h3', null, key ? key + ' · ' + rows.length : 'Outside a run · ' + rows.length));
+    hd.appendChild(el('span', 'tiny', key
+      ? (run ? planLabel(run.plan_hash) + ' · ' + run.outcome : 'a governed run')
+      : 'called directly by an agent, not journaled against a plan'));
+    grp.appendChild(hd);
+    const wrap = el('div', 'card execwrap');
+    for (const g of rows) wrap.appendChild(execRow(g));
+    grp.appendChild(wrap);
+    host.appendChild(grp);
+  }
+}
+
+function execRow(g) {
+  const f = g.fields || {};
+  const run = RUNIDX && f.run_id ? RUNIDX.byId.get(f.run_id) : null;
+  const state = stepState(f, run ? run.outcome : null);
+  const wrap = el('div');
+  const btn = el('button', 'exec');
+  const bar = el('span', 'bar');
+  bar.style.background = 'var(--' + STEP_TONE[state] + ')';
+  btn.appendChild(bar);
+  const nm = el('span', 'nm');
+  nm.appendChild(document.createTextNode(f.tool_name || shortHash(g.hash)));
+  const sub = [];
+  if (f.node && f.node !== f.tool_name) sub.push(f.node);
+  sub.push(STEP_WORD[state]);
+  if (f.attempt && f.attempt > 1) sub.push('attempt ' + f.attempt);
+  if (f.duration_ms != null) sub.push(f.duration_ms + 'ms');
+  nm.appendChild(el('span', null, '  ' + sub.join(' · ')));
+  btn.appendChild(nm);
+  btn.appendChild(el('span', 'when', relTime(createdMs(f))));
+
+  const det = el('div', 'execdet');
+  det.hidden = true;
+  btn.onclick = () => {
+    if (!det.hidden) { det.hidden = true; return; }
+    if (!det.childElementCount) buildExecDetail(det, f, g);
+    det.hidden = false;
+  };
+  wrap.appendChild(btn);
+  wrap.appendChild(det);
+  /* Deep-linked from a canvas node's "See the call" — open it already
+     expanded, otherwise the link lands on a closed row and looks inert. */
+  if (TOOL_SEL === g.hash) {
+    buildExecDetail(det, f, g);
+    det.hidden = false;
+    requestAnimationFrame(() => btn.scrollIntoView({ block: 'center' }));
+  }
+  return wrap;
+}
+
+function buildExecDetail(det, f, g) {
+  const add = (label, body) => {
+    det.appendChild(el('div', 'lab', label.toUpperCase()));
+    det.appendChild(body);
+  };
+  if (f.error) {
+    const e = el('div', 'tiny'); e.style.color = 'var(--danger)'; e.textContent = f.error;
+    add('Error', e);
+  }
+  if (f.input != null) add('Arguments', jsonBlock(f.input));
+  const out = f.tool_content != null ? f.tool_content : f.content;
+  if (out != null) {
+    let parsed = out;
+    try { parsed = typeof out === 'string' ? JSON.parse(out) : out; } catch (err) { parsed = out; }
+    add('Result', jsonBlock(parsed));
+  }
+  const meta = [];
+  if (f.author_did) meta.push('by ' + f.author_did);
+  if (f.superstep != null) meta.push('superstep ' + f.superstep);
+  if (f.usage_usd_micros) meta.push('$' + (f.usage_usd_micros / 1e6).toFixed(4));
+  if (f.usage_input_tokens || f.usage_output_tokens) {
+    meta.push((f.usage_input_tokens || 0) + ' in / ' + (f.usage_output_tokens || 0) + ' out tokens');
+  }
+  if (meta.length) det.appendChild(el('div', 'tiny', meta.join(' · ')));
+  const dv = el('div', 'tiny dev-only');
+  dv.style.fontFamily = 'var(--mono)';
+  dv.textContent = 'grain ' + g.hash + (f.tool_call_id ? '  ·  call ' + f.tool_call_id : '');
+  det.appendChild(dv);
+}
 
 /* ══ query workbench ══════════════════════════════════════════════════
    Everything goes through /api/cal. Saved queries and templates are CAL

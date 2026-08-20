@@ -53,10 +53,24 @@ runtime (invariant 6: dependency-light). It serves the web console and the
 ## The console (console.html)
 
 One embedded HTML file, **vanilla JS**, no build step, no external assets
-(dependency-light). Four pages behind hash routes — `#memory` (sentence list),
+(dependency-light). Pages behind hash routes — `#memory` (sentence list),
 `#graph` (canvas force-graph, focus + depth + rewind scrubber), `#activity`,
-`#suggestions`, `#connect/{agent,sync,settings}` — plus a slide-in memory panel.
-Light + dark, token for token. **Design source of truth is the Paper file
+`#query`, `#workflows[/<plan>]`, `#runs`, `#tools/{catalog,executions}`,
+`#suggestions`, `#settings/{agent,sync,general}` — plus a slide-in memory panel.
+Light + dark, token for token.
+
+`render()` un-hides exactly one `<section class="page" id="page-X">`, and the
+list of names it iterates is the ONLY thing that makes a page visible. A page
+missing from that array renders its content into a pane that stays `hidden` —
+which is a blank tab, not an error. `every_console_page_is_in_the_visibility_list`
+(in `lib.rs`) pins section ids, nav `data-page` values and that array together;
+keep them in step.
+
+Triggers deliberately have no page: they render on the workflow canvas in their
+own lane (`trgNodes`/`trgEdges`, kept OUT of `WF_DRAFT` so a save cannot
+serialize them) and are read-only because CAL has no `ADD trigger` at all. The
+canvas run overlay and the Runs page share one index (`loadRuns()` → `RUNIDX`);
+do not add a second fetch of `/api/run/*` for a new surface. **Design source of truth is the Paper file
 "Areev", page "Console v2 — Redesign"** — reproduce visual changes there (or
 read exact values from it via the Paper tools) rather than eyeballing; keep the
 embedded file and the Paper design in sync.
