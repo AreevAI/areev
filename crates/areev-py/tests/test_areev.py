@@ -1233,3 +1233,96 @@ def test_cal_prepare_validates_and_warms_a_statement(tmp_path):
         db.cal_prepare("RECALL facts FORMAT []")
 
     assert len(json.loads(db.cal("RECALL facts RECENT 5"))["grains"]) == 1
+
+
+# --------------------------------------------------------------------------
+# the tuning seam — record_corpus_export / record_adapter / gated apply
+# --------------------------------------------------------------------------
+
+ADAPTER_REPLY = json.dumps({
+    "adapter": {"uri": "file:///tmp/a.safetensors", "sha256": "feedfeed"},
+    "base_model": "qwen3-4b",
+    "quantization": "bf16",
+    "serving_runtime": "vllm",
+    "serves_as": "acme-support",
+})
+
+
+def _seed_tuning(m):
+    """A fact, a recorded corpus export, and an evalset — the pin."""
+    fact = m.add_fact("acme", "deploy_target", "k8s")
+    manifest = json.loads(m.record_corpus_export(
+        'RECALL facts WHERE subject = "acme"', "train.jsonl",
+        source_hashes=json.dumps([fact]),
+    ))["hash"]
+    evalset = json.loads(m.cal(
+        'ADD fact SET subject = "evalset:gate" SET relation = "mg:evalset" '
+        'SET object = "{\\"name\\":\\"gate\\",\\"cases\\":[]}" '
+        'SET namespace = "agent:harness" REASON "the pin"'
+    ))["hash"]
+    return fact, manifest, evalset
+
+
+def test_record_adapter_registers_with_lineage(tmp_path):
+    m = make_db(tmp_path)
+    _fact, manifest, evalset = _seed_tuning(m)
+    adapter = json.loads(m.record_adapter(ADAPTER_REPLY, manifest, evalset))["hash"]
+    assert len(adapter) == HEX64
+
+    # The registry grain is provenance-walkable from the manifest.
+    kids = json.loads(m.provenance(manifest))
+    assert any(k["hash"] == adapter for k in kids), kids
+
+    # An incomplete reply is refused and writes nothing.
+    with pytest.raises(ValueError, match="serves_as"):
+        m.record_adapter(json.dumps({"adapter": {"uri": "u", "sha256": "s"},
+                                     "base_model": "x"}), manifest, evalset)
+    # Lineage must anchor to a real manifest, not any grain.
+    with pytest.raises(ValueError, match="not a corpus export manifest"):
+        m.record_adapter(ADAPTER_REPLY, _fact, evalset)
+
+
+def test_adapter_promotion_is_gated_end_to_end(tmp_path):
+    m = make_db(tmp_path)
+    _fact, manifest, evalset = _seed_tuning(m)
+    m.record_adapter(ADAPTER_REPLY, manifest, evalset)
+
+    # Propose: the builtin adapter_intake analyzer files the pinned rec.
+    m.loop_run()
+    recs = json.loads(m.recommendations('{"status":"pending"}'))
+    rec = next(r for r in recs if "adapter_intake" in r["analyzer"])
+    assert rec["target_ref"] == "model:acme-support"
+
+    # Ungated apply refuses — and refuses BEFORE any state transition when
+    # the gating run id is bad, so nothing is stranded approved.
+    with pytest.raises(ValueError, match="gating run"):
+        m.apply_recommendation(rec["hash"], because="ship it")
+    with pytest.raises(ValueError, match="no recorded gate run"):
+        m.apply_recommendation(rec["hash"], because="ship it", gating_run="eval-nope")
+    assert json.loads(m.recommendations('{"status":"pending"}')), \
+        "a failed gate load must leave the rec pending"
+
+    # Record a clean gate run (what `areev eval run` journals), then apply.
+    m.cal(
+        f'ADD fact SET subject = "evalset:{evalset}" SET relation = "mg:eval_run" '
+        'SET object = "{\\"run_id\\":\\"eval-1\\",\\"passed\\":3,\\"failed\\":0}" '
+        'SET namespace = "agent:harness" REASON "gate run"'
+    )
+    applied = json.loads(m.apply_recommendation(
+        rec["hash"], because="gated and green", gating_run="eval-1"))
+    assert applied["rollbackable"] is True
+
+    # The promotion Fact exists — the host serving contract…
+    promos = json.loads(m.cal(
+        'RECALL facts WHERE relation = "mg:adapter_promotion" AND namespace = "areev-loop"'
+    ))["grains"]
+    assert len(promos) == 1
+    assert promos[0]["fields"]["subject"] == "model:acme-support"
+    assert promos[0]["fields"]["gating_run_id"] == "eval-1"
+
+    # …and rollback retracts it.
+    m.rollback_recommendation(rec["hash"], "regressed in prod")
+    promos = json.loads(m.cal(
+        'RECALL facts WHERE relation = "mg:adapter_promotion" AND namespace = "areev-loop"'
+    ))["grains"]
+    assert promos == []

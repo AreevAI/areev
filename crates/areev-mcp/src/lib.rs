@@ -949,12 +949,31 @@ impl McpServer {
                     let now = now_ms();
                     match action {
                         "apply" => {
+                            // A code or adapter revision applies only through
+                            // its recorded gating edge; evidence is loaded
+                            // from the journaled `mg:eval_run` summary, never
+                            // from the client — and BEFORE the approval, so a
+                            // bad run id strands nothing.
+                            let gating = match args.get("gating_run").and_then(Value::as_str) {
+                                Some(run_id) => {
+                                    Some(engine.gating_evidence(&sub, hash, run_id).map_err(|e| e.to_string())?)
+                                }
+                                None => None,
+                            };
+                            engine
+                                .preflight_apply(&sub, hash, &scopes, false, gating.is_some())
+                                .map_err(|e| e.to_string())?;
                             engine
                                 .review(&mut sub, hash, Decision::Approve, actor, ObserverType::Agent, &scopes, because, now)
                                 .map_err(|e| e.to_string())?;
-                            engine
-                                .apply(&mut sub, hash, actor, ObserverType::Agent, &scopes, because, false, now)
-                                .map_err(|e| e.to_string())?;
+                            match &gating {
+                                Some(g) => engine
+                                    .apply_gated(&mut sub, hash, actor, ObserverType::Agent, &scopes, because, false, g, now)
+                                    .map_err(|e| e.to_string())?,
+                                None => engine
+                                    .apply(&mut sub, hash, actor, ObserverType::Agent, &scopes, because, false, now)
+                                    .map_err(|e| e.to_string())?,
+                            };
                         }
                         "approve" => engine
                             .review(&mut sub, hash, Decision::Approve, actor, ObserverType::Agent, &scopes, because, now)
@@ -1249,12 +1268,13 @@ fn all_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "areev_recommendations",
-            "description": "List recommendations, or act on one. Without 'action', lists by status (default pending). With action=apply|approve|reject and a 'hash' + mandatory 'because' reason, performs the audited transition (self-approval of an agent's own proposals is blocked).",
+            "description": "List recommendations, or act on one. Without 'action', lists by status (default pending). With action=apply|approve|reject and a 'hash' + mandatory 'because' reason, performs the audited transition (self-approval of an agent's own proposals is blocked). A code or adapter revision applies only with 'gating_run' — an eval run id whose recorded summary becomes the gating evidence.",
             "inputSchema": {"type": "object", "properties": {
                 "status": s("filter: pending|approved|applied|all (default pending)"),
                 "action": s("apply|approve|reject (omit to list)"),
                 "hash": s("recommendation hash (required for an action)"),
-                "because": s("mandatory written reason for the decision")
+                "because": s("mandatory written reason for the decision"),
+                "gating_run": s("eval run id gating a code/adapter revision apply (from areev eval run)")
             }}
         }),
     ]

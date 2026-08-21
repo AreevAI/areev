@@ -6,6 +6,79 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The tuning seam** — the last mile of the corpus path, closing the slow
+  learning loop under the same governance as the fast one. `areev tune --cmd
+  'TRAINER'` hands a governed corpus to a **host-supplied** trainer (JSON on
+  stdio, stderr inherited, no timeout by default — Areev still never trains
+  and takes no training dependency) and registers the returned adapter as an
+  `mg:adapter` Fact in `agent:harness`: base model + adapter + quantization
+  pinned as one tuple, `derived_from` naming the corpus export manifest, the
+  Rule E1 evalset pin embedded. Integrated (`--select … --out`) and
+  bring-your-own (`--corpus … --manifest`) corpus modes; lineage cannot be
+  asserted from the command line — the manifest must be a recorded export.
+- **`adapter_revision` — a new eval-gated recommendation class** mirroring
+  `code_revision`: the new builtin `adapter_intake` analyzer (14 builtins now)
+  proposes the newest unpromoted candidate per served model; apply is refused
+  without a recorded clean run of the pinned evalset and writes an immutable
+  `(model:<name>, mg:adapter_promotion)` Fact — the host contract: serve what
+  a live promotion names, stop when it is retracted (rollback's inverse).
+  One candidate per served model by design; auto-apply is impossible three
+  independent ways. When a baseline eval run exists the recommendation
+  carries an `evalset:<pin>:failed` metric, so a post-promotion regression
+  makes `outcome_review` propose the revert.
+- **`areev eval run --model provider:name`** — grade an evalset against a
+  model behind the ToolCallLlm seam instead of a host command: how a tuned
+  adapter served by vLLM/SGLang (`openai-compat:<served-name>`) or Ollama is
+  gated, with `--base-url`/`--key-env`/`--llm-max-tokens`, fail-closed case
+  prevalidation, the same scorer as `--tool-cmd`, and the graded model
+  recorded in the `mg:eval_run` summary. (`--base-url`/`--key-env` also
+  joined `areev run start`'s USAGE, where they existed undocumented.)
+- **Gated apply reaches every surface** — the loop's documented full-lifecycle
+  parity now includes the gating edge. One shared loader
+  (`Engine::gating_evidence`) serves the CLI's `--gating-run`, Python/Node
+  `apply_recommendation(..., gating_run=…)` / `applyRecommendation(...,
+  gatingRun)`, MCP `areev_recommendations` `gating_run`, and
+  `POST /api/loop/apply` `gating_run` — on every surface the stats are read
+  back from the journaled `mg:eval_run` Fact, never taken from the caller.
+  The console's review queue asks for the gate run id on gated
+  recommendations (their rows now carry `evalset_hash`). Fused
+  approve-and-apply callers are refused **before** the approval lands when
+  the gating run is missing or unknown (`preflight_apply` gained
+  `has_gating`; `ensure_executable` now knows a gated revision's Data
+  payload is executable — both latent classification gaps exposed by the
+  first production producer of gated recommendations).
+- **The record family grows two members in the bindings**:
+  `record_corpus_export` / `recordCorpusExport` (the immutable export
+  manifest, for hosts that select and serialize in-process — the CLI verb
+  stays the paved road) and `record_adapter` / `recordAdapter` (the adapter
+  registration `areev tune` performs, for hosts that train in-process).
+  `record_adapter` now also verifies its lineage anchor **is** a corpus
+  export manifest on every surface, not just the CLI.
+- **Erasure reaches the seam**: the stale-export notice on
+  `forget-subject`/`purge-older-than`/`retention sweep` (and the CAL erasure
+  audit) now walks one provenance hop further and names the **adapters**
+  derived from a stale corpus — `stale_adapters` beside `stale_corpora` in
+  the Tier-2 audit record and `areev audit export`. Still auditable
+  suppression and re-derivation, never an unlearning claim.
+
+### Changed
+
+- **The position on weight tuning is stated on the record, and the tuning seam
+  is named as roadmap.** Areev's boundary is unchanged and now explicit as a
+  named decision in `ARCHITECTURE.md` §10: it emits a governed corpus
+  (`areev corpus`) and grades the result (`areev run shadow`, `areev eval`), and
+  it never trains — no trainer, no training dependency. What is announced as
+  *not yet built* is the seam itself (`areev tune --cmd`, an adapter registry
+  grain, promotion as a gated apply); the design of record is
+  `docs/areev-adaptive-agents-proposal.md` §5. The SEAL rows in
+  `docs/loop-explainer.md` §14 and `docs/loop-reflection.md` are reframed from
+  "avoid weight updates" to "order them last, behind a governed corpus and a
+  replay harness" — a published competitive argument should not be reversed
+  quietly. No accuracy or context-savings claim accompanies any of this until
+  the replay harness has measured one.
+
 ## [1.4.0] — 2026-08-21
 
 ### Added

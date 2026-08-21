@@ -7,6 +7,69 @@ use std::io::Write;
 use areev_cal::executor::CalGrainResult;
 use serde_json::{json, Map, Value};
 
+/// The full governed export, shared by `areev corpus` and `areev tune
+/// --select`: validate the selector is read-only CAL, authorize (the read
+/// grant and the registry write are separate capabilities — fail before
+/// creating an output file), execute, stream the JSONL to `destination`
+/// (`"stdout"` or a file path), and record the immutable export manifest.
+pub fn export(
+    facade: &areev_cal::AreevFacade,
+    selector: &str,
+    destination: &str,
+    recipient: Option<&str>,
+    exported_at_ms: i64,
+) -> Result<(CorpusSummary, areev_core::Hash), String> {
+    use areev_cal::classify::{classify, StatementClass};
+    use areev_cal::executor::CalResultPayload;
+    use areev_cal::{CalExecutor, CalExecutorConfig};
+    use std::io::BufWriter;
+
+    let parsed = areev_cal::parse(selector).map_err(|e| e.to_string())?;
+    if classify(&parsed.statement) != StatementClass::Read {
+        return Err("corpus selector must classify as a read-only CAL statement".into());
+    }
+    facade.authorize_corpus_export().map_err(|e| e.to_string())?;
+    let ex = CalExecutor::new(CalExecutorConfig {
+        allow_destructive_ops: false,
+        ..CalExecutorConfig::default()
+    });
+    let result = ex.execute(selector, facade).map_err(|e| e.to_string())?;
+    let grains = match result.result {
+        CalResultPayload::Grains { grains, .. }
+        | CalResultPayload::Assembled { grains, .. }
+        | CalResultPayload::Formatted { grains, .. }
+        | CalResultPayload::MultiFormatted { grains, .. } => grains,
+        other => {
+            return Err(format!(
+                "corpus selector must return grains, got {}",
+                serde_json::to_value(other)
+                    .ok()
+                    .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| "non-grain result".into())
+            ));
+        }
+    };
+    let summary = if destination == "stdout" {
+        let stdout = std::io::stdout();
+        write_jsonl(grains, BufWriter::new(stdout.lock()))?
+    } else {
+        let file = std::fs::File::create(destination)
+            .map_err(|e| format!("{destination}: {e}"))?;
+        write_jsonl(grains, BufWriter::new(file))?
+    };
+    let manifest = facade
+        .record_corpus_export(
+            selector,
+            destination,
+            recipient,
+            exported_at_ms,
+            &summary.subject_fingerprints,
+            &summary.source_hashes,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok((summary, manifest))
+}
+
 #[derive(Debug, Clone)]
 pub struct CorpusSummary {
     pub rows: usize,

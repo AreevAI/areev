@@ -1579,9 +1579,10 @@ fn advisory_findings_are_refused_by_preflight_not_after_approval() {
     use serde_json::{json, Map};
 
     // The shared gate, pinned directly: exactly one Data shape is executable.
-    assert!(ensure_executable(&Proposal::Cal { cal: "ADD fact …".into() }).is_ok());
+    use crate::model::ActionKind as AK;
+    assert!(ensure_executable(AK::Flag, &Proposal::Cal { cal: "ADD fact …".into() }).is_ok());
     assert!(matches!(
-        ensure_executable(&Proposal::Edit {
+        ensure_executable(AK::Flag, &Proposal::Edit {
             format: "md".into(),
             base_digest: "d".into(),
             diff: "-a\n+b".into(),
@@ -1591,12 +1592,15 @@ fn advisory_findings_are_refused_by_preflight_not_after_approval() {
     let mut advisory = Map::new();
     advisory.insert("note".into(), json!("go look at this"));
     assert!(matches!(
-        ensure_executable(&Proposal::Data { data: advisory }),
+        ensure_executable(AK::Flag, &Proposal::Data { data: advisory }),
         Err(Error::InvalidProposal(_))
     ));
     let mut revert = Map::new();
     revert.insert("revert_of".into(), json!("abc123"));
-    assert!(ensure_executable(&Proposal::Data { data: revert }).is_ok());
+    assert!(ensure_executable(AK::Revert, &Proposal::Data { data: revert }).is_ok());
+    // The gated revisions are executable Data shapes — the promotion write.
+    assert!(ensure_executable(AK::CodeRevision, &Proposal::Data { data: Map::new() }).is_ok());
+    assert!(ensure_executable(AK::AdapterRevision, &Proposal::Data { data: Map::new() }).is_ok());
 
     // End to end: an LLM finding is advisory, and preflight refuses it *before*
     // the fused approve-and-apply path commits an approval it cannot undo.
@@ -1623,7 +1627,7 @@ fn advisory_findings_are_refused_by_preflight_not_after_approval() {
         .find(|r| matches!(r.origin, Origin::Llm { .. }))
         .expect("an llm-origin recommendation");
 
-    let refused = e.preflight_apply(&sub.inner, &llm.hash, &ScopeSet::all(), true);
+    let refused = e.preflight_apply(&sub.inner, &llm.hash, &ScopeSet::all(), true, false);
     assert!(
         matches!(refused, Err(Error::InvalidProposal(_))),
         "preflight must refuse an advisory finding, got {refused:?}"
@@ -1821,6 +1825,127 @@ fn governed_code_change_applies_only_through_the_gate() {
         Err(Error::InvalidProposal(m)) => assert!(m.contains("superseded"), "{m}"),
         other => panic!("stale-pin apply must refuse (re-gate), got {other:?}"),
     }
+}
+
+/// The tuning seam end-to-end: an `mg:adapter` registry grain (what
+/// `areev tune` writes) is picked up by the builtin `adapter_intake`
+/// analyzer, gated exactly like a code revision (refused ungated /
+/// mismatched / failing), applied only through a clean recorded run of the
+/// pinned evalset — writing the `mg:adapter_promotion` Fact hosts re-resolve
+/// from — and rolled back by retracting it, after which the candidate is
+/// re-proposed (the situation returned) until its registry grain is retired.
+#[test]
+fn governed_adapter_promotion_applies_only_through_the_gate() {
+    use crate::model::ActionKind;
+    use crate::recommendation::GatingEvidence;
+
+    let mut sub = TestSubstrate::new();
+    let evalset_hash = sub.add_fact("evalset:support", "mg:evalset", "{\"cases\":[]}");
+    let tuple = serde_json::json!({
+        "adapter": {"uri": "file:///adapters/a.safetensors", "sha256": "feed"},
+        "base_model": "qwen3-4b",
+        "quantization": "bf16",
+        "serving_runtime": "vllm",
+        "serves_as": "acme-support",
+        "evalset_hash": evalset_hash,
+        "corpus_manifest": "cafe0123",
+    })
+    .to_string();
+    let adapter_grain =
+        sub.add_fact_at("agent:harness", "model:acme-support", "mg:adapter", &tuple, 9_000);
+
+    let e = Engine::with_builtins();
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.action_kind == ActionKind::AdapterRevision)
+        .expect("the adapter revision");
+    assert_eq!(rec.evalset_hash.as_deref(), Some(evalset_hash.as_str()));
+    assert_eq!(rec.target_ref, "model:acme-support");
+    assert!(rec.evidence.contains(&adapter_grain));
+    // Auto-apply is structurally impossible: the run left it Pending even
+    // though the engine ran with its default (and any) policy — the class is
+    // excluded by name and the analyzer is AutoApplyClass::Never.
+    assert_eq!(rec.status, RecStatus::Pending);
+    let hash = rec.hash.clone();
+    let scopes = ScopeSet::all();
+    e.review(
+        &mut sub.inner, &hash, Decision::Approve, "user:reviewer",
+        ObserverType::Human, &scopes, "corpus + lineage reviewed", 11_000,
+    )
+    .unwrap();
+
+    // 1. Ungated apply — refused.
+    match e.apply(&mut sub.inner, &hash, "user:reviewer", ObserverType::Human, &scopes, "ship it", false, 12_000) {
+        Err(Error::InvalidProposal(m)) => assert!(m.contains("gating run"), "{m}"),
+        other => panic!("ungated adapter apply must refuse, got {other:?}"),
+    }
+    // 2. Wrong evalset — refused (Rule E1's pin).
+    let wrong = GatingEvidence { evalset_hash: "not-the-pin".into(), run_id: "eval-1".into(), passed: 3, failed: 0 };
+    match e.apply_gated(&mut sub.inner, &hash, "user:reviewer", ObserverType::Human, &scopes, "ship", false, &wrong, 12_100) {
+        Err(Error::InvalidProposal(m)) => assert!(m.contains("pinned"), "{m}"),
+        other => panic!("wrong-evalset apply must refuse, got {other:?}"),
+    }
+    // 3. A failing gate admits nothing.
+    let failing = GatingEvidence { evalset_hash: evalset_hash.clone(), run_id: "eval-2".into(), passed: 2, failed: 1 };
+    match e.apply_gated(&mut sub.inner, &hash, "user:reviewer", ObserverType::Human, &scopes, "ship", false, &failing, 12_200) {
+        Err(Error::InvalidProposal(m)) => assert!(m.contains("failing gate"), "{m}"),
+        other => panic!("failing-gate apply must refuse, got {other:?}"),
+    }
+    // 4. Clean gate, live pin: applies, writing the promotion Fact.
+    let clean = GatingEvidence { evalset_hash: evalset_hash.clone(), run_id: "eval-3".into(), passed: 3, failed: 0 };
+    e.apply_gated(&mut sub.inner, &hash, "user:reviewer", ObserverType::Human, &scopes, "gated and green", false, &clean, 12_300)
+        .unwrap();
+    let promotion = {
+        use crate::substrate::SubstrateRead;
+        sub.inner
+            .grains_of_type("fact", Some("areev-loop"), Default::default())
+            .unwrap()
+            .into_iter()
+            .find(|g| g.str_field("relation") == Some("mg:adapter_promotion") && g.is_live())
+            .expect("the promotion grain")
+    };
+    assert_eq!(promotion.str_field("subject"), Some("model:acme-support"));
+    assert_eq!(promotion.str_field("gating_evalset"), Some(evalset_hash.as_str()));
+    assert_eq!(promotion.str_field("gating_run_id"), Some("eval-3"));
+
+    // 5. One candidate per served model: while the promotion is live, the
+    // analyzer proposes nothing new for this subject.
+    e.run(&mut sub.inner, &RunOptions::default(), 13_000).unwrap();
+    assert!(
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .all(|r| r.action_kind != ActionKind::AdapterRevision),
+        "a promoted model must not re-propose"
+    );
+
+    // 6. Rollback retracts the promotion (the recorded inverse) …
+    e.rollback(&mut sub.inner, &hash, "user:reviewer", ObserverType::Human, &scopes, "regressed in prod", 14_000)
+        .unwrap();
+    {
+        use crate::substrate::SubstrateRead;
+        let live = sub.inner
+            .grains_of_type("fact", Some("areev-loop"), Default::default())
+            .unwrap()
+            .into_iter()
+            .filter(|g| g.str_field("relation") == Some("mg:adapter_promotion") && g.is_live())
+            .count();
+        assert_eq!(live, 0, "rollback must retract the promotion");
+    }
+    // … and the still-live candidate is re-proposed — the situation
+    // returned. Retiring the mg:adapter grain is how a host silences it.
+    e.run(&mut sub.inner, &RunOptions::default(), 15_000).unwrap();
+    assert!(
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.action_kind == ActionKind::AdapterRevision),
+        "post-rollback the candidate must be re-proposed"
+    );
 }
 
 // ── Issue #29: evalset-backed outcome metric ──────────────────────────────

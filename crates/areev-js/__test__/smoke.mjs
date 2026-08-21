@@ -1236,3 +1236,89 @@ test('a top-level timezone reaches the config key the evaluator reads (#67)', as
     `timezone must be mapped into config, got ${JSON.stringify(g.fields)}`)
   m.close()
 })
+
+// ── the tuning seam: recordCorpusExport / recordAdapter / gated apply ──────
+
+const ADAPTER_REPLY = JSON.stringify({
+  adapter: { uri: 'file:///tmp/a.safetensors', sha256: 'feedfeed' },
+  base_model: 'qwen3-4b',
+  quantization: 'bf16',
+  serving_runtime: 'vllm',
+  serves_as: 'acme-support',
+})
+
+async function seedTuning(m) {
+  const fact = await m.addFact('acme', 'deploy_target', 'k8s')
+  const manifest = JSON.parse(await m.recordCorpusExport(
+    'RECALL facts WHERE subject = "acme"', 'train.jsonl', null, null,
+    JSON.stringify([fact]),
+  )).hash
+  const evalset = JSON.parse(await m.cal(
+    'ADD fact SET subject = "evalset:gate" SET relation = "mg:evalset" '
+    + 'SET object = "{\\"name\\":\\"gate\\",\\"cases\\":[]}" '
+    + 'SET namespace = "agent:harness" REASON "the pin"',
+  )).hash
+  return { fact, manifest, evalset }
+}
+
+test('recordAdapter registers with lineage and validates the reply', async () => {
+  const m = makeDb()
+  const { fact, manifest, evalset } = await seedTuning(m)
+
+  const adapter = JSON.parse(await m.recordAdapter(ADAPTER_REPLY, manifest, evalset)).hash
+  assert.equal(adapter.length, HEX64)
+  const kids = JSON.parse(await m.provenance(manifest))
+  assert.ok(kids.some((k) => k.hash === adapter), 'adapter derives from the manifest')
+
+  // An incomplete reply is refused; lineage must anchor to a real manifest.
+  await assert.rejects(
+    () => m.recordAdapter(JSON.stringify({ adapter: { uri: 'u', sha256: 's' }, base_model: 'x' }), manifest, evalset),
+    /serves_as/,
+  )
+  await assert.rejects(
+    () => m.recordAdapter(ADAPTER_REPLY, fact, evalset),
+    /not a corpus export manifest/,
+  )
+})
+
+test('adapter promotion is gated end to end', async () => {
+  const m = makeDb()
+  const { evalset, manifest } = await seedTuning(m)
+  await m.recordAdapter(ADAPTER_REPLY, manifest, evalset)
+
+  await m.loopRun()
+  const recs = JSON.parse(await m.recommendations())
+  const rec = recs.find((r) => r.analyzer.includes('adapter_intake'))
+  assert.ok(rec, 'adapter_intake must propose')
+  assert.equal(rec.target_ref, 'model:acme-support')
+
+  // Ungated apply refuses BEFORE the approval lands, so nothing strands.
+  await assert.rejects(() => m.applyRecommendation(rec.hash, 'ship it'), /gating run/)
+  await assert.rejects(
+    () => m.applyRecommendation(rec.hash, 'ship it', false, null, 'eval-nope'),
+    /no recorded gate run/,
+  )
+  assert.ok(JSON.parse(await m.recommendations()).length, 'still pending after refusals')
+
+  // Record a clean gate run (what `areev eval run` journals), then apply.
+  await m.cal(
+    `ADD fact SET subject = "evalset:${evalset}" SET relation = "mg:eval_run" `
+    + 'SET object = "{\\"run_id\\":\\"eval-1\\",\\"passed\\":3,\\"failed\\":0}" '
+    + 'SET namespace = "agent:harness" REASON "gate run"',
+  )
+  const applied = JSON.parse(await m.applyRecommendation(rec.hash, 'gated and green', false, null, 'eval-1'))
+  assert.equal(applied.rollbackable, true)
+
+  const promos = JSON.parse(await m.cal(
+    'RECALL facts WHERE relation = "mg:adapter_promotion" AND namespace = "areev-loop"',
+  )).grains
+  assert.equal(promos.length, 1)
+  assert.equal(promos[0].fields.subject, 'model:acme-support')
+
+  // Rollback retracts the promotion — the recorded inverse.
+  await m.rollbackRecommendation(rec.hash, 'regressed in prod')
+  const after = JSON.parse(await m.cal(
+    'RECALL facts WHERE relation = "mg:adapter_promotion" AND namespace = "areev-loop"',
+  )).grains
+  assert.equal(after.length, 0)
+})

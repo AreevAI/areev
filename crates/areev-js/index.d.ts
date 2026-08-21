@@ -317,6 +317,24 @@ export declare class Areev {
   /** Persist a content-addressed harness config and the run -> config link. */
   recordRunManifest(runId: string, config: string): Promise<string>
   /**
+   * Record a governed corpus export a host performed itself — the same
+   * immutable export-manifest grain `areev corpus` writes (the CLI verb
+   * remains the paved road; this is for hosts that select and serialize
+   * in-process). `subjectFingerprints` and `sourceHashes` are JSON string
+   * arrays. Returns the manifest hash — the lineage anchor
+   * `recordAdapter` requires.
+   */
+  recordCorpusExport(selector: string, destination: string, recipient?: string | undefined | null, subjectFingerprints?: string | undefined | null, sourceHashes?: string | undefined | null): Promise<string>
+  /**
+   * Register a host-trained adapter (the tuning seam) — the same
+   * registration `areev tune` performs after its trainer returns, for
+   * hosts that train in-process. `reply` is the adapter-reference JSON
+   * (`{"adapter": {"uri", "sha256"}, "base_model", "serves_as", …}`),
+   * `manifestHash` a recorded corpus export, `evalsetHash` the Rule E1
+   * pin. Validation is the facade's: an incomplete reply writes nothing.
+   */
+  recordAdapter(reply: string, manifestHash: string, evalsetHash: string): Promise<string>
+  /**
    * Run one analysis pass. Bare it never gates. `fullSweep` re-analyzes
    * the whole memory (`areev loop reflect` semantics); `policy` is a path
    * to a host `loop-policy.json` — the only way auto-apply is granted
@@ -335,8 +353,12 @@ export declare class Areev {
    *
    * `scopes` is a comma-separated subset of `read,write,review,apply,admin`;
    * omit it for all scopes.
+   * A code or adapter revision applies only through its recorded gating
+   * edge: pass `gatingRun` (an `eval-…` run id from `areev eval run`) and
+   * the evidence is loaded from the journaled `mg:eval_run` summary —
+   * never from these arguments. Same contract as the CLI's `--gating-run`.
    */
-  applyRecommendation(hash: string, because: string, allowDestructive?: boolean | undefined | null, scopes?: string | undefined | null): Promise<string>
+  applyRecommendation(hash: string, because: string, allowDestructive?: boolean | undefined | null, scopes?: string | undefined | null, gatingRun?: string | undefined | null): Promise<string>
   /**
    * Approve a recommendation **without** applying it — the two-person flow
    * the CLI's separate `approve` verb enables, so a supervising agent can

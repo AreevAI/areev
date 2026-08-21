@@ -702,6 +702,18 @@ The audit found a set of gaps that an enterprise agent story needs regardless of
 the tuning direction. Listed because they are the actual content of "with all
 governance in place," and one of them is a live security bug.
 
+> **Status note (2026-08-21):** the cross-namespace read below is **closed**
+> on main — every loop-substrate read path is namespace-grant-gated
+> (`require_read`/`may_read` in `areev-loop-adapter/src/substrate.rs`, with
+> `agent:*`/loop namespaces excluded from implicit analyzer input), regression
+> test `areev-loop-adapter/tests/adapter.rs`
+> (`substrate_reads_respect_namespace_grants`). The *other* items in this
+> section — the CLI's self-asserted actor and `ScopeSet::all()`, ungated
+> loop-namespace writes, grant caching, missing GRANT/REVOKE audit — remain
+> open as written. Phase E itself shipped: `areev tune`, `adapter_revision`,
+> `areev eval run --model`, and stale-adapter erasure notices (see
+> `CHANGELOG.md`).
+
 **Fix first — a principal holding `loop.run` and nothing else can read every
 namespace in the file.** The loop's substrate calls `facade.with_store(...)`,
 which bypasses `check_verb` entirely; `RUN LOOP` is gated once, and after that

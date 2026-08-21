@@ -11,3 +11,4 @@ loop.budget_pressure/1        T0  builtin  on=true  Budget pressure
 loop.outcome_review/1         T0  builtin  on=true  Outcome review
 loop.retention_sweep/1        T0  builtin  on=false  Retention sweep
 loop.run_outcome/1            T0  builtin  on=true  Run outcomes
+loop.adapter_intake/1         T0  builtin  on=true  Adapter intake

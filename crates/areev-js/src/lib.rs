@@ -1923,6 +1923,59 @@ impl Areev {
         })
     }
 
+    /// Record a governed corpus export a host performed itself — the same
+    /// immutable export-manifest grain `areev corpus` writes (the CLI verb
+    /// remains the paved road; this is for hosts that select and serialize
+    /// in-process). `subjectFingerprints` and `sourceHashes` are JSON string
+    /// arrays. Returns the manifest hash — the lineage anchor
+    /// `recordAdapter` requires.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn record_corpus_export(
+        &self,
+        selector: String,
+        destination: String,
+        recipient: Option<String>,
+        subject_fingerprints: Option<String>,
+        source_hashes: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let fps: Vec<String> =
+                serde_json::from_str(subject_fingerprints.as_deref().unwrap_or("[]"))
+                    .map_err(|e| napi::Error::from_reason(format!("subjectFingerprints must be a JSON string array: {e}")))?;
+            let hashes: Vec<String> = serde_json::from_str(source_hashes.as_deref().unwrap_or("[]"))
+                .map_err(|e| napi::Error::from_reason(format!("sourceHashes must be a JSON string array: {e}")))?;
+            let hash = facade
+                .record_corpus_export(&selector, &destination, recipient.as_deref(), now_ms(), &fps, &hashes)
+                .map_err(err)?;
+            Ok(json!({"hash": hash.to_hex()}).to_string())
+        })
+    }
+
+    /// Register a host-trained adapter (the tuning seam) — the same
+    /// registration `areev tune` performs after its trainer returns, for
+    /// hosts that train in-process. `reply` is the adapter-reference JSON
+    /// (`{"adapter": {"uri", "sha256"}, "base_model", "serves_as", …}`),
+    /// `manifestHash` a recorded corpus export, `evalsetHash` the Rule E1
+    /// pin. Validation is the facade's: an incomplete reply writes nothing.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn record_adapter(
+        &self,
+        reply: String,
+        manifest_hash: String,
+        evalset_hash: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let hash = facade
+                .record_adapter(&reply, &manifest_hash, &evalset_hash, now_ms())
+                .map_err(err)?;
+            Ok(json!({"hash": hash.to_hex()}).to_string())
+        })
+    }
+
     /// Run one analysis pass. Bare it never gates. `fullSweep` re-analyzes
     /// the whole memory (`areev loop reflect` semantics); `policy` is a path
     /// to a host `loop-policy.json` — the only way auto-apply is granted
@@ -2055,12 +2108,17 @@ impl Areev {
     /// `scopes` is a comma-separated subset of `read,write,review,apply,admin`;
     /// omit it for all scopes.
     #[napi(ts_return_type = "Promise<string>")]
+    /// A code or adapter revision applies only through its recorded gating
+    /// edge: pass `gatingRun` (an `eval-…` run id from `areev eval run`) and
+    /// the evidence is loaded from the journaled `mg:eval_run` summary —
+    /// never from these arguments. Same contract as the CLI's `--gating-run`.
     pub fn apply_recommendation(
         &self,
         hash: String,
         because: String,
         allow_destructive: Option<bool>,
         scopes: Option<String>,
+        gating_run: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let actor = self.actor.clone();
@@ -2074,16 +2132,27 @@ impl Areev {
             // Ask before approving. The approval is a real state transition and
             // `approved` has no exit but `applied` or `expired`, so recording it
             // first and then hitting the destructive gate stranded the
-            // recommendation where the reviewer could no longer reject it.
+            // recommendation where the reviewer could no longer reject it. The
+            // gating edge loads FIRST for the same reason: a bad run id must
+            // fail before any state transition.
+            let gating = match &gating_run {
+                Some(run_id) => Some(engine.gating_evidence(&sub, &hash, run_id).map_err(err)?),
+                None => None,
+            };
             engine
-                .preflight_apply(&sub, &hash, &scopes, allow_destructive)
+                .preflight_apply(&sub, &hash, &scopes, allow_destructive, gating.is_some())
                 .map_err(err)?;
             engine
                 .review(&mut sub, &hash, Decision::Approve, &actor, ObserverType::Human, &scopes, &because, now)
                 .map_err(err)?;
-            let applied = engine
-                .apply(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, now)
-                .map_err(err)?;
+            let applied = match &gating {
+                Some(g) => engine
+                    .apply_gated(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, g, now)
+                    .map_err(err)?,
+                None => engine
+                    .apply(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, now)
+                    .map_err(err)?,
+            };
             Ok(json!({"hash": hash, "rollbackable": applied.rollbackable}).to_string())
         })
     }

@@ -364,6 +364,7 @@ blocked (self-approval, `LOP-E021`) — run a reviewer process with distinct
 | `action` | string | no | `apply` \| `approve` \| `reject` (omit to list) |
 | `hash` | string | for an action | recommendation hash |
 | `because` | string | for an action | mandatory written reason |
+| `gating_run` | string | for a gated apply | an `eval-…` run id from `areev eval run`; a **code or adapter revision** applies only with one, and the evidence is loaded from the journaled `mg:eval_run` summary — never from the client. An ungated apply of a gated revision is refused *before* the approval lands, so nothing is stranded |
 
 ### The graph, time, and run↔memory reads
 

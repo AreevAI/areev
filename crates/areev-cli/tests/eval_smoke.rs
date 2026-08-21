@@ -223,3 +223,219 @@ fn reacceptance_compares_a_rerun_against_a_recorded_baseline() {
     );
     assert_eq!(report["reacceptance"]["tolerance_points"], 100.0);
 }
+
+// ── `--model`: grading through the ToolCallLlm seam (the adapter gate) ────
+
+/// Serve `count` canned OpenAI-compatible chat completions on a loopback
+/// listener — no live keys, no new dependencies (the areev-llm fixture
+/// pattern). Each response carries `usage`, which the seam requires.
+fn canned_openai_server(count: usize, content: &str, with_usage: bool) -> String {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut body = serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": content},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2}
+    });
+    if !with_usage {
+        body.as_object_mut().unwrap().remove("usage");
+    }
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        for _ in 0..count {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            // Drain headers + Content-Length body bytes, then answer.
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            let header_end = loop {
+                let Ok(n) = stream.read(&mut tmp) else { return };
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let content_length: usize = String::from_utf8_lossy(&buf[..header_end])
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            while buf.len() < header_end + content_length {
+                let Ok(n) = stream.read(&mut tmp) else { return };
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn areev_env(args: &[&str], envs: &[(&str, &str)]) -> (bool, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_areev"));
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("spawn areev");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn tool_cmd_and_model_are_one_of() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db").to_str().unwrap().to_string();
+    let cases = write_cases(
+        &dir,
+        "cases.json",
+        r#"[{"name": "x", "input": "q", "expect": {"contains": "a"}}]"#,
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", &db, "--name", "gate", "--cases", &cases]);
+    assert!(ok, "{err}");
+    let hash = stored_hash(&out);
+
+    let (ok, _out, err) = areev(&[
+        "eval", "run", "--db", &db, "--evalset", &hash,
+        "--tool-cmd", "cat", "--model", "openai-compat:x",
+    ]);
+    assert!(!ok, "both executors must be refused");
+    assert!(err.contains("not both"), "{err}");
+
+    let (ok, _out, err) = areev(&["eval", "run", "--db", &db, "--evalset", &hash]);
+    assert!(!ok, "no executor must be refused");
+    assert!(err.contains("--tool-cmd") && err.contains("--model"), "{err}");
+}
+
+#[test]
+fn a_model_grades_the_gate_through_an_openai_compatible_endpoint() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db").to_str().unwrap().to_string();
+
+    // Two prompt cases against a model that always answers "k8s": one
+    // passes, one fails — a gate that cannot fail is not a gate. The second
+    // case's messages-array shape exercises the conversation mapping.
+    let cases = write_cases(
+        &dir,
+        "cases.json",
+        r#"[
+            {"name": "target", "input": "what is the deploy target?",
+             "expect": {"contains": "k8s"}},
+            {"name": "cloud",
+             "input": [{"role": "system", "content": "answer tersely"},
+                        {"role": "user", "content": "which cloud?"}],
+             "expect": {"contains": "aws"}}
+        ]"#,
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", &db, "--name", "gate", "--cases", &cases]);
+    assert!(ok, "{err}");
+    let hash = stored_hash(&out);
+
+    let base = canned_openai_server(2, "k8s", true);
+    let (ok, out, err) = areev_env(
+        &[
+            "eval", "run", "--db", &db, "--evalset", &hash,
+            "--model", "openai-compat:fake-adapter", "--base-url", &base, "--key-env", "FAKE_KEY",
+        ],
+        &[("FAKE_KEY", "dummy")],
+    );
+    assert!(!ok, "a run with a failing case must exit non-zero: {err}");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).expect("report is JSON");
+    assert_eq!(report["passed"], 1, "{out}");
+    assert_eq!(report["failed"], 1, "{out}");
+
+    // The recorded edge names WHICH model was judged — part of the evidence.
+    let (ok, out, err) = areev(&[
+        "cal",
+        r#"RECALL facts WHERE relation = "mg:eval_run""#,
+        "--db", &db, "--ns", "agent:harness",
+    ]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("openai-compat:fake-adapter"),
+        "the summary must record the graded model: {out}"
+    );
+}
+
+#[test]
+fn model_cases_are_prevalidated_and_record_nothing_on_shape_errors() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db").to_str().unwrap().to_string();
+    // An object input is fine for tool-cmd (any JSON on stdin) but has no
+    // meaning as a chat — the model path must refuse it BEFORE any case
+    // runs, and record no summary (a partial gate is not a gate).
+    let cases = write_cases(
+        &dir,
+        "cases.json",
+        r#"[
+            {"name": "ok", "input": "hi", "expect": {"contains": "x"}},
+            {"name": "shapeless", "input": {"q": 1}, "expect": {"contains": "x"}}
+        ]"#,
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", &db, "--name", "gate", "--cases", &cases]);
+    assert!(ok, "{err}");
+    let hash = stored_hash(&out);
+
+    let (ok, _out, err) = areev_env(
+        &[
+            "eval", "run", "--db", &db, "--evalset", &hash,
+            "--model", "openai-compat:x", "--base-url", "http://127.0.0.1:1", "--key-env", "FAKE_KEY",
+        ],
+        &[("FAKE_KEY", "dummy")],
+    );
+    assert!(!ok, "a shapeless model case must refuse the whole run");
+    assert!(err.contains("shapeless"), "the refusal names the case: {err}");
+
+    let (ok, out, err) = areev(&[
+        "cal", r#"RECALL facts WHERE relation = "mg:eval_run""#, "--db", &db, "--ns", "agent:harness",
+    ]);
+    assert!(ok, "{err}");
+    let payload: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        payload["grains"].as_array().map(Vec::len),
+        Some(0),
+        "a refused run records no gating edge: {out}"
+    );
+}
+
+#[test]
+fn a_response_without_usage_fails_the_case() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db").to_str().unwrap().to_string();
+    let cases = write_cases(
+        &dir,
+        "cases.json",
+        r#"[{"name": "target", "input": "q", "expect": {"contains": "k8s"}}]"#,
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", &db, "--name", "gate", "--cases", &cases]);
+    assert!(ok, "{err}");
+    let hash = stored_hash(&out);
+
+    // The seam requires token usage on every response (budgeted runs). A
+    // proxy that strips `usage` must fail the case, not silently pass it.
+    let base = canned_openai_server(1, "k8s", false);
+    let (ok, out, _err) = areev_env(
+        &[
+            "eval", "run", "--db", &db, "--evalset", &hash,
+            "--model", "openai-compat:x", "--base-url", &base, "--key-env", "FAKE_KEY",
+        ],
+        &[("FAKE_KEY", "dummy")],
+    );
+    assert!(!ok, "a usage-less response must fail the gate");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["failed"], 1, "{out}");
+}

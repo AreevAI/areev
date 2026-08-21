@@ -2819,9 +2819,11 @@ function sugCard(r) {
   const prompt = el('span', 'meta');
   const line = el('div', 'line');
   const why = document.createElement('input'); why.type = 'text';
+  const gate = document.createElement('input'); gate.type = 'text';
+  gate.placeholder = 'gate run id (eval-…)'; gate.hidden = true;
   const conf = el('button', 'btn sm', 'Confirm');
   const cancel = el('button', 'btn ghost sm', 'Cancel');
-  line.appendChild(why); line.appendChild(conf); line.appendChild(cancel);
+  line.appendChild(why); line.appendChild(gate); line.appendChild(conf); line.appendChild(cancel);
   reason.appendChild(prompt); reason.appendChild(line);
 
   if (r.status === 'applied') {
@@ -2859,19 +2861,30 @@ function sugCard(r) {
   card.appendChild(dev);
 
   let armed = null;
+  const gated = !!r.evalset_hash;
   function arm(action, promptText, confirmLabel) {
     armed = action;
-    prompt.textContent = promptText + ' Your answer is recorded in the audit trail.';
+    const applying = action === 'apply' || action === 'approve_and_apply';
+    prompt.textContent = promptText + ' Your answer is recorded in the audit trail.'
+      + (gated && applying
+        ? ' This change is gated: paste the run id from `areev eval run --evalset '
+          + String(r.evalset_hash).slice(0, 12) + '…`.'
+        : '');
+    gate.hidden = !(gated && applying);
     conf.textContent = confirmLabel;
     why.placeholder = 'e.g. confirmed with the customer on the call';
     acts.hidden = true; reason.hidden = false;
     why.focus();
   }
-  cancel.onclick = () => { armed = null; why.value = ''; reason.hidden = true; acts.hidden = false; };
+  cancel.onclick = () => { armed = null; why.value = ''; gate.value = ''; reason.hidden = true; acts.hidden = false; };
   conf.onclick = async () => {
     if (!why.value.trim()) { toast('A reason is required — it goes in the audit trail'); why.focus(); return; }
+    if (!gate.hidden && !gate.value.trim()) {
+      toast('This change applies only with a recorded gate run — run the evalset first and paste its run id');
+      gate.focus(); return;
+    }
     conf.disabled = true; cancel.disabled = true;
-    await loopAct(r.hash, armed, why.value.trim());
+    await loopAct(r.hash, armed, why.value.trim(), gate.hidden ? '' : gate.value.trim());
     conf.disabled = false; cancel.disabled = false;
   };
   return card;
@@ -2987,19 +3000,22 @@ const errText = res => ((res && res.error) || 'unknown error') + (res && res.cod
 /* The engine's lifecycle is Pending → Approved → Applied, so applying a
    pending recommendation is two calls, not one — going straight to apply
    fails with LOP-E020. One reason covers both: the user made one decision. */
-async function loopAct(hash, action, because) {
+async function loopAct(hash, action, because, gatingRun) {
   const post = (url, body) => api(url, { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const done = async msg => { toast(msg); RECS = {}; await loadRecs(SUGTAB); await refresh(); };
+  /* A code or adapter revision applies only with a recorded gate run; the
+     server loads the stats from the journaled eval summary, never from us. */
+  const applyBody = gatingRun ? { hash, because, gating_run: gatingRun } : { hash, because };
   let res;
   if (action === 'approve_and_apply') {
     res = await post('/api/loop/review', { hash, decision: 'approve', because });
     if (!(res && res.ok)) return done('Could not approve: ' + errText(res));
-    res = await post('/api/loop/apply', { hash, because });
+    res = await post('/api/loop/apply', applyBody);
     return done(res && res.ok ? 'Applied ✓'
       : 'Approved, but applying failed: ' + errText(res) + ' — finish it from Needs review');
   }
-  if (action === 'apply') res = await post('/api/loop/apply', { hash, because });
+  if (action === 'apply') res = await post('/api/loop/apply', applyBody);
   else if (action === 'rollback') res = await post('/api/loop/rollback', { hash, because });
   else res = await post('/api/loop/review', { hash, decision: 'reject', because });
   return done(res && res.ok

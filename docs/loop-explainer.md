@@ -413,7 +413,7 @@ substrate but with no verification or governance workflow on top.*
 | ACE | incremental playbook deltas | never let an LLM monolithically rewrite memory (their case: 18k tokens @ 66.7% → one rewrite → 122 tokens @ 57.1%) |
 | GEPA | reflective evolution, Pareto pool | reflective non-weight improvement works; keep competing fixes |
 | Voyager | self-verified executable skills | improvement compounds when an external check grades it |
-| SEAL | self-generated finetuning | weight updates admit catastrophic forgetting; learn in the memory layer |
+| SEAL | self-generated finetuning | weight updates admit catastrophic forgetting — so learn in the memory layer *first*; and when you do tune, the corpus and the evaluation had better be governed |
 
 *Visual: pick 4 rows max for the slide; full table in the leave-behind.*
 
@@ -481,6 +481,15 @@ MCP / HTTP parity on the full lifecycle incl. rollback + outcomes · precision
 7. **Fleet rollups** — cross-file/cross-agent aggregation in the console.
 8. **Migrate onto the OMS `0x0C` recommendation grain** — the native type now
    exists (OMS 1.5); moving the live queue onto it is a data migration.
+9. **The tuning seam** — `areev corpus` already exports a governed, step-labeled
+   training set and `areev run shadow` / `areev eval` already grade a candidate
+   against recorded history. What is missing is `areev tune --cmd ...`, which
+   hands that corpus to the **host's** trainer and takes back an adapter
+   reference registered as a grain (base model + adapter + quantization pinned as
+   one unit), so promotion runs through the four gates a memory edit already
+   passes. Areev still never trains. No capability claim until the harness has
+   measured one — see
+   [`areev-adaptive-agents-proposal.md`](areev-adaptive-agents-proposal.md) §5.
 
 *Visual: two-lane timeline, "shipped" lane visibly heavier; next lane
 numbered.*

@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod tune;
 mod trigger_cli;
 
 use std::collections::HashMap;
@@ -56,6 +57,15 @@ COMMANDS:
   corpus   --select '<READ CAL>' [--out FILE] [--recipient ID]
                                       stream governed OpenAI chat
                                       JSONL and record its provenance registry
+  tune     --cmd 'TRAINER' --evalset HASH
+           (--select '<READ CAL>' --out FILE | --corpus FILE --manifest HASH)
+           [--recipient ID] [--timeout-secs N]
+                                      hand the corpus to YOUR trainer (JSON on
+                                      stdio; Areev never trains) and register
+                                      the returned adapter with full lineage;
+                                      promotion then rides the loop:
+                                      `loop run` proposes, `eval run --model`
+                                      gates, `loop apply --gating-run` admits
   search   --query TEXT [--subject S] [-k N]   hybrid recall (BM25 + structural, RRF)
   history  --subject S --relation R [--ns NS]
   provenance <source-hash>            grains distilled from a source (reverse)
@@ -169,9 +179,12 @@ COMMANDS:
                                       execution records for a workflow —
                                       which grains ran which of its nodes
   eval     <create|run>                the §7.4 gating edge: create stores an
-           evalset (--name N --cases FILE); run --evalset HASH --tool-cmd CMD
-           executes it, journals each case under an eval- run id, and records
-           the summary `areev loop apply --gating-run` loads
+           evalset (--name N --cases FILE); run --evalset HASH executes it
+           against --tool-cmd CMD or --model provider:name ([--base-url URL]
+           [--key-env VAR] [--llm-max-tokens N] — how a tuned adapter served
+           by vLLM/SGLang/Ollama is graded), journals each case under an
+           eval- run id, and records the summary `areev loop apply
+           --gating-run` loads
   tool     provenance <hash> [--depth N]   one-command code forensics: the
            recommendations targeting this code, each transition's approver +
            BECAUSE + gating edge, and the runs that touched it
@@ -179,7 +192,8 @@ COMMANDS:
            oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. start --workflow HASH --run-id ID [--input JSON]
-           [--tool-cmd CMD] [--model provider:name] [--llm-max-tokens N]
+           [--tool-cmd CMD] [--model provider:name] [--base-url URL]
+           [--key-env VAR] [--llm-max-tokens N]
            [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--credential NAME=ENV_VAR,...] [--allow-host URL,...]
@@ -491,6 +505,31 @@ fn write_erasure_audit(
             "stale_corpora".into(),
             serde_json::to_value(stale_exports).unwrap_or_else(|_| serde_json::json!([])),
         );
+        // One provenance hop further: adapters trained on a stale corpus
+        // are stale too (`areev tune` writes `derived_from` = the export
+        // manifest). The erasure cannot reach into a checkpoint; it CAN say
+        // precisely which adapters must be retired or re-derived — that
+        // report is the whole point of the lineage.
+        let mut stale_adapters = Vec::new();
+        for export in stale_exports {
+            let Ok(h) = Hash::from_hex(&export.manifest_hash) else {
+                continue;
+            };
+            let kids = m.grains_derived_from(&h).unwrap_or_default();
+            for g in kids {
+                if g.get_str("relation") != Some("mg:adapter") {
+                    continue;
+                }
+                stale_adapters.push(serde_json::json!({
+                    "subject": g.get_str("subject"),
+                    "grain_hash": g.hash.to_hex(),
+                    "export_id": export.export_id,
+                }));
+            }
+        }
+        if !stale_adapters.is_empty() {
+            context.insert("stale_adapters".into(), serde_json::json!(stale_adapters));
+        }
         obs.common.context = Some(serde_json::Value::Object(context));
         for export in stale_exports {
             let recipient = export
@@ -501,6 +540,14 @@ fn write_erasure_audit(
             eprintln!(
                 "areev: corpus {} at {}{} is stale and must be retired or re-derived",
                 export.export_id, export.destination, recipient
+            );
+        }
+        for a in &stale_adapters {
+            eprintln!(
+                "areev: adapter {} (grain {}) derives from stale corpus {} — retire or re-derive",
+                a["subject"].as_str().unwrap_or("?"),
+                a["grain_hash"].as_str().unwrap_or("?"),
+                a["export_id"].as_str().unwrap_or("?"),
             );
         }
     }
@@ -1506,73 +1553,31 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
         }
         "corpus" => {
-            use areev_cal::classify::{classify, StatementClass};
-            use areev_cal::executor::CalResultPayload;
-            use std::io::BufWriter;
-
             let selector = flag(&flags, "select")
                 .or_else(|| positional.first().cloned())
                 .ok_or_else(|| {
                     "usage: areev corpus --select '<READ CAL>' [--out FILE] [--recipient ID]"
                         .to_string()
                 })?;
-            let parsed = areev_cal::parse(&selector).map_err(|e| e.to_string())?;
-            if classify(&parsed.statement) != StatementClass::Read {
-                return Err("corpus selector must classify as a read-only CAL statement".into());
-            }
             let facade = AreevFacade::with_session(m, Some(ns), None);
             report_meta_warnings(&facade);
             let facade = apply_principal(facade, &flags)?;
-            // The selector's read grant and the immutable registry write are
-            // separate capabilities. Fail before creating an output file.
-            facade.authorize_corpus_export().map_err(|e| e.to_string())?;
-            let ex = CalExecutor::new(CalExecutorConfig {
-                allow_destructive_ops: false,
-                ..CalExecutorConfig::default()
-            });
-            let result = ex.execute(&selector, &facade).map_err(|e| e.to_string())?;
-            let grains = match result.result {
-                CalResultPayload::Grains { grains, .. }
-                | CalResultPayload::Assembled { grains, .. }
-                | CalResultPayload::Formatted { grains, .. }
-                | CalResultPayload::MultiFormatted { grains, .. } => grains,
-                other => {
-                    return Err(format!(
-                        "corpus selector must return grains, got {}",
-                        serde_json::to_value(other)
-                            .ok()
-                            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
-                            .unwrap_or_else(|| "non-grain result".into())
-                    ));
-                }
-            };
             let destination = flag(&flags, "out").unwrap_or_else(|| "stdout".to_string());
             let recipient = flag(&flags, "recipient");
-            let summary = if destination == "stdout" {
-                let stdout = std::io::stdout();
-                corpus::write_jsonl(grains, BufWriter::new(stdout.lock()))?
-            } else {
-                let file = std::fs::File::create(&destination)
-                    .map_err(|e| format!("{destination}: {e}"))?;
-                corpus::write_jsonl(grains, BufWriter::new(file))?
-            };
-            let exported_at = now_ms();
-            let manifest = facade
-                .record_corpus_export(
-                    &selector,
-                    &destination,
-                    recipient.as_deref(),
-                    exported_at,
-                    &summary.subject_fingerprints,
-                    &summary.source_hashes,
-                )
-                .map_err(|e| e.to_string())?;
+            let (summary, manifest) =
+                corpus::export(&facade, &selector, &destination, recipient.as_deref(), now_ms())?;
             eprintln!(
                 "corpus export: {} row(s), {} source grain(s), manifest {}",
                 summary.rows,
                 summary.source_hashes.len(),
                 manifest
             );
+        }
+        "tune" => {
+            let facade = AreevFacade::with_session(m, Some(ns), None);
+            report_meta_warnings(&facade);
+            let facade = apply_principal(facade, &flags)?;
+            return tune::run_tune(&facade, &flags);
         }
         "history" => {
             let s = need(&flags, "subject")?;
@@ -3791,9 +3796,33 @@ fn run_eval(
             Ok(())
         }
         "run" => {
-            let usage = "areev eval run --evalset HASH --tool-cmd CMD [--as PRINCIPAL]";
+            let usage = "areev eval run --evalset HASH (--tool-cmd CMD | --model provider:name \
+                         [--base-url URL] [--key-env VAR] [--llm-max-tokens N])";
             let evalset_hex = need("evalset", usage)?;
-            let cmd = need("tool-cmd", usage)?;
+            // Exactly one executor: a host command, or a model behind the
+            // ToolCallLlm seam (how a tuned adapter served by vLLM / SGLang /
+            // Ollama is graded — `--model openai-compat:<served-name>`).
+            let cmd = flag(flags, "tool-cmd");
+            let model = flag(flags, "model");
+            let llm = match (&cmd, &model) {
+                (Some(_), Some(_)) => {
+                    return Err("give either --tool-cmd or --model, not both".into());
+                }
+                (None, None) => return Err(usage.to_string()),
+                (Some(_), None) => None,
+                (None, Some(spec)) => Some(
+                    areev_llm::resolve_toolcall(
+                        spec,
+                        flag(flags, "base-url").as_deref(),
+                        flag(flags, "key-env").as_deref(),
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+            };
+            let llm_max_tokens: u32 = flag(flags, "llm-max-tokens")
+                .map(|v| v.parse().map_err(|_| "--llm-max-tokens must be a number".to_string()))
+                .transpose()?
+                .unwrap_or(1024);
             let h = Hash::from_hex(&evalset_hex).map_err(|e| e.to_string())?;
             let grain = facade.with_store(|m| m.get(&h)).map_err(|e| e.to_string())?;
             let payload: serde_json::Value = grain
@@ -3812,13 +3841,34 @@ fn run_eval(
                     .map(|d| d.as_millis())
                     .unwrap_or(0)
             );
+            // Fail-closed: a gate run that cannot run EVERY case records
+            // nothing. The model path constrains case-input shapes (a prompt
+            // string or a messages array); tool-cmd cases stay any-JSON.
+            if llm.is_some() {
+                for case in &cases {
+                    let cname = case.get("name").and_then(|v| v.as_str()).unwrap_or("case");
+                    let input = case.get("input").cloned().unwrap_or(serde_json::json!({}));
+                    eval_model_messages(&input).map_err(|e| format!("case '{cname}': {e}"))?;
+                }
+            }
             let (mut passed, mut failed) = (0u64, 0u64);
             let mut rows = Vec::new();
             for case in &cases {
                 let cname = case.get("name").and_then(|v| v.as_str()).unwrap_or("case");
                 let input = case.get("input").cloned().unwrap_or(serde_json::json!({}));
                 let expect = case.get("expect").cloned().unwrap_or(serde_json::json!({}));
-                let (ok, got) = run_eval_case(&cmd, &evalset_hex, cname, &input, &expect);
+                let (ok, got) = match &llm {
+                    Some(llm) => {
+                        run_eval_case_model(llm.as_ref(), &input, &expect, llm_max_tokens)
+                    }
+                    None => run_eval_case(
+                        cmd.as_deref().unwrap_or_default(),
+                        &evalset_hex,
+                        cname,
+                        &input,
+                        &expect,
+                    ),
+                };
                 if ok { passed += 1 } else { failed += 1 };
                 // Each case is journaled — the gate run is inspectable with
                 // `areev run-trace --run-id <eval id>` like any other run.
@@ -3842,10 +3892,15 @@ fn run_eval(
                     .map_err(|e| e.to_string())?;
                 rows.push(serde_json::json!({"case": cname, "ok": ok}));
             }
-            // The summary Fact — the RECORDED edge apply-gating loads.
-            let summary = serde_json::json!({
+            // The summary Fact — the RECORDED edge apply-gating loads. The
+            // grading model rides beside the stats: for an adapter gate,
+            // WHICH served model was judged is part of the evidence.
+            let mut summary = serde_json::json!({
                 "run_id": run_id, "passed": passed, "failed": failed,
             });
+            if let Some(spec) = &model {
+                summary["model"] = serde_json::json!(spec);
+            }
             let mut fact = areev_core::types::Fact::new(
                 &format!("evalset:{evalset_hex}"),
                 "mg:eval_run",
@@ -3990,16 +4045,99 @@ fn run_eval_case(
     if let Some(why) = out.failure("eval case") {
         return (false, why);
     }
-    let ok = if let Some(eq) = expect.get("equals") {
-        serde_json::from_str::<serde_json::Value>(&stdout)
-            .map(|got| &got == eq)
+    (eval_expect_matches(expect, &stdout), stdout)
+}
+
+/// The ONE scorer, shared by the tool-cmd and model paths: `expect.equals`
+/// compares parsed JSON, `expect.contains` is a substring test, anything
+/// else fails. Two scorers would let the two paths drift on what "passed"
+/// means — the gate's whole job.
+fn eval_expect_matches(expect: &serde_json::Value, got: &str) -> bool {
+    if let Some(eq) = expect.get("equals") {
+        serde_json::from_str::<serde_json::Value>(got)
+            .map(|parsed| &parsed == eq)
             .unwrap_or(false)
     } else if let Some(needle) = expect.get("contains").and_then(|v| v.as_str()) {
-        stdout.contains(needle)
+        got.contains(needle)
     } else {
         false
+    }
+}
+
+/// Map a model-path case `input` onto chat messages: a string is one user
+/// message; an array of `{role, content}` (`system` | `user` | `assistant`)
+/// is a conversation, with at most one leading `system` lifted into the
+/// request's system slot. Anything else is refused — BEFORE any case runs.
+fn eval_model_messages(
+    input: &serde_json::Value,
+) -> Result<(Option<String>, Vec<areev_llm::ChatMessage>), String> {
+    use areev_llm::ChatMessage;
+    if let Some(prompt) = input.as_str() {
+        return Ok((None, vec![ChatMessage::User(prompt.to_string())]));
+    }
+    let Some(turns) = input.as_array() else {
+        return Err(
+            "--model cases need a string prompt or an array of {role, content} \
+             messages (tool-cmd cases take any JSON)"
+                .into(),
+        );
     };
-    (ok, stdout)
+    let mut system = None;
+    let mut messages = Vec::new();
+    for (i, turn) in turns.iter().enumerate() {
+        let role = turn.get("role").and_then(|r| r.as_str()).unwrap_or_default();
+        let content = turn
+            .get("content")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| format!("message {i} has no string content"))?;
+        match role {
+            "system" if i == 0 => system = Some(content.to_string()),
+            "system" => return Err(format!("message {i}: system must be the first message")),
+            "user" => messages.push(ChatMessage::User(content.to_string())),
+            "assistant" => messages.push(ChatMessage::Assistant {
+                text: Some(content.to_string()),
+                tool_calls: vec![],
+            }),
+            other => return Err(format!("message {i} has unsupported role {other:?}")),
+        }
+    }
+    if messages.is_empty() {
+        return Err("a --model case needs at least one user or assistant message".into());
+    }
+    Ok((system, messages))
+}
+
+/// Run one case against the model behind the ToolCallLlm seam: no tools,
+/// temperature 0.0, the response text scored by the same matcher as a
+/// tool-cmd case's stdout.
+fn run_eval_case_model(
+    llm: &dyn areev_llm::ToolCallLlm,
+    input: &serde_json::Value,
+    expect: &serde_json::Value,
+    max_tokens: u32,
+) -> (bool, String) {
+    use areev_llm::{ToolCallRequest, ToolChoice};
+    // Prevalidated before the run started; a failure here is still a case
+    // failure rather than a panic.
+    let (system, messages) = match eval_model_messages(input) {
+        Ok(v) => v,
+        Err(e) => return (false, e),
+    };
+    let req = ToolCallRequest {
+        system,
+        messages,
+        tools: &[],
+        tool_choice: ToolChoice::None,
+        max_tokens,
+        temperature: 0.0,
+    };
+    match llm.call(&req) {
+        Ok(resp) => {
+            let text = resp.text.unwrap_or_default().trim().to_string();
+            (eval_expect_matches(expect, &text), text)
+        }
+        Err(e) => (false, format!("model call failed: {}", e.message)),
+    }
 }
 
 /// `areev hold` — legal holds (governed-agents §5.4): while a hold is live on
@@ -4194,31 +4332,10 @@ fn load_gating_evidence(
     rec_hash: &str,
     run_id: &str,
 ) -> Result<areev_loop::GatingEvidence, String> {
-    let rec = engine
-        .recommendations(sub, None)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|r| r.hash == rec_hash)
-        .ok_or_else(|| format!("recommendation {rec_hash} not found"))?;
-    let pin = rec
-        .evalset_hash
-        .ok_or_else(|| "this recommendation pins no evalset — --gating-run only applies to code revisions".to_string())?;
-    // Read through the shared evalset reader, so the run that GATES an apply
-    // and the runs that later JUDGE it are parsed by exactly one piece of code.
-    // Two parsers of this summary drifting apart would let a rule be admitted
-    // on one reading of an evalset and measured on another.
-    match areev_loop::eval::eval_run_by_id(sub, &pin, run_id).map_err(|e| e.to_string())? {
-        Some(run) => Ok(areev_loop::GatingEvidence {
-            evalset_hash: pin,
-            run_id: run.run_id,
-            passed: run.passed,
-            failed: run.failed,
-        }),
-        None => Err(format!(
-            "no recorded gate run '{run_id}' for evalset {pin} — run `areev eval run \
-             --evalset {pin} ...` first"
-        )),
-    }
+    // The ONE loader every surface shares (`Engine::gating_evidence`): the
+    // stats that admit a gated revision are read back from the recorded
+    // `mg:eval_run` Fact, never taken from the caller.
+    engine.gating_evidence(sub, rec_hash, run_id).map_err(|e| e.to_string())
 }
 
 fn resolve_hash(engine: &Engine, sub: &AreevSubstrate, prefix: &str) -> Result<String, String> {
@@ -4579,6 +4696,7 @@ fn run_audit(
                 "because": ctx.get("because"),
                 "grains_erased": ctx.get("grains_erased"),
                 "stale_corpora": ctx.get("stale_corpora"),
+                "stale_adapters": ctx.get("stale_adapters"),
             }),
         ));
     }
@@ -4888,11 +5006,24 @@ fn run_loop(
             // code produced. Before the revert lands, report which runs
             // touched the reverted tool — the report is what makes that
             // data reviewable, so it prints even (especially) when large.
-            let code_target = engine
+            let target_ref = engine
                 .recommendations(&sub, None)
                 .ok()
                 .and_then(|recs| recs.into_iter().find(|r| r.hash == hash))
-                .and_then(|r| r.target_ref.strip_prefix("tool:").map(str::to_string));
+                .map(|r| r.target_ref);
+            // The adapter mirror: retracting a promotion is the memory-side
+            // inverse — the SERVING side is the host's move, and the runs the
+            // adapter answered are not reverted. The opaque is a served-model
+            // name, not a grain hash, so there is no runs_touching walk.
+            if let Some(model) = target_ref.as_deref().and_then(|t| t.strip_prefix("model:")) {
+                eprintln!(
+                    "adapter promotion for model:{model} will be retracted — the host \
+                     must stop serving it; runs answered since promotion are NOT reverted"
+                );
+            }
+            let code_target = target_ref
+                .as_deref()
+                .and_then(|t| t.strip_prefix("tool:").map(str::to_string));
             if let Some(tool_hash) = &code_target {
                 if let Ok(h) = Hash::from_hex(tool_hash) {
                     let touched = sub

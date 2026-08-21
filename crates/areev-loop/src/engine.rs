@@ -1022,12 +1022,17 @@ impl Engine {
     ///
     /// Deliberately does not check the lifecycle transition: the caller is
     /// about to make it legal by approving.
+    /// `has_gating` is whether the caller will supply a gating run at apply:
+    /// a gated revision (code or adapter) without one is refused HERE, before
+    /// a fused approve-and-apply records the approval — `approved` has no
+    /// exit but `applied` or `expired`, so asking after would strand it.
     pub fn preflight_apply<S: OmsSubstrate>(
         &self,
         sub: &S,
         rec_hash: &str,
         scopes: &ScopeSet,
         allow_destructive: bool,
+        has_gating: bool,
     ) -> Result<()> {
         if !scopes.has(Scope::Apply) {
             return Err(Error::ScopeDenied("apply".into()));
@@ -1038,7 +1043,10 @@ impl Engine {
                 "destructive apply requires admin scope + allow_destructive".into(),
             ));
         }
-        ensure_executable(&rec.proposal)?;
+        ensure_executable(rec.action_kind, &rec.proposal)?;
+        if requires_gating(rec.action_kind) && !has_gating {
+            return Err(Error::InvalidProposal(GATING_REQUIRED.into()));
+        }
         Ok(())
     }
 
@@ -1062,9 +1070,53 @@ impl Engine {
         )
     }
 
+    /// Load the gating evidence for `rec_hash` from the RECORDED
+    /// `mg:eval_run` summary named by `run_id` — the one loader every
+    /// surface (CLI, bindings, MCP, HTTP) shares, so the stats that admit a
+    /// gated revision can never come from a caller: they are read back from
+    /// the Fact `areev eval run` journaled, within the recommendation's own
+    /// pinned evalset (a run id from a different evalset simply isn't found).
+    pub fn gating_evidence<S: OmsSubstrate>(
+        &self,
+        sub: &S,
+        rec_hash: &str,
+        run_id: &str,
+    ) -> Result<crate::recommendation::GatingEvidence> {
+        let rec = self
+            .recommendations(sub, None)?
+            .into_iter()
+            .find(|r| r.hash == rec_hash)
+            .ok_or_else(|| {
+                Error::InvalidProposal(format!("recommendation {rec_hash} not found"))
+            })?;
+        let pin = rec.evalset_hash.ok_or_else(|| {
+            Error::InvalidProposal(
+                "this recommendation pins no evalset — a gating run applies only \
+                 to code and adapter revisions"
+                    .into(),
+            )
+        })?;
+        // Read through the shared evalset reader, so the run that GATES an
+        // apply and the runs that later JUDGE it are parsed by exactly one
+        // piece of code — two parsers drifting apart would let a rule be
+        // admitted on one reading of a summary and measured on another.
+        match crate::eval::eval_run_by_id(sub, &pin, run_id)? {
+            Some(run) => Ok(crate::recommendation::GatingEvidence {
+                evalset_hash: pin,
+                run_id: run.run_id,
+                passed: run.passed,
+                failed: run.failed,
+            }),
+            None => Err(Error::InvalidProposal(format!(
+                "no recorded gate run '{run_id}' for evalset {pin} — run \
+                 `areev eval run --evalset {pin} ...` first"
+            ))),
+        }
+    }
+
     /// Apply WITH the §7.4 evalset-run edge — the only path that can apply a
-    /// `code_revision`. The evidence is validated against the
-    /// recommendation's pin and recorded on the audit Observation.
+    /// gated (code or adapter) revision. The evidence is validated against
+    /// the recommendation's pin and recorded on the audit Observation.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_gated<S: OmsSubstrate>(
         &self,
@@ -1125,18 +1177,13 @@ impl Engine {
                 "destructive apply requires admin scope + allow_destructive".into(),
             ));
         }
-        // §7.4: a code revision applies ONLY through the evalset-run edge —
-        // the pin must match, the pinned evalset must still be LIVE (a
-        // superseded evalset invalidates in-flight code recommendations:
-        // they re-gate), and a failing gate admits nothing.
-        if rec.action_kind == ActionKind::CodeRevision {
-            let g = gating.ok_or_else(|| {
-                Error::InvalidProposal(
-                    "code revisions apply only with a recorded gating run \
-                     (evalset hash + run id + stats) — use apply_gated"
-                        .into(),
-                )
-            })?;
+        // §7.4: a code or adapter revision applies ONLY through the
+        // evalset-run edge — the pin must match, the pinned evalset must
+        // still be LIVE (a superseded evalset invalidates in-flight
+        // recommendations: they re-gate), and a failing gate admits nothing.
+        if requires_gating(rec.action_kind) {
+            let g = gating
+                .ok_or_else(|| Error::InvalidProposal(GATING_REQUIRED.into()))?;
             let pin = rec.evalset_hash.as_deref().unwrap_or_default();
             if g.evalset_hash != pin {
                 return Err(Error::InvalidProposal(format!(
@@ -1163,7 +1210,7 @@ impl Engine {
             if g.failed > 0 {
                 return Err(Error::InvalidProposal(format!(
                     "the gating run failed {}/{} cases — a failing gate \
-                     cannot admit code",
+                     admits nothing",
                     g.failed,
                     g.passed + g.failed
                 )));
@@ -1205,19 +1252,25 @@ impl Engine {
             Proposal::Edit { .. } => {
                 return Err(Error::InvalidProposal(ADVISORY_EDIT.into()));
             }
-            // A gated code revision EXECUTES by writing the promotion grain:
-            // an immutable record that this tool target now resolves to the
-            // proposed code (the payload rides the recommendation's Data —
-            // typically a blob address from the §7.4 seam). Hosts read the
-            // promotion to re-resolve; retracting it is the rollback
-            // inverse, so the apply is rollbackable end-to-end.
-            Proposal::Data { data } if rec.action_kind == ActionKind::CodeRevision => {
+            // A gated code or adapter revision EXECUTES by writing the
+            // promotion grain: an immutable record that this target now
+            // resolves to the proposed code (a §7.4 blob address) or adapter
+            // (the tuning seam's registry tuple). Hosts read the promotion
+            // to re-resolve — `(tool:X, mg:code_promotion)` or
+            // `(model:X, mg:adapter_promotion)`; retracting it is the
+            // rollback inverse, so the apply is rollbackable end-to-end.
+            Proposal::Data { data } if requires_gating(rec.action_kind) => {
+                let relation = if rec.action_kind == ActionKind::AdapterRevision {
+                    "mg:adapter_promotion"
+                } else {
+                    "mg:code_promotion"
+                };
                 let mut spec = crate::substrate::GrainSpec::new(
                     crate::model::grain_type::FACT,
                     LOOP_NS,
                 )
                 .with_field("subject", rec.target_ref.clone())
-                .with_field("relation", "mg:code_promotion")
+                .with_field("relation", relation)
                 .with_field(
                     "object",
                     serde_json::to_string(data)
@@ -1947,6 +2000,17 @@ fn stamp_llm(
     }
 }
 
+/// The action kinds that apply ONLY through the evalset-run gating edge
+/// (§7.4 for tool code; the tuning seam's adapter promotion inherits the
+/// same rule). One predicate so the gate, the rollbackable stamp, and the
+/// promotion write can never disagree on membership.
+fn requires_gating(kind: ActionKind) -> bool {
+    matches!(
+        kind,
+        ActionKind::CodeRevision | ActionKind::AdapterRevision
+    )
+}
+
 fn stamp(
     m: &AnalyzerManifest,
     params: &crate::manifest::Params,
@@ -1970,9 +2034,10 @@ fn stamp(
     let rollbackable = match &d.proposal {
         Proposal::Cal { .. } => !destructive,
         Proposal::Edit { .. } => false,
-        // A code revision applies by WRITING the promotion grain; retracting
-        // it is the exact inverse — rollbackable by construction.
-        Proposal::Data { .. } => d.action_kind == ActionKind::CodeRevision,
+        // A code or adapter revision applies by WRITING the promotion
+        // grain; retracting it is the exact inverse — rollbackable by
+        // construction.
+        Proposal::Data { .. } => requires_gating(d.action_kind),
     };
     let mut evidence = d.evidence;
     evidence.truncate(MAX_EVIDENCE);
@@ -2149,6 +2214,11 @@ const ADVISORY_EDIT: &str = "This recommendation is advisory: the engine cannot 
 
 /// The refusal an advisory `Data` finding earns — every `Data` shape except
 /// `outcome_review`'s revert, which carries `revert_of`.
+/// Shared by [`Engine::preflight_apply`] and the apply gate so a fused
+/// approve-and-apply caller is refused BEFORE the approval lands, not after.
+const GATING_REQUIRED: &str = "code and adapter revisions apply only with a recorded gating run \
+     (evalset hash + run id + stats) — use apply_gated";
+
 const ADVISORY_DATA: &str = "This finding is advisory: the engine cannot execute it. Act on its \
      guidance. Dismiss it with REJECT … BECAUSE while it is still pending, or approve it to \
      acknowledge it and let it expire.";
@@ -2165,14 +2235,19 @@ const ADVISORY_DATA: &str = "This finding is advisory: the engine cannot execute
 /// approve-and-apply path in the bindings did, leaving the recommendation in
 /// `approved`, whose only exits are `applied` and `expired`. Preflight asks
 /// first, so that path now refuses before it commits anything.
-pub(crate) fn ensure_executable(proposal: &Proposal) -> Result<()> {
+pub(crate) fn ensure_executable(action_kind: ActionKind, proposal: &Proposal) -> Result<()> {
     match proposal {
         Proposal::Cal { .. } => Ok(()),
         Proposal::Edit { .. } => Err(Error::InvalidProposal(ADVISORY_EDIT.into())),
-        // `outcome_review` is the one executable Data shape: `revert_of` names
-        // an earlier applied recommendation to roll back.
+        // Two executable Data shapes: `outcome_review`'s `revert_of` (names
+        // an earlier applied recommendation to roll back), and a gated
+        // revision (code or adapter), which executes by writing its
+        // promotion grain — the gating-run requirement itself is checked at
+        // apply, not here.
         Proposal::Data { data } => {
-            if data.get("revert_of").and_then(Value::as_str).is_some() {
+            if requires_gating(action_kind)
+                || data.get("revert_of").and_then(Value::as_str).is_some()
+            {
                 Ok(())
             } else {
                 Err(Error::InvalidProposal(ADVISORY_DATA.into()))
