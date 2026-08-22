@@ -16,10 +16,13 @@ The `.mg` format, CAL syntax, and error codes are stable contracts.
 
 ## Docs
 
-- [README](README.md): Project overview, quickstart (CLI, Python, MCP), benchmarks, and the crate map.
+- [README](README.md): Project overview — self-improving agents, governed; the problem/solution, key metrics, and links into everything below.
+- [Quickstart](docs/quickstart.md): Install (cargo/pip/npm/binaries), the CLI in three commands, MCP for Claude Code, `areev run`, Rust/Python/Node embedding, the PostgreSQL backend, encryption at rest, durability & fleets.
+- [Why Areev](docs/why-areev.md): The full argument — how agent memory rots, the three systems (record / loop / governance), governed runs, erasure, storage, and the SLM tuning seam.
+- [Quality](docs/quality.md): How every published number is produced and gated — test taxonomy, per-crate coverage floors, benchmark receipts.
 - [Architecture](ARCHITECTURE.md): The workspace, the grain model, the store schema, hybrid recall, and the sync/forks design.
 - [CAL reference](docs/cal-reference.md): The Context Assembly Language — `RECALL`, `ASSEMBLE`, `EXISTS`, `HISTORY`, `ADD`, `SUPERSEDE`, `REPORT SUBJECT`, pipelines, and the shaped, authorization-gated destruction model.
-- [MCP reference](docs/mcp-reference.md): The 23 stdio MCP tools (`areev_recall/add/supersede/forget/remember/cal`, the DSAR read `areev_subject_report`, the graph/time reads, the run joins, the loop pair, and the runtime six) and how to wire them into an MCP client — including the saved-query pattern (`DESCRIBE QUERIES` → `RUN`) for assembly logic that lives in the file.
+- [MCP reference](docs/mcp-reference.md): The 25 stdio MCP tools (`areev_recall/add/supersede/forget/remember/cal`, the DSAR read `areev_subject_report`, the graph/time reads, the run joins, the loop pair, and the runtime six) and how to wire them into an MCP client — including the saved-query pattern (`DESCRIBE QUERIES` → `RUN`) for assembly logic that lives in the file.
 - [Migration guide](docs/migrate.md): `areev migrate` — importing from mem0 (with full edit history), Zep/Graphiti, Letta, LangMem/LangGraph, Basic Memory, or generic JSONL, with per-source export one-liners.
 - [Memory-tool backend](docs/memory-tool.md): Areev as the storage backend for Anthropic's client-side memory tool (`memory_20250818`) in Python, Node, and the CLI.
 - [FAQ](FAQ.md): Question-and-answer coverage of what Areev is, how it differs from vector DBs and RAG, grains, OMS, recall, encryption, and maturity.

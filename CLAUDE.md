@@ -9,12 +9,12 @@ with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
-`areev` on PyPI, and **`@areev/areev`** on npm — main package *and* every
-per-platform addon (`@areev/areev-win32-x64-msvc`, …) are scoped, because npm's
-similarity/spam filter rejects the unscoped `areev-*` names and a rejected
-platform package left the manifest promising a Windows addon that did not
-exist. An unscoped-`areev` exception is still user-tracked with npm support but
-is no longer on the release path.
+`areev` on PyPI, and **`areev`** on npm (unscoped, since 1.5.1 — npm support
+granted the exception and released the `areev-win32-x64-msvc` security hold
+on 2026-08-22, so the main package *and* every per-platform addon
+(`areev-win32-x64-msvc`, …) publish unscoped). The former scoped packages
+(`@areev/areev` + platforms) are deprecated pointers, kept for existing
+installs; never publish new versions to them.
 `areev-py`, `areev-bench`, and `areev-conformance` stay `publish = false`;
 `areev-js` ships to npm, not crates.io.
 The version lives in `[workspace.package]` in the root `Cargo.toml` (all crates
@@ -56,10 +56,15 @@ node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot i
   agrees) and `stats` (the README quality figures still match the tree).
   `security.yml` runs `cargo deny`. Still run tests locally before pushing.
 - **The README quotes generated numbers.** `scripts/repo_stats.py` emits
-  `docs/repo-stats.{json,md,html}` and the two SVGs the README embeds; the
+  `docs/repo-stats.{json,md,html}` and four SVGs the README embeds (the
+  quality chart + the per-crate coverage chart, light/dark each); the
   `stats` job fails the build if they drift >2% from the tree. Line coverage is
   a separate input: `scripts/coverage.py` turns the `coverage` job's LCOV trace
-  into `docs/coverage.json`, which `repo_stats.py` renders into the same chart.
+  into `docs/coverage.json`, which `repo_stats.py` renders into the same charts.
+  The README's latency chart is separate: `scripts/bench_chart.py` renders
+  `docs/assets/bench-latency-{light,dark}.svg` from numbers quoted out of
+  `crates/areev-bench/RESULTS.md` — re-run it by hand when RESULTS.md changes
+  (measurements are not tree-derivable, so it is not CI-checked).
   Coverage scores **source lines only** (no `tests/`, no `benches/`, no
   `#[cfg(test)]` blocks) and excludes what that job cannot execute
   (`areev-py` — pytest's job; `areev-bench` — explicit tools; `store/src/pg.rs`
@@ -311,7 +316,7 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 ## Naming
 
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`, npm packages `@areev/areev` +
-`@areev/areev-<platform>` (all scoped; unscoped `areev` pending npm approval,
-not required by the release). The OMS spec itself is external (CC0); OMS
+"areevd", Python module `areev`, npm packages `areev` +
+`areev-<platform>` (unscoped since 1.5.1; the scoped `@areev/*` twins are
+deprecated pointers). The OMS spec itself is external (CC0); OMS
 conformance is the compatibility mechanism with other implementations.

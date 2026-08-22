@@ -11,7 +11,7 @@ memory is one file, opened with a namespace, giving JavaScript agents durable
 add / recall / supersede / forget over content-addressed memory.
 
 ```js
-const { Areev } = require('@areev/areev')
+const { Areev } = require('areev')
 
 const mem = new Areev('caller.db', 'caller') // 3rd arg: passphrase for AES-256 at rest
 const h = await mem.addFact('john', 'prefers', 'tea', 0.95)
