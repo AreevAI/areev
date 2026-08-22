@@ -1089,6 +1089,36 @@ column per field. That is a consequence of content addressing, not an
 oversight, and the honest response is to widen and then say so rather than to
 imply an exactness the storage model cannot provide.
 
+### WHERE fails closed: pushed down, evaluated per grain, or refused
+
+**Decision (2026-08-22, issue #91):** every `WHERE` condition on the recall
+family (`RECALL`, `EXISTS`, `HISTORY … WHERE`, ASSEMBLE's post-filter) is
+either consumed by the engine push-down, evaluated per grain by the one
+authoritative boolean evaluator (`grain_matches_condition_tree`), or refused
+before the scan — it is never dropped.
+
+The failure this retires was the worst shape a memory engine can have: a
+*narrowing* clause that silently *widened*. A common field outside a type's
+queryable set passed validation, fell out of push-down, and returned
+everything with only a stderr warning — so `WHERE status = "failed"`
+returned the successes, in the right shape and order, indistinguishable from
+a correct answer without knowing the field tables by heart. `NOT x = v` was
+flattened to `x = v` (precisely the excluded set), and `a OR b` pushed only
+`a`.
+
+The mechanism is a planning pass (`plan_residual_where`) that splits the
+condition tree: leaves the push-down consumes (test-pinned truth table)
+become engine parameters; everything else — type-specific fields, `NOT`/`OR`
+subtrees, unsupported comparators, `IS NULL` — survives as a *residual tree*
+evaluated per grain after the (widened) scan. Validation runs before the
+scan: a field the target type cannot carry is `CAL-E060`; an engine-level
+field (`query`, `time`, `entity`, `contradicted`, `scope`, `tags`) in a
+position it cannot be honoured (under `NOT`/`OR`, wrong comparator) is
+`CAL-E061`, because those narrow the scan and have no per-grain value.
+Leniency was deliberately NOT kept behind an opt-in: a filter that cannot be
+honoured has no honest lenient reading, and the safe direction must be the
+default direction.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

@@ -243,6 +243,13 @@ pub struct Trigger {
     /// the evaluator already holds it, and the declaration replicates with
     /// the trigger — auditable, not host-local. Omit-default: absent means
     /// no context assembly, exactly the pre-1.5 behaviour.
+    ///
+    /// Since 1.5.1 (#92) the spelling may bind the query's parameters from
+    /// the firing item using `--dedup-key`'s JSON pointers:
+    /// `triage_ctx($session = /session)`. The whole spelling is stored
+    /// verbatim (still one string, same wire shape); the plain-name form is
+    /// byte-identical to 1.5.0. Resolution is fail-closed: an unresolvable
+    /// pointer refuses the firing.
     pub context_query: Option<String>,
     pub common: GrainCommon,
 }

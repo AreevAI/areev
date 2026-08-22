@@ -45,6 +45,16 @@ pub fn validate(trigger: &Trigger) -> Result<()> {
     if let Some(why) = trigger.incoherence() {
         return Err(TriggerError::Malformed { what: why });
     }
+    // A malformed `--context-query` spelling (#92) can never fire — refuse
+    // it at authoring time with the parser's own message. The fire path
+    // re-parses (fail-closed) for declarations that bypassed validation.
+    if let Some(spec) = trigger.context_query.as_deref() {
+        if let Err(why) = crate::context::parse_context_query(spec) {
+            return Err(TriggerError::Malformed {
+                what: format!("context_query: {why}"),
+            });
+        }
+    }
     if trigger.kind == TriggerKind::Schedule {
         let expr = trigger.cron.as_deref().unwrap_or_default();
         parse_cron(expr)?;

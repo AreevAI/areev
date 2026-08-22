@@ -1519,10 +1519,10 @@ fn anonymize_fixtures_gate_a_policy_in_both_directions() {
     );
 }
 
-/// #85: `trigger add --context-query` — the name is validated at declaration
-/// (it rides inside a CAL string at fire time), and an unregistered query
-/// warns rather than refuses (saved queries replicate with the file; the
-/// evaluator fails closed at fire time either way).
+/// #85/#92: `trigger add --context-query` — the spelling (`name` or
+/// `name($p = /ptr, …)`) is validated at declaration, and an unregistered
+/// query warns rather than refuses (saved queries replicate with the file;
+/// the evaluator fails closed at fire time either way).
 #[test]
 fn trigger_context_query_is_validated_at_declaration() {
     let dir = TempDir::new().unwrap();
@@ -1552,4 +1552,28 @@ fn trigger_context_query_is_validated_at_declaration() {
     ]);
     assert!(ok, "{err}");
     assert!(out.contains("triage_ctx"), "the declaration must be on the grain: {out}");
+
+    // #92 — the parameterized spelling declares too, stored verbatim so the
+    // binding replicates and audits with the trigger.
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", &db, "--type", "interval", "--interval", "120",
+        "--workflow", wf, "--context-query", "thread_ctx($session = /session)",
+        "--because", "test",
+    ]);
+    assert!(ok, "the parameterized spelling must declare: {err}");
+    let (ok, out, err) = areev(&["cal", r#"RECALL triggers RECENT 5"#, "--db", &db]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("thread_ctx($session = /session)"),
+        "the whole spelling must be on the grain: {out}"
+    );
+
+    // A malformed binding is refused at declaration with the parser's reason.
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", &db, "--type", "interval", "--interval", "120",
+        "--workflow", wf, "--context-query", "thread_ctx($session = session)",
+        "--because", "test",
+    ]);
+    assert!(!ok, "a pointer without '/' must be refused");
+    assert!(err.contains("JSON pointer"), "{err}");
 }

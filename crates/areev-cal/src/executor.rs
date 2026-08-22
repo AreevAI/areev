@@ -2261,10 +2261,15 @@ impl CalExecutor {
             .pipeline
             .iter()
             .any(|st| matches!(st, PipelineStage::Count { .. }));
-        let has_post_filter = recall.where_clause.as_ref().is_some_and(|w| {
-            !extract_type_specific_conditions(&w.condition).is_empty()
-                || !extract_type_specific_set_conditions(&w.condition).is_empty()
-        });
+        // #91 — plan the residual WHERE tree up front. This validates every
+        // filter BEFORE the scan (refusing what cannot be honoured with
+        // CAL-E060/E061 instead of widening) and decides whether a
+        // post-retrieval pass needs the scan widened to see the full set.
+        let residual_where = match recall.where_clause.as_ref() {
+            Some(w) => plan_residual_where(&w.condition, &recall.grain_type, exec_warnings)?,
+            None => None,
+        };
+        let has_post_filter = residual_where.is_some();
         // CONTRADICTIONS has already widened to the same bound; don't stack.
         let wide_reason: Option<String> = if recall.contradictions.is_some() {
             None
@@ -2345,47 +2350,16 @@ impl CalExecutor {
             }
         }
 
-        // ── WI-1.6: Post-retrieval filtering for type-specific fields ────
+        // ── #91: Residual WHERE — evaluated per grain ────────────────────
         //
-        // Extract type-specific conditions from the WHERE clause and apply
-        // them as post-filters on the grain result set. These fields
-        // (e.g., tool_name on tools, goal_state on goals) are not part
-        // of RecallParams and must be filtered after retrieval.
-        if let Some(ref where_clause) = recall.where_clause {
-            let type_conditions = extract_type_specific_conditions(&where_clause.condition);
-            let set_conditions = extract_type_specific_set_conditions(&where_clause.condition);
-
-            // Validate fields against the target grain type.
-            let referenced_fields = type_conditions
-                .iter()
-                .map(|(f, _, _)| f.as_str())
-                .chain(set_conditions.iter().map(|c| c.field.as_str()));
-            for field in referenced_fields {
-                let specific = type_specific_fields(&recall.grain_type);
-                if recall.grain_type != GrainTypePlural::All
-                    && !specific.contains(&field)
-                    && !COMMON_FIELDS.contains(&field)
-                {
-                    let suggestion = suggest_field(field, &recall.grain_type);
-                    return Err(CalError::FieldNotOnGrainType {
-                        field: field.to_string(),
-                        grain_type: recall.grain_type.as_str().to_string(),
-                        span: recall.span,
-                        suggestion,
-                    });
-                }
-            }
-
-            if !type_conditions.is_empty() || !set_conditions.is_empty() {
-                grains.retain(|grain| {
-                    type_conditions
-                        .iter()
-                        .all(|(field, comp, val)| grain_matches_condition(grain, field, comp, val))
-                        && set_conditions
-                            .iter()
-                            .all(|c| grain_matches_set_condition(grain, c))
-                });
-            }
+        // Everything push-down did not consume (type-specific fields,
+        // NOT/OR subtrees, unsupported comparators, IS NULL, …) is applied
+        // here through the ONE authoritative evaluator, with full boolean
+        // semantics. Validation already ran in `plan_residual_where`,
+        // before the scan — a filter is pushed down, evaluated here, or
+        // refused; it is never dropped.
+        if let Some(ref residual) = residual_where {
+            grains.retain(|grain| grain_matches_condition_tree(grain, residual));
         }
 
         // ── Re-apply the caller's bound to the widened scan ──────────────
@@ -2671,17 +2645,13 @@ impl CalExecutor {
                     ("scope_path", Comparator::Eq) | ("scope", Comparator::Eq) => {
                         params.scope_path = Some(value_to_string(value)?);
                     }
-                    // Type-specific fields (e.g. goal_state, session_id, is_error)
-                    // are handled later by extract_type_specific_conditions as post-filters.
-                    // Only warn for truly unknown fields.
-                    _ => {
-                        if !is_known_type_specific_field(field) {
-                            warnings.push(format!(
-                                "CAL-W010: WHERE field '{}' is not a recognized filter field. Check field name.",
-                                field
-                            ));
-                        }
-                    }
+                    // Everything else (type-specific fields, unsupported
+                    // comparators on common fields) is the residual filter's
+                    // job — `plan_residual_where` validated it and
+                    // `grain_matches_condition_tree` applies it per grain
+                    // (#91). No warning here: a residual filter is honoured,
+                    // not ignored.
+                    _ => {}
                 }
                 Ok(())
             }
@@ -2780,13 +2750,13 @@ impl CalExecutor {
                 Ok(())
             }
 
-            Condition::Or { left, .. } => {
-                // OR is not directly representable in RecallParams.
-                // Apply the left branch only and emit a warning.
-                self.apply_where_clause(left, params, warnings, let_values)?;
-                warnings.push(
-                    "OR conditions are partially supported in Phase 1: only the left branch is applied. Use separate queries with UNION for full OR semantics.".to_string()
-                );
+            Condition::Or { .. } => {
+                // OR is not representable in RecallParams (conjunctive), so
+                // NOTHING inside it is pushed down — the whole subtree goes
+                // to the residual filter, which evaluates it per grain with
+                // real disjunction semantics (#91). Pushing only the left
+                // branch, as this used to, silently narrowed `a OR b` to
+                // `a`.
                 Ok(())
             }
 
@@ -3284,8 +3254,24 @@ impl CalExecutor {
             });
         }
 
-        // General case: recall with limit 1 to detect presence.
-        params.limit = Some(1);
+        // #91 — the same refuse-or-honour contract as RECALL: anything
+        // push-down did not consume must be evaluated per grain, so an
+        // EXISTS with a residual filter scans wide and post-filters instead
+        // of trusting the first hit of an under-filtered scan (which made
+        // `EXISTS tools WHERE tool_name = "x"` true whenever ANY tool
+        // grain existed).
+        let residual_where = match exists.where_clause.as_ref() {
+            Some(w) => plan_residual_where(&w.condition, &exists.grain_type, exec_warnings)?,
+            None => None,
+        };
+
+        // General case: recall with limit 1 to detect presence — widened to
+        // the scan bound when a residual filter still has to run.
+        params.limit = if residual_where.is_some() {
+            Some(self.config.max_limit as usize)
+        } else {
+            Some(1)
+        };
 
         // Apply capability overrides (the pin also clears any IN-set scope).
         if let Some(ref ns) = self.config.namespace_override {
@@ -3300,8 +3286,18 @@ impl CalExecutor {
             .recall(&params)
             .map_err(|e| map_store_err(e, exists.span))?;
 
-        let found = !hits.is_empty();
-        let hash_out = hits.first().map(|h| h.hash.to_hex()).unwrap_or_default();
+        let (found, hash_out) = if let Some(ref residual) = residual_where {
+            let grains = hits_to_grain_results(&hits);
+            let first = grains
+                .iter()
+                .find(|g| grain_matches_condition_tree(g, residual));
+            (first.is_some(), first.map(|g| g.hash.clone()).unwrap_or_default())
+        } else {
+            (
+                !hits.is_empty(),
+                hits.first().map(|h| h.hash.to_hex()).unwrap_or_default(),
+            )
+        };
 
         Ok(CalResultPayload::Exists {
             exists: found,
@@ -3397,6 +3393,12 @@ impl CalExecutor {
                 let mut params = RecallParams::default();
                 self.apply_where_clause(&wc.condition, &mut params, exec_warnings, let_values)?;
 
+                // #91 — HISTORY WHERE is untyped, so plan against the
+                // wildcard: refuse engine-only fields in residual position,
+                // honour everything else per grain instead of dropping it.
+                let residual_where =
+                    plan_residual_where(&wc.condition, &GrainTypePlural::All, exec_warnings)?;
+
                 // Apply capability overrides (the pin also clears any IN-set scope).
                 if let Some(ref ns) = self.config.namespace_override {
                     params.namespace = Some(ns.clone());
@@ -3406,14 +3408,34 @@ impl CalExecutor {
                     params.user_id = Some(uid.clone());
                 }
 
-                // Use a modest limit to find matching grains for history.
+                // Use a modest limit to find matching grains for history —
+                // widened when a residual filter still has to select among
+                // them.
                 if params.limit.is_none() {
-                    params.limit = Some(10);
+                    params.limit = Some(if residual_where.is_some() {
+                        self.config.max_limit as usize
+                    } else {
+                        10
+                    });
                 }
 
                 let hits = store
                     .recall(&params)
                     .map_err(|e| map_store_err(e, history.span))?;
+
+                // Residual filter: keep only the grains the WHERE clause
+                // actually selects (push-down alone may under-filter).
+                let hits: Vec<crate::store_types::SearchHit> =
+                    if let Some(ref residual) = residual_where {
+                        let grains = hits_to_grain_results(&hits);
+                        hits.into_iter()
+                            .zip(grains)
+                            .filter(|(_, g)| grain_matches_condition_tree(g, residual))
+                            .map(|(h, _)| h)
+                            .collect()
+                    } else {
+                        hits
+                    };
 
                 // Collect version histories for all matching grains.
                 let mut all_versions: Vec<CalVersionResult> = Vec::new();
@@ -3706,27 +3728,45 @@ impl CalExecutor {
                         })
                     }
                 } else {
-                    // Static fallback (same as Phase 1).
-                    let common = serde_json::json!([
-                        {"name": "subject", "type": "string", "filterable": true, "sortable": true},
-                        {"name": "relation", "type": "string", "filterable": true, "sortable": true},
-                        {"name": "object", "type": "string", "filterable": true, "sortable": false},
-                        {"name": "namespace", "type": "string", "filterable": true, "sortable": true},
-                        {"name": "user_id", "type": "string", "filterable": true, "sortable": true},
-                        {"name": "created_at", "type": "timestamp", "filterable": true, "sortable": true},
-                        {"name": "confidence", "type": "number", "filterable": true, "sortable": true},
-                        {"name": "importance", "type": "number", "filterable": true, "sortable": true},
-                        {"name": "tags", "type": "array", "filterable": true, "sortable": false},
-                        {"name": "session_id", "type": "string", "filterable": true, "sortable": true}
-                    ]);
+                    // Static fallback. Common fields every recall honours…
+                    let mut fields: Vec<serde_json::Value> = vec![
+                        serde_json::json!({"name": "subject", "type": "string", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "relation", "type": "string", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "object", "type": "string", "filterable": true, "sortable": false}),
+                        serde_json::json!({"name": "namespace", "type": "string", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "user_id", "type": "string", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "created_at", "type": "timestamp", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "confidence", "type": "number", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "importance", "type": "number", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "tags", "type": "array", "filterable": true, "sortable": false}),
+                    ];
+                    // …plus, for a typed DESCRIBE, exactly the registry's
+                    // queryable set for that type (#91): every advertised
+                    // field now genuinely filters — `WHERE` refuses what it
+                    // cannot honour, so this list and the executor cannot
+                    // drift apart. (`session_id` is here for the types that
+                    // declare it, no longer advertised type-free.)
+                    if let Some(gt) = gt_engine {
+                        for name in areev_core::types::registry::meta(gt).queryable_fields {
+                            if fields.iter().any(|f| f["name"] == *name) {
+                                continue;
+                            }
+                            fields.push(serde_json::json!({
+                                "name": name,
+                                "type": "field",
+                                "filterable": true,
+                                "sortable": false,
+                            }));
+                        }
+                    }
                     if let Some(gt) = opt_gt {
                         serde_json::json!({
                             "grain_type": gt.as_str(),
-                            "fields": common
+                            "fields": fields
                         })
                     } else {
                         serde_json::json!({
-                            "fields": common
+                            "fields": fields
                         })
                     }
                 }
@@ -4728,26 +4768,22 @@ impl CalExecutor {
         // Apply the WHERE clause as a post-composition filter on assembled
         // results. Each condition is matched against the grain's fields.
         let grains = if let Some(ref wc) = assemble.where_clause {
-            let type_conditions = extract_type_specific_conditions(&wc.condition);
-            let mut common_conditions = Vec::new();
-            collect_common_conditions(&wc.condition, &mut common_conditions);
-
-            let filtered: Vec<CalGrainResult> = base_grains
+            // #91 — ASSEMBLE WHERE is a pure post-composition filter: no
+            // push-down exists here, so the WHOLE tree is evaluated per
+            // grain by the one authoritative evaluator (the flat extraction
+            // it replaces lost NOT and turned OR into AND). Validate
+            // against the wildcard first so engine-only fields (query,
+            // time, tags, …) refuse instead of matching nothing.
+            validate_residual_subtree(
+                &wc.condition,
+                &GrainTypePlural::All,
+                "in ASSEMBLE WHERE (a post-composition filter)",
+                exec_warnings,
+            )?;
+            base_grains
                 .into_iter()
-                .filter(|grain| {
-                    // Check type-specific conditions.
-                    let type_ok = type_conditions
-                        .iter()
-                        .all(|(field, comp, val)| grain_matches_condition(grain, field, comp, val));
-                    // Check common field conditions post-hoc.
-                    let common_ok = common_conditions
-                        .iter()
-                        .all(|(field, comp, val)| grain_matches_condition(grain, field, comp, val));
-                    type_ok && common_ok
-                })
-                .collect();
-
-            filtered
+                .filter(|grain| grain_matches_condition_tree(grain, &wc.condition))
+                .collect()
         } else {
             base_grains
         };
@@ -6612,118 +6648,239 @@ fn suggest_field(field: &str, grain_type: &GrainTypePlural) -> Option<String> {
     None
 }
 
-/// Extract type-specific field conditions from a WHERE clause.
+// ---------------------------------------------------------------------------
+// #91 — WHERE planning: push-down vs residual, refuse-instead-of-widen
+// ---------------------------------------------------------------------------
+
+/// Fields that exist only at engine level: they narrow the SCAN (BM25 text,
+/// temporal windows, the entity graph, fork status, scope/prefix registry,
+/// the tags index) and have no per-grain value the post-filter could read.
+/// A condition on one of these that push-down cannot consume — under
+/// `NOT`/`OR`, or with an unsupported comparator — is refused with
+/// `CAL-E061` rather than silently widening the result.
+const ENGINE_ONLY_FIELDS: &[&str] = &[
+    "query",
+    "time",
+    "entity",
+    "contradicted",
+    "scope",
+    "scope_path",
+    "tags",
+];
+
+/// Common fields the residual filter can evaluate on ANY grain type: they
+/// live in the grain's field map (OMS §5.2 common set) or on the result
+/// envelope (`hash`, `grain_type`/`type`, `score`). A grain that does not
+/// carry the field simply does not match — narrowing, never widening.
+const GRAIN_EVALUABLE_COMMON: &[&str] = &[
+    "subject",
+    "relation",
+    "object",
+    "namespace",
+    "user_id",
+    "confidence",
+    "importance",
+    "created_at",
+    "verification_status",
+    "source_type",
+    "recall_priority",
+    "epistemic_status",
+    "content",
+    "summary",
+    "hash",
+    "grain_type",
+    "type",
+    "score",
+];
+
+/// Does `apply_where_clause` consume this leaf into `RecallParams`?
 ///
-/// Returns a Vec of (field, comparator, value) tuples for conditions that
-/// reference fields NOT in `COMMON_FIELDS`. These need post-retrieval
-/// filtering because they cannot be pushed down into `RecallParams`.
-fn extract_type_specific_conditions(condition: &Condition) -> Vec<(String, Comparator, Value)> {
-    let mut result = Vec::new();
-    extract_type_specific_conditions_inner(condition, &mut result);
-    result
+/// Exactly the arms of that match — the two must stay in sync (test-pinned
+/// by `test_pushdown_consumed_matches_apply_where_clause_arms`). A consumed
+/// leaf is replaced by TRUE in the residual tree: the engine already
+/// narrowed by it, and re-checking per grain would be wrong for filters
+/// with engine semantics (namespace prefix scoping, BM25 `query`, …).
+///
+/// Deliberately NOT consumed even though push-down also sets a param:
+/// `session_id` — its push-down narrows the scan via the thread index but
+/// the post-filter remains authoritative (`session_id` stays out of
+/// `COMMON_FIELDS`, test-pinned), so it is re-checked per grain.
+fn leaf_pushdown_consumed(condition: &Condition) -> bool {
+    match condition {
+        Condition::Comparison {
+            field, comparator, ..
+        } => matches!(
+            (field.as_str(), comparator),
+            (
+                "subject" | "relation" | "object" | "namespace" | "user_id" | "query" | "time"
+                    | "entity" | "scope" | "scope_path",
+                Comparator::Eq
+            ) | ("confidence" | "importance", Comparator::Gte | Comparator::Gt)
+                | ("contradicted", Comparator::Eq)
+        ),
+        Condition::In { field, .. } => matches!(
+            field.as_str(),
+            "subject" | "relation" | "object" | "tags" | "namespace"
+        ),
+        Condition::NotIn { field, .. } => field == "tags",
+        Condition::Contains { field, .. } => {
+            matches!(field.as_str(), "subject" | "object" | "content" | "summary")
+        }
+        // IS CATEGORY on `relation` desugars to relation_in; on any other
+        // field it is warned (CAL-W008) and ignored — both are "handled" by
+        // push-down, so neither reaches the residual filter.
+        Condition::IsCategory { .. } => true,
+        _ => false,
+    }
 }
 
-fn extract_type_specific_conditions_inner(
+/// Plan the residual WHERE tree for a recall-shaped statement.
+///
+/// Splits `condition` into what the engine's push-down consumed and a
+/// residual tree that `grain_matches_condition_tree` must evaluate per
+/// grain after retrieval. Returns `Ok(None)` when push-down consumed
+/// everything. Every residual leaf is validated first:
+///
+/// - engine-only fields ([`ENGINE_ONLY_FIELDS`]) in residual position →
+///   `CAL-E061` (they have no per-grain value);
+/// - a field a typed recall cannot carry (not grain-evaluable-common, not
+///   in the type's queryable set, not domain-prefixed) → `CAL-E060`;
+/// - on an untyped recall an unknown field warns `CAL-W010` and still
+///   filters (matching only grains that carry it).
+///
+/// This is the #91 fix: a filter is either pushed down, evaluated per
+/// grain, or refused — never dropped. `NOT`/`OR` subtrees are never pushed
+/// (push-down is conjunctive-positive only), so they land here whole and
+/// are evaluated with full boolean semantics by the ONE authoritative
+/// evaluator, `grain_matches_condition_tree`.
+fn plan_residual_where(
     condition: &Condition,
-    result: &mut Vec<(String, Comparator, Value)>,
-) {
+    grain_type: &GrainTypePlural,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<Option<Condition>, CalError> {
     match condition {
+        Condition::And { left, right, span } => {
+            let l = plan_residual_where(left, grain_type, warnings)?;
+            let r = plan_residual_where(right, grain_type, warnings)?;
+            Ok(match (l, r) {
+                (None, None) => None,
+                (Some(c), None) | (None, Some(c)) => Some(c),
+                (Some(a), Some(b)) => Some(Condition::And {
+                    left: Box::new(a),
+                    right: Box::new(b),
+                    span: *span,
+                }),
+            })
+        }
+        Condition::Or { left, right, .. } => {
+            validate_residual_subtree(left, grain_type, "under NOT/OR", warnings)?;
+            validate_residual_subtree(right, grain_type, "under NOT/OR", warnings)?;
+            Ok(Some(condition.clone()))
+        }
+        Condition::Not { inner, .. } => {
+            validate_residual_subtree(inner, grain_type, "under NOT/OR", warnings)?;
+            Ok(Some(condition.clone()))
+        }
+        leaf => {
+            if leaf_pushdown_consumed(leaf) {
+                Ok(None)
+            } else {
+                validate_residual_leaf(leaf, grain_type, None, warnings)?;
+                Ok(Some(leaf.clone()))
+            }
+        }
+    }
+}
+
+/// Validate every leaf of a subtree that will be evaluated per grain
+/// (a `NOT`/`OR` subtree — nothing inside it was pushed down).
+fn validate_residual_subtree(
+    condition: &Condition,
+    grain_type: &GrainTypePlural,
+    context: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<(), CalError> {
+    match condition {
+        Condition::And { left, right, .. } | Condition::Or { left, right, .. } => {
+            validate_residual_subtree(left, grain_type, context, warnings)?;
+            validate_residual_subtree(right, grain_type, context, warnings)
+        }
+        Condition::Not { inner, .. } => {
+            validate_residual_subtree(inner, grain_type, context, warnings)
+        }
+        leaf => validate_residual_leaf(leaf, grain_type, Some(context), warnings),
+    }
+}
+
+/// Validate one residual leaf. `forced_context` is set for leaves inside a
+/// `NOT`/`OR` subtree; a bare leaf reports its own comparator instead.
+fn validate_residual_leaf(
+    leaf: &Condition,
+    grain_type: &GrainTypePlural,
+    forced_context: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<(), CalError> {
+    let (field, span, own_context): (&str, Option<Span>, String) = match leaf {
         Condition::Comparison {
             field,
             comparator,
-            value,
+            span,
             ..
-            // `hash` is listed in COMMON_FIELDS but no structural filter
-            // consumes it — it lives on the envelope, not in `RecallParams`.
-            // Skipping it here meant `WHERE hash = "<a real address>"` matched
-            // nothing structurally and filtered nothing afterwards, so it
-            // returned the entire result set. Route it to the post-filter,
-            // which resolves envelope fields.
-        } if !COMMON_FIELDS.contains(&field.as_str()) || field == "hash" => {
-            result.push((field.clone(), *comparator, value.clone()));
+        } => (field, *span, format!("with comparator {comparator}")),
+        Condition::In { field, span, .. } => (field, *span, "with IN".to_string()),
+        Condition::NotIn { field, span, .. } => (field, *span, "with NOT IN".to_string()),
+        Condition::Contains { field, span, .. } => (field, *span, "with CONTAINS".to_string()),
+        Condition::StartsWith { field, span, .. } => {
+            (field, *span, "with STARTS WITH".to_string())
         }
-        Condition::And { left, right, .. } => {
-            extract_type_specific_conditions_inner(left, result);
-            extract_type_specific_conditions_inner(right, result);
+        Condition::IsNull { field, span, .. } | Condition::IsNotNull { field, span, .. } => {
+            (field, *span, "with IS [NOT] NULL".to_string())
         }
-        Condition::Or { left, right, .. } => {
-            extract_type_specific_conditions_inner(left, result);
-            extract_type_specific_conditions_inner(right, result);
-        }
-        Condition::Not { inner, .. } => {
-            extract_type_specific_conditions_inner(inner, result);
-        }
-        _ => {}
+        Condition::IsCategory { field, span, .. } => (field, *span, "with IS".to_string()),
+        // Non-leaf variants never reach here.
+        _ => return Ok(()),
+    };
+
+    // Domain-prefixed fields (hc:patient_id, fin:account, …) ride in
+    // extra_fields and are valid by structure on every type.
+    if field.contains(':') {
+        return Ok(());
     }
-}
-
-/// Type-specific IN/NOT IN conditions extracted from a WHERE clause.
-/// Kept separate from `extract_type_specific_conditions` so callers that
-/// only care about scalar comparisons stay simple.
-struct TypeSpecificSetCondition {
-    field: String,
-    values: Vec<Value>,
-    negated: bool,
-}
-
-fn extract_type_specific_set_conditions(condition: &Condition) -> Vec<TypeSpecificSetCondition> {
-    let mut result = Vec::new();
-    extract_type_specific_set_conditions_inner(condition, &mut result);
-    result
-}
-
-fn extract_type_specific_set_conditions_inner(
-    condition: &Condition,
-    result: &mut Vec<TypeSpecificSetCondition>,
-) {
-    match condition {
-        Condition::In { field, values, .. }
-            // The apply_where_clause path already handles `subject`/`relation`/
-            // `object`/`tags`/`namespace` at engine-level; other fields need
-            // post-retrieval filtering.
-            if !matches!(
-                field.as_str(),
-                "subject" | "relation" | "object" | "tags" | "namespace"
-            ) => {
-                result.push(TypeSpecificSetCondition {
-                    field: field.clone(),
-                    values: values.clone(),
-                    negated: false,
-                });
+    if ENGINE_ONLY_FIELDS.contains(&field) {
+        return Err(CalError::EngineFieldNotFilterable {
+            field: field.to_string(),
+            context: forced_context.map(str::to_string).unwrap_or(own_context),
+            span,
+        });
+    }
+    if GRAIN_EVALUABLE_COMMON.contains(&field) {
+        return Ok(());
+    }
+    if grain_type.to_grain_type().is_some() {
+        if type_specific_fields(grain_type).contains(&field) {
+            return Ok(());
+        }
+        let suggestion = suggest_field(field, grain_type);
+        return Err(CalError::FieldNotOnGrainType {
+            field: field.to_string(),
+            grain_type: grain_type.as_str().to_string(),
+            span,
+            suggestion,
+        });
+    }
+    // Untyped recall: no type to validate against. An unknown-everywhere
+    // field still filters (matching only grains that carry it) but warns,
+    // because it is far more likely a typo than a domain field.
+    if !is_known_type_specific_field(field) {
+        warnings.push(
+            super::errors::CalWarning::UnrecognizedWhereField {
+                field: field.to_string(),
+                span,
             }
-        Condition::NotIn { field, values, .. }
-            if field.as_str() != "tags" => {
-                result.push(TypeSpecificSetCondition {
-                    field: field.clone(),
-                    values: values.clone(),
-                    negated: true,
-                });
-            }
-        Condition::And { left, right, .. } => {
-            extract_type_specific_set_conditions_inner(left, result);
-            extract_type_specific_set_conditions_inner(right, result);
-        }
-        Condition::Or { left, right, .. } => {
-            extract_type_specific_set_conditions_inner(left, result);
-            extract_type_specific_set_conditions_inner(right, result);
-        }
-        Condition::Not { inner, .. } => {
-            extract_type_specific_set_conditions_inner(inner, result);
-        }
-        _ => {}
+            .to_string(),
+        );
     }
-}
-
-fn grain_matches_set_condition(grain: &CalGrainResult, cond: &TypeSpecificSetCondition) -> bool {
-    let any_match = cond
-        .values
-        .iter()
-        .any(|v| grain_matches_condition(grain, &cond.field, &Comparator::Eq, v));
-    if cond.negated {
-        !any_match
-    } else {
-        any_match
-    }
+    Ok(())
 }
 
 /// Apply a type-specific field condition to a single grain result.
@@ -6742,7 +6899,21 @@ pub fn grain_matches_condition(
     // rest of CAL spells an address.
     let envelope: Option<serde_json::Value> = match field {
         "hash" => Some(serde_json::Value::String(grain.hash.clone())),
-        "grain_type" => Some(serde_json::Value::String(grain.grain_type.clone())),
+        // `type` is the OMS §5.2 spelling of the same envelope property.
+        "grain_type" | "type" => Some(serde_json::Value::String(grain.grain_type.clone())),
+        // The fused relevance score lives on the envelope, not in `fields`.
+        "score" => serde_json::Number::from_f64(grain.score).map(serde_json::Value::Number),
+        // Omit-default discriminators (#91): canonical serialization omits
+        // the default value to keep legacy blobs byte-identical, so an
+        // absent field MEANS the default and a filter must see it that way
+        // (`kind = "execution"` has to match a grain that never wrote
+        // `kind`).
+        "kind" if grain.grain_type == "tool" && json_field(&grain.fields, "kind").is_none() => {
+            Some(serde_json::Value::String("execution".into()))
+        }
+        "status" if grain.grain_type == "tool" && json_field(&grain.fields, "status").is_none() => {
+            Some(serde_json::Value::String("completed".into()))
+        }
         _ => None,
     };
     let grain_value = match &envelope {
@@ -6815,9 +6986,10 @@ pub fn grain_matches_condition(
 /// standing exclusion on expression languages intact, because nothing new is
 /// parsed.
 ///
-/// Note this is the AUTHORITATIVE match. The structural push-down in
-/// `apply_where_clause` drops OR and NOT with a warning, so it *widens*; a
-/// caller that trusts the recall result alone gets more than it asked for.
+/// Note this is the AUTHORITATIVE match. Since #91 the recall path uses it
+/// too: `plan_residual_where` routes everything the structural push-down
+/// does not consume — NOT/OR subtrees included — through this evaluator, so
+/// a recall result reflects the whole WHERE clause rather than widening.
 ///
 /// Used by `PipelineStage::Filter` (post-pipeline WHERE) to filter grains
 /// by conditions after pipeline stages like SELECT have been applied.
@@ -6863,30 +7035,6 @@ pub fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Conditio
             .and_then(|v| v.as_str())
             .map(|s| s.eq_ignore_ascii_case(category))
             .unwrap_or(false),
-    }
-}
-
-/// Extract ALL comparison conditions from a WHERE clause (common + type-specific).
-///
-/// Used by ASSEMBLE WHERE for post-composition filtering where every
-/// condition must be checked against the assembled grain set.
-fn collect_common_conditions(condition: &Condition, result: &mut Vec<(String, Comparator, Value)>) {
-    match condition {
-        Condition::Comparison {
-            field,
-            comparator,
-            value,
-            ..
-        }
-            // Include common fields that ASSEMBLE needs for post-filtering.
-            if COMMON_FIELDS.contains(&field.as_str()) => {
-                result.push((field.clone(), *comparator, value.clone()));
-            }
-        Condition::And { left, right, .. } => {
-            collect_common_conditions(left, result);
-            collect_common_conditions(right, result);
-        }
-        _ => {}
     }
 }
 
@@ -9610,10 +9758,12 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_type_specific_conditions_filters_common() {
+    fn test_plan_residual_where_splits_pushdown_from_residual() {
+        // `subject = "john"` is push-down consumed; `tool = "web_search"`
+        // is type-specific and must survive as the residual tree.
         let condition = super::super::ast::Condition::And {
             left: Box::new(super::super::ast::Condition::Comparison {
-                field: "subject".into(), // common field
+                field: "subject".into(), // push-down consumed
                 comparator: super::super::ast::Comparator::Eq,
                 value: super::super::ast::Value::String {
                     value: "john".into(),
@@ -9631,37 +9781,159 @@ mod tests {
             span: None,
         };
 
-        let type_conds = super::extract_type_specific_conditions(&condition);
-        assert_eq!(type_conds.len(), 1, "only 'tool' should be extracted");
-        assert_eq!(type_conds[0].0, "tool");
+        let mut warnings = Vec::new();
+        let residual =
+            super::plan_residual_where(&condition, &GrainTypePlural::Tools, &mut warnings)
+                .expect("plan must succeed")
+                .expect("the type-specific leaf must remain residual");
+        match residual {
+            super::super::ast::Condition::Comparison { field, .. } => {
+                assert_eq!(field, "tool");
+            }
+            other => panic!("expected the bare 'tool' leaf, got {other:?}"),
+        }
+        assert!(warnings.is_empty(), "no warnings for valid fields");
     }
 
     #[test]
-    fn test_collect_common_conditions() {
-        let condition = super::super::ast::Condition::And {
-            left: Box::new(super::super::ast::Condition::Comparison {
-                field: "subject".into(), // common field
+    fn test_plan_residual_where_unpushed_comparator_on_common_field() {
+        // #91 — `confidence < 0.5` has no push-down arm (only >= and >),
+        // so it must be RESIDUAL, not dropped: dropping a narrowing clause
+        // fails open.
+        let condition = super::super::ast::Condition::Comparison {
+            field: "confidence".into(),
+            comparator: super::super::ast::Comparator::Lt,
+            value: super::super::ast::Value::Number { value: 0.5 },
+            span: None,
+        };
+
+        let mut warnings = Vec::new();
+        let residual =
+            super::plan_residual_where(&condition, &GrainTypePlural::Facts, &mut warnings)
+                .expect("plan must succeed");
+        assert!(
+            residual.is_some(),
+            "an unpushed comparator on a common field must be post-filtered"
+        );
+    }
+
+    #[test]
+    fn test_plan_residual_where_refuses_unfilterable_field_on_typed_recall() {
+        // #91 repro 1 — `RECALL tools WHERE status_x = …`-style fields that
+        // the type cannot carry refuse with CAL-E060 instead of widening.
+        let condition = super::super::ast::Condition::Comparison {
+            field: "priority".into(),
+            comparator: super::super::ast::Comparator::Eq,
+            value: super::super::ast::Value::String {
+                value: "high".into(),
+            },
+            span: None,
+        };
+
+        let mut warnings = Vec::new();
+        let err = super::plan_residual_where(&condition, &GrainTypePlural::Tools, &mut warnings)
+            .expect_err("a filter that cannot be honoured must refuse");
+        assert_eq!(err.code(), "CAL-E060");
+    }
+
+    #[test]
+    fn test_plan_residual_where_refuses_engine_field_under_not() {
+        // `NOT query = "x"` cannot be evaluated per grain (BM25 is a scan
+        // property) — CAL-E061, never a silent drop.
+        let condition = super::super::ast::Condition::Not {
+            inner: Box::new(super::super::ast::Condition::Comparison {
+                field: "query".into(),
                 comparator: super::super::ast::Comparator::Eq,
-                value: super::super::ast::Value::String {
-                    value: "john".into(),
-                },
-                span: None,
-            }),
-            right: Box::new(super::super::ast::Condition::Comparison {
-                field: "tool".into(), // type-specific field
-                comparator: super::super::ast::Comparator::Eq,
-                value: super::super::ast::Value::String {
-                    value: "web_search".into(),
-                },
+                value: super::super::ast::Value::String { value: "x".into() },
                 span: None,
             }),
             span: None,
         };
 
-        let mut common_conds = Vec::new();
-        super::collect_common_conditions(&condition, &mut common_conds);
-        assert_eq!(common_conds.len(), 1, "only 'subject' should be collected");
-        assert_eq!(common_conds[0].0, "subject");
+        let mut warnings = Vec::new();
+        let err = super::plan_residual_where(&condition, &GrainTypePlural::Facts, &mut warnings)
+            .expect_err("engine-only fields under NOT must refuse");
+        assert_eq!(err.code(), "CAL-E061");
+    }
+
+    #[test]
+    fn test_plan_residual_where_keeps_not_subtree_whole() {
+        // #91 repro 2 — `NOT tool_name = "x"` must survive as a NOT tree so
+        // the evaluator returns the complement, not the matches.
+        let condition = super::super::ast::Condition::Not {
+            inner: Box::new(super::super::ast::Condition::Comparison {
+                field: "tool_name".into(),
+                comparator: super::super::ast::Comparator::Eq,
+                value: super::super::ast::Value::String { value: "x".into() },
+                span: None,
+            }),
+            span: None,
+        };
+
+        let mut warnings = Vec::new();
+        let residual =
+            super::plan_residual_where(&condition, &GrainTypePlural::Tools, &mut warnings)
+                .expect("plan must succeed")
+                .expect("NOT subtree must remain residual");
+        assert!(
+            matches!(residual, super::super::ast::Condition::Not { .. }),
+            "the negation must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_pushdown_consumed_matches_apply_where_clause_arms() {
+        // Truth table pinning `leaf_pushdown_consumed` to the arms of
+        // `apply_where_clause`. If an arm is added or removed there, this
+        // table must move with it — a leaf marked consumed that no arm
+        // pushes is a dropped filter (the #91 fail-open), and a pushed
+        // leaf left unmarked double-filters with per-grain semantics
+        // (wrong for prefix-scoped `namespace`, BM25 `query`, …).
+        use super::super::ast::{Comparator, Condition, Value};
+        let cmp = |field: &str, comparator: Comparator| Condition::Comparison {
+            field: field.into(),
+            comparator,
+            value: Value::String { value: "v".into() },
+            span: None,
+        };
+
+        // Consumed: engine-level equality push-down.
+        for f in [
+            "subject", "relation", "object", "namespace", "user_id", "query", "time", "entity",
+            "scope", "scope_path",
+        ] {
+            assert!(super::leaf_pushdown_consumed(&cmp(f, Comparator::Eq)), "{f} Eq");
+            // …but only for the comparator the push-down supports.
+            assert!(!super::leaf_pushdown_consumed(&cmp(f, Comparator::NotEq)), "{f} NotEq");
+        }
+        for f in ["confidence", "importance"] {
+            assert!(super::leaf_pushdown_consumed(&cmp(f, Comparator::Gte)), "{f} Gte");
+            assert!(!super::leaf_pushdown_consumed(&cmp(f, Comparator::Lt)), "{f} Lt");
+        }
+        assert!(super::leaf_pushdown_consumed(&cmp("contradicted", Comparator::Eq)));
+
+        // NOT consumed: the residual filter is authoritative for these.
+        assert!(!super::leaf_pushdown_consumed(&cmp("hash", Comparator::Eq)));
+        assert!(!super::leaf_pushdown_consumed(&cmp("session_id", Comparator::Eq)));
+        assert!(!super::leaf_pushdown_consumed(&cmp("tool_name", Comparator::Eq)));
+        assert!(!super::leaf_pushdown_consumed(&cmp("status", Comparator::Eq)));
+
+        // Set forms.
+        let in_cond = |field: &str| Condition::In {
+            field: field.into(),
+            values: vec![Value::String { value: "v".into() }],
+            span: None,
+        };
+        for f in ["subject", "relation", "object", "tags", "namespace"] {
+            assert!(super::leaf_pushdown_consumed(&in_cond(f)), "{f} IN");
+        }
+        assert!(!super::leaf_pushdown_consumed(&in_cond("role")));
+        let not_in_tags = Condition::NotIn {
+            field: "tags".into(),
+            values: vec![Value::String { value: "v".into() }],
+            span: None,
+        };
+        assert!(super::leaf_pushdown_consumed(&not_in_tags));
     }
 
     #[test]
@@ -9752,8 +10024,9 @@ mod tests {
 
     #[test]
     fn test_session_id_not_in_common_fields() {
-        // session_id must NOT be in COMMON_FIELDS so it gets picked up by
-        // extract_type_specific_conditions as a post-filter.
+        // session_id must NOT be in COMMON_FIELDS: its push-down only
+        // narrows the SCAN (thread index), so `plan_residual_where` keeps
+        // it residual and the post-filter stays authoritative.
         assert!(
             !super::COMMON_FIELDS.contains(&"session_id"),
             "session_id should not be in COMMON_FIELDS"
@@ -9761,7 +10034,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_id_extracted_as_type_specific() {
+    fn test_session_id_stays_residual_despite_scan_pushdown() {
         let condition = super::super::ast::Condition::And {
             left: Box::new(super::super::ast::Condition::Comparison {
                 field: "subject".into(),
@@ -9782,13 +10055,20 @@ mod tests {
             span: None,
         };
 
-        let type_conds = super::extract_type_specific_conditions(&condition);
-        assert_eq!(
-            type_conds.len(),
-            1,
-            "session_id should be extracted as type-specific"
-        );
-        assert_eq!(type_conds[0].0, "session_id");
+        let mut warnings = Vec::new();
+        let residual =
+            super::plan_residual_where(&condition, &GrainTypePlural::Events, &mut warnings)
+                .expect("plan must succeed")
+                .expect("session_id must remain residual");
+        // `subject = "alice"` is consumed by push-down; `session_id` is
+        // pushed only as a scan hint, so it must survive for the
+        // authoritative per-grain re-check.
+        match residual {
+            super::super::ast::Condition::Comparison { field, .. } => {
+                assert_eq!(field, "session_id");
+            }
+            other => panic!("expected the session_id leaf, got {other:?}"),
+        }
     }
 
     #[test]
@@ -9921,9 +10201,6 @@ mod tests {
             ],
             span: None,
         };
-        let sets = super::extract_type_specific_set_conditions(&condition);
-        assert_eq!(sets.len(), 1);
-        let set = &sets[0];
 
         let user_grain = CalGrainResult {
             hash: "h1".into(),
@@ -9948,8 +10225,11 @@ mod tests {
             contested_by: None,
         };
 
-        assert!(super::grain_matches_set_condition(&user_grain, set));
-        assert!(!super::grain_matches_set_condition(&tool_grain, set));
+        assert!(super::grain_matches_condition_tree(&user_grain, &condition));
+        assert!(!super::grain_matches_condition_tree(
+            &tool_grain,
+            &condition
+        ));
     }
 
     #[test]
@@ -9976,7 +10256,7 @@ mod tests {
     }
 
     #[test]
-    fn role_and_session_id_both_extracted_as_type_specific() {
+    fn role_and_session_id_both_stay_residual() {
         use super::super::ast::{Comparator, Condition, Value};
         let condition = Condition::And {
             left: Box::new(Condition::Comparison {
@@ -9995,10 +10275,17 @@ mod tests {
             }),
             span: None,
         };
-        let conds = super::extract_type_specific_conditions(&condition);
-        let fields: Vec<&str> = conds.iter().map(|(f, _, _)| f.as_str()).collect();
-        assert!(fields.contains(&"role"));
-        assert!(fields.contains(&"session_id"));
+        let mut warnings = Vec::new();
+        let residual =
+            super::plan_residual_where(&condition, &GrainTypePlural::Events, &mut warnings)
+                .expect("plan must succeed")
+                .expect("both leaves must remain residual");
+        // Neither leaf is push-down consumed, so the residual keeps the
+        // whole AND tree.
+        match residual {
+            super::super::ast::Condition::And { .. } => {}
+            other => panic!("expected the full AND tree, got {other:?}"),
+        }
     }
 
     // -- WI-1.1: ASSEMBLE WHERE clause -----------------------------------

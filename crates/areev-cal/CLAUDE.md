@@ -15,6 +15,19 @@ recursive-descent parse → `CalQuery` AST → `CalExecutor::execute`
 (executor.rs): LET eval → `execute_statement` (big match) → `apply_pipeline`
 → `apply_format_clause` → `CalResultPayload`.
 
+**WHERE fails closed (#91, 1.5.1).** `plan_residual_where` (executor.rs)
+splits every recall-family WHERE tree: leaves the push-down consumes
+(`leaf_pushdown_consumed`, a test-pinned truth table that must stay in sync
+with `apply_where_clause`'s arms) become engine params; everything else —
+type-specific fields, NOT/OR subtrees, unsupported comparators, IS NULL —
+survives as a residual tree evaluated per grain by
+`grain_matches_condition_tree` (the ONE boolean evaluator). Validation runs
+before the scan: a field the target type cannot carry is CAL-E060; an
+engine-level field (`ENGINE_ONLY_FIELDS`: query/time/entity/contradicted/
+scope/scope_path/tags) in a position it cannot be honoured is CAL-E061. A
+filter is pushed, evaluated, or refused — NEVER dropped. If you add a
+push-down arm, extend the truth table and its pin test in the same change.
+
 **LET eval writes its results onto `CalQuery::let_values`** (`#[serde(skip)]` —
 execution state, not query text); `apply_where_clause` expands `IN $var` from
 it, and surrogate/nested queries plus ASSEMBLE sources inherit it. The scope

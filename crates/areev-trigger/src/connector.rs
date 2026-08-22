@@ -21,6 +21,22 @@
 //! `more: true` means "there is a backlog": the next invocation runs
 //! immediately instead of waiting out the interval, so a cold start drains
 //! without hammering.
+//!
+//! **Blobs (#93).** An item may carry binary attachments without inlining
+//! them into the Event grain: a per-item `blobs` array of
+//! `{ "filename", "mime", "b64" }`, referenced from the payload by index
+//! (`"blob": "@0"`). The EVALUATOR — the party that already holds the
+//! writer — stores each entry in the CAS (`put_blob`, idempotent on
+//! content), rewrites every `"blob": "@N"` reference to the resulting
+//! `cas://sha256:…` address, and attaches a matching `content_refs` entry
+//! to the Event it writes. The run's tools then use `blob get` exactly as
+//! on the host-driven path, and erasure's sole-reference reclamation covers
+//! these blobs with no special case. Budgets are enforced per item
+//! ([`MAX_BLOB_BYTES_PER_ITEM`]) and per response
+//! ([`MAX_BLOB_BYTES_PER_RESPONSE`]), decoded size, and a violation —
+//! oversize, undecodable `b64`, or a dangling `"@N"` — fails the WHOLE
+//! poll (`TRG-E011`) with the cursor unmoved: a silently dropped attachment
+//! is an invoice posting without evidence, and a lost item is worse.
 
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +65,34 @@ pub struct PollItem {
     /// naming.
     pub id: String,
     pub payload: serde_json::Value,
+    /// Binary attachments for this item (#93). The evaluator stores each in
+    /// the CAS and rewrites `"blob": "@<index>"` payload references to the
+    /// `cas://` address; the bytes themselves never enter the Event grain.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blobs: Vec<PollBlob>,
 }
+
+/// One attachment riding with a [`PollItem`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PollBlob {
+    /// Original filename, carried into the Event's `content_refs` metadata.
+    pub filename: Option<String>,
+    /// MIME type, carried into `content_refs.mime_type`.
+    pub mime: Option<String>,
+    /// The bytes, standard base64 (RFC 4648). Wasteful over the pipe but
+    /// consistent with the one JSON-on-stdio contract; a temp-file side
+    /// channel would be faster and was rejected for breaking it.
+    pub b64: String,
+}
+
+/// Decoded-size budget for one item's blobs: 16 MiB, the maximum grain
+/// size. Refused loudly (`TRG-E011`), never truncated.
+pub const MAX_BLOB_BYTES_PER_ITEM: usize = 16 * 1024 * 1024;
+
+/// Decoded-size budget for one poll response: 48 MiB — what the 64 MiB
+/// stdout cap can carry once base64's 4/3 inflation is paid.
+pub const MAX_BLOB_BYTES_PER_RESPONSE: usize = 48 * 1024 * 1024;
 
 /// What the connector answered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,12 +129,58 @@ pub fn dedup_value(item: &PollItem, pointers: &[String]) -> Option<String> {
     Some(parts.join("\u{1f}"))
 }
 
+/// Rewrite `"blob": "@<index>"` payload references to the CAS addresses of
+/// the item's stored blobs (#93).
+///
+/// Only string values under a key named `blob` are eligible, and only when
+/// they start with `@` — anything else (a `cas://` address from a
+/// re-delivered payload, ordinary strings) passes through untouched. An
+/// `@`-value that is not a valid in-range index is an error: a dangling
+/// reference silently left in place would hand the run a payload that
+/// points at nothing.
+pub fn rewrite_blob_refs(payload: &mut serde_json::Value, uris: &[String]) -> Result<(), String> {
+    match payload {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "blob" {
+                    if let serde_json::Value::String(s) = v {
+                        if let Some(n) = s.strip_prefix('@') {
+                            let uri = n
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|i| uris.get(i))
+                                .ok_or_else(|| {
+                                    format!(
+                                        "payload references blob \"@{n}\" but the item \
+                                         carries {} blob(s)",
+                                        uris.len()
+                                    )
+                                })?;
+                            *v = serde_json::Value::String(uri.clone());
+                            continue;
+                        }
+                    }
+                }
+                rewrite_blob_refs(v, uris)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                rewrite_blob_refs(v, uris)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn item(id: &str, payload: serde_json::Value) -> PollItem {
-        PollItem { id: id.into(), payload }
+        PollItem { id: id.into(), payload, blobs: Vec::new() }
     }
 
     #[test]
@@ -140,6 +229,51 @@ mod tests {
         let r: PollResponse = serde_json::from_str(r#"{"items":[]}"#).unwrap();
         assert!(r.cursor.is_none(), "not Some(\"null\") and not an error");
         assert!(!r.more);
+    }
+
+    #[test]
+    fn blob_refs_rewrite_to_cas_addresses() {
+        let uris = vec!["cas://sha256:aa".to_string(), "cas://sha256:bb".to_string()];
+        let mut payload = serde_json::json!({
+            "email": { "from": "a@b.c" },
+            "attachments": [
+                { "filename": "inv.pdf", "blob": "@0" },
+                { "filename": "po.pdf", "blob": "@1" },
+            ],
+            // Not under a `blob` key: untouched even though it looks like one.
+            "note": "@0",
+            // Already an address (re-delivery): untouched.
+            "prior": { "blob": "cas://sha256:cc" },
+        });
+        rewrite_blob_refs(&mut payload, &uris).unwrap();
+        assert_eq!(payload["attachments"][0]["blob"], "cas://sha256:aa");
+        assert_eq!(payload["attachments"][1]["blob"], "cas://sha256:bb");
+        assert_eq!(payload["note"], "@0");
+        assert_eq!(payload["prior"]["blob"], "cas://sha256:cc");
+    }
+
+    #[test]
+    fn a_dangling_blob_ref_is_refused_not_left_in_place() {
+        let uris = vec!["cas://sha256:aa".to_string()];
+        let mut payload = serde_json::json!({ "a": { "blob": "@7" } });
+        assert!(rewrite_blob_refs(&mut payload, &uris).is_err());
+        let mut payload = serde_json::json!({ "a": { "blob": "@zero" } });
+        assert!(rewrite_blob_refs(&mut payload, &uris).is_err());
+    }
+
+    #[test]
+    fn blobs_parse_and_default_to_empty() {
+        let r: PollResponse = serde_json::from_str(
+            r#"{"items":[{"id":"m1","payload":{"a":{"blob":"@0"}},
+                 "blobs":[{"filename":"inv.pdf","mime":"application/pdf","b64":"Zm9v"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.items[0].blobs.len(), 1);
+        assert_eq!(r.items[0].blobs[0].filename.as_deref(), Some("inv.pdf"));
+        // An item without the field stays valid — the 1.5.0 contract.
+        let r: PollResponse =
+            serde_json::from_str(r#"{"items":[{"id":"m1","payload":{}}]}"#).unwrap();
+        assert!(r.items[0].blobs.is_empty());
     }
 
     #[test]

@@ -21,14 +21,17 @@
 use std::sync::Arc;
 
 use areev_cal::AreevFacade;
-use areev_core::types::{Event, Grain, GrainType, Observation, Trigger, TriggerKind};
+use areev_core::types::{ContentRef, Event, Grain, GrainType, Observation, Trigger, TriggerKind};
 use areev_run::HostToolExecutor;
 use areev_store::TriggerState;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::clock::Clock;
-use crate::connector::{dedup_value, PollItem, PollRequest, PollResponse};
+use crate::connector::{
+    dedup_value, rewrite_blob_refs, PollItem, PollRequest, PollResponse,
+    MAX_BLOB_BYTES_PER_ITEM, MAX_BLOB_BYTES_PER_RESPONSE,
+};
 use crate::error::{Result, TriggerError};
 use crate::schedule;
 
@@ -55,6 +58,11 @@ pub struct EvalOptions {
     pub dry_run: bool,
     /// This evaluator's identity, recorded in the claim.
     pub node: String,
+    /// Decoded-size budget for one item's connector blobs (#93). Overrun
+    /// refuses the whole poll (TRG-E011) rather than truncating.
+    pub max_blob_bytes_per_item: usize,
+    /// Decoded-size budget for one poll response's blobs (#93).
+    pub max_blob_bytes_per_response: usize,
 }
 
 impl Default for EvalOptions {
@@ -65,6 +73,8 @@ impl Default for EvalOptions {
             max_items: 100,
             dry_run: false,
             node: default_node_id(),
+            max_blob_bytes_per_item: MAX_BLOB_BYTES_PER_ITEM,
+            max_blob_bytes_per_response: MAX_BLOB_BYTES_PER_RESPONSE,
         }
     }
 }
@@ -325,7 +335,7 @@ impl Evaluator {
         }
 
         let mut report = EvalReport::default();
-        let item = PollItem { id: String::new(), payload };
+        let item = PollItem { id: String::new(), payload, blobs: Vec::new() };
         report.items = 1;
         let Some(value) = dedup_value(&item, &trigger.dedup_key) else {
             report.unidentifiable = 1;
@@ -343,7 +353,7 @@ impl Evaluator {
             return Ok(report);
         };
         let run_id = run_id_for(&hash, trigger.connector.as_deref(), &value);
-        match self.start_run(&trigger, &run_id, &item, &hash) {
+        match self.start_run(&trigger, &run_id, &item, &hash, &[]) {
             StartOutcome::Started => report.runs_started = 1,
             StartOutcome::Ingested => report.ingested = 1,
             StartOutcome::Duplicate => report.duplicates = 1,
@@ -583,7 +593,11 @@ impl Evaluator {
             // A clocked trigger with no external source fires once per
             // occurrence, carrying the occurrence itself as the item.
             TriggerKind::Interval | TriggerKind::Schedule | TriggerKind::Once => {
-                vec![PollItem { id: now.to_string(), payload: serde_json::json!({ "at_ms": now }) }]
+                vec![PollItem {
+                    id: now.to_string(),
+                    payload: serde_json::json!({ "at_ms": now }),
+                    blobs: Vec::new(),
+                }]
             }
             TriggerKind::Memory => {
                 // Recorded so the journal says "seeded" rather than leaving a
@@ -602,6 +616,7 @@ impl Evaluator {
                         // correlated set, however many members contributed.
                         id: k.clone(),
                         payload: serde_json::json!({ "correlation": k }),
+                        blobs: Vec::new(),
                     })
                     .collect()
             }
@@ -611,15 +626,25 @@ impl Evaluator {
             TriggerKind::Webhook | TriggerKind::Manual => Vec::new(),
         };
 
+        // #93 — store connector blobs in the CAS and rewrite `"blob": "@N"`
+        // payload references to their addresses BEFORE identity resolution,
+        // so a `--dedup-key` pointer into a rewritten field sees the stable
+        // content address rather than a positional index. A contract
+        // violation fails the whole poll here (TRG-E011): fire() then leaves
+        // the cursor unmoved, so nothing is lost — the connector gets fixed
+        // and the same page is re-polled.
+        let mut items = items;
+        let item_refs = self.ingest_item_blobs(hash, &mut items, opts)?;
+
         outcome.items = items.len();
-        for item in items {
+        for (item, refs) in items.into_iter().zip(item_refs) {
             let Some(value) = dedup_value(&item, &trigger.dedup_key) else {
                 outcome.unidentifiable += 1;
                 continue;
             };
             outcome.fired_items.push(item.payload.clone());
             let run_id = run_id_for(hash, trigger.connector.as_deref(), &value);
-            match self.start_run(trigger, &run_id, &item, hash) {
+            match self.start_run(trigger, &run_id, &item, hash, &refs) {
                 StartOutcome::Started => outcome.runs_started += 1,
                 StartOutcome::Ingested => outcome.ingested += 1,
                 StartOutcome::Duplicate => outcome.duplicates += 1,
@@ -796,9 +821,80 @@ impl Evaluator {
                     "grain_type": grain.grain_type.as_str(),
                     "op_seq": op.op_seq,
                 }),
+                blobs: Vec::new(),
             });
         }
         Ok((items, cursor))
+    }
+
+    /// Store an item's connector blobs in the CAS and rewrite payload
+    /// references (#93). Returns one `ContentRef` list per item, parallel
+    /// to `items`. Any contract violation — undecodable base64, a budget
+    /// overrun, a dangling `"@N"` — refuses the WHOLE poll with TRG-E011,
+    /// so the cursor stays put and nothing is silently dropped. `put_blob`
+    /// is idempotent on content, so a re-polled page costs only the
+    /// transfer.
+    fn ingest_item_blobs(
+        &self,
+        hash: &str,
+        items: &mut [PollItem],
+        opts: &EvalOptions,
+    ) -> Result<Vec<Vec<ContentRef>>> {
+        let violation = |detail: String| TriggerError::BlobContract {
+            trigger: short(hash, 12).to_string(),
+            detail,
+        };
+        let mut response_total = 0usize;
+        let mut all_refs = Vec::with_capacity(items.len());
+        for (idx, item) in items.iter_mut().enumerate() {
+            if item.blobs.is_empty() {
+                all_refs.push(Vec::new());
+                continue;
+            }
+            let mut item_total = 0usize;
+            let mut refs = Vec::with_capacity(item.blobs.len());
+            let mut uris = Vec::with_capacity(item.blobs.len());
+            for (bi, blob) in item.blobs.iter().enumerate() {
+                let name = blob.filename.as_deref().unwrap_or("unnamed");
+                let bytes = areev_core::b64::decode(&blob.b64).ok_or_else(|| {
+                    violation(format!("item {idx} blob {bi} ({name}) is not valid base64"))
+                })?;
+                item_total += bytes.len();
+                response_total += bytes.len();
+                if item_total > opts.max_blob_bytes_per_item {
+                    return Err(violation(format!(
+                        "item {idx} blobs exceed the per-item budget ({} bytes decoded)",
+                        opts.max_blob_bytes_per_item
+                    )));
+                }
+                if response_total > opts.max_blob_bytes_per_response {
+                    return Err(violation(format!(
+                        "response blobs exceed the per-response budget ({} bytes decoded)",
+                        opts.max_blob_bytes_per_response
+                    )));
+                }
+                let uri = self
+                    .facade
+                    .with_store(|m| m.put_blob(&bytes))
+                    .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+                refs.push(ContentRef {
+                    uri: uri.clone(),
+                    modality: None,
+                    mime_type: blob.mime.clone(),
+                    size_bytes: Some(bytes.len() as u64),
+                    checksum: Some(uri.trim_start_matches("cas://").to_string()),
+                    metadata: blob.filename.as_ref().map(|f| serde_json::json!({ "filename": f })),
+                });
+                uris.push(uri);
+            }
+            rewrite_blob_refs(&mut item.payload, &uris)
+                .map_err(|d| violation(format!("item {idx}: {d}")))?;
+            // The bytes are in the CAS now; drop the base64 so nothing
+            // downstream can re-inline it into the Event or the run input.
+            item.blobs.clear();
+            all_refs.push(refs);
+        }
+        Ok(all_refs)
     }
 
     fn poll(
@@ -919,6 +1015,7 @@ impl Evaluator {
         run_id: &str,
         item: &PollItem,
         trigger_hash: &str,
+        content_refs: &[ContentRef],
     ) -> StartOutcome {
         // Idempotency has to hold whether or not a runtime is wired in. With a
         // starter, the runtime's duplicate-run-id refusal is the guard; without
@@ -940,6 +1037,13 @@ impl Evaluator {
             .extra_field("run_id", serde_json::json!(run_id));
         if let Some(c) = &trigger.connector {
             event = event.extra_field("connector", serde_json::json!(c));
+        }
+        // #93 — the item's stored blobs, referenced the same way a
+        // host-driven ingest references them: through `content_refs`, which
+        // is what keeps them alive through GC, carries them in bundles, and
+        // lets erasure's sole-reference reclamation find them.
+        for cr in content_refs {
+            event = event.content_ref(cr.clone());
         }
         if let Err(e) = self.facade.with_store(|m| m.add(&event)) {
             return StartOutcome::Failed(format!("ingest: {e}"));
@@ -963,13 +1067,13 @@ impl Evaluator {
         // blind, so a missing query or a failed read refuses the firing (the
         // evaluator's normal retry/backoff applies) rather than starting a
         // run without the context its declaration promised.
-        if let Some(name) = &trigger.context_query {
-            match self.assemble_context(name) {
+        if let Some(spec) = &trigger.context_query {
+            match self.assemble_context(spec, &item.payload) {
                 Ok(ctx) => {
                     input["context"] = ctx;
                 }
                 Err(why) => {
-                    return StartOutcome::Failed(format!("context_query \"{name}\": {why}"));
+                    return StartOutcome::Failed(format!("context_query \"{spec}\": {why}"));
                 }
             }
         }
@@ -980,24 +1084,74 @@ impl Evaluator {
         }
     }
 
-    /// Run the trigger's saved query (`RUN "name"`) against the facade this
-    /// evaluator already holds and return the result payload. The executor
-    /// re-validates the saved body as read-only at execution, and the
-    /// destructive cap is off — a context query can never mutate.
-    fn assemble_context(&self, name: &str) -> std::result::Result<serde_json::Value, String> {
-        // The name travels inside a CAL string literal; refuse anything that
-        // could not be a saved-query name rather than escaping it.
-        if name.is_empty()
-            || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        {
-            return Err("not a saved-query name (allowed: [A-Za-z0-9_.-])".into());
+    /// Run the trigger's saved query (`RUN "name"($p = v, …)`) against the
+    /// facade this evaluator already holds and return the result payload.
+    /// The executor re-validates the saved body as read-only at execution,
+    /// and the destructive cap is off — a context query can never mutate.
+    ///
+    /// #92 — the declaration may bind the query's parameters from the
+    /// firing item (`name($session = /session)`): each JSON pointer is
+    /// resolved against the item's payload with `--dedup-key`'s machinery
+    /// and semantics. Fail-closed like the rest of declared context: an
+    /// unresolvable pointer, or one landing on a non-scalar, refuses the
+    /// firing rather than running the query with a hole in it. Values ride
+    /// as a parsed AST (`RunQueryStmt`), never inside CAL text, so an
+    /// untrusted payload value cannot inject CAL.
+    fn assemble_context(
+        &self,
+        spec: &str,
+        payload: &serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let spec = crate::context::parse_context_query(spec)?;
+        let mut bindings: Vec<(String, areev_cal::ast::Value)> = Vec::new();
+        for (param, pointer) in &spec.bindings {
+            let v = payload.pointer(pointer).ok_or_else(|| {
+                format!("parameter ${param}: pointer {pointer} does not resolve against the firing item")
+            })?;
+            let value = match v {
+                serde_json::Value::String(s) => {
+                    areev_cal::ast::Value::String { value: s.clone() }
+                }
+                serde_json::Value::Number(n) => areev_cal::ast::Value::Number {
+                    value: n.as_f64().ok_or_else(|| {
+                        format!("parameter ${param}: {pointer} is not a representable number")
+                    })?,
+                },
+                serde_json::Value::Bool(b) => areev_cal::ast::Value::Boolean { value: *b },
+                other => {
+                    return Err(format!(
+                        "parameter ${param}: pointer {pointer} must land on a scalar, found {}",
+                        match other {
+                            serde_json::Value::Null => "null",
+                            serde_json::Value::Array(_) => "an array",
+                            _ => "an object",
+                        }
+                    ))
+                }
+            };
+            bindings.push((param.clone(), value));
         }
         let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig {
             allow_destructive_ops: false,
             ..areev_cal::CalExecutorConfig::default()
         });
+        let query = areev_cal::ast::CalQuery {
+            version: Default::default(),
+            statement: areev_cal::ast::CalStatement::RunQuery(areev_cal::ast::RunQueryStmt {
+                name: spec.name.clone(),
+                bindings,
+                span: None,
+            }),
+            pipeline: Vec::new(),
+            with_options: Vec::new(),
+            format: None,
+            let_bindings: Vec::new(),
+            user_vars: Default::default(),
+            let_values: Default::default(),
+            warnings: Vec::new(),
+        };
         let res = ex
-            .execute(&format!("RUN \"{name}\""), self.facade.as_ref())
+            .execute_parsed(query, &format!("RUN \"{}\"", spec.name), self.facade.as_ref())
             .map_err(|e| e.to_string())?;
         serde_json::to_value(&res.result).map_err(|e| e.to_string())
     }

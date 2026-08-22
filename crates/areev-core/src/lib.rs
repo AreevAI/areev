@@ -3,6 +3,7 @@
 
 pub mod anon;
 pub mod authz;
+pub mod b64;
 pub mod error;
 pub mod format;
 pub mod ns;

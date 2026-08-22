@@ -2643,3 +2643,243 @@ fn a_cached_plan_is_not_mutated_by_execution() {
     assert_eq!(n(&first), n(&second), "a cached plan must stay pristine");
     assert_eq!(n(&first), 2);
 }
+
+// ---------------------------------------------------------------------------
+// #91 — WHERE fails closed: pushed down, evaluated per grain, or refused.
+// ---------------------------------------------------------------------------
+
+/// Seed three tool executions with distinct names. Returns the facade.
+fn seed_three_tools(facade: &AreevFacade) {
+    use areev_cal::facade::CalStoreFacade;
+    for (name, is_err) in [
+        ("validate_rows", false),
+        ("post_ledger", false),
+        ("fetch_invoice", true),
+    ] {
+        let fields = serde_json::json!({
+            "tool_name": name,
+            "content": "ran",
+            "is_error": is_err,
+            "namespace": "caller",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        facade.cal_add("tool", &fields).unwrap();
+    }
+}
+
+fn grain_count(payload: &CalResultPayload) -> usize {
+    match payload {
+        CalResultPayload::Grains { grains, .. } => grains.len(),
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+/// #91 repro 1 — a WHERE field the grain type cannot carry used to pass
+/// validation, drop out of push-down, and return EVERYTHING with only a
+/// stderr warning. "Show me the failures" returned the successes. It now
+/// refuses with CAL-E060 before the scan.
+#[test]
+fn a_filter_that_cannot_be_honoured_refuses_instead_of_widening() {
+    let (ex, facade, _d) = setup();
+    seed_three_tools(&facade);
+
+    for q in [
+        r#"RECALL tools WHERE priority = "high" RECENT 200"#,
+        r#"RECALL tools WHERE scope_level = "nonexistent" RECENT 200"#,
+        r#"RECALL facts WHERE status = "nope" RECENT 100"#,
+        r#"RECALL facts WHERE priority = "high" RECENT 100"#,
+    ] {
+        let err = ex.execute(q, &facade).expect_err(q);
+        assert_eq!(err.code(), "CAL-E060", "{q} must refuse, got: {err}");
+    }
+
+    // Genuinely honourable filters keep working — and exclude.
+    let hits = ex
+        .execute(r#"RECALL tools WHERE is_error = true RECENT 200"#, &facade)
+        .unwrap();
+    assert_eq!(grain_count(&hits.result), 1);
+}
+
+/// #91 repro 2 — `NOT field = x` used to be flattened to `field = x`,
+/// returning precisely the set the author asked to exclude.
+#[test]
+fn not_on_a_type_specific_field_returns_the_complement() {
+    let (ex, facade, _d) = setup();
+    seed_three_tools(&facade);
+
+    let not_form = ex
+        .execute(
+            r#"RECALL tools WHERE NOT tool_name = "validate_rows" RECENT 200"#,
+            &facade,
+        )
+        .unwrap();
+    let neq_form = ex
+        .execute(
+            r#"RECALL tools WHERE tool_name != "validate_rows" RECENT 200"#,
+            &facade,
+        )
+        .unwrap();
+
+    for (label, payload) in [("NOT =", &not_form.result), ("!=", &neq_form.result)] {
+        match payload {
+            CalResultPayload::Grains { grains, .. } => {
+                assert_eq!(grains.len(), 2, "{label} must return the complement");
+                for g in grains {
+                    let v = serde_json::to_value(g).unwrap();
+                    assert_ne!(
+                        v["fields"]["tool_name"], "validate_rows",
+                        "{label} must EXCLUDE the named tool"
+                    );
+                }
+            }
+            other => panic!("expected Grains, got {other:?}"),
+        }
+    }
+}
+
+/// OR between residual fields used to push only the left branch down
+/// (narrowing `a OR b` to `a`); it is now a real per-grain disjunction.
+#[test]
+fn or_between_residual_fields_is_a_real_disjunction() {
+    let (ex, facade, _d) = setup();
+    seed_three_tools(&facade);
+
+    let hits = ex
+        .execute(
+            r#"RECALL tools WHERE tool_name = "validate_rows" OR tool_name = "post_ledger" RECENT 200"#,
+            &facade,
+        )
+        .unwrap();
+    match hits.result {
+        CalResultPayload::Grains { grains, .. } => {
+            assert_eq!(grains.len(), 2);
+            for g in &grains {
+                let v = serde_json::to_value(g).unwrap();
+                assert_ne!(
+                    v["fields"]["tool_name"], "fetch_invoice",
+                    "OR must not widen to the whole set"
+                );
+            }
+        }
+        other => panic!("expected Grains, got {other:?}"),
+    }
+}
+
+/// #91 repro 3 — `kind` (and `status`) are queryable on tools, with the
+/// omit-default materialized: an execution grain never writes `kind`, and
+/// `kind = "execution"` must still match it.
+#[test]
+fn kind_and_status_are_queryable_on_tools_with_omit_defaults() {
+    use areev_cal::facade::CalStoreFacade;
+    let (ex, facade, _d) = setup();
+
+    // A legacy execution record: writes neither `kind` nor `status`.
+    let exec_fields = serde_json::json!({
+        "tool_name": "crm_lookup",
+        "content": "ok",
+        "namespace": "caller",
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    facade.cal_add("tool", &exec_fields).unwrap();
+
+    // A definition, and a pending async execution.
+    let def_fields = serde_json::json!({
+        "tool_name": "crm_lookup",
+        "kind": "definition",
+        "tool_description": "Look up a CRM record",
+        "namespace": "caller",
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    facade.cal_add("tool", &def_fields).unwrap();
+    let pending_fields = serde_json::json!({
+        "tool_name": "crm_lookup",
+        "status": "pending",
+        "namespace": "caller",
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    facade.cal_add("tool", &pending_fields).unwrap();
+
+    let count_of = |q: &str| -> usize {
+        let res = ex.execute(q, &facade).unwrap_or_else(|e| panic!("{q}: {e}"));
+        grain_count(&res.result)
+    };
+
+    assert_eq!(
+        count_of(r#"RECALL tools WHERE kind = "definition" RECENT 200"#),
+        1
+    );
+    // Both execution grains omit `kind`; the default must match.
+    assert_eq!(
+        count_of(r#"RECALL tools WHERE kind = "execution" RECENT 200"#),
+        2
+    );
+    // The exclusion every host invented a child namespace for (#91):
+    // results without definitions.
+    assert_eq!(
+        count_of(r#"RECALL tools WHERE kind != "definition" RECENT 200"#),
+        2
+    );
+    assert_eq!(
+        count_of(r#"RECALL tools WHERE status = "pending" RECENT 200"#),
+        1
+    );
+    // Absent status reads as completed (legacy sync records) — the
+    // definition also omits status, so it reads completed too.
+    assert_eq!(
+        count_of(r#"RECALL tools WHERE status = "completed" RECENT 200"#),
+        2
+    );
+}
+
+/// Engine-only fields (query, time, tags, …) narrow the scan and have no
+/// per-grain value — under NOT/OR they refuse with CAL-E061 instead of
+/// being dropped.
+#[test]
+fn engine_only_fields_refuse_under_not_and_or() {
+    let (ex, facade, _d) = setup();
+    seed_three_tools(&facade);
+
+    for q in [
+        r#"RECALL facts WHERE NOT time = "yesterday""#,
+        r#"RECALL tools WHERE time = "yesterday" OR tool_name = "post_ledger" RECENT 10"#,
+    ] {
+        let err = ex.execute(q, &facade).expect_err(q);
+        assert_eq!(err.code(), "CAL-E061", "{q} must refuse, got: {err}");
+    }
+}
+
+/// EXISTS shares the refuse-or-honour contract: a type-specific filter is
+/// post-checked instead of answering "true" because ANY grain of the type
+/// existed.
+#[test]
+fn exists_honours_type_specific_filters() {
+    let (ex, facade, _d) = setup();
+    seed_three_tools(&facade);
+
+    let hit = ex
+        .execute(r#"EXISTS tools WHERE tool_name = "post_ledger""#, &facade)
+        .unwrap();
+    match hit.result {
+        CalResultPayload::Exists { exists, .. } => assert!(exists),
+        other => panic!("expected Exists, got {other:?}"),
+    }
+
+    let miss = ex
+        .execute(r#"EXISTS tools WHERE tool_name = "no_such_tool""#, &facade)
+        .unwrap();
+    match miss.result {
+        CalResultPayload::Exists { exists, hash } => {
+            assert!(!exists, "EXISTS must not answer true from an under-filtered scan");
+            assert!(hash.is_empty());
+        }
+        other => panic!("expected Exists, got {other:?}"),
+    }
+}

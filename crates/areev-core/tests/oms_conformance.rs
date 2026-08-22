@@ -746,4 +746,14 @@ fn trigger_without_context_query_is_byte_identical_and_with_it_roundtrips() {
     assert_eq!(back.context_query.as_deref(), Some("triage_ctx"));
     let (_, h1) = serialize_grain(&bare).unwrap();
     assert_ne!(h1, h2, "setting the field is new content, a new address");
+
+    // #92 — the parameterized spelling is the same string field, stored
+    // verbatim: the binding punctuation survives NFC + roundtrip.
+    let spec = "triage_ctx($session = /session, $from = /email/from)";
+    let bound = Trigger::new(TriggerKind::Interval, "cafe0123")
+        .interval_secs(60)
+        .context_query(spec);
+    let (blob3, _) = serialize_grain(&bound).unwrap();
+    let back = deserialize_blob(&blob3).unwrap().to_trigger().unwrap();
+    assert_eq!(back.context_query.as_deref(), Some(spec));
 }

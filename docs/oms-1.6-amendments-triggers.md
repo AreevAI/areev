@@ -158,14 +158,26 @@ inside a run cannot open the memory its own run holds, but the evaluator —
 the one party already holding it — can. The declaration replicates with the
 trigger, so what a fired run sees is auditable, not host-local.
 
+Since 1.5.1 (#92) the field MAY additionally spell parameter bindings from
+the firing item: `name($param = /json/pointer, …)`. Each pointer (RFC 6901,
+the same pointers `dedup_key` carries) is resolved against the item's
+payload at fire time and bound as the saved query's parameter, which is how
+a message-driven run carries the thread it belongs to. The field stays one
+string with the same compact key; the plain-name form is unchanged.
+
 Semantics an implementation MUST honor:
 
 1. The named query is executed read-only, under the evaluator's session; a
    context query can never mutate.
 2. **Fail closed.** A trigger that declares context MUST NOT fire without it:
    a missing query or a failed read refuses the firing (subject to the
-   evaluator's normal retry), never starts a context-less run.
+   evaluator's normal retry), never starts a context-less run. A parameter
+   binding whose pointer does not resolve, or resolves to a non-scalar,
+   refuses the firing the same way — never a query with an unbound hole.
 3. **Compatibility.** Because it is omit-default, a trigger that does not set
    it MUST serialize byte-identically to before this amendment — every
    existing content address is unchanged. An implementation MUST prove this
-   by test rather than assert it.
+   by test rather than assert it. The parameterized spelling is stored
+   verbatim; a plain name remains byte-identical to the 1.5.0 form.
+4. **No injection.** Bound values MUST travel structurally (parsed bindings),
+   never by splicing item-derived text into query source.
