@@ -2341,9 +2341,13 @@ impl Areev {
     /// to the value itself: the connector is handed the broker's address and
     /// never the secret. An unset variable is refused here rather than
     /// leaving the connector to make an unauthenticated call.
+    ///
+    /// Budgets bound the runs a firing starts, exactly as on `run_start`.
     #[pyo3(signature = (only = None, dry_run = false, lease_secs = None, max_items = None,
                         connector_cmd = None, tool_cmd = None, credentials_json = None,
-                        node = None, model = None, base_url = None, key_env = None))]
+                        node = None, model = None, base_url = None, key_env = None,
+                        max_tokens = None, max_usd_micros = None, max_wall_ms = None,
+                        ask_ttl_sec = None, llm_max_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2359,8 +2363,16 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        max_tokens: Option<u64>,
+        max_usd_micros: Option<u64>,
+        max_wall_ms: Option<u64>,
+        ask_ttl_sec: Option<i64>,
+        llm_max_tokens: Option<u32>,
     ) -> PyResult<String> {
-        let ev = self.evaluator(connector_cmd, tool_cmd, credentials_json, model, base_url, key_env)?;
+        let ev = self.evaluator(
+            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
+        )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
         if let Some(secs) = lease_secs {
             opts.lease = std::time::Duration::from_secs(secs);
@@ -2377,8 +2389,12 @@ impl Areev {
 
     /// Hand a webhook or manual payload to a trigger. Areev never opens a
     /// port: the host owns the listener and hands the payload over.
+    ///
+    /// Takes the same budgets as `trigger_run`: a delivery starts a real run.
     #[pyo3(signature = (trigger, payload_json, connector_cmd = None, tool_cmd = None,
-                        credentials_json = None, model = None, base_url = None, key_env = None))]
+                        credentials_json = None, model = None, base_url = None, key_env = None,
+                        max_tokens = None, max_usd_micros = None, max_wall_ms = None,
+                        ask_ttl_sec = None, llm_max_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2391,10 +2407,18 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        max_tokens: Option<u64>,
+        max_usd_micros: Option<u64>,
+        max_wall_ms: Option<u64>,
+        ask_ttl_sec: Option<i64>,
+        llm_max_tokens: Option<u32>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
-        let ev = self.evaluator(connector_cmd, tool_cmd, credentials_json, model, base_url, key_env)?;
+        let ev = self.evaluator(
+            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
+        )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
         serde_json::to_string(&report).map_err(err)
     }
@@ -2494,6 +2518,7 @@ impl Areev {
 
     /// The acting evaluator. Mirrors the CLI's construction, including the two
     /// deliberate `None`s documented on [`Areev::trigger_run`].
+    #[allow(clippy::too_many_arguments)]
     fn evaluator(
         &self,
         connector_cmd: Option<String>,
@@ -2502,6 +2527,7 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        opts: areev_run::RunOptions,
     ) -> PyResult<areev_trigger::Evaluator> {
         // A connector IS a tool — JSON in, JSON out, one process per
         // invocation — so there is one subprocess contract to learn and
@@ -2519,7 +2545,7 @@ impl Areev {
             tool_cmd.map(|cmd| {
                 std::sync::Arc::new(RunnerStarter {
                     runner: self.runner(Some(cmd), llm),
-                    opts: areev_run::RunOptions::default(),
+                    opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
             });
 

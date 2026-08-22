@@ -84,6 +84,26 @@ impl RunStarter for RunnerStarter {
     }
 }
 
+/// The run ceilings a firing passes on, from the same flags `run start` takes.
+fn run_budgets(flags: &HashMap<String, String>) -> areev_run::RunOptions {
+    areev_run::RunOptions {
+        budgets: areev_run::BudgetsSpec {
+            max_supersteps: flag(flags, "max-supersteps").and_then(|v| v.parse().ok()),
+            max_tokens: flag(flags, "max-tokens").and_then(|v| v.parse().ok()),
+            max_usd_micros: flag(flags, "max-usd")
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|usd| (usd * 1_000_000.0) as u64),
+            max_wall_ms: flag(flags, "max-wall-ms").and_then(|v| v.parse().ok()),
+            max_storage_bytes: flag(flags, "max-storage").and_then(|v| v.parse().ok()),
+        },
+        ask_ttl_sec: flag(flags, "ask-ttl").and_then(|v| v.parse().ok()),
+        workers: flag(flags, "workers").and_then(|v| v.parse().ok()).unwrap_or(4),
+        on_dangling: Default::default(),
+        llm_max_tokens: flag(flags, "llm-max-tokens").and_then(|v| v.parse().ok()),
+        inject_crash: None,
+    }
+}
+
 pub fn run_trigger(
     m: Areev,
     ns: &str,
@@ -133,8 +153,7 @@ fn evaluator(facade: Arc<AreevFacade>, ns: &str, flags: &HashMap<String, String>
             ns: ns.to_string(),
             principal: flag(flags, "as").unwrap_or_else(|| "user:local".into()),
         };
-        Arc::new(RunnerStarter { runner, opts: areev_run::RunOptions::default() })
-            as Arc<dyn RunStarter>
+        Arc::new(RunnerStarter { runner, opts: run_budgets(flags) }) as Arc<dyn RunStarter>
     });
 
     // Credentials are named on the command line and READ here, so a value
@@ -582,4 +601,38 @@ fn set_paused(
         println!("{verb}d trigger {}", short(&target, 12));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn flags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn budget_flags_reach_the_run_a_firing_starts() {
+        // `trigger run` built RunOptions::default(), so moving a workflow
+        // behind a trigger silently dropped every ceiling.
+        let o = run_budgets(&flags(&[
+            ("max-tokens", "5000"),
+            ("max-usd", "0.25"),
+            ("max-wall-ms", "60000"),
+            ("ask-ttl", "3600"),
+        ]));
+        assert_eq!(o.budgets.max_tokens, Some(5000));
+        assert_eq!(o.budgets.max_usd_micros, Some(250_000), "--max-usd is dollars, stored as micros");
+        assert_eq!(o.budgets.max_wall_ms, Some(60_000));
+        assert_eq!(o.ask_ttl_sec, Some(3600));
+    }
+
+    #[test]
+    fn no_budget_flags_means_no_ceiling_not_a_surprise_one() {
+        let o = run_budgets(&flags(&[]));
+        assert_eq!(o.budgets.max_tokens, None);
+        assert_eq!(o.budgets.max_usd_micros, None);
+        assert_eq!(o.ask_ttl_sec, None);
+        assert_eq!(o.workers, 4, "the documented default");
+    }
 }

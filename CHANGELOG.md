@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A trigger-started run now carries the budgets it was given.**
+  `run start` has taken `--max-tokens`/`--max-usd`/`--max-wall-ms`/`--ask-ttl`
+  on every surface since the runtime shipped; the trigger path took none of
+  them and built `RunOptions::default()`, in the CLI and both bindings alike.
+  Moving a workflow behind a trigger therefore dropped every ceiling silently —
+  on the one path that fires unattended, where an unbounded run has nobody
+  watching it and an ask with no TTL parks forever. `trigger run` and
+  `trigger deliver` now take the same budgets as `run start`, optional and
+  adding no implicit limit when omitted. Node refuses a negative budget rather
+  than reading it as unlimited, as it already did for `runStart`.
+- **`docs/triggers.md` now states what a run started by a trigger receives.**
+  The connector contract was documented; the run input was not. A trigger wraps
+  the item as `{trigger, connector, scope, item}` while `run start` passes its
+  input through unchanged, so one plan started both ways sees two shapes — and
+  a tool reading a top-level key dies on the trigger path only, while the pass
+  still reports `runs_started: 1` with no errors, because the firing did
+  succeed and the run is what failed.
+
 ## [1.4.0] — 2026-08-21
 
 ### Added

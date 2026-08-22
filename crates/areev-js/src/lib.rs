@@ -198,6 +198,7 @@ fn js_read_only_evaluator(
 /// deliberate `None`s: without a connector a due polling trigger fails loudly
 /// (`TRG-E003`) rather than looking healthy while doing nothing, and without a
 /// `toolCmd` the pass ingests items and records firings but starts nothing.
+#[allow(clippy::too_many_arguments)]
 fn js_evaluator(
     facade: std::sync::Arc<AreevFacade>,
     ns: String,
@@ -206,6 +207,7 @@ fn js_evaluator(
     tool_cmd: Option<String>,
     credentials_json: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+    opts: areev_run::RunOptions,
 ) -> napi::Result<areev_trigger::Evaluator> {
     // A connector IS a tool — JSON in, JSON out, one process per invocation —
     // so there is one subprocess contract to learn and connectors inherit its
@@ -227,7 +229,7 @@ fn js_evaluator(
                 Some(cmd),
                 llm,
             ),
-            opts: areev_run::RunOptions::default(),
+            opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
     });
 
@@ -2792,6 +2794,11 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        max_tokens: Option<i64>,
+        max_usd_micros: Option<i64>,
+        max_wall_ms: Option<i64>,
+        ask_ttl_sec: Option<i64>,
+        llm_max_tokens: Option<u32>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2807,6 +2814,8 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
+                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
+                                    ask_ttl_sec, llm_max_tokens)?,
             )?;
             let mut opts = areev_trigger::EvalOptions {
                 dry_run: dry_run.unwrap_or(false),
@@ -2841,6 +2850,11 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        max_tokens: Option<i64>,
+        max_usd_micros: Option<i64>,
+        max_wall_ms: Option<i64>,
+        ask_ttl_sec: Option<i64>,
+        llm_max_tokens: Option<u32>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2858,6 +2872,8 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
+                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
+                                    ask_ttl_sec, llm_max_tokens)?,
             )?;
             let report = ev.deliver(&trigger, payload).map_err(err)?;
             serde_json::to_string(&report).map_err(err)

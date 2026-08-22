@@ -533,12 +533,12 @@ export declare class Areev {
    * never the secret. An unset variable is refused here rather than leaving
    * the connector to make an unauthenticated call.
    */
-  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null): Promise<string>
+  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null): Promise<string>
   /**
    * Hand a webhook or manual payload to a trigger. Areev never opens a
    * port: the host owns the listener and hands the payload over.
    */
-  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null): Promise<string>
+  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null): Promise<string>
   /** Stop a trigger firing without deleting it. Mandatory reason. */
   triggerPause(trigger: string, because: string): Promise<string>
   /** Let a paused trigger fire again. Mandatory reason. */
