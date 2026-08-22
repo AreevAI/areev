@@ -171,35 +171,14 @@ jobs:
       - name: Collect per-platform binaries into npm/ dirs
         run: npx napi artifacts
 
-      # Two SBOMs, because the package has two dependency graphs and only one
-      # of them is visible to npm: `npm sbom` describes the JS tree, while
-      # everything the addon actually links is Cargo's. Publishing only the
-      # npm one would describe a package with almost no dependencies.
-      - name: Generate SBOMs
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p sbom
-          (cd crates/areev-js && npm sbom --sbom-format cyclonedx --omit dev) \
-            > "sbom/areev-${VERSION}-npm.cdx.json"
-          rustup update stable
-          cargo install cargo-cyclonedx --version 0.5.7 --locked
-          # areev-js is NOT a workspace member, so it carries its own lockfile
-          # and has to be described from its own manifest.
-          (cd crates/areev-js && cargo cyclonedx --format json --spec-version 1.5 --locked)
-          find crates/areev-js -name '*.cdx.json' \
-            -exec cp {} "sbom/areev-${VERSION}-node-cargo.cdx.json" \;
-          test -s "sbom/areev-${VERSION}-node-cargo.cdx.json"
+      # Attest before publishing: an artifact on the registry that no
+      # attestation covers is worse than one with none, because the security
+      # model claims every artifact is attested. This one DOES gate the
+      # publish — it is a security claim, not paperwork.
       - name: Attest build provenance for the native addons
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: crates/areev-js/npm/*/*.node
-      - name: Attach the SBOMs to the GitHub Release
-        working-directory: ${{ github.workspace }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" sbom/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
       - name: Publish platform packages + main to npm
         # We do NOT use `napi prepublish` here: it publishes every platform
         # package in one shot, and we want the main package to go out LAST so
@@ -246,3 +225,36 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Two SBOMs, because the package has two dependency graphs and only one
+      # of them is visible to npm: `npm sbom` describes the JS tree, while
+      # everything the addon actually links is Cargo's. Publishing only the
+      # npm one would describe a package with almost no dependencies.
+      #
+      # AFTER the publish, and `continue-on-error`: a bill of materials is
+      # documentation about a build, not the build, and it must never be able
+      # to withhold a release from users. On the 1.5.2 tag it did exactly that
+      # — a wrong flag here meant npm never got the packages at all.
+      - name: Generate and attach the SBOMs
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p sbom
+          (cd crates/areev-js && npm sbom --sbom-format cyclonedx --omit dev) \
+            > "sbom/areev-${VERSION}-npm.cdx.json"
+          rustup update stable
+          cargo install cargo-cyclonedx --version 0.5.7 --locked
+          # areev-js is NOT a workspace member, so it carries its own lockfile
+          # and is described from its own manifest. cargo-cyclonedx takes
+          # NEITHER `--locked` nor `-p`, ignores `--override-filename`, and
+          # writes `<package>.cdx.json` beside the manifest; `--top-level` is
+          # deliberately absent because it truncates to DIRECT dependencies.
+          cargo cyclonedx --manifest-path crates/areev-js/Cargo.toml \
+            --format json --spec-version 1.5
+          cp crates/areev-js/areev-js.cdx.json "sbom/areev-${VERSION}-node-cargo.cdx.json"
+          test -s "sbom/areev-${VERSION}-node-cargo.cdx.json"
+          gh release upload "$GITHUB_REF_NAME" sbom/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
