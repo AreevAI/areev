@@ -1117,6 +1117,27 @@ webhook, an overlapping cursor, and two nodes racing all produce **one run and
 one recorded skip**. The first poll seeds the cursor and fires nothing, so you
 do not process the mailbox's history on day one.
 
+A firing gets **the same runner `run start` builds**, so a plan that runs by
+hand runs on a heartbeat — the executor pin, the sandbox and the model all
+reach it, and each also reads its `$AREEV_RUN_*` variable, because a heartbeat
+is a cron line rather than something you type:
+
+```bash
+# The cron line: no flags, all host config from the environment.
+AREEV_RUN_TOOL_CMD=./tools.sh \
+AREEV_RUN_ALLOW_EXECUTOR=1671652297b93a6a… \
+AREEV_RUN_SANDBOX_CMD=/usr/local/bin/areev-sandbox \
+AREEV_RUN_MODEL=claude-sonnet-5 \
+  areev trigger run --db ap.db --ns accounting --max-usd 0.25 --ask-ttl 3600
+```
+
+Budgets matter more here than anywhere else: a standing rule fires unattended,
+so an unbounded run has nobody watching it and an ask with no TTL parks
+forever. Give the trigger a `--name` too — it is what `trigger list` and
+`trigger status` print, and unlike the workflow hash it survives re-declaring
+the plan (a re-`add` of identical plan JSON mints a **new** grain, because the
+content address covers `created_at`; see [triggers.md](triggers.md)).
+
 Fire on the memory's own contents instead of an external source:
 
 ```bash

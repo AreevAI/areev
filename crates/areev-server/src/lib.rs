@@ -116,7 +116,23 @@ pub struct UiServer {
     /// otherwise identity headers are attacker-controlled input and are
     /// ignored entirely. Rights still come from the FILE's grant grains.
     sso_header: Option<String>,
-    sso_secret: Option<String>,
+    /// The proxy shared secrets this instance accepts, newest first.
+    ///
+    /// A list rather than a value so the secret can be **rotated without a
+    /// zero-overlap cutover** (#79). It is an impersonation-grade credential:
+    /// whoever holds it can present any identity header, approval-capable
+    /// principals included. Rotating one of those atomically across a proxy
+    /// fleet and a console is not achievable in practice, so the honest
+    /// choices were a brief outage or a window where the wrong secret is live
+    /// — and an operator facing either under suspected-compromise pressure
+    /// will defer the rotation, which is the outcome that actually costs.
+    ///
+    /// Two at a time, deliberately: enough for old-and-new, not enough to
+    /// accumulate a drawer of forgotten live credentials. Both are checked in
+    /// constant time and the comparison never short-circuits on the first
+    /// mismatch, so timing cannot reveal which one matched or how many are
+    /// configured.
+    sso_secrets: Vec<String>,
 }
 
 /// Per-request principal binding. The server handles one request at a
@@ -198,16 +214,40 @@ impl UiServer {
             #[cfg(feature = "tls")]
             tls_config: None,
             sso_header: None,
-            sso_secret: None,
+            sso_secrets: Vec::new(),
         }
     }
 
     /// Enable trusted-header SSO (v0). `header` names the identity header
     /// the authenticating proxy forwards; `secret` is the proxy's shared
     /// secret, demanded in `x-areev-proxy-secret` on every SSO request.
-    pub fn with_sso(mut self, header: impl Into<String>, secret: impl Into<String>) -> Self {
+    pub fn with_sso(self, header: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.with_sso_rotating(header, secret, None::<String>)
+    }
+
+    /// [`with_sso`](Self::with_sso) with a second secret accepted during a
+    /// rotation window (#79).
+    ///
+    /// `next` is the incoming secret; `secret` stays the one already deployed.
+    /// While both are configured either proves the proxy, so the fleet can be
+    /// moved over one node at a time and the old secret retired afterwards —
+    /// the way a TLS key is rotated. Order carries no privilege: they are
+    /// equally valid until one is removed, which is what makes the window
+    /// safe to run in both directions (roll forward, or roll back).
+    ///
+    /// The window is meant to be short. Nothing here enforces that — a
+    /// deadline the server could enforce would have to live in the file or a
+    /// clock it does not own — so retiring the old secret is the operator's
+    /// step, and `docs/runbooks/sso-secret-rotation.md` is the procedure.
+    pub fn with_sso_rotating(
+        mut self,
+        header: impl Into<String>,
+        secret: impl Into<String>,
+        next: Option<impl Into<String>>,
+    ) -> Self {
         let header = header.into();
         let secret = secret.into();
+        let next = next.map(Into::into).filter(|s| !s.trim().is_empty());
         // An empty proxy secret would let `x-areev-proxy-secret:` (empty)
         // prove any identity — refuse loudly at the library boundary too,
         // not just in the CLI.
@@ -215,8 +255,18 @@ impl UiServer {
             !header.trim().is_empty() && !secret.trim().is_empty(),
             "with_sso requires a non-empty header name and proxy secret"
         );
+        // A rotation that deploys the same value twice is a rotation that did
+        // not happen, and it would read as "both live" in every log and
+        // status line. Refuse rather than silently accept the no-op.
+        assert!(
+            next.as_deref() != Some(secret.as_str()),
+            "the rotating proxy secret must differ from the current one"
+        );
         self.sso_header = Some(header.to_ascii_lowercase());
-        self.sso_secret = Some(secret);
+        self.sso_secrets = match next {
+            Some(n) => vec![secret, n],
+            None => vec![secret],
+        };
         self
     }
 
@@ -535,12 +585,17 @@ impl UiServer {
         // (constant-time secret check). A forged header without the secret
         // is silently ignored — the request proceeds as whatever its other
         // credentials make it.
-        let sso_identity: Option<String> = match (&self.sso_secret, proxy_secret, sso_identity_raw) {
-            (Some(expected), Some(presented), Some(id))
-                if ct_eq(expected.as_bytes(), presented.as_bytes())
-                    && !id.trim().is_empty() =>
-            {
-                Some(id)
+        let sso_identity: Option<String> = match (proxy_secret, sso_identity_raw) {
+            (Some(presented), Some(id)) if !id.trim().is_empty() => {
+                // `fold`, not `any`: `any` short-circuits on the first match,
+                // so during a rotation window the response time would say
+                // WHICH secret was presented. Every configured secret is
+                // compared, every time.
+                let proved = self
+                    .sso_secrets
+                    .iter()
+                    .fold(false, |acc, s| ct_eq(s.as_bytes(), presented.as_bytes()) | acc);
+                proved.then_some(id)
             }
             _ => None,
         };
@@ -2585,6 +2640,15 @@ mod sso_tests {
     const WRITE: &[u8] = br#"{"query":"ADD fact SET subject = \"x\" SET relation = \"r\" SET object = \"o\" SET namespace = \"caller\" REASON \"t\""}"#;
 
     fn sso_server() -> UiServer {
+        sso_server_with("proxy-secret", None)
+    }
+
+    /// The same server mid-rotation: `proxy-secret` deployed, `next` incoming.
+    fn sso_server_rotating(next: Option<&str>) -> UiServer {
+        sso_server_with("proxy-secret", next)
+    }
+
+    fn sso_server_with(secret: &str, next: Option<&str>) -> UiServer {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
         store
@@ -2596,7 +2660,8 @@ mod sso_tests {
             .unwrap();
         std::mem::forget(dir);
         let facade = AreevFacade::with_session(store, Some("caller".into()), None);
-        UiServer::new(facade, "sso-test".into()).with_sso("x-forwarded-user", "proxy-secret")
+        UiServer::new(facade, "sso-test".into())
+            .with_sso_rotating("x-forwarded-user", secret, next)
     }
 
     fn post(server: &UiServer, extra_headers: &str) -> String {
@@ -2653,6 +2718,57 @@ mod sso_tests {
             wrong.contains("anonymous") || wrong.contains("401"),
             "wrong proxy secret must not authenticate: {wrong}"
         );
+    }
+
+    /// The rotation window (#79): while two secrets are configured, either
+    /// proves the proxy — so the fleet moves over one node at a time instead
+    /// of atomically, which is the only way an impersonation-grade credential
+    /// gets rotated without an outage or a gap.
+    #[test]
+    fn both_secrets_authenticate_during_a_rotation_window() {
+        let server = sso_server_rotating(Some("new-secret"));
+        let id = "X-Forwarded-User: user:pat@example.com\r\n";
+
+        for secret in ["proxy-secret", "new-secret"] {
+            let out = post(&server, &format!("{id}X-Areev-Proxy-Secret: {secret}\r\n"));
+            assert!(out.contains("HTTP/1.1 200"), "{secret} rejected: {out}");
+            assert!(!out.contains("AUT-E001"), "{secret} must authenticate: {out}");
+        }
+
+        // The window widens what proves the proxy, never what a proved
+        // identity may do, and never to a third value.
+        let wrong = post(&server, &format!("{id}X-Areev-Proxy-Secret: guess\r\n"));
+        assert!(
+            wrong.contains("anonymous") || wrong.contains("401"),
+            "an unrelated secret must still be refused mid-rotation: {wrong}"
+        );
+    }
+
+    /// Closing the window is what actually retires the old credential — the
+    /// step the runbook exists to make sure nobody skips.
+    #[test]
+    fn the_retired_secret_stops_working_once_the_window_closes() {
+        // Rotation complete: the new value is now the only one deployed.
+        let server = sso_server_with("new-secret", None);
+        let id = "X-Forwarded-User: user:pat@example.com\r\n";
+
+        let ok = post(&server, &format!("{id}X-Areev-Proxy-Secret: new-secret\r\n"));
+        assert!(ok.contains("HTTP/1.1 200"), "{ok}");
+        assert!(!ok.contains("AUT-E001"), "the promoted secret must authenticate: {ok}");
+
+        let old = post(&server, &format!("{id}X-Areev-Proxy-Secret: proxy-secret\r\n"));
+        assert!(
+            old.contains("anonymous") || old.contains("401"),
+            "the retired secret must stop working: {old}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must differ")]
+    fn rotating_to_the_same_value_is_refused() {
+        // A rotation that deploys the same value twice did not happen, and it
+        // would read as "both live" in every log and status line.
+        let _ = sso_server_rotating(Some("proxy-secret"));
     }
 
     use crate::CONSOLE_HTML;

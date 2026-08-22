@@ -162,6 +162,24 @@ top of that.
   that principal) or the shared secret (the implied admin). A credential whose
   `env` variable is unset or **empty** authenticates nobody; an empty
   `Authorization: Bearer ` never resolves.
+- **Trusted-header SSO** (`areev ui --sso-header NAME --sso-secret-env VAR`):
+  an authenticating proxy does the OIDC/SAML handshake and forwards the
+  identity in `NAME`; Areev honours that header **only** when the same request
+  carries the proxy shared secret in `x-areev-proxy-secret`, compared in
+  constant time. A forged identity header without the secret is *ignored* — the
+  request proceeds as whatever its other credentials make it, rather than being
+  rejected, so the header is never attacker-controlled input. Rights still come
+  from the file's grant grains: the secret decides who may **assert**, never
+  what an asserted principal may **do**. It is nevertheless an
+  impersonation-grade credential, since the identities it can assert include
+  approval-capable principals whose name IS the audit record on a
+  human-in-the-loop decision. `--sso-secret-env-next VAR` accepts a second
+  secret during a rotation window so an operator is never choosing between an
+  outage and a deferred rotation; both candidates are compared every time
+  (`fold`, never `any` — short-circuiting would leak *which* secret matched
+  through response timing), the console warns on every start while the window
+  is open, and rotating to the same value is refused. Procedure:
+  [runbooks/sso-secret-rotation.md](runbooks/sso-secret-rotation.md).
 - Import is **DoS-hardened**: an untrusted `.mg` blob is size-capped and its
   msgpack framing is validated iteratively before decoding, so a hostile grain
   cannot cause a stack overflow (deep nesting) or a giant pre-allocation (a
@@ -425,6 +443,56 @@ it here.
 
 Because the path is `<cache>/<hex>` and `get_blob` verifies the digest on every
 read, a poisoned cache entry cannot impersonate a different executor.
+
+## Release artifacts: provenance and bill of materials
+
+Every published release carries a **build provenance attestation** and a
+**CycloneDX SBOM** (#81). The problem they address is the one behind every
+registry compromise of the last few years: nothing about a package on
+crates.io, PyPI or npm otherwise tells you it came from this repository's CI
+rather than a maintainer's laptop or a stolen publish token.
+
+Attestations are Sigstore-backed and keyless, so there is no signing key for
+this project to lose — the identity being attested is the workflow, in this
+repository, at that commit.
+
+Verify a downloaded CLI archive:
+
+```bash
+gh attestation verify areev-1.5.2-aarch64-apple-darwin.tar.gz --repo AreevAI/areev
+```
+
+Verify an installed npm package (npm's own registry-visible provenance, from
+`npm publish --provenance`):
+
+```bash
+npm audit signatures
+```
+
+Verify a wheel:
+
+```bash
+gh attestation verify areev-1.5.2-cp39-abi3-macosx_11_0_arm64.whl --repo AreevAI/areev
+```
+
+The SBOMs are attached to the GitHub Release as `*.cdx.json`. There is one per
+ecosystem, and for the two binding packages there are **two** graphs, because
+the interesting dependencies are Cargo's — a wheel or a `.node` addon links a
+Rust tree that `pip`/`npm` cannot see, so an SBOM built only from the
+package-manager metadata would truthfully describe almost nothing.
+
+| Asset | What it describes |
+|---|---|
+| `areev-<v>-cargo.cdx.json` | the `areev` binary's Rust dependency graph |
+| `areev-<v>-python.cdx.json` | the Rust graph compiled into the wheel |
+| `areev-<v>-node-cargo.cdx.json` | the Rust graph compiled into the `.node` addon |
+| `areev-<v>-npm.cdx.json` | the addon package's JS tree |
+
+This complements, and does not replace, `cargo-deny` (advisories, licenses,
+sources, bans) in `security.yml`: `cargo-deny` says the dependencies are
+acceptable, the SBOM says which ones shipped, and the attestation says who
+built them. Note this is unrelated to grain signing (#77) — that is about
+authenticating *data* at the format level, which remains out of scope below.
 
 ## Threats out of scope
 

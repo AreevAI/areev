@@ -1157,6 +1157,93 @@ test('a trigger-started run carries the budgets it was given', async () => {
   m.close()
 })
 
+test('a firing executes a pinned code-carrying node', async () => {
+  // #90: the trigger path built its runner with a bare CommandExecutor, so
+  // allowExecutor never reached it and a Tier C node refused with RUN-E018 —
+  // while the same plan ran fine from runStart. An agent could have declared
+  // context *or* sandboxed tools on the trigger path, not both.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-tierc-'))
+  const m = new Areev(join(dir, 'c.db'), 'ops')
+
+  const script = "#!/bin/sh\nread -r line\necho '{\"validated\":true}'\n"
+  const uri = await m.putBlob(Buffer.from(script))
+  const addr = uri.replace('cas://sha256:', '')
+
+  const tool = await m.add('tool', JSON.stringify({
+    tool_name: 'validate_rows', kind: 'definition', executor_uri: uri,
+  }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'tierc', nodes: ['validate_rows'], edges: [], bindings: { validate_rows: tool },
+  }))
+  const trig = await m.triggerAdd(
+    JSON.stringify({ kind: 'webhook', workflow: wf, connector: 'c', dedup_key: ['/id'] }),
+    'a pinned code node must run from a trigger',
+  )
+
+  // Unpinned: refused, exactly as runStart refuses. The fix widens what a
+  // firing CAN execute, never what it MAY.
+  const refused = JSON.parse(await m.triggerDeliver(trig, JSON.stringify({ id: 'a' })))
+  assert.equal(refused.runs_started, 0, JSON.stringify(refused))
+
+  // Pinned: it runs — with no toolCmd at all, because an all-Tier-C plan
+  // needs no subprocess.
+  const ran = JSON.parse(await m.triggerDeliver(
+    trig, JSON.stringify({ id: 'b' }), null, null, null, null, null, null,
+    null, null, null, null, null, addr, join(dir, 'execache'),
+  ))
+  assert.equal(ran.runs_started, 1, JSON.stringify(ran))
+  m.close()
+})
+
+test('a prefixed workflow reference is stored bare and still fires', async () => {
+  // #73: `sha256:<hex>` was accepted at declaration and unusable at
+  // evaluation — the evaluator hex-decoded the whole string, so the trigger
+  // validated, listed, reported `waiting`, and died at fire time.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-prefix-'))
+  const m = new Areev(join(dir, 'p.db'), 'ops')
+
+  const tool = await m.add('tool', JSON.stringify({ tool_name: 'noop', kind: 'definition' }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'prefixed', nodes: ['only'], edges: [], bindings: { only: tool },
+  }))
+  const trig = await m.triggerAdd(
+    JSON.stringify({ kind: 'webhook', workflow: `sha256:${wf}`, connector: 'c', dedup_key: ['/id'] }),
+    'a prefixed reference must still fire',
+  )
+
+  // Stored bare, so a round-trip comparison against the declared hash matches.
+  const row = JSON.parse(await m.triggerList()).find((r) => r.trigger === trig)
+  assert.equal(row.workflow, wf)
+
+  const toolCmd = `${process.execPath} -e "process.stdout.write('{}')"`
+  const report = JSON.parse(await m.triggerDeliver(
+    trig, JSON.stringify({ id: 'x' }), null, toolCmd,
+  ))
+  assert.equal(report.runs_started, 1, JSON.stringify(report))
+  m.close()
+})
+
+test('triggerList reports the declaration name', async () => {
+  // #73: `name` is accepted on write and is what a human uses to identify a
+  // trigger, but no read surface returned it — so identity fell onto the
+  // workflow hash, which is stable only until the plan is re-declared.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-name-'))
+  const m = new Areev(join(dir, 'n.db'), 'ops')
+  const trig = await m.triggerAdd(
+    JSON.stringify({
+      kind: 'interval', workflow: 'd'.repeat(HEX64), interval_secs: 60,
+      name: 'nightly-invoice-sweep',
+    }),
+    'named for a human',
+  )
+
+  const row = JSON.parse(await m.triggerList()).find((r) => r.trigger === trig)
+  assert.equal(row.name, 'nightly-invoice-sweep')
+  const status = JSON.parse(await m.triggerStatus()).find((r) => r.trigger === trig)
+  assert.equal(status.name, 'nightly-invoice-sweep')
+  m.close()
+})
+
 test('triggerRender emits heartbeat config and creates nothing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'areev-trig-render-'))
   const m = new Areev(join(dir, 'r.db'), 'ops')

@@ -100,15 +100,56 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
+  # A bill of materials for the binary's dependency graph (#81). Generated
+  # once, on one runner: the graph comes from Cargo.lock, which is committed
+  # and identical for every target, so five copies would be five identical
+  # files with different names.
+  #
+  # cargo-cyclonedx is pinned rather than floating: an SBOM whose generator
+  # changes between releases produces diffs that are the tool moving, not the
+  # dependencies, and the point of publishing one is that a consumer can
+  # diff two releases and see what actually changed.
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.7 --locked
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
+          cargo cyclonedx --format json --spec-version 1.5 --locked -p areev
+          mkdir -p dist
+          # cargo-cyclonedx writes next to the manifest it described.
+          find . -name '*.cdx.json' -not -path './dist/*' -print \
+            -exec cp {} "dist/areev-${VERSION}-cargo.cdx.json" \;
+          test -s "dist/areev-${VERSION}-cargo.cdx.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-sbom
+          path: dist/*.cdx.json
+          if-no-files-found: error
+
   publish:
     name: attach to the release
-    needs: build
+    needs: [build, sbom]
     # Only a real release has something to attach to; a manual run stops after
     # build, which makes `workflow_dispatch` a usable dry run.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance (#81): a consumer can prove a downloaded asset was
+      # produced by THIS workflow in THIS repo, rather than on a maintainer's
+      # laptop or through a stolen publish token. Sigstore-backed, keyless —
+      # no key for us to lose, which is the whole reason to prefer it.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -122,6 +163,15 @@ jobs:
           cat ./*.sha256 | sort -k2 > SHA256SUMS
           rm -f ./*.sha256
           cat SHA256SUMS
+      # Attest BEFORE upload: an asset on the release that no attestation
+      # covers is worse than one with none at all, because the release notes
+      # claim every asset is attested.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       - name: Upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

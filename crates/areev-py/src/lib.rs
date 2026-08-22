@@ -2368,7 +2368,8 @@ impl Areev {
             .iter()
             .map(|(h, t)| {
                 json!({
-                    "trigger": h, "kind": t.kind.as_str(), "workflow": t.workflow,
+                    "trigger": h, "name": areev_trigger::trigger_name(t),
+                    "kind": t.kind.as_str(), "workflow": t.workflow,
                     "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
                 })
             })
@@ -2424,12 +2425,18 @@ impl Areev {
     /// never the secret. An unset variable is refused here rather than
     /// leaving the connector to make an unauthenticated call.
     ///
-    /// Budgets bound the runs a firing starts, exactly as on `run_start`.
+    /// Budgets bound the runs a firing starts, exactly as on `run_start`, and
+    /// so does `allow_executor` (#90): a firing gets the same runner
+    /// `run_start` builds, so a plan with a code-carrying or sandboxed node
+    /// executes from a trigger exactly as it does by hand. Without the pin
+    /// such a node refuses with `RUN-E018` — the authorization to execute
+    /// code must come from the host, never from the file that carries it.
     #[pyo3(signature = (only = None, dry_run = false, lease_secs = None, max_items = None,
                         connector_cmd = None, tool_cmd = None, credentials_json = None,
                         node = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
-                        ask_ttl_sec = None, llm_max_tokens = None))]
+                        ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
+                        executor_cache = None, sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2450,9 +2457,13 @@ impl Areev {
         max_wall_ms: Option<u64>,
         ask_ttl_sec: Option<i64>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
@@ -2472,11 +2483,13 @@ impl Areev {
     /// Hand a webhook or manual payload to a trigger. Areev never opens a
     /// port: the host owns the listener and hands the payload over.
     ///
-    /// Takes the same budgets as `trigger_run`: a delivery starts a real run.
+    /// Takes the same budgets and the same executor pin as `trigger_run`: a
+    /// delivery starts a real run.
     #[pyo3(signature = (trigger, payload_json, connector_cmd = None, tool_cmd = None,
                         credentials_json = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
-                        ask_ttl_sec = None, llm_max_tokens = None))]
+                        ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
+                        executor_cache = None, sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2494,11 +2507,15 @@ impl Areev {
         max_wall_ms: Option<u64>,
         ask_ttl_sec: Option<i64>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
@@ -2601,6 +2618,7 @@ impl Areev {
     /// The acting evaluator. Mirrors the CLI's construction, including the two
     /// deliberate `None`s documented on [`Areev::trigger_run`].
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn evaluator(
         &self,
         connector_cmd: Option<String>,
@@ -2609,6 +2627,7 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        pin: ExecutorPin,
         opts: areev_run::RunOptions,
     ) -> PyResult<areev_trigger::Evaluator> {
         // A connector IS a tool — JSON in, JSON out, one process per
@@ -2623,13 +2642,27 @@ impl Areev {
             });
 
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> =
-            tool_cmd.map(|cmd| {
+        // A firing gets the runner `run_start` builds, pin included (#90).
+        // Gating on `tool_cmd` alone was the same reduction one level down: a
+        // plan whose nodes are all pinned code, or all abstract, needs no
+        // subprocess, and gating on one meant such a plan was ingested,
+        // recorded as fired, and never started.
+        let can_execute =
+            tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+        let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(
+            || {
                 std::sync::Arc::new(RunnerStarter {
-                    runner: self.runner(Some(cmd), llm),
+                    runner: self.runner_pinned(
+                        tool_cmd,
+                        llm,
+                        pin.allow_executor,
+                        pin.executor_cache,
+                        pin.sandbox_cmd,
+                    ),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
-            });
+            },
+        );
 
         // Credentials are named here and READ here, so a value never appears
         // in a grain, in the host's arguments, or in the connector's
@@ -2777,6 +2810,16 @@ impl Areev {
             principal: self.actor.clone(),
         }
     }
+}
+
+/// The host's authorization to execute code-carrying tools, carried as one
+/// value so the trigger surface takes the same three settings `run_start`
+/// does without growing three more positional parameters at every call.
+#[derive(Default)]
+struct ExecutorPin {
+    allow_executor: Option<String>,
+    executor_cache: Option<String>,
+    sandbox_cmd: Option<String>,
 }
 
 fn run_options(

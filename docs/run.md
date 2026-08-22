@@ -368,6 +368,18 @@ the storage tier, and it silently decides whether an agent design is portable:
   their own memory directly; keep `--context-query` for the declaration's
   auditability, portability back to the embedded tier, or both.
 
+**Why the embedded tier has no read-only open, and what it would take.** The
+obvious fix — open read-only and let WAL's concurrent readers through — is
+deferred rather than declined, and the reason is worth stating so nobody
+re-derives it. The exclusive lock is taken inside `turso_core` (`fcntl`
+`F_SETLK`), and the pinned `turso = "=0.7.2"` facade exposes no read-only
+open; the pin exists because encryption-at-rest is audited against that exact
+version. Even past the lock, today's open path *writes*: schema DDL replay, a
+second locked `.telemetry.db` sidecar, stamp-gated heal passes, and the
+anon-vault write-behind on egress. So it is a store-level project gated on a
+deliberate, re-audited engine bump (or a custom no-lock IO implementation),
+not a patch — tracked on #85.
+
 ## What a run writes (the journal)
 
 The journal proper — intents, results, checkpoints — lives in **the run's own

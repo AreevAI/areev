@@ -312,3 +312,75 @@ def test_trigger_budgets_default_to_unset_when_not_given(tmp_path):
     budgets = json.loads(m.run_inspect(json.loads(m.run_list(10))[0]))["budgets"]
     assert budgets["max_tokens"] is None and budgets["max_usd_micros"] is None
 
+
+
+def test_a_firing_executes_a_pinned_code_carrying_node(tmp_path):
+    """#90: the trigger path built its runner with a bare CommandExecutor, so
+    `allow_executor` never reached it and a Tier C node refused with RUN-E018
+    — while the same plan ran fine from `run_start`. An agent could have
+    declared context *or* sandboxed tools on the trigger path, not both."""
+    m = areev.Areev(str(tmp_path / "c.db"), ns="ops")
+    uri = m.put_blob(b"#!/bin/sh\nread -r line\necho '{\"validated\":true}'\n")
+    addr = uri.removeprefix("cas://sha256:")
+
+    tool = m.add("tool", json.dumps({
+        "tool_name": "validate_rows", "kind": "definition", "executor_uri": uri}))
+    wf = m.add("workflow", json.dumps({
+        "name": "tierc", "nodes": ["validate_rows"], "edges": [],
+        "bindings": {"validate_rows": tool}}))
+    trig = m.trigger_add(json.dumps({
+        "kind": "webhook", "workflow": wf, "connector": "c",
+        "dedup_key": ["/id"]}), "a pinned code node must run from a trigger")
+
+    # Unpinned: refused, exactly as `run_start` refuses. The fix widens what a
+    # firing CAN execute, never what it MAY.
+    report = json.loads(m.trigger_deliver(trig, json.dumps({"id": "a"})))
+    assert report["runs_started"] == 0, report
+
+    # Pinned: it runs — and with no `tool_cmd` at all, because an all-Tier-C
+    # plan needs no subprocess.
+    report = json.loads(m.trigger_deliver(
+        trig, json.dumps({"id": "b"}), allow_executor=addr,
+        executor_cache=str(tmp_path / "execache")))
+    assert report["runs_started"] == 1, report
+
+
+def test_a_prefixed_workflow_reference_is_stored_bare_and_still_fires(tmp_path):
+    """#73: `sha256:<hex>` was accepted at declaration and unusable at
+    evaluation — the evaluator hex-decoded the whole string, so the trigger
+    validated, listed, reported `waiting`, and died at fire time on
+    `FMT-E001: invalid hex hash: Odd number of digits`."""
+    import sys
+
+    m = areev.Areev(str(tmp_path / "p.db"), ns="ops")
+    tool = m.add("tool", json.dumps({"tool_name": "noop", "kind": "definition"}))
+    wf = m.add("workflow", json.dumps({
+        "name": "prefixed", "nodes": ["only"], "edges": [], "bindings": {"only": tool}}))
+    trig = m.trigger_add(json.dumps({
+        "kind": "webhook", "workflow": f"sha256:{wf}", "connector": "c",
+        "dedup_key": ["/id"]}), "a prefixed reference must still fire")
+
+    # Stored bare, so a round-trip comparison against the declared hash matches.
+    row = next(r for r in json.loads(m.trigger_list()) if r["trigger"] == trig)
+    assert row["workflow"] == wf, row
+
+    tool_cmd = f"{sys.executable} -c \"import sys,json;sys.stdout.write(json.dumps({{}}))\""
+    report = json.loads(m.trigger_deliver(trig, json.dumps({"id": "x"}), tool_cmd=tool_cmd))
+    assert report["runs_started"] == 1, report
+
+
+def test_trigger_list_reports_the_declarations_name(tmp_path):
+    """#73: `name` is accepted on write and is what a human uses to identify a
+    trigger, but no read surface returned it — so identity fell onto the
+    workflow hash, which is stable only until the plan is re-declared."""
+    m = ops_db(tmp_path, "n.db")
+    trig = m.trigger_add(json.dumps({
+        "kind": "interval", "workflow": WORKFLOW, "interval_secs": 60,
+        "name": "nightly-invoice-sweep"}), "named for a human")
+
+    row = next(r for r in json.loads(m.trigger_list()) if r["trigger"] == trig)
+    assert row["name"] == "nightly-invoice-sweep", row
+    assert row["workflow"] == WORKFLOW, row
+
+    status = next(r for r in json.loads(m.trigger_status()) if r["trigger"] == trig)
+    assert status["name"] == "nightly-invoice-sweep", status

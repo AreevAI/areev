@@ -15,6 +15,7 @@ use areev_trigger::{
     predicate, schedule, EvalOptions, Evaluator, RunStarter, StartResult, SystemClock,
 };
 
+use crate::run_stack::{self, report_refusals};
 use crate::{flag, need};
 
 /// `10m`, `2h`, `90s`, `1d` -> milliseconds.
@@ -84,26 +85,6 @@ impl RunStarter for RunnerStarter {
     }
 }
 
-/// The run ceilings a firing passes on, from the same flags `run start` takes.
-fn run_budgets(flags: &HashMap<String, String>) -> areev_run::RunOptions {
-    areev_run::RunOptions {
-        budgets: areev_run::BudgetsSpec {
-            max_supersteps: flag(flags, "max-supersteps").and_then(|v| v.parse().ok()),
-            max_tokens: flag(flags, "max-tokens").and_then(|v| v.parse().ok()),
-            max_usd_micros: flag(flags, "max-usd")
-                .and_then(|v| v.parse::<f64>().ok())
-                .map(|usd| (usd * 1_000_000.0) as u64),
-            max_wall_ms: flag(flags, "max-wall-ms").and_then(|v| v.parse().ok()),
-            max_storage_bytes: flag(flags, "max-storage").and_then(|v| v.parse().ok()),
-        },
-        ask_ttl_sec: flag(flags, "ask-ttl").and_then(|v| v.parse().ok()),
-        workers: flag(flags, "workers").and_then(|v| v.parse().ok()).unwrap_or(4),
-        on_dangling: Default::default(),
-        llm_max_tokens: flag(flags, "llm-max-tokens").and_then(|v| v.parse().ok()),
-        inject_crash: None,
-    }
-}
-
 pub fn run_trigger(
     m: Areev,
     ns: &str,
@@ -131,54 +112,103 @@ pub fn run_trigger(
     }
 }
 
-fn evaluator(facade: Arc<AreevFacade>, ns: &str, flags: &HashMap<String, String>) -> Evaluator {
+/// The acting evaluator, plus the broker whose refusals are reported once the
+/// pass finishes.
+///
+/// The runner this hands to a firing is built by [`crate::run_stack`] — the
+/// same builder `run start` uses (#90). It used to be a deliberately minimal
+/// copy: a bare `CommandExecutor` with `llm: None`, so a code-carrying node
+/// refused with `RUN-E018` and an abstract one with `RUN-E006` no matter which
+/// flags the operator passed. The trigger path silently supported a subset of
+/// the plans the host path ran, which is the worst place to support a subset:
+/// nobody is watching a heartbeat fire.
+fn evaluator(
+    facade: Arc<AreevFacade>,
+    ns: &str,
+    flags: &HashMap<String, String>,
+) -> Result<(Evaluator, Option<Arc<areev_run::Broker>>), String> {
+    let principal = flag(flags, "as").unwrap_or_else(|| "user:local".into());
     // The same seam host tools use. A connector IS a tool — JSON in, JSON out,
     // one process per invocation — so there is one subprocess contract to learn
     // and connectors inherit its timeout, output cap and secret scrub.
     let connector: Option<Arc<dyn areev_run::HostToolExecutor>> =
-        flag(flags, "connector-cmd").or_else(|| flag(flags, "tool-cmd")).map(|cmd| {
-            Arc::new(areev_run::CommandExecutor::new(&cmd)) as Arc<dyn areev_run::HostToolExecutor>
-        });
+        run_stack::flag_or_env(flags, "connector-cmd", "AREEV_RUN_CONNECTOR_CMD")
+            .or_else(|| run_stack::flag_or_env(flags, "tool-cmd", "AREEV_RUN_TOOL_CMD"))
+            .map(|cmd| {
+                Arc::new(areev_run::CommandExecutor::new(&cmd))
+                    as Arc<dyn areev_run::HostToolExecutor>
+            });
 
-    // Starting runs needs a tool command of its own: the workflow's nodes have
-    // to execute. Without one, the pass ingests items and records firings but
-    // starts nothing, which is a useful mode rather than a broken one.
-    let starter: Option<Arc<dyn RunStarter>> = flag(flags, "tool-cmd").map(|cmd| {
+    // The credential broker for the runs a firing starts, distinct from the
+    // per-poll broker the evaluator raises for a connector: a run's tools are
+    // granted per tool (`--tool-egress`), a connector is the only caller in
+    // its own pass. Both read `--credential name=ENV_VAR`, so one heartbeat
+    // command configures both.
+    let broker_guard = run_stack::build_egress(flags)?.map(Arc::new);
+    let egress = broker_guard.as_ref().map(|b| areev_run::EgressHandle::new(Arc::clone(b)));
+
+    // Starting runs needs a way to execute the plan's nodes. A `--tool-cmd`
+    // is the usual one, but it is no longer the only one: a plan whose nodes
+    // are all pinned code, or all abstract, executes with no subprocess at
+    // all. Without ANY of them the pass still ingests items and records
+    // firings but starts nothing, which is a useful mode rather than a broken
+    // one — so the condition widened rather than moved.
+    let starter: Option<Arc<dyn RunStarter>> = if run_stack::can_execute(flags) {
         let runner = areev_run::Runner {
             facade: Arc::clone(&facade),
             clock: Arc::new(areev_run::SystemClock),
-            executor: Arc::new(areev_run::CommandExecutor::new(&cmd)),
-            llm: None,
-            observer: None,
+            executor: run_stack::tool_executor(flags, egress.as_ref()),
+            llm: run_stack::toolcall_llm(flags)?,
+            observer: run_stack::observer(flags)?,
             ns: ns.to_string(),
-            principal: flag(flags, "as").unwrap_or_else(|| "user:local".into()),
+            principal: principal.clone(),
         };
-        Arc::new(RunnerStarter { runner, opts: run_budgets(flags) }) as Arc<dyn RunStarter>
-    });
+        Some(Arc::new(RunnerStarter { runner, opts: run_stack::run_options(flags) })
+            as Arc<dyn RunStarter>)
+    } else {
+        None
+    };
 
     // Credentials are named on the command line and READ here, so a value
     // never appears in a grain, in shell history, or in the connector's
     // environment: `--credential gmail=GMAIL_TOKEN_VAR` names the variable.
+    //
+    // An unset variable is refused rather than dropped — the same rule
+    // `run start` and both bindings already applied. A silently dropped
+    // credential does not stay silent: it surfaces downstream as an
+    // unexplained 401 from someone else's API, hours later, on a heartbeat
+    // nobody is watching. `build_egress` above validated the same list, so
+    // this cannot reach a different verdict; it is spelled out rather than
+    // assumed, because the two would drift the first time either moved.
     let mut credentials = std::collections::BTreeMap::new();
     if let Some(spec) = flag(flags, "credential") {
         for pair in spec.split(',') {
-            if let Some((name, var)) = pair.split_once('=') {
-                if let Ok(c) = areev_run::Credential::bearer_from_env(var.trim()) {
-                    credentials.insert(name.trim().to_string(), c);
-                }
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
             }
+            let (name, var) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("--credential: expected name=ENV_VAR, got {pair:?}"))?;
+            credentials.insert(
+                name.trim().to_string(),
+                areev_run::Credential::bearer_from_env(var.trim())?,
+            );
         }
     }
 
-    Evaluator {
-        facade,
-        clock: Arc::new(SystemClock),
-        connector,
-        starter,
-        credentials,
-        ns: ns.to_string(),
-        principal: flag(flags, "as").unwrap_or_else(|| "user:local".into()),
-    }
+    Ok((
+        Evaluator {
+            facade,
+            clock: Arc::new(SystemClock),
+            connector,
+            starter,
+            credentials,
+            ns: ns.to_string(),
+            principal,
+        },
+        broker_guard,
+    ))
 }
 
 fn add(
@@ -194,7 +224,11 @@ fn add(
              (interval|schedule|once|polling|memory|webhook|manual|composite)"
         )
     })?;
-    let workflow = need(flags, "workflow")?;
+    // Stored bare, whichever spelling was written (#73): `--workflow
+    // sha256:<hex>` used to be accepted here and then die at fire time on
+    // `FMT-E001: invalid hex hash`, after reporting `waiting` in between.
+    let workflow =
+        areev_core::types::strip_grain_scheme(&need(flags, "workflow")?).to_string();
     // A rationale is not optional in spirit: a trigger with no recorded reason
     // is not auditable, the same argument retention policies make.
     let because = need(flags, "because")?;
@@ -291,11 +325,18 @@ fn add(
         }
         t = t.context_query(&q);
     }
+    // The human label. Accepted on every other write surface and printed by
+    // `list`/`status` since 1.5.2 (#73) — without it, identity falls onto the
+    // workflow hash, which changes every time the plan is re-declared.
+    if let Some(name) = flag(flags, "name") {
+        t = t.extra_field("name", serde_json::json!(name));
+    }
     t = t.extra_field("because", serde_json::json!(because));
 
     // Refuse here rather than storing something that can never fire — the
     // failure nobody notices, because its symptom is nothing happening.
     schedule::validate(&t).map_err(|e| e.to_string())?;
+    warn_if_plan_will_not_resolve(facade, ns, &workflow);
 
     let hash = facade.with_store(|m| m.add(&t)).map_err(|e| e.to_string())?;
     if json_out {
@@ -310,6 +351,40 @@ fn add(
     Ok(())
 }
 
+/// Say at declaration time what the plan will need at fire time (#73).
+///
+/// `docs/run.md` documents `RUN-E006` correctly, but `docs/triggers.md` walked
+/// through `trigger add --workflow <WF_HASH>` without mentioning that the
+/// plan's nodes must already resolve — so the natural first attempt (declare a
+/// plan, point a trigger at it) failed at the first firing rather than at
+/// declaration, and `trigger status` said `waiting` in between.
+///
+/// A warning, never a refusal: a plan can arrive by sync after the trigger is
+/// declared, a Definition can be added later, and abstract nodes are perfectly
+/// legitimate with `--model` configured on the heartbeat. Refusing would be
+/// wrong in all three cases; saying nothing was wrong in the common one.
+fn warn_if_plan_will_not_resolve(facade: &Arc<AreevFacade>, ns: &str, workflow: &str) {
+    let Ok(hash) = areev_core::error::Hash::from_hex(workflow) else {
+        return; // `schedule::validate` already refused this.
+    };
+    match facade.with_store(|m| areev_run::abstract_nodes(m, ns, &hash)) {
+        Err(why) => eprintln!(
+            "warning: workflow {} does not resolve to a plan in this memory yet ({why}) — \
+             the trigger will fail at its first firing until it does",
+            short(workflow, 12)
+        ),
+        Ok(nodes) if !nodes.is_empty() => eprintln!(
+            "warning: {} node(s) in this plan are abstract — no binding and no matching \
+             tool definition: {}. They need a tool-calling model at fire time \
+             (`areev trigger run --model ...`, or $AREEV_RUN_MODEL on the heartbeat); \
+             without one the firing fails with RUN-E006",
+            nodes.len(),
+            nodes.join(", ")
+        ),
+        Ok(_) => {}
+    }
+}
+
 fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), String> {
     let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let declarations = ev.declarations().map_err(|e| e.to_string())?;
@@ -318,7 +393,8 @@ fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Strin
             .iter()
             .map(|(h, t)| {
                 serde_json::json!({
-                    "trigger": h, "kind": t.kind.as_str(), "workflow": t.workflow,
+                    "trigger": h, "name": areev_trigger::trigger_name(t),
+                    "kind": t.kind.as_str(), "workflow": t.workflow,
                     "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
                 })
             })
@@ -331,7 +407,12 @@ fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Strin
         return Ok(());
     }
     for (h, t) in declarations {
-        let what = t.scope.as_deref().unwrap_or("-");
+        // A declaration's own name beats its scope in the identity column:
+        // that is the string the operator wrote down, and the one they type
+        // into a ticket.
+        let what = areev_trigger::trigger_name(&t)
+            .unwrap_or_else(|| t.scope.clone().unwrap_or_else(|| "-".into()));
+        let what = what.as_str();
         let off = if t.enabled { "" } else { "  [disabled]" };
         println!(
             "{}  {:<9} {:<28} -> {}{off}",
@@ -362,6 +443,9 @@ fn show(
         println!("{}", serde_json::to_string(&found).map_err(|e| e.to_string())?);
     } else {
         println!("trigger      {}", found.trigger);
+        if let Some(name) = &found.name {
+            println!("name         {name}");
+        }
         println!("kind         {}", found.kind);
         println!("workflow     {}", found.workflow);
         println!("enabled      {}", found.enabled);
@@ -424,12 +508,16 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
         } else {
             "waiting"
         };
+        // The name, when declared, is the identity a human recognizes; the
+        // hash prefix stays first because it is what every other subcommand
+        // takes as its argument.
         println!(
-            "{}  {:<8} {:<9} {}",
+            "{}  {:<8} {:<9} {}{}",
             short(&s.trigger, 12),
             state,
             s.kind,
-            short(&s.workflow, 12)
+            short(&s.workflow, 12),
+            s.name.as_deref().map(|n| format!("  {n}")).unwrap_or_default()
         );
         if let Some(why) = &s.unusable {
             println!("              cannot fire: {why}");
@@ -457,7 +545,7 @@ fn evaluate(
     flags: &HashMap<String, String>,
     json_out: bool,
 ) -> Result<(), String> {
-    let ev = evaluator(facade, ns, flags);
+    let (ev, broker) = evaluator(facade, ns, flags)?;
     let mut opts = EvalOptions { dry_run: flag(flags, "dry-run").is_some(), ..Default::default() };
     if let Some(id) = flag(flags, "id") {
         opts.only = Some(id);
@@ -479,7 +567,11 @@ fn evaluate(
             format!("runs {}", report.runs_started)
         } else {
             // Say what actually happened rather than implying runs executed.
-            format!("ingested {} (no --tool-cmd, so nothing was executed)", report.ingested)
+            format!(
+                "ingested {} (no --tool-cmd, --allow-executor or --model, \
+                 so nothing was executed)",
+                report.ingested
+            )
         };
         // `unusable` is printed unconditionally when non-zero: burying it
         // would recreate the silence this counter exists to break.
@@ -497,6 +589,7 @@ fn evaluate(
             eprintln!("error: {e}");
         }
     }
+    report_refusals(&broker);
     // Exit 0 on a clean pass with nothing to do, so a heartbeat never pages on
     // a healthy no-op — the same discipline `loop run` uses.
     if report.errors.is_empty() {
@@ -574,7 +667,7 @@ fn deliver(
     let payload: serde_json::Value =
         serde_json::from_str(raw.trim()).map_err(|e| format!("payload is not JSON: {e}"))?;
 
-    let ev = evaluator(facade, ns, flags);
+    let (ev, broker) = evaluator(facade, ns, flags)?;
     let report = ev.deliver(&id, payload).map_err(|e| e.to_string())?;
     if json_out {
         println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?);
@@ -585,6 +678,7 @@ fn deliver(
     } else {
         println!("delivered · runs {} · ingested {}", report.runs_started, report.ingested);
     }
+    report_refusals(&broker);
     Ok(())
 }
 
@@ -632,38 +726,4 @@ fn set_paused(
         println!("{verb}d trigger {}", short(&target, 12));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod budget_tests {
-    use super::*;
-
-    fn flags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    #[test]
-    fn budget_flags_reach_the_run_a_firing_starts() {
-        // `trigger run` built RunOptions::default(), so moving a workflow
-        // behind a trigger silently dropped every ceiling.
-        let o = run_budgets(&flags(&[
-            ("max-tokens", "5000"),
-            ("max-usd", "0.25"),
-            ("max-wall-ms", "60000"),
-            ("ask-ttl", "3600"),
-        ]));
-        assert_eq!(o.budgets.max_tokens, Some(5000));
-        assert_eq!(o.budgets.max_usd_micros, Some(250_000), "--max-usd is dollars, stored as micros");
-        assert_eq!(o.budgets.max_wall_ms, Some(60_000));
-        assert_eq!(o.ask_ttl_sec, Some(3600));
-    }
-
-    #[test]
-    fn no_budget_flags_means_no_ceiling_not_a_surprise_one() {
-        let o = run_budgets(&flags(&[]));
-        assert_eq!(o.budgets.max_tokens, None);
-        assert_eq!(o.budgets.max_usd_micros, None);
-        assert_eq!(o.ask_ttl_sec, None);
-        assert_eq!(o.workers, 4, "the documented default");
-    }
 }

@@ -178,6 +178,30 @@ impl Catchup {
     }
 }
 
+/// Read a grain reference through whatever content-address scheme prefix it
+/// was written with — `sha256:<hex>`, `grain:sha256:<hex>`, or bare `<hex>`.
+///
+/// Case-insensitive on the scheme only: the hex itself is left exactly as
+/// found, because `Hash::from_hex` is the one authority on whether it is a
+/// hash, and a display helper that "fixed" it would hide a real typo.
+pub fn strip_grain_scheme(reference: &str) -> &str {
+    let r = reference.trim();
+    let bytes = r.as_bytes();
+    for scheme in ["grain:sha256:", "sha256:"] {
+        // Compared as BYTES, not by slicing `&r[..n]`: a reference can arrive
+        // by bundle import from an implementation we did not write, and
+        // `&str` indexing panics on a multi-byte boundary. Matching an ASCII
+        // scheme proves those bytes are ASCII, so the split point is a char
+        // boundary by then.
+        if bytes.len() > scheme.len()
+            && bytes[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+        {
+            return &r[scheme.len()..];
+        }
+    }
+    r
+}
+
 /// A Trigger grain — a standing rule that starts a Workflow.
 #[derive(Debug, Clone)]
 pub struct Trigger {
@@ -323,6 +347,21 @@ impl Trigger {
     pub fn member(mut self, alias: &str, hash: &str) -> Self {
         self.members.insert(alias.to_string(), hash.to_string());
         self
+    }
+
+    /// The bare content address behind [`workflow`](Self::workflow), whatever
+    /// scheme prefix the declaration spelled it with.
+    ///
+    /// Both `sha256:<hex>` and the bare `<hex>` are accepted on write across
+    /// the surfaces, and `grain:sha256:<hex>` is the vocabulary Recommendation
+    /// targets already use — so a caller reasonably reaches for any of them.
+    /// The evaluator hex-decoded the whole string, which turned a prefixed
+    /// reference into a declaration that validated, listed, reported `waiting`
+    /// forever, and died at fire time with `FMT-E001: invalid hex hash: Odd
+    /// number of digits` (#73). Reading through the prefix here means one
+    /// helper decides, rather than every call site remembering to.
+    pub fn workflow_hash(&self) -> &str {
+        strip_grain_scheme(&self.workflow)
     }
 
     /// The content address behind an alias.

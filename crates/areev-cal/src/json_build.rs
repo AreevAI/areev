@@ -316,7 +316,14 @@ fn build_trigger_from_json(
             "unknown trigger kind '{kind_str}' (interval|schedule|once|polling|memory|webhook|manual|composite)"
         ))
     })?;
+    // Stored bare, whichever spelling was written (#73). Both `sha256:<hex>`
+    // and the bare form are accepted on write, and a declaration that keeps
+    // the prefix does not round-trip: a caller comparing `trigger_list`'s
+    // reference against the hash it declared gets no match either way.
+    // Normalizing on the way IN keeps one spelling in the file; the read path
+    // still reads through a prefix, for declarations already stored.
     let workflow = get_str("workflow")
+        .map(|w| areev_core::types::strip_grain_scheme(&w).to_string())
         .ok_or_else(|| AreevError::Validation("ADD trigger requires 'workflow'".into()))?;
 
     let strings = |field: &str| -> Vec<String> {

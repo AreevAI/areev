@@ -6,10 +6,17 @@ duplicate add became a no-op) turned the crash into silence — the block ran
 clean and printed nothing, which reads as "Areev Loop found no problems" (#66).
 Both would have been caught here.
 
-The scope is deliberately narrow: the Areev Loop proof blocks, the ones the
-README introduces as "the fastest way to see it needs no agent". They are
-extracted from the shipped Markdown rather than retyped, so a block that is
-edited without being re-run fails instead of quietly drifting from the engine.
+The scope is deliberately narrow: the Areev Loop proof blocks, introduced as
+"the fastest way to see it needs no agent". They are extracted from the shipped
+Markdown rather than retyped, so a block that is edited without being re-run
+fails instead of quietly drifting from the engine.
+
+`README.md` used to carry one and no longer does: the 1.5.1 revamp made the
+README visual-first, leading with the CLI and console screenshots rather than a
+Python listing. This file kept asserting a block that had been removed, so the
+Python job went red on a doc change — the guard outliving the thing it guarded.
+The guard itself still matters, so it moved down to the two docs that do carry
+a block rather than being deleted.
 """
 
 import json
@@ -19,7 +26,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-DOCS = ["README.md", "docs/loop.md", "docs/cookbook.md"]
+DOCS = ["docs/loop.md", "docs/cookbook.md"]
 
 # Lines that are prose-in-code: a `<hash>` placeholder stands in for a real
 # address because a 64-hex string is unreadable in a doc.
@@ -96,12 +103,18 @@ def test_documented_proof_block_prints_what_it_claims(rel, line_no, body, tmp_pa
     assert "71%" in printed, f"{rel}:{line_no} → {printed!r}"
 
 
-def test_readme_documents_the_output_it_produces():
-    """The README prints its expected output in a `# →` comment. Keep it true."""
-    text = (REPO / "README.md").read_text(encoding="utf-8")
-    claim = next(l for l in text.splitlines() if l.startswith("# → high"))
-    for token in ("stripe_refund", "5 times", "71%", "rate_limited"):
-        assert token in claim, f"README's documented output lost {token!r}: {claim!r}"
+def test_the_docs_print_the_output_they_claim():
+    """A block that prints its expected output in a `# →` comment must keep it
+    true. This used to read `README.md` alone, which no longer carries a proof
+    block; asserting over the docs that do keeps the check where the claim is."""
+    for rel in DOCS:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        claims = [l for l in text.splitlines() if l.startswith("# → high")]
+        if not claims:
+            continue
+        for claim in claims:
+            for token in ("stripe_refund", "5 times", "71%", "rate_limited"):
+                assert token in claim, f"{rel}'s documented output lost {token!r}: {claim!r}"
 
 
 def test_loop_doc_block_leaves_two_recommendations(tmp_path, monkeypatch):

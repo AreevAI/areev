@@ -75,6 +75,65 @@ Then put `trigger run` on whatever heartbeat you already have. It can be much
 coarser than your shortest interval: the command is cheap, and the memory
 decides what is due.
 
+### The plan has to resolve before the trigger fires
+
+`--workflow <WF_HASH>` binds the trigger to a plan, and **the plan's nodes must
+already resolve** — each one either bound to a Tool Definition in `bindings`,
+or matched by a Definition head whose `tool_name` equals the node id. A node
+that is neither is **abstract**: legitimate, but it crosses the model boundary,
+so it needs a tool-calling model at fire time (`--model`, or `$AREEV_RUN_MODEL`
+on the heartbeat). Without one the firing fails with `RUN-E006` — see
+[run.md](run.md).
+
+The natural first attempt — declare a plan, point a trigger at it — therefore
+used to fail at the *first firing* rather than at declaration, with
+`trigger status` reporting `waiting` in between. Since 1.5.2 `trigger add`
+says so up front:
+
+```
+$ areev trigger add --db ap.db --ns accounting --type interval --interval 900 \
+    --workflow 4cb34f1a… --because "sweep"
+warning: 1 node(s) in this plan are abstract — no binding and no matching tool
+definition: gtm.send. They need a tool-calling model at fire time
+(`areev trigger run --model ...`, or $AREEV_RUN_MODEL on the heartbeat);
+without one the firing fails with RUN-E006
+declared trigger a32027ab…
+```
+
+A warning, not a refusal: a plan can arrive by sync after the trigger is
+declared, a Definition can be added later, and abstract nodes are perfectly
+fine with a model configured.
+
+### Re-declaring a plan mints a NEW plan
+
+Grains are content-addressed over the **whole** `.mg` blob, and the blob's
+header carries `created_at`. Two `add("workflow", …)` calls with identical
+node/edge/binding JSON therefore return **different** hashes, one second apart.
+There is no "re-add is free" — an idempotent-declare loop that re-adds on every
+boot mints a new plan each time, while the trigger declared earlier still
+points at the old one. Nothing reports an error; plans simply accumulate and
+the cadence keeps running the version nobody is editing.
+
+(Only a *byte-identical* blob collapses to a no-op, which in practice means the
+same grain re-imported, not the same fields re-authored. Excluding `created_at`
+from the address is not an option: canonical serialization is frozen — changing
+it moves every content address ever computed and breaks OMS conformance.)
+
+So declare idempotently by **recalling first**, keying on something stable:
+
+```python
+existing = json.loads(m.recall(grain_type="workflow", subject="gtm.send", limit=1))
+wf = existing[0]["hash"] if existing else m.add(
+    "workflow",
+    json.dumps({"nodes": ["gtm.send"], "edges": [], "bindings": {}, "retries": {}}),
+    "gtm.send",   # the subject is the stable identity; the hash is not
+)
+```
+
+The same applies to the trigger itself. Give it a `name` — it is returned by
+`trigger_list`, `trigger_status` and `areev trigger list`, and it is the one
+identifier that survives re-declaring the plan.
+
 ## Declared context (`--context-query`)
 
 A trigger-started run begins blind on the embedded backend: the evaluator
@@ -237,6 +296,55 @@ db.trigger_run(tool_cmd="./tools.sh", max_usd_micros=250_000, ask_ttl_sec=3600)
 Budgets matter more here than anywhere else: a standing rule fires unattended,
 so an unbounded run has nobody watching it, and an ask with no TTL parks
 forever.
+
+## The runner a firing gets (1.5.2, #90)
+
+A firing builds **the same runner `run start` builds**. Whatever executes a
+plan by hand executes it on a heartbeat:
+
+| What | `areev trigger run` / `deliver` | Python / Node | Environment |
+|---|---|---|---|
+| Host tools | `--tool-cmd` | `tool_cmd` | `$AREEV_RUN_TOOL_CMD` |
+| Polling connector | `--connector-cmd` | `connector_cmd` | `$AREEV_RUN_CONNECTOR_CMD` |
+| Code-carrying tools (Tier C) | `--allow-executor` | `allow_executor` | `$AREEV_RUN_ALLOW_EXECUTOR` |
+| Sandbox dispatch (`runtime`) | `--sandbox-cmd` | `sandbox_cmd` | `$AREEV_RUN_SANDBOX_CMD` |
+| Prepared-code cache | `--executor-cache` | `executor_cache` | `$AREEV_RUN_EXECUTOR_CACHE` |
+| Abstract nodes | `--model` / `--base-url` / `--key-env` | `model` / `base_url` / `key_env` | `$AREEV_RUN_MODEL` / `…_BASE_URL` / `…_KEY_ENV` |
+| Outbound credentials | `--credential` / `--allow-host` / `--tool-egress` | `credentials_json` | — |
+| Ceilings | the budget flags above | the budget arguments above | — |
+
+Every one of these also reads its `$AREEV_RUN_*` variable, with the flag
+winning when both are set: a heartbeat is a cron line, a launchd plist or a
+k8s CronJob, not an interactive command, and an operator should not have to
+re-edit the scheduler entry to pin an address.
+
+Before 1.5.2 the trigger path built a deliberately reduced runner — a bare
+`CommandExecutor` with no model — so a plan with a code-carrying node refused
+at start with `RUN-E018` and one with an abstract node with `RUN-E006`, no
+matter which flags were passed. `--context-query` and `runtime` shipped in the
+same release and were meant to compose; used together the run refused, so an
+agent could have declared context **or** sandboxed tools on the trigger path,
+not both.
+
+The pin is still the authorization, and it still comes from the **host**: a
+grant living in the file would arrive in the same bundle as the code it
+authorizes. What changed is where the host can state it, not who may.
+
+A firing now also starts runs when there is no `--tool-cmd` at all — a plan
+whose nodes are all pinned code, or all abstract, needs no subprocess. With
+none of `--tool-cmd`, `--allow-executor` or `--model` the pass still ingests
+items and records firings without executing, which stays a useful mode.
+
+## Naming the workflow
+
+`--workflow` takes the plan's **64-hex content address**, optionally prefixed
+`sha256:`. Both spellings are accepted on write and normalized to the bare form
+on the way in, so `trigger_list` returns what you declared and a round-trip
+comparison matches. Anything that is not an address is refused at declaration
+and reported as `unusable` by `trigger status` (`TRG-E002`) — before 1.5.2 a
+`sha256:`-prefixed reference was accepted, listed, reported `waiting` forever,
+and then died at fire time on `FMT-E001: invalid hex hash: Odd number of
+digits`.
 
 ## Idempotency
 

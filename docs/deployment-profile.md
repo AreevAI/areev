@@ -120,6 +120,16 @@ the IdP handshake, and never reuse it across environments. The identity a
 proxy asserts still only gets what the FILE grants it — but the file
 cannot tell a real IdP assertion from a forged one once the secret leaks.
 
+**Rotating it does not require a zero-overlap cutover.**
+`--sso-secret-env-next VAR` opens a window in which **either** secret proves
+the proxy, so the fleet moves over one node at a time and the old value is
+retired once nothing presents it — TLS key rotation's shape. The console
+prints a warning on every start while the window is open, because a rotation
+left half-finished is an extra impersonation-grade credential live in
+production. The procedure, for both a planned rotation and a suspected leak
+(where the answer is a hard cutover, **not** a window), is
+[runbooks/sso-secret-rotation.md](runbooks/sso-secret-rotation.md).
+
 ## What to hand the reviewer
 
 - This document.

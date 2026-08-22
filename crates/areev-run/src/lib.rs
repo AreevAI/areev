@@ -31,7 +31,7 @@ pub use clock::{Clock, ScriptedClock, SystemClock};
 pub use broker::{Broker, CallerGrant, Credential, EgressGrants};
 pub use egress::{EgressDenied, EgressPolicy};
 pub use executor::{CodeExecutor, CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode};
-pub use manifest::{BudgetsSpec, ForkBase, PinnedTool, RunManifest};
+pub use manifest::{abstract_nodes, BudgetsSpec, ForkBase, PinnedTool, RunManifest};
 pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
 pub use stream::{RunEvent, RunObserver};

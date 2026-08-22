@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod run_stack;
 mod tune;
 mod trigger_cli;
 
@@ -114,12 +115,22 @@ COMMANDS:
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
            [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
+           [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
+           [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
-                                      Without --tool-cmd it ingests without
-                                      executing; --dry-run touches nothing.
+                                      A firing gets the SAME runner `run start`
+                                      builds: the executor pin, the sandbox and
+                                      the model all reach it, so a plan that
+                                      runs by hand runs on a heartbeat. Every
+                                      one of those also reads its $AREEV_RUN_*
+                                      variable, because a heartbeat is a cron
+                                      line, not an interactive command.
+                                      With none of --tool-cmd/--allow-executor/
+                                      --model it ingests without executing;
+                                      --dry-run touches nothing.
                                       --credential names an env var whose value
                                       the egress broker attaches on the way out,
                                       so the connector never holds the token.
@@ -132,7 +143,8 @@ COMMANDS:
                                       hand a webhook/manual payload to Areev.
                                       The host owns the listener — Areev never
                                       opens a port. Idempotent on the dedup key.
-                                      Takes the same budget flags as `run`
+                                      Takes the same runner and budget flags as
+                                      `trigger run`
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
                                       reported, not silent)
@@ -275,7 +287,13 @@ COMMANDS:
                                       probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
   ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]
-           [--tls-cert PATH --tls-key PATH]  web console (default 127.0.0.1:7437)
+           [--tls-cert PATH --tls-key PATH]
+           [--sso-header NAME --sso-secret-env VAR [--sso-secret-env-next VAR]]
+                                      web console (default 127.0.0.1:7437).
+                                      --sso-secret-env-next opens a rotation
+                                      window: both secrets prove the proxy, so
+                                      the fleet moves over one node at a time
+                                      (docs/runbooks/sso-secret-rotation.md)
   hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
            [--tls-cert PATH --tls-key PATH]
            [--retain 30d]             sync hub: many apps, one shared memory
@@ -2357,10 +2375,49 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     if secret.trim().is_empty() {
                         return Err(format!("--sso-secret-env {var}: secret is empty"));
                     }
-                    server = server.with_sso(&header, secret);
+                    // The rotation window (#79): while --sso-secret-env-next
+                    // is set, either secret proves the proxy, so a fleet
+                    // moves over one node at a time instead of atomically.
+                    let next = match flag(&flags, "sso-secret-env-next") {
+                        None => None,
+                        Some(nvar) => {
+                            let v = std::env::var(&nvar).map_err(|_| {
+                                format!(
+                                    "--sso-secret-env-next {nvar}: environment variable is not set"
+                                )
+                            })?;
+                            if v.trim().is_empty() {
+                                return Err(format!(
+                                    "--sso-secret-env-next {nvar}: secret is empty"
+                                ));
+                            }
+                            if v == secret {
+                                return Err(format!(
+                                    "--sso-secret-env-next {nvar} holds the same value as \
+                                     --sso-secret-env {var} — that is a rotation that did not \
+                                     happen, and it would read as 'both live' everywhere"
+                                ));
+                            }
+                            Some(v)
+                        }
+                    };
+                    let rotating = next.is_some();
+                    server = server.with_sso_rotating(&header, secret, next);
                     eprintln!(
                         "areev: trusted-header SSO enabled ({header} + x-areev-proxy-secret)"
                     );
+                    if rotating {
+                        // Loud, every start: a rotation window left open is
+                        // an extra impersonation-grade credential live in
+                        // production, and the whole risk of the feature is
+                        // that nobody remembers to close it.
+                        eprintln!(
+                            "areev: ⚠ SSO secret ROTATION WINDOW open — two proxy secrets are \
+                             accepted. Retire the old one (drop --sso-secret-env-next and \
+                             promote its value) as soon as every proxy presents the new one: \
+                             docs/runbooks/sso-secret-rotation.md"
+                        );
+                    }
                 }
                 (None, None) => {}
                 _ => return Err("--sso-header and --sso-secret-env must be given together".into()),
@@ -3193,103 +3250,8 @@ fn run_run(
     flags: &HashMap<String, String>,
     positional: &[String],
 ) -> Result<(), String> {
-    use areev_run::{
-        BudgetsSpec, CommandExecutor, ExecResult, HostToolExecutor, RunOptions, Runner,
-        RunSession, SystemClock,
-    };
+    use areev_run::{RunSession, Runner, SystemClock};
     use std::sync::Arc;
-
-    /// The no-command fallback: refuse to fake tool execution.
-    struct NoExecutor;
-    impl HostToolExecutor for NoExecutor {
-        fn execute(
-            &self,
-            tool_name: &str,
-            _hash: &str,
-            _input: &serde_json::Value,
-            _idem: &str,
-        ) -> ExecResult {
-            ExecResult::Err {
-                cause: areev_run_core::FailCause::ExecutorError,
-                detail: format!(
-                    "no --tool-cmd configured; cannot execute host tool '{tool_name}'"
-                ),
-            }
-        }
-    }
-
-    /// `--credential name=ENV_VAR`, `--allow-host URL`, `--tool-egress
-    /// tool:cred+cred:METHOD+METHOD`. Returns None when no egress is
-    /// configured, which leaves tools exactly as they were.
-    fn build_egress(flags: &HashMap<String, String>) -> Result<Option<areev_run::Broker>, String> {
-        let (creds, hosts, tools) = (
-            flag(flags, "credential"),
-            flag(flags, "allow-host"),
-            flag(flags, "tool-egress"),
-        );
-        if creds.is_none() && hosts.is_none() && tools.is_none() {
-            return Ok(None);
-        }
-        let mut credentials = std::collections::BTreeMap::new();
-        for pair in creds.iter().flat_map(|v| v.split(',')) {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                continue;
-            }
-            let (name, var) = pair
-                .split_once('=')
-                .ok_or_else(|| format!("--credential: expected name=ENV_VAR, got {pair:?}"))?;
-            // The value is READ here from a variable the host named. A secret
-            // on a command line is a secret in shell history and in `ps`.
-            credentials.insert(
-                name.trim().to_string(),
-                areev_run::Credential::bearer_from_env(var.trim())?,
-            );
-        }
-        let policy = match &hosts {
-            // Absent means unrestricted, and is reported as such rather than
-            // silently reading as a policy.
-            None => areev_run::EgressPolicy::unrestricted(),
-            Some(list) => {
-                let entries: Vec<serde_json::Value> = list
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|h| !h.is_empty())
-                    .map(|h| serde_json::json!(h))
-                    .collect();
-                areev_run::EgressPolicy::from_config(Some(&serde_json::json!({
-                    "int:allowed_outbound_hosts": entries
-                })))?
-            }
-        };
-        let mut grants = areev_run::EgressGrants::new();
-        for spec in tools.iter().flat_map(|v| v.split(',')) {
-            let spec = spec.trim();
-            if spec.is_empty() {
-                continue;
-            }
-            let mut parts = spec.split(':');
-            let tool = parts.next().unwrap_or("").trim();
-            if tool.is_empty() {
-                return Err(format!(
-                    "--tool-egress: expected tool:cred+cred:METHOD+METHOD, got {spec:?}"
-                ));
-            }
-            let mut g = areev_run::CallerGrant::new();
-            for c in parts.next().unwrap_or("").split('+').map(str::trim) {
-                if !c.is_empty() {
-                    g = g.credential(c);
-                }
-            }
-            for m in parts.next().unwrap_or("").split('+').map(str::trim) {
-                if !m.is_empty() {
-                    g = g.method(m);
-                }
-            }
-            grants = grants.grant(tool, g);
-        }
-        Ok(Some(areev_run::Broker::start(policy, credentials, grants, "RUN-E022")?))
-    }
 
     let sub_cmd = positional.first().map(|s| s.as_str()).unwrap_or("");
     let principal = flag(flags, "as").unwrap_or_else(|| "user:local".to_string());
@@ -3301,7 +3263,7 @@ fn run_run(
     // Held so the broker outlives the run; also the handle refusals are read
     // back from once it finishes.
     let mut broker_guard: Option<Arc<areev_run::Broker>> = None;
-    let egress: Option<areev_run::EgressHandle> = match build_egress(flags)? {
+    let egress: Option<areev_run::EgressHandle> = match run_stack::build_egress(flags)? {
         None => None,
         Some(broker) => {
             let broker = Arc::new(broker);
@@ -3309,89 +3271,12 @@ fn run_run(
             Some(areev_run::EgressHandle::new(broker))
         }
     };
-    let base: Arc<dyn HostToolExecutor> = match flag(flags, "tool-cmd") {
-        Some(cmd) => {
-            let ce = CommandExecutor::new(&cmd);
-            Arc::new(match &egress {
-                Some(h) => ce.with_egress(h.clone()),
-                None => ce,
-            })
-        }
-        None => Arc::new(NoExecutor),
-    };
-    // Code-carrying tools: a Definition may name its executor by content
-    // address, and the blob travels with the memory. Nothing runs unless the
-    // operator pinned the address HERE — a grant in the file would arrive in
-    // the same bundle as the code it authorizes. The broker handle reaches
-    // the code executor too (#87): the pinned blob — the authoring style
-    // whose provenance the host can prove — gets the SAME credential story
-    // as a `--tool-cmd`, --tool-cmd present or not.
-    let executor: Arc<dyn HostToolExecutor> = match flag(flags, "allow-executor") {
-        None => base,
-        Some(list) => {
-            let mut ce = areev_run::CodeExecutor::new(base);
-            for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
-                ce = ce.allow(addr);
-            }
-            if let Some(dir) = flag(flags, "executor-cache") {
-                ce = ce.cache_dir(dir);
-            }
-            if let Some(cmd) = flag(flags, "sandbox-cmd") {
-                ce = ce.sandbox_cmd(&cmd);
-            }
-            if let Some(h) = &egress {
-                ce = ce.with_egress(h.clone());
-            }
-            Arc::new(ce)
-        }
-    };
-    // Abstract nodes need a tool-calling model (--model, same spec grammar
-    // and env-key discipline as `areev loop run --model`). Without one,
-    // abstract nodes refuse at resolve (RUN-E006); bound/named plans run.
-    let llm = match flag(flags, "model") {
-        Some(spec) => Some(
-            areev_llm::resolve_toolcall(
-                &spec,
-                flag(flags, "base-url").as_deref(),
-                flag(flags, "key-env").as_deref(),
-            )
-            .map_err(|e| e.to_string())?,
-        ),
-        None => None,
-    };
-    // --events prints each §6.10 run event to stderr as one JSON line
-    // (stdout stays the machine surface); --otel-endpoint exports OTLP/HTTP
-    // JSON spans to a collector. Both compose through one fan-out observer.
-    let mut observers: Vec<Arc<dyn areev_run::RunObserver>> = Vec::new();
-    if flag(flags, "events").is_some_and(|v| !matches!(v.as_str(), "false" | "0" | "off" | "no")) {
-        struct StderrEvents;
-        impl areev_run::RunObserver for StderrEvents {
-            fn event(&self, ev: &areev_run::RunEvent) {
-                if let Ok(line) = serde_json::to_string(ev) {
-                    eprintln!("{line}");
-                }
-            }
-        }
-        observers.push(Arc::new(StderrEvents));
-    }
-    if let Some(endpoint) = flag(flags, "otel-endpoint") {
-        observers.push(Arc::new(areev_run::OtelObserver::new(&endpoint)?));
-    }
-    let observer: Option<Arc<dyn areev_run::RunObserver>> = match observers.len() {
-        0 => None,
-        1 => observers.pop(),
-        _ => {
-            struct FanOut(Vec<Arc<dyn areev_run::RunObserver>>);
-            impl areev_run::RunObserver for FanOut {
-                fn event(&self, ev: &areev_run::RunEvent) {
-                    for o in &self.0 {
-                        o.event(ev);
-                    }
-                }
-            }
-            Some(Arc::new(FanOut(observers)))
-        }
-    };
+    // The executor stack, the model and the ceilings all come from
+    // `run_stack` — the one builder `trigger run` calls too, so a plan that
+    // executes here executes there (#90).
+    let executor = run_stack::tool_executor(flags, egress.as_ref());
+    let llm = run_stack::toolcall_llm(flags)?;
+    let observer = run_stack::observer(flags)?;
     let runner = Runner {
         facade: Arc::new(AreevFacade::with_session(m, Some(ns.to_string()), None)),
         clock: Arc::new(SystemClock),
@@ -3401,22 +3286,7 @@ fn run_run(
         ns: ns.to_string(),
         principal: principal.clone(),
     };
-    let opts = RunOptions {
-        budgets: BudgetsSpec {
-            max_supersteps: flag(flags, "max-supersteps").and_then(|v| v.parse().ok()),
-            max_tokens: flag(flags, "max-tokens").and_then(|v| v.parse().ok()),
-            max_usd_micros: flag(flags, "max-usd")
-                .and_then(|v| v.parse::<f64>().ok())
-                .map(|usd| (usd * 1_000_000.0) as u64),
-            max_wall_ms: flag(flags, "max-wall-ms").and_then(|v| v.parse().ok()),
-            max_storage_bytes: flag(flags, "max-storage").and_then(|v| v.parse().ok()),
-        },
-        ask_ttl_sec: flag(flags, "ask-ttl").and_then(|v| v.parse().ok()),
-        workers: flag(flags, "workers").and_then(|v| v.parse().ok()).unwrap_or(4),
-        on_dangling: Default::default(),
-        llm_max_tokens: flag(flags, "llm-max-tokens").and_then(|v| v.parse().ok()),
-        inject_crash: None,
-    };
+    let opts = run_stack::run_options(flags);
 
     let need = |key: &str, usage: &str| -> Result<String, String> {
         flag(flags, key).ok_or_else(|| format!("usage: {usage}"))
@@ -3438,19 +3308,7 @@ fn run_run(
         }
     };
 
-    let report_refusals = |b: &Option<Arc<areev_run::Broker>>| {
-        // A refusal the tool saw as a 403 and swallowed is a refusal the
-        // operator would otherwise have to guess at from a failed node.
-        if let Some(b) = b {
-            for r in b.refusals() {
-                eprintln!(
-                    "areev: {} ({})",
-                    areev_run_core::RunError::EgressRefused { destination: r.destination },
-                    r.reason
-                );
-            }
-        }
-    };
+    let report_refusals = run_stack::report_refusals;
     match sub_cmd {
         "start" => {
             let wf = need("workflow", "areev run start --workflow HASH --run-id ID [--input JSON] [--tool-cmd CMD] [--as PRINCIPAL]")?;

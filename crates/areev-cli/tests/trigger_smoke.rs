@@ -349,3 +349,112 @@ fn deliver_hands_a_payload_to_a_push_trigger() {
     assert!(!ok, "deliver without --id must fail");
     assert!(err.contains("id"), "{err}");
 }
+
+// ---- the runner a firing gets (#90) ---------------------------------------
+
+/// Author a one-node plan bound to a code-carrying Definition, plus a trigger
+/// pointing at it, and return `(trigger_prefix, pinned_address)`.
+///
+/// Written in-process rather than through the binary because no CLI verb
+/// authors a Workflow or a Tool Definition — `ADD` is limited to fact,
+/// observation, goal and skill. The handle is dropped before the binary runs:
+/// one memory, one writer.
+fn seed_code_plan(db: &str) -> (String, String) {
+    use areev_core::types::{Grain, Tool, ToolKind, Trigger, TriggerKind, Workflow};
+
+    let mut m = areev_store::Areev::open(db).unwrap();
+    // The blob is a real executable script, so a host that pins it genuinely
+    // dispatches rather than only getting past the check.
+    let uri = m.put_blob(b"#!/bin/sh\nread -r line\necho '{\"validated\":true}'\n").unwrap();
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+
+    let def = Tool::new("validate_rows")
+        .kind(ToolKind::Definition)
+        .tool_description("a code-carrying tool")
+        .executor_uri(&uri)
+        .namespace("ops");
+    let dh = m.add(&def).unwrap();
+    let wf = Workflow::new(vec!["validate_rows".into()])
+        .bind("validate_rows", &dh.to_hex())
+        .namespace("ops");
+    let plan = m.add(&wf).unwrap();
+    let t = Trigger::new(TriggerKind::Interval, &plan.to_hex()).interval_secs(60).namespace("ops");
+    let trigger = m.add(&t).unwrap().to_hex();
+    drop(m);
+    (trigger[..12].to_string(), addr)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_firing_runs_a_code_carrying_node_when_the_host_pinned_it() {
+    // #90: `trigger run` built its runner with a bare CommandExecutor, so the
+    // executor pin and the sandbox command never reached it and passing the
+    // flags changed nothing — the same plan ran fine from `run start`. The
+    // trigger path silently supported a subset of the plans the host path ran,
+    // on the one path nobody is watching.
+    //
+    // No `--tool-cmd` here on purpose: an all-Tier-C plan needs no subprocess,
+    // and gating on one was the same reduction one level down — such a plan
+    // was ingested, recorded as fired, and never started.
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let (_trigger, addr) = seed_code_plan(db);
+
+    let (ok, out, err) = areev(&[
+        "trigger", "run", "--db", db, "--ns", "ops",
+        "--allow-executor", &addr, "--executor-cache", cache.to_str().unwrap(),
+        "--format", "json",
+    ]);
+    assert!(ok, "a pinned code node must run from a trigger: {out}{err}");
+    assert!(out.contains("\"runs_started\":1"), "{out}");
+    assert!(!out.contains("RUN-E018"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unpinned_code_carrying_node_refuses_and_names_the_surface_in_use() {
+    // The fix widens what a firing CAN execute, never what it MAY: the
+    // authorization to run code still comes from the host. What changed is
+    // the message, which used to name `--allow-executor (CLI)`, `Python/Node`
+    // and `areev serve` — three surfaces, none of them the one the operator
+    // was actually using.
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+    let (_trigger, _addr) = seed_code_plan(db);
+
+    let (ok, out, err) = areev(&[
+        "trigger", "run", "--db", db, "--ns", "ops", "--tool-cmd", "/bin/false",
+        "--format", "json",
+    ]);
+    assert!(!ok, "an unpinned code node must refuse: {out}{err}");
+    assert!(out.contains("RUN-E018"), "{out}{err}");
+    assert!(out.contains("areev trigger"), "the refusal must name this surface: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_pin_reaches_a_firing_through_the_environment_too() {
+    // A heartbeat is a cron line, a launchd plist or a k8s CronJob, not an
+    // interactive command — so the pin has to be settable out of band, which
+    // is the second acceptance criterion on #90. `areev-mcp` already read
+    // these variables; the CLI did not.
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let (_trigger, addr) = seed_code_plan(db);
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["trigger", "run", "--db", db, "--ns", "ops", "--format", "json"])
+        .env("AREEV_RUN_TOOL_CMD", "/bin/false")
+        .env("AREEV_RUN_ALLOW_EXECUTOR", &addr)
+        .env("AREEV_RUN_EXECUTOR_CACHE", cache.to_str().unwrap())
+        .output()
+        .expect("spawn areev");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("\"runs_started\":1"), "{stdout}");
+}

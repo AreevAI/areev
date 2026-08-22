@@ -207,6 +207,7 @@ fn js_evaluator(
     tool_cmd: Option<String>,
     credentials_json: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+    pin: JsExecutorPin,
     opts: areev_run::RunOptions,
 ) -> napi::Result<areev_trigger::Evaluator> {
     // A connector IS a tool — JSON in, JSON out, one process per invocation —
@@ -220,14 +221,23 @@ fn js_evaluator(
                 as std::sync::Arc<dyn areev_run::HostToolExecutor>
         });
 
-    let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = tool_cmd.map(|cmd| {
+    // A firing gets the runner `runStart` builds, pin included (#90). Gating
+    // on `toolCmd` alone was the same reduction one level down: a plan whose
+    // nodes are all pinned code, or all abstract, needs no subprocess, and
+    // gating on one meant such a plan was ingested, recorded as fired, and
+    // never started.
+    let can_execute = tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+    let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(|| {
         std::sync::Arc::new(RunnerStarter {
-            runner: js_runner_with_llm(
+            runner: js_runner_pinned(
                 std::sync::Arc::clone(&facade),
                 ns.clone(),
                 principal.clone(),
-                Some(cmd),
+                tool_cmd,
                 llm,
+                pin.allow_executor,
+                pin.executor_cache,
+                pin.sandbox_cmd,
             ),
             opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -2520,6 +2530,7 @@ impl Areev {
     /// abstract nodes still has to execute them, and the backend is host config
     /// that is deliberately not journaled with the run.
     #[napi(ts_return_type = "Promise<string>")]
+    #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn run_resume(
         &self,
         run_id: String,
@@ -2791,7 +2802,8 @@ impl Areev {
                 .iter()
                 .map(|(h, t)| {
                     json!({
-                        "trigger": h, "kind": t.kind.as_str(), "workflow": t.workflow,
+                        "trigger": h, "name": areev_trigger::trigger_name(t),
+                        "kind": t.kind.as_str(), "workflow": t.workflow,
                         "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
                     })
                 })
@@ -2858,6 +2870,12 @@ impl Areev {
     /// to the value itself: the connector is handed the broker's address and
     /// never the secret. An unset variable is refused here rather than leaving
     /// the connector to make an unauthenticated call.
+    ///
+    /// `allowExecutor` reaches the firing's runner exactly as it does
+    /// `runStart` (#90), so a plan with a code-carrying or sandboxed node
+    /// executes from a trigger exactly as it does by hand. Without the pin
+    /// such a node refuses with `RUN-E018` — the authorization to execute code
+    /// must come from the host, never from the file that carries it.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn trigger_run(
@@ -2878,6 +2896,9 @@ impl Areev {
         max_wall_ms: Option<i64>,
         ask_ttl_sec: Option<i64>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2893,6 +2914,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -2917,6 +2939,9 @@ impl Areev {
 
     /// Hand a webhook or manual payload to a trigger. Areev never opens a
     /// port: the host owns the listener and hands the payload over.
+    ///
+    /// Takes the same budgets and the same executor pin as `triggerRun`: a
+    /// delivery starts a real run.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn trigger_deliver(
@@ -2934,6 +2959,9 @@ impl Areev {
         max_wall_ms: Option<i64>,
         ask_ttl_sec: Option<i64>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2951,6 +2979,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -3102,6 +3131,16 @@ fn js_runner_with_llm(
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
     js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None)
+}
+
+/// The host's authorization to execute code-carrying tools, carried as one
+/// value so the trigger surface takes the same three settings `runStart` does
+/// without growing three more positional parameters at every call site.
+#[derive(Default)]
+struct JsExecutorPin {
+    allow_executor: Option<String>,
+    executor_cache: Option<String>,
+    sandbox_cmd: Option<String>,
 }
 
 /// The pin-aware factory (#87): `allowExecutor` is the same comma list as
