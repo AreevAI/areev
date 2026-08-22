@@ -52,8 +52,17 @@ must publish bottom-up.
   (cd crates/areev-js && ./node_modules/.bin/napi build --platform --release)
   git diff crates/areev-js/index.js   # must be version lines ONLY
   ```
+- **Regenerate the repo-stats artifacts after the bump** — they embed the
+  version string, so the pre-flight `--check` (run before the bump) goes
+  stale the moment `Cargo.toml` moves and the `stats` CI job fails the
+  release PR on `version: committed '<old>', tree has '<new>'` (1.5.1 hit
+  exactly this):
+  ```bash
+  python3 scripts/repo_stats.py && python3 scripts/repo_stats.py --check
+  ```
 - Move the `[Unreleased]` section of `CHANGELOG.md` under a new dated version
-  heading; add a fresh empty `[Unreleased]`.
+  heading; add a fresh empty `[Unreleased]`. Keep the compare-link refs at
+  the bottom of the file current too — they go stale silently.
 - Commit: `Release vX.Y.Z`. **Do not tag here** — step 3 tags the merge
   commit on `main`, not this branch tip, and tagging twice on two different
   commits is how a release ships from the wrong SHA.
