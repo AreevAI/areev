@@ -112,6 +112,12 @@ jobs:
   sbom:
     name: SBOM
     runs-on: ubuntu-latest
+    # A bill of materials is documentation about a build, not the build. It
+    # must never be able to withhold a shipped binary from users — which is
+    # exactly what it did on the 1.5.2 tag, where a wrong flag in this job
+    # left five green platform builds unattached to the release. `publish`
+    # no longer waits on it either; both halves of that lesson matter.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -123,11 +129,15 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
-          cargo cyclonedx --format json --spec-version 1.5 --locked -p areev
+          # cargo-cyclonedx takes NEITHER `--locked` nor `-p`, and it ignores
+          # `--override-filename`: it writes `<package>.cdx.json` next to each
+          # manifest it describes. `--top-level` is also deliberately absent —
+          # it truncates the document to DIRECT dependencies (17 of 341 here),
+          # which is not a bill of materials.
+          cargo cyclonedx --manifest-path crates/areev-cli/Cargo.toml \
+            --format json --spec-version 1.5
           mkdir -p dist
-          # cargo-cyclonedx writes next to the manifest it described.
-          find . -name '*.cdx.json' -not -path './dist/*' -print \
-            -exec cp {} "dist/areev-${VERSION}-cargo.cdx.json" \;
+          cp crates/areev-cli/areev.cdx.json "dist/areev-${VERSION}-cargo.cdx.json"
           test -s "dist/areev-${VERSION}-cargo.cdx.json"
       - uses: actions/upload-artifact@v4
         with:
@@ -137,6 +147,10 @@ jobs:
 
   publish:
     name: attach to the release
+    # `needs: sbom` for ORDERING only — the job is `continue-on-error`, and a
+    # continue-on-error job that fails still satisfies `needs`. So the SBOM is
+    # attached alongside the binaries when it works, and cannot hold them
+    # hostage when it does not.
     needs: [build, sbom]
     # Only a real release has something to attach to; a manual run stops after
     # build, which makes `workflow_dispatch` a usable dry run.

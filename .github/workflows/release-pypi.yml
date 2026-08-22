@@ -112,31 +112,16 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      # The wheel is a compiled Rust extension, so its real dependency graph
-      # is Cargo's, not pip's — `pip-audit` over the wheel would report a
-      # package with no dependencies, which is true and useless. Describe the
-      # graph that actually ships inside the binary.
-      - name: Generate CycloneDX SBOM
-        run: |
-          set -euo pipefail
-          rustup update stable
-          cargo install cargo-cyclonedx --version 0.5.7 --locked
-          cargo cyclonedx --format json --spec-version 1.5 --locked -p areev-py
-          VERSION="${GITHUB_REF_NAME#v}"
-          find . -name '*.cdx.json' -not -path './dist/*' \
-            -exec cp {} "dist/areev-${VERSION}-python.cdx.json" \;
-          test -s "dist/areev-${VERSION}-python.cdx.json"
-      # Attest before publishing, for the same reason release-cli.yml does.
+      # Attest before publishing: an artifact on the registry that no
+      # attestation covers is worse than one with none, because the security
+      # model claims every artifact is attested. This one DOES gate the
+      # publish — it is a security claim, not paperwork.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "dist/*.whl"
-      - name: Attach the SBOM to the GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
-      # `maturin upload dist/*` would now also try to upload the SBOM, which
-      # PyPI rejects. Publish exactly the distributions.
+      # `maturin upload dist/*` would also try to upload the SBOM, which PyPI
+      # rejects. Publish exactly the distributions.
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
@@ -144,3 +129,30 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing dist/*.whl dist/*.tar.gz
+
+      # The wheel is a compiled Rust extension, so its real dependency graph
+      # is Cargo's, not pip's — `pip-audit` over the wheel would report a
+      # package with no dependencies, which is true and useless. Describe the
+      # graph that actually ships inside the binary.
+      #
+      # AFTER the publish, and `continue-on-error`: a bill of materials is
+      # documentation about a build, not the build, and it must never be able
+      # to withhold a release from users. On the 1.5.2 tag it did exactly that
+      # — a wrong flag here meant PyPI never got the wheels at all.
+      - name: Generate and attach the CycloneDX SBOM
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rustup update stable
+          cargo install cargo-cyclonedx --version 0.5.7 --locked
+          # Takes NEITHER `--locked` nor `-p`, ignores `--override-filename`,
+          # and writes `<package>.cdx.json` beside the manifest. `--top-level`
+          # is deliberately absent: it truncates to DIRECT dependencies.
+          cargo cyclonedx --manifest-path crates/areev-py/Cargo.toml \
+            --format json --spec-version 1.5
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp crates/areev-py/areev-py.cdx.json "dist/areev-${VERSION}-python.cdx.json"
+          test -s "dist/areev-${VERSION}-python.cdx.json"
+          gh release upload "$GITHUB_REF_NAME" dist/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
