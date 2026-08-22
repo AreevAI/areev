@@ -58,6 +58,8 @@ GENERATED = {
     "docs/repo-stats.html",
     "docs/assets/repo-stats-light.svg",
     "docs/assets/repo-stats-dark.svg",
+    "docs/assets/coverage-light.svg",
+    "docs/assets/coverage-dark.svg",
 }
 
 # Coverage is an *input*, not something this script can compute: it needs a full
@@ -469,6 +471,78 @@ def render_svg(d: dict, theme: str) -> str:
     return "\n".join(parts) + "\n"
 
 
+def render_coverage_svg(d: dict, theme: str) -> str:
+    """Per-crate coverage bars with each crate's CI floor as a notch.
+
+    One hue (single measure), values direct-labeled on the bar, floors as a
+    contrasting notch — the chart the README embeds next to the headline
+    figure so "80.1%" is never quoted without the per-crate gates behind it.
+    """
+    c = THEMES[theme]
+    cov = d.get("coverage")
+    if not cov:
+        return ""  # no coverage.json committed; artifact intentionally empty
+
+    crates = [x for x in cov["per_crate"] if x.get("floor") is not None]
+
+    W = 820
+    top, row_h = 88, 26
+    label_w, right_pad = 196, 76
+    plot_x, plot_w = label_w + 16, W - (label_w + 16) - right_pad
+    H = top + len(crates) * row_h + 58
+
+    def x_at(pct: float) -> float:
+        return plot_x + plot_w * pct / 100
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'viewBox="0 0 {W} {H}" role="img" '
+        f'aria-label="Areev line coverage by crate: {cov["line_coverage"]}% overall, '
+        'each crate gated by its own CI floor">',
+        '<style>'
+        'text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}'
+        '.n{font-weight:700;font-variant-numeric:tabular-nums}'
+        '.v{font-weight:600;font-variant-numeric:tabular-nums}'
+        '</style>',
+        f'<rect width="{W}" height="{H}" rx="10" fill="{c["bg"]}" stroke="{c["line"]}"/>',
+        f'<text x="32" y="42" class="n" font-size="16" fill="{c["fg"]}">'
+        'Areev — line coverage by crate</text>',
+        f'<text x="32" y="62" font-size="12" fill="{c["muted"]}">'
+        f'{cov["line_coverage"]}% of {_fmt(cov["lines_total"])} instrumented source lines '
+        '· source only, no test code · every notch is a CI floor</text>',
+    ]
+
+    # Recessive grid: quartile lines behind the bars.
+    for pct in (25, 50, 75, 100):
+        gx = x_at(pct)
+        parts.append(f'<path d="M{gx:.1f} {top - 8}V{top + len(crates) * row_h}" '
+                     f'stroke="{c["line"]}" stroke-width="1"/>')
+        parts.append(f'<text x="{gx:.1f}" y="{top - 14}" font-size="10" '
+                     f'fill="{c["muted"]}" text-anchor="middle">{pct}</text>')
+
+    for i, crate in enumerate(crates):
+        y = top + i * row_h
+        bar_w = plot_w * crate["line_coverage"] / 100
+        parts += [
+            f'<text x="{plot_x - 12}" y="{y + 13}" font-size="12" fill="{c["fg"]}" '
+            f'text-anchor="end">{crate["name"]}</text>',
+            f'<rect x="{plot_x}" y="{y + 2}" width="{bar_w:.1f}" height="15" rx="4" '
+            f'fill="{c["accent"]}"/>',
+            f'<rect x="{x_at(crate["floor"]) - 1:.1f}" y="{y - 1}" width="2" height="21" '
+            f'fill="{c["fg"]}"/>',
+            f'<text x="{plot_x + bar_w + 8:.1f}" y="{y + 14}" class="v" font-size="10.5" '
+            f'fill="{c["fg"]}">{crate["line_coverage"]}</text>',
+        ]
+
+    parts += [
+        f'<text x="32" y="{H - 22}" font-size="11" fill="{c["muted"]}">'
+        'bar = measured · notch = this crate’s floor, CI fails the build below it '
+        '· scope + exclusions with reasons: docs/coverage.json</text>',
+        '</svg>',
+    ]
+    return "\n".join(parts) + "\n"
+
+
 def render_md(d: dict) -> str:
     """A GitHub-renderable version of the report.
 
@@ -786,6 +860,8 @@ OUTPUTS = {
     "docs/repo-stats.html": render_html,
     "docs/assets/repo-stats-light.svg": lambda d: render_svg(d, "light"),
     "docs/assets/repo-stats-dark.svg": lambda d: render_svg(d, "dark"),
+    "docs/assets/coverage-light.svg": lambda d: render_coverage_svg(d, "light"),
+    "docs/assets/coverage-dark.svg": lambda d: render_coverage_svg(d, "dark"),
 }
 
 

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="330" viewBox="0 0 820 330" role="img" aria-label="Areev recall latency, measured p50: 9 to 158 microseconds across every surface on a laptop, 361 microseconds on a 2016 Raspberry Pi 3, flat from 500 to 8,000 grains">
+<style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.v{font-weight:600;font-variant-numeric:tabular-nums}</style>
+<rect width="820" height="330" rx="10" fill="#ffffff" stroke="#dfe3e8"/>
+<text x="32" y="42" class="n" font-size="16" fill="#111418">Areev — recall latency, measured (p50)</text>
+<text x="32" y="62" font-size="12" fill="#5b6470">in-process, no server in the recall path · Apple M4 Max unless the row names the device</text>
+<text x="32" y="88" font-size="11" fill="#5b6470" font-weight="600">ONE RECALL, EVERY SURFACE · µs</text>
+<text x="240" y="112" font-size="11.5" fill="#111418" text-anchor="end">entity_latest, in-process</text>
+<rect x="250" y="100" width="6.8" height="15" rx="4" fill="#1f6feb"/>
+<text x="264.8" y="112" class="v" font-size="11" fill="#111418">9 µs</text>
+<text x="240" y="142" font-size="11.5" fill="#111418" text-anchor="end">structural recall, in-process</text>
+<rect x="250" y="130" width="24.8" height="15" rx="4" fill="#1f6feb"/>
+<text x="282.8" y="142" class="v" font-size="11" fill="#111418">33 µs</text>
+<text x="240" y="172" font-size="11.5" fill="#111418" text-anchor="end">50 ms voice frame + live write-back</text>
+<rect x="250" y="160" width="59.2" height="15" rx="4" fill="#1f6feb"/>
+<text x="317.2" y="172" class="v" font-size="11" fill="#111418">79 µs</text>
+<text x="240" y="202" font-size="11.5" fill="#111418" text-anchor="end">MCP stdio (agent host)</text>
+<rect x="250" y="190" width="96.8" height="15" rx="4" fill="#1f6feb"/>
+<text x="354.8" y="202" class="v" font-size="11" fill="#111418">129 µs</text>
+<text x="240" y="232" font-size="11.5" fill="#111418" text-anchor="end">localhost HTTP sidecar</text>
+<rect x="250" y="220" width="118.5" height="15" rx="4" fill="#1f6feb"/>
+<text x="376.5" y="232" class="v" font-size="11" fill="#111418">158 µs</text>
+<text x="240" y="262" font-size="11.5" fill="#111418" text-anchor="end">in-process on a $35 Raspberry Pi 3 (2016)</text>
+<rect x="250" y="250" width="270.8" height="15" rx="4" fill="#1f6feb"/>
+<text x="528.8" y="262" class="v" font-size="11" fill="#111418">361 µs</text>
+<text x="788" y="88" font-size="11" fill="#5b6470" font-weight="600" text-anchor="end">16× THE CORPUS, SAME LATENCY · µs</text>
+<text x="620" y="114" font-size="11.5" fill="#111418" font-weight="600">Raspberry Pi 3 (2016)</text>
+<rect x="620" y="139.3" width="38" height="34.7" rx="4" fill="#1f6feb"/>
+<text x="639.0" y="134.3" class="v" font-size="10" fill="#111418" text-anchor="middle">348</text>
+<text x="639.0" y="187" font-size="9.5" fill="#5b6470" text-anchor="middle">500</text>
+<rect x="668" y="138.1" width="38" height="35.9" rx="4" fill="#1f6feb"/>
+<text x="687.0" y="133.1" class="v" font-size="10" fill="#111418" text-anchor="middle">360</text>
+<text x="687.0" y="187" font-size="9.5" fill="#5b6470" text-anchor="middle">2k</text>
+<rect x="716" y="138.0" width="38" height="36.0" rx="4" fill="#1f6feb"/>
+<text x="735.0" y="133.0" class="v" font-size="10" fill="#111418" text-anchor="middle">361</text>
+<text x="735.0" y="187" font-size="9.5" fill="#5b6470" text-anchor="middle">8k grains</text>
+<text x="620" y="210" font-size="11.5" fill="#111418" font-weight="600">Intel NUC (2018)</text>
+<rect x="620" y="235.2" width="38" height="34.8" rx="4" fill="#1f6feb"/>
+<text x="639.0" y="230.2" class="v" font-size="10" fill="#111418" text-anchor="middle">29</text>
+<text x="639.0" y="283" font-size="9.5" fill="#5b6470" text-anchor="middle">500</text>
+<rect x="668" y="235.2" width="38" height="34.8" rx="4" fill="#1f6feb"/>
+<text x="687.0" y="230.2" class="v" font-size="10" fill="#111418" text-anchor="middle">29</text>
+<text x="687.0" y="283" font-size="9.5" fill="#5b6470" text-anchor="middle">2k</text>
+<rect x="716" y="234.0" width="38" height="36.0" rx="4" fill="#1f6feb"/>
+<text x="735.0" y="229.0" class="v" font-size="10" fill="#111418" text-anchor="middle">30</text>
+<text x="735.0" y="283" font-size="9.5" fill="#5b6470" text-anchor="middle">8k grains</text>
+<text x="32" y="310" font-size="11" fill="#5b6470">for scale: a hosted memory service’s enterprise headline — “retrieval under 200 ms” = 200,000 µs · data: crates/areev-bench/RESULTS.md</text>
+</svg>

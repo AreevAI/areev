@@ -56,10 +56,15 @@ node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot i
   agrees) and `stats` (the README quality figures still match the tree).
   `security.yml` runs `cargo deny`. Still run tests locally before pushing.
 - **The README quotes generated numbers.** `scripts/repo_stats.py` emits
-  `docs/repo-stats.{json,md,html}` and the two SVGs the README embeds; the
+  `docs/repo-stats.{json,md,html}` and four SVGs the README embeds (the
+  quality chart + the per-crate coverage chart, light/dark each); the
   `stats` job fails the build if they drift >2% from the tree. Line coverage is
   a separate input: `scripts/coverage.py` turns the `coverage` job's LCOV trace
-  into `docs/coverage.json`, which `repo_stats.py` renders into the same chart.
+  into `docs/coverage.json`, which `repo_stats.py` renders into the same charts.
+  The README's latency chart is separate: `scripts/bench_chart.py` renders
+  `docs/assets/bench-latency-{light,dark}.svg` from numbers quoted out of
+  `crates/areev-bench/RESULTS.md` — re-run it by hand when RESULTS.md changes
+  (measurements are not tree-derivable, so it is not CI-checked).
   Coverage scores **source lines only** (no `tests/`, no `benches/`, no
   `#[cfg(test)]` blocks) and excludes what that job cannot execute
   (`areev-py` — pytest's job; `areev-bench` — explicit tools; `store/src/pg.rs`
