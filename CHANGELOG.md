@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-22
+
 ### Added
 
 - **Trigger-started runs carry declared context** (#85). A Trigger grain may
