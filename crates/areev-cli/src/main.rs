@@ -114,6 +114,7 @@ COMMANDS:
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
            [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
+           [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
@@ -121,14 +122,17 @@ COMMANDS:
                                       executing; --dry-run touches nothing.
                                       --credential names an env var whose value
                                       the egress broker attaches on the way out,
-                                      so the connector never holds the token
+                                      so the connector never holds the token.
+                                      The budget flags are the ones `run start`
+                                      takes, and bound the runs a firing starts
   trigger  render --target cron|launchd|systemd|k8s-cronjob
                                       emit heartbeat config for infrastructure
                                       you already run; never creates anything
-  trigger  deliver --id T [< payload.json]
+  trigger  deliver --id T [< payload.json] [--tool-cmd CMD] [budget flags]
                                       hand a webhook/manual payload to Areev.
                                       The host owns the listener — Areev never
-                                      opens a port. Idempotent on the dedup key
+                                      opens a port. Idempotent on the dedup key.
+                                      Takes the same budget flags as `run`
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
                                       reported, not silent)

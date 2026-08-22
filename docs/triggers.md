@@ -201,6 +201,43 @@ unmoved**. Refusing loudly beats truncating — a silently dropped attachment
 is an invoice posting without evidence, and a lost item is worse; the
 connector gets fixed and the same page is re-polled.
 
+## What the run receives
+
+A trigger does not pass the item through as the run input. It wraps it, so a
+run can always say what fired it:
+
+```json
+{ "trigger": "<hash>", "connector": "gmail", "scope": "mailbox:…",
+  "item": { … the connector's or delivery's payload … } }
+```
+
+`run start` passes its `--input` through unchanged, so **one plan started both
+ways sees two shapes**. Tools that must work either way should resolve it once:
+
+```python
+payload = payload.get("item", payload)
+```
+
+A tool that reads a top-level key without this dies on the trigger path only,
+is retried per the node's `retries`, and the pass still reports
+`runs_started: 1` with an empty `errors` list — the firing genuinely succeeded;
+the run is what failed.
+
+## Budgets
+
+A firing starts a real run, so it takes the same ceilings `run start` does —
+`max_tokens`, `max_usd_micros`, `max_wall_ms`, `ask_ttl_sec` and
+`llm_max_tokens`, on both `trigger run` and `trigger deliver`. They are
+optional and add no implicit limit when omitted.
+
+```python
+db.trigger_run(tool_cmd="./tools.sh", max_usd_micros=250_000, ask_ttl_sec=3600)
+```
+
+Budgets matter more here than anywhere else: a standing rule fires unattended,
+so an unbounded run has nobody watching it, and an ask with no TTL parks
+forever.
+
 ## Idempotency
 
 The run id is derived from `(trigger, connector, dedup value)`, so the same item

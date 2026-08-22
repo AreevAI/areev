@@ -1119,6 +1119,44 @@ test('triggerRun evaluates, and dryRun touches nothing', async () => {
   m.close()
 })
 
+test('a trigger-started run carries the budgets it was given', async () => {
+  // The bridge built RunOptions::default(), so every ceiling a host set was
+  // dropped on the one path that fires unattended.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-budget-'))
+  const m = new Areev(join(dir, 'b.db'), 'ops')
+
+  // An unbound node is abstract and refuses at load (RUN-E006), so bind one.
+  const tool = await m.add('tool', JSON.stringify({ tool_name: 'noop', kind: 'definition' }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'budgeted', nodes: ['only'], edges: [], bindings: { only: tool },
+  }))
+  const trig = await m.triggerAdd(
+    JSON.stringify({ kind: 'webhook', workflow: wf, connector: 'c', dedup_key: ['/id'] }),
+    'budgets must survive the trigger path',
+  )
+
+  const toolCmd = `${process.execPath} -e "process.stdout.write('{}')"`
+  const report = JSON.parse(await m.triggerDeliver(
+    trig, JSON.stringify({ id: 'item-1' }), null, toolCmd, null, null, null, null,
+    5000, 250000, 60000, 3600,
+  ))
+  assert.equal(report.runs_started, 1, JSON.stringify(report))
+
+  const runId = JSON.parse(await m.runList(10))[0]
+  const budgets = JSON.parse(await m.runInspect(runId)).budgets
+  assert.equal(budgets.max_tokens, 5000)
+  assert.equal(budgets.max_usd_micros, 250000)
+  assert.equal(budgets.max_wall_ms, 60000)
+
+  // A negative budget is a caller bug, not "unlimited".
+  await assert.rejects(
+    () => m.triggerDeliver(trig, JSON.stringify({ id: 'i2' }), null, toolCmd,
+      null, null, null, null, -1),
+    /maxTokens must be >= 0/,
+  )
+  m.close()
+})
+
 test('triggerRender emits heartbeat config and creates nothing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'areev-trig-render-'))
   const m = new Areev(join(dir, 'r.db'), 'ops')

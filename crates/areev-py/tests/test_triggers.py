@@ -263,3 +263,52 @@ def test_trigger_status_reports_unusable_for_declarations_it_did_not_write(tmp_p
     # …and a healthy one carries no `unusable` key at all.
     assert "unusable" not in rows[0]
     assert rows[0]["due"] is True
+
+
+def test_a_trigger_started_run_carries_the_budgets_it_was_given(tmp_path):
+    """The bridge built `RunOptions::default()`, so every budget a host passed
+    to `run_start` was dropped on the trigger path — the worst place to drop
+    one, since a standing rule fires unattended."""
+    import sys
+
+    m = areev.Areev(str(tmp_path / "b.db"), ns="ops")
+    # An unbound node is abstract and refuses at load (RUN-E006).
+    tool = m.add("tool", json.dumps({"tool_name": "noop", "kind": "definition"}))
+    wf = m.add("workflow", json.dumps({
+        "name": "budgeted", "nodes": ["only"], "edges": [], "bindings": {"only": tool},
+    }))
+    trig = m.trigger_add(json.dumps({
+        "kind": "webhook", "workflow": wf, "connector": "c",
+        "dedup_key": ["/id"]}), "budgets must survive the trigger path")
+
+    tool = f"{sys.executable} -c \"import sys,json;sys.stdout.write(json.dumps({{}}))\""
+    report = json.loads(m.trigger_deliver(
+        trig, json.dumps({"id": "item-1"}), tool_cmd=tool,
+        max_tokens=5000, max_usd_micros=250_000, max_wall_ms=60_000, ask_ttl_sec=3600))
+    assert report["runs_started"] == 1, report
+
+    run_id = json.loads(m.run_list(10))[0]
+    budgets = json.loads(m.run_inspect(run_id))["budgets"]
+    assert budgets["max_tokens"] == 5000, budgets
+    assert budgets["max_usd_micros"] == 250_000, budgets
+    assert budgets["max_wall_ms"] == 60_000, budgets
+
+
+def test_trigger_budgets_default_to_unset_when_not_given(tmp_path):
+    """Optional, and adds no implicit ceiling when omitted."""
+    import sys
+
+    m = areev.Areev(str(tmp_path / "b2.db"), ns="ops")
+    tool = m.add("tool", json.dumps({"tool_name": "noop", "kind": "definition"}))
+    wf = m.add("workflow", json.dumps({
+        "name": "unbudgeted", "nodes": ["only"], "edges": [], "bindings": {"only": tool},
+    }))
+    trig = m.trigger_add(json.dumps({
+        "kind": "webhook", "workflow": wf, "connector": "c",
+        "dedup_key": ["/id"]}), "no budgets given")
+    tool = f"{sys.executable} -c \"import sys,json;sys.stdout.write(json.dumps({{}}))\""
+    m.trigger_deliver(trig, json.dumps({"id": "i"}), tool_cmd=tool)
+
+    budgets = json.loads(m.run_inspect(json.loads(m.run_list(10))[0]))["budgets"]
+    assert budgets["max_tokens"] is None and budgets["max_usd_micros"] is None
+
