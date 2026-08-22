@@ -93,11 +93,14 @@ COMMANDS:
                                       with the memory; `set` declares,
                                       `sweep --yes` enforces (audited)
   trigger  add --type KIND --workflow HASH --because \"why\"
-           [--context-query NAME]     a saved query the evaluator runs at
+           [--context-query SPEC]     a saved query the evaluator runs at
                                       fire time; its result rides into the
                                       run input as `context` (how a
                                       trigger-started run reads its own
-                                      memory on the embedded backend)
+                                      memory on the embedded backend).
+                                      SPEC is `name` or `name($p = /ptr,
+                                      ...)` — pointers resolve against the
+                                      firing item's payload (fail-closed)
            [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
            [--scope S] [--dedup-key PTR] [--catchup last|none|all]
            [--where EXPR] [--members ALIAS=HASH,...] [--correlate PTR]

@@ -151,7 +151,14 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         required_add_fields: &["tool_name"],
         queryable_fields: &[
             "tool_name",
-            "tool_phase",
+            // Discriminator: "definition" | "execution" (#91). Stored
+            // omit-default (absent = "execution"); the CAL post-filter
+            // materializes the default so both values match.
+            "kind",
+            // Async lifecycle: "pending" | "completed" | "failed" (absent =
+            // "completed" for legacy sync records). Sync success/failure is
+            // `is_error`, not `status`.
+            "status",
             "is_error",
             "tool_call_id",
             "tool",

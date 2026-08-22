@@ -156,6 +156,7 @@ in source.
 | `TRG-E008` | `UnknownMember` | A composite predicate references a member it does not declare |
 | `TRG-E009` | `EgressRefused` | The connector tried to reach a host outside its allowlist |
 | `TRG-E010` | `Storage` | The store refused or failed underneath the evaluator |
+| `TRG-E011` | `BlobContract` | A connector's blob payload violated the contract (bad base64, dangling `"@N"` reference, or budget overrun); the poll was refused whole with the cursor unmoved |
 
 ## Registry — CAL codes
 
@@ -172,6 +173,7 @@ and are the source of truth. Ranges:
 | `CAL-E040`–`E050` | Templates |
 | `CAL-E051`–`E059` | Saved queries |
 | `CAL-E060` | Field not available on grain type |
+| `CAL-E061` | Engine-level field used where it cannot be honoured (under `NOT`/`OR`, or with an unsupported comparator) |
 | `CAL-E070`–`E071` | Unsafe input / ASSEMBLE timeout |
 | `CAL-E080`–`E085` | ACCUMULATE |
 | `CAL-E090`–`E091` | Crypto during execution / hash not found |

@@ -278,6 +278,19 @@ pub enum CalError {
         suggestion: Option<String>,
     },
 
+    /// CAL-E061 — An engine-level filter field (`query`, `time`, `entity`,
+    /// `contradicted`, `scope`, `tags`, …) was used where it cannot be
+    /// honoured: under `NOT`/`OR`, or with a comparator its push-down does
+    /// not support. These fields narrow the scan and have no per-grain
+    /// value, so the executor refuses rather than silently widening (#91).
+    #[error("CAL-E061: Engine-level field \"{field}\" cannot be used {context}; it narrows the scan and has no per-grain value to filter on")]
+    EngineFieldNotFilterable {
+        field: String,
+        /// Where it appeared, e.g. `"under NOT/OR"` or `"with comparator !="`.
+        context: String,
+        span: Option<Span>,
+    },
+
     // ── Phase 2: ASSEMBLE errors (CAL-E032 – CAL-E035) ─────────────────
     /// CAL-E032 — ASSEMBLE FROM has more than 8 named sources.
     #[error("CAL-E032: Too many ASSEMBLE sources ({count}, max {max})")]
@@ -673,6 +686,7 @@ impl CalError {
             Self::HashNotFound { .. } => "CAL-E091",
             Self::InvalidQuery { .. } => "CAL-E092",
             Self::FieldNotOnGrainType { .. } => "CAL-E060",
+            Self::EngineFieldNotFilterable { .. } => "CAL-E061",
             Self::AssembleTooManySources { .. } => "CAL-E032",
             Self::AssembleBudgetExceeded { .. } => "CAL-E033",
             Self::AssembleDuplicateLabel { .. } => "CAL-E034",
@@ -756,6 +770,7 @@ impl CalError {
             | Self::InvalidQuery { span, .. }
             | Self::CryptoError { span, .. }
             | Self::FieldNotOnGrainType { span, .. }
+            | Self::EngineFieldNotFilterable { span, .. }
             | Self::AssemblePinnedBudgetExceeded { span, .. }
             | Self::AssembleTooManySources { span, .. }
             | Self::AssembleBudgetExceeded { span, .. }
@@ -1018,6 +1033,13 @@ impl CalError {
                 span: s,
                 suggestion,
             },
+            Self::EngineFieldNotFilterable { field, context, .. } => {
+                Self::EngineFieldNotFilterable {
+                    field,
+                    context,
+                    span: s,
+                }
+            }
             Self::AssembleTooManySources { count, max, .. } => Self::AssembleTooManySources {
                 count,
                 max,
@@ -1393,8 +1415,12 @@ pub enum CalWarning {
         span: Option<Span>,
     },
 
-    /// CAL-W010 — A WHERE field is not a recognized structural filter and
-    /// was silently ignored during query execution.
+    /// CAL-W010 — A WHERE field on an untyped (`RECALL all`) query is not a
+    /// recognized field on any grain type. The filter is still applied per
+    /// grain (matching only grains that carry the field — likely none), so
+    /// this usually signals a misspelled field name. On a *typed* recall the
+    /// same situation is a hard `CAL-E060` instead (#91: a filter that
+    /// cannot be honoured refuses rather than widening).
     UnrecognizedWhereField { field: String, span: Option<Span> },
 
     /// CAL-W011 — A `{{#each}}` block hit the OMS CAL §10.8 iteration cap,
@@ -1566,7 +1592,7 @@ impl std::fmt::Display for CalWarning {
             Self::UnrecognizedWhereField { field, .. } => {
                 write!(
                     f,
-                    "CAL-W010: WHERE field '{}' is not a recognized structural filter and was ignored",
+                    "CAL-W010: WHERE field '{}' is not a recognized field on any grain type; it will match only grains that carry it. Check the field name.",
                     field
                 )
             }

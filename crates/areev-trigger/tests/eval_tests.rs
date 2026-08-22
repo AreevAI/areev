@@ -947,11 +947,13 @@ fn an_unusable_declaration_is_reported_distinctly_not_as_waiting() {
 #[derive(Default)]
 struct CapturingStarter {
     inputs: Mutex<Vec<Value>>,
+    run_ids: Mutex<Vec<String>>,
 }
 
 impl RunStarter for CapturingStarter {
-    fn start(&self, _workflow: &str, _run_id: &str, input: Value) -> StartResult {
+    fn start(&self, _workflow: &str, run_id: &str, input: Value) -> StartResult {
         self.inputs.lock().unwrap().push(input);
+        self.run_ids.lock().unwrap().push(run_id.to_string());
         StartResult::Started
     }
 }
@@ -1019,4 +1021,392 @@ fn a_missing_context_query_refuses_the_firing() {
         r.errors
     );
     assert!(starter.inputs.lock().unwrap().is_empty(), "no run input was handed over");
+}
+
+// ---- parameterized declared context (#92) ----------------------------------
+
+/// The declaration binds saved-query parameters from the FIRING ITEM:
+/// `--context-query 'thread_ctx($session = /session)'`. The evaluator
+/// resolves the pointer against the item's payload and runs the query with
+/// that binding, so a message-driven run can carry its own thread.
+#[test]
+fn a_context_query_binds_parameters_from_the_firing_item() {
+    let rig = Rig::new();
+    // The thread the firing message belongs to, and a decoy thread that
+    // must NOT be selected.
+    rig.facade
+        .with_store(|m| {
+            m.add(
+                &areev_core::types::Fact::new("sess-42", "corrects", "invoice-7")
+                    .namespace(NS)
+                    .created_at(T0),
+            )?;
+            m.add(
+                &areev_core::types::Fact::new("sess-99", "corrects", "invoice-9")
+                    .namespace(NS)
+                    .created_at(T0),
+            )
+        })
+        .unwrap();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(
+        r#"DEFINE QUERY "thread_ctx"($session) AS { RECALL facts WHERE subject = $session AND namespace = "ops" }"#,
+        rig.facade.as_ref(),
+    )
+    .expect("DEFINE QUERY must succeed");
+
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id")
+            .context_query("thread_ctx($session = /session)"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{ "id": "m-1", "payload": { "id": "m-1", "session": "sess-42" } }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&starter) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap(); // priming poll seeds the cursor
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 1, "errors: {:?}", r.errors);
+
+    let inputs = starter.inputs.lock().unwrap();
+    let ctx = inputs[0]["context"].to_string();
+    assert!(
+        ctx.contains("invoice-7"),
+        "the bound thread's fact must be in the context: {}",
+        inputs[0]
+    );
+    assert!(
+        !ctx.contains("invoice-9"),
+        "the decoy thread must be EXCLUDED — the binding scoped the query: {}",
+        inputs[0]
+    );
+}
+
+/// Fail closed, with `--dedup-key`'s precedent: a pointer that does not
+/// resolve against the firing item refuses the firing rather than running
+/// the query with a hole in it.
+#[test]
+fn an_unresolvable_context_pointer_refuses_the_firing() {
+    let rig = Rig::new();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(
+        r#"DEFINE QUERY "thread_ctx"($session) AS { RECALL facts WHERE subject = $session AND namespace = "ops" }"#,
+        rig.facade.as_ref(),
+    )
+    .unwrap();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id")
+            .context_query("thread_ctx($session = /session)"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        // No `session` key: the declared pointer cannot resolve.
+        ok(json!([{ "id": "m-1", "payload": { "id": "m-1" } }]), Some("c2"), false),
+    ]);
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&starter) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0, "a run must not start with a hole in its context");
+    assert!(
+        r.errors.iter().any(|e| e.contains("/session")),
+        "the refusal names the pointer: {:?}",
+        r.errors
+    );
+    assert!(starter.inputs.lock().unwrap().is_empty());
+}
+
+/// A pointer landing on an object or array refuses too — parameters bind
+/// scalars, and stringifying a subtree silently would corrupt the query.
+#[test]
+fn a_non_scalar_context_binding_refuses_the_firing() {
+    let rig = Rig::new();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(
+        r#"DEFINE QUERY "thread_ctx"($session) AS { RECALL facts WHERE subject = $session AND namespace = "ops" }"#,
+        rig.facade.as_ref(),
+    )
+    .unwrap();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id")
+            .context_query("thread_ctx($session = /email)"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{ "id": "m-1", "payload": { "id": "m-1", "email": { "from": "a@b.c" } } }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&starter) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0);
+    assert!(
+        r.errors.iter().any(|e| e.contains("scalar")),
+        "the refusal says why: {:?}",
+        r.errors
+    );
+}
+
+/// A malformed spelling is refused at authoring time by
+/// `schedule::validate` — a trigger that can never fire must not be stored.
+#[test]
+fn a_malformed_context_query_spelling_is_refused_at_declaration() {
+    let t = Trigger::new(TriggerKind::Interval, WF)
+        .interval_secs(60)
+        .context_query("ctx($session = session)"); // pointer missing '/'
+    let err = areev_trigger::schedule::validate(&t).expect_err("must refuse");
+    assert!(err.to_string().contains("context_query"), "{err}");
+}
+
+// ---- connector blobs (#93) -------------------------------------------------
+
+/// The whole #93 loop: the connector hands back a blob, the EVALUATOR (the
+/// party holding the writer) stores it in the CAS, rewrites the payload
+/// reference to the address, and attaches a `content_refs` entry to the
+/// Event it writes — so the trigger path stores attachments exactly like
+/// the host-driven path.
+#[test]
+fn connector_blobs_land_in_the_cas_and_the_payload_is_rewritten() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id"),
+    );
+    // "Zm9vYmFy" = b"foobar".
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{
+                "id": "m-1",
+                "payload": {
+                    "id": "m-1",
+                    "attachments": [{ "filename": "inv.pdf", "blob": "@0" }],
+                },
+                "blobs": [{ "filename": "inv.pdf", "mime": "application/pdf", "b64": "Zm9vYmFy" }],
+            }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&starter) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 1, "errors: {:?}", r.errors);
+
+    // The run input carries an ordinary cas:// address, not bytes.
+    let inputs = starter.inputs.lock().unwrap();
+    let uri = inputs[0]["item"]["attachments"][0]["blob"]
+        .as_str()
+        .expect("blob ref must be a string")
+        .to_string();
+    assert!(uri.starts_with("cas://sha256:"), "rewritten to an address: {uri}");
+    assert!(
+        !inputs[0].to_string().contains("Zm9vYmFy"),
+        "the base64 must not reach the run input"
+    );
+
+    // The bytes are retrievable by address, and dedup is content-addressed.
+    let bytes = rig.facade.with_store(|m| m.get_blob(&uri)).unwrap();
+    assert_eq!(bytes, b"foobar");
+
+    // The Event references the blob through content_refs — what keeps it
+    // alive through GC and reachable by erasure.
+    let run_id = starter.run_ids.lock().unwrap()[0].clone();
+    let grains = rig.facade.with_store(|m| m.run_grains(NS, &run_id, 0, 10)).unwrap();
+    assert!(
+        grains.iter().any(|(_, g)| format!("{:?}", g.fields).contains(&uri)),
+        "the ingest Event must carry a content_ref to {uri}; got {} grain(s): {h}",
+        grains.len()
+    );
+}
+
+/// A blob over budget refuses the WHOLE poll — TRG-E011, cursor unmoved —
+/// rather than truncating or dropping the attachment: a silently dropped
+/// attachment is an invoice posting without evidence, and a lost item is
+/// worse.
+#[test]
+fn an_over_budget_blob_refuses_the_whole_poll_and_keeps_the_cursor() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{
+                "id": "m-1",
+                "payload": { "id": "m-1", "a": { "blob": "@0" } },
+                "blobs": [{ "filename": "big.bin", "b64": "Zm9vYmFy" }],
+            }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&starter) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap(); // priming seeds cursor c1
+    rig.clock.advance(60_000);
+    let tight = EvalOptions { max_blob_bytes_per_item: 3, ..opts() };
+    let r = ev.run(&tight).unwrap();
+    assert_eq!(r.runs_started, 0);
+    assert!(
+        r.errors.iter().any(|e| e.contains("TRG-E011")),
+        "the refusal carries its code: {:?}",
+        r.errors
+    );
+    let st = rig.state(&h);
+    assert_eq!(st.cursor.as_deref(), Some("c1"), "the cursor must not advance past evidence");
+    assert!(st.consecutive_failures > 0, "the failure is counted for backoff");
+    assert!(starter.inputs.lock().unwrap().is_empty(), "no run started");
+}
+
+/// A dangling `"@N"` payload reference is a connector bug, not something to
+/// hand to a run: the poll refuses whole.
+#[test]
+fn a_dangling_blob_reference_refuses_the_poll() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{
+                "id": "m-1",
+                "payload": { "id": "m-1", "a": { "blob": "@3" } },
+                "blobs": [{ "b64": "Zm9vYmFy" }],
+            }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let ev = rig_polling_evaluator(&rig, conn);
+
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0);
+    assert!(r.errors.iter().any(|e| e.contains("TRG-E011")), "{:?}", r.errors);
+    assert_eq!(rig.state(&h).cursor.as_deref(), Some("c1"));
+}
+
+/// Undecodable base64 refuses too — salvaging a corrupt attachment would
+/// store evidence that matches nothing.
+#[test]
+fn undecodable_blob_base64_refuses_the_poll() {
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("gmail")
+            .interval_secs(60)
+            .dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([{
+                "id": "m-1",
+                "payload": { "id": "m-1" },
+                "blobs": [{ "filename": "x", "b64": "!!! not base64 !!!" }],
+            }]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let ev = rig_polling_evaluator(&rig, conn);
+
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0);
+    assert!(r.errors.iter().any(|e| e.contains("TRG-E011")), "{:?}", r.errors);
+}
+
+/// Shared constructor for the blob failure tests.
+fn rig_polling_evaluator(rig: &Rig, conn: Arc<FakeConnector>) -> Evaluator {
+    Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: None,
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    }
 }

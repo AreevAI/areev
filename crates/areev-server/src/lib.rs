@@ -1607,31 +1607,10 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Decode standard base64 (RFC 4648), enough for HTTP Basic credentials.
-/// Hand-rolled to keep the server dependency-free. Returns `None` on any
-/// invalid character or truncated input.
+/// The one hand-rolled decoder lives in `areev_core::b64` (the trigger
+/// evaluator shares it for connector blobs, #93).
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let s = s.trim().trim_end_matches('=');
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for &c in s.as_bytes() {
-        acc = (acc << 6) | val(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Some(out)
+    areev_core::b64::decode(s)
 }
 
 /// Extract the password from an HTTP Basic credential (`base64("user:pass")`).

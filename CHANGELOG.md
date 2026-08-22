@@ -6,6 +6,66 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CAL `WHERE` fails closed** (#91). A filter is now pushed down, evaluated
+  per grain, or refused — never dropped. Before, a common field outside a
+  grain type's queryable set (`status`, `priority`, `epistemic_status`, …)
+  passed validation, fell out of push-down, and returned **everything** with
+  only a stderr `CAL-W010` — so `RECALL tools WHERE status = "failed"`
+  returned the successes, in the right shape and order. Now a field the
+  target type cannot carry refuses with `CAL-E060` before the scan; `NOT`
+  and `OR` are honoured with real boolean semantics by the one authoritative
+  per-grain evaluator (`NOT tool_name = "x"` returned precisely the set the
+  author asked to exclude; `a OR b` pushed only `a`); previously-dropped
+  comparators (`confidence < x`, `subject != y`, `IS NULL`) now filter; and
+  engine-level fields (`query`, `time`, `entity`, `contradicted`, `scope`,
+  `tags`) refuse with the new **`CAL-E061`** where they cannot be honoured
+  (under `NOT`/`OR`, unsupported comparator) instead of widening. `EXISTS`
+  (which answered `true` if *any* grain of the type existed), `HISTORY …
+  WHERE`, and ASSEMBLE's post-filter share the contract. Leniency was
+  deliberately not kept behind an opt-in: the safe direction is the default
+  direction. `DESCRIBE FIELDS <type>` now lists exactly the registry's
+  filterable set for that type.
+- **`kind` and `status` are queryable on `tools`** (#91). Definitions and
+  execution records are one grain type split by `kind`; without it every
+  host invented a child-namespace workaround to keep definitions from
+  outranking real results. Both fields are stored omit-default and the
+  filter materializes the default (`kind = "execution"`, `status =
+  "completed"` match grains that never wrote the field). The phantom
+  `tool_phase` field — advertised, parsed, and never written — is removed
+  from the queryable set.
+
+### Added
+
+- **`--context-query` can see the firing item** (#92). The declaration may
+  bind saved-query parameters from the item's payload with the JSON
+  pointers `--dedup-key` already understands: `--context-query
+  'triage_ctx($session = /session)'`. The evaluator resolves each pointer
+  at fire time and runs the query with those bindings via the parsed-AST
+  `RUN` path (no CAL text splicing, so payload values cannot inject CAL).
+  Fail-closed with `--dedup-key`'s precedent: an unresolvable pointer or a
+  non-scalar value refuses the firing. The whole spelling is stored
+  verbatim on the trigger grain (same field, same compact key; the plain
+  name form is byte-identical to 1.5.0), so the binding replicates and
+  audits with the declaration. Malformed spellings refuse at `trigger add`.
+- **Polling connectors can persist CAS blobs** (#93). An item may return a
+  `blobs` array (`{filename, mime, b64}`); the **evaluator** — the party
+  already holding the writer — stores each entry (`put_blob`, idempotent on
+  content), rewrites `"blob": "@N"` payload references to the resulting
+  `cas://sha256:…` address, and attaches matching `content_refs`
+  (uri/mime_type/size_bytes/checksum, filename in metadata) to the Event it
+  writes. Attachments ingested by trigger and by host are now
+  indistinguishable: `blob get` works mid-run, dedup is content-addressed,
+  and erasure's sole-reference reclamation needs no special case. Budgets
+  are enforced on decoded size (16 MiB/item, 48 MiB/response, evaluator
+  options) and any contract violation — over budget, undecodable base64, a
+  dangling `"@N"` — is the new **`TRG-E011`**: the whole poll refuses with
+  the cursor unmoved, because a silently dropped attachment is an invoice
+  posting without evidence and a lost item is worse. The RFC 4648 base64
+  decoder moved to `areev_core::b64` (one implementation, shared with the
+  server's HTTP Basic path).
+
 ## [1.5.0] — 2026-08-22
 
 ### Added

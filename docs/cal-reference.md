@@ -579,7 +579,52 @@ usually scope a recall to a tenant, a session, or a user:
 
 `hash` is a filter field like any other (`WHERE hash = "<64-hex>"`, with or
 without the `sha256:` prefix, and `hash IN (...)`), even though a grain's
-content address lives on the envelope rather than among its fields.
+content address lives on the envelope rather than among its fields. The same
+holds for `grain_type`/`type` and `score`.
+
+#### WHERE fails closed (1.5.1, #91)
+
+Every condition is **pushed down, evaluated per grain, or refused — never
+dropped**. Before 1.5.1 a filter the engine could not push down was silently
+discarded with a stderr warning, so `RECALL tools WHERE status = "failed"`
+returned every execution — successes included — in the right shape and
+order. Now:
+
+- A field the target grain type cannot carry refuses with **`CAL-E060`**
+  before the scan (`RECALL facts WHERE status = "nope"` is an error, not
+  the whole table). On an untyped `RECALL all`, an unknown-everywhere field
+  still filters (matching only grains that carry it) and warns `CAL-W010`.
+- `NOT` and `OR` are honoured with real boolean semantics by the one
+  authoritative per-grain evaluator: `WHERE NOT tool_name = "x"` returns
+  the complement, and `a OR b` is a disjunction (it used to push only the
+  left branch down).
+- **Engine-level fields** — `query`, `time`, `entity`, `contradicted`,
+  `scope`, `scope_path`, `tags` — narrow the scan and have no per-grain
+  value, so under `NOT`/`OR`, or with a comparator their push-down does not
+  support, they refuse with **`CAL-E061`** instead of widening.
+- Comparators the push-down alone never honoured (`confidence < 0.5`,
+  `subject != "x"`, `deadline IS NULL`) are now applied per grain.
+
+`EXISTS`, `HISTORY … WHERE`, and the ASSEMBLE-level `WHERE` share the same
+contract. `DESCRIBE FIELDS <type>` lists exactly the fields that filter for
+that type.
+
+On `tools`, `kind` (`"definition"` / `"execution"`) and `status`
+(`"pending"` / `"completed"` / `"failed"`, the async lifecycle) are
+queryable; both are stored omit-default, and the filter sees the default on
+grains that never wrote the field, so `kind != "definition"` is the
+results-without-definitions query no child-namespace workaround is needed
+for. (`status` is the *async* lifecycle — sync success/failure remains
+`is_error`. The phantom `tool_phase` field, which parsed and matched
+nothing, is gone.)
+
+```sql
+RECALL tools WHERE NOT tool_name = "validate_rows" RECENT 200
+```
+
+```sql
+RECALL tools WHERE kind != "definition" ORDER BY created_at DESC LIMIT 1
+```
 
 #### Namespace scoping: exact, sets, and `"org.*"` prefixes
 

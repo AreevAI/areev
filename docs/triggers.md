@@ -99,6 +99,35 @@ Fail closed: a trigger that declared context never fires without it. A
 missing query or a failed read refuses the firing (retried on the evaluator's
 normal cadence) rather than starting a run without the context it promised.
 
+### Binding parameters from the firing item (1.5.1, #92)
+
+A parameterless query can carry durable knowledge but nothing about the item
+that fired. The declaration may bind saved-query parameters from the item's
+payload, using the same JSON pointers `--dedup-key` understands:
+
+```bash
+areev trigger add --db accounting.db --ns accounting \
+  --type polling --observer gmail --interval 120 --workflow <WF_HASH> \
+  --context-query 'triage_ctx($session = /session, $sender = /email/from)' \
+  --because "carry the thread the message belongs to"
+```
+
+`triage_ctx` is then an ordinary *parameterized* saved query
+(`DEFINE QUERY "triage_ctx"($session, $sender) AS { … }`), so a source like
+`RECALL events WHERE session_id = $session RECENT 10` finally becomes
+expressible on the trigger path. At fire time the evaluator resolves each
+pointer against the item's payload and runs the query with those bindings —
+still read-only, still against the memory it already holds. The whole
+spelling is stored verbatim on the trigger grain, so the binding replicates
+and audits like the rest of the declaration.
+
+Fail closed, with `--dedup-key`'s precedent: a pointer that does not resolve,
+or that lands on an object/array rather than a scalar, refuses the firing —
+never a query with a hole in it. Bound values travel as a parsed AST, never
+inside CAL text, so a hostile payload value cannot inject CAL. A malformed
+spelling is refused at `trigger add`; a binding the query does not declare
+warns at declaration and is ignored at run (`CAL-W006`).
+
 On the PostgreSQL tier the lock constraint disappears (reads never block), so
 tools *can* query the memory mid-run — `--context-query` remains useful there
 for the auditability of the declaration and for plans that must stay portable
@@ -137,6 +166,40 @@ ceiling, an output cap, and the withholding of any variable named by
   released, `next_due_at` is pushed out by an exponential backoff floored at the
   declared interval, and the failure is visible in `trigger status`. A broken
   connector backs off; it never hot-loops.
+
+### Blobs: attachments without inlining (1.5.1, #93)
+
+A connector cannot write the CAS itself — the evaluator holds the memory
+while the connector runs — so an item may hand attachments back **through**
+the response, and the evaluator (the party already holding the writer)
+stores them:
+
+```json
+{ "items": [
+    { "id": "<message-id>",
+      "payload": { "email": { }, "attachments": [ { "filename": "inv.pdf", "blob": "@0" } ] },
+      "blobs": [ { "filename": "inv.pdf", "mime": "application/pdf", "b64": "…" } ] } ],
+  "cursor": "1802611", "more": false }
+```
+
+At fire time the evaluator `put_blob`s each entry (idempotent on content —
+a re-delivered message costs only the transfer), rewrites every
+`"blob": "@N"` payload reference to the resulting `cas://sha256:…` address,
+and attaches a matching `content_refs` entry (uri / mime_type / size_bytes /
+checksum, filename in metadata) to the Event it writes. The run receives
+ordinary `cas://` addresses and its tools use `blob get` exactly as on the
+host-driven path; GC, bundles, and erasure's sole-reference reclamation see
+these blobs with no special case. Strings under a `blob` key that don't
+start with `@` (e.g. an already-rewritten `cas://` address) pass through
+untouched.
+
+Budgets are enforced on **decoded** size — 16 MiB per item, 48 MiB per
+response by default (`trigger run` inherits them from the evaluator's
+options) — and a violation of any kind (over budget, undecodable `b64`, a
+dangling `"@N"`) is **`TRG-E011`: the whole poll is refused with the cursor
+unmoved**. Refusing loudly beats truncating — a silently dropped attachment
+is an invoice posting without evidence, and a lost item is worse; the
+connector gets fixed and the same page is re-polled.
 
 ## Idempotency
 
@@ -508,3 +571,4 @@ the seam does and does not guarantee.
 | `TRG-E008` | a composite references an undeclared member |
 | `TRG-E009` | the connector tried to reach a disallowed host |
 | `TRG-E010` | the store failed underneath the evaluator |
+| `TRG-E011` | a connector's blob payload violated the contract (bad base64, dangling `"@N"`, budget overrun) — the poll refused whole, cursor unmoved |

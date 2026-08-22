@@ -33,6 +33,12 @@ pub enum TriggerError {
     EgressRefused { trigger: String, host: String },
     /// TRG-E010 — the store refused or failed underneath us.
     Storage { detail: String },
+    /// TRG-E011 — a connector's blob payload violated the contract:
+    /// undecodable `b64`, a dangling `"@N"` reference, or a per-item /
+    /// per-response budget overrun. The WHOLE poll fails with the cursor
+    /// unmoved — refusing loudly beats truncating, because a silently
+    /// dropped attachment is an invoice posting without evidence.
+    BlobContract { trigger: String, detail: String },
 }
 
 impl TriggerError {
@@ -48,6 +54,7 @@ impl TriggerError {
             TriggerError::UnknownMember { .. } => "TRG-E008",
             TriggerError::EgressRefused { .. } => "TRG-E009",
             TriggerError::Storage { .. } => "TRG-E010",
+            TriggerError::BlobContract { .. } => "TRG-E011",
         }
     }
 }
@@ -91,6 +98,11 @@ impl fmt::Display for TriggerError {
                  which is outside its declared allowed_outbound_hosts"
             ),
             TriggerError::Storage { detail } => write!(f, "TRG-E010: store: {detail}"),
+            TriggerError::BlobContract { trigger, detail } => write!(
+                f,
+                "TRG-E011: connector blob contract violated for trigger {trigger}: {detail} — \
+                 the poll was refused whole and the cursor left unmoved"
+            ),
         }
     }
 }
@@ -115,6 +127,7 @@ mod tests {
             TriggerError::UnknownMember { trigger: "t".into(), member: "m".into() },
             TriggerError::EgressRefused { trigger: "t".into(), host: "h".into() },
             TriggerError::Storage { detail: "d".into() },
+            TriggerError::BlobContract { trigger: "t".into(), detail: "d".into() },
         ]
     }
 
