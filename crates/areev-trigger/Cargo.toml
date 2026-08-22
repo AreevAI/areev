@@ -26,7 +26,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # which we already have, so this adds ZERO new crates. 3.x adds derive_builder
 # and strum, dragging in the syn/quote/proc-macro2 chain — which is exactly the
 # kind of growth the dependency-light policy exists to stop.
-croner = { version = ">=2.2, <3", default-features = false }
+croner = { version = ">=2.2, <4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
