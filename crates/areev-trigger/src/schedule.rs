@@ -45,6 +45,21 @@ pub fn validate(trigger: &Trigger) -> Result<()> {
     if let Some(why) = trigger.incoherence() {
         return Err(TriggerError::Malformed { what: why });
     }
+    // A workflow reference that cannot be decoded can never start anything,
+    // and `incoherence()` only established it is non-empty. Checking it HERE
+    // is what puts it in `trigger status`'s `unusable` column (#67) instead
+    // of leaving it to report `waiting` forever and fail at fire time (#73).
+    // The scheme prefix is stripped first: both spellings are accepted on
+    // write, so both have to be readable.
+    if let Err(e) = areev_core::error::Hash::from_hex(trigger.workflow_hash()) {
+        return Err(TriggerError::UnresolvedWorkflow {
+            hash: trigger.workflow.clone(),
+            why: format!(
+                "{e} — a workflow is named by its 64-hex content address, \
+                 optionally prefixed `sha256:`"
+            ),
+        });
+    }
     // A malformed `--context-query` spelling (#92) can never fire — refuse
     // it at authoring time with the parser's own message. The fire path
     // re-parses (fail-closed) for declarations that bypassed validation.

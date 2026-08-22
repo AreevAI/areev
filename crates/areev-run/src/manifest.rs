@@ -465,3 +465,37 @@ fn find_definition_by_name(
     let h = Hash::from_hex(&hex).ok()?;
     Some((h, g))
 }
+
+/// The nodes of `plan_hash` that would resolve as **abstract** — no binding
+/// and no Definition head whose `tool_name` matches — plus whether the plan
+/// itself is present at all.
+///
+/// A pre-flight read: it takes no lease, writes nothing, and is exactly the
+/// half of [`RunManifest::resolve`] that decides `RUN-E006`. It exists so a
+/// declaration that names a plan can say at AUTHORING time what the plan will
+/// need at fire time (#73): `areev trigger add --workflow <WF>` used to accept
+/// a plan whose nodes did not resolve, report `waiting`, and fail at the first
+/// firing — on the operator's mailbox rather than at their keyboard.
+///
+/// Abstract is not an error here, which is why this returns node ids rather
+/// than a `Result`: an abstract node is legitimate with a tool-calling model
+/// configured. The caller decides whether that is a warning or nothing.
+pub fn abstract_nodes(
+    m: &mut Areev,
+    ns: &str,
+    plan_hash: &Hash,
+) -> std::result::Result<Vec<String>, String> {
+    let wf = m
+        .get(plan_hash)
+        .map_err(|e| format!("{e}"))?
+        .to_workflow()
+        .map_err(|e| format!("{e}"))?;
+    let plan = PlanGraph::build(&wf).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if plan.bindings[i].is_none() && find_definition_by_name(m, ns, node).is_none() {
+            out.push(node.clone());
+        }
+    }
+    Ok(out)
+}

@@ -102,16 +102,45 @@ jobs:
     # For Trusted Publishing, tie this to a `pypi` environment on the repo.
     permissions:
       id-token: write
+      # Build provenance + the SBOM asset (#81).
+      attestations: write
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
+      # The wheel is a compiled Rust extension, so its real dependency graph
+      # is Cargo's, not pip's — `pip-audit` over the wheel would report a
+      # package with no dependencies, which is true and useless. Describe the
+      # graph that actually ships inside the binary.
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          rustup update stable
+          cargo install cargo-cyclonedx --version 0.5.7 --locked
+          cargo cyclonedx --format json --spec-version 1.5 --locked -p areev-py
+          VERSION="${GITHUB_REF_NAME#v}"
+          find . -name '*.cdx.json' -not -path './dist/*' \
+            -exec cp {} "dist/areev-${VERSION}-python.cdx.json" \;
+          test -s "dist/areev-${VERSION}-python.cdx.json"
+      # Attest before publishing, for the same reason release-cli.yml does.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.whl"
+      - name: Attach the SBOM to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
+      # `maturin upload dist/*` would now also try to upload the SBOM, which
+      # PyPI rejects. Publish exactly the distributions.
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
           command: upload
-          args: --non-interactive --skip-existing dist/*
+          args: --non-interactive --skip-existing dist/*.whl dist/*.tar.gz

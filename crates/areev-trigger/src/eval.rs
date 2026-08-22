@@ -138,6 +138,16 @@ pub struct EvalReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct TriggerStatus {
     pub trigger: String,
+    /// The declaration's `name`, when it carries one.
+    ///
+    /// `name` is what a human uses to identify a trigger, and it is accepted
+    /// on write — but nothing read it back (#73), so identity fell onto the
+    /// workflow hash, which is stable only until the plan is re-declared. It
+    /// rides in `extra_fields` rather than being a typed field: OMS §A.7 has
+    /// no Trigger `name`, and inventing one would be a spec-level decision
+    /// for a label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub kind: String,
     pub workflow: String,
     pub enabled: bool,
@@ -161,6 +171,23 @@ pub struct TriggerStatus {
     /// reports it rather than assuming the write path caught everything.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unusable: Option<String>,
+}
+
+/// The declaration's human label, if it has one.
+///
+/// Written through `extra_fields` by every surface that accepts `name` on a
+/// trigger, and read back here so `list` and `status` can print it (#73).
+/// Blank is treated as absent: a name that renders as nothing is worse than
+/// none, because it displaces the hash a reader could otherwise have used.
+pub fn trigger_name(trigger: &Trigger) -> Option<String> {
+    trigger
+        .common
+        .extra_fields
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Starts the workflow a trigger is bound to.
@@ -236,7 +263,21 @@ impl Evaluator {
         for g in grains {
             let hash = g.hash.to_hex();
             match g.to_trigger() {
-                Ok(t) => out.push((hash, t)),
+                Ok(mut t) => {
+                    // `to_trigger` reconstructs the typed fields; `extra_fields`
+                    // is not restored for any grain type, so the declaration's
+                    // `name` — an extra field by design, since OMS §A.7 has no
+                    // Trigger `name` — has to be carried over here. Doing it in
+                    // the shared deserializer would silently change what every
+                    // read-modify-write re-serializes, which is the kind of
+                    // change that moves content addresses.
+                    if let Some(name) = g.get_str("name") {
+                        t.common
+                            .extra_fields
+                            .insert("name".into(), serde_json::json!(name));
+                    }
+                    out.push((hash, t))
+                }
                 // A declaration this build cannot read is reported, never
                 // skipped silently: silence is the symptom of every trigger
                 // failure, so it must never also be the symptom of a bug.
@@ -264,6 +305,7 @@ impl Evaluator {
             let unusable = schedule::validate(&t).err().map(|e| e.to_string());
             out.push(TriggerStatus {
                 trigger: hash,
+                name: trigger_name(&t),
                 kind: t.kind.as_str().to_string(),
                 workflow: t.workflow.clone(),
                 enabled: t.enabled,
@@ -1077,7 +1119,10 @@ impl Evaluator {
                 }
             }
         }
-        match starter.start(&trigger.workflow, run_id, input) {
+        // Read through whatever scheme prefix the declaration spelled the
+        // reference with (#73): `sha256:<hex>` validated, listed, and reported
+        // `waiting` forever, then died here on `FMT-E001: invalid hex hash`.
+        match starter.start(trigger.workflow_hash(), run_id, input) {
             StartResult::Started => StartOutcome::Started,
             StartResult::Duplicate => StartOutcome::Duplicate,
             StartResult::Failed(why) => StartOutcome::Failed(why),

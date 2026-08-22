@@ -56,16 +56,20 @@ fn ok(items: Value, cursor: Option<&str>, more: bool) -> ExecResult {
 #[derive(Default)]
 struct FakeStarter {
     started: Mutex<Vec<String>>,
+    /// The workflow reference each firing handed over — what the real starter
+    /// hex-decodes, so it is where a scheme prefix would surface (#73).
+    workflows: Mutex<Vec<String>>,
 }
 
 impl RunStarter for FakeStarter {
-    fn start(&self, _workflow: &str, run_id: &str, _input: Value) -> StartResult {
+    fn start(&self, workflow: &str, run_id: &str, _input: Value) -> StartResult {
         let mut s = self.started.lock().unwrap();
         if s.iter().any(|id| id == run_id) {
             // Exactly what `areev run start` does with an existing id.
             return StartResult::Duplicate;
         }
         s.push(run_id.to_string());
+        self.workflows.lock().unwrap().push(workflow.to_string());
         StartResult::Started
     }
 }
@@ -1409,4 +1413,91 @@ fn rig_polling_evaluator(rig: &Rig, conn: Arc<FakeConnector>) -> Evaluator {
         ns: NS.into(),
         principal: "user:test".into(),
     }
+}
+
+// ---- the declaration's own shape (#73) ------------------------------------
+
+#[test]
+fn a_prefixed_workflow_reference_still_starts_its_run() {
+    // `sha256:<hex>` is accepted on write by every surface, so it has to be
+    // readable at fire time. It was not: the evaluator hex-decoded the WHOLE
+    // string, so the declaration validated, listed, reported `waiting`, and
+    // then died with `FMT-E001: invalid hex hash: Odd number of digits` on the
+    // first firing — an hour of debugging for a spelling nothing refused.
+    let rig = Rig::new();
+    rig.declare(Trigger::new(TriggerKind::Interval, &format!("sha256:{WF}")).interval_secs(60));
+
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 1, "{:?}", r.errors);
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert_eq!(
+        rig.starter.workflows.lock().unwrap().as_slice(),
+        &[WF.to_string()],
+        "the starter must be handed the bare address, whatever the declaration spelled"
+    );
+}
+
+#[test]
+fn a_grain_scheme_prefix_is_read_through_too() {
+    // `grain:sha256:<hex>` is the vocabulary Recommendation targets use, so a
+    // caller reaches for it by analogy. One helper decides, not each call site.
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Interval, &format!("grain:sha256:{WF}")).interval_secs(60),
+    );
+
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 1, "{:?}", r.errors);
+    assert_eq!(rig.starter.workflows.lock().unwrap().as_slice(), &[WF.to_string()]);
+}
+
+#[test]
+fn an_undecodable_workflow_reference_is_unusable_not_waiting() {
+    // The other half of the same bug: a reference that is not an address at
+    // all must land in `status`'s `unusable` column at declaration time, not
+    // sit in `waiting` until a firing discovers it. Stored without validation,
+    // as a bundle import from another implementation would be.
+    let rig = Rig::new();
+    let bad = rig.declare(Trigger::new(TriggerKind::Interval, "not-a-hash").interval_secs(60));
+
+    let ev = rig.evaluator(None);
+    let status = ev.status().unwrap();
+    let row = status.iter().find(|s| s.trigger == bad).unwrap();
+    let why = row.unusable.as_deref().expect("the reason must be reported, not inferred");
+    assert!(why.contains("TRG-E002"), "the reason must name the code: {why}");
+    assert!(!row.due, "an unusable declaration must never be reported as due");
+
+    let report = ev.run(&opts()).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert_eq!(report.unusable, 1);
+}
+
+#[test]
+fn a_declarations_name_reaches_status_and_is_not_invented_when_absent() {
+    // `name` is accepted on write and is what a human uses to identify a
+    // trigger, but nothing read it back — so identity fell onto the workflow
+    // hash, which is stable only until the plan is re-declared (#73).
+    use areev_core::types::Grain as _;
+    let rig = Rig::new();
+    let named = rig.declare(
+        Trigger::new(TriggerKind::Interval, WF)
+            .interval_secs(60)
+            .extra_field("name", json!("nightly-invoice-sweep")),
+    );
+    // Blank is absent: a name that renders as nothing is worse than none,
+    // because it displaces the hash a reader could otherwise have used.
+    let blank = rig.declare(
+        Trigger::new(TriggerKind::Interval, WF)
+            .interval_secs(90)
+            .extra_field("name", json!("   ")),
+    );
+    let unnamed = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(120));
+
+    let status = rig.evaluator(None).status().unwrap();
+    let name_of = |h: &str| {
+        status.iter().find(|s| s.trigger == h).unwrap().name.clone()
+    };
+    assert_eq!(name_of(&named).as_deref(), Some("nightly-invoice-sweep"));
+    assert_eq!(name_of(&blank), None);
+    assert_eq!(name_of(&unnamed), None);
 }

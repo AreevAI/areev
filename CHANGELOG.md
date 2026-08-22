@@ -6,6 +6,134 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-08-22
+
+### Fixed
+
+- **A trigger builds the same runner `run start` builds** (#90). The trigger
+  path constructed a deliberately reduced runtime — a bare `CommandExecutor`
+  with no model — so a plan with a **code-carrying (Tier C) node refused at
+  start with `RUN-E018`** and one with an **abstract node with `RUN-E006`**,
+  no matter which flags the operator passed; the same plan ran happily from
+  `run start`. `--context-query` (#92) and `runtime` (#86) shipped in the same
+  release and were meant to compose; used together the run refused, so an
+  agent could have declared context **or** sandboxed tools on the trigger
+  path, not both. `trigger run` and `trigger deliver` now take
+  `--allow-executor`, `--executor-cache`, `--sandbox-cmd`, `--model` /
+  `--base-url` / `--key-env`, the egress trio, and the observers — from one
+  shared builder rather than a second copy, so a stack that grows a component
+  cannot grow it on only one path. Both bindings gain `allow_executor`,
+  `executor_cache` and `sandbox_cmd` on `trigger_run`/`trigger_deliver`.
+  Every setting also reads its `$AREEV_RUN_*` variable (flag wins), because a
+  heartbeat is a cron line, not an interactive command. A firing now also
+  starts runs with **no** `--tool-cmd` at all — a plan whose nodes are all
+  pinned code, or all abstract, needs no subprocess, and gating on one was the
+  same reduction one level down. The pin is still the authorization and still
+  comes from the host; what changed is where the host may state it, not who
+  may. `RUN-E018`/the runtime refusal now name `areev trigger` among the
+  surfaces to pin on — the old message named three, none of them the one the
+  operator was using.
+- **A trigger-started run carries the budgets it was given.** `run start` has
+  taken `--max-tokens`/`--max-usd`/`--max-wall-ms`/`--ask-ttl` on every
+  surface since the runtime shipped; the trigger path took none of them and
+  built `RunOptions::default()`, in the CLI and both bindings alike. Moving a
+  workflow behind a trigger therefore dropped every ceiling silently — on the
+  one path that fires unattended, where an unbounded run has nobody watching
+  it and an ask with no TTL parks forever.
+- **`areev trigger --credential NAME=VAR` refuses an unset variable** instead
+  of dropping it. `run start` and both bindings already did; the trigger path
+  dropped it silently, which does not stay silent — it surfaces downstream as
+  an unexplained 401 from someone else's API, hours later, on a heartbeat
+  nobody is watching.
+- **A `sha256:`-prefixed workflow reference fires** (#73). Both spellings were
+  accepted at declaration and only the bare one worked at evaluation, which
+  hex-decoded the whole string: the trigger validated, listed, reported
+  `waiting` forever, then died at fire time on `FMT-E001: invalid hex hash:
+  Odd number of digits`. References are now read through a known scheme
+  prefix (`sha256:`, `grain:sha256:`) everywhere and **normalized to the bare
+  form on write**, so `trigger_list` returns what was declared and a
+  round-trip comparison matches. A reference that is not an address at all is
+  refused at declaration and reported as `unusable` by `trigger status`
+  (`TRG-E002`) rather than sitting in `waiting`.
+- **`name` is returned by every trigger read surface** (#73). It was accepted
+  on write and read back by nothing, so identity fell onto the workflow hash
+  — which is stable only until the plan is re-declared. `areev trigger
+  list`/`status`/`show`, `trigger_list()` and `trigger_status()` now carry it,
+  and `areev trigger add --name` sets it. A blank name is treated as absent.
+- **`trigger add` says at declaration time what the plan will need at fire
+  time** (#73). Pointing a trigger at a plan whose nodes do not resolve used
+  to fail at the *first firing*, on the operator's mailbox rather than at
+  their keyboard, with `trigger status` reporting `waiting` in between. It now
+  warns when the workflow is not in the memory, and when nodes are abstract
+  (naming them, and the model configuration they will need). A warning rather
+  than a refusal: a plan can arrive by sync afterwards, a Definition can be
+  added later, and abstract nodes are legitimate with a model configured.
+- **The Python docs-example guard no longer asserts a block the README does
+  not have.** The 1.5.1 revamp made the README visual-first and removed its
+  Python proof block; the guard kept asserting it, so the `python` CI job went
+  red on a docs change — the guard outliving the thing it guarded. It now
+  covers the two docs that do carry a block.
+
+### Added
+
+- **SSO proxy secrets rotate without a zero-overlap cutover** (#79).
+  `areev ui --sso-secret-env-next VAR` opens a window in which **either**
+  secret proves the proxy, so a fleet moves over one node at a time and the
+  old value is retired once nothing presents it — TLS key rotation's shape.
+  The secret is impersonation-grade (it can assert any identity, including
+  approval-capable principals), and rotating one atomically across a proxy
+  fleet is not achievable in practice, so the honest choices were an outage or
+  a gap — and an operator facing either under suspected-compromise pressure
+  defers the rotation, which is the outcome that actually costs. Two secrets
+  at a time, deliberately; both compared in constant time with no
+  short-circuit, so timing cannot reveal which matched; rotating to the same
+  value is refused; and the console warns on **every** start while the window
+  is open, because a rotation left half-finished is an extra live credential.
+  New runbook: [`docs/runbooks/sso-secret-rotation.md`](docs/runbooks/sso-secret-rotation.md),
+  covering the planned rotation **and** the suspected-compromise case, where
+  the answer is a hard cutover and *not* a window.
+- **Release artifacts carry provenance and an SBOM** (#81). All three release
+  workflows now attach a Sigstore-backed build provenance attestation
+  (`actions/attest-build-provenance`, keyless — no key for this project to
+  lose) and publish a CycloneDX SBOM alongside the artifact; npm packages also
+  publish with `--provenance`, which is what `npm audit signatures` checks.
+  The bindings get **two** SBOMs each, because a wheel or a `.node` addon
+  links a Rust tree `pip`/`npm` cannot see, so a package-manager-only bill
+  would truthfully describe almost nothing. Verification is one command
+  (`gh attestation verify …`), documented in
+  [`docs/security-model.md`](docs/security-model.md). This complements
+  `cargo-deny` rather than replacing it: `cargo-deny` says the dependencies
+  are acceptable, the SBOM says which ones shipped, the attestation says who
+  built them.
+
+### Documentation
+
+- `docs/triggers.md` gains **the runner a firing gets** (the full flag /
+  binding / environment table), **the plan has to resolve before the trigger
+  fires**, **re-declaring a plan mints a NEW plan**, **naming the workflow**,
+  and **what the run receives** — a trigger wraps the item as
+  `{trigger, connector, scope, item}` while `run start` passes its input
+  through unchanged, so one plan started both ways sees two shapes, and a tool
+  reading a top-level key fails on the trigger path only while the pass still
+  reports `runs_started: 1` with no errors.
+- **Re-adding a Workflow is not free, and the docs now say so** (#73). Grains
+  are content-addressed over the whole `.mg` blob and the header carries
+  `created_at`, so two identical `add("workflow", …)` calls return different
+  hashes: an idempotent-declare loop mints a new plan every boot while the
+  trigger still points at the old one, silently. Excluding `created_at` from
+  the address is not an option — canonical serialization is frozen, and
+  moving it would change every content address ever computed and break OMS
+  conformance. `docs/triggers.md` documents the recall-first declare pattern
+  instead.
+- `docs/run.md` records **why the embedded backend has no read-only open**
+  (#85) — the exclusive lock lives inside a pinned `turso` whose facade
+  exposes none, and today's open path writes regardless (DDL replay, the
+  telemetry sidecar, heal passes, the anon-vault write-behind), so it is a
+  store-level project gated on a re-audited engine bump, not a patch.
+- `docs/security-model.md` documents trusted-header SSO and its rotation
+  window under data-in-transit, and adds **release artifacts: provenance and
+  bill of materials**.
+
 ## [1.5.1] — 2026-08-22
 
 ### Fixed
@@ -1225,7 +1353,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/AreevAI/areev/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/AreevAI/areev/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/AreevAI/areev/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/AreevAI/areev/compare/v1.3.1...v1.4.0

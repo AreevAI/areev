@@ -444,9 +444,10 @@ impl Runner {
                     return Err(RunError::CodeExecRefused {
                         condition: format!(
                             "node '{}' names executor {uri}, which this host has not \
-                             pinned — pin it: --allow-executor {} (CLI), \
-                             allow_executor (Python/Node), or \
-                             $AREEV_RUN_ALLOW_EXECUTOR (areev serve)",
+                             pinned — pin it: --allow-executor {} (`areev run` and \
+                             `areev trigger`), allow_executor (Python/Node), or \
+                             $AREEV_RUN_ALLOW_EXECUTOR (any surface, including a \
+                             heartbeat)",
                             p.node,
                             crate::executor::strip_cas(uri)
                         ),
@@ -461,8 +462,10 @@ impl Runner {
                             condition: format!(
                                 "node '{}' declares runtime {rt:?}, which this host \
                                  cannot dispatch — configure the sandbox: \
-                                 --sandbox-cmd areev-sandbox (CLI), sandbox_cmd \
-                                 (Python/Node), or $AREEV_RUN_SANDBOX_CMD (areev serve)",
+                                 --sandbox-cmd areev-sandbox (`areev run` and \
+                                 `areev trigger`), sandbox_cmd (Python/Node), or \
+                                 $AREEV_RUN_SANDBOX_CMD (any surface, including a \
+                                 heartbeat)",
                                 p.node
                             ),
                         });
