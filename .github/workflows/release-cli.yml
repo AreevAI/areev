@@ -40,7 +40,7 @@ jobs:
           - { runner: macos-latest,     target: aarch64-apple-darwin,      ext: "" }
           - { runner: windows-latest,   target: x86_64-pc-windows-msvc,    ext: ".exe" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup update stable && rustup target add ${{ matrix.target }}
@@ -119,7 +119,7 @@ jobs:
     # no longer waits on it either; both halves of that lesson matter.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup update stable
       - name: Install cargo-cyclonedx
