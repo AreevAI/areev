@@ -1367,9 +1367,28 @@ impl UiServer {
         let mut sub = BorrowedSubstrate::new(&self.facade);
         let scopes = areev_loop_adapter::scopes_for(&self.facade.authz());
         let observer = areev_loop_adapter::observer_for_principal(actor);
-        match self.engine().apply(
-            &mut sub, hash, actor, observer, &scopes, because, allow_destructive, now_ms(),
-        ) {
+        let engine = self.engine();
+        // A code or adapter revision applies only through its recorded gating
+        // edge: `gating_run` names an eval run whose journaled `mg:eval_run`
+        // summary becomes the evidence — the stats never come from the client.
+        let gating = match req.get("gating_run").and_then(Value::as_str) {
+            Some(run_id) => match engine.gating_evidence(&sub, hash, run_id) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    return ok_json(json!({"ok": false, "error": e.to_string(), "code": e.code()}))
+                }
+            },
+            None => None,
+        };
+        let applied = match &gating {
+            Some(g) => engine.apply_gated(
+                &mut sub, hash, actor, observer, &scopes, because, allow_destructive, g, now_ms(),
+            ),
+            None => engine.apply(
+                &mut sub, hash, actor, observer, &scopes, because, allow_destructive, now_ms(),
+            ),
+        };
+        match applied {
             Ok(applied) => ok_json(json!({"ok": true, "rollbackable": applied.rollbackable})),
             Err(e) => ok_json(json!({"ok": false, "error": e.to_string(), "code": e.code()})),
         }
@@ -1533,6 +1552,9 @@ fn rec_json(r: &areev_loop::Recommendation) -> Value {
         "destructive": r.destructive,
         "rollbackable": r.rollbackable,
         "evidence": r.evidence,
+        // The Rule E1 pin, when present — the console reads it to know this
+        // apply needs a recorded gating run (and which evalset to run).
+        "evalset_hash": r.evalset_hash,
     })
 }
 
@@ -1851,6 +1873,86 @@ mod credential_route_tests {
     use areev_core::authz::{CredentialMap, AUTHZ_NS, REL_PERMITS};
     use areev_core::types::{Fact, Grain};
     use areev_store::Areev;
+
+    /// The tuning seam over HTTP: an adapter recommendation applies only
+    /// with `gating_run` in the POST body — evidence loaded from the
+    /// journaled eval summary, never from the client — and the rec row
+    /// carries `evalset_hash` so the console knows the apply is gated.
+    #[test]
+    fn loop_apply_honors_a_gating_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        let mut store = Areev::open(path.to_str().unwrap()).unwrap();
+        // The pin and a clean recorded gate run, as `areev eval` writes them.
+        let evalset = store
+            .add(
+                &Fact::new("evalset:gate", "mg:evalset", "{\"name\":\"gate\",\"cases\":[]}")
+                    .namespace("agent:harness")
+                    .created_at(1_000),
+            )
+            .unwrap()
+            .to_hex();
+        store
+            .add(
+                &Fact::new(
+                    &format!("evalset:{evalset}"),
+                    "mg:eval_run",
+                    "{\"run_id\":\"eval-1\",\"passed\":3,\"failed\":0}",
+                )
+                .namespace("agent:harness")
+                .created_at(2_000),
+            )
+            .unwrap();
+        store.add(&Fact::new("acme", "tier", "Enterprise").namespace("caller").created_at(3_000)).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        // Register an adapter with real lineage (a recorded corpus export).
+        let manifest = facade
+            .record_corpus_export("RECALL facts", "train.jsonl", None, 4_000, &[], &[])
+            .unwrap()
+            .to_hex();
+        facade
+            .record_adapter(
+                r#"{"adapter":{"uri":"file:///tmp/a","sha256":"feed"},"base_model":"qwen3-4b","serves_as":"acme-support"}"#,
+                &manifest,
+                &evalset,
+                5_000,
+            )
+            .unwrap();
+        // Token mode: the shared secret is the implied local owner — the
+        // token-less console is read-only by design.
+        let s = UiServer::new(facade, "test".into()).with_auth("gate-token".into());
+        let tok = Some("gate-token");
+
+        // Propose, then find the adapter rec — its row must carry the pin.
+        let run = s.route("POST", "/api/loop/run", b"{}", tok, None);
+        assert!(run.0.starts_with("200"), "{}", text(&run));
+        let list = s.route("GET", "/api/loop/recommendations?status=pending", b"", tok, None);
+        let rows: serde_json::Value = serde_json::from_str(&text(&list)).unwrap();
+        let rec = rows["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["analyzer"].as_str().unwrap_or("").contains("adapter_intake"))
+            .unwrap_or_else(|| panic!("adapter_intake must propose: {rows}"));
+        assert_eq!(rec["evalset_hash"], evalset.as_str(), "the row must carry the pin");
+        let hash = rec["hash"].as_str().unwrap().to_string();
+
+        // Approve (the console's first POST), then: ungated apply refused,
+        // a bad run id refused, the recorded run admits.
+        let approve = format!(r#"{{"hash":"{hash}","decision":"approve","because":"reviewed"}}"#);
+        let r = s.route("POST", "/api/loop/review", approve.as_bytes(), tok, None);
+        assert!(text(&r).contains("\"ok\":true"), "{}", text(&r));
+        let bare = format!(r#"{{"hash":"{hash}","because":"ship it"}}"#);
+        let r = s.route("POST", "/api/loop/apply", bare.as_bytes(), tok, None);
+        assert!(text(&r).contains("gating run"), "ungated must refuse: {}", text(&r));
+        let bad = format!(r#"{{"hash":"{hash}","because":"ship","gating_run":"eval-nope"}}"#);
+        let r = s.route("POST", "/api/loop/apply", bad.as_bytes(), tok, None);
+        assert!(text(&r).contains("no recorded gate run"), "{}", text(&r));
+        let good = format!(r#"{{"hash":"{hash}","because":"gated and green","gating_run":"eval-1"}}"#);
+        let r = s.route("POST", "/api/loop/apply", good.as_bytes(), tok, None);
+        assert!(text(&r).contains("\"ok\":true"), "gated apply failed: {}", text(&r));
+    }
 
     /// A server in credential-map mode: two env-referenced tokens, rights
     /// seeded as grant grains in the file itself.

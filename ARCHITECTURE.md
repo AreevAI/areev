@@ -832,6 +832,41 @@ run is a command a host triggers, so improvement never runs unattended. That is
 the difference between "an LLM edits your memory" and self-improvement you can
 put in production.
 
+### Areev supplies the corpus and grades the result; it never trains
+
+The pressure to turn a memory engine into a trainer is obvious — we hold the
+trajectories, so why not tune on them? The boundary is deliberate, and it is the
+same one CAL applies to every host verb: if a thing needs a filesystem path, a
+credential, or a process to exist, it belongs to the host. A training job needs a
+GPU, a credential, a trainer process and hours of wall clock, so Areev ships no
+trainer and takes no training dependency — the posture `--embed-cmd` and
+`--llm-cmd` already established.
+
+What Areev does own is the half nobody else documents. `areev corpus` emits the
+training set through an **authorized CAL selector**, with step-level quality
+labels and loss weights — masking the harmful steps of a failed run instead of
+discarding the run — and writes an immutable export manifest naming every source
+hash, the model/policy bindings, the subject fingerprints touched, and the
+recipient. `areev run shadow` replays recorded runs with zero effect dispatches
+and `areev eval` pins an evalset as a gating edge, which together are the only
+honest way to say a candidate is an improvement. And because an export is a
+grain, a later `FORGET SUBJECT` reports which corpora — and therefore which
+downstream checkpoints — are now stale and must be retired or re-derived.
+
+The claim ladder is bounded on purpose: we can prove what went into a corpus,
+exclude a subject from it, and re-derive. We do **not** claim a subject has been
+removed from anyone's weights. The seam itself completes the loop: `areev tune
+--cmd` hands the corpus to the host's trainer and registers the returned
+adapter as an `mg:adapter` Fact — base model + adapter + quantization pinned as
+one tuple, `derived_from` naming the corpus manifest — and promotion is a gated
+apply through the loop's existing lifecycle (the `adapter_intake` analyzer
+proposes, `areev eval run --model` records the gating edge against any
+OpenAI-compatible serving endpoint, `APPROVE`/`APPLY --gating-run` admits,
+rollback retracts the `mg:adapter_promotion` Fact hosts serve from). One
+candidate per served model; auto-apply is impossible by class. Design of
+record: [`docs/areev-adaptive-agents-proposal.md`](docs/areev-adaptive-agents-proposal.md)
+§5 — and still no capability claim before the harness has measured one.
+
 ### The anonymization boundary is the model, not the tool
 
 An `egress` anonymization policy covers what leaves for a model provider, and

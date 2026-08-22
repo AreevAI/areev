@@ -82,6 +82,9 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "run.cost" => {
             "Workflow {workflow} spent ${usd} across {runs} runs (avg ${avg_usd}/run)"
         }
+        "adapter.candidate" => {
+            "Promote adapter for \"{model}\" (base {base_model}) — gated on its pinned evalset"
+        }
         // origin=llm drafts carry free text (clearly marked llm) rather than a
         // deterministic template — the model's proposed summary rides in {text}.
         "llm.discover" => "{text}",
@@ -499,8 +502,10 @@ pub struct GatingEvidence {
 /// re-checked when a stored grain is loaded (a hand-authored grain must not
 /// bypass the rule):
 /// - `code_revision` ⇔ a `tool:` target, and it MUST pin an evalset hash.
+/// - `adapter_revision` ⇔ a `model:` target, same mandatory pin (the tuning
+///   seam inherits §7.4's gate wholesale).
 /// - An `evalset:` target is its own always-human-approved class: never a
-///   `code_revision`, and never itself pinned (the gate cannot gate itself).
+///   gated revision, and never itself pinned (the gate cannot gate itself).
 /// - No other target class carries a pin.
 pub fn validate_code_rules(
     action: ActionKind,
@@ -522,6 +527,19 @@ pub fn validate_code_rules(
                 "code_revision requires a tool: target, got class '{other}'"
             ));
         }
+        (ActionKind::AdapterRevision, "model") => {
+            if evalset_hash.is_none_or(|h| h.trim().is_empty()) {
+                return e1(
+                    "an adapter_revision must pin the evalset hash it was \
+                     gated against (evalset_hash)",
+                );
+            }
+        }
+        (ActionKind::AdapterRevision, other) => {
+            return e1(&format!(
+                "adapter_revision requires a model: target, got class '{other}'"
+            ));
+        }
         // A REVERT of an applied code revision targets the same tool: —
         // it is the rollback inverse, not new code, so it needs no pin
         // (blocking it here would leave the highest-stakes target class
@@ -534,6 +552,15 @@ pub fn validate_code_rules(
         (_, "code") => {
             return e1("a tool: target requires action_kind code_revision");
         }
+        // Same rollback-inverse escape hatch for the adapter class.
+        (ActionKind::Revert, "model") => {
+            if evalset_hash.is_some() {
+                return e1("an adapter revert carries no evalset pin");
+            }
+        }
+        (_, "model") => {
+            return e1("a model: target requires action_kind adapter_revision");
+        }
         (_, "evalset") => {
             if evalset_hash.is_some() {
                 return e1(
@@ -544,7 +571,10 @@ pub fn validate_code_rules(
         }
         _ => {
             if evalset_hash.is_some() {
-                return e1("evalset_hash is only valid on code_revision recommendations");
+                return e1(
+                    "evalset_hash is only valid on code_revision or \
+                     adapter_revision recommendations",
+                );
             }
         }
     }
@@ -650,6 +680,24 @@ mod tests {
         // Pins don't leak onto ordinary targets.
         assert!(validate_code_rules(A::Consolidate, "memory", Some("abc")).is_err());
         assert!(validate_code_rules(A::Consolidate, "memory", None).is_ok());
+    }
+
+    #[test]
+    fn rule_e1_pins_adapter_revisions_like_code() {
+        use crate::model::ActionKind as A;
+        // adapter_revision on a model target with a pin: OK.
+        assert!(validate_code_rules(A::AdapterRevision, "model", Some("abc")).is_ok());
+        // Unpinned adapter revision: refused.
+        assert!(validate_code_rules(A::AdapterRevision, "model", None).is_err());
+        assert!(validate_code_rules(A::AdapterRevision, "model", Some("  ")).is_err());
+        // adapter_revision off a model target: refused.
+        assert!(validate_code_rules(A::AdapterRevision, "memory", Some("abc")).is_err());
+        assert!(validate_code_rules(A::AdapterRevision, "code", Some("abc")).is_err());
+        // A model target with a non-adapter action: refused.
+        assert!(validate_code_rules(A::Flag, "model", None).is_err());
+        // The rollback inverse needs no pin — and must carry none.
+        assert!(validate_code_rules(A::Revert, "model", None).is_ok());
+        assert!(validate_code_rules(A::Revert, "model", Some("abc")).is_err());
     }
 
     #[test]

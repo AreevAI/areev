@@ -178,6 +178,7 @@ pub fn builtin_analyzers() -> Vec<Box<dyn Analyzer>> {
         Box::new(crate::analyzers::outcome_review::OutcomeReview::new()),
         Box::new(crate::analyzers::retention_sweep::RetentionSweep::new()),
         Box::new(crate::analyzers::run_outcome::RunOutcome::new()),
+        Box::new(crate::analyzers::adapter_intake::AdapterIntake::new()),
     ]
 }
 
@@ -190,14 +191,14 @@ mod tests {
         let a = builtin_analyzers();
         assert_eq!(
             a.len(),
-            13,
+            14,
             "6 hygiene + skill/goal trajectory + 3 telemetry-fed (cold/coverage/budget) \
-             + retention (default-off) + run_outcome"
+             + retention (default-off) + run_outcome + adapter_intake"
         );
         let mut ids: Vec<&str> = a.iter().map(|x| x.manifest().id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 13, "analyzer ids must be unique");
+        assert_eq!(ids.len(), 14, "analyzer ids must be unique");
     }
 
     #[test]

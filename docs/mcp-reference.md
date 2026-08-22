@@ -364,6 +364,7 @@ blocked (self-approval, `LOP-E021`) — run a reviewer process with distinct
 | `action` | string | no | `apply` \| `approve` \| `reject` (omit to list) |
 | `hash` | string | for an action | recommendation hash |
 | `because` | string | for an action | mandatory written reason |
+| `gating_run` | string | for a gated apply | an `eval-…` run id from `areev eval run`; a **code or adapter revision** applies only with one, and the evidence is loaded from the journaled `mg:eval_run` summary — never from the client. An ungated apply of a gated revision is refused *before* the approval lands, so nothing is stranded |
 
 ### The graph, time, and run↔memory reads
 
@@ -445,7 +446,7 @@ the CLI:
 
 | Tool | What it does |
 |---|---|
-| `areev_run_start` | Start a run — `workflow` (64-hex), fresh `run_id`, optional `input` (any JSON) and budgets (`max_tokens`, `max_usd_micros`, `max_wall_ms`, `max_supersteps`). Client-gated nodes park the run and return a `requires_action` envelope. |
+| `areev_run_start` | Start a run — `workflow` (64-hex), fresh `run_id`, optional `input` (any JSON) and budgets (`max_tokens`, `max_usd_micros`, `max_wall_ms`, `max_supersteps`). Client-gated nodes park the run and return a `requires_action` envelope. Code-carrying / sandboxed Definitions follow the same server-bound posture as `$AREEV_RUN_TOOL_CMD`: the operator sets `$AREEV_RUN_ALLOW_EXECUTOR` (the executor pin, comma list), `$AREEV_RUN_EXECUTOR_CACHE`, and `$AREEV_RUN_SANDBOX_CMD` (the areev-sandbox runner for `runtime: "wasm32-areev"`) at server start — a client can never pin code, because the pin IS the authorization. |
 | `areev_run_resume` | Resume a parked/interrupted run from its latest checkpoint — settles answered asks, expires stale ones, re-delivers crash-window intents under the same idempotency key (recorded). |
 | `areev_run_respond` | Answer one pending ask by `tool_call_id` (never an index) with `result` / `is_error`. Separation of duties is structural; rejected and late responses are journaled as audit evidence before the error returns. |
 | `areev_run_cancel` | Write the kill-switch marker (`run_id`, optional `because`) — deliberately the lowest-privilege run verb. |

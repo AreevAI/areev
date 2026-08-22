@@ -316,8 +316,8 @@ behind these flags.
 
 ### Tier C: sandboxed pure-compute tools
 
-`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen two-function
-import set, a fuel ceiling, a memory-page ceiling, and a module-size cap applied
+`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen one-function
+import set (`areev::emit` — `alloc` is a guest export the host calls), a fuel ceiling, a memory-page ceiling, and a module-size cap applied
 before the decoder sees the bytes. A module cannot open a socket, touch the
 filesystem, read an environment variable, see a clock, or run forever.
 
@@ -452,6 +452,12 @@ boundary. See [`loop.md`](loop.md) for the surfaces; the invariants:
   synced file can never arrive pre-armed: auto-apply never touches free text,
   destruction, prompts, or LLM-drafted content; analyzers execute read-only;
   no payload amplifies scopes; no file raises a host-set cap.
+- **Substrate reads are namespace-grant-gated.** A principal holding
+  `loop.run` reads only the namespaces its grants cover: explicit-namespace
+  reads fail closed rather than returning empty, all-namespace scans filter
+  per grain, and `agent:*`/loop namespaces are excluded from implicit
+  analyzer input entirely (governance and harness state are not analyzer
+  fodder). Regression-tested in `areev-loop-adapter/tests/adapter.rs`.
 - **The laundering threat.** The deterministic path can carry attacker text:
   tool-failure clustering derives a signature from attacker-controlled tool
   output. So auto-apply is restricted to SUPERSEDE-only structural curation

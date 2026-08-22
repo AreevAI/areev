@@ -950,17 +950,56 @@ impl Evaluator {
             // when none did would make the report lie.
             return StartOutcome::Ingested;
         };
-        let input = serde_json::json!({
+        let mut input = serde_json::json!({
             "trigger": trigger_hash,
             "connector": trigger.connector,
             "scope": trigger.scope,
             "item": item.payload,
         });
+        // Declared context (#85): the EVALUATOR assembles it, because it is
+        // the one party that already holds the memory — on the embedded
+        // backend a tool inside the run cannot open the file its own run
+        // locks. Fail closed: a trigger that declared context must not fire
+        // blind, so a missing query or a failed read refuses the firing (the
+        // evaluator's normal retry/backoff applies) rather than starting a
+        // run without the context its declaration promised.
+        if let Some(name) = &trigger.context_query {
+            match self.assemble_context(name) {
+                Ok(ctx) => {
+                    input["context"] = ctx;
+                }
+                Err(why) => {
+                    return StartOutcome::Failed(format!("context_query \"{name}\": {why}"));
+                }
+            }
+        }
         match starter.start(&trigger.workflow, run_id, input) {
             StartResult::Started => StartOutcome::Started,
             StartResult::Duplicate => StartOutcome::Duplicate,
             StartResult::Failed(why) => StartOutcome::Failed(why),
         }
+    }
+
+    /// Run the trigger's saved query (`RUN "name"`) against the facade this
+    /// evaluator already holds and return the result payload. The executor
+    /// re-validates the saved body as read-only at execution, and the
+    /// destructive cap is off — a context query can never mutate.
+    fn assemble_context(&self, name: &str) -> std::result::Result<serde_json::Value, String> {
+        // The name travels inside a CAL string literal; refuse anything that
+        // could not be a saved-query name rather than escaping it.
+        if name.is_empty()
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Err("not a saved-query name (allowed: [A-Za-z0-9_.-])".into());
+        }
+        let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig {
+            allow_destructive_ops: false,
+            ..areev_cal::CalExecutorConfig::default()
+        });
+        let res = ex
+            .execute(&format!("RUN \"{name}\""), self.facade.as_ref())
+            .map_err(|e| e.to_string())?;
+        serde_json::to_value(&res.result).map_err(|e| e.to_string())
     }
 
     /// One Observation per firing: what fired, what it produced, what it

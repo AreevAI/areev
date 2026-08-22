@@ -940,3 +940,83 @@ fn an_unusable_declaration_is_reported_distinctly_not_as_waiting() {
         report.errors
     );
 }
+
+// ---- declared context (#85) ------------------------------------------------
+
+/// A starter that keeps the input it was handed, so a test can look inside.
+#[derive(Default)]
+struct CapturingStarter {
+    inputs: Mutex<Vec<Value>>,
+}
+
+impl RunStarter for CapturingStarter {
+    fn start(&self, _workflow: &str, _run_id: &str, input: Value) -> StartResult {
+        self.inputs.lock().unwrap().push(input);
+        StartResult::Started
+    }
+}
+
+/// A trigger naming a `context_query` fires with the saved query's result in
+/// the run input — the evaluator assembles it, because it is the one party
+/// that already holds the memory the run's own tools cannot open.
+#[test]
+fn a_context_query_trigger_carries_assembled_context() {
+    let rig = Rig::new();
+    // Knowledge the run should see, and the saved query that selects it.
+    rig.facade
+        .with_store(|m| {
+            m.add(
+                &areev_core::types::Fact::new("acme", "deploy_target", "k8s")
+                    .namespace(NS)
+                    .created_at(T0),
+            )
+        })
+        .unwrap();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(
+        r#"DEFINE QUERY "triage_ctx"() AS { RECALL facts WHERE subject = "acme" AND namespace = "ops" }"#,
+        rig.facade.as_ref(),
+    )
+    .expect("DEFINE QUERY must succeed");
+
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Interval, WF).interval_secs(120).context_query("triage_ctx"),
+    );
+    let starter = Arc::new(CapturingStarter::default());
+    let mut ev = rig.evaluator(None);
+    ev.starter = Some(Arc::clone(&starter) as Arc<dyn RunStarter>);
+
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 1, "errors: {:?}", r.errors);
+    let inputs = starter.inputs.lock().unwrap();
+    let ctx = &inputs[0]["context"];
+    assert!(
+        ctx.to_string().contains("deploy_target"),
+        "the run input must carry the assembled context: {}",
+        inputs[0]
+    );
+    assert_eq!(inputs[0]["trigger"], json!(h), "the declared payload survives beside it");
+}
+
+/// Fail closed: a trigger that declared context must not fire blind. A
+/// missing saved query refuses the firing (retried on the evaluator's normal
+/// cadence) instead of starting a run without the promised context.
+#[test]
+fn a_missing_context_query_refuses_the_firing() {
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Interval, WF).interval_secs(120).context_query("not_defined"),
+    );
+    let starter = Arc::new(CapturingStarter::default());
+    let mut ev = rig.evaluator(None);
+    ev.starter = Some(Arc::clone(&starter) as Arc<dyn RunStarter>);
+
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.runs_started, 0, "a declared-context trigger must not fire blind");
+    assert!(
+        r.errors.iter().any(|e| e.contains("not_defined")),
+        "the refusal names the query: {:?}",
+        r.errors
+    );
+    assert!(starter.inputs.lock().unwrap().is_empty(), "no run input was handed over");
+}

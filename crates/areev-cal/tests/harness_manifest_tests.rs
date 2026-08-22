@@ -168,3 +168,143 @@ fn assembly_manifest_sampling_is_off_by_default() {
         .unwrap();
     assert!(observations.is_empty());
 }
+
+// ── The tuning seam: adapter registration ────────────────────────────────
+
+fn adapter_reply() -> String {
+    serde_json::json!({
+        "adapter": {"uri": "file:///adapters/a.safetensors", "sha256": "feedfeed"},
+        "base_model": "qwen3-4b",
+        "base_build": "2026-08-01",
+        "quantization": "bf16",
+        "serving_runtime": "vllm",
+        "serves_as": "acme-support",
+        "metrics": {"train_loss": 0.42}
+    })
+    .to_string()
+}
+
+/// A corpus export manifest to anchor the lineage on (the real one is an
+/// Observation; `record_adapter` only requires the hash to resolve).
+fn seed_manifest(facade: &AreevFacade) -> String {
+    facade
+        .record_corpus_export("RECALL facts", "train.jsonl", None, 5_000, &[], &[])
+        .unwrap()
+        .to_hex()
+}
+
+#[test]
+fn record_adapter_writes_the_registry_grain_with_lineage() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Areev::open(dir.path().join("tune.db").to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+    let manifest = seed_manifest(&facade);
+
+    let hash = facade
+        .record_adapter(&adapter_reply(), &manifest, "pin1234", 9_000)
+        .unwrap();
+    let grain = facade.with_store(|m| m.get(&hash)).unwrap();
+    assert_eq!(grain.get_str("namespace"), Some(HARNESS_NS));
+    assert_eq!(grain.get_str("subject"), Some("model:acme-support"));
+    assert_eq!(grain.get_str("relation"), Some("mg:adapter"));
+    assert_eq!(grain.get_str("derived_from"), Some(manifest.as_str()));
+    // The pin and the lineage ride INSIDE the object too — the analyzer's
+    // single-read contract.
+    let object: serde_json::Value =
+        serde_json::from_str(grain.get_str("object").unwrap()).unwrap();
+    assert_eq!(object["evalset_hash"], "pin1234");
+    assert_eq!(object["corpus_manifest"], manifest.as_str());
+    assert_eq!(object["serves_as"], "acme-support");
+
+    // The reverse walk: from the corpus manifest to every adapter trained
+    // on it — this is what the stale-adapter erasure notice rides.
+    let manifest_hash = areev_core::Hash::from_hex(&manifest).unwrap();
+    let kids = facade
+        .with_store(|m| m.grains_derived_from(&manifest_hash))
+        .unwrap();
+    assert!(
+        kids.iter().any(|g| g.get_str("relation") == Some("mg:adapter")),
+        "provenance walk must find the adapter"
+    );
+}
+
+#[test]
+fn record_adapter_refuses_incomplete_replies_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Areev::open(dir.path().join("tune2.db").to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+    let manifest = seed_manifest(&facade);
+    let before = facade.with_store(|m| m.stats()).unwrap().grains;
+
+    for broken in [
+        r#"{"base_model":"x","serves_as":"y"}"#,                            // no adapter
+        r#"{"adapter":{"uri":"u"},"base_model":"x","serves_as":"y"}"#,      // no sha256
+        r#"{"adapter":{"uri":"u","sha256":"s"},"serves_as":"y"}"#,          // no base_model
+        r#"{"adapter":{"uri":"u","sha256":"s"},"base_model":"x"}"#,         // no serves_as
+        r#"{"adapter":{"uri":"u","sha256":"s"},"base_model":"x","serves_as":"  "}"#,
+        "not json",
+    ] {
+        assert!(
+            facade.record_adapter(broken, &manifest, "pin", 9_000).is_err(),
+            "must refuse: {broken}"
+        );
+    }
+    // An unresolvable manifest and an empty pin also refuse.
+    assert!(facade
+        .record_adapter(&adapter_reply(), "zz", "pin", 9_000)
+        .is_err());
+    assert!(facade
+        .record_adapter(
+            &adapter_reply(),
+            &"ab".repeat(32), // well-formed hash, not in the store
+            "pin",
+            9_000
+        )
+        .is_err());
+    assert!(facade
+        .record_adapter(&adapter_reply(), &manifest, "  ", 9_000)
+        .is_err());
+
+    let after = facade.with_store(|m| m.stats()).unwrap().grains;
+    assert_eq!(before, after, "a refused registration writes nothing");
+}
+
+#[test]
+fn record_adapter_requires_the_harness_write_grant() {
+    use areev_core::authz::{AUTHZ_NS, REL_PERMITS};
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Areev::open(dir.path().join("tune3.db").to_str().unwrap()).unwrap();
+    // A principal with write on an ordinary namespace but NOT agent:harness.
+    store
+        .add(
+            &Fact::new("agent:bot", REL_PERMITS, "read,write ON caller")
+                .namespace(AUTHZ_NS)
+                .created_at(1_000),
+        )
+        .unwrap();
+    let owner = AreevFacade::with_session(store, Some("caller".into()), None);
+    let manifest = seed_manifest(&owner);
+    let facade = owner.with_principal("agent:bot").unwrap();
+    let err = facade
+        .record_adapter(&adapter_reply(), &manifest, "pin", 9_000)
+        .unwrap_err();
+    assert_eq!(err.code(), "AUT-E001", "harness write must be granted: {err}");
+}
+
+#[test]
+fn record_adapter_refuses_a_non_manifest_lineage_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Areev::open(dir.path().join("tune4.db").to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+    // A real grain that is NOT a corpus export manifest.
+    let plain = facade
+        .with_store(|m| m.add(&Fact::new("a", "b", "c").namespace("caller")))
+        .unwrap();
+    let err = facade
+        .record_adapter(&adapter_reply(), &plain.to_hex(), "pin", 9_000)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("not a corpus export manifest"),
+        "lineage must anchor to a real manifest: {err}"
+    );
+}

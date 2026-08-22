@@ -780,3 +780,97 @@ fn mcp_profile_memory_hides_run_tools() {
 
     assert_eq!(by_id(4)["result"]["isError"], false);
 }
+
+/// The tuning seam's promotion over MCP: an adapter recommendation applies
+/// only with `gating_run` — the evidence is loaded from the journaled
+/// eval summary, never from the client — and an ungated apply is refused
+/// BEFORE the approval lands, leaving the recommendation pending.
+#[test]
+fn mcp_gated_apply_promotes_an_adapter() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db");
+    let db = db.to_str().unwrap();
+
+    // ── seed via the CLI: fact → evalset → corpus → tune (fake trainer) →
+    //    a clean recorded gate run ──
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev")).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "areev {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    let hash64 = |s: &str| {
+        s.split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_ascii_hexdigit()))
+            .find(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or_else(|| panic!("no hash in: {s}"))
+            .to_string()
+    };
+    cli(&["add", "acme", "deploy_target", "k8s", "--db", db]);
+    let cases = dir.path().join("cases.json");
+    std::fs::write(&cases, r#"[{"name":"echo","input":{"q":1},"expect":{"equals":{"q":1}}}]"#)
+        .unwrap();
+    let (out, _) = cli(&["eval", "create", "--db", db, "--name", "gate", "--cases",
+                         cases.to_str().unwrap()]);
+    let evalset = hash64(&out);
+    let corpus = dir.path().join("train.jsonl");
+    let (_, err) = cli(&["corpus", "--db", db, "--select",
+                         r#"RECALL facts WHERE subject = "acme""#,
+                         "--out", corpus.to_str().unwrap()]);
+    let manifest = hash64(&err);
+    #[cfg(not(windows))]
+    let trainer = r#"printf '{"adapter":{"uri":"file:///tmp/a","sha256":"feed"},"base_model":"qwen3-4b","serves_as":"acme-support"}'"#;
+    #[cfg(windows)]
+    let trainer = r#"echo {"adapter":{"uri":"file:///tmp/a","sha256":"feed"},"base_model":"qwen3-4b","serves_as":"acme-support"}"#;
+    cli(&["tune", "--db", db, "--cmd", trainer, "--evalset", &evalset,
+          "--corpus", corpus.to_str().unwrap(), "--manifest", &manifest]);
+    let (out, _) = cli(&["eval", "run", "--db", db, "--evalset", &evalset, "--tool-cmd", "cat"]);
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let run_id = report["run_id"].as_str().unwrap().to_string();
+
+    // ── session 1: propose over MCP, read the rec hash back ──
+    let out = session(db, &[
+        ("areev_loop", serde_json::json!({})),
+        ("areev_recommendations", serde_json::json!({})),
+    ]);
+    let list = out.iter().find(|v| v["id"] == 3).unwrap();
+    assert_eq!(list["result"]["isError"], false, "{list}");
+    let text = list["result"]["content"][0]["text"].as_str().unwrap();
+    let rows: serde_json::Value = serde_json::from_str(text).unwrap();
+    let rec = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["analyzer"].as_str().unwrap_or("").contains("adapter_intake"))
+        .unwrap_or_else(|| panic!("adapter_intake must propose over MCP: {rows}"));
+    let rec_hash = rec["hash"].as_str().unwrap().to_string();
+
+    // ── session 2: ungated apply refused (still pending), gated apply lands ──
+    let out = session(db, &[
+        ("areev_recommendations",
+         serde_json::json!({"action": "apply", "hash": rec_hash, "because": "ship it"})),
+        ("areev_recommendations",
+         serde_json::json!({"action": "apply", "hash": rec_hash, "because": "gated and green",
+                            "gating_run": run_id})),
+    ]);
+    let refused = out.iter().find(|v| v["id"] == 2).unwrap();
+    assert_eq!(refused["result"]["isError"], true, "ungated apply must refuse: {refused}");
+    assert!(
+        refused["result"]["content"][0]["text"].as_str().unwrap().contains("gating run"),
+        "{refused}"
+    );
+    let applied = out.iter().find(|v| v["id"] == 3).unwrap();
+    assert_eq!(applied["result"]["isError"], false, "gated apply failed: {applied}");
+
+    // The promotion Fact exists — verified through the CLI read side.
+    let (out, _) = cli(&["cal", r#"RECALL facts WHERE relation = "mg:adapter_promotion""#,
+                         "--db", db, "--ns", "areev-loop"]);
+    let payload: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(payload["grains"].as_array().map(Vec::len), Some(1), "{out}");
+}

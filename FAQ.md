@@ -327,6 +327,39 @@ restricted to structural memory curation (deduplication, fork merges) — it can
 touch a prompt/instruction file, or run a destructive `FORGET`. Those always
 require a human. See [`docs/security-model.md`](docs/security-model.md).
 
+### Will Areev fine-tune a small model on my agent's history?
+
+Not itself — Areev ships no trainer and takes no training dependency, the same
+boundary that keeps embeddings and LLM calls host-supplied. What already ships is
+the half that is actually hard.
+
+`areev corpus --select '<READ CAL>' [--out train.jsonl] [--recipient ID]` exports
+an OpenAI-format JSONL training set chosen by an **authorized CAL query**,
+carrying tool definitions, step-level quality labels and loss weights (so the
+harmful steps of a failed run are masked rather than the whole run discarded),
+elision records, and trace/model/policy/subject-fingerprint bindings. Every
+export writes an immutable manifest grain whose edges name each source hash, so a
+later `areev forget-subject` reports which corpora — and therefore which
+downstream checkpoints — went stale and must be retired or re-derived. For
+grading, `areev run shadow` replays recorded runs with zero effect dispatches and
+`areev eval` pins an evalset as the gating edge `areev loop apply --gating-run`
+consumes.
+
+The seam completes it: `areev tune --cmd ...` hands that corpus to **your**
+trainer and registers the returned adapter as a grain pinning base model +
+adapter + quantization as one unit, with `derived_from` naming the corpus
+manifest. Promotion runs through the same gates a memory edit does: `areev
+loop run` proposes it (one candidate per served model), `areev eval run
+--evalset <pin> --model openai-compat:<name>` grades it against any
+OpenAI-compatible serving endpoint (vLLM/SGLang; `ollama:` for GGUF), approve
+carries a written reason, apply requires the recorded clean gating run
+(Rule E1), and rollback retracts the promotion Fact the host serves from.
+Two things it deliberately does not come with: any accuracy or context-savings
+claim before the harness has measured one, and any claim that erasure removes
+a subject from model weights — what Areev evidences is auditable suppression
+and re-derivation (`forget-subject` names the stale corpora *and* the stale
+adapters).
+
 ### What are the latency characteristics?
 
 Recall is in-process and fast. Measured on an Apple M4 Max: structural recall

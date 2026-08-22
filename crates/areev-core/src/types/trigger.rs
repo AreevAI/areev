@@ -236,6 +236,14 @@ pub struct Trigger {
     /// (`int:cursor_field`, `int:webhook_path`, `int:timezone`, …). Inner keys
     /// are never compacted, so arbitrary connector settings round-trip verbatim.
     pub config: Option<serde_json::Value>,
+    /// A saved query (`qry:<name>`) the EVALUATOR runs when this trigger
+    /// fires; its result rides into the run input as `context`. This is how
+    /// a trigger-started run carries assembled context on the embedded
+    /// backend, where a tool cannot open the memory its own run holds (#85):
+    /// the evaluator already holds it, and the declaration replicates with
+    /// the trigger — auditable, not host-local. Omit-default: absent means
+    /// no context assembly, exactly the pre-1.5 behaviour.
+    pub context_query: Option<String>,
     pub common: GrainCommon,
 }
 
@@ -259,6 +267,7 @@ impl Trigger {
             concurrency: Concurrency::default(),
             catchup: Catchup::default(),
             config: None,
+            context_query: None,
             common: GrainCommon { confidence: 1.0, ..Default::default() },
         }
     }
@@ -336,6 +345,12 @@ impl Trigger {
 
     pub fn catchup(mut self, c: Catchup) -> Self {
         self.catchup = c;
+        self
+    }
+
+    /// Name the saved query whose result becomes the run input's `context`.
+    pub fn context_query(mut self, name: &str) -> Self {
+        self.context_query = Some(name.to_string());
         self
     }
 
@@ -429,6 +444,9 @@ impl Grain for Trigger {
         if let Some(ref c) = self.cron {
             parts.push(c.clone());
         }
+        if let Some(ref q) = self.context_query {
+            parts.push(q.clone());
+        }
         parts.join(" ")
     }
 }
@@ -462,6 +480,9 @@ impl Trigger {
         }
         if !self.enabled {
             m.insert("enabled".into(), serde_json::json!(false));
+        }
+        if let Some(ref q) = self.context_query {
+            m.insert("context_query".into(), serde_json::json!(q));
         }
         m
     }

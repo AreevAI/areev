@@ -122,6 +122,10 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     m.insert("failure_cause", "afc");
     m.insert("failure_detail", "afd");
     m.insert("actor_execution_environment", "aex");
+    // The tuning-adjacent sandbox pair (#86): both omit-default, absent on
+    // every pre-1.5 grain.
+    m.insert("runtime", "axr");
+    m.insert("runtime_limits", "axl");
 
     // OMS 1.3 Integration Domain Profile (int:* context map keys)
     // Tool fields (REST API connectors)
@@ -169,6 +173,7 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     m.insert("concurrency", "tconc");
     m.insert("catchup", "tcatch");
     m.insert("config", "tcfg");
+    m.insert("context_query", "tcq");
 
     // Observation fields
     m.insert("observer_id", "oid");

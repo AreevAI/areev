@@ -123,8 +123,8 @@ syncs with the file and is queryable.
 
 ## The analyzers
 
-Thirteen built-in analyzers, all deterministic (T0/T1), computing over typed
-grains — never raw prose. Eleven are default-on; goal stagnation and retention
+Fourteen built-in analyzers, all deterministic (T0/T1), computing over typed
+grains — never raw prose. Twelve are default-on; goal stagnation and retention
 sweep are opt-in (see the table). Three are **telemetry-fed** —
 they read the recall-telemetry sidecar (below) and move Areev Loop from *hygiene*
 (is memory internally correct?) to *utility* (is memory used, and does it
@@ -145,6 +145,7 @@ help?):
 | `retention_sweep` | grains older than a declared `max_age_days` (**opt-in** — a deletion policy is stated, never inferred; 0 = disabled) | one `FORGET` per over-age grain, batched per namespace (destructive, never auto-applies). The proposal names every grain it would remove, and states how many exceed the per-proposal cap rather than truncating silently. The cron equivalent is `areev retention sweep` — see [`gdpr.md`](gdpr.md) §2a |
 | `outcome_review` | an applied recommendation past `review_after` that regressed | a revert |
 | `run_outcome` | `areev run` workflows whose terminal runs keep failing/stalling/exhausting budgets (≥50% of ≥3 runs), or whose aggregate spend crosses a floor — fed by the run-outcome Observations the driver writes at every terminal run | an advisory flag per workflow (failure cluster and/or cost attribution) |
+| `adapter_intake` | an unpromoted adapter registered by [`areev tune`](#the-tuning-seam-adapter_revision) (an `mg:adapter` Fact in `agent:harness`) — one candidate per served model, the newest | an `adapter_revision` pinned to its evalset (Rule E1; never auto-applies) |
 
 Precision is measured, never asserted: `cargo run -p areev-bench --bin
 loop_precision` scores each analyzer against a labeled fixture and exits
@@ -161,6 +162,52 @@ Both ASSEMBLE paths feed budget telemetry. Multi-source assemblies allocate
 token budgets; the legacy single-source path interprets the numeric limit as a
 grain count and reports `budget.unit = "grains"`. In either case, dropping any
 candidate records an overflow sample for `budget_pressure`.
+
+## The tuning seam — `adapter_revision`
+
+The corpus path's last mile. `areev tune` hands a governed corpus to a
+**host-supplied** trainer (Areev never trains, ships no trainer, takes no
+training dependency) and registers the returned adapter as an `mg:adapter`
+Fact in `agent:harness` — base model + adapter + quantization pinned as one
+tuple, `derived_from` naming the corpus export manifest, and the Rule E1
+evalset pin embedded. From there the loop governs it exactly like a code
+revision:
+
+```bash
+areev tune --select '<READ CAL>' --out train.jsonl \
+           --evalset <PIN> --cmd 'my-trainer --base qwen3-4b'
+areev loop run                          # adapter_intake proposes the promotion
+areev eval run --evalset <PIN> --model openai-compat:<serves_as>   # the gate
+areev loop approve <rec> --because "…"
+areev loop apply <rec> --gating-run <eval-run-id>
+```
+
+The apply writes an immutable `(model:<name>, mg:adapter_promotion)` Fact in
+`areev-loop` carrying the payload plus the recorded gating edge. **That Fact
+is the host contract**: serve whatever a live promotion names (query
+`(model:X, mg:adapter_promotion)`), and treat a retracted promotion as the
+stop-serving signal — `areev loop rollback` is the memory-side inverse; the
+serving side is the host's move, and runs answered since promotion are not
+reverted.
+
+The lifecycle is deliberately **one candidate per served model**: while a
+promotion is live the analyzer proposes nothing for that model — replacing a
+promoted adapter starts with rolling the promotion back, after which the
+newest unpromoted candidate is proposed. A rolled-back candidate re-proposes
+while its registry grain stays live ("the situation returned"); retiring the
+`mg:adapter` grain — a supersession or `FORGET` — is how a host silences it.
+Multiple live candidates under one model are registry rows, not competing
+values; don't "resolve" them as a fork.
+
+Verify stays closed for adapters: when a baseline run of the pinned evalset
+exists, the recommendation carries an `evalset:<pin>:failed` metric — re-run
+`areev eval run --evalset <pin> --model …` after promotion and a recorded
+regression makes `outcome_review` propose the revert. An adapter promotion is
+auto-apply-impossible three independent ways (the `model:` class is excluded
+by name, the analyzer is `AutoApplyClass::Never`, and origin rules still
+apply). Erasure reaches the seam too: `forget-subject` reports which corpus
+exports went stale **and which adapters derive from them** — auditable
+suppression and re-derivation, never a claim that a subject left the weights.
 
 ## Recall telemetry (the utility signal)
 
@@ -280,14 +327,21 @@ db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole me
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
 db.recommendations('{"status":"pending"}')
 db.apply_recommendation(hash, because="…")     # audited approve+apply
+db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
+#   (code/adapter) revision: evidence loads from the recorded eval summary,
+#   and an ungated attempt refuses BEFORE the approval lands
 db.dismiss_recommendation(hash, "…")           # audited reject
 db.rollback_recommendation(hash, because="…")  # retract what an apply created
 db.loop_outcomes()                           # the Verify gate's held/regressed record
+# The tuning seam for hosts that train in-process (the CLI stays the paved road):
+db.record_corpus_export(selector, destination, source_hashes=json.dumps([...]))
+db.record_adapter(reply_json, manifest_hash, evalset_hash)
 ```
 
 Node mirrors these as `recordToolCall`, `loopRun` (incl. `fullSweep` /
-`policy`), `recommendations`, `applyRecommendation`, `dismissRecommendation`,
-`rollbackRecommendation`, and `loopOutcomes`, plus the `actor` constructor
+`policy`), `recommendations`, `applyRecommendation` (incl. `gatingRun`),
+`dismissRecommendation`, `rollbackRecommendation`, `loopOutcomes`,
+`recordCorpusExport`, and `recordAdapter`, plus the `actor` constructor
 argument.
 
 ### MCP — two tools
@@ -300,11 +354,16 @@ with different `--scopes`/`--actor` so no agent can approve its own proposals.
 ### HTTP — `/api/loop/*`
 
 `GET recommendations|health|analyzers` (reads) and `POST run|review|apply|
-rollback|config` (writes). The console's Areev Loop tab renders the queue with
+rollback|config` (writes). `POST /api/loop/apply` takes an optional
+`gating_run` — the `eval-…` run id a **code or adapter revision** requires;
+the evidence is loaded server-side from the journaled `mg:eval_run` summary,
+never from the request. The console's Areev Loop tab renders the queue with
 severity dots, evidence, and approve/apply/reject actions gated behind a
-mandatory reason; the **Setup** tab is writable — click an analyzer on/off to
-persist an enable/disable to the file's config (`POST /api/loop/config`).
-Auto-apply is never grantable from the console — only via a host policy file.
+mandatory reason; a gated recommendation (its row carries `evalset_hash`)
+additionally asks for the gate run id before it will apply. The **Setup**
+tab is writable — click an analyzer on/off to persist an enable/disable to
+the file's config (`POST /api/loop/config`). Auto-apply is never grantable
+from the console — only via a host policy file.
 
 ## Does it actually work? — the Verify gate
 

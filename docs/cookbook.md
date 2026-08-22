@@ -745,6 +745,41 @@ subject or retention erasure identify stale corpus files. Those files must be
 retired or re-derived—the receipt is not an unlearning claim about model
 weights.
 
+### …then tune a small model on it (the tuning seam)
+
+Hand that corpus to **your** trainer — Areev never trains — and govern the
+resulting adapter through the same gates a memory edit passes:
+
+```bash
+# The gate first: the evalset hash is the Rule E1 pin.
+areev eval create --db agent.db --name support-gate --cases cases.json
+
+# Export + train in one command (or reuse an earlier export with
+# --corpus train.jsonl --manifest <hash>). The trainer gets the job spec on
+# stdin and AREEV_CORPUS_PATH/AREEV_CORPUS_MANIFEST/AREEV_EVALSET in env,
+# and prints an adapter reference on stdout:
+#   {"adapter": {"uri", "sha256"}, "base_model", "serves_as",
+#    "quantization"?, "serving_runtime"?, "base_build"?, "metrics"?}
+areev tune --db agent.db --cmd 'my-trainer --base qwen3-4b' \
+  --select 'RECALL events WHERE session_id = "session-42"' \
+  --out train.jsonl --evalset <PIN>
+
+# Propose → grade → promote → (regret → roll back):
+areev loop run --db agent.db                 # adapter_intake files the rec
+areev eval run --db agent.db --evalset <PIN> \
+  --model openai-compat:<serves_as>           # vLLM/SGLang; ollama:<name> for GGUF
+areev loop approve <rec> --db agent.db --because "corpus + lineage reviewed"
+areev loop apply   <rec> --db agent.db --because "gated and green" \
+  --gating-run <eval-run-id>
+```
+
+The apply writes `(model:<serves_as>, mg:adapter_promotion)` — the host
+serves what a live promotion names and stops when it is retracted. Because
+the adapter grain's `derived_from` is the corpus manifest, a later
+`forget-subject` names the stale adapters right beside the stale corpora.
+Serving is any OpenAI-compatible endpoint: set `OPENAI_BASE_URL` (ending in
+`/v1`) and a non-empty `OPENAI_API_KEY`, or pass `--base-url`/`--key-env`.
+
 ---
 
 ## 15. Ship assembly logic in the file (saved queries + templates)
@@ -1028,7 +1063,11 @@ areev recall ... --db acct.db                                   # STO-E001, lock
 
 This is safe rather than a loophole: blobs are immutable, live beside the file
 rather than in it, and carry their checksum as their address, which the read
-re-verifies. An **encrypted** memory is the exception — decrypting the sidecar
+re-verifies. For *grains* the doors are different: declare a
+`--context-query` on the trigger so the evaluator assembles a saved query's
+result into the run input before the run starts, or run the PostgreSQL
+backend, where reads never block and a tool may open the memory mid-run
+(see [run.md](run.md#backend-divergence-reading-the-memory-mid-run-85)). An **encrypted** memory is the exception — decrypting the sidecar
 needs the derived key, so `blob get` opens it and therefore needs
 `--passphrase-env` and an unheld file.
 

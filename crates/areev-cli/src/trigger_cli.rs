@@ -241,6 +241,29 @@ fn add(
     if let Some(tz) = flag(flags, "timezone") {
         t = t.config(serde_json::json!({ "int:timezone": tz }));
     }
+    if let Some(q) = flag(flags, "context-query") {
+        // The name rides inside a CAL string at fire time; refuse anything
+        // that could not be a saved-query name (same rule the evaluator
+        // enforces, moved to declaration time where the author can fix it).
+        if q.is_empty()
+            || !q.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Err(format!(
+                "--context-query {q:?} is not a saved-query name (allowed: [A-Za-z0-9_.-])"
+            ));
+        }
+        // Warn — don't refuse — when the query is not registered yet: saved
+        // queries replicate with the file, so it may arrive by sync, and the
+        // evaluator fails closed at fire time either way.
+        use areev_cal::CalStoreFacade as _;
+        if facade.get_query(&q).is_none() {
+            eprintln!(
+                "warning: saved query \"{q}\" is not registered in this memory yet — \
+                 the trigger will refuse to fire until it is (DEFINE QUERY {q} AS ...)"
+            );
+        }
+        t = t.context_query(&q);
+    }
     t = t.extra_field("because", serde_json::json!(because));
 
     // Refuse here rather than storing something that can never fire — the

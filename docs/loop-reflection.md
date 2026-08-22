@@ -131,7 +131,7 @@ Where the rest of the field sits, and what we take from each:
 | **Voyager** | skill library of *executable, self-verified* code | **Adopt & scope**: synthesize a skill only if it's executably testable; otherwise it stays a proposal, not memory. |
 | **Mem0** | LLM picks ADD/UPDATE/**DELETE**/NOOP | **Beat**: destructive deletes silently lose info; its own table shows full-context beats it on accuracy. We supersede, never delete. |
 | **Zep / Graphiti** | bi-temporal edge invalidation (expire, don't delete) | **Already are**: Areev's immutable grains + supersession *is* the non-lossy model. Add the governed improvement loop on top. |
-| **SEAL** | self-generated finetuning data (real weight update) | **Avoid**: admits its own catastrophic forgetting. Keep learning in the append+supersede memory layer, which can't forget. |
+| **SEAL** | self-generated finetuning data (real weight update) | **Order, don't avoid**: it admits its own catastrophic forgetting, so learning goes in the append+supersede memory layer *first* — which can't forget. Weights are the last step after context and harness are exhausted, and only behind a governed corpus and a replay harness that grades the result (`areev corpus`, `areev run shadow`). |
 
 The through-line: a self-improving memory layer is trustworthy **only** when
 (a) detection is deterministic, (b) LLM edits are *proposals*, (c) a real

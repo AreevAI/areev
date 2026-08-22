@@ -61,17 +61,24 @@ pub trait HostToolExecutor: Send + Sync {
         &self,
         _tool_name: &str,
         _tool_hash: &str,
-        uri: &str,
-        _bytes: &[u8],
+        code: &PreparedCode,
         _input: &Value,
         _idempotency_key: &str,
     ) -> ExecResult {
         ExecResult::Err {
             cause: FailCause::ExecutorError,
             detail: format!(
-                "this host does not run code-carrying tools, so {uri} was not executed"
+                "this host does not run code-carrying tools, so {} was not executed",
+                code.uri
             ),
         }
+    }
+
+    /// Whether this host can dispatch a declared (non-native) runtime.
+    /// Default `false`: a plan declaring `wasm32-areev` refuses at start on
+    /// a host with no sandbox, the same fail-closed shape as the pin.
+    fn runtime_supported(&self, _runtime: &str) -> bool {
+        false
     }
 }
 
@@ -299,6 +306,11 @@ pub struct CodeExecutor {
     allowed: std::collections::BTreeSet<String>,
     cache_dir: std::path::PathBuf,
     timeout: Option<std::time::Duration>,
+    egress: Option<EgressHandle>,
+    /// The sandbox runner, argv-split (`areev-sandbox` or a path to it).
+    /// Host config, like the pin: a plan can declare `wasm32-areev`, but only
+    /// an operator who configured a sandbox can dispatch it.
+    sandbox_cmd: Option<Vec<String>>,
 }
 
 impl CodeExecutor {
@@ -309,7 +321,28 @@ impl CodeExecutor {
             allowed: Default::default(),
             cache_dir: std::env::temp_dir().join("areev-executors"),
             timeout: Some(std::time::Duration::from_secs(300)),
+            egress: None,
+            sandbox_cmd: None,
         }
+    }
+
+    /// Configure the areev-sandbox runner for `runtime: "wasm32-areev"`
+    /// Definitions (#86). Argv-split like `--embed-cmd` — never a shell.
+    pub fn sandbox_cmd(mut self, cmd: &str) -> Self {
+        let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        if !argv.is_empty() {
+            self.sandbox_cmd = Some(argv);
+        }
+        self
+    }
+
+    /// Route this executor's code blobs through a credential broker — the
+    /// same seam `CommandExecutor::with_egress` gives a `--tool-cmd`. A
+    /// pinned blob is the authoring style whose provenance the host can
+    /// actually prove; it must not get the WEAKER credential story (#87).
+    pub fn with_egress(mut self, egress: EgressHandle) -> Self {
+        self.egress = Some(egress);
+        self
     }
 
     /// Pin one content address (64 hex, or a full `cas://sha256:` URI).
@@ -366,24 +399,34 @@ impl HostToolExecutor for CodeExecutor {
         self.inner.execute(tool_name, tool_hash, input, idempotency_key)
     }
 
-    /// Pass through: the wrapped executor is the one holding a broker.
+    /// The broker's refusals — read from our own handle when we hold one
+    /// (the no-`--tool-cmd` case, where `inner` is a refusing stub), else
+    /// passed through to the wrapped executor. Both handles wrap the same
+    /// `Arc<Broker>`, so this never double-reports.
     fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
-        self.inner.refusals()
+        match &self.egress {
+            Some(e) => e.refusals(),
+            None => self.inner.refusals(),
+        }
     }
 
     fn code_allowed(&self, _tool_hash: &str, uri: &str) -> bool {
         self.allowed.contains(&strip_cas(uri).to_ascii_lowercase())
     }
 
+    fn runtime_supported(&self, runtime: &str) -> bool {
+        runtime == "wasm32-areev" && self.sandbox_cmd.is_some()
+    }
+
     fn execute_code(
         &self,
         tool_name: &str,
         tool_hash: &str,
-        uri: &str,
-        bytes: &[u8],
+        code: &PreparedCode,
         input: &Value,
         idempotency_key: &str,
     ) -> ExecResult {
+        let uri = code.uri.as_str();
         // Checked at start too. Re-checked here because a pool worker must
         // not depend on a caller having done it — the same reason the
         // destructive-ops cap is re-applied rather than trusted.
@@ -394,7 +437,7 @@ impl HostToolExecutor for CodeExecutor {
             };
         }
         let hex = strip_cas(uri).to_ascii_lowercase();
-        let path = match self.materialize(&hex, bytes) {
+        let path = match self.materialize(&hex, &code.bytes) {
             Ok(p) => p,
             Err(e) => {
                 return ExecResult::Err {
@@ -403,22 +446,61 @@ impl HostToolExecutor for CodeExecutor {
                 }
             }
         };
-        // Spawned directly rather than through a shell: the path is ours and
-        // contains no metacharacters, and going direct means no quoting bug
-        // can turn a cache path into an argument. A unix blob interprets its
-        // own shebang; on Windows the OS decides, which is why a code-carrying
-        // executor is platform-specific and the operator pins per platform.
+        // The declared runtime decides HOW the materialized blob runs (#86):
+        // native = the blob is the program; wasm32-areev = the sandbox is
+        // the program and the blob is its --module. Re-checked here for the
+        // same pool-worker reason as the pin.
         use areev_core::proc::{self, SpawnPolicy};
+        let cmd = match code.runtime.as_deref() {
+            None | Some("native") => std::process::Command::new(&path),
+            Some(rt) => {
+                let Some(argv) = self.sandbox_cmd.as_ref().filter(|_| rt == "wasm32-areev") else {
+                    return ExecResult::Err {
+                        cause: FailCause::ExecutorError,
+                        detail: format!(
+                            "{uri} declares runtime {rt:?}, which this host cannot \
+                             dispatch — configure --sandbox-cmd"
+                        ),
+                    };
+                };
+                let mut c = std::process::Command::new(&argv[0]);
+                c.args(&argv[1..]);
+                c.arg("--module").arg(&path);
+                if let Some(limits) = &code.limits {
+                    if let Some(fuel) = limits.get("fuel").and_then(Value::as_u64) {
+                        c.arg("--fuel").arg(fuel.to_string());
+                    }
+                    if let Some(pages) = limits.get("max_pages").and_then(Value::as_u64) {
+                        c.arg("--max-pages").arg(pages.to_string());
+                    }
+                }
+                c
+            }
+        };
+        // Native blobs are spawned directly rather than through a shell: the
+        // path is ours and contains no metacharacters, and going direct means
+        // no quoting bug can turn a cache path into an argument. A unix blob
+        // interprets its own shebang; on Windows the OS decides, which is why
+        // a code-carrying executor is platform-specific and the operator pins
+        // per platform. The sandbox path constructs argv the same way — the
+        // shell never sees any of it.
         let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        let mut env: Vec<(&str, &str)> = vec![
+            ("AREEV_TOOL_NAME", tool_name),
+            ("AREEV_TOOL_HASH", tool_hash),
+            ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
+            ("AREEV_EXECUTOR_URI", uri),
+        ];
+        // Brokered credentials, on the same terms as `CommandExecutor`:
+        // present only when the tool has a grant, so an unauthorized blob
+        // cannot even see the broker. A sandboxed module has no sockets, so
+        // the vars are inert there — harmless, and uniform.
+        let brokered = self.egress.as_ref().map(|e| e.env_for(tool_name)).unwrap_or_default();
+        env.extend(brokered.iter().map(|(k, v)| (*k, v.as_str())));
         let out = match proc::run(
-            std::process::Command::new(&path),
+            cmd,
             Some(input.to_string().as_bytes()),
-            &[
-                ("AREEV_TOOL_NAME", tool_name),
-                ("AREEV_TOOL_HASH", tool_hash),
-                ("AREEV_IDEMPOTENCY_KEY", idempotency_key),
-                ("AREEV_EXECUTOR_URI", uri),
-            ],
+            &env,
             &policy,
         ) {
             Ok(o) => o,
@@ -488,6 +570,11 @@ pub struct PreparedCode {
     /// The blob's bytes. `get_blob` verified the digest on read, so these
     /// bytes ARE the address — that is the whole integrity story.
     pub bytes: Vec<u8>,
+    /// The manifest-pinned runtime (#86). `None` = native direct exec;
+    /// `"wasm32-areev"` routes to the sandbox.
+    pub runtime: Option<String>,
+    /// The manifest-pinned sandbox limits (`{"fuel", "max_pages"}`).
+    pub limits: Option<Value>,
 }
 
 /// A completed dispatch coming back to the driver thread. Carries the
@@ -584,8 +671,7 @@ impl Pool {
                         Some(c) => executor.execute_code(
                             &tool_name,
                             &tool_hash,
-                            &c.uri,
-                            &c.bytes,
+                            c,
                             &job.input,
                             &job.idempotency_key,
                         ),

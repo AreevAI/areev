@@ -54,6 +54,12 @@ The scary version of self-improvement is an agent that changes itself between
 your reviews. This one cannot: **autonomy is never earned by a metric, it stays
 an explicit grant from the host.**
 
+Weights stay outside the engine — but not outside the governance story. Areev
+exports the governed training corpus your own trainer consumes, grades what
+comes back against a pinned evalset, and promotes the result through the same
+gates a memory edit passes — the
+[tuning seam](#reproducible-trajectories-and-governed-corpora).
+
 ---
 
 ## The problem
@@ -775,6 +781,25 @@ downstream trainer/model owner that must act on a stale-export notice. Later ide
 erasure reports which exported corpora are stale and must be retired or
 re-derived; this is auditable suppression/re-derivation, not a claim that a
 subject has been removed from model weights.
+
+**The tuning seam.** That corpus is the hard half of tuning a small model on
+your agent's own history: on-policy trajectories with step-level labels (the
+harmful steps of a failed run are masked, not the whole run discarded), a
+gating harness, and lineage that survives an erasure. `areev tune --cmd ...`
+is the last mile: hand the corpus to **your** trainer exactly as `--embed-cmd`
+hands text to your embedder, take back an adapter reference, and it registers
+as a grain pinning base model + adapter + quantization as one unit, with
+`derived_from` naming the corpus manifest. Promotion is then what every other
+change here already is: `areev loop run` proposes the candidate, `areev eval
+run --evalset <pin> --model openai-compat:<name>` grades it against your
+serving endpoint (vLLM/SGLang; `ollama:` for GGUF), a **clean recorded run**
+admits it through `approve`/`apply --gating-run` — writing the
+`mg:adapter_promotion` grain your host serves from — and rollback retracts
+it. Works from the CLI, Python, Node, MCP, or the console alike. Areev still
+never trains, ships no trainer, and takes no training dependency: it supplies
+the corpus, grades the result, and owns the lineage — and no accuracy or
+context-savings claim ships until the harness has measured one. Full guide:
+[docs/loop.md](docs/loop.md) · recipe: [cookbook §14](docs/cookbook.md#14-capture-a-reproducible-run-and-export-a-governed-corpus).
 - **It runs where you already run things — no daemon.** A cheap, idempotent
   command with watermark gates (`--min-new`, `--if-stale`): a Claude Code
   `SessionEnd` hook, cron, CI (`areev loop list --fail-on high` exits 2 —

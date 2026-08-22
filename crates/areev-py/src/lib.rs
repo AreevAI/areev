@@ -1513,7 +1513,8 @@ impl Areev {
     #[pyo3(signature = (workflow, run_id, input_json = None, tool_cmd = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
-                        llm_max_tokens = None))]
+                        llm_max_tokens = None, allow_executor = None, executor_cache = None,
+                        sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1530,6 +1531,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1539,7 +1543,8 @@ impl Areev {
         // Resolved before the run starts, so a bad model spec or a missing key
         // fails without journaling a run that cannot advance.
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner = self.runner(tool_cmd, llm);
+        let runner =
+            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
         let opts =
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
         let session = py
@@ -1554,7 +1559,8 @@ impl Areev {
     /// with abstract nodes still has to execute them, and the backend is host
     /// config that is deliberately not journaled with the run.
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
-                        key_env = None, llm_max_tokens = None))]
+                        key_env = None, llm_max_tokens = None, allow_executor = None,
+                        executor_cache = None, sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1565,9 +1571,13 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner = self.runner(tool_cmd, llm);
+        let runner =
+            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
         let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
         Ok(run_session_json(session).to_string())
@@ -1825,6 +1835,63 @@ impl Areev {
             .map_err(err)
     }
 
+    /// Record a governed corpus export a host performed itself — the same
+    /// immutable export-manifest grain `areev corpus` writes (the CLI verb
+    /// remains the paved road; this is for hosts that select and serialize
+    /// in-process). `subject_fingerprints` and `source_hashes` are JSON
+    /// string arrays. Returns the manifest hash — the lineage anchor
+    /// `record_adapter` requires, and what later erasure consults to report
+    /// stale corpora and adapters.
+    #[pyo3(signature = (selector, destination, recipient = None, subject_fingerprints = "[]".to_string(), source_hashes = "[]".to_string()))]
+    fn record_corpus_export(
+        &self,
+        py: Python<'_>,
+        selector: String,
+        destination: String,
+        recipient: Option<String>,
+        subject_fingerprints: String,
+        source_hashes: String,
+    ) -> PyResult<String> {
+        let fps: Vec<String> = serde_json::from_str(&subject_fingerprints)
+            .map_err(|e| PyValueError::new_err(format!("subject_fingerprints must be a JSON string array: {e}")))?;
+        let hashes: Vec<String> = serde_json::from_str(&source_hashes)
+            .map_err(|e| PyValueError::new_err(format!("source_hashes must be a JSON string array: {e}")))?;
+        py.detach(|| {
+            self.facade.record_corpus_export(
+                &selector,
+                &destination,
+                recipient.as_deref(),
+                now_ms(),
+                &fps,
+                &hashes,
+            )
+        })
+        .map(|h| json!({"hash": h.to_hex()}).to_string())
+        .map_err(err)
+    }
+
+    /// Register a host-trained adapter (the tuning seam) — the same
+    /// registration `areev tune` performs after its trainer returns, for
+    /// hosts that train in-process. `reply` is the adapter-reference JSON
+    /// (`{"adapter": {"uri", "sha256"}, "base_model", "serves_as", …}`),
+    /// `manifest_hash` a recorded corpus export, `evalset_hash` the Rule E1
+    /// pin. Validation is the facade's: an incomplete reply writes nothing.
+    /// The next `loop_run()` proposes the promotion (`adapter_intake`).
+    fn record_adapter(
+        &self,
+        py: Python<'_>,
+        reply: String,
+        manifest_hash: String,
+        evalset_hash: String,
+    ) -> PyResult<String> {
+        py.detach(|| {
+            self.facade
+                .record_adapter(&reply, &manifest_hash, &evalset_hash, now_ms())
+        })
+        .map(|h| json!({"hash": h.to_hex()}).to_string())
+        .map_err(err)
+    }
+
     /// Run one analysis pass. Bare (all args `None`) it never gates — an
     /// evaluator's first call always runs. `full_sweep=True` re-analyzes the
     /// whole memory (the `areev loop reflect` semantics); `policy` is a path
@@ -1950,7 +2017,11 @@ impl Areev {
     /// `scopes` is a comma-separated subset of
     /// `read,write,review,apply,admin`; omit it for all scopes. Pass a narrow
     /// set to enforce separation of duties from the host.
-    #[pyo3(signature = (hash, because, allow_destructive = false, scopes = None))]
+    /// A code or adapter revision applies only through its recorded gating
+    /// edge: pass `gating_run` (an `eval-…` run id from `areev eval run`) and
+    /// the evidence is loaded from the journaled `mg:eval_run` summary —
+    /// never from these arguments. Same contract as the CLI's `--gating-run`.
+    #[pyo3(signature = (hash, because, allow_destructive = false, scopes = None, gating_run = None))]
     fn apply_recommendation(
         &self,
         py: Python<'_>,
@@ -1958,6 +2029,7 @@ impl Areev {
         because: String,
         allow_destructive: bool,
         scopes: Option<String>,
+        gating_run: Option<String>,
     ) -> PyResult<String> {
         let scopes = parse_scopes(scopes.as_deref())?;
         let applied = py
@@ -1971,9 +2043,19 @@ impl Areev {
                 // destructive gate stranded the recommendation somewhere the
                 // reviewer could no longer reject it. The CLI's separate
                 // approve/apply verbs never had this trap; the fused call did.
-                engine.preflight_apply(&sub, &hash, &scopes, allow_destructive)?;
+                // The gating edge loads FIRST for the same reason: a bad run
+                // id must fail before any state transition, not after the
+                // approval already landed.
+                let gating = match &gating_run {
+                    Some(run_id) => Some(engine.gating_evidence(&sub, &hash, run_id)?),
+                    None => None,
+                };
+                engine.preflight_apply(&sub, &hash, &scopes, allow_destructive, gating.is_some())?;
                 engine.review(&mut sub, &hash, Decision::Approve, &self.actor, ObserverType::Human, &scopes, &because, now)?;
-                engine.apply(&mut sub, &hash, &self.actor, ObserverType::Human, &scopes, &because, allow_destructive, now)
+                match &gating {
+                    Some(g) => engine.apply_gated(&mut sub, &hash, &self.actor, ObserverType::Human, &scopes, &because, allow_destructive, g, now),
+                    None => engine.apply(&mut sub, &hash, &self.actor, ObserverType::Human, &scopes, &because, allow_destructive, now),
+                }
             })
             .map_err(err)?;
         Ok(json!({"hash": hash, "rollbackable": applied.rollbackable}).to_string())
@@ -2603,7 +2685,22 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
+        self.runner_pinned(tool_cmd, llm, None, None, None)
+    }
+
+    /// The pin-aware factory (#87): `allow_executor` is the same comma list
+    /// as the CLI's `--allow-executor` — without it, a plan naming a
+    /// code-carrying Definition refuses at start (RUN-E018), because the
+    /// authorization to execute code must come from the host, never the file.
+    fn runner_pinned(
+        &self,
+        tool_cmd: Option<String>,
+        llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
+    ) -> areev_run::Runner {
+        let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
                 std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
             }
@@ -2626,6 +2723,22 @@ impl Areev {
                     }
                 }
                 std::sync::Arc::new(NoExec)
+            }
+        };
+        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+            None => base,
+            Some(list) => {
+                let mut ce = areev_run::CodeExecutor::new(base);
+                for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                    ce = ce.allow(addr);
+                }
+                if let Some(dir) = executor_cache {
+                    ce = ce.cache_dir(dir);
+                }
+                if let Some(cmd) = sandbox_cmd {
+                    ce = ce.sandbox_cmd(&cmd);
+                }
+                std::sync::Arc::new(ce)
             }
         };
         areev_run::Runner {

@@ -280,7 +280,11 @@ The blob is an ordinary CAS blob, so it travels in bundles and `get_blob`
 verifies its digest on every read. The contract inside is identical to
 `--tool-cmd`: JSON on stdin, JSON on stdout, `AREEV_TOOL_NAME` /
 `AREEV_TOOL_HASH` / `AREEV_IDEMPOTENCY_KEY` in the environment (plus
-`AREEV_EXECUTOR_URI`).
+`AREEV_EXECUTOR_URI`) — **including brokered credentials**: with
+`--credential`/`--tool-egress` configured, a granted blob gets
+`AREEV_EGRESS_URL`/`AREEV_EGRESS_TOKEN` on the same terms as a `--tool-cmd`
+(#87 — the authoring style whose provenance the host can prove no longer gets
+the weaker credential story).
 
 **Nothing code-carrying runs unless the host pinned its address:**
 
@@ -288,6 +292,14 @@ verifies its digest on every read. The contract inside is identical to
 areev run start --workflow <WF> --run-id r1 \
   --allow-executor <64 hex>[,<64 hex>...] [--executor-cache DIR]
 ```
+
+The pin exists on every surface that starts runs (#87): `allow_executor` /
+`executor_cache` on `run_start`/`run_resume` in Python and Node (same comma
+list), and `$AREEV_RUN_ALLOW_EXECUTOR` / `$AREEV_RUN_EXECUTOR_CACHE` set at
+`areev serve` start for MCP — server-bound like `$AREEV_RUN_TOOL_CMD`,
+because the pin IS the authorization and an MCP client must not grant it to
+itself. The console's HTTP surface does not start runs at all (its runner is
+deliberately non-executing), so it carries no pin.
 
 Because bundles carry blobs, importing a peer's memory imports their connector
 code — so the authorization to execute it deliberately does **not** live in the
@@ -306,21 +318,76 @@ The address is pinned into the manifest at start, so superseding the Definition
 mid-run cannot change what executes. The blob is materialized to
 `<cache>/<hex>` (mode 0700) and reused; the path *is* the content address.
 
-A pinned executor is **not sandboxed** — it runs as you, exactly like
+A pinned **native** executor is not sandboxed — it runs as you, exactly like
 `--tool-cmd`. The pin is a judgement about provenance, not a container. It is
 also platform-specific: a blob is bytes, so pin per platform.
 
+### Declared runtimes — dispatching to the sandbox (`runtime`)
+
+Provenance and isolation are independent knobs (#86). A Definition may declare
+the runtime its blob executes under:
+
+```json
+{ "tool_name": "validate_rows", "kind": "definition",
+  "executor_uri": "cas://sha256:<64 hex>",
+  "runtime": "wasm32-areev",
+  "runtime_limits": { "fuel": 200000000, "max_pages": 256 } }
+```
+
+Absent (or `"native"`) is exactly the behaviour above. `"wasm32-areev"` routes
+the pinned blob to **areev-sandbox** — a pure `wasm32` module under wasmi: no
+WASI, a frozen one-function import set, fuel and memory ceilings, and
+platform-independent by construction (one `.wasm` blob runs everywhere the
+sandbox does). The engine constructs the sandbox's argv itself
+(`--module <cached blob> --fuel N --max-pages N`, input JSON on stdin), so
+`runtime` + `executor_uri` in the memory is the whole declaration.
+
+The sandbox is host config, like the pin: `--sandbox-cmd 'areev-sandbox'` on
+the CLI, `sandbox_cmd` on `run_start` in Python/Node, `$AREEV_RUN_SANDBOX_CMD`
+for `areev serve`. A plan declaring `wasm32-areev` on a host with no sandbox
+refuses at start (`RUN-E018`, naming the missing flag), and the runtime is
+**frozen into the run manifest** with the address — a mid-run supersession
+cannot re-route a blob from the sandbox to native exec. An unknown runtime
+string refuses at resolve rather than falling back to native, which would run
+foreign bytes as a program. (`areev-sandbox` is a separate `publish = false`
+binary — build it from the repo and point `--sandbox-cmd` at it.)
+
+### Backend divergence: reading the memory mid-run (#85)
+
+Whether a **tool subprocess** can read the memory its own run holds depends on
+the storage tier, and it silently decides whether an agent design is portable:
+
+- **Embedded (Turso file)**: no — the file lock is exclusive, so even a pure
+  `RECALL` from inside a tool is refused (`STO-E001`). Use the doors that
+  exist: `areev blob get` reads CAS attachments lock-free, and a **trigger's
+  `--context-query`** has the evaluator assemble a saved query's result into
+  the run input before the run starts ([triggers](triggers.md)).
+- **PostgreSQL (server tier)**: yes — any number of handles may hold the same
+  schema and reads never block (MVCC), so a tool may open the memory and
+  query it mid-run. If your production target is Postgres, tools can read
+  their own memory directly; keep `--context-query` for the declaration's
+  auditability, portability back to the embedded tier, or both.
+
 ## What a run writes (the journal)
 
-Runs live in the reserved `agent:harness` namespace, as ordinary grains:
+The journal proper — intents, results, checkpoints — lives in **the run's own
+session namespace** (whatever `--ns` was passed; the store default `shared`
+otherwise), so choose the namespace whose retention, anonymization and erasure
+policies should govern the record. The run's *administrative* records — the
+manifest and its `run:<id>` link, cancel, redelivery, the rejected-response
+audit, the run-outcome census, egress refusals — live in the reserved
+`agent:harness` namespace; trigger firing records use `agent:triggers`.
+(Earlier revisions of this page claimed the whole journal lived in
+`agent:harness` — it never did, and an operator who believed it could leave a
+run journal outside every policy they had declared. #87.)
 
-| Record | Grain | When |
-|---|---|---|
-| Intent | Tool grain, `status = pending` | **before** every effect dispatch |
-| Result | supersession of the intent, re-stating its identity + usage | when the effect settles |
-| Checkpoint | State grain (scheduler state + the superstep's decision record), chained by `derived_from` | every superstep |
-| Manifest | the frozen plan resolution, budgets, principal | at start |
-| Cancel / audit / redelivery | Facts and Observations | as they happen |
+| Record | Grain | Namespace | When |
+|---|---|---|---|
+| Intent | Tool grain, `status = pending` | session `--ns` | **before** every effect dispatch |
+| Result | supersession of the intent, re-stating its identity + usage | session `--ns` | when the effect settles |
+| Checkpoint | State grain (scheduler state + the superstep's decision record), chained by `derived_from` | session `--ns` | every superstep |
+| Manifest | the frozen plan resolution, budgets, principal | `agent:harness` | at start |
+| Cancel / audit / redelivery / run-outcome / egress refusals | Facts and Observations | `agent:harness` | as they happen |
 
 Every journal record carries the full effect identity — run id, task path,
 node, attempt, effect sequence, kind — and `tool_call_id` is a digest of that
@@ -517,7 +584,7 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
 | Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 

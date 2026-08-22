@@ -317,6 +317,31 @@ impl AreevFacade {
                 "stale_corpora".into(),
                 serde_json::to_value(stale_exports).unwrap_or_else(|_| serde_json::json!([])),
             );
+            // One provenance hop further (parity with the CLI's erasure
+            // notice): adapters trained on a stale corpus are stale too —
+            // `areev tune` writes `derived_from` = the export manifest.
+            let mut stale_adapters = Vec::new();
+            {
+                let mut store = self.store.lock().unwrap();
+                for export in stale_exports {
+                    let Ok(h) = areev_core::Hash::from_hex(&export.manifest_hash) else {
+                        continue;
+                    };
+                    for g in store.grains_derived_from(&h).unwrap_or_default() {
+                        if g.get_str("relation") != Some("mg:adapter") {
+                            continue;
+                        }
+                        stale_adapters.push(serde_json::json!({
+                            "subject": g.get_str("subject"),
+                            "grain_hash": g.hash.to_hex(),
+                            "export_id": export.export_id,
+                        }));
+                    }
+                }
+            }
+            if !stale_adapters.is_empty() {
+                context.insert("stale_adapters".into(), serde_json::json!(stale_adapters));
+            }
             obs.common.context = Some(serde_json::Value::Object(context));
         }
         self.store.lock().unwrap().add(&obs).map(|_| ())
@@ -675,6 +700,98 @@ impl AreevFacade {
         let mut store = self.store.lock().unwrap();
         let hashes = store.add_batch(&[&state, &link])?;
         Ok((hashes[0], hashes[1]))
+    }
+
+    /// Register a host-trained adapter (the tuning seam's `areev tune`).
+    /// Validates the trainer's reply tuple, embeds the Rule E1 evalset pin
+    /// and the corpus-manifest lineage into the object JSON (the single-read
+    /// contract the `adapter_intake` analyzer depends on), and writes ONE
+    /// `mg:adapter` Fact in `agent:harness` whose `derived_from` names the
+    /// corpus export manifest — so `areev provenance <manifest>` and CAL
+    /// `DERIVED FROM` walk from the corpus to every adapter trained on it.
+    /// A hard validation error writes nothing.
+    ///
+    /// Unlike `record_run_manifest`'s epoch-zero value collapse, an adapter
+    /// registration is an *event*: `recorded_at_ms` is the real clock.
+    pub fn record_adapter(
+        &self,
+        reply_json: &str,
+        manifest_hash: &str,
+        evalset_hash: &str,
+        recorded_at_ms: i64,
+    ) -> Result<Hash> {
+        self.check_verb(Verb::Write, areev_core::authz::HARNESS_NS)?;
+        let mut reply: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(reply_json).map_err(|e| {
+                AreevError::Validation(format!("trainer reply must be a JSON object: {e}"))
+            })?;
+        let need_str = |v: Option<&serde_json::Value>, what: &str| -> Result<String> {
+            v.and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    AreevError::Validation(format!(
+                        "trainer reply is missing required field {what}"
+                    ))
+                })
+        };
+        let adapter = reply
+            .get("adapter")
+            .and_then(|a| a.as_object())
+            .cloned()
+            .ok_or_else(|| {
+                AreevError::Validation(
+                    "trainer reply is missing required object \"adapter\"".into(),
+                )
+            })?;
+        need_str(adapter.get("uri"), "adapter.uri")?;
+        need_str(adapter.get("sha256"), "adapter.sha256")?;
+        need_str(reply.get("base_model"), "base_model")?;
+        // The subject becomes the promotion target `model:<serves_as>` —
+        // TargetRef's only opaque constraint is non-empty, checked here so a
+        // malformed name fails at tune time, not at draft time.
+        let serves_as = need_str(reply.get("serves_as"), "serves_as")?;
+        let manifest = Hash::from_hex(manifest_hash).map_err(|_| {
+            AreevError::Validation(format!(
+                "corpus manifest {manifest_hash:?} is not a grain hash"
+            ))
+        })?;
+        {
+            let mut store = self.store.lock().unwrap();
+            let grain = store.get(&manifest).map_err(|_| {
+                AreevError::Validation(format!(
+                    "corpus manifest {manifest_hash} not found in this memory"
+                ))
+            })?;
+            // Lineage anchors to a REAL export manifest, not any grain a
+            // caller names: the corpus-export Observation is the only shape
+            // the erasure walk and the registry reader recognize.
+            if grain.get_str("observer_type") != Some("corpus_export") {
+                return Err(AreevError::Validation(format!(
+                    "{manifest_hash} is not a corpus export manifest — use the \
+                     hash from `areev corpus` / record_corpus_export"
+                )));
+            }
+        }
+        if evalset_hash.trim().is_empty() {
+            return Err(AreevError::Validation(
+                "an adapter registration requires the evalset pin (Rule E1)".into(),
+            ));
+        }
+        reply.insert("evalset_hash".into(), serde_json::json!(evalset_hash));
+        reply.insert("corpus_manifest".into(), serde_json::json!(manifest.to_hex()));
+        let object = serde_json::Value::Object(reply).to_string();
+
+        let mut fact = Fact::new(&format!("model:{serves_as}"), "mg:adapter", &object)
+            .namespace(areev_core::authz::HARNESS_NS)
+            .created_at(recorded_at_ms);
+        fact.common.derived_from = Some(manifest.to_hex());
+        fact.common
+            .extra_fields
+            .insert("evalset_hash".into(), serde_json::json!(evalset_hash));
+        let mut store = self.store.lock().unwrap();
+        store.add(&fact)
     }
 
     /// Add many grains in one store transaction. Each entry is the same

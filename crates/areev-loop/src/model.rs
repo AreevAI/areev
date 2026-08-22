@@ -188,6 +188,11 @@ pub enum ActionKind {
     /// without a recorded gating run, and a superseded evalset invalidates
     /// the pin (the recommendation re-gates).
     CodeRevision,
+    /// Propose promoting a host-trained adapter into service for a `model:`
+    /// target (the tuning seam). Same governance shape as `CodeRevision`:
+    /// NEVER auto-applied, must pin the evalset it was gated against
+    /// (Rule E1), and apply is refused without a recorded gating run.
+    AdapterRevision,
 }
 
 impl ActionKind {
@@ -201,6 +206,7 @@ impl ActionKind {
             ActionKind::Revert => "revert",
             ActionKind::Flag => "flag",
             ActionKind::CodeRevision => "code_revision",
+            ActionKind::AdapterRevision => "adapter_revision",
         }
     }
 }
@@ -243,9 +249,10 @@ impl TargetRef {
     }
 
     /// Memory/query targets are the only classes eligible for auto-apply
-    /// (§6.3); prompt (`doc:`), `host:`, and the §7.4 `tool:`/`evalset:`
-    /// classes are never auto-applied — code and its gate are excluded BY
-    /// NAME, not by accident of the grant vocabulary.
+    /// (§6.3); prompt (`doc:`), `host:`, the §7.4 `tool:`/`evalset:` classes,
+    /// and the tuning seam's `model:` class are never auto-applied — code,
+    /// adapters, and their gate are excluded BY NAME, not by accident of the
+    /// grant vocabulary.
     pub fn auto_apply_eligible_class(&self) -> bool {
         matches!(
             self.scheme.as_str(),
@@ -262,6 +269,7 @@ impl TargetRef {
             "doc" => "prompt",
             "tool" => "code",
             "evalset" => "evalset",
+            "model" => "model",
             _ => "host",
         }
     }
@@ -272,7 +280,7 @@ impl TargetRef {
 }
 
 const KNOWN_SCHEMES: &[&str] = &[
-    "grain", "entity", "query", "template", "doc", "host", "tool", "evalset",
+    "grain", "entity", "query", "template", "doc", "host", "tool", "evalset", "model",
 ];
 
 /// Case-fold + trim for identity comparison. Upstream NFC is assumed.

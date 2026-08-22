@@ -6,6 +6,138 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-22
+
+### Added
+
+- **Trigger-started runs carry declared context** (#85). A Trigger grain may
+  name a saved query (`--context-query NAME`, field `context_query`, compact
+  key `tcq`, omit-default — every existing trigger keeps its content
+  address): at fire time the **evaluator** runs it read-only against the
+  memory it already holds and places the result into the run input as
+  `context`. This is the embedded backend's answer to its own exclusive
+  lock — a tool inside a run cannot open the memory its run holds, but the
+  evaluator can, and the declaration replicates with the trigger, so what a
+  fired run sees is auditable rather than host-local. Fail closed: a trigger
+  that declared context never fires without it. The backend divergence is
+  now documented (`docs/run.md`): on the PostgreSQL tier reads never block,
+  so tools *can* query the memory mid-run — the read-only embedded open
+  (#85 proposal A) stays tracked, gated on a deliberate turso bump.
+- **Tool Definitions declare their runtime, and the engine dispatches to the
+  sandbox** (#86). `runtime: "wasm32-areev"` (+ optional `runtime_limits:
+  {fuel, max_pages}`; both omit-default, compact keys `axr`/`axl`) routes a
+  pinned `cas://` blob to **areev-sandbox** instead of native exec — the
+  engine constructs the sandbox argv itself (`--module <cached blob>
+  --fuel N --max-pages N`), so provenance (`--allow-executor`) and isolation
+  become independent knobs. The runtime is frozen into the run manifest with
+  the address; an unknown runtime refuses at resolve rather than running
+  foreign bytes natively; a declared runtime on a host with no sandbox
+  refuses at start, naming the missing config. The sandbox runner is host
+  config on every surface: `--sandbox-cmd` (CLI), `sandbox_cmd`
+  (Python/Node `run_start`/`run_resume`), `$AREEV_RUN_SANDBOX_CMD`
+  (`areev serve`). Also: the sandbox's `ForbiddenImport` message and module
+  docs no longer claim `areev::alloc` is importable (it is a guest
+  **export**; the frozen import set is `areev::emit` alone — regression-
+  pinned), and `areev-sandbox`'s version stamp is no longer stale.
+- **The executor pin reaches every surface that starts runs** (#87).
+  `allow_executor`/`executor_cache` on Python and Node
+  `run_start`/`run_resume` (the CLI's comma list), and
+  `$AREEV_RUN_ALLOW_EXECUTOR`/`$AREEV_RUN_EXECUTOR_CACHE` set at `areev
+  serve` start for MCP — server-bound like `$AREEV_RUN_TOOL_CMD`, because
+  the pin IS the authorization. Previously a plan naming a code-carrying
+  Definition was unrunnable from every non-CLI surface (RUN-E018 with no
+  recourse); the refusal now names the pin mechanism per surface. The
+  console's HTTP surface deliberately does not start runs, so it carries no
+  pin.
+
+### Fixed
+
+- **Code-carrying tools reach the credential broker** (#87).
+  `CodeExecutor::execute_code` now injects
+  `AREEV_EGRESS_URL`/`AREEV_EGRESS_TOKEN` on the same terms as
+  `CommandExecutor` — granted tools only — and the CLI hands the broker to
+  the code executor even without `--tool-cmd`. Previously the pinned blob,
+  the authoring style whose provenance the host can actually prove, was the
+  one that could NOT use brokered credentials.
+- **Two doc corrections** (#87): `docs/run.md` no longer claims the run
+  journal lives in `agent:harness` (intents/results/checkpoints live in the
+  run's session `--ns`; the manifest and administrative records are the
+  `agent:harness` residents — an operator following the old text could
+  leave a journal outside every declared policy), and the 1.3.0 changelog
+  bullet claiming webhook/manual/composite triggers "fire in a later
+  release" is corrected in place — all eight kinds fire since 1.3.0.
+
+- **The tuning seam** — the last mile of the corpus path, closing the slow
+  learning loop under the same governance as the fast one. `areev tune --cmd
+  'TRAINER'` hands a governed corpus to a **host-supplied** trainer (JSON on
+  stdio, stderr inherited, no timeout by default — Areev still never trains
+  and takes no training dependency) and registers the returned adapter as an
+  `mg:adapter` Fact in `agent:harness`: base model + adapter + quantization
+  pinned as one tuple, `derived_from` naming the corpus export manifest, the
+  Rule E1 evalset pin embedded. Integrated (`--select … --out`) and
+  bring-your-own (`--corpus … --manifest`) corpus modes; lineage cannot be
+  asserted from the command line — the manifest must be a recorded export.
+- **`adapter_revision` — a new eval-gated recommendation class** mirroring
+  `code_revision`: the new builtin `adapter_intake` analyzer (14 builtins now)
+  proposes the newest unpromoted candidate per served model; apply is refused
+  without a recorded clean run of the pinned evalset and writes an immutable
+  `(model:<name>, mg:adapter_promotion)` Fact — the host contract: serve what
+  a live promotion names, stop when it is retracted (rollback's inverse).
+  One candidate per served model by design; auto-apply is impossible three
+  independent ways. When a baseline eval run exists the recommendation
+  carries an `evalset:<pin>:failed` metric, so a post-promotion regression
+  makes `outcome_review` propose the revert.
+- **`areev eval run --model provider:name`** — grade an evalset against a
+  model behind the ToolCallLlm seam instead of a host command: how a tuned
+  adapter served by vLLM/SGLang (`openai-compat:<served-name>`) or Ollama is
+  gated, with `--base-url`/`--key-env`/`--llm-max-tokens`, fail-closed case
+  prevalidation, the same scorer as `--tool-cmd`, and the graded model
+  recorded in the `mg:eval_run` summary. (`--base-url`/`--key-env` also
+  joined `areev run start`'s USAGE, where they existed undocumented.)
+- **Gated apply reaches every surface** — the loop's documented full-lifecycle
+  parity now includes the gating edge. One shared loader
+  (`Engine::gating_evidence`) serves the CLI's `--gating-run`, Python/Node
+  `apply_recommendation(..., gating_run=…)` / `applyRecommendation(...,
+  gatingRun)`, MCP `areev_recommendations` `gating_run`, and
+  `POST /api/loop/apply` `gating_run` — on every surface the stats are read
+  back from the journaled `mg:eval_run` Fact, never taken from the caller.
+  The console's review queue asks for the gate run id on gated
+  recommendations (their rows now carry `evalset_hash`). Fused
+  approve-and-apply callers are refused **before** the approval lands when
+  the gating run is missing or unknown (`preflight_apply` gained
+  `has_gating`; `ensure_executable` now knows a gated revision's Data
+  payload is executable — both latent classification gaps exposed by the
+  first production producer of gated recommendations).
+- **The record family grows two members in the bindings**:
+  `record_corpus_export` / `recordCorpusExport` (the immutable export
+  manifest, for hosts that select and serialize in-process — the CLI verb
+  stays the paved road) and `record_adapter` / `recordAdapter` (the adapter
+  registration `areev tune` performs, for hosts that train in-process).
+  `record_adapter` now also verifies its lineage anchor **is** a corpus
+  export manifest on every surface, not just the CLI.
+- **Erasure reaches the seam**: the stale-export notice on
+  `forget-subject`/`purge-older-than`/`retention sweep` (and the CAL erasure
+  audit) now walks one provenance hop further and names the **adapters**
+  derived from a stale corpus — `stale_adapters` beside `stale_corpora` in
+  the Tier-2 audit record and `areev audit export`. Still auditable
+  suppression and re-derivation, never an unlearning claim.
+
+### Changed
+
+- **The position on weight tuning is stated on the record, and the tuning seam
+  is named as roadmap.** Areev's boundary is unchanged and now explicit as a
+  named decision in `ARCHITECTURE.md` §10: it emits a governed corpus
+  (`areev corpus`) and grades the result (`areev run shadow`, `areev eval`), and
+  it never trains — no trainer, no training dependency. What is announced as
+  *not yet built* is the seam itself (`areev tune --cmd`, an adapter registry
+  grain, promotion as a gated apply); the design of record is
+  `docs/areev-adaptive-agents-proposal.md` §5. The SEAL rows in
+  `docs/loop-explainer.md` §14 and `docs/loop-reflection.md` are reframed from
+  "avoid weight updates" to "order them last, behind a governed corpus and a
+  replay harness" — a published competitive argument should not be reversed
+  quietly. No accuracy or context-savings claim accompanies any of this until
+  the replay harness has measured one.
+
 ## [1.4.0] — 2026-08-21
 
 ### Added
@@ -367,8 +499,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   memory instead of a fact buried in someone's crontab.
   - Eight kinds over four primitives: `interval`/`schedule`/`once` (Time),
     `polling` (Time + Poll), `memory` (state predicate), `webhook`/`manual`
-    (Push), and `composite`. The last three are declared and validated now and
-    fire in a later release.
+    (Push), and `composite`. All eight fire: webhook and manual through
+    `trigger deliver`, composites settled in the same evaluator pass as
+    their members. (This bullet originally claimed the last three would
+    "fire in a later release" — stale before it shipped; `docs/triggers.md`
+    was always right. Corrected 2026-08-22, #87.)
   - Idempotency by construction: the run id is derived from
     `(trigger, connector, dedup value)`, so a re-delivered item is one run and
     one recorded skip. Correctness does not rest on the lease — the lease only
@@ -409,7 +544,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lease is reclaimable, so a crashed driver does not park its run forever.
 
 - **`areev-sandbox` (Tier C)**: a standalone package that runs a pure `wasm32`
-  module with no WASI, a frozen two-function import set, fuel, a memory ceiling,
+  module with no WASI, a frozen one-function import set (`areev::emit`; `alloc` is a guest export), fuel, a memory ceiling,
   and a module-size cap applied before decode. Deliberately outside the
   workspace so `wasmi`'s tree and MSRV never reach workspace `cargo deny`, MSRV
   checks or test time; it has its own CI job. Protects the host from the tool —

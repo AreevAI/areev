@@ -1923,6 +1923,59 @@ impl Areev {
         })
     }
 
+    /// Record a governed corpus export a host performed itself — the same
+    /// immutable export-manifest grain `areev corpus` writes (the CLI verb
+    /// remains the paved road; this is for hosts that select and serialize
+    /// in-process). `subjectFingerprints` and `sourceHashes` are JSON string
+    /// arrays. Returns the manifest hash — the lineage anchor
+    /// `recordAdapter` requires.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn record_corpus_export(
+        &self,
+        selector: String,
+        destination: String,
+        recipient: Option<String>,
+        subject_fingerprints: Option<String>,
+        source_hashes: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let fps: Vec<String> =
+                serde_json::from_str(subject_fingerprints.as_deref().unwrap_or("[]"))
+                    .map_err(|e| napi::Error::from_reason(format!("subjectFingerprints must be a JSON string array: {e}")))?;
+            let hashes: Vec<String> = serde_json::from_str(source_hashes.as_deref().unwrap_or("[]"))
+                .map_err(|e| napi::Error::from_reason(format!("sourceHashes must be a JSON string array: {e}")))?;
+            let hash = facade
+                .record_corpus_export(&selector, &destination, recipient.as_deref(), now_ms(), &fps, &hashes)
+                .map_err(err)?;
+            Ok(json!({"hash": hash.to_hex()}).to_string())
+        })
+    }
+
+    /// Register a host-trained adapter (the tuning seam) — the same
+    /// registration `areev tune` performs after its trainer returns, for
+    /// hosts that train in-process. `reply` is the adapter-reference JSON
+    /// (`{"adapter": {"uri", "sha256"}, "base_model", "serves_as", …}`),
+    /// `manifestHash` a recorded corpus export, `evalsetHash` the Rule E1
+    /// pin. Validation is the facade's: an incomplete reply writes nothing.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn record_adapter(
+        &self,
+        reply: String,
+        manifest_hash: String,
+        evalset_hash: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let hash = facade
+                .record_adapter(&reply, &manifest_hash, &evalset_hash, now_ms())
+                .map_err(err)?;
+            Ok(json!({"hash": hash.to_hex()}).to_string())
+        })
+    }
+
     /// Run one analysis pass. Bare it never gates. `fullSweep` re-analyzes
     /// the whole memory (`areev loop reflect` semantics); `policy` is a path
     /// to a host `loop-policy.json` — the only way auto-apply is granted
@@ -2055,12 +2108,17 @@ impl Areev {
     /// `scopes` is a comma-separated subset of `read,write,review,apply,admin`;
     /// omit it for all scopes.
     #[napi(ts_return_type = "Promise<string>")]
+    /// A code or adapter revision applies only through its recorded gating
+    /// edge: pass `gatingRun` (an `eval-…` run id from `areev eval run`) and
+    /// the evidence is loaded from the journaled `mg:eval_run` summary —
+    /// never from these arguments. Same contract as the CLI's `--gating-run`.
     pub fn apply_recommendation(
         &self,
         hash: String,
         because: String,
         allow_destructive: Option<bool>,
         scopes: Option<String>,
+        gating_run: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let actor = self.actor.clone();
@@ -2074,16 +2132,27 @@ impl Areev {
             // Ask before approving. The approval is a real state transition and
             // `approved` has no exit but `applied` or `expired`, so recording it
             // first and then hitting the destructive gate stranded the
-            // recommendation where the reviewer could no longer reject it.
+            // recommendation where the reviewer could no longer reject it. The
+            // gating edge loads FIRST for the same reason: a bad run id must
+            // fail before any state transition.
+            let gating = match &gating_run {
+                Some(run_id) => Some(engine.gating_evidence(&sub, &hash, run_id).map_err(err)?),
+                None => None,
+            };
             engine
-                .preflight_apply(&sub, &hash, &scopes, allow_destructive)
+                .preflight_apply(&sub, &hash, &scopes, allow_destructive, gating.is_some())
                 .map_err(err)?;
             engine
                 .review(&mut sub, &hash, Decision::Approve, &actor, ObserverType::Human, &scopes, &because, now)
                 .map_err(err)?;
-            let applied = engine
-                .apply(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, now)
-                .map_err(err)?;
+            let applied = match &gating {
+                Some(g) => engine
+                    .apply_gated(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, g, now)
+                    .map_err(err)?,
+                None => engine
+                    .apply(&mut sub, &hash, &actor, ObserverType::Human, &scopes, &because, allow_destructive, now)
+                    .map_err(err)?,
+            };
             Ok(json!({"hash": hash, "rollbackable": applied.rollbackable}).to_string())
         })
     }
@@ -2410,6 +2479,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2425,7 +2497,9 @@ impl Areev {
             // Resolved before the run starts, so a bad model spec or a missing
             // key fails without journaling a run that cannot advance.
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let runner = js_runner_pinned(
+                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+            );
             let opts = js_run_options_full(
                 max_tokens,
                 max_usd_micros,
@@ -2452,6 +2526,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2459,7 +2536,9 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let runner = js_runner_pinned(
+                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+            );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
@@ -3006,7 +3085,25 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None)
+}
+
+/// The pin-aware factory (#87): `allowExecutor` is the same comma list as
+/// the CLI's `--allow-executor` — without it, a plan naming a code-carrying
+/// Definition refuses at start (RUN-E018), because the authorization to
+/// execute code must come from the host, never the file.
+#[allow(clippy::too_many_arguments)]
+fn js_runner_pinned(
+    facade: std::sync::Arc<AreevFacade>,
+    ns: String,
+    principal: String,
+    tool_cmd: Option<String>,
+    llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+    allow_executor: Option<String>,
+    executor_cache: Option<String>,
+    sandbox_cmd: Option<String>,
+) -> areev_run::Runner {
+    let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
         Some(cmd) if !cmd.trim().is_empty() => {
             std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
         }
@@ -3027,6 +3124,22 @@ fn js_runner_with_llm(
                 }
             }
             std::sync::Arc::new(NoExec)
+        }
+    };
+    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+        None => base,
+        Some(list) => {
+            let mut ce = areev_run::CodeExecutor::new(base);
+            for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                ce = ce.allow(addr);
+            }
+            if let Some(dir) = executor_cache {
+                ce = ce.cache_dir(dir);
+            }
+            if let Some(cmd) = sandbox_cmd {
+                ce = ce.sandbox_cmd(&cmd);
+            }
+            std::sync::Arc::new(ce)
         }
     };
     areev_run::Runner {
