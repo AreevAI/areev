@@ -143,3 +143,30 @@ fn a_raised_fuel_budget_lets_a_heavier_guest_finish() {
     assert!(matches!(run(&m, &serde_json::Value::Null, &stingy), Err(SandboxError::FuelExhausted)));
     assert!(run(&m, &serde_json::Value::Null, &Limits::default()).is_ok());
 }
+
+/// `areev::alloc` is a guest EXPORT, not an import — a module that tries to
+/// IMPORT it is refused at instantiation, and the refusal message says which
+/// way round the contract goes (#86: the old message claimed alloc was
+/// importable, which walked authors straight into this refusal).
+#[test]
+fn a_module_that_imports_alloc_is_refused_and_the_message_names_the_contract() {
+    const IMPORTS_ALLOC: &str = r#"
+(module
+  (import "areev" "alloc" (func $alloc (param i32) (result i32)))
+  (import "areev" "emit" (func $emit (param i32 i32)))
+  (memory (export "memory") 1 4)
+  (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+  (func (export "run") (param i32) (param i32)))
+"#;
+    let e = run(&wasm(IMPORTS_ALLOC), &serde_json::Value::Null, &Limits::default()).unwrap_err();
+    match &e {
+        SandboxError::ForbiddenImport { module, name } => {
+            assert_eq!(module, "areev");
+            assert_eq!(name, "alloc");
+        }
+        other => panic!("expected ForbiddenImport, got {other}"),
+    }
+    let msg = e.to_string();
+    assert!(msg.contains("EXPORT"), "the message must say alloc is an export: {msg}");
+    assert!(!msg.contains("only areev::alloc and"), "the stale claim must be gone: {msg}");
+}

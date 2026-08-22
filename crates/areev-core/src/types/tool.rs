@@ -207,6 +207,16 @@ pub struct Tool {
     /// used by the invoker to look up endpoint + auth at invoke time.
     /// **Must not be logged at INFO+ — see `Debug` impl below (SR-F5).**
     pub executor_uri: Option<String>,
+    /// The runtime a code-carrying Definition's blob executes under (#86).
+    /// Absent / `"native"` = today's semantics: the blob runs directly, as
+    /// you. `"wasm32-areev"` routes the pinned blob to the areev-sandbox
+    /// (no WASI, frozen imports, fuel + memory caps) — provenance
+    /// (`--allow-executor`) and isolation become independent knobs.
+    pub runtime: Option<String>,
+    /// Sandbox resource limits for a non-native runtime, e.g.
+    /// `{"fuel": 200000000, "max_pages": 256}`. Object-shaped JSON;
+    /// meaningless without `runtime`.
+    pub runtime_limits: Option<serde_json::Value>,
     /// Parameters the LLM must NOT choose for itself; merged over LLM
     /// input at invoke time. Object-shaped JSON.
     pub locked_params: Option<serde_json::Value>,
@@ -272,6 +282,8 @@ impl Tool {
             output_schema: None,
             strict: None,
             executor_uri: None,
+            runtime: None,
+            runtime_limits: None,
             locked_params: None,
             examples: None,
             annotations: None,
@@ -375,6 +387,16 @@ impl Tool {
         self
     }
 
+    pub fn runtime(mut self, runtime: &str) -> Self {
+        self.runtime = Some(runtime.to_string());
+        self
+    }
+
+    pub fn runtime_limits(mut self, limits: serde_json::Value) -> Self {
+        self.runtime_limits = Some(limits);
+        self
+    }
+
     pub fn locked_params(mut self, params: serde_json::Value) -> Self {
         self.locked_params = Some(params);
         self
@@ -422,6 +444,8 @@ impl fmt::Debug for Tool {
                 "executor_uri",
                 &self.executor_uri.as_ref().map(|_| "<redacted>"),
             )
+            .field("runtime", &self.runtime)
+            .field("runtime_limits", &self.runtime_limits)
             .field("locked_params", &self.locked_params)
             .field("examples", &self.examples)
             .field("annotations", &self.annotations)
@@ -592,6 +616,8 @@ mod tests {
             "transient_definition_hash",
             "failure_cause",
             "failure_detail",
+            "runtime",
+            "runtime_limits",
             "actor_execution_environment",
         ] {
             assert!(

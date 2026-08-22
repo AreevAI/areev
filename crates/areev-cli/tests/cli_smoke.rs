@@ -1518,3 +1518,38 @@ fn anonymize_fixtures_gate_a_policy_in_both_directions() {
         "the failure must name what went wrong, got: {err}"
     );
 }
+
+/// #85: `trigger add --context-query` — the name is validated at declaration
+/// (it rides inside a CAL string at fire time), and an unregistered query
+/// warns rather than refuses (saved queries replicate with the file; the
+/// evaluator fails closed at fire time either way).
+#[test]
+fn trigger_context_query_is_validated_at_declaration() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db").to_str().unwrap().to_string();
+    let wf = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+    // A name that could not be a saved-query name is refused by shape.
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", &db, "--type", "interval", "--interval", "120",
+        "--workflow", wf, "--context-query", "bad name!", "--because", "test",
+    ]);
+    assert!(!ok, "a malformed query name must be refused");
+    assert!(err.contains("saved-query name"), "{err}");
+
+    // A well-formed but unregistered name declares fine, with a warning.
+    let (ok, out, err) = areev(&[
+        "trigger", "add", "--db", &db, "--type", "interval", "--interval", "120",
+        "--workflow", wf, "--context-query", "triage_ctx", "--because", "test",
+    ]);
+    assert!(ok, "declaration must succeed: {err}");
+    assert!(out.contains("declared trigger"), "{out}");
+    assert!(err.contains("not registered"), "the warning names the gap: {err}");
+
+    // And the declaration is readable back off the grain.
+    let (ok, out, err) = areev(&[
+        "cal", r#"RECALL triggers RECENT 5"#, "--db", &db,
+    ]);
+    assert!(ok, "{err}");
+    assert!(out.contains("triage_ctx"), "the declaration must be on the grain: {out}");
+}

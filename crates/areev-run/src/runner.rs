@@ -444,11 +444,29 @@ impl Runner {
                     return Err(RunError::CodeExecRefused {
                         condition: format!(
                             "node '{}' names executor {uri}, which this host has not \
-                             pinned — pass --allow-executor {} to run it",
+                             pinned — pin it: --allow-executor {} (CLI), \
+                             allow_executor (Python/Node), or \
+                             $AREEV_RUN_ALLOW_EXECUTOR (areev serve)",
                             p.node,
                             crate::executor::strip_cas(uri)
                         ),
                     });
+                }
+                // Same fail-closed shape for the declared runtime (#86): a
+                // plan asking for the sandbox on a host with none refuses
+                // BEFORE the run exists, naming the missing configuration.
+                if let Some(rt) = &p.runtime {
+                    if !self.executor.runtime_supported(rt) {
+                        return Err(RunError::CodeExecRefused {
+                            condition: format!(
+                                "node '{}' declares runtime {rt:?}, which this host \
+                                 cannot dispatch — configure the sandbox: \
+                                 --sandbox-cmd areev-sandbox (CLI), sandbox_cmd \
+                                 (Python/Node), or $AREEV_RUN_SANDBOX_CMD (areev serve)",
+                                p.node
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -1330,9 +1348,10 @@ impl Runner {
                             .pinned
                             .iter()
                             .find(|p| p.node == key.node)
-                            .and_then(|p| p.executor_uri.as_deref())
+                            .filter(|p| p.executor_uri.is_some())
                         {
-                            Some(uri) => {
+                            Some(pin) => {
+                                let uri = pin.executor_uri.as_deref().unwrap();
                                 let bytes = self
                                     .facade
                                     .with_store(|m| m.get_blob(uri))
@@ -1340,6 +1359,11 @@ impl Runner {
                                 Some(crate::executor::PreparedCode {
                                     uri: uri.to_string(),
                                     bytes,
+                                    // The manifest-frozen runtime rides with
+                                    // the bytes, so a mid-run supersession
+                                    // cannot re-route sandbox to native.
+                                    runtime: pin.runtime.clone(),
+                                    limits: pin.runtime_limits.clone(),
                                 })
                             }
                             None => None,

@@ -75,6 +75,35 @@ Then put `trigger run` on whatever heartbeat you already have. It can be much
 coarser than your shortest interval: the command is cheap, and the memory
 decides what is due.
 
+## Declared context (`--context-query`)
+
+A trigger-started run begins blind on the embedded backend: the evaluator
+holds the memory while the run executes, so neither the connector nor the
+run's tools can open it (#85). The trigger declares the fix:
+
+```bash
+areev trigger add --db accounting.db --ns accounting \
+  --type polling --observer gmail --interval 120 --workflow <WF_HASH> \
+  --context-query triage_ctx \
+  --because "poll the mailbox; carry the triage context in"
+```
+
+`triage_ctx` is an ordinary saved query (`DEFINE QUERY "triage_ctx"() AS
+{ … }` — it replicates with the file). At fire time the **evaluator** runs it
+— read-only, against the memory it already holds — and places the result into
+the run input as `context`, beside `trigger`/`connector`/`scope`/`item`. The
+declaration replicates with the trigger grain, so *what a fired run gets to
+see* is auditable, not host-local configuration.
+
+Fail closed: a trigger that declared context never fires without it. A
+missing query or a failed read refuses the firing (retried on the evaluator's
+normal cadence) rather than starting a run without the context it promised.
+
+On the PostgreSQL tier the lock constraint disappears (reads never block), so
+tools *can* query the memory mid-run — `--context-query` remains useful there
+for the auditability of the declaration and for plans that must stay portable
+back to the embedded tier. See [run.md](run.md#backend-divergence-reading-the-memory-mid-run-85).
+
 ## The connector contract
 
 Same shape as `--tool-cmd`, because a connector **is** a tool: JSON on stdin,

@@ -721,3 +721,29 @@ fn goal_optional_fields_reach_the_blob() {
 
 // --- Grain Builder Pattern ---
 
+
+/// #85 / OMS 1.6 trigger amendment: `context_query` is omit-default — a
+/// trigger that does not set it serializes byte-identically to before the
+/// field existed, so every pre-1.5 trigger keeps its content address. The
+/// amendment rule says an implementation MUST prove this by test.
+#[test]
+fn trigger_without_context_query_is_byte_identical_and_with_it_roundtrips() {
+    use areev_core::types::{Trigger, TriggerKind};
+
+    let bare = Trigger::new(TriggerKind::Interval, "cafe0123").interval_secs(60);
+    let (blob, _) = serialize_grain(&bare).unwrap();
+    let dg = deserialize_blob(&blob).unwrap();
+    assert!(
+        !dg.fields.contains_key("context_query"),
+        "an unset context_query must not reach the wire"
+    );
+
+    let with = Trigger::new(TriggerKind::Interval, "cafe0123")
+        .interval_secs(60)
+        .context_query("triage_ctx");
+    let (blob2, h2) = serialize_grain(&with).unwrap();
+    let back = deserialize_blob(&blob2).unwrap().to_trigger().unwrap();
+    assert_eq!(back.context_query.as_deref(), Some("triage_ctx"));
+    let (_, h1) = serialize_grain(&bare).unwrap();
+    assert_ne!(h1, h2, "setting the field is new content, a new address");
+}

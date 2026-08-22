@@ -1513,7 +1513,8 @@ impl Areev {
     #[pyo3(signature = (workflow, run_id, input_json = None, tool_cmd = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
-                        llm_max_tokens = None))]
+                        llm_max_tokens = None, allow_executor = None, executor_cache = None,
+                        sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1530,6 +1531,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1539,7 +1543,8 @@ impl Areev {
         // Resolved before the run starts, so a bad model spec or a missing key
         // fails without journaling a run that cannot advance.
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner = self.runner(tool_cmd, llm);
+        let runner =
+            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
         let opts =
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
         let session = py
@@ -1554,7 +1559,8 @@ impl Areev {
     /// with abstract nodes still has to execute them, and the backend is host
     /// config that is deliberately not journaled with the run.
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
-                        key_env = None, llm_max_tokens = None))]
+                        key_env = None, llm_max_tokens = None, allow_executor = None,
+                        executor_cache = None, sandbox_cmd = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1565,9 +1571,13 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner = self.runner(tool_cmd, llm);
+        let runner =
+            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
         let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
         Ok(run_session_json(session).to_string())
@@ -2675,7 +2685,22 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
+        self.runner_pinned(tool_cmd, llm, None, None, None)
+    }
+
+    /// The pin-aware factory (#87): `allow_executor` is the same comma list
+    /// as the CLI's `--allow-executor` — without it, a plan naming a
+    /// code-carrying Definition refuses at start (RUN-E018), because the
+    /// authorization to execute code must come from the host, never the file.
+    fn runner_pinned(
+        &self,
+        tool_cmd: Option<String>,
+        llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
+    ) -> areev_run::Runner {
+        let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
                 std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
             }
@@ -2698,6 +2723,22 @@ impl Areev {
                     }
                 }
                 std::sync::Arc::new(NoExec)
+            }
+        };
+        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+            None => base,
+            Some(list) => {
+                let mut ce = areev_run::CodeExecutor::new(base);
+                for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                    ce = ce.allow(addr);
+                }
+                if let Some(dir) = executor_cache {
+                    ce = ce.cache_dir(dir);
+                }
+                if let Some(cmd) = sandbox_cmd {
+                    ce = ce.sandbox_cmd(&cmd);
+                }
+                std::sync::Arc::new(ce)
             }
         };
         areev_run::Runner {

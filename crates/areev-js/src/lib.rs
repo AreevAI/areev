@@ -2479,6 +2479,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2494,7 +2497,9 @@ impl Areev {
             // Resolved before the run starts, so a bad model spec or a missing
             // key fails without journaling a run that cannot advance.
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let runner = js_runner_pinned(
+                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+            );
             let opts = js_run_options_full(
                 max_tokens,
                 max_usd_micros,
@@ -2521,6 +2526,9 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         llm_max_tokens: Option<u32>,
+        allow_executor: Option<String>,
+        executor_cache: Option<String>,
+        sandbox_cmd: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2528,7 +2536,9 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-            let runner = js_runner_with_llm(facade, ns, actor, tool_cmd, llm);
+            let runner = js_runner_pinned(
+                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+            );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
@@ -3075,7 +3085,25 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None)
+}
+
+/// The pin-aware factory (#87): `allowExecutor` is the same comma list as
+/// the CLI's `--allow-executor` — without it, a plan naming a code-carrying
+/// Definition refuses at start (RUN-E018), because the authorization to
+/// execute code must come from the host, never the file.
+#[allow(clippy::too_many_arguments)]
+fn js_runner_pinned(
+    facade: std::sync::Arc<AreevFacade>,
+    ns: String,
+    principal: String,
+    tool_cmd: Option<String>,
+    llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
+    allow_executor: Option<String>,
+    executor_cache: Option<String>,
+    sandbox_cmd: Option<String>,
+) -> areev_run::Runner {
+    let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
         Some(cmd) if !cmd.trim().is_empty() => {
             std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
         }
@@ -3096,6 +3124,22 @@ fn js_runner_with_llm(
                 }
             }
             std::sync::Arc::new(NoExec)
+        }
+    };
+    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+        None => base,
+        Some(list) => {
+            let mut ce = areev_run::CodeExecutor::new(base);
+            for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                ce = ce.allow(addr);
+            }
+            if let Some(dir) = executor_cache {
+                ce = ce.cache_dir(dir);
+            }
+            if let Some(cmd) = sandbox_cmd {
+                ce = ce.sandbox_cmd(&cmd);
+            }
+            std::sync::Arc::new(ce)
         }
     };
     areev_run::Runner {

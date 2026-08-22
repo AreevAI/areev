@@ -412,6 +412,11 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         if let Some(ref c) = t.correlate {
             map.insert(compact_field("correlate").to_string(), nfc_string(c));
         }
+        if let Some(ref q) = t.context_query {
+            // Omit-default (unlike `enabled`): pre-1.5 triggers carry no
+            // context query, and absent-means-none keeps their addresses.
+            map.insert(compact_field("context_query").to_string(), nfc_string(q));
+        }
         if let Some(w) = t.window_ms {
             map.insert(compact_field("window_ms").to_string(), Value::Integer(w.into()));
         }
@@ -507,6 +512,12 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         }
         if let Some(ref axu) = action.executor_uri {
             map.insert(compact_field("executor_uri").to_string(), nfc_string(axu));
+        }
+        if let Some(ref rt) = action.runtime {
+            map.insert(compact_field("runtime").to_string(), nfc_string(rt));
+        }
+        if let Some(ref rl) = action.runtime_limits {
+            map.insert(compact_field("runtime_limits").to_string(), json_to_msgpack(rl));
         }
         if let Some(ref lprm) = action.locked_params {
             map.insert(

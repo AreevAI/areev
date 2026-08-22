@@ -316,8 +316,8 @@ behind these flags.
 
 ### Tier C: sandboxed pure-compute tools
 
-`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen two-function
-import set, a fuel ceiling, a memory-page ceiling, and a module-size cap applied
+`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen one-function
+import set (`areev::emit` — `alloc` is a guest export the host calls), a fuel ceiling, a memory-page ceiling, and a module-size cap applied
 before the decoder sees the bytes. A module cannot open a socket, touch the
 filesystem, read an environment variable, see a clock, or run forever.
 

@@ -16,14 +16,15 @@
 //!
 //! ## The blessed format
 //!
-//! A pure `wasm32` core module. **No WASI.** The import set is frozen at two
-//! functions, and anything else in the import section is refused at
+//! A pure `wasm32` core module. **No WASI.** The import set is frozen at ONE
+//! function, and anything else in the import section is refused at
 //! instantiation rather than trapped at call time:
 //!
-//! - `areev.alloc(len: i32) -> i32` — the guest allocates a buffer in its own
-//!   linear memory and returns the offset. Implemented by the guest; the host
-//!   calls it to place input.
-//! - `areev.emit(ptr: i32, len: i32)` — the guest hands back its JSON result.
+//! - `areev.emit(ptr: i32, len: i32)` — the only import: the guest hands
+//!   back its JSON result.
+//! - `alloc(len: i32) -> i32` is a guest **export** (with `run` and
+//!   `memory`), not an import: the guest allocates a buffer in its own
+//!   linear memory and the host calls it to place input.
 //!
 //! JSON in, JSON out, over linear memory. The same shape as every other seam,
 //! so a Tier C tool and a subprocess tool look identical from the outside.
@@ -102,7 +103,8 @@ impl std::fmt::Display for SandboxError {
             SandboxError::ForbiddenImport { module, name } => write!(
                 f,
                 "module imports {module}::{name}, which is not in the frozen import set — \
-                 a Tier C module may import only {IMPORT_MODULE}::alloc and {IMPORT_MODULE}::emit"
+                 a Tier C module may import only {IMPORT_MODULE}::emit ({IMPORT_MODULE}::alloc \
+                 is a guest EXPORT the host calls, not an import)"
             ),
             SandboxError::FuelExhausted => write!(f, "guest exhausted its fuel"),
             SandboxError::MemoryExhausted => write!(f, "guest exceeded its memory ceiling"),

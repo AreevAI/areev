@@ -153,6 +153,7 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
             "concurrency",
             "catchup",
             "config",
+            "context_query",
             "timezone",
         ],
         "tool" => &[
@@ -181,6 +182,8 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
             "input_schema",
             "strict",
             "executor_uri",
+            "runtime",
+            "runtime_limits",
             "locked_params",
             "examples",
             "annotations",
@@ -346,6 +349,7 @@ fn build_trigger_from_json(
         })
         .unwrap_or_default();
     t.correlate = get_str("correlate");
+    t.context_query = get_str("context_query");
     t.window_ms = fields.get("window_ms").and_then(|v| v.as_i64());
     if let Some(c) = get_str("concurrency") {
         t.concurrency = Concurrency::parse(&c).ok_or_else(|| {
@@ -1136,6 +1140,39 @@ pub fn build_grain_from_json<S: GrainSink>(
                 }
                 if let Some(uri) = strict_str("executor_uri")? {
                     tool = tool.executor_uri(&uri);
+                }
+                if let Some(rt) = strict_str("runtime")? {
+                    // Fail closed on the value: an unknown runtime must be
+                    // refused at write time, not silently stored and then
+                    // refused at every run start.
+                    if !matches!(rt.as_str(), "native" | "wasm32-areev") {
+                        return Err(AreevError::Validation(format!(
+                            "tool 'runtime' '{rt}' is not recognized; \
+                             accepted: native, wasm32-areev"
+                        )));
+                    }
+                    tool = tool.runtime(&rt);
+                }
+                if let Some(rl) = fields.get("runtime_limits").filter(|v| !v.is_null()) {
+                    let obj = rl.as_object().ok_or_else(|| {
+                        AreevError::Validation(
+                            "tool 'runtime_limits' must be a JSON object".into(),
+                        )
+                    })?;
+                    for (k, v) in obj {
+                        if !matches!(k.as_str(), "fuel" | "max_pages") {
+                            return Err(AreevError::Validation(format!(
+                                "tool 'runtime_limits' key '{k}' is not recognized; \
+                                 accepted: fuel, max_pages"
+                            )));
+                        }
+                        if v.as_u64().is_none() {
+                            return Err(AreevError::Validation(format!(
+                                "tool 'runtime_limits.{k}' must be a non-negative integer"
+                            )));
+                        }
+                    }
+                    tool = tool.runtime_limits(rl.clone());
                 }
                 if let Some(lp) = fields.get("locked_params").filter(|v| !v.is_null()) {
                     if !lp.is_object() {

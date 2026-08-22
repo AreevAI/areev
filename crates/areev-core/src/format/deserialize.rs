@@ -611,6 +611,9 @@ impl DeserializedGrain {
                 if let Some(c) = self.get_str("cron") {
                     t = t.cron(c);
                 }
+                if let Some(q) = self.get_str("context_query") {
+                    t = t.context_query(q);
+                }
                 Box::new(t)
             }
             GrainType::Tool => {
@@ -837,6 +840,12 @@ impl DeserializedGrain {
         }
         if let Some(s) = self.get_str("executor_uri") {
             a.executor_uri = Some(s.to_string());
+        }
+        if let Some(s) = self.get_str("runtime") {
+            a.runtime = Some(s.to_string());
+        }
+        if let Some(v) = self.fields.get("runtime_limits") {
+            a.runtime_limits = Some(v.clone());
         }
         if let Some(v) = self.fields.get("locked_params") {
             a.locked_params = Some(v.clone());
@@ -1309,6 +1318,7 @@ impl DeserializedGrain {
             .unwrap_or_default();
         t.catchup = self.get_str("catchup").and_then(Catchup::parse).unwrap_or_default();
         t.config = self.fields.get("config").cloned();
+        t.context_query = self.get_str("context_query").map(str::to_string);
         self.fill_common_scalars(&mut t.common);
         Ok(t)
     }

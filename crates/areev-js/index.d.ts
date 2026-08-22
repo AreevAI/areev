@@ -456,7 +456,7 @@ export declare class Areev {
    * Start a governed run. Returns the session JSON:
    * `{"finished": …}` or `{"parked": envelope}`.
    */
-  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null): Promise<string>
+  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
   /**
    * Resume a parked/interrupted run from its latest checkpoint.
    *
@@ -464,7 +464,7 @@ export declare class Areev {
    * abstract nodes still has to execute them, and the backend is host config
    * that is deliberately not journaled with the run.
    */
-  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null): Promise<string>
+  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
   /**
    * Answer a pending Client ask. `responder` is REQUIRED — approval
    * separation of duties (responder ≠ triggering principal) is structural.

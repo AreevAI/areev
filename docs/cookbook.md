@@ -1063,7 +1063,11 @@ areev recall ... --db acct.db                                   # STO-E001, lock
 
 This is safe rather than a loophole: blobs are immutable, live beside the file
 rather than in it, and carry their checksum as their address, which the read
-re-verifies. An **encrypted** memory is the exception — decrypting the sidecar
+re-verifies. For *grains* the doors are different: declare a
+`--context-query` on the trigger so the evaluator assembles a saved query's
+result into the run input before the run starts, or run the PostgreSQL
+backend, where reads never block and a tool may open the memory mid-run
+(see [run.md](run.md#backend-divergence-reading-the-memory-mid-run-85)). An **encrypted** memory is the exception — decrypting the sidecar
 needs the derived key, so `blob get` opens it and therefore needs
 `--passphrase-env` and an unheld file.
 

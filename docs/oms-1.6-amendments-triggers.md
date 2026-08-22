@@ -148,3 +148,24 @@ should implement the whole contract and say so.
 ```json
 { "oms_conformance": 3, "oms_modules": ["triggers"] }
 ```
+
+## T7 — `Trigger.context_query` (optional string, compact key `tcq`, omit-default)
+
+A trigger MAY name a saved query (`qry:<name>`) whose result the **evaluator**
+assembles at fire time and places into the run input as `context`. This is the
+declared-context answer to the embedded backend's single-writer lock: a tool
+inside a run cannot open the memory its own run holds, but the evaluator —
+the one party already holding it — can. The declaration replicates with the
+trigger, so what a fired run sees is auditable, not host-local.
+
+Semantics an implementation MUST honor:
+
+1. The named query is executed read-only, under the evaluator's session; a
+   context query can never mutate.
+2. **Fail closed.** A trigger that declares context MUST NOT fire without it:
+   a missing query or a failed read refuses the firing (subject to the
+   evaluator's normal retry), never starts a context-less run.
+3. **Compatibility.** Because it is omit-default, a trigger that does not set
+   it MUST serialize byte-identically to before this amendment — every
+   existing content address is unchanged. An implementation MUST prove this
+   by test rather than assert it.

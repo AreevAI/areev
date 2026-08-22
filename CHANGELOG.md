@@ -8,6 +8,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Trigger-started runs carry declared context** (#85). A Trigger grain may
+  name a saved query (`--context-query NAME`, field `context_query`, compact
+  key `tcq`, omit-default — every existing trigger keeps its content
+  address): at fire time the **evaluator** runs it read-only against the
+  memory it already holds and places the result into the run input as
+  `context`. This is the embedded backend's answer to its own exclusive
+  lock — a tool inside a run cannot open the memory its run holds, but the
+  evaluator can, and the declaration replicates with the trigger, so what a
+  fired run sees is auditable rather than host-local. Fail closed: a trigger
+  that declared context never fires without it. The backend divergence is
+  now documented (`docs/run.md`): on the PostgreSQL tier reads never block,
+  so tools *can* query the memory mid-run — the read-only embedded open
+  (#85 proposal A) stays tracked, gated on a deliberate turso bump.
+- **Tool Definitions declare their runtime, and the engine dispatches to the
+  sandbox** (#86). `runtime: "wasm32-areev"` (+ optional `runtime_limits:
+  {fuel, max_pages}`; both omit-default, compact keys `axr`/`axl`) routes a
+  pinned `cas://` blob to **areev-sandbox** instead of native exec — the
+  engine constructs the sandbox argv itself (`--module <cached blob>
+  --fuel N --max-pages N`), so provenance (`--allow-executor`) and isolation
+  become independent knobs. The runtime is frozen into the run manifest with
+  the address; an unknown runtime refuses at resolve rather than running
+  foreign bytes natively; a declared runtime on a host with no sandbox
+  refuses at start, naming the missing config. The sandbox runner is host
+  config on every surface: `--sandbox-cmd` (CLI), `sandbox_cmd`
+  (Python/Node `run_start`/`run_resume`), `$AREEV_RUN_SANDBOX_CMD`
+  (`areev serve`). Also: the sandbox's `ForbiddenImport` message and module
+  docs no longer claim `areev::alloc` is importable (it is a guest
+  **export**; the frozen import set is `areev::emit` alone — regression-
+  pinned), and `areev-sandbox`'s version stamp is no longer stale.
+- **The executor pin reaches every surface that starts runs** (#87).
+  `allow_executor`/`executor_cache` on Python and Node
+  `run_start`/`run_resume` (the CLI's comma list), and
+  `$AREEV_RUN_ALLOW_EXECUTOR`/`$AREEV_RUN_EXECUTOR_CACHE` set at `areev
+  serve` start for MCP — server-bound like `$AREEV_RUN_TOOL_CMD`, because
+  the pin IS the authorization. Previously a plan naming a code-carrying
+  Definition was unrunnable from every non-CLI surface (RUN-E018 with no
+  recourse); the refusal now names the pin mechanism per surface. The
+  console's HTTP surface deliberately does not start runs, so it carries no
+  pin.
+
+### Fixed
+
+- **Code-carrying tools reach the credential broker** (#87).
+  `CodeExecutor::execute_code` now injects
+  `AREEV_EGRESS_URL`/`AREEV_EGRESS_TOKEN` on the same terms as
+  `CommandExecutor` — granted tools only — and the CLI hands the broker to
+  the code executor even without `--tool-cmd`. Previously the pinned blob,
+  the authoring style whose provenance the host can actually prove, was the
+  one that could NOT use brokered credentials.
+- **Two doc corrections** (#87): `docs/run.md` no longer claims the run
+  journal lives in `agent:harness` (intents/results/checkpoints live in the
+  run's session `--ns`; the manifest and administrative records are the
+  `agent:harness` residents — an operator following the old text could
+  leave a journal outside every declared policy), and the 1.3.0 changelog
+  bullet claiming webhook/manual/composite triggers "fire in a later
+  release" is corrected in place — all eight kinds fire since 1.3.0.
+
 - **The tuning seam** — the last mile of the corpus path, closing the slow
   learning loop under the same governance as the fast one. `areev tune --cmd
   'TRAINER'` hands a governed corpus to a **host-supplied** trainer (JSON on
@@ -440,8 +497,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   memory instead of a fact buried in someone's crontab.
   - Eight kinds over four primitives: `interval`/`schedule`/`once` (Time),
     `polling` (Time + Poll), `memory` (state predicate), `webhook`/`manual`
-    (Push), and `composite`. The last three are declared and validated now and
-    fire in a later release.
+    (Push), and `composite`. All eight fire: webhook and manual through
+    `trigger deliver`, composites settled in the same evaluator pass as
+    their members. (This bullet originally claimed the last three would
+    "fire in a later release" — stale before it shipped; `docs/triggers.md`
+    was always right. Corrected 2026-08-22, #87.)
   - Idempotency by construction: the run id is derived from
     `(trigger, connector, dedup value)`, so a re-delivered item is one run and
     one recorded skip. Correctness does not rest on the lease — the lease only
@@ -482,7 +542,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lease is reclaimable, so a crashed driver does not park its run forever.
 
 - **`areev-sandbox` (Tier C)**: a standalone package that runs a pure `wasm32`
-  module with no WASI, a frozen two-function import set, fuel, a memory ceiling,
+  module with no WASI, a frozen one-function import set (`areev::emit`; `alloc` is a guest export), fuel, a memory ceiling,
   and a module-size cap applied before decode. Deliberately outside the
   workspace so `wasmi`'s tree and MSRV never reach workspace `cargo deny`, MSRV
   checks or test time; it has its own CI job. Protects the host from the tool —

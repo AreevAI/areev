@@ -48,6 +48,16 @@ pub struct PinnedTool {
     /// manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor_uri: Option<String>,
+    /// The Definition's declared runtime ("wasm32-areev"), pinned with the
+    /// address so a mid-run supersession cannot re-route a blob from the
+    /// sandbox to native exec. Absent = native, and existing manifests
+    /// serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// The declared sandbox limits (`{"fuel", "max_pages"}`), pinned with
+    /// the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_limits: Option<serde_json::Value>,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -145,6 +155,8 @@ impl RunManifest {
                             tool_name: node.clone(),
                             executor: "subgraph".into(),
                             executor_uri: None,
+                            runtime: None,
+                            runtime_limits: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -163,6 +175,8 @@ impl RunManifest {
                             tool_name: node.clone(),
                             executor: "abstract".into(),
                             executor_uri: None,
+                            runtime: None,
+                            runtime_limits: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -379,12 +393,38 @@ fn pin_from_definition(
             Some(format!("cas://sha256:{}", hex.to_ascii_lowercase()))
         }
     };
+    // The declared runtime (#86). Fail closed on both axes: a runtime on a
+    // tool with no code blob describes nothing, and an unknown runtime —
+    // possible on a grain that arrived by sync from another implementation,
+    // since our own write path refuses it — must not silently fall back to
+    // native exec, which would run wasm bytes as a program.
+    let runtime = match g.get_str("runtime") {
+        None | Some("native") => None,
+        Some(rt) if executor_uri.is_none() => {
+            return Err(RunError::CodeExecRefused {
+                condition: format!(
+                    "node '{node}' declares runtime {rt:?} but names no executor_uri —                      a runtime routes a code blob, and there is none"
+                ),
+            })
+        }
+        Some("wasm32-areev") => Some("wasm32-areev".to_string()),
+        Some(rt) => {
+            return Err(RunError::CodeExecRefused {
+                condition: format!(
+                    "node '{node}' declares runtime {rt:?}, which this build cannot                      dispatch — accepted: native, wasm32-areev"
+                ),
+            })
+        }
+    };
+    let runtime_limits = if runtime.is_some() { g.fields.get("runtime_limits").cloned() } else { None };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
         tool_name,
         executor: executor.into(),
         executor_uri,
+        runtime,
+        runtime_limits,
     })
 }
 

@@ -93,6 +93,11 @@ COMMANDS:
                                       with the memory; `set` declares,
                                       `sweep --yes` enforces (audited)
   trigger  add --type KIND --workflow HASH --because \"why\"
+           [--context-query NAME]     a saved query the evaluator runs at
+                                      fire time; its result rides into the
+                                      run input as `context` (how a
+                                      trigger-started run reads its own
+                                      memory on the embedded backend)
            [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
            [--scope S] [--dedup-key PTR] [--catchup last|none|all]
            [--where EXPR] [--members ALIAS=HASH,...] [--correlate PTR]
@@ -196,6 +201,7 @@ COMMANDS:
            [--key-env VAR] [--llm-max-tokens N]
            [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
+           [--sandbox-cmd 'areev-sandbox']
            [--credential NAME=ENV_VAR,...] [--allow-host URL,...]
            [--tool-egress TOOL:CRED+CRED:METHOD+METHOD,...];
            --credential/--allow-host/--tool-egress broker a tool's outbound
@@ -3280,14 +3286,39 @@ fn run_run(
 
     let sub_cmd = positional.first().map(|s| s.as_str()).unwrap_or("");
     let principal = flag(flags, "as").unwrap_or_else(|| "user:local".to_string());
+    // The credential broker. A tool that posts to a vendor gets the broker's
+    // address and a capability token -- never the token itself -- so the
+    // secret stays in this process. `--tool-egress` is the per-tool grant:
+    // which credentials a named tool may spend, and which methods it may
+    // issue. A tool with no grant cannot even see the broker.
+    // Held so the broker outlives the run; also the handle refusals are read
+    // back from once it finishes.
+    let mut broker_guard: Option<Arc<areev_run::Broker>> = None;
+    let egress: Option<areev_run::EgressHandle> = match build_egress(flags)? {
+        None => None,
+        Some(broker) => {
+            let broker = Arc::new(broker);
+            broker_guard = Some(Arc::clone(&broker));
+            Some(areev_run::EgressHandle::new(broker))
+        }
+    };
     let base: Arc<dyn HostToolExecutor> = match flag(flags, "tool-cmd") {
-        Some(cmd) => Arc::new(CommandExecutor::new(&cmd)),
+        Some(cmd) => {
+            let ce = CommandExecutor::new(&cmd);
+            Arc::new(match &egress {
+                Some(h) => ce.with_egress(h.clone()),
+                None => ce,
+            })
+        }
         None => Arc::new(NoExecutor),
     };
     // Code-carrying tools: a Definition may name its executor by content
     // address, and the blob travels with the memory. Nothing runs unless the
     // operator pinned the address HERE — a grant in the file would arrive in
-    // the same bundle as the code it authorizes.
+    // the same bundle as the code it authorizes. The broker handle reaches
+    // the code executor too (#87): the pinned blob — the authoring style
+    // whose provenance the host can prove — gets the SAME credential story
+    // as a `--tool-cmd`, --tool-cmd present or not.
     let executor: Arc<dyn HostToolExecutor> = match flag(flags, "allow-executor") {
         None => base,
         Some(list) => {
@@ -3298,43 +3329,13 @@ fn run_run(
             if let Some(dir) = flag(flags, "executor-cache") {
                 ce = ce.cache_dir(dir);
             }
-            Arc::new(ce)
-        }
-    };
-    // The credential broker. A tool that posts to a vendor gets the broker's
-    // address and a capability token -- never the token itself -- so the
-    // secret stays in this process. `--tool-egress` is the per-tool grant:
-    // which credentials a named tool may spend, and which methods it may
-    // issue. A tool with no grant cannot even see the broker.
-    // Held so the broker outlives the run; also the handle refusals are read
-    // back from once it finishes.
-    let mut broker_guard: Option<Arc<areev_run::Broker>> = None;
-    let executor: Arc<dyn HostToolExecutor> = match build_egress(flags)? {
-        None => executor,
-        Some(broker) => {
-            let broker = Arc::new(broker);
-            broker_guard = Some(Arc::clone(&broker));
-            let handle = areev_run::EgressHandle::new(broker);
-            // Only the command executor spawns children that could use it.
-            match flag(flags, "tool-cmd") {
-                Some(cmd) => {
-                    let ce = areev_run::CommandExecutor::new(&cmd).with_egress(handle);
-                    match flag(flags, "allow-executor") {
-                        None => Arc::new(ce) as Arc<dyn HostToolExecutor>,
-                        Some(list) => {
-                            let mut c = areev_run::CodeExecutor::new(Arc::new(ce));
-                            for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
-                                c = c.allow(addr);
-                            }
-                            if let Some(dir) = flag(flags, "executor-cache") {
-                                c = c.cache_dir(dir);
-                            }
-                            Arc::new(c)
-                        }
-                    }
-                }
-                None => executor,
+            if let Some(cmd) = flag(flags, "sandbox-cmd") {
+                ce = ce.sandbox_cmd(&cmd);
             }
+            if let Some(h) = &egress {
+                ce = ce.with_egress(h.clone());
+            }
+            Arc::new(ce)
         }
     };
     // Abstract nodes need a tool-calling model (--model, same spec grammar
