@@ -9,12 +9,12 @@ with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
-`areev` on PyPI, and **`@areev/areev`** on npm — main package *and* every
-per-platform addon (`@areev/areev-win32-x64-msvc`, …) are scoped, because npm's
-similarity/spam filter rejects the unscoped `areev-*` names and a rejected
-platform package left the manifest promising a Windows addon that did not
-exist. An unscoped-`areev` exception is still user-tracked with npm support but
-is no longer on the release path.
+`areev` on PyPI, and **`areev`** on npm (unscoped, since 1.5.1 — npm support
+granted the exception and released the `areev-win32-x64-msvc` security hold
+on 2026-08-22, so the main package *and* every per-platform addon
+(`areev-win32-x64-msvc`, …) publish unscoped). The former scoped packages
+(`@areev/areev` + platforms) are deprecated pointers, kept for existing
+installs; never publish new versions to them.
 `areev-py`, `areev-bench`, and `areev-conformance` stay `publish = false`;
 `areev-js` ships to npm, not crates.io.
 The version lives in `[workspace.package]` in the root `Cargo.toml` (all crates
@@ -311,7 +311,7 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 ## Naming
 
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`, npm packages `@areev/areev` +
-`@areev/areev-<platform>` (all scoped; unscoped `areev` pending npm approval,
-not required by the release). The OMS spec itself is external (CC0); OMS
+"areevd", Python module `areev`, npm packages `areev` +
+`areev-<platform>` (unscoped since 1.5.1; the scoped `@areev/*` twins are
+deprecated pointers). The OMS spec itself is external (CC0); OMS
 conformance is the compatibility mechanism with other implementations.

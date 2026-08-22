@@ -182,7 +182,7 @@ EOF
 - **npm** (`release-npm.yml`) — `napi build --locked` per platform; the Linux
   legs build inside `node:20-bullseye` so the addon's glibc floor stays at
   2.31, asserted by a grep over the `.node`. Platform packages publish first,
-  the main `@areev/areev` package last, so a half-published release never
+  the main `areev` package last, so a half-published release never
   advertises a platform that is not on the registry yet.
 - **CLI** (`release-cli.yml`) — five prebuilt `areev` binaries, smoke-tested
   (`--version`, `add`, `recall`) before upload, attached to the Release with
@@ -190,7 +190,7 @@ EOF
 
 ## 6. Verify
 
-- `npm view @areev/areev version`
+- `npm view areev version`
 - `curl -s https://pypi.org/pypi/areev/json | jq -r .info.version` — **PyPI's
   JSON API is CDN-cached** and can serve the previous version for minutes
   after a successful upload; confirm with
@@ -201,11 +201,12 @@ EOF
 
 ## Notes
 
-- Registry names: `areev` on crates.io and PyPI are ours. npm ships
-  **`@areev/areev`** — the unscoped `areev` name and `areev-win32-x64-msvc`
-  are blocked by npm's similarity/spam filters pending a support exception;
-  when granted, publish unscoped, deprecate the scoped one, and flip the
-  docs back to `npm install areev`.
+- Registry names: `areev` on crates.io, PyPI, and npm (unscoped, since
+  1.5.1 — npm support granted the similarity-filter exception and released
+  the `areev-win32-x64-msvc` security hold on 2026-08-22). The scoped
+  `@areev/*` twins (1.2.3–1.5.1) are **deprecated pointers**: never publish
+  new versions to them, and never "un-deprecate" — existing installs keep
+  resolving them forever.
 - crates.io rate-limits NEW crate names hard (burst ~5, slow refill, 429
   with retry-after); existing-crate version publishes are much milder.
   Retry on 429 AND on upload timeouts — a timed-out upload may still have
