@@ -1207,6 +1207,19 @@ pub fn build_grain_from_json<S: GrainSink>(
                     areev_core::types::capability::Declaration::parse(caps)
                         .map_err(|e| AreevError::Validation(format!("tool {e}")))?;
                     tool = tool.capabilities(caps.clone());
+                } else if declared_runtime.as_deref() == Some("wasm32-areev-io") {
+                    // The inverse the manifest freeze also enforces: a
+                    // capability RUNTIME with nothing declared can reach
+                    // nothing, so refuse it at WRITE time too. Without this the
+                    // grain writes here and then dies at every run start — the
+                    // "writable then unrunnable" split the shared parser exists
+                    // to prevent, just from the other direction.
+                    return Err(AreevError::Validation(
+                        "tool declares runtime 'wasm32-areev-io' but no capabilities — a \
+                         capability runtime with an empty declaration can reach nothing; \
+                         use 'wasm32-areev' for a pure module"
+                            .to_string(),
+                    ));
                 }
                 if let Some(lp) = fields.get("locked_params").filter(|v| !v.is_null()) {
                     if !lp.is_object() {
@@ -2025,6 +2038,23 @@ mod tests {
             let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
             assert!(err.to_string().contains("wasm32-areev-io"), "{err}");
         }
+    }
+
+    #[test]
+    fn the_capability_runtime_without_a_declaration_is_refused_at_write_time() {
+        // The inverse the manifest freeze also enforces: a capability RUNTIME
+        // with nothing declared can reach nothing, so it must not write here
+        // only to die at every run start — the "writable then unrunnable" split
+        // the shared parser exists to prevent, from the other direction.
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev-io",
+        }));
+        let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+        assert!(
+            err.to_string().contains("wasm32-areev-io") && err.to_string().contains("capabilities"),
+            "the refusal names the runtime and the missing declaration: {err}"
+        );
     }
 
     #[test]

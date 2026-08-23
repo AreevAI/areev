@@ -472,7 +472,11 @@ impl CodeExecutor {
                 limits.max_calls = n.min(u64::from(u32::MAX)) as u32;
             }
             if let Some(n) = l.get("max_response_bytes").and_then(Value::as_u64) {
-                limits.max_response_bytes = n as usize;
+                // Clamp rather than `as usize`-truncate: on a 32-bit target a
+                // manifest value above `usize::MAX` would silently wrap to a
+                // tiny ceiling that refuses legitimate responses, the same
+                // hazard the `max_calls` clamp above avoids.
+                limits.max_response_bytes = usize::try_from(n).unwrap_or(usize::MAX);
             }
         }
         egress.declare(tool_name, declared, limits);

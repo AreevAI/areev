@@ -66,6 +66,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   verbose-error endpoint could bounce the injected `Authorization` back to the
   caller and into the audit trail.
 
+- **The private-space deny recognized only canonical IP literals.** Under an
+  unrestricted egress policy, `is_private_destination` is the sole control
+  stopping a synced capability tool from reaching loopback, link-local, or
+  metadata address space — but it parsed the host with `Ipv4Addr::from_str`,
+  which accepts only dotted-quad. A libc resolver (and therefore ureq) still
+  maps the historical `inet_aton` forms to the same address, so a Tool grain
+  declaring `hosts: ["http://2852039166"]` — decimal for `169.254.169.254`,
+  the cloud metadata service — sailed straight through it: the exact case the
+  check exists to close. It now canonicalizes decimal, hex, octal, and short
+  (`127.1`) forms, and covers the RFC 6598 shared/CGNAT range
+  (`100.64.0.0/10`), which `Ipv4Addr::is_private` does not.
+
+- **A credential could return after the redirect chain left its origin.** The
+  same-origin check compared each hop against the URL the caller *started*
+  at, so a chain `A(cred) → 302 B (cross-origin, cred dropped) → 302 back to
+  A/<path B chose>` re-attached the credential on the final hop — more
+  permissive than browsers or `curl --location`, which drop it for good once
+  the chain leaves the origin. A hop to a different origin now retires the
+  credential for the rest of the chain, and the success audit records the
+  credential name only when it actually rode the final request — not
+  whichever name the caller asked for.
+
+- **A shared broker re-journaled an earlier run's egress calls as its own.**
+  `areev trigger run` reuses one broker across the runs it fires in sequence,
+  and `Broker::calls()` accumulates for the broker's whole life without
+  draining — so a run's journaling cursor starting at 0 re-wrote a prior
+  run's already-journaled calls into the immutable store a second time, under
+  the new run's id, principal, and clock. The cursor now seeds from what the
+  broker already holds at drive entry.
+
+- **A handful of fail-open edges closed during review, before anything
+  shipped**: `--credential NAME=VAR@` with an empty principal (a typo, or an
+  unset shell variable in the owner position) now refuses rather than
+  silently binding an unbound credential; a poisoned mutex on the
+  per-principal owner map now fails closed instead of skipping the owner
+  check; a `wasm32-areev-io` tool with no `capabilities` is refused at write
+  time, matching the check the manifest already made at run start; and
+  `max_response_bytes` clamps rather than truncates on a 32-bit target.
+
 ### Added
 
 - **Capability tools: an I/O tool can be a grain** (#101). Tier C was correct

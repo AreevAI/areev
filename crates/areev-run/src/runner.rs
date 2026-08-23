@@ -1128,7 +1128,15 @@ impl Runner {
         // but a successful call is an effect and forty of those are forty
         // things that happened, so they are journaled in order and never
         // deduplicated (#101).
-        let mut calls_journaled: usize = 0;
+        //
+        // Seeded with what the broker ALREADY holds, not 0: the trigger
+        // multi-fire path reuses one broker across sequential runs and
+        // `calls()` accumulates for the broker's whole life, never draining, so
+        // starting the cursor at 0 would re-journal an earlier run's calls
+        // under THIS run's id, principal and clock — duplicate, misattributed
+        // audit grains. Runs drive sequentially, so whatever is already present
+        // belongs to an earlier one and is not ours to journal.
+        let mut calls_journaled: usize = self.executor.calls().len();
         let mut in_flight: usize = 0;
         let mut st = st;
         let mut events = initial_events;

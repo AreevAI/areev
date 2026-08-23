@@ -10,7 +10,7 @@ authority, in steps you can inspect, undo, and re-measure.
 
 <p align="center">
   <img src="docs/assets/areev-hero.png" width="900"
-       alt="How Areev works: typed grains — facts, goals, skills, workflows, tools, events, recommendations — in one store, assembled by the context graph (hybrid recall, rerank, knowledge graph) into a budget-shaped pseudonymized context for the LLM provider; the host executes the actions under human-in-the-loop governance, and the Areev learning loop (propose, review, apply, verify) feeds what happened back into the store">
+       alt="How Areev works: typed grains — facts, goals, skills, workflows, tools, events, recommendations — in one store, assembled by the context graph (hybrid recall, rerank, knowledge graph) into a budget-shaped pseudonymized context for the LLM provider; the host executes the actions under human-in-the-loop governance, and the Areev learning loop (propose, review, apply, verify, plus the governed model-tuning seam) feeds what happened back into the store">
 </p>
 
 <p align="center">

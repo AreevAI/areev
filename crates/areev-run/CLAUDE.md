@@ -124,7 +124,10 @@ evidence. Responding and resuming are separate acts.
   never where it ended up, so an allowed host's `302` to `169.254.169.254` was
   fetched and its body handed back. Every hop re-checks `policy.permits` and
   (when the method changed) `grant.permits_method`; the credential re-attaches
-  only when `egress::same_origin` holds. Turning `http_status_as_error` off also
+  only while `egress::same_origin` holds AND the chain has never left the start
+  origin (a `left_origin` latch — an `A→B→A` bounce gets no credential, and the
+  success audit records the credential name only when it rode the final hop).
+  Turning `http_status_as_error` off also
   means a 4xx/5xx now reaches the caller as `{status, body}` instead of
   collapsing into `502 {"error": "upstream: …"}`.
 - **Reading a credential registers its variable as a secret** (#100) —

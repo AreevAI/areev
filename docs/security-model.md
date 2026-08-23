@@ -490,9 +490,13 @@ Six properties are worth stating because each closes a specific hole:
   was redirected there" are different stories. The mirror image is fixed too:
   the brokered `Authorization` used to be dropped on *every* redirect
   including a same-origin one, so legitimate Google/Microsoft flows 401'd
-  silently; it now re-attaches exactly when scheme+host+port are unchanged and
-  is dropped otherwise. Chains are bounded at ten hops and the bound is
-  auditable.
+  silently; it now rides a follow exactly when scheme+host+port are unchanged
+  **and the chain has never left the starting origin** — an `A → B → A` bounce
+  through another origin retires the credential for good, so an untrusted
+  intermediary cannot have it re-attached to a path it chose (the rule browsers
+  and `curl --location` apply). The success audit records the credential name
+  only when it actually rode the final request. Chains are bounded at ten hops
+  and the bound is auditable.
 - **A reflected credential is scrubbed.** Response *headers* never cross the
   broker — it answers with `{status, body}` and nothing else — so the body is
   the only channel, and an echo or verbose-error endpoint that bounces the
@@ -515,8 +519,12 @@ Six properties are worth stating because each closes a specific hole:
   declares hosts freely, so reaching the local console, the hub, or the
   metadata service takes an explicit `--allow-host` entry. This binds every
   redirect hop, and leaves connectors and `--tool-cmd` tools (pure host config)
-  untouched. It is syntactic: a public hostname resolving to a private address
-  (DNS rebinding) is the standing limitation of hostname allowlisting.
+  untouched. The check canonicalizes the alternate IPv4 literal encodings a
+  libc resolver honours — decimal (`http://2852039166/` is the metadata
+  service), hex, octal and the short `127.1` forms — so classifying only the
+  dotted-quad spelling cannot be used to walk past it. It stays syntactic in one
+  respect only: a public hostname *resolving* to a private address (DNS
+  rebinding) is the standing limitation of hostname allowlisting.
 - **Credentials can be bound to a run principal.** `--credential
   name=VAR@principal` refuses the credential to any run executing as a
   different principal, and to one that bound none (fail-closed) — so a single

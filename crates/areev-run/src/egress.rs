@@ -161,20 +161,35 @@ impl EgressPolicy {
 /// private address (DNS rebinding) is not caught here — that is the
 /// documented limitation of hostname allowlisting in general. What this
 /// closes is the literal form, which is what every off-the-shelf SSRF payload
-/// uses first.
+/// uses first — including the alternate integer encodings (`2130706433`,
+/// `0x7f000001`, `017700000001`, `127.1`) that a libc resolver accepts but
+/// `Ipv4Addr::from_str` does not.
 pub fn is_private_destination(url: &str) -> bool {
     let Ok((_, host, _)) = split_url(url) else {
         // Unparseable never reaches dispatch anyway; classify it as private so
         // this function fails closed if it is ever called first.
         return true;
     };
+    // A single trailing dot is an explicitly fully-qualified name (`localhost.`,
+    // `127.0.0.1.`) naming the very same destination; drop it before the
+    // literal checks so it cannot read as a different, "public" host.
+    let host = host.strip_suffix('.').unwrap_or(&host);
     // RFC 6761: `localhost` and anything under it is loopback by fiat.
     if host == "localhost" || host.ends_with(".localhost") {
         return true;
     }
     // IP literals. IPv6 arrives bracketed from the authority.
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    if let Ok(v4) = bare.parse::<std::net::Ipv4Addr>() {
+    // Canonical dotted-quad first, then the historical `inet_aton` numeric
+    // forms (decimal, hex, octal, and the short `127.1` variants). A C resolver
+    // — and therefore ureq — collapses all of these to the same address, so
+    // recognizing only the canonical spelling would leave `http://2852039166/`
+    // (that is `169.254.169.254`) a straight path to the metadata service.
+    if let Some(v4) = bare
+        .parse::<std::net::Ipv4Addr>()
+        .ok()
+        .or_else(|| parse_ipv4_inet_aton(bare))
+    {
         return v4_is_private(v4);
     }
     if let Ok(v6) = bare.parse::<std::net::Ipv6Addr>() {
@@ -195,6 +210,81 @@ pub fn is_private_destination(url: &str) -> bool {
 
 fn v4_is_private(v4: std::net::Ipv4Addr) -> bool {
     v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+        // 100.64.0.0/10, RFC 6598 shared address space — carrier-grade NAT and
+        // the node/pod ranges of many container platforms. `Ipv4Addr::is_private`
+        // does NOT cover it, so without this a capability tool could reach an
+        // internal neighbour on its declaration alone under an unrestricted
+        // policy, the exact class of destination this gate exists to deny.
+        || matches!(v4.octets(), [100, b, _, _] if (64..=127).contains(&b))
+}
+
+/// The historical `inet_aton` numeric host forms that `Ipv4Addr::from_str`
+/// rejects but a libc resolver (`getaddrinfo`, hence ureq) still accepts: a
+/// bare 32-bit integer (`2130706433`), hex (`0x7f000001`), octal
+/// (`017700000001`), and the short 1–3 part forms whose final part spans the
+/// remaining low bytes (`127.1`, `10.0x1`). Returns the address the form
+/// collapses to, or `None` when the string is a genuine hostname or malformed.
+///
+/// This exists ONLY to classify private-space destinations; a value that does
+/// not parse as one of these forms is left to the hostname path, not forced.
+fn parse_ipv4_inet_aton(host: &str) -> Option<std::net::Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut nums = Vec::with_capacity(parts.len());
+    for p in &parts {
+        nums.push(parse_c_uint(p)?);
+    }
+    let addr: u32 = match nums.as_slice() {
+        // One number is the whole 32-bit address.
+        [a] => u32::try_from(*a).ok()?,
+        // a.b — b spans the low 24 bits.
+        [a, b] => {
+            let a = u8::try_from(*a).ok()?;
+            if *b > 0x00ff_ffff {
+                return None;
+            }
+            (u32::from(a) << 24) | (*b as u32)
+        }
+        // a.b.c — c spans the low 16 bits.
+        [a, b, c] => {
+            let a = u8::try_from(*a).ok()?;
+            let b = u8::try_from(*b).ok()?;
+            if *c > 0x0000_ffff {
+                return None;
+            }
+            (u32::from(a) << 24) | (u32::from(b) << 16) | (*c as u32)
+        }
+        // a.b.c.d — the ordinary four octets, each still writable in hex/octal.
+        [a, b, c, d] => u32::from_be_bytes([
+            u8::try_from(*a).ok()?,
+            u8::try_from(*b).ok()?,
+            u8::try_from(*c).ok()?,
+            u8::try_from(*d).ok()?,
+        ]),
+        _ => return None,
+    };
+    Some(std::net::Ipv4Addr::from(addr))
+}
+
+/// One `inet_aton` part: `0x` hex, a leading-`0` octal, otherwise decimal.
+/// Returned as `u64` so the single-part 32-bit form fits before the caller
+/// bounds it. `None` on an empty part or a digit outside the chosen base.
+fn parse_c_uint(part: &str) -> Option<u64> {
+    let (radix, digits) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+        (16, hex)
+    } else if part.len() > 1 && part.starts_with('0') {
+        (8, &part[1..])
+    } else {
+        (10, part)
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        // Reject `+`/`-`/whitespace that `from_str_radix` would otherwise
+        // tolerate — a numeric host form has none of them.
+        return None;
+    }
+    u64::from_str_radix(digits, radix).ok()
 }
 
 /// Do two absolute URLs share scheme, host and port?
@@ -454,6 +544,36 @@ mod tests {
         // Fails closed on garbage: an unparseable destination never gets the
         // benefit of the doubt.
         assert!(is_private_destination("not-a-url"));
+    }
+
+    #[test]
+    fn private_destinations_are_recognized_in_the_alternate_integer_encodings() {
+        // The forms `Ipv4Addr::from_str` rejects but a libc resolver still maps
+        // to loopback / the metadata service — every off-the-shelf SSRF payload
+        // reaches for one of these first, so the deny must see them.
+        for private in [
+            "http://2130706433/",                  // 127.0.0.1, decimal
+            "http://0x7f000001/",                   // 127.0.0.1, hex
+            "http://017700000001/",                 // 127.0.0.1, octal
+            "http://127.1/",                        // 127.0.0.1, short form
+            "http://127.0.0x1/",                    // mixed-radix short form
+            "http://0/",                            // 0.0.0.0, bare zero
+            "http://2852039166/latest/meta-data/",  // 169.254.169.254 (IMDS), decimal
+            "http://0xA9FEA9FE/",                   // 169.254.169.254, hex
+            "http://127.0.0.1./",                   // trailing-dot FQDN
+            "http://localhost./",                   // trailing-dot localhost
+        ] {
+            assert!(is_private_destination(private), "{private} must classify private");
+        }
+        // A genuine hostname and a public numeric literal still read as public —
+        // the canonicalization must not over-match.
+        for public in [
+            "https://api.github.com/",
+            "http://134744072/",                    // 8.8.8.8, decimal — public
+            "http://999.999.999.999/",              // not a valid address at all
+        ] {
+            assert!(!is_private_destination(public), "{public} must classify public");
+        }
     }
 
     #[test]

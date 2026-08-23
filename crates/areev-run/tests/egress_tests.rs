@@ -29,6 +29,7 @@ type Route = (&'static str, u16, Vec<(String, String)>, &'static str);
 struct Upstream {
     port: u16,
     seen: Arc<std::sync::Mutex<Vec<SeenRequest>>>,
+    routes: Arc<std::sync::Mutex<Vec<Route>>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -39,8 +40,9 @@ impl Upstream {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let routes = Arc::new(std::sync::Mutex::new(routes));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (seen_t, stop_t) = (Arc::clone(&seen), Arc::clone(&stop));
+        let (seen_t, routes_t, stop_t) = (Arc::clone(&seen), Arc::clone(&routes), Arc::clone(&stop));
 
         std::thread::spawn(move || {
             while !stop_t.load(std::sync::atomic::Ordering::Relaxed) {
@@ -79,10 +81,12 @@ impl Upstream {
                 }
                 seen_t.lock().unwrap().push((method, path.clone(), auth));
 
-                let route = routes.iter().find(|(p, ..)| *p == path);
-                let (status, headers, body) = match route {
-                    Some((_, s, h, b)) => (*s, h.clone(), *b),
-                    None => (404, Vec::new(), "not found"),
+                let (status, headers, body) = {
+                    let routes = routes_t.lock().unwrap();
+                    match routes.iter().find(|(p, ..)| *p == path) {
+                        Some((_, s, h, b)) => (*s, h.clone(), *b),
+                        None => (404, Vec::new(), "not found"),
+                    }
                 };
                 let mut head = format!("HTTP/1.1 {status} \r\nContent-Length: {}\r\n", body.len());
                 for (k, v) in &headers {
@@ -95,11 +99,17 @@ impl Upstream {
                 let _ = stream.flush();
             }
         });
-        Upstream { port, seen, stop }
+        Upstream { port, seen, routes, stop }
     }
 
     fn origin(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Add a route after start — for chains whose target port is only known
+    /// once the peer server is bound (an `A → B → A` bounce, for one).
+    fn add_route(&self, route: Route) {
+        self.routes.lock().unwrap().push(route);
     }
 
     /// `(method, path, authorization)` for every request this server handled.
@@ -481,6 +491,61 @@ fn a_cross_origin_redirect_is_followed_without_the_credential() {
     let reqs = other.requests();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].2, None, "a different origin gets no credential: {reqs:?}");
+}
+
+/// Once the chain has left the starting origin the credential is gone for good,
+/// even if a later hop returns to that origin. An `A → B → A` bounce is exactly
+/// how an untrusted intermediary (`B`) would try to have the secret re-attached
+/// to a path it, not the caller, chose — so the final `A` request must arrive
+/// unauthenticated, and the audit must not claim the credential was used.
+#[test]
+fn a_credential_is_not_re_attached_after_the_chain_leaves_and_returns_to_the_origin() {
+    // Both servers are bound before their cross-referencing routes are set, so
+    // each Location can name the other's real port.
+    let first = Upstream::start(vec![("/return", 200, Vec::new(), "home again")]);
+    let other = Upstream::start(vec![]);
+    first.add_route(("/here", 302, header("Location", &format!("{}/detour", other.origin())), ""));
+    other.add_route(("/detour", 302, header("Location", &format!("{}/return", first.origin())), ""));
+
+    std::env::set_var("AREEV_TEST_BOUNCE_CRED", "do-not-return");
+    let broker = Broker::start(
+        policy_for(&[first.origin(), other.origin()]),
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_BOUNCE_CRED").unwrap())]
+            .into_iter()
+            .collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    std::env::remove_var("AREEV_TEST_BOUNCE_CRED");
+    let token = broker.token_for("t").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/here", first.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["body"], json!("home again"), "the bounce was followed to the end");
+
+    let reqs = first.requests();
+    assert_eq!(reqs.len(), 2, "both first-origin hops happened: {reqs:?}");
+    assert_eq!(reqs[0].1, "/here");
+    assert_eq!(reqs[0].2.as_deref(), Some("bearer do-not-return"), "the caller's own hop is authed");
+    assert_eq!(reqs[1].1, "/return");
+    assert_eq!(
+        reqs[1].2, None,
+        "the credential must NOT come back after the chain passed through another origin: {reqs:?}"
+    );
+
+    // And the audit must not claim a credential reached the final destination.
+    let calls = broker.calls();
+    assert_eq!(calls.len(), 1, "one successful call recorded");
+    assert_eq!(
+        calls[0].credential, None,
+        "the audit records no credential when the final hop carried none: {:?}",
+        calls[0]
+    );
 }
 
 /// A grant is checked against the method actually issued. A caller permitted

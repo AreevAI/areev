@@ -113,7 +113,18 @@ impl Credential {
     pub fn bearer_from_env_spec(spec: &str) -> Result<(Credential, Option<String>)> {
         let (var, owner) = match spec.split_once('@') {
             Some((v, o)) if !o.trim().is_empty() => (v.trim(), Some(o.trim().to_string())),
-            Some((v, _)) => (v.trim(), None),
+            // `VAR@` with an empty principal is a typo, or an unset shell
+            // variable expanded into the owner position (`VAR@$OWNER` with
+            // $OWNER unset) — NOT a request for an unbound credential. Treating
+            // it as unbound fails OPEN: the confinement the operator spelled
+            // out silently disappears. Refuse it instead; an unbound credential
+            // is spelled `NAME=VAR`, with no `@` at all.
+            Some((_, _)) => {
+                return Err(format!(
+                    "credential spec {spec:?} has an empty principal after '@' — write \
+                     NAME=VAR for an unbound credential, or NAME=VAR@principal to bind one"
+                ))
+            }
             None => (spec.trim(), None),
         };
         Ok((Self::bearer_from_env(var)?, owner))
@@ -787,12 +798,18 @@ fn serve_one(
         // closed when no principal was bound at all: a path that never binds
         // (the trigger evaluator's connector pass, a bare embedding) gets a
         // refusal, never a quiet exception.
-        let owner = credential_owners
-            .lock()
-            .ok()
-            .and_then(|o| o.get(name.as_str()).cloned());
+        // Recover a poisoned guard rather than fail OPEN on it: `.lock().ok()`
+        // would yield `None`, skip the owner check entirely, and attach the
+        // credential with no principal binding — disabling exactly the #101
+        // isolation this block enforces. The `declared` map above already fails
+        // closed this way (`into_inner`); the security-critical owner map must
+        // too.
+        let owner = {
+            let owners = credential_owners.lock().unwrap_or_else(|e| e.into_inner());
+            owners.get(name.as_str()).cloned()
+        };
         if let Some(owner) = owner {
-            let bound = run_principal.lock().ok().and_then(|p| p.clone());
+            let bound = run_principal.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if bound.as_deref() != Some(owner.as_str()) {
                 note_refusal(
                     refusals,
@@ -885,7 +902,7 @@ fn serve_one(
         &caller,
         refusals,
     ) {
-        Dispatched::Answered { status, mut body, final_url, redirects } => {
+        Dispatched::Answered { status, mut body, final_url, redirects, credential_sent } => {
             // Credential reflection: an echo or a verbose error endpoint can
             // bounce the injected `Authorization` back in its BODY, and that
             // body goes to the guest and (as a digest) into the audit trail.
@@ -913,7 +930,12 @@ fn serve_one(
                     request_digest: req.body.as_deref().map(digest),
                     response_digest: digest(&body),
                     response_bytes: body.len(),
-                    credential: req.credential.clone(),
+                    // Only if the credential actually rode the FINAL request: a
+                    // cross-origin redirect drops it (see `dispatch`), and an
+                    // immutable audit grain claiming the secret reached a
+                    // destination it never touched is a false record a DSAR or
+                    // reviewer would read as fact.
+                    credential: if credential_sent { req.credential.clone() } else { None },
                 },
             );
             respond(
@@ -997,7 +1019,11 @@ enum Dispatched {
     /// `final_url` is where the response actually came from, which is not
     /// necessarily where the caller aimed — that distinction is the point of
     /// recording it.
-    Answered { status: u16, body: String, final_url: String, redirects: u32 },
+    ///
+    /// `credential_sent` is whether the credential actually rode the FINAL
+    /// request: a cross-origin redirect drops it, so the audit must not claim a
+    /// secret reached a destination it never did.
+    Answered { status: u16, body: String, final_url: String, redirects: u32, credential_sent: bool },
     /// A hop was refused by policy; already recorded in `refusals`.
     Refused { detail: String },
     /// The final response exceeded the caller's `max_response_bytes` — the
@@ -1094,6 +1120,14 @@ fn dispatch(
     let mut url = start_url.to_string();
     let mut method = start_method.to_string();
     let mut body = body.map(str::to_string);
+    // Once any hop leaves the starting origin the credential is retired for the
+    // rest of the chain, never to return. Comparing each hop against
+    // `start_url` alone is not enough: an untrusted intermediary can answer
+    // `A → 302 B → 302 A/<path it chose>`, and on that final hop
+    // `same_origin(A, A)` is true, so the secret would be re-attached to a
+    // request an intermediary shaped. Browsers and `curl --location` drop the
+    // header for good once the chain leaves the origin; this matches them.
+    let mut left_origin = false;
     // The cap bounds what is READ: ureq abandons the body at the limit and
     // reports it as `BodyExceedsLimit`, which surfaces as `Err(())` here so an
     // overrun becomes a typed refusal — never an empty or truncated body
@@ -1115,8 +1149,11 @@ fn dispatch(
     for hops in 0..=MAX_REDIRECT_HOPS as u32 {
         // The first hop is the URL the caller named and every layer above has
         // already cleared — the credential goes without a parse-dependent
-        // detour. On follows, it rides only while the origin is unchanged.
-        let send_credential = hops == 0 || crate::egress::same_origin(start_url, &url);
+        // detour. On follows, it rides only while the chain has never left the
+        // starting origin (`same_origin` is then necessarily true too, but the
+        // `left_origin` latch is what makes an A→B→A bounce fail closed).
+        let send_credential =
+            hops == 0 || (!left_origin && crate::egress::same_origin(start_url, &url));
         let result = perform(&agent, &method, &url, body.as_deref(), credential_headers, send_credential);
 
         let mut resp = match result {
@@ -1134,9 +1171,13 @@ fn dispatch(
             // Not a redirect, or one we deliberately do not follow. Either way
             // the caller gets the response as it stands.
             return match read_body(&mut resp) {
-                Ok(text) => {
-                    Dispatched::Answered { status, body: text, final_url: url, redirects: hops }
-                }
+                Ok(text) => Dispatched::Answered {
+                    status,
+                    body: text,
+                    final_url: url,
+                    redirects: hops,
+                    credential_sent: send_credential,
+                },
                 Err(()) => Dispatched::TooLarge { final_url: url },
             };
         };
@@ -1144,9 +1185,13 @@ fn dispatch(
             // A 3xx with no usable `Location` is not a redirect we can follow;
             // hand it back rather than invent a destination.
             return match read_body(&mut resp) {
-                Ok(text) => {
-                    Dispatched::Answered { status, body: text, final_url: url, redirects: hops }
-                }
+                Ok(text) => Dispatched::Answered {
+                    status,
+                    body: text,
+                    final_url: url,
+                    redirects: hops,
+                    credential_sent: send_credential,
+                },
                 Err(()) => Dispatched::TooLarge { final_url: url },
             };
         };
@@ -1255,6 +1300,12 @@ fn dispatch(
         // A method that lost its body must not carry one forward.
         if next_method != method && next_method == "GET" {
             body = None;
+        }
+        // A hop to a different origin retires the credential permanently: even
+        // if a later hop returns to the start origin, the chain has passed
+        // through somewhere untrusted that chose where it goes next.
+        if !crate::egress::same_origin(start_url, &next_url) {
+            left_origin = true;
         }
         method = next_method;
         url = next_url;
