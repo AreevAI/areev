@@ -221,12 +221,14 @@ COMMANDS:
            [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--sandbox-cmd 'areev-sandbox']
-           [--credential NAME=ENV_VAR,...] [--allow-host URL,...]
+           [--credential NAME=ENV_VAR[@PRINCIPAL],...] [--allow-host URL,...]
            [--tool-egress TOOL:CRED+CRED:METHOD+METHOD,...];
            --credential/--allow-host/--tool-egress broker a tool's outbound
            calls: it gets the broker's address and a capability token, never
            the secret. A tool with no grant gets nothing, and a grant naming
-           no method may only read;
+           no method may only read. NAME=ENV_VAR@PRINCIPAL binds the
+           credential to a run principal, so a run executing as anyone else is
+           refused it — for a process holding several principals' secrets;
            --allow-executor pins the content address of a code-carrying tool
            (a Definition whose executor_uri names a cas:// blob). Nothing
            code-carrying runs unpinned, because the blob travels with the
@@ -1080,6 +1082,25 @@ fn run() -> Result<(), String> {
         if let Some(var) = flag(&flags, var_flag) {
             areev_core::proc::deny_env_var(&var);
             areev_loop::proc::deny_env_var(&var);
+        }
+    }
+    // `--credential NAME=ENV_VAR` names a variable the same way, but spells it
+    // on the right of an `=` — so it needs its own parse rather than a fourth
+    // entry in the list above (#100). `Credential::bearer_from_env` registers
+    // the core seam for every host that reads one; this adds the loop mirror,
+    // and does it HERE rather than in `build_egress` because the choke point
+    // runs before any verb arm can spawn.
+    if let Some(list) = flag(&flags, "credential") {
+        for pair in list.split(',') {
+            if let Some((_, spec)) = pair.split_once('=') {
+                // The spec may carry a `VAR@principal` owner (#101); the deny
+                // list wants the bare variable name, so strip the qualifier.
+                let var = spec.trim().split_once('@').map(|(v, _)| v).unwrap_or(spec).trim();
+                if !var.is_empty() {
+                    areev_core::proc::deny_env_var(var);
+                    areev_loop::proc::deny_env_var(var);
+                }
+            }
         }
     }
 

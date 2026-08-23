@@ -352,6 +352,116 @@ string refuses at resolve rather than falling back to native, which would run
 foreign bytes as a program. (`areev-sandbox` is a separate `publish = false`
 binary — build it from the repo and point `--sandbox-cmd` at it.)
 
+### Capability tools — persisting an I/O tool as a grain (`wasm32-areev-io`)
+
+`wasm32-areev` is pure compute, by design and permanently. That left a gap:
+Tier C is the only tier that produces a persistable, content-addressed tool,
+and the tools every real agent needs do I/O. So a mailbox poller had to be a
+native blob (persisted, but *not sandboxed — it runs as you*, and
+platform-specific) or a host `--tool-cmd` script (sandboxed by nothing, and
+outside the memory entirely).
+
+`runtime: "wasm32-areev-io"` (#101) closes it. The guest still gets no socket:
+it gets one more import, `areev::fetch`, answered by the credential broker the
+run already has.
+
+```json
+{ "tool_name": "send_ask", "kind": "definition",
+  "executor_uri": "cas://sha256:<64 hex>",
+  "runtime": "wasm32-areev-io",
+  "runtime_limits": { "fuel": 200000000, "max_pages": 256,
+                      "max_calls": 64, "max_response_bytes": 1048576 },
+  "capabilities": [
+    { "http": { "hosts": ["https://gmail.googleapis.com"],
+                "methods": ["POST"],
+                "path_prefixes": ["/gmail/v1/users/me/"],
+                "credentials": ["gmail"] } }
+  ] }
+```
+
+**`capabilities` declares; it never grants.** The effective set is
+`declared ∩ host-granted`, checked on every call, so the declaration can only
+narrow what `--allow-host` / `--credential` / `--tool-egress` already permitted.
+That is the same split `--allow-executor` makes for the code itself: the
+declaration replicates with the bundle, the authority does not. What it buys is
+audit (a synced memory says what a tool may reach without reading anyone's
+command line) and a tighter bound than the host grant can express — the
+host-side allowlist is host-only, while a capability may pin `path_prefixes`
+and `methods` too.
+
+Deny by default throughout: no declaration means no reach, no declared
+`methods` means `GET`/`HEAD` only, no declared `credentials` means none. Host
+entries use the same grammar as `--allow-host` (scheme mandatory, `*.dom`
+excludes the apex, no bare `*`) — one parser, in `areev-core`, shared by the
+CAL write path and the broker, so a tool that writes is a tool that runs.
+
+Running one:
+
+```bash
+areev run start --db m.db --workflow <plan-hash> \
+  --allow-executor cas://sha256:<64 hex> \
+  --sandbox-cmd areev-sandbox \
+  --credential gmail=GMAIL_TOKEN \
+  --allow-host https://gmail.googleapis.com \
+  --tool-egress 'send_ask:gmail:POST'
+```
+
+What is enforced, and where:
+
+| Check | Where | Failure |
+|---|---|---|
+| `capabilities` without `runtime: "wasm32-areev-io"` | CAL write, and again at resolve | write rejected / `RUN-E018` |
+| the capability runtime with no `capabilities` | resolve | `RUN-E018` — a capability runtime declaring nothing can reach nothing |
+| a malformed declaration | CAL write, and again at resolve | write rejected / `RUN-E018` |
+| the runtime with no broker, or no `--tool-egress` for this tool | dispatch | node fails, naming the missing flag |
+| a module importing `areev::fetch` undeclared | sandbox instantiation | `ForbiddenImport`, by name, before one instruction |
+| host / path / method / credential outside the declaration | broker, per call **and per redirect hop** | 403 + a journaled refusal |
+| an evasive path (`..`, `%2e`/`%2f`/`%5c`, `\\`) against declared `path_prefixes` | broker, per call | 403 — refused rather than normalized |
+| anything outside the host grant | broker, per call | 403 + a journaled refusal |
+| a private/loopback destination (`127.0.0.0/8`, `10/8`, `169.254/16`, `::1`, `fc00::/7`, …) under an **unrestricted** policy | broker, per call and per hop | 403 — a declaration alone cannot authorize local reach; name it in `--allow-host` |
+| a credential owned by a different run principal (`--credential name=VAR@principal`) | broker, per call | 403 + a journaled refusal |
+| more than `max_calls`, or a response over `max_response_bytes` | broker, per call | 403 + a journaled refusal — an overrun is an error, never a truncation |
+
+The declaration is **frozen into the run manifest** beside the runtime, so a
+supersession mid-run cannot widen what a module reaches, and a resume or a
+verify reads the set the run started with.
+
+**Multi-principal isolation.** Two extra gates matter when one engine process
+serves more than one user, which is precisely the case where grain-stored code
+run for user A must not reach user B's data or credentials:
+
+- **Private space is not "the internet".** A capability tool under an
+  unrestricted egress policy (no `--allow-host`) still cannot reach loopback,
+  link-local, private-range or cloud-metadata addresses on its declaration
+  alone — a synced memory can declare any host it likes, and reaching the
+  local console, the hub, or `169.254.169.254` takes an explicit
+  `--allow-host` entry, the operator's auditable act. The rule binds every
+  redirect hop too. Non-capability callers (connectors, `--tool-cmd` tools)
+  are unaffected: their reach was always pure host config. (Syntactic only —
+  a public hostname that *resolves* to a private address is the documented
+  DNS-rebinding limitation of hostname allowlisting, unchanged.)
+- **Credentials can bind to a principal.** `--credential name=VAR@principal`
+  ties a credential to the run principal that owns it; a run executing as
+  anyone else is refused it, and so is a path that bound no principal at all
+  (fail-closed). The tool grant says which *tools* may ask; this says which
+  *runs* may be answered. The driver binds the run's principal automatically,
+  so the gate cannot be forgotten. An unqualified `--credential name=VAR` is
+  unchanged — spendable by any run its grant admits.
+
+**Determinism.** A pure `wasm32-areev` module is re-execution-provable: same
+module, same input, same fuel. A capability module is deterministic *modulo
+journaled effects* — which is why it is a separate runtime name and not a flag
+on the first. `verify` is unaffected either way: it answers a tool node from
+its journaled **result** grain and does not re-execute the tool, so a
+capability tool's result is journaled and superseded like any other. Every
+brokered call is additionally recorded as an `egress_call` Observation in
+`agent:harness` (see `security-model.md`) — evidence about the run, never a
+step of it, so replay stays byte-identical.
+
+Not in this phase: verify-by-re-execution against the recorded call log,
+connectors resolved as capability tools by content address, concurrency, and
+streaming.
+
 ### Backend divergence: reading the memory mid-run (#85)
 
 Whether a **tool subprocess** can read the memory its own run holds depends on

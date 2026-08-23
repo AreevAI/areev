@@ -28,9 +28,17 @@ pub mod runner;
 pub mod stream;
 
 pub use clock::{Clock, ScriptedClock, SystemClock};
-pub use broker::{Broker, CallerGrant, Credential, EgressGrants};
+pub use broker::{Broker, CallerGrant, CapabilityLimits, Credential, EgressCall, EgressGrants};
+// The capability vocabulary lives in areev-core, beside the grain field it
+// validates, because `areev-cal`'s write path sits BELOW this crate and has to
+// reach the same parser (#101). Re-exported so a host writing against the
+// driver does not have to know that.
+pub use areev_core::types::capability::{CapabilityDenied, Declaration};
 pub use egress::{EgressDenied, EgressPolicy};
-pub use executor::{CodeExecutor, CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode};
+pub use executor::{
+    is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor, CommandExecutor, EgressHandle,
+    ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
+};
 pub use manifest::{abstract_nodes, BudgetsSpec, ForkBase, PinnedTool, RunManifest};
 pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;

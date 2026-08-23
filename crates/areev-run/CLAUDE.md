@@ -116,6 +116,47 @@ evidence. Responding and resuming are separate acts.
   plain call). The §6.10 check: journals identical with no/normal/slow
   subscriber.
 
+## Brokered egress (`broker.rs`, `egress.rs`) and capability tools
+
+- **The broker follows redirects itself** (#99, 1.6.0) — `max_redirects(0)` +
+  `http_status_as_error(false)` on the agent, then a hop loop in `dispatch`.
+  ureq's auto-follow made the allowlist a check on where a request *started*,
+  never where it ended up, so an allowed host's `302` to `169.254.169.254` was
+  fetched and its body handed back. Every hop re-checks `policy.permits` and
+  (when the method changed) `grant.permits_method`; the credential re-attaches
+  only while `egress::same_origin` holds AND the chain has never left the start
+  origin (a `left_origin` latch — an `A→B→A` bounce gets no credential, and the
+  success audit records the credential name only when it rode the final hop).
+  Turning `http_status_as_error` off also
+  means a 4xx/5xx now reaches the caller as `{status, body}` instead of
+  collapsing into `502 {"error": "upstream: …"}`.
+- **Reading a credential registers its variable as a secret** (#100) —
+  `Credential::bearer_from_env` calls `areev_core::proc::deny_env_var`. Placed
+  there, not at each host's flag parsing, because FOUR hosts read credentials
+  (`areev run`, `areev trigger run`, areev-py, areev-js). The CLI additionally
+  registers the `areev-loop` mirror at its choke point.
+- **`declared ∩ host-granted`** (#101) — `Broker::declare(caller, Declaration,
+  CapabilityLimits)` adds a per-caller layer that `serve_one` checks ALONGSIDE
+  the grant, never instead of it. A caller with no declaration (every
+  `--tool-cmd` tool, every connector) is unaffected. The call budget is spent
+  BEFORE dispatch so a refused call still costs one — otherwise a module probes
+  the policy for free.
+- **The vocabulary lives in `areev_core::types::capability`**, not here:
+  `areev-cal`'s write path sits below this crate and must reach the same parser,
+  or a tool becomes writable and then unrunnable. `egress::AllowedHost` is a
+  re-export of core's for the same reason.
+- **Two audit kinds, different dedup.** `refusals()` dedups on
+  `(caller, destination, reason)` — a policy fact. `calls()` does not — an
+  effect, and forty are forty. Both journal at the superstep boundary
+  (`write_egress_refusal` / `write_egress_call`), neither is a journal entry, so
+  `verify` is byte-identical with or without a broker.
+- **`PinnedTool.capabilities`** freezes the declaration beside `runtime`, so a
+  mid-run supersession cannot widen reach. `runtime_allows_capabilities` gates
+  the `--allow-fetch` flag off the MANIFEST, never off the module.
+- The sandbox seam spawns under `EnvPolicy::ClearExcept`; native blobs keep
+  `InheritExcept`. `AREEV_*` extras are applied AFTER the policy, so the broker
+  handshake survives the clear.
+
 ## Not yet (documented gaps)
 
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
@@ -123,6 +164,11 @@ evidence. Responding and resuming are separate acts.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.
 - Subgraph ask-bubbling; `run_trace` fork splicing (the `mg:fork_of` Fact is
   the index; the CLI splice view is not built yet).
+- #101 P2/P3: verify-by-re-execution against the recorded call log (needs the
+  per-call record to be a replayable structure, not an Observation), and
+  connectors resolved as capability tools by content address (needs the trigger
+  path's process-global `EGRESS_ENV` mutex unified with the run path's
+  `EgressHandle` first).
 
 ## Tests
 

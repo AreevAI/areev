@@ -217,6 +217,37 @@ pub struct Tool {
     /// `{"fuel": 200000000, "max_pages": 256}`. Object-shaped JSON;
     /// meaningless without `runtime`.
     pub runtime_limits: Option<serde_json::Value>,
+    /// What a `wasm32-areev-io` module DECLARES it needs to reach (#101).
+    ///
+    /// An array of single-key capability objects, so the vocabulary can grow
+    /// without changing the field's shape. Today there is exactly one key:
+    ///
+    /// ```json
+    /// [ { "http": { "hosts": ["https://gmail.googleapis.com"],
+    ///               "methods": ["POST"],
+    ///               "path_prefixes": ["/gmail/v1/users/me/"],
+    ///               "credentials": ["gmail"] } } ]
+    /// ```
+    ///
+    /// ## A declaration, never an authorization
+    ///
+    /// This is the half that REPLICATES, and it is deliberately not a grant.
+    /// A grain that could authorize its own egress would be a permission
+    /// arriving in the same bundle as the code it authorizes — the exact thing
+    /// `--allow-executor` exists to refuse for the code itself. What this buys
+    /// is the other two things a bundle should carry:
+    ///
+    /// 1. **Audit** — a synced memory says what a tool is allowed to reach
+    ///    without anyone reading the host's command line.
+    /// 2. **A ceiling** — the effective set is `declared ∩ host-granted`, so a
+    ///    declaration can only ever NARROW what the host already permitted. A
+    ///    module that asks for something it did not declare is refused, and a
+    ///    module that declares something the host did not grant still cannot
+    ///    reach it.
+    ///
+    /// Meaningless without a capability-bearing `runtime`; write-validated at
+    /// `json_build.rs` and frozen into the run manifest at start.
+    pub capabilities: Option<serde_json::Value>,
     /// Parameters the LLM must NOT choose for itself; merged over LLM
     /// input at invoke time. Object-shaped JSON.
     pub locked_params: Option<serde_json::Value>,
@@ -284,6 +315,7 @@ impl Tool {
             executor_uri: None,
             runtime: None,
             runtime_limits: None,
+            capabilities: None,
             locked_params: None,
             examples: None,
             annotations: None,
@@ -397,6 +429,13 @@ impl Tool {
         self
     }
 
+    /// Declare what a capability runtime may reach (#101). Array-shaped JSON;
+    /// see the field's docs for the vocabulary.
+    pub fn capabilities(mut self, capabilities: serde_json::Value) -> Self {
+        self.capabilities = Some(capabilities);
+        self
+    }
+
     pub fn locked_params(mut self, params: serde_json::Value) -> Self {
         self.locked_params = Some(params);
         self
@@ -446,6 +485,7 @@ impl fmt::Debug for Tool {
             )
             .field("runtime", &self.runtime)
             .field("runtime_limits", &self.runtime_limits)
+            .field("capabilities", &self.capabilities)
             .field("locked_params", &self.locked_params)
             .field("examples", &self.examples)
             .field("annotations", &self.annotations)
@@ -618,6 +658,7 @@ mod tests {
             "failure_detail",
             "runtime",
             "runtime_limits",
+            "capabilities",
             "actor_execution_environment",
         ] {
             assert!(
@@ -625,6 +666,31 @@ mod tests {
                 "field '{expanded}' must be omitted from the wire when None"
             );
         }
+    }
+
+    #[test]
+    fn capabilities_round_trip_through_the_wire() {
+        // The compact key ("axcp") must expand back: a declaration that
+        // serializes but does not deserialize is an audit field that silently
+        // vanishes on sync — the exact opposite of why it replicates (#101).
+        use crate::format::deserialize::deserialize_blob;
+        use crate::format::serialize::serialize_grain;
+        let caps = serde_json::json!([{"http": {
+            "hosts": ["https://gmail.googleapis.com"],
+            "methods": ["POST"],
+            "path_prefixes": ["/gmail/v1/users/me/"],
+            "credentials": ["gmail"]
+        }}]);
+        let tool = Tool::new("send_ask")
+            .kind(ToolKind::Definition)
+            .runtime("wasm32-areev-io")
+            .capabilities(caps.clone())
+            .created_at(1);
+        let (blob, _) = serialize_grain(&tool).unwrap();
+        let dg = deserialize_blob(&blob).unwrap();
+        assert_eq!(dg.fields.get("capabilities"), Some(&caps), "expanded key, verbatim value");
+        let back = dg.to_tool().unwrap();
+        assert_eq!(back.capabilities, Some(caps), "and the typed reconstruction carries it");
     }
 
     #[test]

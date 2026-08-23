@@ -184,6 +184,7 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
             "executor_uri",
             "runtime",
             "runtime_limits",
+            "capabilities",
             "locked_params",
             "examples",
             "annotations",
@@ -1148,16 +1149,18 @@ pub fn build_grain_from_json<S: GrainSink>(
                 if let Some(uri) = strict_str("executor_uri")? {
                     tool = tool.executor_uri(&uri);
                 }
+                let mut declared_runtime: Option<String> = None;
                 if let Some(rt) = strict_str("runtime")? {
                     // Fail closed on the value: an unknown runtime must be
                     // refused at write time, not silently stored and then
                     // refused at every run start.
-                    if !matches!(rt.as_str(), "native" | "wasm32-areev") {
+                    if !matches!(rt.as_str(), "native" | "wasm32-areev" | "wasm32-areev-io") {
                         return Err(AreevError::Validation(format!(
                             "tool 'runtime' '{rt}' is not recognized; \
-                             accepted: native, wasm32-areev"
+                             accepted: native, wasm32-areev, wasm32-areev-io"
                         )));
                     }
+                    declared_runtime = Some(rt.clone());
                     tool = tool.runtime(&rt);
                 }
                 if let Some(rl) = fields.get("runtime_limits").filter(|v| !v.is_null()) {
@@ -1167,10 +1170,13 @@ pub fn build_grain_from_json<S: GrainSink>(
                         )
                     })?;
                     for (k, v) in obj {
-                        if !matches!(k.as_str(), "fuel" | "max_pages") {
+                        if !matches!(
+                            k.as_str(),
+                            "fuel" | "max_pages" | "max_calls" | "max_response_bytes"
+                        ) {
                             return Err(AreevError::Validation(format!(
                                 "tool 'runtime_limits' key '{k}' is not recognized; \
-                                 accepted: fuel, max_pages"
+                                 accepted: fuel, max_pages, max_calls, max_response_bytes"
                             )));
                         }
                         if v.as_u64().is_none() {
@@ -1180,6 +1186,40 @@ pub fn build_grain_from_json<S: GrainSink>(
                         }
                     }
                     tool = tool.runtime_limits(rl.clone());
+                }
+                // #101: the declared capability set. Validated HERE, at write
+                // time, for the same reason the runtime is — a declaration
+                // that only fails at run start is a declaration nobody finds
+                // until the run they needed it for.
+                if let Some(caps) = fields.get("capabilities").filter(|v| !v.is_null()) {
+                    if declared_runtime.as_deref() != Some("wasm32-areev-io") {
+                        return Err(AreevError::Validation(format!(
+                            "tool 'capabilities' requires runtime 'wasm32-areev-io'; \
+                             this tool declares runtime '{}'",
+                            declared_runtime.as_deref().unwrap_or("native")
+                        )));
+                    }
+                    // ONE parser for the vocabulary, in areev-core beside the
+                    // grain field, so the write path here and the enforcement
+                    // path in the broker cannot drift. A looser check here is
+                    // how a tool comes to be writable and then unrunnable,
+                    // discovered on the run someone needed it for.
+                    areev_core::types::capability::Declaration::parse(caps)
+                        .map_err(|e| AreevError::Validation(format!("tool {e}")))?;
+                    tool = tool.capabilities(caps.clone());
+                } else if declared_runtime.as_deref() == Some("wasm32-areev-io") {
+                    // The inverse the manifest freeze also enforces: a
+                    // capability RUNTIME with nothing declared can reach
+                    // nothing, so refuse it at WRITE time too. Without this the
+                    // grain writes here and then dies at every run start — the
+                    // "writable then unrunnable" split the shared parser exists
+                    // to prevent, just from the other direction.
+                    return Err(AreevError::Validation(
+                        "tool declares runtime 'wasm32-areev-io' but no capabilities — a \
+                         capability runtime with an empty declaration can reach nothing; \
+                         use 'wasm32-areev' for a pure module"
+                            .to_string(),
+                    ));
                 }
                 if let Some(lp) = fields.get("locked_params").filter(|v| !v.is_null()) {
                     if !lp.is_object() {
@@ -1954,5 +1994,119 @@ mod tests {
         .clone();
         let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
         assert!(err.to_string().contains("read_only"), "{err}");
+    }
+
+    // ---- #101: the capability declaration ---------------------------------
+
+    fn tool_fields(extra: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        let mut fields = json!({"tool_name": "send_ask", "kind": "definition"})
+            .as_object()
+            .unwrap()
+            .clone();
+        for (k, v) in extra.as_object().unwrap() {
+            fields.insert(k.clone(), v.clone());
+        }
+        fields
+    }
+
+    #[test]
+    fn a_capability_tool_writes() {
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev-io",
+            "runtime_limits": {"fuel": 5000, "max_calls": 8, "max_response_bytes": 4096},
+            "capabilities": [{"http": {
+                "hosts": ["https://gmail.googleapis.com"],
+                "methods": ["POST"],
+                "path_prefixes": ["/gmail/v1/users/me/"],
+                "credentials": ["gmail"]
+            }}],
+        }));
+        build_grain_from_json("tool", &fields, NullSink).expect("a well-formed declaration writes");
+    }
+
+    #[test]
+    fn capabilities_require_the_capability_runtime() {
+        // A declaration a runtime cannot honour describes nothing. Refused at
+        // WRITE time, so it is not discovered on the run someone needed it for.
+        for rt in [json!("wasm32-areev"), json!("native")] {
+            let fields = tool_fields(json!({
+                "executor_uri": "cas://sha256:aa",
+                "runtime": rt,
+                "capabilities": [{"http": {"hosts": ["https://a.example"]}}],
+            }));
+            let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+            assert!(err.to_string().contains("wasm32-areev-io"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_capability_runtime_without_a_declaration_is_refused_at_write_time() {
+        // The inverse the manifest freeze also enforces: a capability RUNTIME
+        // with nothing declared can reach nothing, so it must not write here
+        // only to die at every run start — the "writable then unrunnable" split
+        // the shared parser exists to prevent, from the other direction.
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev-io",
+        }));
+        let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+        assert!(
+            err.to_string().contains("wasm32-areev-io") && err.to_string().contains("capabilities"),
+            "the refusal names the runtime and the missing declaration: {err}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_capability_is_refused_at_write_time() {
+        // The SAME parser the broker enforces with — a tool that writes is a
+        // tool that runs.
+        for bad in [
+            json!([{"http": {"hosts": ["https://*"]}}]),
+            json!([{"http": {"hosts": []}}]),
+            json!([{"filesystem": {}}]),
+            json!({"http": {}}),
+            json!([{"http": {"hosts": ["https://a.example"], "methods": ["TRACE"]}}]),
+        ] {
+            let fields = tool_fields(json!({
+                "executor_uri": "cas://sha256:aa",
+                "runtime": "wasm32-areev-io",
+                "capabilities": bad,
+            }));
+            assert!(
+                build_grain_from_json("tool", &fields, NullSink).is_err(),
+                "{bad} must not write"
+            );
+        }
+    }
+
+    #[test]
+    fn the_capability_runtime_is_an_accepted_runtime_name() {
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev-nope",
+        }));
+        let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+        assert!(err.to_string().contains("wasm32-areev-io"), "the message lists it: {err}");
+    }
+
+    #[test]
+    fn the_capability_runtime_limits_are_accepted() {
+        // `max_calls` / `max_response_bytes` join `fuel` / `max_pages`, and an
+        // unknown key is still refused.
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev",
+            "runtime_limits": {"max_calls": 4},
+        }));
+        build_grain_from_json("tool", &fields, NullSink).expect("accepted");
+
+        let fields = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev",
+            "runtime_limits": {"max_sneak": 4},
+        }));
+        let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+        assert!(err.to_string().contains("max_sneak"), "{err}");
     }
 }

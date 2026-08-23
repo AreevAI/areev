@@ -915,6 +915,71 @@ the failure that actually occurs — a connector legitimately holding a
 credential and misusing it — so provenance, not isolation, is where the control
 was put.
 
+### A capability is declared in the memory and granted by the host; the guest never gets a socket
+
+Tier C (`areev-sandbox`) was correct for pure compute and, for two releases,
+that made it half a promise. It is the **only** tier producing a persistable,
+content-addressed tool, and it forbade all I/O — so the tools every real agent
+needs could not be grains. The two options for an I/O tool were a native code
+grain (persisted, but *not sandboxed — it runs as you*, and platform-specific)
+and a host `--tool-cmd` script (sandboxed by nothing, and outside the memory
+entirely). "Tier C can never touch the network" was a real design statement,
+and 1.6.0 revisits it deliberately and narrowly.
+
+The tier now has two runtimes, because there are two determinism stories:
+`wasm32-areev` is pure and re-execution-provable; `wasm32-areev-io` adds
+exactly one import, `areev::fetch`, and is deterministic *modulo journaled
+effects*. Naming them separately is the point — a flag on the first would have
+made a provable property silently conditional.
+
+**The isolation claim is strengthened, not weakened.** The guest still has no
+socket, no credential, no clock, no environment. It has an unforgeable
+capability to *ask the host*, and the host enforces policy and performs the
+call. Three trust levels: untrusted guest → trusted sandbox binary, which holds
+a revocable broker token → engine broker, which holds credentials. This is the
+model proxy-wasm and Cloudflare Workers use ("the platform performs the fetch,
+the guest never gets a socket") and the one Spin's runtime-config and Extism
+use for secrets ("the guest holds a label, the host resolves it"). It needed no
+new IPC: the engine already injected the broker's address and token into the
+sandbox process for uniformity, inert only because the *guest* could not reach
+them.
+
+The authorization split is the decision above, applied one level down. The
+Tool grain's `capabilities` field **declares** — hosts, methods, path prefixes,
+credential names — and replicates with the bundle. The host **grants**, with
+`--allow-host` / `--credential` / `--tool-egress`, and that never replicates.
+The effective set is their intersection, evaluated on every call, so a
+declaration can only ever narrow. A grain that authorized its own egress would
+be, once again, a permission arriving in the same bundle as the code it
+authorizes.
+
+Two things follow that are worth stating because they are not symmetric. The
+declaration may pin **path prefixes**, which the host-side allowlist
+deliberately cannot: `--allow-host` allowlists hosts because path-level
+authorization there would imply a model it does not have, whereas a capability
+tool's code is pinned by content address, so it can afford to be narrower —
+and the exfiltration case worth closing is a malicious tool POSTing stolen
+context to an *allowed* host's upload endpoint. And the declaration is
+**frozen into the run manifest** beside the pinned runtime, so a supersession
+mid-run cannot widen reach, and resume and verify read the set the run started
+with.
+
+The audit trail grew a second half to match. The broker already journaled
+refusals; it now journals successful calls too, as `egress_call` Observations
+carrying method, final URL, status and body **digests** — never bodies, since
+a grain is immutable and replicates, and never a credential value, since the
+broker only ever received a label. Neither kind is a journal entry, so `verify`
+stays byte-identical whether or not a broker was configured: they are evidence
+*about* a run, not steps *of* one.
+
+Two prerequisites had to be closed first, and both were live bugs rather than
+theoretical ones — a capability system resting on an allowlist a redirect can
+walk through, or a broker whose credential leaks into the child environment,
+grants strictly more than it declares. The HTTP client had been following
+redirects with the allowlist checked only on the initial URL, and the
+`--credential` variable had never been added to the withhold list every other
+secret flag is on.
+
 ### Cadence is data; evaluation is a command
 
 A trigger is a standing rule that starts a workflow, declared as a `Trigger`

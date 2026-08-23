@@ -6,6 +6,201 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-08-23
+
+### Security
+
+- **The outbound allowlist now governs every redirect hop, not just the first**
+  (#99). The broker's HTTP agent followed up to ten redirects on its own, while
+  `policy.permits` was checked exactly once — on the caller-supplied URL,
+  before dispatch. So an allowed host answering `302 Location:
+  http://169.254.169.254/latest/meta-data/` had its follow-up performed and the
+  cloud metadata service's body handed back to the tool: host allowlisting is
+  this subsystem's core control, and a redirect walked straight through it. It
+  affected every brokered tool and connector, not a hypothetical. Auto-follow
+  is now off (`max_redirects(0)`) and the broker follows by hand, re-checking
+  the allowlist on every hop and re-checking the grant whenever a `303`
+  changes the method. The invariant is now enforced rather than intended: **no
+  byte is sent to, and no body is returned from, a host the allowlist does not
+  permit.** A blocked redirect journals a refusal (`RUN-E022` / `TRG-E009`)
+  worded apart from an aimed-at one — "it tried to reach there" and "it was
+  redirected there" are different stories for whoever reads the record — and
+  chains are bounded at ten hops with the bound itself auditable.
+
+  The mirror image is fixed in the same change. ureq's `redirect_auth_headers`
+  defaults to `Never`, so the brokered `Authorization` was dropped on *every*
+  redirect, including the same-origin ones Google and Microsoft APIs use
+  routinely; the follow-up arrived unauthenticated, 401'd, and nothing in the
+  journal said why. The credential now re-attaches exactly when scheme, host
+  and port are unchanged, and is dropped otherwise. A `Location` that is
+  relative resolves against its base; one that is not a resolvable `http(s)`
+  URL, or that carries a control character, is refused rather than guessed at.
+
+- **`--credential NAME=ENV_VAR` no longer leaks the raw secret into every child
+  process** (#100). The withhold list was three flags long
+  (`--passphrase-env`, `--token-env`, `--anon-key-env`) and `--credential` was
+  not on it, so the credential value stayed in the inherited environment of
+  every tool, connector and sandbox subprocess — readable from
+  `/proc/self/environ`, a core dump, or an `env`-printing bug. A tool never
+  needed to call the broker at all, which is the exact opposite of what
+  brokering is for. Reading a credential is now what registers its variable as
+  a secret: `Credential::bearer_from_env` calls `deny_env_var`. Placing it
+  there rather than at a flag-parsing site is the point — **four** hosts read
+  credentials this way (`areev run`, `areev trigger run`, and the Python and
+  Node bindings), so a fix at any one of them would have left the other three
+  open. Children still receive `AREEV_EGRESS_URL` + `AREEV_EGRESS_TOKEN`,
+  which are applied after the environment policy.
+
+  The existing test did not catch this because it removed the variable from
+  the *parent* before spawning, validating the broker's request path rather
+  than the deployment where an operator exports a token and leaves it
+  exported. The regression test keeps it exported.
+
+- **The sandbox seam spawns under `EnvPolicy::ClearExcept`.** A wasm host has
+  no claim on the operator's whole environment, and it is now also the process
+  holding a broker token. Native code blobs keep `InheritExcept` — they are
+  ordinary programs and may legitimately read an ambient variable.
+
+- **A credential reflected in a response body is scrubbed.** Response headers
+  never cross the broker, so the body was the only channel by which an echo or
+  verbose-error endpoint could bounce the injected `Authorization` back to the
+  caller and into the audit trail.
+
+- **The private-space deny recognized only canonical IP literals.** Under an
+  unrestricted egress policy, `is_private_destination` is the sole control
+  stopping a synced capability tool from reaching loopback, link-local, or
+  metadata address space — but it parsed the host with `Ipv4Addr::from_str`,
+  which accepts only dotted-quad. A libc resolver (and therefore ureq) still
+  maps the historical `inet_aton` forms to the same address, so a Tool grain
+  declaring `hosts: ["http://2852039166"]` — decimal for `169.254.169.254`,
+  the cloud metadata service — sailed straight through it: the exact case the
+  check exists to close. It now canonicalizes decimal, hex, octal, and short
+  (`127.1`) forms, and covers the RFC 6598 shared/CGNAT range
+  (`100.64.0.0/10`), which `Ipv4Addr::is_private` does not.
+
+- **A credential could return after the redirect chain left its origin.** The
+  same-origin check compared each hop against the URL the caller *started*
+  at, so a chain `A(cred) → 302 B (cross-origin, cred dropped) → 302 back to
+  A/<path B chose>` re-attached the credential on the final hop — more
+  permissive than browsers or `curl --location`, which drop it for good once
+  the chain leaves the origin. A hop to a different origin now retires the
+  credential for the rest of the chain, and the success audit records the
+  credential name only when it actually rode the final request — not
+  whichever name the caller asked for.
+
+- **A shared broker re-journaled an earlier run's egress calls as its own.**
+  `areev trigger run` reuses one broker across the runs it fires in sequence,
+  and `Broker::calls()` accumulates for the broker's whole life without
+  draining — so a run's journaling cursor starting at 0 re-wrote a prior
+  run's already-journaled calls into the immutable store a second time, under
+  the new run's id, principal, and clock. The cursor now seeds from what the
+  broker already holds at drive entry.
+
+- **A handful of fail-open edges closed during review, before anything
+  shipped**: `--credential NAME=VAR@` with an empty principal (a typo, or an
+  unset shell variable in the owner position) now refuses rather than
+  silently binding an unbound credential; a poisoned mutex on the
+  per-principal owner map now fails closed instead of skipping the owner
+  check; a `wasm32-areev-io` tool with no `capabilities` is refused at write
+  time, matching the check the manifest already made at run start; and
+  `max_response_bytes` clamps rather than truncates on a 32-bit target.
+
+### Added
+
+- **Capability tools: an I/O tool can be a grain** (#101). Tier C was correct
+  for pure compute and, for two releases, that made it half a promise — it is
+  the **only** tier producing a persistable, content-addressed tool, and it
+  forbade all I/O, so the tools every real agent needs (poll a mailbox, append
+  a sheet, call a model) could not be grains. The options for an I/O tool were
+  a native blob (persisted, but *not sandboxed — it runs as you*, and
+  platform-specific) or a host `--tool-cmd` script (sandboxed by nothing, and
+  outside the memory entirely).
+
+  The tier now has two runtimes, because there are two determinism stories:
+
+  | Runtime | Import set | Determinism |
+  |---|---|---|
+  | `wasm32-areev` | `areev::emit` | pure — re-execution-provable (unchanged) |
+  | `wasm32-areev-io` | `+ areev::fetch` | deterministic *modulo journaled effects* |
+
+  **The guest still never gets a socket.** It gets one unforgeable capability
+  to *ask the host*; the sandbox binary's trusted Rust half forwards over
+  loopback to the credential broker, holding a revocable broker token and
+  never a credential. This needed no new IPC — the engine already injected the
+  broker's address and token into that process for uniformity, inert only
+  because the *guest* could not reach them. The isolation claim is
+  strengthened, not weakened: no socket, no credential, no clock, no
+  environment, and the host enforces policy and records everything.
+
+  A new `capabilities` field on the Tool grain declares what a module may
+  reach — hosts, methods, path prefixes, credential names. It **declares; it
+  never grants**: the effective set is `declared ∩ host-granted`, checked on
+  every call, so a declaration can only narrow what `--allow-host` /
+  `--credential` / `--tool-egress` already permitted. That is the same split
+  `--allow-executor` makes for the code itself — the declaration replicates
+  with the bundle, the authority does not. What it buys is audit (a synced
+  memory says what a tool may reach without reading anyone's command line) and
+  a **tighter** bound than the host grant can express: `--allow-host`
+  allowlists hosts only, while a capability may pin `path_prefixes`, closing
+  the exfiltration case a host-only grant structurally cannot — a malicious
+  tool POSTing stolen context to an *allowed* host's upload endpoint.
+
+  Deny by default throughout, and enforced at five heights: CAL refuses a
+  malformed declaration at **write** time; the manifest refuses a bad
+  runtime/declaration pairing at **start** and freezes the declaration beside
+  the pinned runtime, so a mid-run supersession cannot widen reach; dispatch
+  refuses a capability module whose host wired no broker, naming the missing
+  flag; the sandbox refuses a module importing `areev::fetch` without
+  `--allow-fetch` at **instantiation**, by name, before one instruction runs;
+  and the broker checks declaration, grant, allowlist, method, call budget and
+  response ceiling on **every call — and every redirect hop**, so a `302` on a
+  declared host cannot walk a module off its declared paths. The
+  `path_prefixes` match refuses evasive shapes (`..` segments, `%2e`/`%2f`/
+  `%5c`, backslashes) outright rather than normalizing them, the response
+  ceiling bounds what the broker *reads* rather than measuring after
+  buffering, and `areev::fetch` is non-reentrant by mechanism — a guest whose
+  `alloc` calls `fetch` again gets `-1`, not a recursion. Two further gates make the runtime safe for
+  a process serving more than one user: a capability declaration cannot reach
+  loopback/private/metadata address space by itself (that takes an explicit
+  `--allow-host` entry, and the rule binds every redirect hop), and
+  `--credential name=VAR@principal` binds a credential to its owning run
+  principal so a run executing as anyone else — or as none — is refused it. The
+  driver binds the run principal automatically. The host-prefix grammar has one parser,
+  in `areev-core` beside the grain field, shared by the write path and the
+  broker — two would be how a tool becomes writable and then unrunnable.
+
+  Ceilings are `runtime_limits` keys (`max_calls`, `max_response_bytes`, next
+  to `fuel` and `max_pages`), and an overrun is a typed error, never a
+  truncation.
+
+- **Successful brokered calls are journaled, not only refusals.** A new
+  `egress_call` Observation in `agent:harness` records caller, method, final
+  URL, status, redirect count, request and response **digests**, response size
+  and the credential **name**. "It was allowed to reach Gmail" is a policy
+  statement; "it sent these four requests" is the evidence, and only the first
+  was in the memory before. Bodies are digests because a grain is immutable
+  and replicates; the credential is a name because that is all the broker ever
+  received. Refusals dedup on `(caller, destination, reason)` and calls do
+  not — a refusal is a policy fact and forty retries are one of them, but a
+  call is an effect and forty are forty. Neither is a journal entry, so
+  `verify` stays byte-identical whether or not a broker was configured.
+
+### Changed
+
+- **A non-2xx from an upstream reaches the caller as a status, not a broker
+  error.** `http_status_as_error` had to be turned off for the broker to read
+  a redirect's `Location` at all, and it fixes a smaller wrong on the way: a
+  404 or a 429 used to arrive as `502 {"error": "upstream: …"}`,
+  indistinguishable from the connection having failed. The broker's contract
+  is to answer with the response, so it now does.
+
+### Not in this release
+
+Deliberately out of #101's first phase: verify-by-re-execution against the
+recorded call log, connectors resolved as capability tools by content address,
+concurrency, streaming, raw sockets, and guest-visible clock or RNG — the last
+of those permanently, because it is the determinism boundary.
+
 ## [1.5.2] — 2026-08-22
 
 ### Fixed
@@ -1353,7 +1548,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/AreevAI/areev/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/AreevAI/areev/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/AreevAI/areev/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/AreevAI/areev/compare/v1.4.0...v1.5.0

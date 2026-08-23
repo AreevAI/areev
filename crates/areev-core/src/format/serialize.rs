@@ -519,6 +519,9 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         if let Some(ref rl) = action.runtime_limits {
             map.insert(compact_field("runtime_limits").to_string(), json_to_msgpack(rl));
         }
+        if let Some(ref caps) = action.capabilities {
+            map.insert(compact_field("capabilities").to_string(), json_to_msgpack(caps));
+        }
         if let Some(ref lprm) = action.locked_params {
             map.insert(
                 compact_field("locked_params").to_string(),

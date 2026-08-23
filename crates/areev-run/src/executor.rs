@@ -52,6 +52,23 @@ pub trait HostToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// Every brokered call that WENT OUT (#101).
+    ///
+    /// The mirror of [`HostToolExecutor::refusals`], and journaled the same
+    /// way: a capability tool's bargain is that its I/O is mediated *and
+    /// recorded*, so "it was allowed to reach Gmail" (policy) and "it sent
+    /// these four requests" (evidence) are both in the memory. Default: none.
+    fn calls(&self) -> Vec<crate::broker::EgressCall> {
+        Vec::new()
+    }
+
+    /// Bind the principal the current run executes as, so the broker can
+    /// refuse a credential owned by a different principal (#101). Default
+    /// no-op: an executor with no broker has nothing to bind. Called by the
+    /// driver at drive entry — every run, resume and fork passes through
+    /// there — so an owned credential fails closed if this is ever skipped.
+    fn bind_run_principal(&self, _principal: &str) {}
+
     /// Execute a content-addressed code blob. `bytes` were read and
     /// hash-verified on the driver thread; this runs on a pool worker.
     ///
@@ -143,6 +160,25 @@ impl EgressHandle {
     fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
         self.broker.refusals()
     }
+    fn calls(&self) -> Vec<crate::broker::EgressCall> {
+        self.broker.calls()
+    }
+    /// Does this caller hold a grant (and therefore a token)?
+    fn token_for(&self, caller: &str) -> Option<&str> {
+        self.broker.token_for(caller)
+    }
+    /// Register a Definition's declared capability set with the broker.
+    fn declare(
+        &self,
+        caller: &str,
+        declaration: areev_core::types::capability::Declaration,
+        limits: crate::broker::CapabilityLimits,
+    ) {
+        self.broker.declare(caller, declaration, limits)
+    }
+    fn bind_run_principal(&self, principal: &str) {
+        self.broker.bind_run_principal(principal)
+    }
     /// The env a tool named `tool_name` gets. Empty when it has no grant, so
     /// a tool nobody authorized cannot even see the broker.
     fn env_for(&self, tool_name: &str) -> Vec<(&'static str, String)> {
@@ -193,6 +229,16 @@ impl CommandExecutor {
 impl HostToolExecutor for CommandExecutor {
     fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
         self.egress.as_ref().map(|e| e.refusals()).unwrap_or_default()
+    }
+
+    fn calls(&self) -> Vec<crate::broker::EgressCall> {
+        self.egress.as_ref().map(|e| e.calls()).unwrap_or_default()
+    }
+
+    fn bind_run_principal(&self, principal: &str) {
+        if let Some(e) = &self.egress {
+            e.bind_run_principal(principal);
+        }
     }
 
     fn execute(
@@ -381,11 +427,84 @@ impl CodeExecutor {
         std::fs::rename(&tmp, &path)?;
         Ok(path)
     }
+
+    /// Tell the broker what this module declared, so `declared ∩ host-granted`
+    /// is enforced on every `areev::fetch` (#101).
+    ///
+    /// Done at dispatch rather than at run start because this is where the
+    /// manifest-pinned declaration and the broker handle are both in hand, and
+    /// because it must hold for a pool worker that never saw the start path —
+    /// the same reason the executor pin is re-checked here rather than trusted.
+    /// Re-registering across dispatches is deliberate and does not refill the
+    /// call budget.
+    fn register_capability(&self, tool_name: &str, code: &PreparedCode) -> Result<(), String> {
+        // A capability module with no broker has nowhere to send anything, and
+        // the honest failure is at dispatch with the fix named — not a module
+        // that starts and then has every call refused by a broker that is not
+        // there.
+        let Some(egress) = self.egress.as_ref() else {
+            return Err(format!(
+                "{} declares runtime \"wasm32-areev-io\" but this host configured no credential \
+                 broker — a capability module needs --allow-host/--credential/--tool-egress",
+                code.uri
+            ));
+        };
+        // Equally honest: a grant is what mints the token the module presents,
+        // so without one it holds no `AREEV_EGRESS_TOKEN` and every call would
+        // be a 401 with no explanation.
+        if egress.token_for(tool_name).is_none() {
+            return Err(format!(
+                "{} declares capabilities but the host granted tool '{tool_name}' no egress — \
+                 add --tool-egress '{tool_name}:<credentials>:<methods>'",
+                code.uri
+            ));
+        }
+        let declared = match &code.capabilities {
+            Some(v) => areev_core::types::capability::Declaration::parse(v)
+                .map_err(|e| format!("{} declares malformed capabilities: {e}", code.uri))?,
+            // Unreachable through the manifest, which refuses this pairing at
+            // start — but a pool worker does not get to assume that.
+            None => areev_core::types::capability::Declaration::default(),
+        };
+        let mut limits = crate::broker::CapabilityLimits::default();
+        if let Some(l) = &code.limits {
+            if let Some(n) = l.get("max_calls").and_then(Value::as_u64) {
+                limits.max_calls = n.min(u64::from(u32::MAX)) as u32;
+            }
+            if let Some(n) = l.get("max_response_bytes").and_then(Value::as_u64) {
+                // Clamp rather than `as usize`-truncate: on a 32-bit target a
+                // manifest value above `usize::MAX` would silently wrap to a
+                // tiny ceiling that refuses legitimate responses, the same
+                // hazard the `max_calls` clamp above avoids.
+                limits.max_response_bytes = usize::try_from(n).unwrap_or(usize::MAX);
+            }
+        }
+        egress.declare(tool_name, declared, limits);
+        Ok(())
+    }
 }
 
 /// `cas://sha256:<hex>` -> `<hex>`; anything else is returned unchanged.
 pub(crate) fn strip_cas(uri: &str) -> &str {
     uri.strip_prefix("cas://sha256:").unwrap_or(uri)
+}
+
+/// The two runtimes that route a pinned blob to areev-sandbox.
+///
+/// `wasm32-areev` is pure Tier C (#86): no capabilities, re-execution-provable,
+/// the frozen import set is exactly `areev::emit`. `wasm32-areev-io` (#101) is
+/// the same isolation with ONE more gate, `areev::fetch`, answered by the
+/// engine's credential broker — so it is deterministic *modulo journaled
+/// effects* rather than provable by re-execution, which is why it is a
+/// separate name and not a flag on the first. Both spawn the same binary; the
+/// declaration is what decides whether the extra import is linked at all.
+pub fn is_sandbox_runtime(runtime: &str) -> bool {
+    matches!(runtime, "wasm32-areev" | "wasm32-areev-io")
+}
+
+/// Does this runtime admit `areev::fetch`? Only the `-io` variant.
+pub fn runtime_allows_capabilities(runtime: Option<&str>) -> bool {
+    runtime == Some("wasm32-areev-io")
 }
 
 impl HostToolExecutor for CodeExecutor {
@@ -403,6 +522,20 @@ impl HostToolExecutor for CodeExecutor {
     /// (the no-`--tool-cmd` case, where `inner` is a refusing stub), else
     /// passed through to the wrapped executor. Both handles wrap the same
     /// `Arc<Broker>`, so this never double-reports.
+    fn calls(&self) -> Vec<crate::broker::EgressCall> {
+        match &self.egress {
+            Some(e) => e.calls(),
+            None => self.inner.calls(),
+        }
+    }
+
+    fn bind_run_principal(&self, principal: &str) {
+        match &self.egress {
+            Some(e) => e.bind_run_principal(principal),
+            None => self.inner.bind_run_principal(principal),
+        }
+    }
+
     fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
         match &self.egress {
             Some(e) => e.refusals(),
@@ -415,7 +548,7 @@ impl HostToolExecutor for CodeExecutor {
     }
 
     fn runtime_supported(&self, runtime: &str) -> bool {
-        runtime == "wasm32-areev" && self.sandbox_cmd.is_some()
+        is_sandbox_runtime(runtime) && self.sandbox_cmd.is_some()
     }
 
     fn execute_code(
@@ -450,11 +583,13 @@ impl HostToolExecutor for CodeExecutor {
         // native = the blob is the program; wasm32-areev = the sandbox is
         // the program and the blob is its --module. Re-checked here for the
         // same pool-worker reason as the pin.
-        use areev_core::proc::{self, SpawnPolicy};
+        use areev_core::proc::{self, EnvPolicy, SpawnPolicy};
+        let sandboxed = matches!(code.runtime.as_deref(), Some(rt) if rt != "native");
         let cmd = match code.runtime.as_deref() {
             None | Some("native") => std::process::Command::new(&path),
             Some(rt) => {
-                let Some(argv) = self.sandbox_cmd.as_ref().filter(|_| rt == "wasm32-areev") else {
+                let Some(argv) = self.sandbox_cmd.as_ref().filter(|_| is_sandbox_runtime(rt))
+                else {
                     return ExecResult::Err {
                         cause: FailCause::ExecutorError,
                         detail: format!(
@@ -473,6 +608,28 @@ impl HostToolExecutor for CodeExecutor {
                     if let Some(pages) = limits.get("max_pages").and_then(Value::as_u64) {
                         c.arg("--max-pages").arg(pages.to_string());
                     }
+                    if let Some(n) = limits.get("max_response_bytes").and_then(Value::as_u64) {
+                        c.arg("--max-response-bytes").arg(n.to_string());
+                    }
+                }
+                // `--allow-fetch` is what LINKS `areev::fetch` into the guest's
+                // import set. Without it the sandbox's frozen set is exactly
+                // `areev::emit`, so a module that imports `fetch` without a
+                // capability declaration is refused at instantiation, by name,
+                // before one instruction runs — the same `ForbiddenImport`
+                // philosophy #86 established, extended from "which imports" to
+                // "which capabilities".
+                //
+                // The flag is derived from the MANIFEST-pinned runtime, never
+                // from the module: a blob cannot talk its way into a gate.
+                if runtime_allows_capabilities(Some(rt)) {
+                    if let Err(detail) = self.register_capability(tool_name, code) {
+                        return ExecResult::Err {
+                            cause: FailCause::ExecutorError,
+                            detail,
+                        };
+                    }
+                    c.arg("--allow-fetch");
                 }
                 c
             }
@@ -484,7 +641,24 @@ impl HostToolExecutor for CodeExecutor {
         // a code-carrying executor is platform-specific and the operator pins
         // per platform. The sandbox path constructs argv the same way — the
         // shell never sees any of it.
-        let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        // A native blob inherits (minus the registered secrets): it is an
+        // ordinary program and may legitimately read an ambient variable. The
+        // SANDBOX gets `ClearExcept` instead — it is a wasm host, so the only
+        // environment it can justify is what it needs to start, and under #101
+        // it is also the process holding a broker token. `InheritExcept` there
+        // would hand the operator's whole environment to the least-trusted
+        // seam in the tree for no capability it uses. The `AREEV_*` extras are
+        // applied AFTER the policy (`proc::run`), so the broker handshake and
+        // the tool identity survive the clear.
+        let policy = SpawnPolicy {
+            timeout: self.timeout,
+            env: if sandboxed {
+                EnvPolicy::ClearExcept { allow: EnvPolicy::minimal_allow() }
+            } else {
+                EnvPolicy::default()
+            },
+            ..SpawnPolicy::default()
+        };
         let mut env: Vec<(&str, &str)> = vec![
             ("AREEV_TOOL_NAME", tool_name),
             ("AREEV_TOOL_HASH", tool_hash),
@@ -493,8 +667,10 @@ impl HostToolExecutor for CodeExecutor {
         ];
         // Brokered credentials, on the same terms as `CommandExecutor`:
         // present only when the tool has a grant, so an unauthorized blob
-        // cannot even see the broker. A sandboxed module has no sockets, so
-        // the vars are inert there — harmless, and uniform.
+        // cannot even see the broker. Until #101 these were inert in the
+        // sandbox — a pure module has no sockets — and were passed for
+        // uniformity; the capability runtime is what makes the sandbox
+        // binary's Rust half actually use them.
         let brokered = self.egress.as_ref().map(|e| e.env_for(tool_name)).unwrap_or_default();
         env.extend(brokered.iter().map(|(k, v)| (*k, v.as_str())));
         let out = match proc::run(
@@ -573,8 +749,13 @@ pub struct PreparedCode {
     /// The manifest-pinned runtime (#86). `None` = native direct exec;
     /// `"wasm32-areev"` routes to the sandbox.
     pub runtime: Option<String>,
-    /// The manifest-pinned sandbox limits (`{"fuel", "max_pages"}`).
+    /// The manifest-pinned sandbox limits (`{"fuel", "max_pages",
+    /// "max_calls", "max_response_bytes"}`).
     pub limits: Option<Value>,
+    /// The manifest-pinned capability declaration (#101), present only for a
+    /// `wasm32-areev-io` module. Frozen with the runtime, so a mid-run
+    /// supersession cannot widen what the module may reach.
+    pub capabilities: Option<Value>,
 }
 
 /// A completed dispatch coming back to the driver thread. Carries the

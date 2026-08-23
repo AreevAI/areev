@@ -1,3 +1,4 @@
+pub mod capability;
 pub mod executor_kind;
 mod consensus;
 mod consent;

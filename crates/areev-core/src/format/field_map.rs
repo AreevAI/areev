@@ -126,6 +126,9 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     // every pre-1.5 grain.
     m.insert("runtime", "axr");
     m.insert("runtime_limits", "axl");
+    // #101: the declared capability set for a `wasm32-areev-io` module.
+    // Omit-default like the pair above, so no pre-1.6 grain changes address.
+    m.insert("capabilities", "axcp");
 
     // OMS 1.3 Integration Domain Profile (int:* context map keys)
     // Tool fields (REST API connectors)
