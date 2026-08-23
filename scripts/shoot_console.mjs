@@ -27,14 +27,15 @@ const SHOTS = [
     settle: async (page) => {
       await page.waitForSelector('#gcanvas', { timeout: 15000 });
       await page.waitForTimeout(4500);          // force-directed layout settles
-      // The whole file at once is a hairball. Focus one person, widen to two
-      // hops, and zoom until their neighbourhood fills the frame — which is
-      // how the view is actually used, not a special screenshot mode.
+      // The graph draws entities, not the values hanging off them, so the
+      // whole file fits in one frame. Widen the focus to two hops and fit —
+      // which is how the view is actually used, not a screenshot-only mode.
+      // Layout is seeded from the node names, so this frames the same way
+      // every time.
       await page.click('#gdepth button[data-d="2"]').catch(() => {});
-      await page.fill('#gjump', 'dev_rao').catch(() => {});
-      await page.waitForTimeout(2500);
-      for (let i = 0; i < 4; i++) { await page.click('#gin').catch(() => {}); await page.waitForTimeout(220); }
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(1500);
+      await page.click('#gfit').catch(() => {});
+      await page.waitForTimeout(1800);
     },
   },
   {
