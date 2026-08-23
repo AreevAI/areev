@@ -127,7 +127,7 @@ not raise the same evidence twice. Both scripts assert their own results and
 | **[CAL](docs/cal-reference.md)** — the context | A query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit | A turn needs a *budget-shaped* prompt, and deterministic allocation is what makes a replay comparable |
 | **[The store](docs/why-areev.md#storage-a-plain-sqlite-file-or-a-postgres-schema)** — the record | A provenance graph in a plain **SQLite file** ([Turso](https://github.com/tursodatabase/turso)), or a **PostgreSQL** schema for the server tier | **~30 µs** recall in-process; one conformance suite pins both backends to identical semantics |
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,288 tests · 80.1% coverage** | **`FORGET SUBJECT`** is one operation |
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,309 tests · 80.1% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
