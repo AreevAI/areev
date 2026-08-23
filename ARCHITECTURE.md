@@ -1184,6 +1184,39 @@ Leniency was deliberately NOT kept behind an opt-in: a filter that cannot be
 honoured has no honest lenient reading, and the safe direction must be the
 default direction.
 
+### Framework adapters live outside the repo
+
+**Decision (2026-08-23):** the ecosystem adapters that put Areev underneath
+someone else's agent framework — `areev-langgraph`, `areev-crewai`, and any
+that follow — are developed and released from a **separate repository**
+(`AreevAI/areev-adapters`), not from this tree. They consume the *published*
+PyPI `areev` like any other user; nothing in this repo imports them.
+
+The forcing argument is cadence, not tidiness. An adapter's compatibility
+obligation points at its framework, whose majors move on someone else's
+schedule and whose minors are not always minor (CrewAI removed its entire
+memory system in one). A `crewai 2.x` break demands an adapter major with
+zero core change, and an areev release demands nothing of the adapter beyond
+the version floor it already declares. Two release trains sharing one repo
+means each one's tags, CI redness, and dependency tree land on the other for
+no benefit — and the heavier tree is the framework's, imposed on every core
+PR that never touches Python.
+
+What that costs, stated plainly: this repo loses the pre-merge signal that a
+core change broke an adapter. The replacement is a **release-time** gate —
+the adapter suites run against the about-to-publish `areev` wheel, which is
+the moment the answer actually matters, since an adapter can only ever
+consume a published core. While the adapters repo is parked (private, no
+active releases, 1.0.0 on PyPI), that gate is **not wired**, and a core
+release can break them silently; wiring it is the first item on the
+un-parking checklist in that repo's README.
+
+The rule this generalizes: an integration whose compatibility contract points
+at a third party belongs on that third party's clock, in its own repository.
+The seam that makes it safe is that the dependency arrow crosses the boundary
+exactly once, through a published artifact — the same reason `areev-js` is a
+standalone package rather than a workspace member.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

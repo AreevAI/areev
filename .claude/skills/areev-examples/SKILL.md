@@ -105,10 +105,10 @@ surface you changed, the example *is* one of the docs that must move with it.
 
 ## CI wiring
 
-Model the job on `adapters` (`ci.yml`, the `adapters` job): a throwaway venv,
-per-example deps installed inside the job, run the smoke. Root `examples/` is
-not a cargo workspace member — the same posture as `adapters/` and `areev-js` —
-so nothing leaks into the workspace build.
+Model the job on `python` (`ci.yml`, the `python` job, whose last step is the
+Hermes provider smoke): a throwaway venv, per-example deps installed inside
+the job, run the smoke. Root `examples/` is not a cargo workspace member —
+the same posture as `areev-js` — so nothing leaks into the workspace build.
 
 Add the job **when the example actually runs**. A CI job pointing at a
 placeholder is worse than no job: it goes green over nothing and trains everyone

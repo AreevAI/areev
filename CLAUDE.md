@@ -2,11 +2,18 @@
 
 Embedded memory engine for AI agents — reference implementation of OMS (Open
 Memory Spec). Rust workspace of 16 crates (plus `areev-js`, a standalone napi
-package built outside the workspace, and `adapters/` — the pip packages
-`areev-langgraph` and `areev-crewai`, see `adapters/CLAUDE.md`). Memories
+package built outside the workspace). Memories
 are immutable content-addressed grains in per-file Turso databases, queried
 with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
+
+The framework adapters (`areev-langgraph`, `areev-crewai`) **left this repo**
+on 2026-08-23 for `AreevAI/areev-adapters` — they depend only on the
+published PyPI `areev`, so they version against their upstream frameworks,
+not against the core. That repo is currently **private and parked** (1.0.0
+of both stays on PyPI and works); un-parking is its README's checklist. Do
+not re-add adapter code here — a change that breaks them surfaces in that
+repo's CI, and re-adding a gate for it is part of un-parking.
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
 `areev` on PyPI, and the Node binding on npm as **`@areev/areev`** (+ scoped

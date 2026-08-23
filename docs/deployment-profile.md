@@ -135,10 +135,12 @@ production. The procedure, for both a planned rotation and a suspected leak
 - This document.
 - `docs/gdpr.md` (article → capability map) and `docs/erasure.md`.
 - An `areev audit export` sample from a staging file.
-- The FORGET-SUBJECT demo: `adapters/areev-crewai/tests/test_backend.py::
-  test_forget_subject_erases_sourced_memories` — erasing an identity
-  erases its memories, their supersession history, and their index rows,
-  with a receipt, through the same selector the DSAR report uses.
+- The FORGET-SUBJECT demo: `crates/areev-store/tests/subject_report_tests.rs::
+  report_matches_erasure_selection_exactly` — erasing an identity erases its
+  memories, their supersession history, and their index rows, with a
+  receipt, through the *same selector* the DSAR report uses, so "show me
+  everything" and "delete it" are two calls over one selection. The CAL-level
+  mirror is `crates/areev-cal/tests/erasure_cal_tests.rs`.
 
 ## Explicitly not in this profile
 

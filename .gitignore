@@ -30,7 +30,3 @@ docs/tmp/
 
 # macOS Finder cruft
 .DS_Store
-
-# Python adapter build artifacts
-adapters/**/*.egg-info/
-adapters/**/__pycache__/

@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The framework adapters moved out of this repo.** `areev-langgraph` and
+  `areev-crewai` now live in `AreevAI/areev-adapters` and are developed
+  against the published PyPI `areev`, so they version against their upstream
+  frameworks instead of against the core (`ARCHITECTURE.md` §10, "Framework
+  adapters live outside the repo"). Nothing changes for anyone installing
+  them: both stay on PyPI at 1.0.0 and work against current Areev. They are
+  **parked** — no new releases planned until someone asks — so this repo's
+  CI no longer runs their suites, and until the adapters repo is un-parked
+  an areev release is not gated on them.
+- The Hermes provider smoke, which rode the removed `adapters` CI job for
+  its maturin-built venv, now runs as the last step of the `python` job (and
+  so on macOS as well as Linux).
+
 ## [1.6.0] — 2026-08-23
 
 ### Security
