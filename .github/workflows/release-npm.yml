@@ -176,7 +176,7 @@ jobs:
       # model claims every artifact is attested. This one DOES gate the
       # publish — it is a security claim, not paperwork.
       - name: Attest build provenance for the native addons
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: crates/areev-js/npm/*/*.node
       - name: Publish platform packages + main to npm

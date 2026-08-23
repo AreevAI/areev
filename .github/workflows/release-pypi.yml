@@ -117,7 +117,7 @@ jobs:
       # model claims every artifact is attested. This one DOES gate the
       # publish — it is a security claim, not paperwork.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*.whl"
       # `maturin upload dist/*` would also try to upload the SBOM, which PyPI

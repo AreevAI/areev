@@ -181,7 +181,7 @@ jobs:
       # covers is worse than one with none at all, because the release notes
       # claim every asset is attested.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz
