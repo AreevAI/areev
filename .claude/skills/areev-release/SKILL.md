@@ -52,6 +52,15 @@ must publish bottom-up.
   (cd crates/areev-js && ./node_modules/.bin/napi build --platform --release)
   git diff crates/areev-js/index.js   # must be version lines ONLY
   ```
+- **Refresh `crates/areev-js/Cargo.lock` in the same commit.** areev-js is a
+  DETACHED cargo workspace with its own lockfile, so bumping its `Cargo.toml`
+  leaves the lock pinning the previous version for itself and every path
+  dependency. CI's `node` job asserts this (`cargo metadata --locked`), and
+  `release-npm.yml` builds `--locked` — so left alone it surfaces as a failed
+  RELEASE, not a failed build. 1.6.1 hit exactly this.
+  ```bash
+  (cd crates/areev-js && cargo metadata --format-version 1 >/dev/null)
+  ```
 - **Regenerate the repo-stats artifacts after the bump** — they embed the
   version string, so the pre-flight `--check` (run before the bump) goes
   stale the moment `Cargo.toml` moves and the `stats` CI job fails the
