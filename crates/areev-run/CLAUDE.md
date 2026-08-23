@@ -141,15 +141,51 @@ evidence. Responding and resuming are separate acts.
   `--tool-cmd` tool, every connector) is unaffected. The call budget is spent
   BEFORE dispatch so a refused call still costs one — otherwise a module probes
   the policy for free.
+- **Guest request headers** (#105) — `EgressRequest.headers` carries the
+  non-credential headers enterprise APIs demand (`X-Goog-User-Project` and
+  friends). Three rules, each load-bearing: (1) broker-owned names
+  (`Authorization`/`Cookie`/`Host`/`Proxy-Authorization`, plus whatever header
+  a resolved `Credential::Header` rides in — known only AFTER resolution, so
+  that check lives there) are refused, and refused *free*, because the answer
+  is identical for every caller and so leaks no policy — the spend-first rule
+  exists for answers that differ; (2) malformed names and CR/LF values are
+  `400`, not `403` — injection is malformed, not merely denied; (3) guest
+  headers are a SEPARATE vec from `credential_headers` all the way into
+  `perform`, because the reflection scrub iterates the credential vec and
+  scrubbing a guest-supplied string out of a response body would corrupt it.
+  They ride exactly as far as the credential (one `send_credential` boolean
+  gates both), which is why `EgressCall.headers` can be journaled under
+  `credential_sent` — if that ever becomes two flags, this becomes two too.
+  Values ARE journaled, unlike the credential: the caller chose them.
 - **The vocabulary lives in `areev_core::types::capability`**, not here:
   `areev-cal`'s write path sits below this crate and must reach the same parser,
   or a tool becomes writable and then unrunnable. `egress::AllowedHost` is a
   re-export of core's for the same reason.
-- **Two audit kinds, different dedup.** `refusals()` dedups on
-  `(caller, destination, reason)` — a policy fact. `calls()` does not — an
-  effect, and forty are forty. Both journal at the superstep boundary
-  (`write_egress_refusal` / `write_egress_call`), neither is a journal entry, so
-  `verify` is byte-identical with or without a broker.
+- **Blob reads go through the broker, not the sandbox** (#106) — `POST /blob`
+  on the same port and token, gated on `Declaration::declares_blob_read()` plus
+  `Broker::serve_blobs(db_path)`. The obvious design (sandbox reads the
+  `.blobs` sidecar itself) fails four ways: the subprocess is handed no memory
+  path under `ClearExcept`; `areev-sandbox` cannot take `areev-store` (the
+  5-dep standalone decision) so it would need its own `cas://` parser and
+  SHA-256; the sidecar does not exist on Postgres; and — decisively — a read
+  done in the subprocess has NO channel back to the driver to be journaled
+  (stdout is the guest's result, the fuel line is prose). Routing it here makes
+  the guarantee "neither a socket nor a file descriptor" and gets journaling on
+  the existing superstep drain. Answers RAW BYTES on 200 (a blob is binary;
+  base64-in-JSON would tax every guest with a decoder) and JSON on every error,
+  told apart by status — never by sniffing a payload that may start with `{`.
+  Embedded-only: a Postgres path is a typed 501, not a misleading "missing".
+- **`--allow-blob` comes off the DECLARATION, `--allow-fetch` off the runtime.**
+  Deliberate asymmetry: egress has a host-side grant that narrows the runtime's
+  permission afterwards, so that flag can be broad. A blob read has no second
+  key, so the declaration must be what the flag derives from — otherwise every
+  capability module silently gains the import.
+- **Three audit kinds, two dedup rules.** `refusals()` dedups on
+  `(caller, destination, reason)` — a policy fact. `calls()` and `blob_reads()`
+  do not — effects, and forty are forty. All three journal at the superstep
+  boundary (`write_egress_refusal` / `write_egress_call` / `write_blob_read`),
+  none is a journal entry, so `verify` is byte-identical with or without a
+  broker.
 - **`PinnedTool.capabilities`** freezes the declaration beside `runtime`, so a
   mid-run supersession cannot widen reach. `runtime_allows_capabilities` gates
   the `--allow-fetch` flag off the MANIFEST, never off the module.

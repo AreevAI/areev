@@ -216,13 +216,25 @@ The tool gets `AREEV_EGRESS_URL` and `AREEV_EGRESS_TOKEN` in its environment —
 
 ```json
 { "url": "https://books.zoho.com/api/v3/bills", "method": "POST",
-  "credential": "zoho", "body": "{...}" }
+  "credential": "zoho", "headers": { "X-Tenant-Id": "acme" },
+  "body": "{...}" }
 ```
 
 The broker checks the destination against `--allow-host`, the method and
 credential against that tool's grant, attaches the credential, and makes the
 request. The token never enters the tool's process, so a compromised tool has
 nothing to exfiltrate.
+
+`headers` is optional and carries **non-credential** request headers — the
+ones enterprise APIs require and no credential expresses: `X-Goog-User-Project`
+on Google calls made with user credentials, `anthropic-version`, `x-ms-version`,
+a tenant id. The broker refuses `Authorization`, `Proxy-Authorization`,
+`Cookie`, `Host`, and any header a configured credential rides in, whatever
+their casing: those are the broker's to set, and a caller that could write them
+would be holding the credential channel it exists not to hold. A malformed name
+or a value containing CR/LF is a `400` — header injection dies at the parse, not
+at the socket. Because the caller chose these values, they are **journaled in
+full**, unlike a credential, which is journaled by name only.
 
 `--tool-egress tool:credentials:methods` is the grant, `+`-separated within a
 field. Three rules are deliberate:
@@ -375,9 +387,40 @@ run already has.
     { "http": { "hosts": ["https://gmail.googleapis.com"],
                 "methods": ["POST"],
                 "path_prefixes": ["/gmail/v1/users/me/"],
-                "credentials": ["gmail"] } }
+                "credentials": ["gmail"],
+                "headers": ["X-Goog-User-Project"] } },
+    { "blob": { "read": true } }
   ] }
 ```
+
+The two capabilities are **independent**. `{"blob": {"read": true}}` (#106)
+lets a module read the memory's stored bytes by content address — the
+attachment a trigger's connector already filed — through the same broker on
+the same token, and grants no network. A module that parses attachments and
+calls nothing declares only `blob`; one that calls an API and reads nothing
+declares only `http`. Read-only, by address only: there is no enumeration, no
+write, and no namespace access, so a module fetches bytes it was handed a
+`cas://` reference to and cannot browse the memory. Every read lands as a
+`blob_read` Observation naming the address and the byte count.
+
+A blob-only module still needs a grant, because the token is what identifies
+the caller: `--tool-egress 'parse_attachments::'` names neither a credential
+nor a method, minting a token and authorizing no egress whatsoever.
+
+⚠️ **Embedded backend only.** The read is lock-free precisely because it goes
+to the `.blobs` sidecar without opening the database — and that sidecar is an
+embedded-backend thing. On PostgreSQL a blob lives in-schema, so
+`areev::blob_get` returns a `501` naming the limitation rather than reporting
+the attachment as missing. On that backend a tool can open the memory
+directly anyway (see [Backend divergence](#backend-divergence-reading-the-memory-mid-run-85)),
+so the capability is closing an embedded-tier gap.
+
+`headers` names the non-credential request headers the module may set, and is
+deny-by-default like `credentials`: declaring none permits none. A name the
+broker owns (`Authorization`, `Cookie`, `Host`, `Proxy-Authorization`) is
+refused **at write time**, so a module that tries to declare the credential
+channel is unwritable rather than writable-and-refused-later. Matching is
+case-insensitive, because HTTP field names are.
 
 **`capabilities` declares; it never grants.** The effective set is
 `declared ∩ host-granted`, checked on every call, so the declaration can only
@@ -415,7 +458,13 @@ What is enforced, and where:
 | a malformed declaration | CAL write, and again at resolve | write rejected / `RUN-E018` |
 | the runtime with no broker, or no `--tool-egress` for this tool | dispatch | node fails, naming the missing flag |
 | a module importing `areev::fetch` undeclared | sandbox instantiation | `ForbiddenImport`, by name, before one instruction |
-| host / path / method / credential outside the declaration | broker, per call **and per redirect hop** | 403 + a journaled refusal |
+| a module importing `areev::blob_get` without `{"blob": {"read": true}}` | sandbox instantiation | `ForbiddenImport` — gated on the DECLARATION, not the runtime, so an http-only module never gains it |
+| a blob read by a caller that declared no `blob` capability | broker, per read | 403 + a journaled refusal |
+| a blob read when the host wired no memory | broker, per read | 503 — declaring is not granting on this door either |
+| a malformed or unknown `cas://` address | broker, per read | 404 — the address is the only way in, so there is nothing to enumerate |
+| host / path / method / credential / header outside the declaration | broker, per call **and per redirect hop** | 403 + a journaled refusal |
+| a request header the broker owns (`Authorization`, `Cookie`, `Host`, `Proxy-Authorization`, or one carrying a configured credential) | broker, per call — before the call budget is spent | 403 + a journaled refusal; the answer is the same for every caller, so it costs nothing to ask |
+| a malformed header name, or a value containing CR/LF | broker, per call | 400 — header injection is refused as malformed, not merely denied |
 | an evasive path (`..`, `%2e`/`%2f`/`%5c`, `\\`) against declared `path_prefixes` | broker, per call | 403 — refused rather than normalized |
 | anything outside the host grant | broker, per call | 403 + a journaled refusal |
 | a private/loopback destination (`127.0.0.0/8`, `10/8`, `169.254/16`, `::1`, `fc00::/7`, …) under an **unrestricted** policy | broker, per call and per hop | 403 — a declaration alone cannot authorize local reach; name it in `--allow-host` |
@@ -469,9 +518,12 @@ the storage tier, and it silently decides whether an agent design is portable:
 
 - **Embedded (Turso file)**: no — the file lock is exclusive, so even a pure
   `RECALL` from inside a tool is refused (`STO-E001`). Use the doors that
-  exist: `areev blob get` reads CAS attachments lock-free, and a **trigger's
-  `--context-query`** has the evaluator assemble a saved query's result into
-  the run input before the run starts ([triggers](triggers.md)).
+  exist: `areev blob get` reads CAS attachments lock-free, a **capability
+  tool** reads them with `areev::blob_get` through the broker (#106, above),
+  and a **trigger's `--context-query`** has the evaluator assemble a saved
+  query's result into the run input before the run starts
+  ([triggers](triggers.md)). All three are lock-free by construction, which is
+  why they work while the run holds the file.
 - **PostgreSQL (server tier)**: yes — any number of handles may hold the same
   schema and reads never block (MVCC), so a tool may open the memory and
   query it mid-run. If your production target is Postgres, tools can read

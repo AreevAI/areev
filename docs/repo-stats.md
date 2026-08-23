@@ -6,22 +6,22 @@ v1.6.0 · 17 crates · 275 Rust files
 
 | | |
 |---|---|
-| Source code | **78,555** lines |
-| Test code | **46,633** lines (37.3% of all code) |
-| Test functions | **2,288** |
+| Source code | **78,979** lines |
+| Test code | **47,356** lines (37.5% of all code) |
+| Test functions | **2,309** |
 | Line coverage | **80.1%** of 52,407 instrumented source lines |
 | Stable error codes | **91** |
-| Reference docs | 52 files, 21,972 lines |
+| Reference docs | 52 files, 22,184 lines |
 
 ## By crate
 
 | Crate | Files | Source | Test | Tests |
 |---|---:|---:|---:|---:|
-| `areev-cal` | 39 | 23,861 | 18,287 | 985 |
+| `areev-cal` | 39 | 23,866 | 18,287 | 985 |
 | `areev-store` | 38 | 9,452 | 5,136 | 248 |
-| `areev-core` | 49 | 8,396 | 4,074 | 270 |
-| `areev-cli` | 18 | 5,683 | 5,549 | 165 |
-| `areev-run` | 20 | 4,866 | 4,028 | 131 |
+| `areev-core` | 49 | 8,497 | 4,175 | 277 |
+| `areev-cli` | 18 | 5,685 | 5,549 | 165 |
+| `areev-run` | 20 | 5,182 | 4,650 | 145 |
 | `areev-loop` | 34 | 7,858 | 1,187 | 137 |
 | `areev-context` | 8 | 1,899 | 2,421 | 90 |
 | `areev-trigger` | 12 | 1,646 | 2,000 | 114 |
@@ -39,12 +39,12 @@ v1.6.0 · 17 crates · 275 Rust files
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 163,376 |
-| Source code (no blanks or comments) | 78,555 |
-| Unit test code (`#[cfg(test)]` blocks) | 21,995 |
-| Integration test code (`tests/`, `benches/`) | 24,638 |
+| Physical lines (all Rust) | 164,996 |
+| Source code (no blanks or comments) | 78,979 |
+| Unit test code (`#[cfg(test)]` blocks) | 22,096 |
+| Integration test code (`tests/`, `benches/`) | 25,260 |
 | Example code (`examples/`) | 669 |
-| Test functions | 2,288 |
+| Test functions | 2,309 |
 
 ## Coverage
 

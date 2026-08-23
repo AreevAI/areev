@@ -1089,6 +1089,12 @@ so a binary payload would have to be base64'd into the response and would blow
 the context window it landed in. Tools that need bytes should take the `cas://`
 URI from a grain's `content_refs` and shell out to `areev blob get`.
 
+A **sandboxed** capability tool has its own door (#106): declare
+`{"blob": {"read": true}}` and call `areev::blob_get`, which reads by content
+address through the run's broker and journals a `blob_read`. That is the path
+for anything processing untrusted attachment bytes, since it needs no
+subprocess and no filesystem access — see [run.md](run.md).
+
 ---
 
 ## 18. Start a workflow when something happens (triggers)

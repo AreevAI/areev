@@ -62,6 +62,14 @@ pub trait HostToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// Every CAS blob a capability tool READ (#106).
+    ///
+    /// The third audit stream, drained beside [`HostToolExecutor::calls`] at
+    /// the same superstep boundary. Default: none.
+    fn blob_reads(&self) -> Vec<crate::broker::BlobRead> {
+        Vec::new()
+    }
+
     /// Bind the principal the current run executes as, so the broker can
     /// refuse a credential owned by a different principal (#101). Default
     /// no-op: an executor with no broker has nothing to bind. Called by the
@@ -163,6 +171,9 @@ impl EgressHandle {
     fn calls(&self) -> Vec<crate::broker::EgressCall> {
         self.broker.calls()
     }
+    fn blob_reads(&self) -> Vec<crate::broker::BlobRead> {
+        self.broker.blob_reads()
+    }
     /// Does this caller hold a grant (and therefore a token)?
     fn token_for(&self, caller: &str) -> Option<&str> {
         self.broker.token_for(caller)
@@ -233,6 +244,10 @@ impl HostToolExecutor for CommandExecutor {
 
     fn calls(&self) -> Vec<crate::broker::EgressCall> {
         self.egress.as_ref().map(|e| e.calls()).unwrap_or_default()
+    }
+
+    fn blob_reads(&self) -> Vec<crate::broker::BlobRead> {
+        self.egress.as_ref().map(|e| e.blob_reads()).unwrap_or_default()
     }
 
     fn bind_run_principal(&self, principal: &str) {
@@ -452,10 +467,18 @@ impl CodeExecutor {
         // Equally honest: a grant is what mints the token the module presents,
         // so without one it holds no `AREEV_EGRESS_TOKEN` and every call would
         // be a 401 with no explanation.
+        //
+        // This binds blob-only modules (#106) too, and needs no exception: the
+        // token is what identifies the CALLER, and `POST /blob` has to know
+        // who is asking as much as `POST /` does. A module that reads
+        // attachments and touches no network takes the grant that names
+        // neither a credential nor a method — `--tool-egress 'parse_pdf::'` —
+        // which mints a token and authorizes no egress whatsoever.
         if egress.token_for(tool_name).is_none() {
             return Err(format!(
                 "{} declares capabilities but the host granted tool '{tool_name}' no egress — \
-                 add --tool-egress '{tool_name}:<credentials>:<methods>'",
+                 add --tool-egress '{tool_name}:<credentials>:<methods>' (both may be empty for \
+                 a module that only reads blobs)",
                 code.uri
             ));
         }
@@ -526,6 +549,13 @@ impl HostToolExecutor for CodeExecutor {
         match &self.egress {
             Some(e) => e.calls(),
             None => self.inner.calls(),
+        }
+    }
+
+    fn blob_reads(&self) -> Vec<crate::broker::BlobRead> {
+        match &self.egress {
+            Some(e) => e.blob_reads(),
+            None => self.inner.blob_reads(),
         }
     }
 
@@ -611,6 +641,9 @@ impl HostToolExecutor for CodeExecutor {
                     if let Some(n) = limits.get("max_response_bytes").and_then(Value::as_u64) {
                         c.arg("--max-response-bytes").arg(n.to_string());
                     }
+                    if let Some(n) = limits.get("max_blob_bytes").and_then(Value::as_u64) {
+                        c.arg("--max-blob-bytes").arg(n.to_string());
+                    }
                 }
                 // `--allow-fetch` is what LINKS `areev::fetch` into the guest's
                 // import set. Without it the sandbox's frozen set is exactly
@@ -630,6 +663,26 @@ impl HostToolExecutor for CodeExecutor {
                         };
                     }
                     c.arg("--allow-fetch");
+                    // `--allow-blob` links `areev::blob_get` (#106), and comes
+                    // off the pinned DECLARATION rather than the runtime
+                    // string like `--allow-fetch` does. The asymmetry is
+                    // deliberate: egress has a host-side grant behind it that
+                    // narrows the runtime's permission afterwards, so the flag
+                    // can be broad. A blob read has no such second key — the
+                    // declaration is the only thing that says yes — so it must
+                    // be the thing the flag is derived from, or every
+                    // capability module would silently gain the import.
+                    //
+                    // Still manifest-pinned, so a mid-run supersession cannot
+                    // add it: `code.capabilities` is the frozen copy.
+                    if code
+                        .capabilities
+                        .as_ref()
+                        .and_then(|v| areev_core::types::capability::Declaration::parse(v).ok())
+                        .is_some_and(|d| d.declares_blob_read())
+                    {
+                        c.arg("--allow-blob");
+                    }
                 }
                 c
             }

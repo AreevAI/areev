@@ -18,7 +18,8 @@
 //!
 //! ```json
 //! { "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-//!   "method": "GET", "credential": "gmail" }
+//!   "method": "GET", "credential": "gmail",
+//!   "headers": { "X-Goog-User-Project": "my-project" } }
 //! ```
 //!
 //! and we answer with the response. The cost is real and worth stating: a
@@ -270,6 +271,34 @@ pub struct EgressCall {
     pub response_bytes: usize,
     /// The credential NAME that was attached, never a value.
     pub credential: Option<String>,
+    /// Non-credential request headers the caller set (#105), name AND value.
+    ///
+    /// Recorded in full, unlike the credential and unlike bodies: the caller
+    /// supplied these, so they carry nothing the caller did not already know,
+    /// and "it sent these four requests with these headers" is strictly more
+    /// evidence than "it sent these four requests".
+    pub headers: BTreeMap<String, String>,
+}
+
+/// One CAS blob a capability tool READ, kept for the audit trail (#106).
+///
+/// The mirror of [`EgressCall`] on the other mediated door. A `wasm32-areev-io`
+/// module has no file descriptor of its own any more than it has a socket, so
+/// every stored byte it opens comes through the broker and lands here: "it was
+/// allowed to read attachments" is a policy statement, "it opened these two"
+/// is the evidence.
+///
+/// The address IS the content, so recording it is recording exactly which
+/// bytes were read, with no risk of putting the bytes themselves into an
+/// immutable replicating grain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobRead {
+    /// The tool that asked.
+    pub caller: String,
+    /// The `cas://sha256:…` address it opened.
+    pub uri: String,
+    /// How many bytes it got.
+    pub bytes: usize,
 }
 
 /// Per-caller ceilings on a capability tool's mediated egress.
@@ -321,6 +350,13 @@ pub struct Broker {
     /// evaluator's connector pass, a bare library embedding) fails closed
     /// rather than open.
     run_principal: Arc<std::sync::Mutex<Option<String>>>,
+    /// The memory whose CAS blobs `POST /blob` serves, if the host wired one
+    /// (#106). `None` means blob reads are refused whatever a module declared
+    /// — the same posture as a capability module under a host that configured
+    /// no broker at all.
+    blobs: Arc<std::sync::Mutex<Option<String>>>,
+    /// Every blob a caller actually read.
+    blob_reads: Arc<std::sync::Mutex<Vec<BlobRead>>>,
     /// caller -> its capability token.
     tokens: BTreeMap<String, String>,
     /// The token an unlisted caller presents, when a default grant exists.
@@ -351,9 +387,13 @@ impl Broker {
             Arc::new(std::sync::Mutex::new(BTreeMap::new()));
         let run_principal: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
+        let blobs: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let blob_reads: Arc<std::sync::Mutex<Vec<BlobRead>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let (stop_t, refusals_t) = (Arc::clone(&stop), Arc::clone(&refusals));
         let (calls_t, declared_t) = (Arc::clone(&calls), Arc::clone(&declared));
         let (owners_t, principal_t) = (Arc::clone(&credential_owners), Arc::clone(&run_principal));
+        let (blobs_t, blob_reads_t) = (Arc::clone(&blobs), Arc::clone(&blob_reads));
 
         // One token per caller, minted before the listener serves anything.
         let mut tokens = BTreeMap::new();
@@ -391,6 +431,8 @@ impl Broker {
                             &declared_t,
                             &owners_t,
                             &principal_t,
+                            &blobs_t,
+                            &blob_reads_t,
                             &grants,
                             &by_token,
                             refusal_code,
@@ -413,9 +455,32 @@ impl Broker {
             declared,
             credential_owners,
             run_principal,
+            blobs,
+            blob_reads,
             tokens,
             default_token,
         })
+    }
+
+    /// Serve `POST /blob` from this memory's CAS store (#106).
+    ///
+    /// The path, not a handle: [`areev_store::read_blob_offline`] reads the
+    /// `.blobs` sidecar without opening the database, so serving a blob never
+    /// contends with the driver's exclusive write lock on the same file. That
+    /// is the same property that lets a `--tool-cmd` subprocess run
+    /// `areev blob get` mid-run.
+    ///
+    /// Until a host calls this, blob reads are refused whatever a module
+    /// declared — declaring is not granting here either.
+    pub fn serve_blobs(&self, db_path: &str) {
+        if let Ok(mut b) = self.blobs.lock() {
+            *b = Some(db_path.to_string());
+        }
+    }
+
+    /// Every blob a caller read, for journaling.
+    pub fn blob_reads(&self) -> Vec<BlobRead> {
+        self.blob_reads.lock().map(|b| b.clone()).unwrap_or_default()
     }
 
     /// Bind `name` to the run principal that owns it (#101 follow-through).
@@ -532,6 +597,187 @@ struct EgressRequest {
     /// *what* — it cannot name a value it was not given.
     credential: Option<String>,
     body: Option<String>,
+    /// Non-credential request headers the caller wants set (#105).
+    ///
+    /// The enterprise APIs capability tools are pitched at need one:
+    /// `X-Goog-User-Project` on every Google call made with user credentials,
+    /// `anthropic-version`, `x-ms-version`, a tenant id. None of them is a
+    /// secret — the caller supplies the value, so it is guest-visible by
+    /// construction, which is why these may be journaled verbatim while a
+    /// credential may only ever be journaled by name.
+    ///
+    /// A `BTreeMap` deliberately: one value per name, ordered, so the journal
+    /// is deterministic and a caller cannot smuggle a second `X-Foo` past a
+    /// check that looked at the first.
+    headers: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct BlobRequest {
+    /// A `cas://sha256:<64 hex>` content address. The ONLY way in: there is no
+    /// enumeration and no name lookup, so a module reaches bytes it was handed
+    /// a reference to and cannot go looking for others.
+    uri: String,
+}
+
+/// `POST /blob` — hand a declared capability tool the bytes at one content
+/// address (#106).
+///
+/// ## Why this is the broker's job and not the sandbox's
+///
+/// The obvious design is for the sandbox subprocess to read the `.blobs`
+/// sidecar itself: the read is lock-free, so it looks free. It is not. The
+/// subprocess runs under `EnvPolicy::ClearExcept` and is handed no memory
+/// path; `areev-sandbox` deliberately carries five dependencies and cannot
+/// take `areev-store`, so it would need its own `cas://` parser and its own
+/// SHA-256; the `.blobs` sidecar does not exist on the Postgres backend, where
+/// blobs live in-schema; and — decisively — a read performed inside the
+/// subprocess has **no way back to the driver to be journaled**, because
+/// stdout is contractually the guest's own result and the fuel line on stderr
+/// is prose for a human.
+///
+/// Routing it here answers all four at once. The broker already runs in the
+/// engine's process, already authenticates per-caller tokens, already has a
+/// place to record what happened, and is already the thing that turns "the
+/// module has no socket" into "every byte is mediated and recorded". This
+/// makes the second half true of stored bytes as well: **the guest gets
+/// neither a socket nor a file descriptor.**
+#[allow(clippy::too_many_arguments)]
+fn serve_blob(
+    stream: &mut TcpStream,
+    body: &[u8],
+    caller: &str,
+    declared: &Arc<std::sync::Mutex<BTreeMap<String, Declared>>>,
+    blobs: &Arc<std::sync::Mutex<Option<String>>>,
+    blob_reads: &Arc<std::sync::Mutex<Vec<BlobRead>>>,
+    refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
+    refusal_code: &'static str,
+) -> std::io::Result<()> {
+    let req: BlobRequest = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return respond(
+                stream,
+                400,
+                &serde_json::json!({ "error": format!("bad blob request: {e}") }).to_string(),
+            )
+        }
+    };
+
+    // Declared ∩ host-granted, the same two-key rule egress lives under: the
+    // module must have declared `{"blob": {"read": true}}`, AND the host must
+    // have wired a memory to serve from. A caller with no declaration at all
+    // — every `--tool-cmd` tool, every connector — is refused here rather than
+    // waved through, because unlike egress there is no host-side grant that
+    // could have admitted it: subprocess tools already read blobs with
+    // `areev blob get`, so this door exists only for the sandboxed ones.
+    let permitted = declared
+        .lock()
+        .map(|d| d.get(caller).is_some_and(|e| e.declaration.declares_blob_read()))
+        .unwrap_or(false);
+    if !permitted {
+        note_refusal(
+            refusals,
+            EgressRefusal {
+                caller: caller.to_string(),
+                destination: req.uri.clone(),
+                reason: "read a CAS blob without declaring the 'blob' capability".into(),
+            },
+        );
+        return respond(
+            stream,
+            403,
+            &serde_json::json!({
+                "error": format!(
+                    "caller '{caller}' asked to read a blob without declaring \
+                     {{\"blob\": {{\"read\": true}}}}"
+                ),
+                "code": refusal_code
+            })
+            .to_string(),
+        );
+    }
+
+    let Some(db_path) = blobs.lock().ok().and_then(|b| b.clone()) else {
+        return respond(
+            stream,
+            503,
+            &serde_json::json!({
+                "error": "this host wired no memory for blob reads"
+            })
+            .to_string(),
+        );
+    };
+
+    // The lock-free door is the `.blobs` sidecar, which is an EMBEDDED-backend
+    // thing: on Postgres a blob lives in-schema and reaching it means opening
+    // the memory. Said plainly and up front rather than letting the sidecar
+    // read miss and report "blob missing", which would send someone hunting
+    // for an attachment that is present and simply not reachable this way.
+    if db_path.starts_with("postgres://") || db_path.starts_with("postgresql://") {
+        return respond(
+            stream,
+            501,
+            &serde_json::json!({
+                "error": "blob reads from a sandboxed tool are not supported on the postgres \
+                          backend: the lock-free path is the .blobs sidecar, which only the \
+                          embedded backend has"
+            })
+            .to_string(),
+        );
+    }
+
+    match areev_store::read_blob_offline(&db_path, &req.uri) {
+        Ok(Some(bytes)) => {
+            note_blob_read(
+                blob_reads,
+                BlobRead {
+                    caller: caller.to_string(),
+                    uri: req.uri.clone(),
+                    bytes: bytes.len(),
+                },
+            );
+            respond_bytes(stream, &bytes)
+        }
+        // A sealed blob needs the memory's derived key, which lives behind an
+        // open handle this lock-free path deliberately does not take. Said
+        // plainly rather than reported as missing: "encrypted" and "not there"
+        // are different problems with different fixes.
+        Ok(None) => respond(
+            stream,
+            409,
+            &serde_json::json!({
+                "error": format!(
+                    "blob {} is encrypted at rest; a sandboxed tool cannot open it",
+                    req.uri
+                )
+            })
+            .to_string(),
+        ),
+        Err(e) => respond(
+            stream,
+            404,
+            &serde_json::json!({ "error": e.to_string() }).to_string(),
+        ),
+    }
+}
+
+/// Ceiling on how many effects one broker keeps in memory for journaling.
+/// Shared by calls and blob reads: both are effects, both are drained at the
+/// superstep boundary, and neither should let a runaway module grow the
+/// driver's heap without bound.
+const MAX_RECORDED_CALLS: usize = 4096;
+
+/// Record one blob read. Unlike a refusal these are NOT deduped: reading the
+/// same attachment twice is two reads, exactly as two successful calls are two
+/// calls.
+fn note_blob_read(reads: &Arc<std::sync::Mutex<Vec<BlobRead>>>, r: BlobRead) {
+    if let Ok(mut list) = reads.lock() {
+        if list.len() < MAX_RECORDED_CALLS {
+            list.push(r);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,6 +800,8 @@ fn serve_one(
     declared: &Arc<std::sync::Mutex<BTreeMap<String, Declared>>>,
     credential_owners: &Arc<std::sync::Mutex<BTreeMap<String, String>>>,
     run_principal: &Arc<std::sync::Mutex<Option<String>>>,
+    blobs: &Arc<std::sync::Mutex<Option<String>>>,
+    blob_reads: &Arc<std::sync::Mutex<Vec<BlobRead>>>,
     grants: &EgressGrants,
     by_token: &BTreeMap<String, String>,
     refusal_code: &'static str,
@@ -564,6 +812,12 @@ fn serve_one(
     // Request line, then headers, then a Content-Length body.
     let mut line = String::new();
     reader.read_line(&mut line)?;
+    // Two doors, one port and one token: `/` brokers a network call, `/blob`
+    // reads stored bytes (#106). A path rather than a discriminant inside the
+    // JSON, so the two request shapes stay separate types and a blob read can
+    // be refused before anything parses an egress request out of it.
+    let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let want_blob = path.starts_with("/blob");
     let mut content_length = 0usize;
     let mut presented: Option<String> = None;
     loop {
@@ -627,6 +881,19 @@ fn serve_one(
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
+    if want_blob {
+        return serve_blob(
+            &mut stream,
+            &body,
+            &caller,
+            declared,
+            blobs,
+            blob_reads,
+            refusals,
+            refusal_code,
+        );
+    }
+
     let req: EgressRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -637,6 +904,61 @@ fn serve_one(
             )
         }
     };
+
+    // Guest headers, validated before anything else looks at them (#105).
+    //
+    // Two refusals with different characters. A malformed name or value is a
+    // CLIENT error — the same shape as unparseable JSON — and a value carrying
+    // CR/LF is header injection, which must die here rather than at the socket
+    // where it would split one request into two.
+    //
+    // A broker-owned name is a policy refusal, and deliberately a FREE one:
+    // the "probing is not free" rule that spends a call before the declaration
+    // check exists because those answers differ per caller and so leak the
+    // policy. "May I write the Authorization header?" has exactly one answer,
+    // no, for every caller that ever asks — so answering it without charge
+    // reveals nothing, and refusing early keeps the credential channel's
+    // guarantee independent of budgets, declarations, and grants.
+    for (name, value) in &req.headers {
+        if !areev_core::types::capability::is_valid_header_name(name)
+            || !areev_core::types::capability::is_valid_header_value(value)
+        {
+            return respond(
+                &mut stream,
+                400,
+                &serde_json::json!({
+                    "error": format!("header '{name}' is not a valid HTTP header name/value")
+                })
+                .to_string(),
+            );
+        }
+        if areev_core::types::capability::is_broker_owned_header(name) {
+            note_refusal(
+                refusals,
+                EgressRefusal {
+                    caller: caller.clone(),
+                    destination: req.url.clone(),
+                    reason: format!("tried to set the broker-owned header '{name}'"),
+                },
+            );
+            return respond(
+                &mut stream,
+                403,
+                &serde_json::json!({
+                    "error": format!(
+                        "caller '{caller}' tried to set header '{name}', which the broker owns — \
+                         name a credential instead; the broker attaches it and the caller never \
+                         holds one"
+                    ),
+                    "code": refusal_code
+                })
+                .to_string(),
+            );
+        }
+    }
+    let guest_headers: Vec<(String, String)> =
+        req.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let guest_header_names: Vec<String> = req.headers.keys().cloned().collect();
 
     if let Err(e) = policy.permits(&req.url) {
         note_refusal(
@@ -702,9 +1024,12 @@ fn serve_one(
                     );
                 }
                 d.calls_made += 1;
-                if let Err(denied) =
-                    d.declaration.permits(&req.url, &method, req.credential.as_deref())
-                {
+                if let Err(denied) = d.declaration.permits(
+                    &req.url,
+                    &method,
+                    req.credential.as_deref(),
+                    &guest_header_names,
+                ) {
                     drop(guard);
                     note_refusal(
                         refusals,
@@ -882,6 +1207,40 @@ fn serve_one(
         }
     }
 
+    // The static list of broker-owned names is not the whole credential
+    // channel: `Credential::Header` lets an operator carry a secret in ANY
+    // header — `X-Api-Key`, `apikey`, whatever the upstream wants — and that
+    // name is known only here, after resolution, because it is per-credential
+    // host configuration rather than a constant. A guest header colliding with
+    // it would be a guest writing a value into the exact slot the broker fills
+    // with a secret. Refused for the same reason and with the same words
+    // (#105).
+    for (guest_name, _) in &guest_headers {
+        let g = guest_name.trim().to_ascii_lowercase();
+        if headers.iter().any(|(k, _)| k.trim().to_ascii_lowercase() == g) {
+            note_refusal(
+                refusals,
+                EgressRefusal {
+                    caller: caller.clone(),
+                    destination: req.url.clone(),
+                    reason: format!("tried to set the broker-owned header '{guest_name}'"),
+                },
+            );
+            return respond(
+                &mut stream,
+                403,
+                &serde_json::json!({
+                    "error": format!(
+                        "caller '{caller}' tried to set header '{guest_name}', which carries a \
+                         configured credential on this host — name the credential instead"
+                    ),
+                    "code": refusal_code
+                })
+                .to_string(),
+            );
+        }
+    }
+
     if !matches!(method.as_str(), "GET" | "HEAD" | "DELETE" | "POST" | "PUT" | "PATCH") {
         return respond(
             &mut stream,
@@ -895,6 +1254,7 @@ fn serve_one(
         &method,
         req.body.as_deref(),
         &headers,
+        &guest_headers,
         policy,
         grant,
         capability.as_ref().map(|(_, d)| d),
@@ -936,6 +1296,16 @@ fn serve_one(
                     // destination it never touched is a false record a DSAR or
                     // reviewer would read as fact.
                     credential: if credential_sent { req.credential.clone() } else { None },
+                    // Recorded on the same "what actually rode the final
+                    // request" rule as the credential, and for the same
+                    // reason: guest headers travel exactly as far as the
+                    // credential does (see `dispatch`), so a chain that left
+                    // its origin sent neither.
+                    headers: if credential_sent {
+                        req.headers.clone()
+                    } else {
+                        BTreeMap::new()
+                    },
                 },
             );
             respond(
@@ -998,7 +1368,6 @@ fn digest(body: &str) -> String {
 /// memory here; the ceiling is well above `CapabilityLimits::max_calls`, which
 /// is the real bound for a capability tool.
 fn note_call(calls: &Arc<std::sync::Mutex<Vec<EgressCall>>>, c: EgressCall) {
-    const MAX_RECORDED_CALLS: usize = 4096;
     if let Ok(mut list) = calls.lock() {
         if list.len() < MAX_RECORDED_CALLS {
             list.push(c);
@@ -1023,6 +1392,13 @@ enum Dispatched {
     /// `credential_sent` is whether the credential actually rode the FINAL
     /// request: a cross-origin redirect drops it, so the audit must not claim a
     /// secret reached a destination it never did.
+    ///
+    /// It answers the same question for the caller's own headers (#105), which
+    /// is not a coincidence to be maintained by hand: `perform` gates both on
+    /// one boolean, so "the credential rode" and "the guest headers rode" are
+    /// the same fact. If they ever stop being the same fact, this needs to
+    /// become two flags — journaling a header that did not travel is the same
+    /// false record as journaling a credential that did not.
     Answered { status: u16, body: String, final_url: String, redirects: u32, credential_sent: bool },
     /// A hop was refused by policy; already recorded in `refusals`.
     Refused { detail: String },
@@ -1081,6 +1457,18 @@ enum Dispatched {
 /// chooses. The hop check passes no credential name: credential *membership*
 /// was settled on the initial request, and whether the header actually rides
 /// a given hop is the same-origin rule's decision, not the declaration's.
+/// Guest headers (#105) are settled the same way and for the same reason.
+///
+/// ## Guest headers travel exactly as far as the credential
+///
+/// One rule, not two: a header the caller attached rides while
+/// `send_credential` holds and is dropped the moment the chain leaves its
+/// origin. These are not secrets — the caller chose the values — so the
+/// argument is not confidentiality but intent: `X-Goog-User-Project` was
+/// meant for the host the caller named, and a redirect off-origin is exactly
+/// where "meant for" stops being true. Sending a project id, a tenant, or an
+/// API-version header onward to a destination an intermediary picked would be
+/// the broker volunteering the caller's context to a stranger.
 ///
 /// `max_response_bytes` bounds the READ of the final body, not just its
 /// acceptance — `Some(n)` reads at most `n + 1` bytes, so an upstream cannot
@@ -1091,6 +1479,7 @@ fn dispatch(
     start_method: &str,
     body: Option<&str>,
     credential_headers: &[(String, String)],
+    guest_headers: &[(String, String)],
     policy: &EgressPolicy,
     grant: &CallerGrant,
     declaration: Option<&Declaration>,
@@ -1154,7 +1543,15 @@ fn dispatch(
         // `left_origin` latch is what makes an A→B→A bounce fail closed).
         let send_credential =
             hops == 0 || (!left_origin && crate::egress::same_origin(start_url, &url));
-        let result = perform(&agent, &method, &url, body.as_deref(), credential_headers, send_credential);
+        let result = perform(
+            &agent,
+            &method,
+            &url,
+            body.as_deref(),
+            credential_headers,
+            guest_headers,
+            send_credential,
+        );
 
         let mut resp = match result {
             Ok(r) => r,
@@ -1279,7 +1676,7 @@ fn dispatch(
                     ),
                 };
             }
-            if let Err(denied) = d.permits(&next_url, &next_method, None) {
+            if let Err(denied) = d.permits(&next_url, &next_method, None, &[]) {
                 note_refusal(
                     refusals,
                     EgressRefusal {
@@ -1357,9 +1754,18 @@ fn perform(
     url: &str,
     body: Option<&str>,
     credential_headers: &[(String, String)],
+    guest_headers: &[(String, String)],
     send_credential: bool,
 ) -> std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error> {
-    let headers: &[(String, String)] = if send_credential { credential_headers } else { &[] };
+    // Both sets ride or neither does — see `dispatch`'s "travel exactly as far
+    // as the credential". The credential goes on LAST so that even if the two
+    // ever named the same header, the broker's value is the one that survives;
+    // the guest cannot reach these names at all (`is_broker_owned_header`, and
+    // a `Credential::Header` name is refused beside it), so this is a belt on
+    // top of braces rather than the guarantee itself.
+    let credential_headers: &[(String, String)] =
+        if send_credential { credential_headers } else { &[] };
+    let guest_headers: &[(String, String)] = if send_credential { guest_headers } else { &[] };
     match method {
         "POST" | "PUT" | "PATCH" => {
             let mut b = match method {
@@ -1367,7 +1773,7 @@ fn perform(
                 "PUT" => agent.put(url),
                 _ => agent.patch(url),
             };
-            for (k, v) in headers {
+            for (k, v) in guest_headers.iter().chain(credential_headers) {
                 b = b.header(k, v);
             }
             b.send(body.unwrap_or(""))
@@ -1378,7 +1784,7 @@ fn perform(
                 "DELETE" => agent.delete(url),
                 _ => agent.get(url),
             };
-            for (k, v) in headers {
+            for (k, v) in guest_headers.iter().chain(credential_headers) {
                 b = b.header(k, v);
             }
             b.call()
@@ -1410,6 +1816,26 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<(
     );
     stream.write_all(head.as_bytes())?;
     stream.write_all(body.as_bytes())?;
+    stream.flush()
+}
+
+/// Answer with raw bytes rather than JSON (#106).
+///
+/// A blob is arbitrary bytes — a PDF, an image, a zip — and JSON cannot carry
+/// those without base64, which would cost a third of the size on the wire and,
+/// worse, oblige every guest module to carry a base64 decoder to read its own
+/// attachment. Unlike an HTTP response there is nothing else to report: no
+/// status to relay, no headers, just the bytes at an address that already
+/// names them. So success is `200` plus the body, and every failure is JSON
+/// with an `error` — which the sandbox distinguishes by status, not by
+/// sniffing the payload.
+fn respond_bytes(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 \r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
     stream.flush()
 }
 

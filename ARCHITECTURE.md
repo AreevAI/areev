@@ -980,6 +980,45 @@ redirects with the allowlist checked only on the initial URL, and the
 `--credential` variable had never been added to the withhold list every other
 secret flag is on.
 
+**Decision (2026-08-23, issue #106):** the guest gets neither a socket **nor a
+file descriptor** — a capability tool reads the memory's stored bytes through
+the same broker, never from the filesystem.
+
+The gap this closes is narrow and sharp. A trigger's connector files an email
+attachment as a CAS blob; the tool that should parse it is the one most worth
+sandboxing, because its input is untrusted by construction — and it was the
+one tool that structurally could not be, because `wasm32-areev-io` could reach
+the network but not the bytes the memory already held. So `{"blob": {"read":
+true}}` declares a second capability and `areev::blob_get` reads one blob by
+content address: no enumeration, no write, no namespace access, so a module
+reaches bytes it was handed a reference to and cannot browse the memory.
+
+The implementation choice is the interesting part, because the obvious one is
+wrong in a way that only shows up at the audit trail. Reading the `.blobs`
+sidecar directly from the sandbox subprocess *looks* free — the read is
+lock-free by design, which is what already lets a `--tool-cmd` subprocess run
+`areev blob get` mid-run. But the subprocess is handed no memory path, cannot
+take a dependency on `areev-store` without giving up the five-dependency
+standalone posture that makes it a credible boundary, reads nothing at all on
+the Postgres backend where blobs live in-schema, and — decisively — has **no
+channel back to the driver**: stdout is contractually the guest's own result,
+and the fuel line on stderr is prose for a human. A read performed there could
+not be journaled, which would put the hole in the evidence exactly where the
+untrusted bytes are.
+
+Routing it through the broker answers all four at once, because the broker
+already runs in the engine's process, already authenticates per-caller tokens,
+and already exists to turn "the module has no socket" into "every byte is
+mediated and recorded". Blob reads journal as `blob_read` Observations naming
+the address and byte count, drained on the same superstep boundary as
+`egress_call` — and the address *is* the content hash, so the record names
+exactly which bytes were opened without putting an attachment into an
+immutable, replicating grain. The two capabilities are gated independently, and
+asymmetrically on purpose: `--allow-fetch` derives from the pinned runtime
+because a host-side grant narrows it afterwards, while `--allow-blob` derives
+from the pinned *declaration*, because nothing narrows a blob read after the
+fact and every capability module would otherwise acquire it silently.
+
 ### Cadence is data; evaluation is a command
 
 A trigger is a standing rule that starts a workflow, declared as a `Trigger`

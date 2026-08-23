@@ -352,9 +352,13 @@ stories (#101):
 | Runtime | Import set | Determinism |
 |---|---|---|
 | `wasm32-areev` | `areev::emit` | pure — **re-execution-provable** |
-| `wasm32-areev-io` | `+ areev::fetch` | deterministic **modulo journaled effects** |
+| `wasm32-areev-io` | `+ areev::fetch`, `+ areev::blob_get` | deterministic **modulo journaled effects** |
 
-`alloc` is a guest *export* the host calls, not an import, in both.
+`alloc` is a guest *export* the host calls, not an import, in both. The two
+capability imports are linked **independently**: `fetch` off the pinned
+runtime, `blob_get` off the pinned declaration, so an http module does not
+silently gain the ability to read stored bytes and a blob module gets no
+network.
 
 Until 1.6.0 the rule was absolute — *a Tier C module cannot make a network
 call, so a connector will never be one* — and that was the reason the tier
@@ -394,11 +398,24 @@ Four properties make it a capability system rather than a hole:
   without a capability declaration is refused at instantiation, by name,
   before one instruction runs — the same `ForbiddenImport` treatment WASI gets.
 - **Effective reach is `declared ∩ host-granted`.** The Tool grain's
-  `capabilities` field declares hosts, methods, path prefixes and credential
-  names; the host's `--allow-host` / `--credential` / `--tool-egress` grant
-  independently. Both are checked on every call, so a declaration can only ever
-  narrow. Default deny throughout: no declaration means no reach, no declared
-  methods means read-only, no declared credentials means none.
+  `capabilities` field declares hosts, methods, path prefixes, credential
+  names and request-header names; the host's `--allow-host` / `--credential` /
+  `--tool-egress` grant independently. Both are checked on every call, so a
+  declaration can only ever narrow. Default deny throughout: no declaration
+  means no reach, no declared methods means read-only, no declared credentials
+  means none, no declared headers means none.
+- **The credential channel is not writable from the guest.** A module may set
+  the non-credential headers enterprise APIs demand — `X-Goog-User-Project`,
+  `anthropic-version`, a tenant id — and may not set `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `Host`, or any header a configured
+  credential rides in, at any casing. Declaring one is refused at write time;
+  sending one is refused before the call budget is spent, because that answer
+  is identical for every caller and so leaks no policy. Values containing
+  CR/LF are refused as malformed: header injection dies at the parse rather
+  than at the socket. Caller-set headers travel exactly as far as the
+  credential does — a cross-origin redirect drops both, since a quota project
+  or tenant id was meant for the host the caller named, not for one an
+  intermediary picked.
 - **Path prefixes, which the host-side grant deliberately does not have.**
   `--allow-host` allowlists hosts because a path-level grant there would imply
   an authorization model it does not have. A capability tool is a different
@@ -412,6 +429,20 @@ Four properties make it a capability system rather than a hole:
   declaration binds **every redirect hop**, exactly as the allowlist does: a
   `302` on a declared host must not walk a module from its declared paths to
   an endpoint the host-side grant happens to tolerate.
+- **Stored bytes are mediated on the same terms as the network** (#106). A
+  module that declares `{"blob": {"read": true}}` may read CAS blobs by
+  content address, through the same broker on the same token — so the guest
+  gets **neither a socket nor a file descriptor**, and every read is journaled
+  as a `blob_read`. Read-only and address-only: no enumeration, no write, no
+  namespace access, so a module reaches bytes it was handed a reference to and
+  cannot browse the memory. The import is linked off the pinned *declaration*
+  rather than the runtime string, because unlike egress there is no host-side
+  grant that narrows it afterwards — which also means an `http` module does not
+  quietly acquire it. Routing the read through the broker rather than letting
+  the sandbox open the file is what makes the journal possible at all: a read
+  performed inside the subprocess has no way back to the driver to be recorded,
+  and attachment parsing is precisely the workload where an unrecorded read
+  matters most.
 - **Every call is journaled**, not just the refusals. See below.
 
 Also out, permanently: guest-visible clock and RNG (that is the determinism
@@ -551,7 +582,8 @@ loses at most one superstep of evidence:
 | `observation_kind` | Records | Dedup |
 |---|---|---|
 | `egress_refusal` | caller, destination, reason | per distinct `(caller, destination, reason)` |
-| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name** | none |
+| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name**, caller-set request headers **with values** | none |
+| `blob_read` | caller, `cas://` address, byte count | none |
 
 The dedup difference is deliberate: a refusal is a policy fact and forty
 retries against one blocked host are one of them, but a successful call is an
@@ -562,7 +594,10 @@ and replicates, so an inbox body written into one cannot be taken back, and the
 digest is what pins *which* request anyway. The credential appears by name
 only, which is all the broker ever received: the caller sends a label and the
 value is attached internally, so the record is safe by construction rather than
-by scrubbing.
+by scrubbing. Caller-set headers are the deliberate asymmetry: they are
+recorded with their **values**, because the caller supplied them, so the record
+discloses nothing the caller did not already hold — and "it billed this quota
+project on these four requests" is evidence "it reached Google" is not.
 
 Neither kind is a journal entry. Replay never sees them, so `verify` stays
 byte-identical whether or not a broker was configured — they are evidence

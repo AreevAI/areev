@@ -1172,11 +1172,16 @@ pub fn build_grain_from_json<S: GrainSink>(
                     for (k, v) in obj {
                         if !matches!(
                             k.as_str(),
-                            "fuel" | "max_pages" | "max_calls" | "max_response_bytes"
+                            "fuel"
+                                | "max_pages"
+                                | "max_calls"
+                                | "max_response_bytes"
+                                | "max_blob_bytes"
                         ) {
                             return Err(AreevError::Validation(format!(
                                 "tool 'runtime_limits' key '{k}' is not recognized; \
-                                 accepted: fuel, max_pages, max_calls, max_response_bytes"
+                                 accepted: fuel, max_pages, max_calls, max_response_bytes, \
+                                 max_blob_bytes"
                             )));
                         }
                         if v.as_u64().is_none() {

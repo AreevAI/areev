@@ -28,7 +28,7 @@
 //! | Runtime | Imports | Determinism |
 //! |---|---|---|
 //! | `wasm32-areev` | `areev::emit` | pure — **re-execution-provable** |
-//! | `wasm32-areev-io` | `+ areev::fetch` | deterministic **modulo journaled effects** |
+//! | `wasm32-areev-io` | `+ areev::fetch`, `+ areev::blob_get` | deterministic **modulo journaled effects** |
 //!
 //! The isolation claim is *strengthened*, not weakened. The guest still has no
 //! socket, no credential, no clock, no environment: it gets one more
@@ -65,6 +65,10 @@
 //! - `areev.fetch(ptr: i32, len: i32) -> i32` — **only** under
 //!   [`Limits::allow_fetch`]. A module that imports it without a capability
 //!   declaration is refused by name before one instruction runs.
+//! - `areev.blob_get(ptr: i32, len: i32) -> i32` — **only** under
+//!   [`Limits::allow_blob`] (#106): read one CAS blob by content address,
+//!   through the same broker. Gated independently of `fetch`, so a module
+//!   that parses attachments and touches no network declares exactly that.
 //! - `alloc(len: i32) -> i32` is a guest **export** (with `run` and
 //!   `memory`), not an import: the guest allocates a buffer in its own
 //!   linear memory and the host calls it to place input — and, for `fetch`,
@@ -87,6 +91,7 @@
 //! | frozen imports | reaching anything not on the list |
 //! | no WASI | filesystem, network, clock, environment, randomness |
 //! | response byte cap | an upstream ballooning the guest's memory |
+//! | blob byte cap | one stored attachment ballooning the guest's memory |
 
 use serde::{Deserialize, Serialize};
 use wasmi::{Config, Engine, Linker, Module, Store};
@@ -126,9 +131,23 @@ pub struct Limits {
     /// MANIFEST-pinned runtime (`wasm32-areev-io`), never from the module —
     /// a blob cannot talk its way into a gate.
     pub allow_fetch: bool,
+    /// Link `areev::blob_get` into the guest's import set (#106).
+    ///
+    /// Same posture as [`Self::allow_fetch`], and separate from it on purpose:
+    /// the two capabilities are independent, and the tool this exists for —
+    /// parsing an attachment that arrived from outside — is precisely the one
+    /// that should be reading bytes with no network at all. The engine derives
+    /// this from the manifest-pinned DECLARATION (`{"blob": {"read": true}}`),
+    /// not merely from the runtime string, because unlike `fetch` there is no
+    /// host-side grant that could narrow it afterwards.
+    pub allow_blob: bool,
     /// Largest single brokered response handed back to the guest. Overruns
     /// are errors, never truncation.
     pub max_response_bytes: usize,
+    /// Largest single blob handed back to the guest. Defaults to the payload
+    /// cap rather than the response cap: an attachment is a document, not an
+    /// API answer, and 1 MiB is a small PDF.
+    pub max_blob_bytes: usize,
 }
 
 impl Default for Limits {
@@ -138,7 +157,9 @@ impl Default for Limits {
             max_pages: DEFAULT_MAX_PAGES,
             max_module_bytes: MAX_MODULE_BYTES,
             allow_fetch: false,
+            allow_blob: false,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            max_blob_bytes: MAX_PAYLOAD_BYTES,
         }
     }
 }
@@ -213,6 +234,10 @@ pub struct Outcome {
     /// serializes identically to a pre-1.6 outcome.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fetches: u32,
+    /// CAS blobs the guest read (#106). Same omit-when-zero rule, for the same
+    /// reason: a pure module's outcome must not change shape.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blob_reads: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -237,7 +262,16 @@ struct HostState {
     /// so unchecked reentrancy is a stack-exhaustion primitive with I/O
     /// amplification. A reentrant call returns `-1` immediately, before any
     /// broker traffic and before any `alloc`.
+    ///
+    /// ONE flag for every host call, not one per import (#106): the hazard is
+    /// re-entering *any* host function from inside `alloc`, so a `blob_get`
+    /// nested in a `fetch`'s reply is the same stack-exhaustion primitive as a
+    /// nested `fetch`. A per-import flag would leave that door open.
     fetching: bool,
+    /// How many CAS blobs the guest has read, reported alongside fuel.
+    blob_reads: u32,
+    /// Largest single blob handed back.
+    max_blob_bytes: usize,
 }
 
 /// Run `wasm` against `input`.
@@ -279,7 +313,9 @@ pub fn run(
     for import in module.imports() {
         let (m, n) = (import.module(), import.name());
         let permitted = m == IMPORT_MODULE
-            && (n == "emit" || (n == "fetch" && limits.allow_fetch));
+            && (n == "emit"
+                || (n == "fetch" && limits.allow_fetch)
+                || (n == "blob_get" && limits.allow_blob));
         if !permitted {
             return Err(SandboxError::ForbiddenImport {
                 module: m.to_string(),
@@ -294,8 +330,17 @@ pub fn run(
             // Read once, here, so the guest's calls cannot observe a mutating
             // environment — and so a module with no `fetch` import never
             // touches these at all.
-            broker: if limits.allow_fetch { BrokerEnv::from_env() } else { None },
+            //
+            // Both gates read the same handshake: `blob_get` posts to the same
+            // broker on the same token, just a different path, so a module
+            // that declared only `blob` still needs the broker wired.
+            broker: if limits.allow_fetch || limits.allow_blob {
+                BrokerEnv::from_env()
+            } else {
+                None
+            },
             max_response_bytes: limits.max_response_bytes,
+            max_blob_bytes: limits.max_blob_bytes,
             ..HostState::default()
         },
     );
@@ -329,6 +374,18 @@ pub fn run(
     // makes the `ForbiddenImport` above the *only* way a pure module can be
     // told about `fetch` — there is no second path where it exists but is
     // inert.
+    if limits.allow_blob {
+        linker
+            .func_wrap(
+                IMPORT_MODULE,
+                "blob_get",
+                |caller: wasmi::Caller<'_, HostState>, ptr: i32, len: i32| -> i32 {
+                    host_blob_get(caller, ptr, len)
+                },
+            )
+            .map_err(|e| SandboxError::Module(format!("linker: {e}")))?;
+    }
+
     if limits.allow_fetch {
         linker
             .func_wrap(
@@ -399,7 +456,8 @@ pub fn run(
 
     let fuel_used = limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0));
     let fetches = store.data().fetches;
-    Ok(Outcome { output, fuel_used, fetches })
+    let blob_reads = store.data().blob_reads;
+    Ok(Outcome { output, fuel_used, fetches, blob_reads })
 }
 
 /// `areev::fetch(ptr, len) -> i32` — the guest's one gate to the network.
@@ -413,11 +471,16 @@ pub fn run(
 ///
 /// ```json
 /// { "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-///   "method": "GET", "credential": "gmail", "body": null }
+///   "method": "GET", "credential": "gmail", "body": null,
+///   "headers": { "X-Goog-User-Project": "my-project" } }
 /// ```
 ///
 /// The guest names a credential; it can never name a *value* it was not given,
-/// and no value ever crosses back.
+/// and no value ever crosses back. `headers` (#105) carries non-credential
+/// request headers only — the broker refuses `Authorization`, `Cookie`,
+/// `Host`, `Proxy-Authorization`, and any header a configured credential
+/// rides in. Because this binary forwards rather than translates, that field
+/// needed no change here: the guest ABI is the broker ABI.
 ///
 /// **Out**: a non-negative return is a pointer into guest memory to
 /// `[u32 little-endian length][JSON bytes]`. One `i32` cannot carry both a
@@ -457,6 +520,95 @@ fn host_fetch(mut caller: wasmi::Caller<'_, HostState>, ptr: i32, len: i32) -> i
     let code = host_fetch_inner(&mut caller, ptr, len);
     caller.data_mut().fetching = false;
     code
+}
+
+/// `areev::blob_get(ptr, len) -> i32` — the guest's one gate to stored bytes
+/// (#106).
+///
+/// ## The ABI
+///
+/// **In**: `[ptr, ptr+len)` is a UTF-8 JSON request naming ONE content
+/// address. There is no enumeration and no name lookup, so a module reads
+/// bytes it was handed a reference to and cannot go looking for others:
+///
+/// ```json
+/// { "uri": "cas://sha256:<64 hex>" }
+/// ```
+///
+/// **Out**: the same `[u32 little-endian length][bytes]` framing `fetch` uses,
+/// so the guest ABI grows by one function rather than one pattern — but the
+/// bytes are the **blob itself**, not JSON wrapping it. A blob is arbitrary
+/// binary; putting it through JSON would mean base64, which costs a third of
+/// the size and obliges every guest to carry a decoder to read its own
+/// attachment. On failure the payload is `{"error": "…"}` instead, and the
+/// host — not the guest — tells the two apart, by the broker's HTTP status
+/// rather than by sniffing a payload that might legitimately begin with `{`.
+///
+/// A **negative** return still means the host could not place a response at
+/// all, exactly as for `fetch`.
+///
+/// ## Why this goes through the broker
+///
+/// Reading the `.blobs` sidecar from inside this process looks free — the read
+/// is lock-free by design. It is not: this binary is handed no memory path,
+/// carries five dependencies and so cannot take `areev-store`'s `cas://`
+/// parser or its SHA-256, would silently read nothing on the Postgres backend,
+/// and — decisively — has no way to tell the driver what it read, so the
+/// audit trail Tier C is *for* would have a hole exactly where the untrusted
+/// bytes go. The broker already runs in the engine's process, already
+/// authenticates this token, and already records what it mediates.
+fn host_blob_get(mut caller: wasmi::Caller<'_, HostState>, ptr: i32, len: i32) -> i32 {
+    // The SAME gate `fetch` takes, and deliberately the same flag: `reply`
+    // runs the guest's `alloc`, so a guest whose allocator calls back into any
+    // host function would recurse this native frame with a broker round trip
+    // per level. Per-import flags would let `blob_get` nest inside `fetch`.
+    if caller.data().fetching {
+        return -1;
+    }
+    caller.data_mut().fetching = true;
+    let code = host_blob_get_inner(&mut caller, ptr, len);
+    caller.data_mut().fetching = false;
+    code
+}
+
+fn host_blob_get_inner(caller: &mut wasmi::Caller<'_, HostState>, ptr: i32, len: i32) -> i32 {
+    let Some(wasmi::Extern::Memory(mem)) = caller.get_export("memory") else {
+        return -1;
+    };
+    let len = len.max(0) as usize;
+    if len > MAX_PAYLOAD_BYTES {
+        return reply(
+            caller,
+            &json_error(&format!(
+                "request of {len} bytes exceeds the {MAX_PAYLOAD_BYTES}-byte payload cap"
+            )),
+        );
+    }
+    let mut request = vec![0u8; len];
+    if mem.read(&*caller, ptr.max(0) as usize, &mut request).is_err() {
+        return -1;
+    }
+
+    let (broker, max_blob_bytes) = {
+        let st = caller.data();
+        (st.broker.clone(), st.max_blob_bytes)
+    };
+    caller.data_mut().blob_reads = caller.data().blob_reads.saturating_add(1);
+
+    let body = match broker {
+        None => json_error(
+            "this module declares the blob capability, but the host wired no broker to read \
+             through",
+        ),
+        Some(b) => match http::post(&b.url, "/blob", &b.token, &request, max_blob_bytes) {
+            // 200 is the blob; anything else is the broker's JSON error, which
+            // already reads well enough to hand straight to the guest.
+            Ok((200, bytes)) => return reply(caller, &bytes),
+            Ok((_, bytes)) => bytes,
+            Err(e) => json_error(&e),
+        },
+    };
+    reply(caller, &body)
 }
 
 fn host_fetch_inner(caller: &mut wasmi::Caller<'_, HostState>, ptr: i32, len: i32) -> i32 {

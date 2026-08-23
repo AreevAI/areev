@@ -42,7 +42,7 @@ fn run() -> Result<String, String> {
 
     let path = flags.get("module").ok_or(
         "usage: areev-sandbox --module <FILE.wasm> [--fuel N] [--max-pages N] \
-         [--allow-fetch] [--max-response-bytes N]",
+         [--allow-fetch] [--max-response-bytes N] [--allow-blob] [--max-blob-bytes N]",
     )?;
     let wasm = std::fs::read(path).map_err(|e| format!("reading {path}: {e}"))?;
 
@@ -57,6 +57,11 @@ fn run() -> Result<String, String> {
     // Tier C and a module importing `areev::fetch` is refused by name. The
     // engine passes this only for a manifest-pinned `wasm32-areev-io` runtime.
     limits.allow_fetch = flags.contains_key("allow-fetch");
+    limits.allow_blob = flags.contains_key("allow-blob");
+    if let Some(n) = flags.get("max-blob-bytes") {
+        limits.max_blob_bytes =
+            n.parse().map_err(|_| format!("--max-blob-bytes: not a number: {n}"))?;
+    }
     if let Some(n) = flags.get("max-response-bytes") {
         limits.max_response_bytes =
             n.parse().map_err(|_| format!("--max-response-bytes: not a number: {n}"))?;
@@ -75,13 +80,16 @@ fn run() -> Result<String, String> {
     // must stay exactly what the guest emitted. The brokered-call count rides
     // alongside it and only when there were any, so a pure module's stderr is
     // byte-identical to what it printed before 1.6.
+    // Each clause appears only when it happened, so a pure module's stderr
+    // stays byte-identical to what it printed before 1.6 and an http-only
+    // module's stays identical to 1.6.
+    let mut line = format!("areev-sandbox: fuel used {}", outcome.fuel_used);
     if outcome.fetches > 0 {
-        eprintln!(
-            "areev-sandbox: fuel used {}, brokered calls {}",
-            outcome.fuel_used, outcome.fetches
-        );
-    } else {
-        eprintln!("areev-sandbox: fuel used {}", outcome.fuel_used);
+        line.push_str(&format!(", brokered calls {}", outcome.fetches));
     }
+    if outcome.blob_reads > 0 {
+        line.push_str(&format!(", blob reads {}", outcome.blob_reads));
+    }
+    eprintln!("{line}");
     serde_json::to_string(&outcome.output).map_err(|e| e.to_string())
 }

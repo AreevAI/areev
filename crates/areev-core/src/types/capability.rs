@@ -179,6 +179,64 @@ pub fn url_path(url: &str) -> String {
     }
 }
 
+/// Header names the broker owns; a module may never set them (#105).
+///
+/// `Authorization` and `Proxy-Authorization` ARE the credential channel: the
+/// whole point of brokering is that the module names a credential and never
+/// holds one, so letting it write the header the credential arrives in hands
+/// back exactly the surface #101 closed on the response side. `Cookie` is
+/// ambient authority spelled differently. `Host` re-targets the request
+/// *after* the allowlist has already judged the URL, turning a permitted
+/// destination into a different one at the socket.
+///
+/// Lowercase, because HTTP field names are case-insensitive and a check that
+/// is not would be bypassed by `authorization`.
+pub const BROKER_OWNED_HEADERS: [&str; 4] =
+    ["authorization", "cookie", "host", "proxy-authorization"];
+
+/// Is this a header the broker reserves for itself? Case-insensitive.
+pub fn is_broker_owned_header(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    BROKER_OWNED_HEADERS.contains(&lower.as_str())
+}
+
+/// RFC 9110 `field-name` (a `token`). Refusing anything else at parse time is
+/// what keeps `\r\n` out of a header name — header injection is the failure
+/// this forecloses, and a legitimate API header has no business containing a
+/// separator, a space, or a control byte.
+pub fn is_valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// RFC 9110 `field-value`: visible ASCII, space and tab. The same injection
+/// argument as [`is_valid_header_name`] — a CR or LF here splits one header
+/// into two, and the second one is the attacker's.
+pub fn is_valid_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b) || b >= 0x80)
+}
+
 /// Why a declared capability refused a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityDenied {
@@ -192,6 +250,8 @@ pub enum CapabilityDenied {
     Method { method: String },
     /// The credential is outside the declared set.
     Credential { name: String },
+    /// The request header is outside the declared set (#105).
+    Header { name: String },
 }
 
 impl std::fmt::Display for CapabilityDenied {
@@ -217,6 +277,10 @@ impl std::fmt::Display for CapabilityDenied {
                 f,
                 "asked for credential '{name}', which its declared capability does not name"
             ),
+            CapabilityDenied::Header { name } => write!(
+                f,
+                "tried to set header '{name}', which its declared capability does not name"
+            ),
         }
     }
 }
@@ -232,12 +296,28 @@ pub struct HttpCapability {
     path_prefixes: Vec<String>,
     /// Credential names this module may ask for. Empty = none.
     credentials: BTreeSet<String>,
+    /// Request header names this module may set, lowercased (#105). Empty =
+    /// none, the same deny-by-default reading `credentials` gets. Never
+    /// contains a [`BROKER_OWNED_HEADERS`] name — that is refused at parse.
+    headers: BTreeSet<String>,
+}
+
+/// The `blob` capability: may a module read the memory's stored bytes (#106).
+///
+/// Read-only, and only by content address. There is no enumeration, no write,
+/// and no namespace access — a module can fetch bytes it was handed a `cas://`
+/// reference to and nothing more, so the guarantee that a module cannot browse
+/// the memory survives having this at all.
+#[derive(Debug, Clone, Default)]
+pub struct BlobCapability {
+    read: bool,
 }
 
 /// Everything one Definition declares.
 #[derive(Debug, Clone, Default)]
 pub struct Declaration {
     http: Option<HttpCapability>,
+    blob: Option<BlobCapability>,
 }
 
 impl Declaration {
@@ -271,9 +351,15 @@ impl Declaration {
                     }
                     out.http = Some(parse_http(body)?);
                 }
+                "blob" => {
+                    if out.blob.is_some() {
+                        return Err("'capabilities' declares 'blob' more than once".into());
+                    }
+                    out.blob = Some(parse_blob(body)?);
+                }
                 other => {
                     return Err(format!(
-                        "'capabilities' entry '{other}' is not recognized; accepted: http"
+                        "'capabilities' entry '{other}' is not recognized; accepted: http, blob"
                     ))
                 }
             }
@@ -286,15 +372,30 @@ impl Declaration {
         self.http.is_some()
     }
 
+    /// Does this declaration admit the `areev::blob_get` import at all (#106)?
+    ///
+    /// `{"blob": {"read": false}}` declares the capability and then declines
+    /// it, which is a module saying it wants no blob access — the import is
+    /// not linked, exactly as if the entry were absent.
+    pub fn declares_blob_read(&self) -> bool {
+        self.blob.as_ref().is_some_and(|b| b.read)
+    }
+
     /// May the module make this call?
     ///
     /// The DECLARED half of `declared ∩ host-granted`; the broker checks the
     /// host grant separately and both must pass.
+    /// Header names this declaration admits, lowercased. Empty = none.
+    pub fn permitted_headers(&self) -> impl Iterator<Item = &str> {
+        self.http.iter().flat_map(|h| h.headers.iter().map(String::as_str))
+    }
+
     pub fn permits(
         &self,
         url: &str,
         method: &str,
         credential: Option<&str>,
+        header_names: &[String],
     ) -> std::result::Result<(), CapabilityDenied> {
         let Some(http) = &self.http else {
             return Err(CapabilityDenied::Undeclared { kind: "http" });
@@ -330,6 +431,11 @@ impl Declaration {
                 return Err(CapabilityDenied::Credential { name: name.to_string() });
             }
         }
+        for name in header_names {
+            if !http.headers.contains(&name.trim().to_ascii_lowercase()) {
+                return Err(CapabilityDenied::Header { name: name.to_string() });
+            }
+        }
         Ok(())
     }
 }
@@ -339,10 +445,13 @@ fn parse_http(body: &serde_json::Value) -> Result<HttpCapability> {
         .as_object()
         .ok_or("'capabilities' entry 'http' must be an object")?;
     for k in obj.keys() {
-        if !matches!(k.as_str(), "hosts" | "methods" | "path_prefixes" | "credentials") {
+        if !matches!(
+            k.as_str(),
+            "hosts" | "methods" | "path_prefixes" | "credentials" | "headers"
+        ) {
             return Err(format!(
                 "'capabilities.http' key '{k}' is not recognized; \
-                 accepted: hosts, methods, path_prefixes, credentials"
+                 accepted: hosts, methods, path_prefixes, credentials, headers"
             ));
         }
     }
@@ -387,7 +496,51 @@ fn parse_http(body: &serde_json::Value) -> Result<HttpCapability> {
     let credentials: BTreeSet<String> =
         string_list(obj.get("credentials"), "credentials")?.into_iter().collect();
 
-    Ok(HttpCapability { hosts, methods, path_prefixes, credentials })
+    // Header names are declared, validated, and lowercased here so that every
+    // height reads them identically — and so a module that tries to declare
+    // the credential channel is refused at WRITE time rather than on the run
+    // someone needed it for.
+    let mut headers = BTreeSet::new();
+    for h in string_list(obj.get("headers"), "headers")? {
+        let name = h.trim();
+        if !is_valid_header_name(name) {
+            return Err(format!(
+                "'capabilities.http.headers' entry '{name}' is not a valid HTTP header name"
+            ));
+        }
+        if is_broker_owned_header(name) {
+            return Err(format!(
+                "'capabilities.http.headers' entry '{name}' is set by the broker and cannot be \
+                 declared; name a credential instead"
+            ));
+        }
+        headers.insert(name.to_ascii_lowercase());
+    }
+
+    Ok(HttpCapability { hosts, methods, path_prefixes, credentials, headers })
+}
+
+fn parse_blob(body: &serde_json::Value) -> Result<BlobCapability> {
+    let obj = body
+        .as_object()
+        .ok_or("'capabilities' entry 'blob' must be an object")?;
+    for k in obj.keys() {
+        if k.as_str() != "read" {
+            return Err(format!(
+                "'capabilities.blob' key '{k}' is not recognized; accepted: read"
+            ));
+        }
+    }
+    // Spelled as an explicit `read: true` rather than an empty object, so the
+    // declaration says what it wants rather than implying it, and so a future
+    // `write` has an obvious place to go without changing this shape.
+    let read = match obj.get("read") {
+        None => return Err("'capabilities.blob' must name 'read'".into()),
+        Some(v) => v
+            .as_bool()
+            .ok_or("'capabilities.blob.read' must be a boolean")?,
+    };
+    Ok(BlobCapability { read })
 }
 
 fn string_list(v: Option<&serde_json::Value>, field: &str) -> Result<Vec<String>> {
@@ -431,7 +584,7 @@ mod tests {
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
                 "POST",
                 Some("gmail")
-            )
+            , &[])
             .is_ok());
     }
 
@@ -441,7 +594,7 @@ mod tests {
         let d = Declaration::default();
         assert!(!d.declares_http());
         assert_eq!(
-            d.permits("https://anywhere.example/", "GET", None),
+            d.permits("https://anywhere.example/", "GET", None, &[]),
             Err(CapabilityDenied::Undeclared { kind: "http" })
         );
     }
@@ -450,23 +603,152 @@ mod tests {
     fn the_host_the_path_the_method_and_the_credential_are_each_a_gate() {
         let d = gmail();
         assert!(matches!(
-            d.permits("https://evil.example/gmail/v1/users/me/x", "POST", Some("gmail")),
+            d.permits("https://evil.example/gmail/v1/users/me/x", "POST", Some("gmail"), &[]),
             Err(CapabilityDenied::Host { .. })
         ));
         // The exfiltration case a host-only grant cannot express: an ALLOWED
         // host, a POST it is allowed to make, at an endpoint it never declared.
         assert!(matches!(
-            d.permits("https://gmail.googleapis.com/upload/drive/v3/files", "POST", Some("gmail")),
+            d.permits("https://gmail.googleapis.com/upload/drive/v3/files", "POST", Some("gmail"), &[]),
             Err(CapabilityDenied::Path { .. })
         ));
         assert!(matches!(
-            d.permits("https://gmail.googleapis.com/gmail/v1/users/me/x", "DELETE", Some("gmail")),
+            d.permits("https://gmail.googleapis.com/gmail/v1/users/me/x", "DELETE", Some("gmail"), &[]),
             Err(CapabilityDenied::Method { .. })
         ));
         assert!(matches!(
-            d.permits("https://gmail.googleapis.com/gmail/v1/users/me/x", "POST", Some("sheets")),
+            d.permits("https://gmail.googleapis.com/gmail/v1/users/me/x", "POST", Some("sheets"), &[]),
             Err(CapabilityDenied::Credential { .. })
         ));
+        // And the fifth (#105): a header the declaration does not name.
+        assert!(matches!(
+            d.permits(
+                "https://gmail.googleapis.com/gmail/v1/users/me/x",
+                "POST",
+                Some("gmail"),
+                &["X-Goog-User-Project".to_string()]
+            ),
+            Err(CapabilityDenied::Header { .. })
+        ));
+    }
+
+    #[test]
+    fn declaring_no_headers_means_none() {
+        // Same deny-by-default reading `credentials` and `methods` get: the
+        // gate is "did you say so", not "is it harmless".
+        let d = gmail();
+        assert!(matches!(
+            d.permits("https://gmail.googleapis.com/gmail/v1/users/me/x", "POST", None, &["X-Any".into()]),
+            Err(CapabilityDenied::Header { .. })
+        ));
+    }
+
+    #[test]
+    fn a_declared_header_matches_case_insensitively() {
+        // HTTP field names are case-insensitive, so a declaration that only
+        // matched its own spelling would refuse the same header written
+        // differently — and, worse, a check built the other way round could be
+        // walked past with a re-cased name.
+        let d = decl(json!([{"http": {
+            "hosts": ["https://sheets.googleapis.com"],
+            "methods": ["POST"],
+            "headers": ["X-Goog-User-Project"]
+        }}]));
+        for spelling in ["X-Goog-User-Project", "x-goog-user-project", "X-GOOG-USER-PROJECT"] {
+            assert!(
+                d.permits("https://sheets.googleapis.com/v4/x", "POST", None, &[spelling.to_string()])
+                    .is_ok(),
+                "'{spelling}' names the same header"
+            );
+        }
+    }
+
+    #[test]
+    fn a_declaration_cannot_name_a_header_the_broker_owns() {
+        // Refused at PARSE, so a module that tries is unwritable rather than
+        // writable-and-refused-at-runtime. The credential channel is not
+        // something a declaration gets to reach into, and the error says what
+        // to do instead.
+        for name in ["Authorization", "authorization", "Cookie", "Host", "Proxy-Authorization"] {
+            let e = Declaration::parse(&json!([{"http": {
+                "hosts": ["https://api.example.com"],
+                "headers": [name]
+            }}]))
+            .unwrap_err();
+            assert!(
+                e.contains("set by the broker") && e.contains("credential"),
+                "'{name}' is refused and the message points at credentials: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_blob_capability_is_declared_explicitly() {
+        let d = decl(json!([{"blob": {"read": true}}]));
+        assert!(d.declares_blob_read());
+        // …and declines just as explicitly. `read: false` is a module saying
+        // it wants none, which must not link the import.
+        assert!(!decl(json!([{"blob": {"read": false}}])).declares_blob_read());
+        // The absence of the capability is not permission, same as http.
+        assert!(!Declaration::default().declares_blob_read());
+        assert!(!gmail().declares_blob_read());
+    }
+
+    #[test]
+    fn the_two_capabilities_are_independent() {
+        // The tool #106 exists for — parsing an attachment that arrived from
+        // outside — wants stored bytes and NO network at all. Declaring blob
+        // must not imply http, or the safest module would get the widest gate.
+        let blob_only = decl(json!([{"blob": {"read": true}}]));
+        assert!(blob_only.declares_blob_read());
+        assert!(!blob_only.declares_http());
+        assert_eq!(
+            blob_only.permits("https://anywhere.example/", "GET", None, &[]),
+            Err(CapabilityDenied::Undeclared { kind: "http" })
+        );
+
+        let both = decl(json!([
+            {"http": {"hosts": ["https://api.example.com"], "methods": ["POST"]}},
+            {"blob": {"read": true}}
+        ]));
+        assert!(both.declares_http() && both.declares_blob_read());
+    }
+
+    #[test]
+    fn a_malformed_blob_capability_is_refused() {
+        for bad in [
+            json!([{"blob": {}}]),                       // says nothing
+            json!([{"blob": {"read": "yes"}}]),          // not a boolean
+            json!([{"blob": {"read": true, "write": true}}]), // no write, ever
+            json!([{"blob": true}]),                     // not an object
+        ] {
+            assert!(
+                Declaration::parse(&bad).is_err(),
+                "{bad} must be refused rather than read loosely"
+            );
+        }
+        // And declared twice is a contradiction, not a last-one-wins.
+        assert!(Declaration::parse(&json!([
+            {"blob": {"read": true}},
+            {"blob": {"read": false}}
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn a_malformed_header_name_is_refused_at_parse() {
+        // The injection shapes, killed where a declaration is first read rather
+        // than at the socket where a CR would split one request into two.
+        for bad in ["X-Bad Name", "X:Colon", "X\r\nInjected", "", "X\u{0}Null"] {
+            assert!(
+                Declaration::parse(&json!([{"http": {
+                    "hosts": ["https://api.example.com"],
+                    "headers": [bad]
+                }}]))
+                .is_err(),
+                "{bad:?} is not a valid header name"
+            );
+        }
     }
 
     #[test]
@@ -485,7 +767,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    d.permits(evasive, "POST", Some("gmail")),
+                    d.permits(evasive, "POST", Some("gmail"), &[]),
                     Err(CapabilityDenied::Path { .. })
                 ),
                 "{evasive} must not pass the prefix"
@@ -494,7 +776,7 @@ mod tests {
         // And a benign dotted filename is NOT collateral damage: only whole
         // dot-SEGMENTS and encoded dots are evasive.
         assert!(d
-            .permits("https://gmail.googleapis.com/gmail/v1/users/me/msg.2.json", "POST", Some("gmail"))
+            .permits("https://gmail.googleapis.com/gmail/v1/users/me/msg.2.json", "POST", Some("gmail"), &[])
             .is_ok());
     }
 
@@ -505,7 +787,7 @@ mod tests {
                 "https://gmail.googleapis.com/upload?x=/gmail/v1/users/me/",
                 "POST",
                 Some("gmail")
-            ),
+            , &[]),
             Err(CapabilityDenied::Path { .. })
         ));
     }
@@ -514,9 +796,9 @@ mod tests {
     fn declaring_no_methods_means_read_only() {
         // Same reading as a CallerGrant: naming nothing is not naming everything.
         let d = decl(json!([{"http": {"hosts": ["https://api.example.com"]}}]));
-        assert!(d.permits("https://api.example.com/x", "GET", None).is_ok());
+        assert!(d.permits("https://api.example.com/x", "GET", None, &[]).is_ok());
         assert!(matches!(
-            d.permits("https://api.example.com/x", "POST", None),
+            d.permits("https://api.example.com/x", "POST", None, &[]),
             Err(CapabilityDenied::Method { .. })
         ));
     }
@@ -525,7 +807,7 @@ mod tests {
     fn declaring_no_credentials_means_none() {
         let d = decl(json!([{"http": {"hosts": ["https://api.example.com"]}}]));
         assert!(matches!(
-            d.permits("https://api.example.com/x", "GET", Some("anything")),
+            d.permits("https://api.example.com/x", "GET", Some("anything"), &[]),
             Err(CapabilityDenied::Credential { .. })
         ));
     }
@@ -565,10 +847,10 @@ mod tests {
 
         // And the wildcard reads the same way it does in an allowlist.
         let d = decl(json!([{"http": {"hosts": ["https://*.example.com"]}}]));
-        assert!(d.permits("https://api.example.com/x", "GET", None).is_ok());
-        assert!(d.permits("https://example.com/x", "GET", None).is_err(), "the apex is not a subdomain");
-        assert!(d.permits("https://evil-example.com/x", "GET", None).is_err(), "lookalike");
-        assert!(d.permits("https://api.example.com@evil.com/x", "GET", None).is_err(), "userinfo");
+        assert!(d.permits("https://api.example.com/x", "GET", None, &[]).is_ok());
+        assert!(d.permits("https://example.com/x", "GET", None, &[]).is_err(), "the apex is not a subdomain");
+        assert!(d.permits("https://evil-example.com/x", "GET", None, &[]).is_err(), "lookalike");
+        assert!(d.permits("https://api.example.com@evil.com/x", "GET", None, &[]).is_err(), "userinfo");
     }
 
     #[test]
