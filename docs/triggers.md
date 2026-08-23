@@ -607,6 +607,12 @@ you wrote: mount the memory and make that path resolve inside the container,
 because a heartbeat pointed at a path that does not exist fails every tick,
 which looks exactly like nothing being due.
 
+In a container fleet with no crontab at all, the repo's Docker image carries
+the dumb heartbeat as an image command: `docker run areev heartbeat --ns
+accounting` loops this same one-shot evaluation at `$AREEV_HEARTBEAT_SECS`
+ticks, and `k8s-cronjob` renders against that image's name, so the template
+applies unedited — see [`docker.md`](docker.md).
+
 The rendered interval is the **greatest common divisor** of your declared
 intervals, floored at 60s — deliberately coarser than your shortest trigger.
 The memory owns the real cadence; rendering a 30-second cron because one trigger

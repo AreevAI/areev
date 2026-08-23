@@ -73,7 +73,8 @@ fn console_api_round_trip() {
         cfg.contains("\"tier1_writes\":true")
             && cfg.contains("\"rrf_k0\":60.0")
             && cfg.contains("\"index_text\":true")
-            && cfg.contains("\"hub_mode\":false")
+            && cfg.contains("\"auth_required\":true")
+            && cfg.contains("\"auth_all\":true")
             && cfg.contains("\"file\"")
             && cfg.contains("\"warnings\":[]"),
         "{cfg}"

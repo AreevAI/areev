@@ -1952,7 +1952,7 @@ fn an_unowned_credential_ignores_the_run_principal() {
 /// loopback / private / metadata addresses on its declaration alone.
 #[test]
 fn a_capability_tool_cannot_reach_private_space_on_its_declaration_alone() {
-    // A local service standing in for the console / hub / metadata endpoint.
+    // A local service standing in for the console / metadata endpoint.
     let local = Upstream::start(vec![("/admin", 200, Vec::new(), "LOCAL SECRET")]);
     let broker = Broker::start(
         // Unrestricted: no --allow-host. This is the permissive posture, and

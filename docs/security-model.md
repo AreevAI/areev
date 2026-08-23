@@ -27,7 +27,6 @@ top of that.
 | CLI (`areev`) | local process | the invoking user | filesystem perms |
 | MCP server (`serve --mcp`) | stdio | the parent process that spawned it | inherited |
 | Web console (`areev ui`) | HTTP/1.1 | **loopback only by default** | none, or `--token-env` (Basic/Bearer on every request) |
-| Sync hub (`areevd`) | HTTP/1.1 | networked peers | bearer token (writes + sync) |
 
 ## Data at rest
 
@@ -128,23 +127,20 @@ top of that.
 - ⚠️ **Losing the `.kdf` sidecar** means the passphrase can no longer re-derive
   the key. Back the sidecar up alongside the database.
 
-## Data in transit (sync & hub)
+## Data in transit (sync)
 
 - Sync ships **bundles/segments** (`.mgb`) of immutable grains between files and
   peers. Applied grains are re-hashed on import; a grain whose content does not
   match its content address (SHA-256) is rejected.
-- The **hub** (`areevd`, started with `areev hub --dir DIR --token-env VAR`)
-  requires a **bearer token** on all mutating and segment endpoints — including
-  `GET /api/segment*`, so listing and pulling bundles are gated too, not just
-  pushes. The token is compared in **constant time**. Segment names are
-  sanitized to a single path component (no directory traversal). `--token-env`
-  is **mandatory** for `areev hub`: unlike the console there is no
-  trusted-local-operator default, because a hub exists to be written to by other
-  machines. A pushed segment is an **op-log replay**: it adds grains and
-  applies tombstones — including erasure tombstones, which is how a subject's
-  erasure reaches the hub's store (a tombstone deletes only the exact grain
-  hash it names, and its sole-referenced CAS attachments; it can never delete
-  by predicate).
+- Sync is **file-to-file, not a service**: `areev stream` writes generations
+  of segments into a directory and `areev follow` applies new ones from it, so
+  the transport is whatever moves that directory (rsync, object storage, a
+  shared volume) and its authentication is that transport's. Areev ships no
+  networked sync endpoint — the removed `areev hub` was the last one.
+- An applied segment is an **op-log replay**: it adds grains and applies
+  tombstones — including erasure tombstones, which is how a subject's erasure
+  reaches a replica (a tombstone deletes only the exact grain hash it names,
+  and its sole-referenced CAS attachments; it can never delete by predicate).
 - The **web console** (`areev ui`) is unauthenticated by default (loopback,
   trusted local operator). Pass `--token-env <VAR>` to require a shared secret
   on **every** request — the console page, all reads, and all writes. Browsers
@@ -190,15 +186,15 @@ top of that.
 ### Known limitations in transit
 
 - ⚠️ **TLS is optional and non-default; plaintext is what you get if you don't
-  ask for it.** Both `areev ui` and `areev hub` can terminate TLS natively via
-  the non-default `tls` build feature (`--tls-cert`/`--tls-key`, rustls — no
-  plaintext downgrade, tested), or you can front either with a
-  **TLS-terminating reverse proxy**, which stays the documented default
-  deployment shape (see `docs/deployment-profile.md`) — native TLS exists for
-  deployments with nowhere to run one, not as a replacement for the proxy
-  profile. A plain build/run of either surface is plaintext HTTP either way.
-  Both refuse to bind a non-loopback address unless you pass `--allow-remote`
-  (and even then warn loudly). `--token-env` authentication is **not** a
+  ask for it.** `areev ui` can terminate TLS natively via the non-default
+  `tls` build feature (`--tls-cert`/`--tls-key`, rustls — no plaintext
+  downgrade, tested), or you can front it with a **TLS-terminating reverse
+  proxy**, which stays the documented default deployment shape (see
+  `docs/deployment-profile.md`) — native TLS exists for deployments with
+  nowhere to run one, not as a replacement for the proxy profile. A plain
+  build/run of the console is plaintext HTTP either way.
+  It refuses to bind a non-loopback address unless you pass `--allow-remote`
+  (and even then warns loudly). `--token-env` authentication is **not** a
   substitute for TLS: without it (native or proxied), the token and all
   memory still cross the wire in the clear, so `--token-env` guards against
   unauthorized clients but not against a network eavesdropper.
@@ -214,7 +210,7 @@ top of that.
   set. Truncation of a consistent store is indistinguishable from
   "never written" using the file alone; to detect it, compare against an
   **external anchor** — the op high-water mark of an `areev stream` segment
-  directory, a bundle, or a hub replica.
+  directory, a bundle, or a follower replica.
 
 ## Input handling
 
@@ -284,7 +280,7 @@ top of that.
 - Memory-safety, panics, or resource exhaustion reachable from untrusted `.mg`
   blobs, bundles, or imported segments.
 - Injection, path traversal, or auth bypass in CAL, the store, the MCP server,
-  or the console/hub.
+  or the console.
 - Cryptographic weaknesses in the encryption or crypto-erasure paths.
 - Secret or data leakage in error messages, logs, or `Debug` output.
 
@@ -547,8 +543,8 @@ Six properties are worth stating because each closes a specific hole:
 - **A capability declaration cannot reach private space by itself.** Under an
   unrestricted egress policy a capability tool is still refused loopback,
   link-local, private-range and cloud-metadata destinations — a synced memory
-  declares hosts freely, so reaching the local console, the hub, or the
-  metadata service takes an explicit `--allow-host` entry. This binds every
+  declares hosts freely, so reaching the local console or the metadata
+  service takes an explicit `--allow-host` entry. This binds every
   redirect hop, and leaves connectors and `--tool-cmd` tools (pure host config)
   untouched. The check canonicalizes the alternate IPv4 literal encodings a
   libc resolver honours — decimal (`http://2852039166/` is the metadata

@@ -1,0 +1,68 @@
+# A fleet: two agents, one Postgres, every role running at once.
+#
+#   docker compose -f docker/compose.fleet.yml up
+#
+# One memory = one Postgres SCHEMA (agent_billing, agent_support below), so
+# agents on the same infrastructure cannot contradict each other by
+# construction: writes never cross a schema, erasure is DROP SCHEMA, and the
+# claim protocol makes any number of concurrent trigger evaluators per memory
+# safe — which is why the console and a heartbeat can share one memory here
+# when the embedded file (docker-compose.yml at the repo root) cannot.
+# Add an agent = add a schema + a heartbeat service. Guide: docs/docker.md
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: areev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: areev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U areev -d areev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # The console serves ONE memory; run one per agent (on distinct ports) when
+  # you want to watch several. First open of a new schema runs the DDL
+  # bootstrap — fine here, but provision schemas ahead of the request path in
+  # production (docs/deployment-profile.md, "Postgres connection contract").
+  billing-console:
+    build: { context: .. }
+    image: areev:latest
+    depends_on:
+      postgres: { condition: service_healthy }
+    command:
+      ["ui", "--ns", "billing", "--addr", "0.0.0.0:7437", "--allow-remote",
+       "--token-env", "AREEV_UI_TOKEN"]
+    environment:
+      AREEV_DB: postgres://areev:${POSTGRES_PASSWORD}@postgres:5432/areev?schema=agent_billing
+      AREEV_UI_TOKEN: ${AREEV_UI_TOKEN:?set AREEV_UI_TOKEN (openssl rand -hex 16)}
+    ports:
+      - "127.0.0.1:7437:7437"
+
+  billing-heartbeat:
+    build: { context: .. }
+    image: areev:latest
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["heartbeat", "--ns", "billing"]
+    environment:
+      AREEV_DB: postgres://areev:${POSTGRES_PASSWORD}@postgres:5432/areev?schema=agent_billing
+      AREEV_HEARTBEAT_SECS: "60"
+      # AREEV_RUN_TOOL_CMD: /work/billing-tools.sh   (mount your scripts)
+
+  support-heartbeat:
+    build: { context: .. }
+    image: areev:latest
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["heartbeat", "--ns", "support"]
+    environment:
+      AREEV_DB: postgres://areev:${POSTGRES_PASSWORD}@postgres:5432/areev?schema=agent_support
+      AREEV_HEARTBEAT_SECS: "60"
+
+volumes:
+  pgdata:

@@ -1,0 +1,20 @@
+# Only the cargo workspace reaches the build context. The single compiled-in
+# asset is crates/areev-server/src/console.html, which is inside crates/.
+.git
+target
+demo
+data
+docs
+examples
+scripts
+m0-data
+name-reservation
+crates/areev-js/node_modules
+crates/areev-js/target
+*.db
+*.db-wal
+*.db-shm
+*.db.blobs
+*.db.telemetry.db
+Dockerfile
+docker-compose.yml

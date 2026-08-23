@@ -397,9 +397,9 @@ pub struct CredentialEntry {
     pub env: Option<String>,
     /// The principal this credential authenticates as.
     pub principal: String,
-    /// Per-memory scope (the enterprise plane's hub rule): when set, this
+    /// Per-memory scope (the enterprise plane's rule): when set, this
     /// credential authenticates ONLY on services whose memory label is in
-    /// the list — one auth file shared across hub instances, each token
+    /// the list — one auth file shared across server instances, each token
     /// reaching only its memories. `None` = every memory (the common
     /// single-memory deployment).
     #[serde(default)]

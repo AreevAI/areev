@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **`areev hub` (the "areevd" sync daemon) and the `/api/segment*` endpoints.**
+  Areev no longer runs a networked sync service. Replication is what it already
+  was underneath — `areev stream` writes generations of `.mgb` segments into a
+  directory, `areev follow` applies them — and moving that directory is now
+  always the deployment's job (rsync, object storage, a shared volume). Gone with it: `UiServer::into_hub`, `POST /api/segment`,
+  `GET /api/segment`, `GET /api/segments`, the hub `--retain` archive sweeper,
+  and the console's "Sync across apps" settings tab (`#settings/sync` now lands
+  on the Agent tab).
+
+  The forcing argument is that a hub token is one shared secret over an entire
+  memory — anyone holding it could pull every segment, which is the whole file
+  — and a bundle push is an op-log replay that never crosses the facade's verb
+  checks, so the per-principal credential map governing every other write path
+  had no purchase on it. A surface that can only be all-or-nothing cannot
+  participate in the authorization model the rest of the system is built on.
+  Rationale in full: ARCHITECTURE.md §10, "Sync is file-to-file; Areev runs no
+  networked sync service".
+
+  **Migrating:** a fleet that pushed segments to a hub replaces the HTTP hop
+  with a directory the peers share (`areev stream --to DIR --retain 30d` on the
+  writer, `areev follow --from DIR` on each reader). A deployment that needed
+  concurrent writers against one memory belongs on the **Postgres backend**
+  (`feature = "postgres"`, one memory = one schema), which is the supported
+  answer and always was.
+
 ## [1.6.1] — 2026-08-23
 
 ### Added

@@ -1190,6 +1190,11 @@ areev trigger status --db ap.db --ns accounting   # what fired, what is due
 so a dev memory restored from prod cannot inherit prod's cursor and silently
 skip real work.
 
+In containers the heartbeat is an image command — `docker run areev heartbeat
+--ns accounting` loops the same one-shot evaluation on `$AREEV_HEARTBEAT_SECS`
+ticks; compose files and the multi-agent fleet pattern are in
+[`docker.md`](docker.md).
+
 If your host already embeds Areev, skip the binary — every subcommand above is a
 binding method, so the process holding the memory can fire its own rules:
 
@@ -1209,6 +1214,7 @@ Full reference: [`triggers.md`](triggers.md).
 - [`mcp-reference.md`](mcp-reference.md) — the MCP tools
 - [`triggers.md`](triggers.md) — the eight trigger kinds, in full
 - [`run.md`](run.md) — the governed workflow runtime
+- [`docker.md`](docker.md) — the container image: compose, heartbeat, cloud deploys
 - [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)
 - [`../FAQ.md`](../FAQ.md) — concepts and comparisons
 - [`../SECURITY.md`](../SECURITY.md) — trust model and hardening

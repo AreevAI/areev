@@ -483,7 +483,7 @@ run for user A must not reach user B's data or credentials:
   unrestricted egress policy (no `--allow-host`) still cannot reach loopback,
   link-local, private-range or cloud-metadata addresses on its declaration
   alone — a synced memory can declare any host it likes, and reaching the
-  local console, the hub, or `169.254.169.254` takes an explicit
+  local console or `169.254.169.254` takes an explicit
   `--allow-host` entry, the operator's auditable act. The rule binds every
   redirect hop too. Non-capability callers (connectors, `--tool-cmd` tools)
   are unaffected: their reach was always pure host config. (Syntactic only —
@@ -800,8 +800,9 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 - `Send` targets host-bound nodes only in v1.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
-- One memory = one writer: while a driver holds the file, other writers
-  (including a second `areev run` on the same file) are refused with
+- One memory = one writer: while a driver holds the file, another process
+  (including a second `areev run` on the same file) is refused at open by
+  the OS file lock (`STO-E001`); a second handle inside the same process is
   `STO-E002`. Respond-then-resume across processes works because each verb
   opens, works, and closes.
 

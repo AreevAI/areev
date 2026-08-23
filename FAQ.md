@@ -138,7 +138,7 @@ for integrity. It's the memory-specific layer, not a general SQL store.
 ### Does it need a server or network service?
 
 No. Recall happens in-process against a local file — that's the point. There
-*are* optional networked surfaces (a local web console and a sync hub), but the
+*is* an optional networked surface (the local web console), but the
 core read/write/recall path never leaves the process.
 
 ## Using it

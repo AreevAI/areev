@@ -1057,7 +1057,7 @@ fn serve_one(
     // For a capability caller, an unrestricted host policy does not extend to
     // private address space (#101). A memory that syncs in can declare any
     // hosts it likes, so the declaration alone must never be what authorizes
-    // a request to the loopback console, the hub, a cloud metadata service,
+    // a request to the loopback console, a cloud metadata service,
     // or a LAN neighbour — reaching those takes an explicit `--allow-host`
     // entry, an operator's auditable act, exactly as executing the blob at
     // all takes the executor pin. Subprocess tools and connectors are

@@ -723,8 +723,6 @@
   .conns { display:flex; }
   .conns div { flex:1; display:flex; justify-content:center; }
   .conns i { width:2px; height:22px; background:var(--line2); display:block; border-radius:1px; }
-  .hubbar { display:flex; align-items:center; gap:14px; background:var(--accent-soft); border:1.5px solid var(--accent);
-            border-radius:12px; padding:16px 18px; }
   .kv { display:flex; align-items:baseline; gap:12px; padding:9px 0; border-top:1px solid var(--hair); }
   .kv .k { width:190px; flex-shrink:0; font-size:13.5px; color:var(--dim); }
   .kv .v { flex:1; font-size:14px; color:var(--ink); word-break:break-word; }
@@ -1016,14 +1014,13 @@
       </div>
     </section>
 
-    <!-- ── SETTINGS (formerly "Connect" — Agent/Sync tabs plus General,
+    <!-- ── SETTINGS (formerly "Connect" — the Agent tab plus General,
          which now also carries what used to sit in the rail-foot:
          developer mode and dark mode) ── -->
     <section class="page" id="page-settings" hidden>
       <div id="setCrumb" class="wide"></div>
       <div class="tabs wide" id="conTabs">
         <button class="on" data-c="agent">Your agent</button>
-        <button data-c="sync">Sync across apps</button>
         <button data-c="general">General</button>
       </div>
       <div class="wide" id="conBody"></div>
@@ -1530,7 +1527,6 @@ async function boot() {
   verify();
   await loadRecs('pending');
   if (WF_DEEPLINK) { wfOpen(WF_DEEPLINK); WF_DEEPLINK = null; }
-  if (PAGE === 'settings' && CONTAB === 'sync') await loadSegments();
   if (PAGE === 'suggestions' && !RECS[SUGTAB]) await loadRecs(SUGTAB);
   render();
   if (PAGE === 'memory' && MVIEW === 'graph') Graph.mount();
@@ -1726,7 +1722,7 @@ function wireChrome() {
   $('wfResetLayout').onclick = () => { WFGraph.resetOverrides(); WFGraph.mount(); };
   $('wfSave').onclick = wfArmSave;
 }
-/* Deep links: #memory · #graph · #activity · #suggestions · #connect/sync */
+/* Deep links: #memory · #graph · #activity · #suggestions · #settings/agent */
 /* Set by applyHash when the URL names a specific plan (#workflows/<hash>);
    consumed once BROWSE has loaded (boot() and the hashchange listener both
    need to open it, since a deep link can arrive either way). */
@@ -1743,7 +1739,7 @@ function applyHash() {
   if (['memory', 'analytics', 'activity', 'runs', 'tools', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
-    if (head === 'settings' && ['agent', 'sync', 'general'].includes(tail)) CONTAB = tail;
+    if (head === 'settings' && ['agent', 'general'].includes(tail)) CONTAB = tail;
     if (head === 'suggestions' && ['pending', 'applied', 'rejected'].includes(tail)) SUGTAB = tail;
     if (head === 'tools') {
       if (['catalog', 'executions'].includes(tail)) TOOLTAB = tail;
@@ -1768,7 +1764,6 @@ function syncHash() {
 function go(page) {
   PAGE = page;
   if (page === 'suggestions' && !RECS[SUGTAB]) loadRecs(SUGTAB).then(render);
-  if (page === 'settings' && CONTAB === 'sync') loadSegments();
   // Same reset applyHash() already does for a bare "#workflows" — without
   // it, the sidebar's generic nav click left an open draft/selection in
   // place, so "Workflows" looked like it wasn't navigating at all when you
@@ -3071,14 +3066,6 @@ async function runAnalysis() {
 }
 
 /* ══ connect ══════════════════════════════════════════════════════════ */
-/* null = we could not read the segment list (the /api/segment* surface is
-   token-gated even for reads), [] = readable and empty. */
-let SEGMENTS = null;
-async function loadSegments() {
-  const r = await api('/api/segments');
-  SEGMENTS = Array.isArray(r) ? r : null;
-  render();
-}
 /* Commands want the path the server actually opened, not the pretty label. */
 const DB_NAME = () => DB_PATH || ($('dblabel').textContent || 'memory.db').trim();
 function snippetFor(kind) {
@@ -3090,10 +3077,9 @@ function snippetFor(kind) {
 }
 function renderSettingsPage() {
   renderCrumbHeader('setCrumb', [{ label: 'Settings' }],
-    'Attach agents to this memory, sync it across the apps your customers reach you through, and configure how this console itself behaves.');
+    'Attach agents to this memory and configure how this console itself behaves.');
   const host = $('conBody'); host.textContent = '';
   if (CONTAB === 'agent') return renderConnectAgent(host);
-  if (CONTAB === 'sync') return renderConnectSync(host);
   return renderConnectGeneral(host);
 }
 let SNIPTAB = 'claude';
@@ -3164,125 +3150,6 @@ function renderConnectAgent(host) {
   three.appendChild(bit('It flags its own mistakes', 'Conflicts and duplicates arrive as suggestions you approve — never applied behind your back.'));
   host.appendChild(three);
 }
-function renderConnectSync(host) {
-  const srv = (CONFIG && CONFIG.server) || {};
-  const on = !!srv.hub_mode;
-  if (!on) {
-    const card = el('div', 'card'); card.style.cssText = 'padding:26px 28px;display:flex;flex-direction:column;gap:14px';
-    const t = el('span', null, 'Sync is not turned on for this memory.');
-    t.style.cssText = 'font:600 19px/27px var(--sans);color:var(--ink);letter-spacing:-.015em';
-    card.appendChild(t);
-    card.appendChild(el('span', 'sub', 'Right now this console is the only thing reading this file. Start it as a hub and other '
-      + 'apps — a voice line, a WhatsApp bot, an email inbox — can push what they learn and pull what the others learned, '
-      + 'all against this one memory.'));
-    const codeRow = el('div');
-    codeRow.style.cssText = 'display:flex;align-items:center;gap:16px;background:var(--well);border:1px solid var(--hair);border-radius:10px;padding:15px 14px 15px 18px';
-    const cmd = 'AREEV_HUB_TOKEN=$(openssl rand -hex 16) areev hub --db ' + DB_NAME() + ' --dir ./segments --token-env AREEV_HUB_TOKEN';
-    const pre = el('pre', null, cmd);
-    pre.style.cssText = 'flex:1;font-family:var(--mono);font-size:13px;line-height:21px;color:var(--ink);white-space:pre-wrap;word-break:break-word;margin:0';
-    const cp = el('button', 'btn ghost sm', 'Copy'); cp.onclick = () => copyText(cmd, 'Command');
-    codeRow.appendChild(pre); codeRow.appendChild(cp);
-    card.appendChild(codeRow);
-    card.appendChild(el('span', 'meta', 'Pushing and pulling both need the key. Apps can only ever add — '
-      + 'nothing they send can erase what is already here.'));
-    host.appendChild(card);
-    return;
-  }
-
-  if (SEGMENTS === null) {
-    const lock = el('div', 'card');
-    lock.style.cssText = 'display:flex;align-items:center;gap:14px;padding:18px 20px;margin-bottom:16px';
-    const t = el('div'); t.style.cssText = 'display:flex;flex-direction:column;gap:4px;flex:1';
-    const t1 = el('span', null, 'Transfers are locked');
-    t1.style.cssText = 'font-size:14.5px;font-weight:600;color:var(--ink)';
-    t.appendChild(t1);
-    t.appendChild(el('span', 'meta', 'Listing what has been pushed and pulled needs the hub key — '
-      + 'the same one your apps use to write.'));
-    lock.appendChild(t);
-    const btn = el('button', 'btn sm', 'Enter the key');
-    btn.onclick = async () => {
-      const k = window.prompt('Paste the hub key (the value of the --token-env variable):');
-      if (!k) return;
-      TOKEN = k; sessionStorage.setItem('areev.token', k);
-      await loadSegments();
-    };
-    lock.appendChild(btn);
-    host.appendChild(lock);
-  }
-  const names = Array.isArray(SEGMENTS) ? SEGMENTS : [];
-  const apps = new Map();
-  for (const n of names) {
-    const app = String(n).replace(/\.mgb$/, '').split(/[-_.]/)[0] || 'app';
-    if (!apps.has(app)) apps.set(app, 0);
-    apps.set(app, apps.get(app) + 1);
-  }
-  const card = el('div', 'card'); card.style.cssText = 'padding:24px 26px 26px;display:flex;flex-direction:column';
-  const row = el('div', 'apps');
-  const entries = [...apps.entries()].slice(0, 3);
-  if (!entries.length) entries.push(['no apps yet', 0]);
-  for (const [name, n] of entries) {
-    const a = el('div', 'app');
-    const hd = el('div', 'hd');
-    const d = el('span', 'dot'); d.style.background = n ? 'var(--ok)' : 'var(--ghost)';
-    hd.appendChild(el('b', null, cap(name)));
-    hd.appendChild(d);
-    a.appendChild(hd);
-    a.appendChild(el('span', 'meta', n ? n + (n === 1 ? ' transfer' : ' transfers') : 'nothing received yet'));
-    row.appendChild(a);
-  }
-  card.appendChild(row);
-  const conns = el('div', 'conns');
-  for (let i = 0; i < entries.length; i++) { const c = el('div'); c.appendChild(el('i')); conns.appendChild(c); }
-  conns.style.cssText = 'padding:0';
-  const spacer = el('div'); spacer.style.height = '0'; card.appendChild(spacer);
-  card.appendChild(conns);
-  const bar = el('div', 'hubbar');
-  bar.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">'
-    + '<rect x="7.5" y="2.5" width="14" height="14" rx="4.5" fill="none" stroke="var(--accent-line)" stroke-width="2"/>'
-    + '<rect x="2.5" y="7.5" width="14" height="14" rx="4.5" fill="var(--accent)"/></svg>';
-  const bt = el('div'); bt.style.cssText = 'display:flex;flex-direction:column;gap:3px;flex:1';
-  const b1 = el('span', null, 'One shared memory — ' + DB_NAME());
-  b1.style.cssText = 'font-size:15.5px;font-weight:600;color:var(--ink)';
-  bt.appendChild(b1);
-  bt.appendChild(el('span', null, (STATS.current || 0) + ' memories. Whatever one app learns, the others can answer with.'))
-    .style.cssText = 'font-size:13px;color:var(--text)';
-  bar.appendChild(bt);
-  card.appendChild(bar);
-  host.appendChild(card);
-
-  const transfers = el('div', 'stack');
-  host.appendChild(transfers);
-  const th = el('div', 'grp-head');
-  th.appendChild(el('h2', null, 'Recent transfers'));
-  th.appendChild(el('span', 'meta', names.length + ' in ' + (srv.segment_dir || 'the segment folder')));
-  transfers.appendChild(th);
-  if (!names.length) transfers.appendChild(el('div', 'empty', 'Nothing has been pushed or pulled yet.'));
-  for (const n of names.slice(-12).reverse()) {
-    const r = el('div', 'srow');
-    const ic = el('span'); ic.style.cssText = 'width:18px;flex-shrink:0;display:flex;justify-content:center';
-    ic.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 4.5v14M6 13l6 6 6-6" stroke="var(--ok)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    r.appendChild(ic);
-    r.appendChild(el('span', 't', 'Received a bundle from ' + cap(String(n).replace(/\.mgb$/, '').split(/[-_.]/)[0])));
-    const w = el('span', 'w', n); w.style.cssText = 'width:auto;font-family:var(--mono);font-size:11.5px;color:var(--hash)';
-    r.appendChild(w);
-    transfers.appendChild(r);
-  }
-  const note = el('div', 'card');
-  note.style.cssText = 'display:flex;align-items:flex-start;gap:12px;padding:16px 18px';
-  note.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">'
-    + '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2" stroke="var(--text)" stroke-width="1.7"/>'
-    + '<path d="M8 10.5V7.8a4 4 0 018 0v2.7" stroke="var(--text)" stroke-width="1.7"/></svg>';
-  const nt = el('div'); nt.style.cssText = 'display:flex;flex-direction:column;gap:5px;flex:1';
-  const n1 = el('span', null, srv.auth_required
-    ? 'Syncing needs the key. Reading the memory itself does not.'
-    : 'This hub accepts writes with no key — anyone who can reach it can add memories.');
-  n1.style.cssText = 'font-size:14px;font-weight:600;color:var(--ink)';
-  nt.appendChild(n1);
-  nt.appendChild(el('span', 'meta', 'Pushing and pulling both require the key; anyone on your network can '
-    + 'still read what your agent knows. Apps can only ever add — nothing they send can erase what is already here.'));
-  note.appendChild(nt);
-  host.appendChild(note);
-}
 /* One toggle row, shared by Developer mode and Dark mode — same markup the
    rail used to own, now built fresh on every render instead of wired once
    at boot, since it lives inside a page section that redraws per visit. */
@@ -3336,7 +3203,7 @@ function renderConnectGeneral(host) {
     + (c.recall && c.recall.legs && c.recall.legs.vector ? ' + meaning' : '') + ', fused with RRF');
   add('Namespace', (c.session && c.session.namespace) || 'shared');
   add('Console access', c.server && c.server.auth_required
-    ? (c.server.auth_all ? 'protected — every request needs the token' : 'hub mode — writes need the token')
+    ? (c.server.auth_all ? 'protected — every request needs the token' : 'writes need the token')
     : 'open — anyone who can reach this port can read and change memory');
   add('Result limit', ((c.executor && c.executor.default_limit) || '?') + ' default, '
     + ((c.executor && c.executor.max_limit) || '?') + ' max');

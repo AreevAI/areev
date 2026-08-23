@@ -16,7 +16,6 @@ partner requires it.
 ┌ shared surfaces (optional) ──────────────────────────────────────┐
 │  TLS-terminating reverse proxy (caddy/nginx/traefik)             │
 │      └→ areev ui   --token-env AREEV_UI_TOKEN     (127.0.0.1)      │
-│      └→ areev hub  --token-env AREEV_HUB_TOKEN    (127.0.0.1)      │
 └───────────────┬──────────────────────────────────────────────────┘
 ┌ storage ─────────────────────────────────────────────────────────┐
 │  single-tenant: per-team memory FILES (encrypted at rest,        │
@@ -26,18 +25,22 @@ partner requires it.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+The containerized rendering of this exact shape — the image, the compose
+files, the trigger heartbeat, and the AWS/GCP/Azure/Kubernetes mappings — is
+[`docker.md`](docker.md).
+
 ## The five controls, in order
 
 1. **Token auth on every shared surface.** `areev ui --token-env VAR`
    requires the token on every request (browser Basic prompt or
-   `Authorization: Bearer`); `areev hub` makes `--token-env` mandatory.
+   `Authorization: Bearer`).
    Tokens come from the environment — never the command line, never a
    file in the repo.
 2. **TLS at a terminating proxy, or native TLS where there's nowhere to put
-   one.** The console and hub are std-only HTTP/1.1 on loopback; this
+   one.** The console is std-only HTTP/1.1 on loopback; this
    profile's default is production exposure through caddy/nginx with TLS
    and the loopback bind left as-is — the proxy is not a workaround, it is
-   the profile. Both `areev ui` and `areev hub` can also terminate TLS
+   the profile. `areev ui` can also terminate TLS
    natively (`--tls-cert`/`--tls-key`, the non-default `tls` build feature,
    rustls) for deployments with nowhere to run a proxy — the exception path,
    not a replacement for the documented default.

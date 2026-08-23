@@ -185,7 +185,7 @@ is always an intersection: *declared ∩ granted ∩ host-configured*.
   programs may execute at all (server-bound for MCP: a client cannot grant
   it to itself).
 - `--no-destructive-ops` — a process-wide cap over any grant in the file.
-- Console/hub auth (`--token-env`, per-principal credentials for
+- Console auth (`--token-env`, per-principal credentials for
   `run.respond`) and TLS posture — see
   [`docs/deployment-profile.md`](../docs/deployment-profile.md).
 
@@ -511,6 +511,22 @@ export-only — which is exactly what lets the loop, not the repo, be where
 the agent's tools improve. `smoke.sh` + fixtures remain non-negotiable:
 an agent whose happy path CI can't execute will rot exactly when someone
 needs it.
+
+---
+
+## 14. Deploying it — alone or as a fleet
+
+The repo's Docker image packages the deployment roles — console, trigger
+heartbeat — as one container ([`docs/docker.md`](../docs/docker.md)),
+and running several agents on one box changes nothing in §1's rule: **one
+memory per agent**. On the embedded backend each agent owns its file and its
+heartbeat process — the exclusive file lock makes sharing impossible rather
+than merely inadvisable. On the Postgres backend each agent owns a schema
+and every role runs concurrently. Either way, agents share infrastructure,
+an image, and a database cluster — never a writable memory — so they cannot
+race each other's heads, poison each other's recall, or block each other's
+erasure. Cross-agent knowledge moves the governed ways only: read-only
+mounts or bundle subscriptions.
 
 ---
 

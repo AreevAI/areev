@@ -152,7 +152,7 @@ impl EgressPolicy {
 /// Grain-stored capability tools are refused these under an unrestricted
 /// egress policy (#101): a memory that syncs in can declare any hosts it
 /// likes, and a declaration alone must never be what authorizes a request to
-/// the loopback console, the hub, a cloud metadata service, or a LAN
+/// the loopback console, a cloud metadata service, or a LAN
 /// neighbour. An operator who genuinely wants a capability tool talking to a
 /// local service names it in `--allow-host`, which is an explicit, auditable
 /// act — exactly the shape the executor pin gives code.

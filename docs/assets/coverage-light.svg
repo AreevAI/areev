@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="820" height="510" viewBox="0 0 820 510" role="img" aria-label="Areev line coverage by crate: 80.1% overall, each crate gated by its own CI floor">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="510" viewBox="0 0 820 510" role="img" aria-label="Areev line coverage by crate: 81.0% overall, each crate gated by its own CI floor">
 <style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.v{font-weight:600;font-variant-numeric:tabular-nums}</style>
 <rect width="820" height="510" rx="10" fill="#ffffff" stroke="#dfe3e8"/>
 <text x="32" y="42" class="n" font-size="16" fill="#111418">Areev — line coverage by crate</text>
-<text x="32" y="62" font-size="12" fill="#5b6470">80.1% of 52,407 instrumented source lines · source only, no test code · every notch is a CI floor</text>
+<text x="32" y="62" font-size="12" fill="#5b6470">81.0% of 54,914 instrumented source lines · source only, no test code · every notch is a CI floor</text>
 <path d="M345.0 80V452" stroke="#dfe3e8" stroke-width="1"/>
 <text x="345.0" y="74" font-size="10" fill="#5b6470" text-anchor="middle">25</text>
 <path d="M478.0 80V452" stroke="#dfe3e8" stroke-width="1"/>
@@ -16,56 +16,56 @@
 <rect x="716.4" y="87" width="2" height="21" fill="#111418"/>
 <text x="741.9" y="102" class="v" font-size="10.5" fill="#111418">98.1</text>
 <text x="200" y="127" font-size="12" fill="#111418" text-anchor="end">areev-loop</text>
-<rect x="212" y="116" width="495.3" height="15" rx="4" fill="#0a7d55"/>
+<rect x="212" y="116" width="495.8" height="15" rx="4" fill="#0a7d55"/>
 <rect x="689.8" y="113" width="2" height="21" fill="#111418"/>
-<text x="715.3" y="128" class="v" font-size="10.5" fill="#111418">93.1</text>
-<text x="200" y="153" font-size="12" fill="#111418" text-anchor="end">areev-run-core</text>
-<rect x="212" y="142" width="488.9" height="15" rx="4" fill="#0a7d55"/>
+<text x="715.8" y="128" class="v" font-size="10.5" fill="#111418">93.2</text>
+<text x="200" y="153" font-size="12" fill="#111418" text-anchor="end">areev-trigger</text>
+<rect x="212" y="142" width="490.5" height="15" rx="4" fill="#0a7d55"/>
 <rect x="684.5" y="139" width="2" height="21" fill="#111418"/>
-<text x="708.9" y="154" class="v" font-size="10.5" fill="#111418">91.9</text>
-<text x="200" y="179" font-size="12" fill="#111418" text-anchor="end">areev-trigger</text>
-<rect x="212" y="168" width="484.1" height="15" rx="4" fill="#0a7d55"/>
+<text x="710.5" y="154" class="v" font-size="10.5" fill="#111418">92.2</text>
+<text x="200" y="179" font-size="12" fill="#111418" text-anchor="end">areev-run-core</text>
+<rect x="212" y="168" width="488.9" height="15" rx="4" fill="#0a7d55"/>
 <rect x="684.5" y="165" width="2" height="21" fill="#111418"/>
-<text x="704.1" y="180" class="v" font-size="10.5" fill="#111418">91.0</text>
+<text x="708.9" y="180" class="v" font-size="10.5" fill="#111418">91.9</text>
 <text x="200" y="205" font-size="12" fill="#111418" text-anchor="end">areev-store</text>
 <rect x="212" y="194" width="456.5" height="15" rx="4" fill="#0a7d55"/>
 <rect x="652.6" y="191" width="2" height="21" fill="#111418"/>
 <text x="676.5" y="206" class="v" font-size="10.5" fill="#111418">85.8</text>
-<text x="200" y="231" font-size="12" fill="#111418" text-anchor="end">areev-core</text>
-<rect x="212" y="220" width="439.4" height="15" rx="4" fill="#0a7d55"/>
-<rect x="636.6" y="217" width="2" height="21" fill="#111418"/>
-<text x="659.4" y="232" class="v" font-size="10.5" fill="#111418">82.6</text>
-<text x="200" y="257" font-size="12" fill="#111418" text-anchor="end">areev-run</text>
-<rect x="212" y="246" width="434.6" height="15" rx="4" fill="#0a7d55"/>
-<rect x="631.3" y="243" width="2" height="21" fill="#111418"/>
-<text x="654.6" y="258" class="v" font-size="10.5" fill="#111418">81.7</text>
-<text x="200" y="283" font-size="12" fill="#111418" text-anchor="end">areev-context</text>
-<rect x="212" y="272" width="433.0" height="15" rx="4" fill="#0a7d55"/>
-<rect x="631.3" y="269" width="2" height="21" fill="#111418"/>
-<text x="653.0" y="284" class="v" font-size="10.5" fill="#111418">81.4</text>
-<text x="200" y="309" font-size="12" fill="#111418" text-anchor="end">areev-loop-adapter</text>
-<rect x="212" y="298" width="428.8" height="15" rx="4" fill="#0a7d55"/>
-<rect x="626.0" y="295" width="2" height="21" fill="#111418"/>
-<text x="648.8" y="310" class="v" font-size="10.5" fill="#111418">80.6</text>
+<text x="200" y="231" font-size="12" fill="#111418" text-anchor="end">areev-run</text>
+<rect x="212" y="220" width="447.4" height="15" rx="4" fill="#0a7d55"/>
+<rect x="631.3" y="217" width="2" height="21" fill="#111418"/>
+<text x="667.4" y="232" class="v" font-size="10.5" fill="#111418">84.1</text>
+<text x="200" y="257" font-size="12" fill="#111418" text-anchor="end">areev-core</text>
+<rect x="212" y="246" width="444.8" height="15" rx="4" fill="#0a7d55"/>
+<rect x="636.6" y="243" width="2" height="21" fill="#111418"/>
+<text x="664.8" y="258" class="v" font-size="10.5" fill="#111418">83.6</text>
+<text x="200" y="283" font-size="12" fill="#111418" text-anchor="end">areev-loop-adapter</text>
+<rect x="212" y="272" width="438.4" height="15" rx="4" fill="#0a7d55"/>
+<rect x="626.0" y="269" width="2" height="21" fill="#111418"/>
+<text x="658.4" y="284" class="v" font-size="10.5" fill="#111418">82.4</text>
+<text x="200" y="309" font-size="12" fill="#111418" text-anchor="end">areev-context</text>
+<rect x="212" y="298" width="433.0" height="15" rx="4" fill="#0a7d55"/>
+<rect x="631.3" y="295" width="2" height="21" fill="#111418"/>
+<text x="653.0" y="310" class="v" font-size="10.5" fill="#111418">81.4</text>
 <text x="200" y="335" font-size="12" fill="#111418" text-anchor="end">areev-server</text>
-<rect x="212" y="324" width="409.6" height="15" rx="4" fill="#0a7d55"/>
+<rect x="212" y="324" width="423.5" height="15" rx="4" fill="#0a7d55"/>
 <rect x="610.0" y="321" width="2" height="21" fill="#111418"/>
-<text x="629.6" y="336" class="v" font-size="10.5" fill="#111418">77.0</text>
+<text x="643.5" y="336" class="v" font-size="10.5" fill="#111418">79.6</text>
 <text x="200" y="361" font-size="12" fill="#111418" text-anchor="end">areev-llm</text>
-<rect x="212" y="350" width="403.3" height="15" rx="4" fill="#0a7d55"/>
+<rect x="212" y="350" width="406.4" height="15" rx="4" fill="#0a7d55"/>
 <rect x="599.4" y="347" width="2" height="21" fill="#111418"/>
-<text x="623.3" y="362" class="v" font-size="10.5" fill="#111418">75.8</text>
-<text x="200" y="387" font-size="12" fill="#111418" text-anchor="end">areev-mcp</text>
-<rect x="212" y="376" width="388.4" height="15" rx="4" fill="#0a7d55"/>
-<rect x="588.7" y="373" width="2" height="21" fill="#111418"/>
-<text x="608.4" y="388" class="v" font-size="10.5" fill="#111418">73.0</text>
-<text x="200" y="413" font-size="12" fill="#111418" text-anchor="end">areev-cli</text>
-<rect x="212" y="402" width="384.6" height="15" rx="4" fill="#0a7d55"/>
-<rect x="583.4" y="399" width="2" height="21" fill="#111418"/>
-<text x="604.6" y="414" class="v" font-size="10.5" fill="#111418">72.3</text>
+<text x="626.4" y="362" class="v" font-size="10.5" fill="#111418">76.4</text>
+<text x="200" y="387" font-size="12" fill="#111418" text-anchor="end">areev-cli</text>
+<rect x="212" y="376" width="401.7" height="15" rx="4" fill="#0a7d55"/>
+<rect x="583.4" y="373" width="2" height="21" fill="#111418"/>
+<text x="621.7" y="388" class="v" font-size="10.5" fill="#111418">75.5</text>
+<text x="200" y="413" font-size="12" fill="#111418" text-anchor="end">areev-mcp</text>
+<rect x="212" y="402" width="392.1" height="15" rx="4" fill="#0a7d55"/>
+<rect x="588.7" y="399" width="2" height="21" fill="#111418"/>
+<text x="612.1" y="414" class="v" font-size="10.5" fill="#111418">73.7</text>
 <text x="200" y="439" font-size="12" fill="#111418" text-anchor="end">areev-cal</text>
-<rect x="212" y="428" width="383.0" height="15" rx="4" fill="#0a7d55"/>
+<rect x="212" y="428" width="385.2" height="15" rx="4" fill="#0a7d55"/>
 <rect x="583.4" y="425" width="2" height="21" fill="#111418"/>
-<text x="603.0" y="440" class="v" font-size="10.5" fill="#111418">72.0</text>
+<text x="605.2" y="440" class="v" font-size="10.5" fill="#111418">72.4</text>
 <text x="32" y="488" font-size="11" fill="#5b6470">bar = measured · notch = this crate’s floor, CI fails the build below it · scope + exclusions with reasons: docs/coverage.json</text>
 </svg>

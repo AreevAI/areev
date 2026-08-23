@@ -296,12 +296,6 @@ COMMANDS:
                                       window: both secrets prove the proxy, so
                                       the fleet moves over one node at a time
                                       (docs/runbooks/sso-secret-rotation.md)
-  hub      --token-env VAR [--dir DIR] [--addr HOST:PORT] [--allow-remote]
-           [--tls-cert PATH --tls-key PATH]
-           [--retain 30d]             sync hub: many apps, one shared memory
-                                      (segment push/pull; default 127.0.0.1:7438);
-                                      --retain checkpoints at startup and drops
-                                      segments older than the window
 
 Namespace defaults to \"shared\". Exit code 0 on success.
 --db is optional for one-shot commands: it falls back to $AREEV_DB, then
@@ -1106,7 +1100,7 @@ fn run() -> Result<(), String> {
 
     // Long-lived / exposed surfaces must name their memory explicitly rather
     // than silently defaulting to the personal file.
-    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui" | "hub"))?;
+    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
     let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
 
     // print-only verbs never open the store (paths may be untilde-expanded)
@@ -2479,96 +2473,6 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             eprintln!(
                 "areev console → http://{}  (Ctrl-C to stop)",
-                listener.local_addr().map_err(|e| e.to_string())?
-            );
-            server.serve(listener).map_err(|e| e.to_string())?;
-        }
-        // areevd: the sync hub. Unlike `ui`, this is a network service by
-        // design — other apps push and pull segments against one shared
-        // memory — so the token is mandatory, not optional. Reads stay open
-        // (same contract as the library `into_hub`); every write needs the key,
-        // and a pushed segment can only ever *add* grains.
-        "hub" => {
-            let addr = flag(&flags, "addr").unwrap_or_else(|| "127.0.0.1:7438".to_string());
-            let dir = flag(&flags, "dir").unwrap_or_else(|| "./segments".to_string());
-            let var = flag(&flags, "token-env").ok_or_else(|| {
-                "areev hub requires --token-env <VAR>: hub writes are gated by a shared key. \
-                 Generate one (openssl rand -hex 16), export it, and pass the variable name."
-                    .to_string()
-            })?;
-            let token = std::env::var(&var)
-                .map_err(|_| format!("--token-env {var}: environment variable is not set"))?;
-            if token.trim().is_empty() {
-                return Err(format!("--token-env {var}: token is empty"));
-            }
-            if !addr_is_loopback(&addr) && flag(&flags, "allow-remote").is_none() {
-                return Err(format!(
-                    "refusing to bind the hub to a non-loopback address ({addr}). It is \
-                     authenticated, but still plaintext HTTP — the token and every memory \
-                     crossing the wire are in the clear. Terminate TLS in front of it, or \
-                     pass --allow-remote to accept that risk."
-                ));
-            }
-            // Archive retention (GDPR Art. 17 reach — docs/gdpr.md §3). The
-            // hub imports every pushed segment into its live store, so its
-            // `.mgb` files are archive, not source of truth: a subject
-            // erased in the live store still sits in the segments that
-            // carried it. Sweeping at startup writes a fresh checkpoint
-            // from the (already-erased) store, then drops segments older
-            // than the window.
-            if let Some(v) = flag(&flags, "retain") {
-                let window = parse_duration(&v)
-                    .ok_or_else(|| format!("--retain takes a duration like 30d, got '{v}'"))?;
-                let (kept, dropped) = hub_retention_sweep(&mut m, &dir, window)?;
-                eprintln!(
-                    "areev: retention {v} — wrote a fresh checkpoint ({kept} ops), \
-                     dropped {dropped} segment(s) older than the window"
-                );
-            }
-            let facade = areev_cal::AreevFacade::with_session(m, Some(ns), None);
-            report_meta_warnings(&facade);
-            // `mut` is only exercised when the `tls` build feature is on
-            // (the sole reassignment below is the TLS wiring) — unlike the
-            // `ui` branch, hub has no other builder call in between.
-            #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
-            let mut server = areev_server::UiServer::new(facade, db.clone())
-                .into_hub(Some(token), &dir)
-                .map_err(|e| format!("hub segment dir '{dir}': {e}"))?;
-            // Native TLS (`tls` build feature): --tls-cert/--tls-key PEM
-            // paths, identically to `ui` — the hub is the surface most
-            // likely to be deployed with nowhere to put a fronting proxy,
-            // since it exists specifically to be written to by other
-            // machines. `with_tls` composes with `into_hub` unchanged: TLS
-            // termination lives below the auth/segment fields `into_hub`
-            // sets, not inside them.
-            match (flag(&flags, "tls-cert"), flag(&flags, "tls-key")) {
-                (Some(cert), Some(key)) => {
-                    #[cfg(feature = "tls")]
-                    {
-                        server = server.with_tls(&cert, &key).map_err(|e| e.to_string())?;
-                        eprintln!("areev: native TLS enabled (cert {cert})");
-                    }
-                    #[cfg(not(feature = "tls"))]
-                    {
-                        let _ = (&cert, &key);
-                        return Err(
-                            "this build has no native TLS — rebuild with `--features tls`, \
-                             or use the documented TLS-terminating proxy"
-                                .into(),
-                        );
-                    }
-                }
-                (None, None) => {}
-                _ => return Err("--tls-cert and --tls-key must be given together".into()),
-            }
-            let listener = areev_server::UiServer::bind(&addr).map_err(|e| e.to_string())?;
-            eprintln!(
-                "areev: hub writes require the token in ${var} (Authorization: Bearer …); \
-                 reads are open"
-            );
-            eprintln!("areev: segments under {dir}");
-            eprintln!(
-                "areev hub → http://{}  (Ctrl-C to stop)",
                 listener.local_addr().map_err(|e| e.to_string())?
             );
             server.serve(listener).map_err(|e| e.to_string())?;
@@ -4084,42 +3988,6 @@ fn run_hold(
         }
     }
     Ok(())
-}
-
-/// Checkpoint the hub's segment dir and drop segments older than the
-/// window. Returns `(ops_in_checkpoint, segments_dropped)`.
-///
-/// Order matters: the checkpoint is written FIRST, so the dir never passes
-/// through a state where old segments are gone and no snapshot has replaced
-/// them. The checkpoint is named so it sorts after ordinary pushes and is
-/// itself subject to the window on later sweeps.
-fn hub_retention_sweep(
-    m: &mut Areev,
-    dir: &str,
-    window_ms: i64,
-) -> Result<(usize, usize), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let now = std::time::SystemTime::now();
-    let stamp = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let snap = format!("{dir}/checkpoint-{stamp:013}.mgb");
-    let st = m.bundle_since(0, &snap).map_err(|e| e.to_string())?;
-    let mut dropped = 0usize;
-    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
-        let path = entry.path();
-        if path == std::path::Path::new(&snap) || path.extension().is_none_or(|x| x != "mgb") {
-            continue;
-        }
-        let Ok(modified) = entry.metadata().and_then(|md| md.modified()) else { continue };
-        let age_ms = now.duration_since(modified).map(|d| d.as_millis() as i64).unwrap_or(0);
-        if age_ms > window_ms {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-            dropped += 1;
-        }
-    }
-    Ok((st.ops, dropped))
 }
 
 /// Read a stream dir's `CURSOR`: `"<gen_id> <op_seq> <next_seg>"`.

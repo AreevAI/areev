@@ -9,7 +9,7 @@ deployment), [`gdpr.md`](gdpr.md), [`eu-ai-act.md`](eu-ai-act.md),
 
 | Requirement | Status | Evidence / rationale |
 |---|---|---|
-| Authentication on every service | ✅ | `areev ui --token-env` (Basic/Bearer on every request); `areev hub` makes the token mandatory; token-less consoles are read-only |
+| Authentication on every service | ✅ | `areev ui --token-env` (Basic/Bearer on every request), or per-principal credentials with `--auth`; token-less consoles are read-only |
 | Least privilege / RBAC | ✅ | Grants live IN the memory file as `mg:permits` Facts (CAL 1.3); per-principal credentials via `areev ui --auth areev-auth.json`; loop scopes derive from the bound principal's grants; per-memory token scoping (`memories` list) for shared auth files |
 | Named actors on every change | ✅ | Every audit grain carries the resolved principal; shared-token approvals are structurally refused for `run.respond` and review — the approver's identity IS the record |
 | Separation of duties | ✅ | Approval asks refuse responder == triggering principal (runtime-enforced); loop self-approval blocked; `write` grants neither review nor apply |

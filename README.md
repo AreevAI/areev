@@ -127,7 +127,7 @@ not raise the same evidence twice. Both scripts assert their own results and
 | **[CAL](docs/cal-reference.md)** — the context | A query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit | A turn needs a *budget-shaped* prompt, and deterministic allocation is what makes a replay comparable |
 | **[The store](docs/why-areev.md#storage-a-plain-sqlite-file-or-a-postgres-schema)** — the record | A provenance graph in a plain **SQLite file** ([Turso](https://github.com/tursodatabase/turso)), or a **PostgreSQL** schema for the server tier | **~30 µs** recall in-process; one conformance suite pins both backends to identical semantics |
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,309 tests · 80.1% coverage** | **`FORGET SUBJECT`** is one operation |
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,306 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
@@ -173,6 +173,20 @@ Give Claude Code (or any MCP client) persistent memory in one line:
 ```bash
 claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
 ```
+
+Or skip the toolchains entirely — the repo's [`Dockerfile`](Dockerfile)
+builds the same binary with the Postgres and TLS features already on:
+
+```bash
+docker build -t areev .
+docker run --rm -v areev-data:/data areev add john prefers "window seat"
+AREEV_UI_TOKEN=$(openssl rand -hex 16) docker compose --profile console up
+```
+
+The image serves every role — console and a trigger heartbeat —
+and one box runs a whole fleet of agents, one memory each. Containers,
+compose files, and the AWS / GCP / Azure / Kubernetes mappings:
+[docs/docker.md](docs/docker.md).
 
 Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
 backend, encryption at rest, migration from other stores, and fleet sync:
@@ -363,6 +377,7 @@ How each number is produced, and the benchmark receipts:
 | [`docs/memory-tool.md`](docs/memory-tool.md) | The Anthropic memory-tool backend (Python / Node / CLI) |
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |
 | [`docs/deployment-profile.md`](docs/deployment-profile.md) | Deploying the runtime + adapters: modes, auth, SSO |
+| [`docs/docker.md`](docs/docker.md) | The container image: compose, the trigger heartbeat, cloud deploys, multi-agent fleets |
 | [`FAQ.md`](FAQ.md) | Questions & answers (also LLM-friendly) |
 | [`SECURITY.md`](SECURITY.md) · [`docs/security-model.md`](docs/security-model.md) | Security policy & threat model |
 | [`docs/gdpr.md`](docs/gdpr.md) · [`docs/erasure.md`](docs/erasure.md) | GDPR obligations → capabilities (for a DPIA); the erasure requirement record |

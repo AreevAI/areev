@@ -54,7 +54,7 @@ database server.
 - Memory-safety or panics reachable from untrusted `.mg` blobs, bundles, or
   imported segments (the deserialization / sync path).
 - Injection, path traversal, or auth bypass in the CAL executor, the store
-  index layer, the MCP server, or the web console / sync hub.
+  index layer, the MCP server, or the web console.
 - Cryptographic weaknesses in the encryption-at-rest or crypto-erasure paths.
 - Secret/data leakage in error messages, logs, or `Debug` output.
 - Denial-of-service reachable from untrusted input (unbounded allocation,
@@ -62,10 +62,10 @@ database server.
 
 **Out of scope / known limitations** (documented, not bugs):
 
-- **The web console (`areev ui`) and sync hub speak plaintext HTTP.** Front
-  them with a TLS-terminating reverse proxy for any non-loopback use. The plain
-  `ui` console binds loopback with no auth by design; the hub requires a bearer
-  token.
+- **The web console (`areev ui`) speaks plaintext HTTP.** Front it with a
+  TLS-terminating reverse proxy for any non-loopback use. The plain `ui`
+  console binds loopback with no auth by design; `--token-env` requires a
+  bearer token on every request.
 - **The `.blobs` CAS sidecar (large binary payloads) is stored in plaintext**
   even when the database itself is encrypted at rest. Encryption-at-rest
   currently protects the primary database file, not the blob sidecar.
@@ -79,13 +79,14 @@ database server.
   malicious local process with the same privileges as Areev.
 
 A detailed threat model (data-at-rest, data-in-transit, multi-tenant, and the
-sync/hub trust model) lives in [`docs/security-model.md`](docs/security-model.md).
+sync trust model) lives in [`docs/security-model.md`](docs/security-model.md).
 
 ## Hardening checklist for operators
 
 - Keep Areev and its dependencies up to date (`cargo update`; watch releases).
 - Run `areev ui` on loopback only, or put a TLS proxy + auth in front.
-- Set a strong bearer token for the sync hub; rotate it periodically.
+- Set a strong bearer token on any exposed console (`areev ui --token-env`);
+  rotate it periodically.
 - Derive encryption keys from a strong secret and store them outside the
   database directory.
 - Restrict filesystem permissions on the database directory and `.blobs`.
