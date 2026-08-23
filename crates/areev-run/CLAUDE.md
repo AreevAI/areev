@@ -141,6 +141,22 @@ evidence. Responding and resuming are separate acts.
   `--tool-cmd` tool, every connector) is unaffected. The call budget is spent
   BEFORE dispatch so a refused call still costs one — otherwise a module probes
   the policy for free.
+- **Guest request headers** (#105) — `EgressRequest.headers` carries the
+  non-credential headers enterprise APIs demand (`X-Goog-User-Project` and
+  friends). Three rules, each load-bearing: (1) broker-owned names
+  (`Authorization`/`Cookie`/`Host`/`Proxy-Authorization`, plus whatever header
+  a resolved `Credential::Header` rides in — known only AFTER resolution, so
+  that check lives there) are refused, and refused *free*, because the answer
+  is identical for every caller and so leaks no policy — the spend-first rule
+  exists for answers that differ; (2) malformed names and CR/LF values are
+  `400`, not `403` — injection is malformed, not merely denied; (3) guest
+  headers are a SEPARATE vec from `credential_headers` all the way into
+  `perform`, because the reflection scrub iterates the credential vec and
+  scrubbing a guest-supplied string out of a response body would corrupt it.
+  They ride exactly as far as the credential (one `send_credential` boolean
+  gates both), which is why `EgressCall.headers` can be journaled under
+  `credential_sent` — if that ever becomes two flags, this becomes two too.
+  Values ARE journaled, unlike the credential: the caller chose them.
 - **The vocabulary lives in `areev_core::types::capability`**, not here:
   `areev-cal`'s write path sits below this crate and must reach the same parser,
   or a tool becomes writable and then unrunnable. `egress::AllowedHost` is a

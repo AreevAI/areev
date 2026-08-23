@@ -78,11 +78,20 @@ bug:
 
 ```json
 { "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-  "method": "GET", "credential": "gmail", "body": null }
+  "method": "GET", "credential": "gmail", "body": null,
+  "headers": { "X-Goog-User-Project": "my-project" } }
 ```
 
 The guest names *which* credential; it can never name a value it was not given,
 and no value ever crosses back.
+
+`headers` (optional) carries non-credential request headers the module
+declared in `capabilities.http.headers` — the quota-project, API-version, and
+tenant headers enterprise APIs require. The broker refuses `Authorization`,
+`Proxy-Authorization`, `Cookie`, `Host`, and any header a configured
+credential rides in: those are its to set, and a guest that could write them
+would hold the credential channel this whole boundary exists to keep it out
+of.
 
 **Out**: a non-negative return is a pointer to `[u32 little-endian length][JSON
 bytes]` in guest memory, allocated through the guest's own `alloc` export. One

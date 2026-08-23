@@ -394,11 +394,24 @@ Four properties make it a capability system rather than a hole:
   without a capability declaration is refused at instantiation, by name,
   before one instruction runs — the same `ForbiddenImport` treatment WASI gets.
 - **Effective reach is `declared ∩ host-granted`.** The Tool grain's
-  `capabilities` field declares hosts, methods, path prefixes and credential
-  names; the host's `--allow-host` / `--credential` / `--tool-egress` grant
-  independently. Both are checked on every call, so a declaration can only ever
-  narrow. Default deny throughout: no declaration means no reach, no declared
-  methods means read-only, no declared credentials means none.
+  `capabilities` field declares hosts, methods, path prefixes, credential
+  names and request-header names; the host's `--allow-host` / `--credential` /
+  `--tool-egress` grant independently. Both are checked on every call, so a
+  declaration can only ever narrow. Default deny throughout: no declaration
+  means no reach, no declared methods means read-only, no declared credentials
+  means none, no declared headers means none.
+- **The credential channel is not writable from the guest.** A module may set
+  the non-credential headers enterprise APIs demand — `X-Goog-User-Project`,
+  `anthropic-version`, a tenant id — and may not set `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `Host`, or any header a configured
+  credential rides in, at any casing. Declaring one is refused at write time;
+  sending one is refused before the call budget is spent, because that answer
+  is identical for every caller and so leaks no policy. Values containing
+  CR/LF are refused as malformed: header injection dies at the parse rather
+  than at the socket. Caller-set headers travel exactly as far as the
+  credential does — a cross-origin redirect drops both, since a quota project
+  or tenant id was meant for the host the caller named, not for one an
+  intermediary picked.
 - **Path prefixes, which the host-side grant deliberately does not have.**
   `--allow-host` allowlists hosts because a path-level grant there would imply
   an authorization model it does not have. A capability tool is a different
@@ -551,7 +564,7 @@ loses at most one superstep of evidence:
 | `observation_kind` | Records | Dedup |
 |---|---|---|
 | `egress_refusal` | caller, destination, reason | per distinct `(caller, destination, reason)` |
-| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name** | none |
+| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name**, caller-set request headers **with values** | none |
 
 The dedup difference is deliberate: a refusal is a policy fact and forty
 retries against one blocked host are one of them, but a successful call is an
@@ -562,7 +575,10 @@ and replicates, so an inbox body written into one cannot be taken back, and the
 digest is what pins *which* request anyway. The credential appears by name
 only, which is all the broker ever received: the caller sends a label and the
 value is attached internally, so the record is safe by construction rather than
-by scrubbing.
+by scrubbing. Caller-set headers are the deliberate asymmetry: they are
+recorded with their **values**, because the caller supplied them, so the record
+discloses nothing the caller did not already hold — and "it billed this quota
+project on these four requests" is evidence "it reached Google" is not.
 
 Neither kind is a journal entry. Replay never sees them, so `verify` stays
 byte-identical whether or not a broker was configured — they are evidence

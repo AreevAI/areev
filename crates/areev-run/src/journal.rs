@@ -240,6 +240,14 @@ pub fn write_egress_call(
     if let Some(c) = &call.credential {
         ex.insert("credential".into(), json!(c));
     }
+    // Values and all, unlike the credential (#105). The caller supplied these,
+    // so recording them discloses nothing it did not already hold, and it
+    // turns "it was allowed to reach Google" into "it sent these four requests
+    // billing this quota project". Omitted when empty, per the omit-default
+    // rule these extras are canonically serialized under.
+    if !call.headers.is_empty() {
+        ex.insert("headers".into(), json!(call.headers));
+    }
     m.add(&obs)
 }
 

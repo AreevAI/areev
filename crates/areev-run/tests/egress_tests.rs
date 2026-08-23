@@ -21,8 +21,14 @@ use std::sync::Arc;
 /// a request path to `(status, extra headers, body)`; every request is also
 /// recorded so a test can assert on what the upstream *saw* — which is how
 /// "the credential did not travel" is checked at the only place it can be.
-/// `(method, path, authorization)` — what one request looked like.
-type SeenRequest = (String, String, Option<String>);
+/// `(method, path, authorization, all headers)` — what one request looked like.
+///
+/// The fourth element is every header the upstream received, lowercased names,
+/// in arrival order: `authorization` is called out separately because most of
+/// this suite is about whether the *credential* travelled, but #105 lets a
+/// caller set its own headers and "did `X-Goog-User-Project` actually arrive"
+/// is answerable only here, at the socket the broker wrote to.
+type SeenRequest = (String, String, Option<String>, Vec<(String, String)>);
 /// `(path, status, extra headers, body)` — one row of the routing table.
 type Route = (&'static str, u16, Vec<(String, String)>, &'static str);
 
@@ -61,12 +67,16 @@ impl Upstream {
                 let path = parts.next().unwrap_or("/").to_string();
                 let mut auth = None;
                 let mut content_length = 0usize;
+                let mut all_headers: Vec<(String, String)> = Vec::new();
                 loop {
                     let mut h = String::new();
                     if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
                         break;
                     }
                     let lower = h.to_ascii_lowercase();
+                    if let Some((k, v)) = h.split_once(':') {
+                        all_headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+                    }
                     if let Some(v) = lower.strip_prefix("authorization:") {
                         auth = Some(v.trim().to_string());
                     }
@@ -79,7 +89,7 @@ impl Upstream {
                     use std::io::Read;
                     let _ = reader.read_exact(&mut discard);
                 }
-                seen_t.lock().unwrap().push((method, path.clone(), auth));
+                seen_t.lock().unwrap().push((method, path.clone(), auth, all_headers));
 
                 let (status, headers, body) = {
                     let routes = routes_t.lock().unwrap();
@@ -112,7 +122,7 @@ impl Upstream {
         self.routes.lock().unwrap().push(route);
     }
 
-    /// `(method, path, authorization)` for every request this server handled.
+    /// Every request this server handled, in order.
     fn requests(&self) -> Vec<SeenRequest> {
         self.seen.lock().unwrap().clone()
     }
@@ -746,7 +756,7 @@ fn a_declaration_narrows_a_broader_host_grant() {
         body["error"].as_str().unwrap_or_default().contains("path_prefixes"),
         "and the refusal names why: {body}"
     );
-    let paths: Vec<String> = site.requests().into_iter().map(|(_, p, _)| p).collect();
+    let paths: Vec<String> = site.requests().into_iter().map(|(_, p, _, _)| p).collect();
     assert_eq!(paths, vec!["/gmail/v1/users/me/messages/send"], "the upload never went out");
 }
 
@@ -1060,6 +1070,379 @@ fn a_successful_brokered_call_is_auditable_from_the_memory() {
     }
 }
 
+// ---- #105: non-credential request headers ----------------------------------
+
+/// The use case the feature exists for: a declared header reaches the upstream.
+///
+/// Every Google API called with user credentials wants `X-Goog-User-Project`
+/// or answers 403, and that header is not a credential — which is exactly why
+/// the broker could not set it and the guest could not either. Asserted at the
+/// socket, because "the broker accepted the request" is not the same claim as
+/// "the header arrived".
+#[test]
+fn a_declared_header_reaches_the_upstream() {
+    let site = Upstream::start(vec![("/v4/sheets/append", 200, Vec::new(), "appended")]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        Default::default(),
+        EgressGrants::new().grant("append_sheet", CallerGrant::new().method("POST")),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.declare(
+        "append_sheet",
+        declaration(json!([{"http": {
+            "hosts": [site.origin()],
+            "methods": ["POST"],
+            "headers": ["X-Goog-User-Project"]
+        }}])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("append_sheet").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("{}/v4/sheets/append", site.origin()),
+            "method": "POST",
+            "headers": { "X-Goog-User-Project": "my-project" },
+            "body": "{}"
+        }),
+    );
+    assert_eq!(code, 200, "the call goes out: {body}");
+
+    let reqs = site.requests();
+    assert_eq!(reqs.len(), 1);
+    assert!(
+        reqs[0].3.iter().any(|(k, v)| k == "x-goog-user-project" && v == "my-project"),
+        "the declared header arrived at the upstream: {:?}",
+        reqs[0].3
+    );
+}
+
+/// An undeclared header is refused, on the same deny-by-default reading the
+/// method and credential sets get: declaring some headers does not declare all
+/// of them, and declaring none declares none.
+#[test]
+fn an_undeclared_header_is_refused() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "ok")]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new().method("POST")),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.declare(
+        "t",
+        declaration(json!([{"http": {
+            "hosts": [site.origin()],
+            "methods": ["POST"],
+            "headers": ["X-Goog-User-Project"]
+        }}])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("t").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("{}/x", site.origin()),
+            "method": "POST",
+            "headers": { "X-Tenant-Id": "acme" },
+            "body": "{}"
+        }),
+    );
+    assert_eq!(code, 403, "an undeclared header is refused: {body}");
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("X-Tenant-Id"),
+        "and the refusal names it: {body}"
+    );
+    assert!(site.requests().is_empty(), "nothing went out");
+}
+
+/// The load-bearing refusal: the guest may not write the credential channel.
+///
+/// Letting a module set `Authorization` would hand back exactly the surface
+/// brokering exists to remove — it could attach a credential it minted, or
+/// overwrite the one the broker attached. Checked for every spelling, because
+/// HTTP field names are case-insensitive and a check that is not would be
+/// bypassed by `authorization`. `Host` is here too: it re-targets the request
+/// *after* the allowlist judged the URL.
+#[test]
+fn a_guest_cannot_set_the_headers_the_broker_owns() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "ok")]);
+    std::env::set_var("AREEV_TEST_OWNED_HDR", "s3cret-value");
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_OWNED_HDR").unwrap())]
+            .into_iter()
+            .collect(),
+        EgressGrants::new()
+            .grant("t", CallerGrant::new().method("POST").credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    for name in ["Authorization", "authorization", "AUTHORIZATION", "Cookie", "Host",
+                 "Proxy-Authorization"]
+    {
+        let (code, body) = ask(
+            broker.url(),
+            &token,
+            json!({
+                "url": format!("{}/x", site.origin()),
+                "method": "POST",
+                "headers": { name: "attacker-chosen" },
+                "body": "{}"
+            }),
+        );
+        assert_eq!(code, 403, "'{name}' is the broker's to set: {body}");
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("broker owns"),
+            "and the refusal says so: {body}"
+        );
+    }
+    assert!(site.requests().is_empty(), "not one of them went out");
+}
+
+/// A credential carried in a NON-`Authorization` header is protected too.
+///
+/// `Credential::Header` lets an operator put a secret in any header the
+/// upstream wants — `X-Api-Key`, say — and that name is host configuration, so
+/// it cannot be in a static list. The collision is caught after resolution,
+/// which is the only place the name is known.
+#[test]
+fn a_guest_cannot_overwrite_a_header_carrying_a_configured_credential() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "ok")]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [(
+            "api".to_string(),
+            Credential::Header { name: "X-Api-Key".into(), value: "s3cret".into() },
+        )]
+        .into_iter()
+        .collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().method("POST").credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    // Different casing from the configured name, to pin that the check is
+    // case-insensitive rather than a string equality that happens to pass.
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("{}/x", site.origin()),
+            "method": "POST",
+            "credential": "api",
+            "headers": { "x-api-key": "attacker-chosen" },
+            "body": "{}"
+        }),
+    );
+    assert_eq!(code, 403, "the credential's own header is not the guest's to write: {body}");
+    assert!(site.requests().is_empty(), "nothing went out");
+}
+
+/// Header injection: a CR or LF in a value splits one request into two, and
+/// the second one is the caller's to shape. Refused as malformed, before any
+/// policy question is asked.
+#[test]
+fn a_header_value_carrying_crlf_is_refused_as_malformed() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "ok")]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new().method("POST")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    for (name, value) in [
+        ("X-Evil", "ok\r\nX-Injected: yes"),
+        ("X-Evil", "ok\nX-Injected: yes"),
+        ("X-Bad Name", "fine"),
+        ("X:Colon", "fine"),
+    ] {
+        let (code, _) = ask(
+            broker.url(),
+            &token,
+            json!({
+                "url": format!("{}/x", site.origin()),
+                "method": "POST",
+                "headers": { name: value },
+                "body": "{}"
+            }),
+        );
+        assert_eq!(code, 400, "'{name}: {value}' is malformed, not merely refused");
+    }
+    assert!(site.requests().is_empty(), "nothing went out");
+}
+
+/// Guest headers travel exactly as far as the credential: a cross-origin
+/// redirect drops both.
+///
+/// Not a secrecy argument — the caller chose these values — but an intent one.
+/// The header was meant for the host the caller named; a redirect off-origin
+/// is where "meant for" stops being true, and volunteering a quota project or
+/// tenant id to a destination an intermediary picked is the broker leaking the
+/// caller's context.
+#[test]
+fn guest_headers_do_not_survive_a_cross_origin_redirect() {
+    let elsewhere = Upstream::start(vec![("/landing", 200, Vec::new(), "landed")]);
+    let start = Upstream::start(vec![]);
+    start.add_route((
+        "/go",
+        302,
+        header("Location", &format!("{}/landing", elsewhere.origin())),
+        "",
+    ));
+    let broker = Broker::start(
+        policy_for(&[start.origin(), elsewhere.origin()]),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("{}/go", start.origin()),
+            "method": "GET",
+            "headers": { "X-Goog-User-Project": "my-project" }
+        }),
+    );
+    assert_eq!(code, 200, "the chain completes: {body}");
+
+    let first = start.requests();
+    assert!(
+        first[0].3.iter().any(|(k, _)| k == "x-goog-user-project"),
+        "it rode the hop the caller named: {:?}",
+        first[0].3
+    );
+    let second = elsewhere.requests();
+    assert_eq!(second.len(), 1, "the redirect was followed");
+    assert!(
+        !second[0].3.iter().any(|(k, _)| k == "x-goog-user-project"),
+        "but not the one an intermediary chose: {:?}",
+        second[0].3
+    );
+}
+
+/// The audit half: headers are journaled with their VALUES, unlike the
+/// credential which is journaled by name only.
+///
+/// The asymmetry is the point. A credential value is the host's secret and an
+/// Observation is immutable and replicates, so it may never carry one. A guest
+/// header value came from the caller, discloses nothing the caller did not
+/// already hold, and turns "it was allowed to reach Google" into "it billed
+/// this quota project on these four requests".
+#[test]
+fn guest_headers_are_journaled_with_their_values() {
+    use areev_cal::AreevFacade;
+    use areev_core::types::{Grain, Tool, ToolKind, Workflow};
+    use areev_run::{CommandExecutor, EgressHandle, RunOptions, Runner, ScriptedClock};
+    use areev_store::Areev;
+    use tempfile::TempDir;
+
+    let site = Upstream::start(vec![("/ok", 200, Vec::new(), "upstream said hi")]);
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    let facade = Arc::new(AreevFacade::new(m));
+
+    let def = Tool::new("reach")
+        .kind(ToolKind::Definition)
+        .tool_description("calls out")
+        .created_at(500)
+        .namespace("ops");
+    let dh = facade.with_store(|m| m.add(&def)).unwrap();
+    let plan = facade
+        .with_store(|m| {
+            m.add(
+                &Workflow::new(vec!["reach".into()])
+                    .bind("reach", &dh.to_hex())
+                    .created_at(600)
+                    .namespace("ops"),
+            )
+        })
+        .unwrap();
+
+    let broker = Arc::new(
+        Broker::start(
+            policy_for(&[site.origin()]),
+            Default::default(),
+            EgressGrants::new().grant("reach", CallerGrant::new()),
+            "RUN-E022",
+        )
+        .unwrap(),
+    );
+    let exec = CommandExecutor::new(&format!(
+        "curl -s -X POST -H \"X-Areev-Egress-Token: $AREEV_EGRESS_TOKEN\" \
+           -d '{{\"url\":\"{origin}/ok\",\"method\":\"GET\",\
+                 \"headers\":{{\"X-Goog-User-Project\":\"my-project\"}}}}' \
+           \"$AREEV_EGRESS_URL\" >/dev/null; \
+         echo '{{\"done\":true}}'",
+        origin = site.origin()
+    ))
+    .with_egress(EgressHandle::new(Arc::clone(&broker)));
+
+    let runner = Runner {
+        facade: Arc::clone(&facade),
+        clock: Arc::new(ScriptedClock::new(
+            (0..200).map(|i| 1_755_000_000_000 + i * 10).collect(),
+        )),
+        executor: Arc::new(exec),
+        llm: None,
+        observer: None,
+        ns: "ops".into(),
+        principal: "user:runner".into(),
+    };
+    runner
+        .start(
+            &plan,
+            "r-hdrs",
+            json!({}),
+            &RunOptions {
+                budgets: Default::default(),
+                ask_ttl_sec: None,
+                workers: 1,
+                on_dangling: areev_run::OnDangling::Redispatch,
+                llm_max_tokens: None,
+                inject_crash: None,
+            },
+        )
+        .unwrap();
+
+    let obs = facade
+        .with_store(|m| {
+            m.recent_live_scoped(
+                &[areev_core::authz::HARNESS_NS.to_string()],
+                Some(areev_core::types::GrainType::Observation),
+                50,
+            )
+        })
+        .unwrap();
+    let call = obs
+        .iter()
+        .find(|g| g.get_str("observation_kind") == Some("egress_call"))
+        .expect("the call was journaled");
+
+    let rendered = format!("{call:?}");
+    assert!(
+        rendered.contains("X-Goog-User-Project") && rendered.contains("my-project"),
+        "the header rides the audit trail, name and value: {rendered}"
+    );
+}
+
 /// The declaration binds every hop, not just the first. An upstream on a
 /// DECLARED path answers `302` pointing at an undeclared path on the same
 /// (host-granted) origin — without the per-hop check, a redirect walks the
@@ -1094,7 +1477,7 @@ fn a_redirect_cannot_walk_a_capability_tool_off_its_declared_paths() {
         json!({ "url": format!("{}/gmail/v1/users/me/go", site.origin()), "method": "GET" }),
     );
     assert_eq!(code, 403, "the hop must be refused by the DECLARATION: {body}");
-    let paths: Vec<String> = site.requests().into_iter().map(|(_, p, _)| p).collect();
+    let paths: Vec<String> = site.requests().into_iter().map(|(_, p, _, _)| p).collect();
     assert_eq!(paths, vec!["/gmail/v1/users/me/go"], "the undeclared endpoint was never fetched");
     assert!(
         broker.refusals().iter().any(|r| r.reason.contains("redirect outside the declared capability")),

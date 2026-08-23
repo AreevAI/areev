@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Capability tools can set non-credential request headers** (#105). A
+  brokered `areev::fetch` request takes an optional `headers` map, and a Tool
+  grain declares which names it may use as `capabilities.http.headers`. This
+  was the last thing between capability tools and the APIs they are pitched at:
+  every Google API called with user credentials requires `X-Goog-User-Project`
+  or answers `403 … requires a quota project`, and that header is not a
+  credential, so neither the broker nor the guest could set it. The same gap
+  blocked `anthropic-version`, `x-ms-version`, and every tenant header.
+
+  The credential channel stays closed. `Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Host` — and any header a configured `Credential::Header` rides in,
+  which is known only after resolution — are refused at any casing: declaring
+  one is refused at **write** time, sending one at call time. That refusal is
+  deliberately free rather than costing a call from the budget: the
+  spend-before-checking rule exists so a module cannot probe *per-caller*
+  policy for nothing, and "may I write the Authorization header?" has one
+  answer for everyone. Malformed names and values carrying CR/LF are a `400`,
+  because header injection is malformed rather than merely denied, and it must
+  die at the parse instead of at the socket where it would split one request
+  into two.
+
+  Declared headers are deny-by-default like credentials, matched
+  case-insensitively, checked on every redirect hop, and travel exactly as far
+  as the credential does — a cross-origin hop drops both, since a quota project
+  or tenant id was meant for the host the caller named and not for one an
+  intermediary chose. They are journaled on the `egress_call` Observation
+  **with their values**, the deliberate asymmetry against the credential's
+  name-only record: the caller supplied them, so recording them discloses
+  nothing it did not already hold, and turns "it was allowed to reach Google"
+  into "it billed this quota project on these four requests".
+
+  The sandbox needed no change — it forwards the guest's JSON verbatim, so the
+  guest ABI is the broker ABI.
+
 ### Changed
 
 - **The framework adapters moved out of this repo.** `areev-langgraph` and

@@ -413,11 +413,16 @@ pub fn run(
 ///
 /// ```json
 /// { "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-///   "method": "GET", "credential": "gmail", "body": null }
+///   "method": "GET", "credential": "gmail", "body": null,
+///   "headers": { "X-Goog-User-Project": "my-project" } }
 /// ```
 ///
 /// The guest names a credential; it can never name a *value* it was not given,
-/// and no value ever crosses back.
+/// and no value ever crosses back. `headers` (#105) carries non-credential
+/// request headers only — the broker refuses `Authorization`, `Cookie`,
+/// `Host`, `Proxy-Authorization`, and any header a configured credential
+/// rides in. Because this binary forwards rather than translates, that field
+/// needed no change here: the guest ABI is the broker ABI.
 ///
 /// **Out**: a non-negative return is a pointer into guest memory to
 /// `[u32 little-endian length][JSON bytes]`. One `i32` cannot carry both a

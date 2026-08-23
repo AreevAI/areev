@@ -508,8 +508,12 @@ posts the call it wants:
 
 ```json
 { "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-  "method": "GET", "credential": "gmail" }
+  "method": "GET", "credential": "gmail",
+  "headers": { "X-Goog-User-Project": "my-project" } }
 ```
+
+(`headers` is optional and carries non-credential request headers only — the
+broker refuses the ones it owns; see [run.md](run.md).)
 
 and the broker checks the allowlist, attaches the credential, and makes the
 request. The token never enters the connector's process. Posta's CB4A calls this

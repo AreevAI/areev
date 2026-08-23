@@ -226,8 +226,12 @@ pub struct Tool {
     /// [ { "http": { "hosts": ["https://gmail.googleapis.com"],
     ///               "methods": ["POST"],
     ///               "path_prefixes": ["/gmail/v1/users/me/"],
-    ///               "credentials": ["gmail"] } } ]
+    ///               "credentials": ["gmail"],
+    ///               "headers": ["X-Goog-User-Project"] } } ]
     /// ```
+    ///
+    /// `headers` (#105) names the non-credential request headers the module
+    /// may set; a name the broker owns is refused at write time.
     ///
     /// ## A declaration, never an authorization
     ///

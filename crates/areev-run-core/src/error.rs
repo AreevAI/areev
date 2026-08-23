@@ -68,8 +68,9 @@ pub enum RunError {
     /// `RetentionRefused` and codes are append-only.
     LeaseLost { run_id: String },
     /// RUN-E022 — a host command's outbound call was refused: a destination
-    /// outside the run's allowlist, a method its grant does not permit, or a
-    /// credential it may not spend.
+    /// outside the run's allowlist, a method its grant does not permit, a
+    /// credential it may not spend, or a request header it may not set —
+    /// undeclared, or one the broker owns (#105).
     ///
     /// The trigger evaluator reports the same condition as `TRG-E009`, the way
     /// a storage failure is `TRG-E010` there and `RUN-E020` here. One
