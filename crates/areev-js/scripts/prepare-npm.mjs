@@ -9,18 +9,20 @@
 //   3. wires the main package's `optionalDependencies` to all platform packages, and
 //   4. prints — one per line on stdout — the platform package dirs to publish.
 //
-// The packages are UNSCOPED (`areev`, `areev-win32-x64-msvc`, …) since
-// 1.5.1: npm support granted the similarity-filter exception and released
-// the `areev-win32-x64-msvc` security hold on 2026-08-22. History that must
-// not repeat: while the filter 403'd only the Windows platform name, the
-// main package shipped declaring an optionalDependency that did not exist —
-// npm silently skips a missing optional dep at install and napi then fails
-// at `require()` with its misleading "npm optional dependencies bug" text,
-// so Windows was broken by a registry-name problem reported as a build
+// The packages are back on the SCOPED names (`@areev/areev`,
+// `@areev/areev-win32-x64-msvc`, …) as of 1.6.0: npm's similarity filter
+// still 403s the unscoped `areev` main package against `argv`
+// (`areev-win32-x64-msvc`'s separate SECURITY HOLD was released on
+// 2026-08-22, which is not the same block and does not clear it) — a support
+// ticket for the unscoped name is open, and CLAUDE.md's Status section is
+// the source of truth for where that stands. History that must not repeat:
+// releases before 1.2.3 warned past a 403 on one platform name and shipped a
+// main package declaring an optionalDependency that did not exist — npm
+// silently skips a missing optional dep at install and napi then fails at
+// `require()` with its misleading "npm optional dependencies bug" text, so
+// Windows was broken by a registry-name problem reported as a build
 // problem. That is why this script HARD-FAILS when any declared target has
-// no artifact, and why the workflow publishes the main package last. The
-// scoped `@areev/*` twins (releases 1.2.3–1.5.1) are deprecated pointers;
-// never publish new versions to them.
+// no artifact, and why the workflow publishes the main package last.
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 
 const mainPath = 'package.json';

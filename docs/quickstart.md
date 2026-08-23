@@ -13,7 +13,7 @@ Areev ships on all three registries — install the surface you need:
 ```bash
 cargo install areev          # the `areev` CLI
 pip install areev            # Python bindings
-npm install areev     # Node bindings
+npm install @areev/areev     # Node bindings (unscoped `areev` is pending an npm exception)
 ```
 
 No Rust toolchain? Every release also carries prebuilt `areev` binaries for
@@ -226,7 +226,7 @@ transaction; to load another system's export, prefer `migrate()`
 ## Node
 
 ```js
-const { Areev } = require('areev')
+const { Areev } = require('@areev/areev')
 
 const mem = new Areev('john.db', 'caller')                  // 3rd arg: passphrase for AES-256 at rest
 await mem.addFact('john', 'prefers', 'tea', 0.95)

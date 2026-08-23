@@ -247,7 +247,7 @@ Areev 1.0.1 is published (crates.io, PyPI, npm) and public at
 ### 4.1 Claude Code agent (ten minutes)
 
 ```bash
-cargo install areev            # or: pip install areev / npm install areev
+cargo install areev            # or: pip install areev / npm install @areev/areev
 
 areev init --db agent.db --template coding-agent --framework claude-code
 #   (new verb) seeds namespaces, an instruction doc, starter saved queries,

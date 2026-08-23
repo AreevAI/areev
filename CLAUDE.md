@@ -9,12 +9,17 @@ with CAL, and rendered into model-ready context in-process (no server in the
 recall path).
 
 **Status**: published — the library crates + the `areev` binary on crates.io,
-`areev` on PyPI, and **`areev`** on npm (unscoped, since 1.5.1 — npm support
-granted the exception and released the `areev-win32-x64-msvc` security hold
-on 2026-08-22, so the main package *and* every per-platform addon
-(`areev-win32-x64-msvc`, …) publish unscoped). The former scoped packages
-(`@areev/areev` + platforms) are deprecated pointers, kept for existing
-installs; never publish new versions to them.
+`areev` on PyPI, and the Node binding on npm as **`@areev/areev`** (+ scoped
+per-platform addons). Unscoped `areev` on npm is still blocked: npm's
+similarity filter 403s it against `argv` (`Package name too similar to
+existing package argv`), unresolved as of the 1.5.2 release attempt
+(2026-08-22) despite an earlier belief the exception had been granted —
+`areev-win32-x64-msvc`'s separate *security hold* was released that day, but
+the *main package's* filter block was not, and the two got conflated here
+once already. A support ticket for the unscoped name is open; until it
+lands, npm releases publish under the pre-1.5.1 `@areev/*` scope (never the
+bare `areev-<platform>` names, which 403 the same way). crates.io and PyPI
+are unaffected — different registries, no naming block there.
 `areev-py`, `areev-bench`, and `areev-conformance` stay `publish = false`;
 `areev-js` ships to npm, not crates.io.
 The version lives in `[workspace.package]` in the root `Cargo.toml` (all crates
@@ -316,7 +321,9 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 ## Naming
 
 Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`, npm packages `areev` +
-`areev-<platform>` (unscoped since 1.5.1; the scoped `@areev/*` twins are
-deprecated pointers). The OMS spec itself is external (CC0); OMS
+"areevd", Python module `areev`, npm packages `@areev/areev` +
+`@areev/areev-<platform>` (unscoped `areev`/`areev-<platform>` is the intent
+once npm's similarity-filter exception lands — see Status above — not yet
+in effect; don't call the scoped names "deprecated" until it does). The OMS
+spec itself is external (CC0); OMS
 conformance is the compatibility mechanism with other implementations.

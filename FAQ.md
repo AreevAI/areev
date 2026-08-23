@@ -26,7 +26,7 @@ edges.
 
 Areev is written in Rust and ships as a Rust library, the `areev` command-line
 binary, an MCP server, and Python (`import areev`) and Node
-(`require('areev')`) bindings. It runs anywhere Rust and Turso run — Linux,
+(`require('@areev/areev')`) bindings. It runs anywhere Rust and Turso run — Linux,
 macOS, and Windows on x86-64, plus **arm64** everywhere (Apple Silicon, arm64
 servers, and 64-bit Raspberry Pi OS).
 

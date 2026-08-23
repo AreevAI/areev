@@ -1,14 +1,16 @@
-# Publish the Node bindings (crates/areev-js) to npm as `areev`.
+# Publish the Node bindings (crates/areev-js) to npm. Reads its target name
+# from package.json — currently `@areev/areev` (unscoped `areev` is pending
+# an npm similarity-filter exception; see CLAUDE.md's Status section).
 #
 # napi-rs ships a native addon per platform. This builds the `.node` for each
 # target, then publishes one small platform package per target
-# (`areev-<platform>`) plus the thin main package that loads the right one at
+# (`<name>-<platform>`) plus the thin main package that loads the right one at
 # runtime via optionalDependencies (the layout the review flagged as missing).
 #
 # Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
 # Prerequisite secret: `NPM_TOKEN` (an npm automation token for the account
-# that owns the `areev` packages — it must have publish rights on the
-# unscoped names, not just the `@areev` scope).
+# that owns the `areev` packages — it must have publish rights on whichever
+# names package.json currently declares, scoped or not).
 #
 # NOTE: native cross-platform CI is finicky — watch the first release run and
 # adjust the target matrix / napi flags to your installed @napi-rs/cli (v3) if a
@@ -190,14 +192,13 @@ jobs:
         # publish. Publishes skip anything already on the registry, so re-runs
         # are idempotent.
         #
-        # Both the main package and the per-platform packages are UNSCOPED
-        # (`areev`, `areev-win32-x64-msvc`, …) since 1.5.1 — npm support
-        # granted the similarity-filter exception and released the Windows
-        # name's security hold on 2026-08-22. Any 403 here is a real failure
-        # (auth/2FA/ownership), never the filter; do NOT warn past it — a
-        # manifest that promises a package npm refused breaks `require()` on
-        # that platform (the pre-1.2.3 Windows incident). The scoped
-        # `@areev/*` twins are deprecated pointers; they get no new versions.
+        # The main package and per-platform packages publish under whatever
+        # name is currently in package.json (`@areev/areev` + scoped platform
+        # names as of 1.6.0 — unscoped `areev` still 403s npm's similarity
+        # filter; see CLAUDE.md's Status section for where that stands). Any
+        # OTHER 403 here is a real failure (auth/2FA/ownership); do NOT warn
+        # past it — a manifest that promises a package npm refused breaks
+        # `require()` on that platform (the pre-1.2.3 Windows incident).
         run: |
           set -euo pipefail
           publish_if_absent() { # $1 = package name, $2 = version, $3 = dir
