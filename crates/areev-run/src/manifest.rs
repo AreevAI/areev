@@ -58,6 +58,13 @@ pub struct PinnedTool {
     /// the runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_limits: Option<serde_json::Value>,
+    /// The Definition's declared `capabilities` (#101), frozen at start
+    /// beside the pinned runtime so the effective set — `declared ∩
+    /// host-granted` — replays identically and a mid-run supersession cannot
+    /// widen what a module may reach. Absent for every non-capability tool,
+    /// so existing manifests serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<serde_json::Value>,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -157,6 +164,7 @@ impl RunManifest {
                             executor_uri: None,
                             runtime: None,
                             runtime_limits: None,
+                            capabilities: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -177,6 +185,7 @@ impl RunManifest {
                             executor_uri: None,
                             runtime: None,
                             runtime_limits: None,
+                            capabilities: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -407,16 +416,52 @@ fn pin_from_definition(
                 ),
             })
         }
-        Some("wasm32-areev") => Some("wasm32-areev".to_string()),
+        Some(rt) if crate::executor::is_sandbox_runtime(rt) => Some(rt.to_string()),
         Some(rt) => {
             return Err(RunError::CodeExecRefused {
                 condition: format!(
-                    "node '{node}' declares runtime {rt:?}, which this build cannot                      dispatch — accepted: native, wasm32-areev"
+                    "node '{node}' declares runtime {rt:?}, which this build cannot                      dispatch — accepted: native, wasm32-areev, wasm32-areev-io"
                 ),
             })
         }
     };
     let runtime_limits = if runtime.is_some() { g.fields.get("runtime_limits").cloned() } else { None };
+    // The declared capability set (#101). Fail closed on both axes, the same
+    // way the runtime does: a declaration on a tool whose runtime cannot honour
+    // it describes nothing, and a malformed one must be refused at start rather
+    // than at the first call — a grain can arrive by sync from another
+    // implementation, and our own write path is not the only way in.
+    let capabilities = match g.fields.get("capabilities") {
+        None => None,
+        Some(v) if v.is_null() => None,
+        Some(v) => {
+            if !crate::executor::runtime_allows_capabilities(runtime.as_deref()) {
+                return Err(RunError::CodeExecRefused {
+                    condition: format!(
+                        "node '{node}' declares capabilities but its runtime is {:?} — \
+                         capabilities require runtime \"wasm32-areev-io\"",
+                        runtime.as_deref().unwrap_or("native")
+                    ),
+                });
+            }
+            areev_core::types::capability::Declaration::parse(v).map_err(|e| RunError::CodeExecRefused {
+                condition: format!("node '{node}' declares malformed capabilities: {e}"),
+            })?;
+            Some(v.clone())
+        }
+    };
+    // The inverse: a capability RUNTIME with nothing declared can reach
+    // nothing, and saying so at start beats a module that instantiates and
+    // then has every call refused.
+    if crate::executor::runtime_allows_capabilities(runtime.as_deref()) && capabilities.is_none() {
+        return Err(RunError::CodeExecRefused {
+            condition: format!(
+                "node '{node}' declares runtime \"wasm32-areev-io\" but no capabilities — \
+                 a capability runtime with an empty declaration can reach nothing; \
+                 use \"wasm32-areev\" for a pure module"
+            ),
+        });
+    }
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
@@ -425,6 +470,7 @@ fn pin_from_definition(
         executor_uri,
         runtime,
         runtime_limits,
+        capabilities,
     })
 }
 

@@ -1069,6 +1069,13 @@ impl Runner {
         // This prevents the case instead of noticing it afterwards. On the
         // embedded backend one memory is one writer, so this always succeeds
         // and costs a single meta row.
+        // Bind the run's principal to the broker before any effect fires, so
+        // an owned credential (`--credential name=VAR@principal`) is refused
+        // for a run executing as anyone else (#101). Every entry — start,
+        // resume, fork — funnels through here, which is why it lands here and
+        // not at each caller.
+        self.executor.bind_run_principal(&self.principal);
+
         let holder = format!("{}#{}", self.principal, std::process::id());
         let mut lease = crate::lease::RunLease::acquire(
             &self.facade,
@@ -1116,6 +1123,12 @@ impl Runner {
         // against one blocked host records one fact rather than many.
         let mut refusals_seen: std::collections::BTreeSet<(String, String, String)> =
             Default::default();
+        // How many brokered CALLS have already been journaled. A cursor, not a
+        // set: a refusal is a policy fact and forty attempts are one of them,
+        // but a successful call is an effect and forty of those are forty
+        // things that happened, so they are journaled in order and never
+        // deduplicated (#101).
+        let mut calls_journaled: usize = 0;
         let mut in_flight: usize = 0;
         let mut st = st;
         let mut events = initial_events;
@@ -1367,6 +1380,10 @@ impl Runner {
                                     // cannot re-route sandbox to native.
                                     runtime: pin.runtime.clone(),
                                     limits: pin.runtime_limits.clone(),
+                                    // Frozen at start with the runtime, for
+                                    // the same reason: a supersession mid-run
+                                    // must not widen what a module may reach.
+                                    capabilities: pin.capabilities.clone(),
                                 })
                             }
                             None => None,
@@ -1443,6 +1460,24 @@ impl Runner {
                                 })
                                 .map_err(err_run)?;
                         }
+                        // The mirror: every mediated call a capability tool
+                        // actually made, on the same superstep boundary, so a
+                        // crash loses at most one superstep of evidence.
+                        let calls = self.executor.calls();
+                        for c in calls.iter().skip(calls_journaled) {
+                            self.facade
+                                .with_store(|m| {
+                                    journal::write_egress_call(
+                                        m,
+                                        &run_id,
+                                        c,
+                                        clock,
+                                        &self.principal,
+                                    )
+                                })
+                                .map_err(err_run)?;
+                        }
+                        calls_journaled = calls.len();
                         let h = self
                             .facade
                             .with_store(|m| {

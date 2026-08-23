@@ -69,18 +69,25 @@ pub fn build_egress(
         return Ok(None);
     }
     let mut credentials = std::collections::BTreeMap::new();
+    // name -> owning run principal, for `--credential name=VAR@principal`.
+    let mut owners: Vec<(String, String)> = Vec::new();
     for pair in creds.iter().flat_map(|v| v.split(',')) {
         let pair = pair.trim();
         if pair.is_empty() {
             continue;
         }
-        let (name, var) = pair
+        let (name, spec) = pair
             .split_once('=')
-            .ok_or_else(|| format!("--credential: expected name=ENV_VAR, got {pair:?}"))?;
+            .ok_or_else(|| format!("--credential: expected name=ENV_VAR[@principal], got {pair:?}"))?;
         // The value is READ here from a variable the host named. A secret
-        // on a command line is a secret in shell history and in `ps`.
-        credentials
-            .insert(name.trim().to_string(), areev_run::Credential::bearer_from_env(var.trim())?);
+        // on a command line is a secret in shell history and in `ps`. An
+        // optional `@principal` binds the credential to a run principal (#101).
+        let (cred, owner) = areev_run::Credential::bearer_from_env_spec(spec.trim())?;
+        let name = name.trim().to_string();
+        if let Some(o) = owner {
+            owners.push((name.clone(), o));
+        }
+        credentials.insert(name, cred);
     }
     let policy = match &hosts {
         // Absent means unrestricted, and is reported as such rather than
@@ -124,7 +131,11 @@ pub fn build_egress(
         }
         grants = grants.grant(tool, g);
     }
-    Ok(Some(areev_run::Broker::start(policy, credentials, grants, "RUN-E022")?))
+    let broker = areev_run::Broker::start(policy, credentials, grants, "RUN-E022")?;
+    for (name, owner) in owners {
+        broker.bind_credential_owner(&name, &owner);
+    }
+    Ok(Some(broker))
 }
 
 /// The executor a run's nodes dispatch through: the `--tool-cmd` subprocess,

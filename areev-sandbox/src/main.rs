@@ -40,9 +40,10 @@ fn run() -> Result<String, String> {
         i += 1;
     }
 
-    let path = flags
-        .get("module")
-        .ok_or("usage: areev-sandbox --module <FILE.wasm> [--fuel N] [--max-pages N]")?;
+    let path = flags.get("module").ok_or(
+        "usage: areev-sandbox --module <FILE.wasm> [--fuel N] [--max-pages N] \
+         [--allow-fetch] [--max-response-bytes N]",
+    )?;
     let wasm = std::fs::read(path).map_err(|e| format!("reading {path}: {e}"))?;
 
     let mut limits = areev_sandbox::Limits::default();
@@ -51,6 +52,14 @@ fn run() -> Result<String, String> {
     }
     if let Some(p) = flags.get("max-pages") {
         limits.max_pages = p.parse().map_err(|_| format!("--max-pages: not a number: {p}"))?;
+    }
+    // #101. Off unless the caller says so, so the default invocation is pure
+    // Tier C and a module importing `areev::fetch` is refused by name. The
+    // engine passes this only for a manifest-pinned `wasm32-areev-io` runtime.
+    limits.allow_fetch = flags.contains_key("allow-fetch");
+    if let Some(n) = flags.get("max-response-bytes") {
+        limits.max_response_bytes =
+            n.parse().map_err(|_| format!("--max-response-bytes: not a number: {n}"))?;
     }
 
     let mut raw = String::new();
@@ -63,7 +72,16 @@ fn run() -> Result<String, String> {
 
     let outcome = areev_sandbox::run(&wasm, &input, &limits).map_err(|e| e.to_string())?;
     // Fuel used goes to stderr, not stdout: stdout is the tool's result and
-    // must stay exactly what the guest emitted.
-    eprintln!("areev-sandbox: fuel used {}", outcome.fuel_used);
+    // must stay exactly what the guest emitted. The brokered-call count rides
+    // alongside it and only when there were any, so a pure module's stderr is
+    // byte-identical to what it printed before 1.6.
+    if outcome.fetches > 0 {
+        eprintln!(
+            "areev-sandbox: fuel used {}, brokered calls {}",
+            outcome.fuel_used, outcome.fetches
+        );
+    } else {
+        eprintln!("areev-sandbox: fuel used {}", outcome.fuel_used);
+    }
     serde_json::to_string(&outcome.output).map_err(|e| e.to_string())
 }

@@ -2675,9 +2675,12 @@ impl Areev {
                 serde_json::from_str(&raw).map_err(|e| {
                     err(format!("credentials_json: expected {{\"name\": \"ENV_VAR\"}}: {e}"))
                 })?;
-            for (name, var) in map {
-                let c = areev_run::Credential::bearer_from_env(&var).map_err(|e| {
-                    err(format!("credential {name:?} names ${var}, which is not set: {e}"))
+            for (name, spec) in map {
+                // `@principal` binds a credential to a run principal for its
+                // use in a started RUN (#101); this connector-poll path is the
+                // trigger's own standing egress, so the owner is dropped here.
+                let (c, _owner) = areev_run::Credential::bearer_from_env_spec(&spec).map_err(|e| {
+                    err(format!("credential {name:?} names ${spec}, which is not set: {e}"))
                 })?;
                 credentials.insert(name, c);
             }

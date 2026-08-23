@@ -13,10 +13,10 @@ keywords = ["ai-agents", "memory", "scheduling", "triggers", "oms"]
 categories = ["database"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.5.0" }
-areev-store = { path = "../areev-store", version = "1.5.0" }
-areev-cal = { path = "../areev-cal", version = "1.5.0" }
-areev-run = { path = "../areev-run", version = "1.5.0" }
+areev-core = { path = "../areev-core", version = "1.6.0" }
+areev-store = { path = "../areev-store", version = "1.6.0" }
+areev-cal = { path = "../areev-cal", version = "1.6.0" }
+areev-run = { path = "../areev-run", version = "1.6.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -30,4 +30,4 @@ croner = { version = ">=2.2, <3", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
-areev-run-core = { path = "../areev-run-core", version = "1.5.0" }
+areev-run-core = { path = "../areev-run-core", version = "1.6.0" }

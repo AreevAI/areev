@@ -847,6 +847,9 @@ impl DeserializedGrain {
         if let Some(v) = self.fields.get("runtime_limits") {
             a.runtime_limits = Some(v.clone());
         }
+        if let Some(v) = self.fields.get("capabilities") {
+            a.capabilities = Some(v.clone());
+        }
         if let Some(v) = self.fields.get("locked_params") {
             a.locked_params = Some(v.clone());
         }

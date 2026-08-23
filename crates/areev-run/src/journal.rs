@@ -191,6 +191,58 @@ pub fn write_egress_refusal(
     m.add(&obs)
 }
 
+/// Record one brokered call that WENT OUT, as a Tier-2 Observation (#101).
+///
+/// The audit half of capability tools: a `wasm32-areev-io` module has no
+/// socket of its own, so every byte it sends leaves through the broker and
+/// every one of them lands here. Without this the memory would say a tool was
+/// *allowed* to reach Gmail and never what it actually did.
+///
+/// Bodies are recorded as **digests**, never contents. A grain is immutable
+/// and replicates, so an inbox body written into one cannot be taken back —
+/// and the digest is what a reviewer needs anyway: it pins *which* request,
+/// and it is the structure P2's verify-by-re-execution will match against.
+/// The credential appears by NAME only, which is all the broker ever received
+/// (`EgressRequest.credential` is a label; the value is attached internally),
+/// so the audit record is safe by construction rather than by scrubbing.
+///
+/// Deliberately NOT a journal entry, exactly like [`write_egress_refusal`]:
+/// replay never sees it, so `verify` stays byte-identical whether or not a
+/// broker was configured. It is evidence about the run, not a step of it.
+pub fn write_egress_call(
+    m: &mut Areev,
+    run_id: &str,
+    call: &crate::broker::EgressCall,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let caller = if call.caller.is_empty() { "connector" } else { &call.caller };
+    let mut obs = Observation::new(principal, "system")
+        .subject(&format!("run:{run_id}"))
+        .object(&call.url)
+        .namespace(HARNESS_NS)
+        .created_at(clock_ms as i64);
+    let ex = &mut obs.common.extra_fields;
+    ex.insert("run_id".into(), json!(run_id));
+    ex.insert("observation_kind".into(), json!("egress_call"));
+    ex.insert("caller".into(), json!(caller));
+    ex.insert("method".into(), json!(call.method));
+    ex.insert("destination".into(), json!(call.url));
+    ex.insert("status".into(), json!(call.status));
+    if call.redirects > 0 {
+        ex.insert("redirects".into(), json!(call.redirects));
+    }
+    if let Some(d) = &call.request_digest {
+        ex.insert("request_digest".into(), json!(d));
+    }
+    ex.insert("response_digest".into(), json!(call.response_digest));
+    ex.insert("response_bytes".into(), json!(call.response_bytes));
+    if let Some(c) = &call.credential {
+        ex.insert("credential".into(), json!(c));
+    }
+    m.add(&obs)
+}
+
 /// Write a checkpoint State grain, chained by `derived_from`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_checkpoint(

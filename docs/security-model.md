@@ -332,20 +332,92 @@ Not provided: memory or CPU limits, filesystem confinement, network
 restrictions, or privilege reduction. Do not put a command you do not trust
 behind these flags.
 
-### Tier C: sandboxed pure-compute tools
+### Tier C: sandboxed tools
 
-`areev-sandbox` runs a pure `wasm32` module with no WASI, a frozen one-function
-import set (`areev::emit` — `alloc` is a guest export the host calls), a fuel ceiling, a memory-page ceiling, and a module-size cap applied
-before the decoder sees the bytes. A module cannot open a socket, touch the
-filesystem, read an environment variable, see a clock, or run forever.
+`areev-sandbox` runs a `wasm32` module with no WASI, a frozen import set, a fuel
+ceiling, a memory-page ceiling, and a module-size cap applied before the decoder
+sees the bytes. A module cannot open a socket, touch the filesystem, read an
+environment variable, see a clock, or run forever.
 
 Be precise about what that buys. Tier C protects **the host from the tool**, and
 it is real isolation for parsing, extraction, classification and scoring. It is
 **not credential protection**: a connector that legitimately holds an OAuth token
 and makes outbound calls is not made safer by isolation, which is why the egress
-allowlist and the credential broker exist. By Tier C's own design a module cannot
-make a network call, so a connector will never be one — the two mechanisms cover
-different threats and neither substitutes for the other.
+allowlist and the credential broker exist. The two mechanisms cover different
+threats and neither substitutes for the other.
+
+Since 1.6.0 the tier has **two runtimes**, because there are two determinism
+stories (#101):
+
+| Runtime | Import set | Determinism |
+|---|---|---|
+| `wasm32-areev` | `areev::emit` | pure — **re-execution-provable** |
+| `wasm32-areev-io` | `+ areev::fetch` | deterministic **modulo journaled effects** |
+
+`alloc` is a guest *export* the host calls, not an import, in both.
+
+Until 1.6.0 the rule was absolute — *a Tier C module cannot make a network
+call, so a connector will never be one* — and that was the reason the tier
+half-delivered on its own promise. It is the only tier that produces a
+persistable, content-addressed tool, and it forbade exactly the I/O every real
+agent needs, so an I/O tool had to be a native blob (persisted, but *not
+sandboxed — it runs as you*) or a host `--tool-cmd` script (sandboxed by
+nothing, and outside the memory entirely).
+
+**The isolation claim is strengthened by the second runtime, not weakened.**
+The guest still has no socket, no credential, no clock, no environment. It gets
+one more unforgeable capability — to *ask the host* — and the host enforces
+policy and records everything. Three trust levels, credentials confined to the
+innermost:
+
+```text
+guest wasm ──areev::fetch(req)──▶ sandbox binary (trusted Rust half)
+                                       │ POST loopback, with AREEV_EGRESS_TOKEN
+                                       ▼
+                                engine broker (holds credentials)
+                                  token→caller · host grant · DECLARATION ·
+                                  allowlist · method · attach credential · perform
+                                       ▼
+                                  real upstream
+```
+
+The sandbox binary holds a revocable **broker token**, never a credential. This
+needed no new IPC channel: the engine already injected `AREEV_EGRESS_URL` +
+`AREEV_EGRESS_TOKEN` into that process for uniformity, inert only because the
+*guest* could not reach them.
+
+Four properties make it a capability system rather than a hole:
+
+- **The gate is linked, not guarded.** `areev::fetch` exists in the guest's
+  import set only when the host passed `--allow-fetch`, which the engine
+  derives from the **manifest-pinned** runtime. A module that imports it
+  without a capability declaration is refused at instantiation, by name,
+  before one instruction runs — the same `ForbiddenImport` treatment WASI gets.
+- **Effective reach is `declared ∩ host-granted`.** The Tool grain's
+  `capabilities` field declares hosts, methods, path prefixes and credential
+  names; the host's `--allow-host` / `--credential` / `--tool-egress` grant
+  independently. Both are checked on every call, so a declaration can only ever
+  narrow. Default deny throughout: no declaration means no reach, no declared
+  methods means read-only, no declared credentials means none.
+- **Path prefixes, which the host-side grant deliberately does not have.**
+  `--allow-host` allowlists hosts because a path-level grant there would imply
+  an authorization model it does not have. A capability tool is a different
+  bargain — the code is pinned by content address — so it may pin
+  `path_prefixes` too. That closes the exfiltration case a host-only grant
+  structurally cannot express: a malicious tool POSTing stolen context to an
+  *allowed* host's upload endpoint. The prefix match refuses evasive shapes
+  outright rather than normalizing them — dot-segments (`/../`), percent-
+  encoded dots and separators (`%2e`, `%2f`, `%5c`), and backslashes — because
+  normalizing here would bet our resolution matches every upstream's. And the
+  declaration binds **every redirect hop**, exactly as the allowlist does: a
+  `302` on a declared host must not walk a module from its declared paths to
+  an endpoint the host-side grant happens to tolerate.
+- **Every call is journaled**, not just the refusals. See below.
+
+Also out, permanently: guest-visible clock and RNG (that is the determinism
+boundary), concurrency, streaming, raw sockets, and non-HTTP protocols. One
+outstanding call at a time — completion-order nondeterminism would add an
+ordering side channel to a boundary whose whole point is that it leaks nothing.
 
 ### What reaches a model
 
@@ -382,7 +454,7 @@ evaluator's connector path share one credential broker. A brokered command gets
 are read from host-named environment variables in the driver's process and
 never enter a grain, a bundle, or the child's environment.
 
-Three properties are worth stating because each closes a specific hole:
+Six properties are worth stating because each closes a specific hole:
 
 - **The broker authenticates its callers.** It binds loopback on an ephemeral
   port, and loopback is not an authorization — any process on the box could
@@ -393,10 +465,100 @@ Three properties are worth stating because each closes a specific hole:
   another's. A caller with no grant never receives the broker's address.
 - **Writes are deny-by-default.** A grant naming no method may only `GET`/
   `HEAD`.
+- **The credential variable is withheld from children** (#100, fixed in
+  1.6.0). Reading `--credential NAME=ENV_VAR` is what registers `ENV_VAR` as a
+  secret, so every subprocess seam scrubs it. Before 1.6.0 the withhold list
+  was three flags long and `--credential` was not on it: an operator who
+  exported `ZOHO_TOKEN` and left it exported handed the **raw credential** to
+  every tool, connector and sandbox subprocess, which could read it out of
+  `/proc/self/environ` and never call the broker at all. Registration happens
+  where the variable is *read* rather than at each host's flag parsing,
+  because four hosts read credentials this way (`areev run`, `areev trigger
+  run`, and the Python and Node bindings) and a fix at one site would have
+  left three open. The sandbox seam additionally spawns under
+  `EnvPolicy::ClearExcept` — a wasm host has no claim on the operator's
+  environment, and under #101 it is also the process holding a broker token.
+- **The allowlist governs every hop, not just the first** (#99, fixed in
+  1.6.0). The HTTP client used to follow up to ten redirects on its own while
+  the allowlist was checked once, on the caller-supplied URL, before dispatch
+  — so an allowed host answering `302 Location: http://169.254.169.254/…` had
+  its follow-up performed and the cloud metadata service's body handed back to
+  the tool. Auto-follow is now off and each hop is re-authorized: **no byte is
+  sent to, and no body is returned from, a host the allowlist does not
+  permit.** A blocked redirect journals a refusal (`RUN-E022` / `TRG-E009`)
+  worded apart from an aimed-at one, because "it tried to reach there" and "it
+  was redirected there" are different stories. The mirror image is fixed too:
+  the brokered `Authorization` used to be dropped on *every* redirect
+  including a same-origin one, so legitimate Google/Microsoft flows 401'd
+  silently; it now re-attaches exactly when scheme+host+port are unchanged and
+  is dropped otherwise. Chains are bounded at ten hops and the bound is
+  auditable.
+- **A reflected credential is scrubbed.** Response *headers* never cross the
+  broker — it answers with `{status, body}` and nothing else — so the body is
+  the only channel, and an echo or verbose-error endpoint that bounces the
+  injected `Authorization` back in it has the value replaced before it reaches
+  the caller or the audit trail.
+- **The response ceiling bounds the read, not just the answer.** For a
+  capability caller the broker abandons the body at `max_response_bytes`
+  rather than buffering an upstream's whole answer and then measuring it, and
+  the overrun is a typed refusal — never a truncated or empty body passed off
+  as the upstream's response.
+- **`areev::fetch` is non-reentrant, enforced.** Placing a response calls the
+  guest's own `alloc`, which is guest code; a guest whose allocator called
+  `fetch` again would recurse a native host frame plus a broker round trip per
+  level. An in-flight flag refuses the reentrant call with `-1` before any
+  broker traffic — "one outstanding call, synchronous" is a mechanism, not a
+  convention.
+- **A capability declaration cannot reach private space by itself.** Under an
+  unrestricted egress policy a capability tool is still refused loopback,
+  link-local, private-range and cloud-metadata destinations — a synced memory
+  declares hosts freely, so reaching the local console, the hub, or the
+  metadata service takes an explicit `--allow-host` entry. This binds every
+  redirect hop, and leaves connectors and `--tool-cmd` tools (pure host config)
+  untouched. It is syntactic: a public hostname resolving to a private address
+  (DNS rebinding) is the standing limitation of hostname allowlisting.
+- **Credentials can be bound to a run principal.** `--credential
+  name=VAR@principal` refuses the credential to any run executing as a
+  different principal, and to one that bound none (fail-closed) — so a single
+  process holding several users' secrets cannot let a run started for one spend
+  another's. The tool grant governs which *tools* may ask; ownership governs
+  which *runs* may be answered. This is the RBAC unit for the case where
+  grain-stored code invoked on behalf of one user must not gain another's
+  access — alongside the wasm guest having no filesystem, no store handle, and
+  no environment to reach another user's data with in the first place.
 
 Grants are host configuration, never grains, for the same reason the
 code-executor allowlist is: a Definition declaring its own reach would be a
-permission arriving in the same bundle as the code it authorizes.
+permission arriving in the same bundle as the code it authorizes. A capability
+tool's `capabilities` field (#101) is not a counter-example — it *declares*,
+and the effective set is its intersection with the host grant, so it can only
+narrow.
+
+### The egress audit trail
+
+Both halves of a run's outbound behaviour land in the memory as Tier-2
+Observations in `agent:harness`, written at each superstep boundary so a crash
+loses at most one superstep of evidence:
+
+| `observation_kind` | Records | Dedup |
+|---|---|---|
+| `egress_refusal` | caller, destination, reason | per distinct `(caller, destination, reason)` |
+| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name** | none |
+
+The dedup difference is deliberate: a refusal is a policy fact and forty
+retries against one blocked host are one of them, but a successful call is an
+*effect* and forty of those are forty things that happened.
+
+Bodies are recorded as `sha256:` digests, never contents — a grain is immutable
+and replicates, so an inbox body written into one cannot be taken back, and the
+digest is what pins *which* request anyway. The credential appears by name
+only, which is all the broker ever received: the caller sends a label and the
+value is attached internally, so the record is safe by construction rather than
+by scrubbing.
+
+Neither kind is a journal entry. Replay never sees them, so `verify` stays
+byte-identical whether or not a broker was configured — they are evidence
+*about* the run, not steps *of* it.
 
 **Refusals are evidence, so they are journaled.** Each distinct `(caller,
 destination, reason)` a run is refused lands as an Observation in

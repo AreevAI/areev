@@ -187,13 +187,16 @@ fn evaluator(
             if pair.is_empty() {
                 continue;
             }
-            let (name, var) = pair
+            let (name, spec) = pair
                 .split_once('=')
-                .ok_or_else(|| format!("--credential: expected name=ENV_VAR, got {pair:?}"))?;
-            credentials.insert(
-                name.trim().to_string(),
-                areev_run::Credential::bearer_from_env(var.trim())?,
-            );
+                .ok_or_else(|| format!("--credential: expected name=ENV_VAR[@principal], got {pair:?}"))?;
+            // The `@principal` owner qualifier governs a credential's use in a
+            // started RUN, and is enforced on that run's broker (built by
+            // `build_egress` above). This is the connector-poll broker — the
+            // trigger's own standing egress, not a per-user run — so the owner
+            // is parsed off and dropped here rather than breaking the read.
+            let (cred, _owner) = areev_run::Credential::bearer_from_env_spec(spec.trim())?;
+            credentials.insert(name.trim().to_string(), cred);
         }
     }
 

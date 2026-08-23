@@ -249,6 +249,7 @@ fn a_pinned_blob_reaches_the_credential_broker_on_the_same_terms() {
         bytes: script.to_vec(),
         runtime: None,
         limits: None,
+        capabilities: None,
     };
     // A granted tool sees the broker's address and its own capability token.
     let seen = match exec.execute_code("poster", "h", &code, &json!({}), "k") {
@@ -391,4 +392,205 @@ fn a_runtime_without_an_executor_uri_is_refused() {
         .unwrap_err();
     assert_eq!(err.code(), "RUN-E018");
     assert!(err.to_string().contains("names no executor_uri"), "{err}");
+}
+
+// ---- #101: the capability runtime -----------------------------------------
+
+/// Build a plan whose one node is a capability tool.
+fn plan_with_capabilities(
+    rig: &Rig,
+    uri: &str,
+    runtime: &str,
+    capabilities: Option<Value>,
+    limits: Option<Value>,
+) -> Hash {
+    let mut def = Tool::new("work")
+        .kind(ToolKind::Definition)
+        .tool_description("a capability tool")
+        .executor_uri(uri)
+        .runtime(runtime)
+        .created_at(500)
+        .namespace("ops");
+    if let Some(c) = capabilities {
+        def = def.capabilities(c);
+    }
+    if let Some(l) = limits {
+        def = def.runtime_limits(l);
+    }
+    let dh = rig.facade.with_store(|m| m.add(&def)).unwrap();
+    let wf = Workflow::new(vec!["work".into()])
+        .bind("work", &dh.to_hex())
+        .created_at(600)
+        .namespace("ops");
+    rig.facade.with_store(|m| m.add(&wf)).unwrap()
+}
+
+fn gmail_caps() -> Value {
+    json!([{"http": {
+        "hosts": ["https://gmail.googleapis.com"],
+        "methods": ["POST"],
+        "credentials": ["gmail"]
+    }}])
+}
+
+/// A fake sandbox that echoes its argv as the tool result.
+#[cfg(unix)]
+fn fake_sandbox(rig: &Rig, name: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = rig.dir.join(name);
+    let mut f = std::fs::File::create(&path).unwrap();
+    f.write_all(b"#!/bin/sh\nprintf '{\"argv\":\"%s\"}' \"$*\"\n").unwrap();
+    let mut perm = f.metadata().unwrap().permissions();
+    perm.set_mode(0o700);
+    f.set_permissions(perm).unwrap();
+    path
+}
+
+/// A broker granting `work` what a capability tool needs.
+fn capability_broker() -> Arc<areev_run::Broker> {
+    Arc::new(
+        areev_run::Broker::start(
+            areev_run::EgressPolicy::unrestricted(),
+            Default::default(),
+            areev_run::EgressGrants::new()
+                .grant("work", areev_run::CallerGrant::new().method("POST")),
+            "RUN-E022",
+        )
+        .unwrap(),
+    )
+}
+
+/// The declaration is FROZEN into the persisted manifest beside the runtime,
+/// so a mid-run supersession of the Definition cannot widen what a module
+/// reaches — and a resume or a verify reads the same set the run started with.
+#[cfg(unix)]
+#[test]
+fn a_capability_declaration_is_pinned_into_the_manifest() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-io-module");
+    let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev-io", Some(gmail_caps()), None);
+    let fake = fake_sandbox(&rig, "fake-sandbox-pin.sh");
+
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap())
+        .with_egress(areev_run::EgressHandle::new(capability_broker()));
+    rig.runner(Arc::new(exec)).start(&plan, "r-pin", json!({}), &opts()).unwrap();
+
+    let manifest = rig
+        .facade
+        .with_store(|m| areev_run::RunManifest::load(m, "r-pin"))
+        .expect("the manifest persisted");
+    let pin = manifest.pinned.iter().find(|p| p.node == "work").expect("the node is pinned");
+    assert_eq!(pin.runtime.as_deref(), Some("wasm32-areev-io"));
+    assert_eq!(pin.capabilities.as_ref(), Some(&gmail_caps()), "frozen verbatim");
+}
+
+/// A capability RUNTIME with nothing declared can reach nothing. Saying so at
+/// start beats a module that instantiates and has every call refused.
+#[test]
+fn a_capability_runtime_with_no_declaration_refuses_at_start() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm");
+    let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev-io", None, None);
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback)).allow(&uri);
+    let err = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap_err();
+    assert_eq!(err.code(), "RUN-E018");
+    assert!(err.to_string().contains("no capabilities"), "{err}");
+}
+
+/// And the inverse: a declaration on a runtime that cannot honour it describes
+/// nothing. Our own write path refuses this pairing, but a grain can arrive by
+/// sync from another implementation, so the run path refuses it too.
+#[test]
+fn capabilities_on_a_pure_runtime_refuse_at_start() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm");
+    let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev", Some(gmail_caps()), None);
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback)).allow(&uri);
+    let err = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap_err();
+    assert_eq!(err.code(), "RUN-E018");
+    assert!(err.to_string().contains("wasm32-areev-io"), "{err}");
+}
+
+/// A malformed declaration is refused at start rather than at the first call —
+/// same reasoning as the unknown runtime, and reachable the same way (sync).
+#[test]
+fn a_malformed_capability_declaration_refuses_at_start() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm");
+    let plan = plan_with_capabilities(
+        &rig,
+        &uri,
+        "wasm32-areev-io",
+        // A bare `*` allows the whole internet under the appearance of a policy.
+        Some(json!([{"http": {"hosts": ["https://*"]}}])),
+        None,
+    );
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback)).allow(&uri);
+    let err = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap_err();
+    assert_eq!(err.code(), "RUN-E018");
+    assert!(err.to_string().contains("malformed capabilities"), "{err}");
+}
+
+/// The `-io` runtime dispatches to the same sandbox binary, with the gate flag.
+/// `--allow-fetch` is what LINKS `areev::fetch`, so a pure module on the same
+/// host still cannot import it.
+#[cfg(unix)]
+#[test]
+fn the_capability_runtime_passes_allow_fetch_to_the_sandbox() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-io-module");
+    let plan = plan_with_capabilities(
+        &rig,
+        &uri,
+        "wasm32-areev-io",
+        Some(gmail_caps()),
+        Some(json!({"fuel": 5000, "max_response_bytes": 4096})),
+    );
+
+    let fake = fake_sandbox(&rig, "fake-sandbox-io.sh");
+    // A capability module needs a broker: the credential lives there and the
+    // module holds only a token.
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap())
+        .with_egress(areev_run::EgressHandle::new(capability_broker()));
+    let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let records = rig.facade.with_store(|m| m.step_actions("ops", &plan, None, 10)).unwrap();
+    let grain = rig.facade.with_store(|m| m.get(&records[0].1)).unwrap();
+    let argv = grain.get_str("tool_content").expect("a result grain carries its content").to_string();
+    assert!(argv.contains("--allow-fetch"), "the capability gate is opened: {argv}");
+    assert!(argv.contains("--max-response-bytes 4096"), "{argv}");
+    assert!(argv.contains("--fuel 5000"), "{argv}");
+}
+
+/// A capability module with no broker configured fails with the fix named,
+/// rather than starting and having every call refused by a broker that is not
+/// there.
+#[cfg(unix)]
+#[test]
+fn a_capability_module_without_a_broker_says_so() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-io-module");
+    let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev-io", Some(gmail_caps()), None);
+    let fake = fake_sandbox(&rig, "fake-sandbox-nb.sh");
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap());
+
+    let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected a terminal") };
+    assert!(matches!(outcome, RunOutcome::Failed { .. }), "got {outcome:?}");
+    let records = rig.facade.with_store(|m| m.step_actions("ops", &plan, None, 10)).unwrap();
+    let grain = rig.facade.with_store(|m| m.get(&records[0].1)).unwrap();
+    let detail = grain.get_str("failure_detail").unwrap_or_default().to_string();
+    assert!(detail.contains("no credential broker"), "{detail}");
 }

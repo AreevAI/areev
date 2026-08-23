@@ -11,14 +11,14 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.5.0" }
+areev-core = { path = "../areev-core", version = "1.6.0" }
 # `cargo run -p areev-bench --features postgres --bin pg_bench` — the
 # server-tier latency harness (needs DATABASE_URL).
 
-areev-store = { path = "../areev-store", version = "1.5.0" }
-areev-cal = { path = "../areev-cal", version = "1.5.0" }
-areev-context = { path = "../areev-context", version = "1.5.0" }
-areev-server = { path = "../areev-server", version = "1.5.0" }
+areev-store = { path = "../areev-store", version = "1.6.0" }
+areev-cal = { path = "../areev-cal", version = "1.6.0" }
+areev-context = { path = "../areev-context", version = "1.6.0" }
+areev-server = { path = "../areev-server", version = "1.6.0" }
 areev-loop = { path = "../areev-loop" }
 areev-llm = { path = "../areev-llm" }
 serde_json = "1"

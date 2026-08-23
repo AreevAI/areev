@@ -170,3 +170,226 @@ fn a_module_that_imports_alloc_is_refused_and_the_message_names_the_contract() {
     assert!(msg.contains("EXPORT"), "the message must say alloc is an export: {msg}");
     assert!(!msg.contains("only areev::alloc and"), "the stale claim must be gone: {msg}");
 }
+
+// ---- #101: the capability gate -------------------------------------------
+
+/// The broker address reaches this process through the ENVIRONMENT, which is
+/// process-global while `cargo test` runs threads in parallel — so two tests
+/// that set it race, and the loser reads the winner's value. Everything that
+/// touches `AREEV_EGRESS_*` takes this first.
+static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the lock without inheriting a poisoning from an unrelated failure —
+/// the guard protects an ordering, not an invariant.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A guest that asks the host to fetch, then emits whatever came back.
+///
+/// The `fetch` ABI in one guest: write a request, call `areev::fetch`, and
+/// read `[u32 LE len][bytes]` at the returned pointer.
+const FETCHER: &str = r#"
+(module
+  (import "areev" "emit" (func $emit (param i32 i32)))
+  (import "areev" "fetch" (func $fetch (param i32 i32) (result i32)))
+  (memory (export "memory") 1 4)
+  (global $bump (mut i32) (i32.const 2048))
+  (func (export "alloc") (param $n i32) (result i32)
+    (local $p i32)
+    (local.set $p (global.get $bump))
+    (global.set $bump (i32.add (global.get $bump) (local.get $n)))
+    (local.get $p))
+  ;; {"url":"http://127.0.0.1:1/x","method":"GET"}  — 44 bytes
+  (data (i32.const 16) "{\22url\22:\22http://127.0.0.1:1/x\22,\22method\22:\22GET\22}")
+  (func (export "run") (param $ptr i32) (param $len i32)
+    (local $r i32)
+    (local.set $r (call $fetch (i32.const 16) (i32.const 44)))
+    (if (i32.lt_s (local.get $r) (i32.const 0))
+      (then
+        ;; negative = the host could not place a response at all
+        (call $emit (i32.const 16) (i32.const 0))
+        (return)))
+    ;; emit the length-prefixed payload's BODY: ptr+4, length at ptr
+    (call $emit
+      (i32.add (local.get $r) (i32.const 4))
+      (i32.load (local.get $r)))))
+"#;
+
+/// The same guest, but the host never opted in.
+#[test]
+fn a_module_importing_fetch_is_refused_unless_the_host_allowed_it() {
+    // The `ForbiddenImport` philosophy extended from "which imports" to "which
+    // capabilities": refused BY NAME at instantiation, before one instruction.
+    let e = run(&wasm(FETCHER), &serde_json::Value::Null, &Limits::default()).unwrap_err();
+    match e {
+        SandboxError::ForbiddenImport { ref module, ref name } => {
+            assert_eq!(module, "areev");
+            assert_eq!(name, "fetch");
+        }
+        other => panic!("got {other}"),
+    }
+}
+
+/// And a PURE module is unaffected by the gate existing.
+#[test]
+fn a_pure_module_still_runs_under_a_capability_host() {
+    // `--allow-fetch` links the import; it does not change a module that never
+    // asks for it, and `fetches` stays 0 so the outcome is byte-identical.
+    let limits = Limits { allow_fetch: true, ..Default::default() };
+    let out = run(&wasm(ECHO), &serde_json::json!({ "x": 1 }), &limits).unwrap();
+    assert_eq!(out.output, serde_json::json!({ "ok": true }));
+    assert_eq!(out.fetches, 0);
+}
+
+/// With the capability allowed but no broker wired, a call is a typed error
+/// the guest can read — never a silent success and never a hang.
+#[test]
+fn a_capability_module_with_no_broker_gets_an_error_it_can_read() {
+    // Belt and braces: the engine refuses this pairing at dispatch, so getting
+    // here means a hand-run sandbox. It still must not pretend to succeed.
+    let _guard = env_lock();
+    std::env::remove_var("AREEV_EGRESS_URL");
+    std::env::remove_var("AREEV_EGRESS_TOKEN");
+    let limits = Limits { allow_fetch: true, ..Default::default() };
+    let out = run(&wasm(FETCHER), &serde_json::Value::Null, &limits).unwrap();
+    let err = out.output["error"].as_str().unwrap_or_default();
+    assert!(err.contains("no credential broker"), "got {}", out.output);
+    assert_eq!(out.fetches, 1, "the attempt is still counted");
+}
+
+/// The whole round trip against a real loopback broker stand-in: the guest's
+/// request reaches it, and its answer reaches the guest.
+#[test]
+fn a_brokered_call_round_trips_through_loopback() {
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let seen_t = std::sync::Arc::clone(&seen);
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mut token = String::new();
+        let mut len = 0usize;
+        loop {
+            let mut h = String::new();
+            if reader.read_line(&mut h).unwrap() == 0 || h.trim().is_empty() {
+                break;
+            }
+            let lower = h.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("x-areev-egress-token:") {
+                token = v.trim().to_string();
+            }
+            if let Some(v) = lower.strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; len];
+        reader.read_exact(&mut body).unwrap();
+        *seen_t.lock().unwrap() =
+            format!("{token}|{}", String::from_utf8_lossy(&body));
+
+        let reply = r#"{"status":200,"body":"hello from upstream"}"#;
+        let mut stream = stream;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 \r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        stream.flush().unwrap();
+    });
+
+    // The guest's hardcoded URL is port 1; point the module at our listener by
+    // rewriting the WAT (the request URL is the guest's business, the BROKER
+    // address is the host's).
+    let _guard = env_lock();
+    std::env::set_var("AREEV_EGRESS_URL", format!("http://127.0.0.1:{port}"));
+    std::env::set_var("AREEV_EGRESS_TOKEN", "tok-abc123");
+    let limits = Limits { allow_fetch: true, ..Default::default() };
+    let out = run(&wasm(FETCHER), &serde_json::Value::Null, &limits).unwrap();
+    std::env::remove_var("AREEV_EGRESS_URL");
+    std::env::remove_var("AREEV_EGRESS_TOKEN");
+    handle.join().unwrap();
+
+    assert_eq!(out.fetches, 1);
+    assert_eq!(
+        out.output,
+        serde_json::json!({ "status": 200, "body": "hello from upstream" }),
+        "the broker's answer reaches the guest verbatim"
+    );
+    let seen = seen.lock().unwrap().clone();
+    let (token, body) = seen.split_once('|').unwrap();
+    assert_eq!(token, "tok-abc123", "the capability token is presented");
+    assert!(
+        body.contains("\"url\":\"http://127.0.0.1:1/x\""),
+        "the guest's request is forwarded verbatim, not translated: {body}"
+    );
+}
+
+/// The guest never sees the broker's address or token, even when it can call
+/// through it — there is no WASI, so there is no way to read the environment.
+#[test]
+fn the_guest_cannot_read_the_broker_env_it_calls_through() {
+    // A guest importing anything that could read the environment is refused,
+    // which is what makes the token unreachable rather than merely unread.
+    const WANTS_ENV: &str = r#"
+    (module
+      (import "areev" "emit" (func $emit (param i32 i32)))
+      (import "wasi_snapshot_preview1" "environ_get"
+        (func $environ_get (param i32 i32) (result i32)))
+      (memory (export "memory") 1 4)
+      (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+      (func (export "run") (param i32) (param i32)))
+    "#;
+    let limits = Limits { allow_fetch: true, ..Default::default() };
+    let e = run(&wasm(WANTS_ENV), &serde_json::Value::Null, &limits).unwrap_err();
+    assert!(
+        matches!(e, SandboxError::ForbiddenImport { ref module, .. } if module == "wasi_snapshot_preview1"),
+        "got {e}"
+    );
+}
+
+/// A hostile `alloc` that calls `fetch` reentrantly must be refused, not
+/// recursed. `reply` runs the guest's allocator, so without the in-flight
+/// guard each nesting level is a native host frame plus a broker round trip —
+/// a stack-exhaustion primitive with I/O amplification.
+#[test]
+fn a_reentrant_fetch_from_inside_alloc_is_refused_not_recursed() {
+    const HOSTILE_ALLOC: &str = r#"
+    (module
+      (import "areev" "emit" (func $emit (param i32 i32)))
+      (import "areev" "fetch" (func $fetch (param i32 i32) (result i32)))
+      (memory (export "memory") 1 4)
+      (global $bump (mut i32) (i32.const 4096))
+      (data (i32.const 16) "{\22url\22:\22http://127.0.0.1:1/x\22,\22method\22:\22GET\22}")
+      (data (i32.const 200) "{\22ok\22:true}")
+      (func (export "alloc") (param $n i32) (result i32)
+        (local $p i32)
+        ;; the attack: every allocation tries to fetch again
+        (drop (call $fetch (i32.const 16) (i32.const 44)))
+        (local.set $p (global.get $bump))
+        (global.set $bump (i32.add (global.get $bump) (local.get $n)))
+        (local.get $p))
+      (func (export "run") (param i32) (param i32)
+        (drop (call $fetch (i32.const 16) (i32.const 44)))
+        (call $emit (i32.const 200) (i32.const 11))))
+    "#;
+    let _guard = env_lock();
+    std::env::remove_var("AREEV_EGRESS_URL");
+    std::env::remove_var("AREEV_EGRESS_TOKEN");
+    let limits = Limits { allow_fetch: true, ..Default::default() };
+    let out = run(&wasm(HOSTILE_ALLOC), &serde_json::Value::Null, &limits).unwrap();
+    assert_eq!(out.output, serde_json::json!({ "ok": true }), "the run still completes");
+    // Two NON-reentrant attempts go through (the input-placement alloc's, and
+    // run's own); every reentrant one from inside a reply's alloc is refused
+    // with -1 before it is even counted.
+    assert_eq!(out.fetches, 2, "reentrant attempts are refused, not performed");
+}
