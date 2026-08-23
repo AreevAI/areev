@@ -1346,6 +1346,11 @@ fn guest_headers_do_not_survive_a_cross_origin_redirect() {
 /// header value came from the caller, discloses nothing the caller did not
 /// already hold, and turns "it was allowed to reach Google" into "it billed
 /// this quota project on these four requests".
+// Unix-only for the same reason as every other shell-driven test here: the
+// vehicle is a `curl` pipeline with `$VAR` expansion and single-quoted JSON,
+// which `cmd /C` does not parse. The FEATURE is platform-independent and is
+// covered everywhere by the socket-level tests above.
+#[cfg(unix)]
 #[test]
 fn guest_headers_are_journaled_with_their_values() {
     use areev_cal::AreevFacade;
@@ -1661,6 +1666,10 @@ fn a_blob_read_without_a_token_is_refused() {
 /// and the tool this capability exists for is the one that parses untrusted
 /// attachments — precisely where a hole in the audit trail is least
 /// affordable.
+// Unix-only: same `curl`-through-a-POSIX-shell vehicle as its `egress_call`
+// sibling. The blob door itself is exercised on every platform by
+// `a_declared_module_reads_a_blob_through_the_broker`.
+#[cfg(unix)]
 #[test]
 fn a_blob_read_is_auditable_from_the_memory() {
     use areev_cal::AreevFacade;
