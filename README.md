@@ -354,6 +354,7 @@ How each number is produced, and the benchmark receipts:
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How Areev works: grains, `.mg` format, CAL, recall, sync |
 | [`docs/loop.md`](docs/loop.md) | Areev Loop — governed self-improvement (analyzers, four gates, policy, every surface) |
 | [`docs/run.md`](docs/run.md) | `areev run` — the governed runtime: plans, the journal, verify, HITL, budgets, forks |
+| [`examples/how-to-create-an-areev-agent.md`](examples/how-to-create-an-areev-agent.md) | Building an agent on Areev: architecture, grain selection, the autonomy spectrum, dynamic planning, do/don't |
 | [`docs/triggers.md`](docs/triggers.md) | Standing rules that start workflows — the cadence as data |
 | [`docs/eu-ai-act.md`](docs/eu-ai-act.md) · [`docs/procurement.md`](docs/procurement.md) | EU AI Act article→capability→command map; procurement questionnaire answers |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
@@ -370,7 +371,8 @@ How each number is produced, and the benchmark receipts:
 
 Runnable material lives in [`examples/`](examples/) — vertical agents,
 notebooks, CI gates, policy variants, custom analyzers — every one keyless
-and deterministic at its floor. The workspace layout and crate map are in
+and deterministic at its floor; the guide to assembling your own agent is
+[`examples/how-to-create-an-areev-agent.md`](examples/how-to-create-an-areev-agent.md). The workspace layout and crate map are in
 [`ARCHITECTURE.md`](ARCHITECTURE.md); Areev is built on
 [Turso Database](https://github.com/tursodatabase/turso) (MIT — see
 `THIRD-PARTY-NOTICES.md`). The `.mg` format and CAL are stable, documented,

@@ -227,6 +227,34 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 [`ERROR_CODES.md`](ERROR_CODES.md). Format/uniqueness are test-enforced
 (`error_code_tests`, `test_all_error_codes_have_unique_codes`).
 
+## Agent workflows — plan → run → history → improve
+
+The core of agent execution. A plan is a **Workflow grain** (nodes, edges
+with `cond`/`max_cycles`, node→Tool `bindings`, `retries`, + `name`/`reducers`
+extra fields); `nodes[0]` is the entry and **edge declaration order is
+semantic** (canonical evaluation order). The execution graph is *derived*,
+twice: `PlanGraph::build` (`areev-run-core/src/plan.rs`, pure V1–V6 —
+unique/reachable nodes, conditions parse, Tarjan SCC + every-cycle-bounded,
+back-edge classification for mid-graph loop re-entry) then
+`RunManifest::resolve` (`areev-run/src/manifest.rs`, V3/V7 — bindings frozen
+at run start into host/client/subgraph/abstract executors, so a superseded
+plan never changes a running run). The grain itself is immutable input:
+runs point back at it via `mg:step_action:<node>` links, triggers point at
+it by hash, and every edit is a supersession minting a **new hash** —
+after which triggers must be re-pointed (they do NOT follow heads).
+Lifecycle: author (CAL `ADD workflow` graph syntax — note `* N` = retries,
+not `max_cycles`; JSON `add` for bounded cycles/reducers; console) → run
+(`areev run *`) → history (CAL `HISTORY`, `run-trace`, `runs-touching`,
+`step-actions`) → improve (`areev loop run`'s `run_outcome` flags failure/
+cost per plan hash → human review → `SUPERSEDE workflow` applies →
+`outcome_review` measures and proposes reverts; CAL `REVERT` parses but is
+unsupported — revert = supersede back). Playbook with the full checklist:
+`.claude/skills/areev-agent-workflows`; the user-facing guide (architecture,
+grain selection, dynamic planning, do/don't) is
+`examples/how-to-create-an-areev-agent.md`; references: `docs/run.md`
+("Authoring a plan", "The run ↔ memory join"), `docs/loop.md`,
+`docs/triggers.md`.
+
 ## Smaller crates
 
 - **areev-mcp**: 25 tools (`areev_recall/search/nearest/add/supersede/forget/remember/cal`,
