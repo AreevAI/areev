@@ -388,9 +388,32 @@ run already has.
                 "methods": ["POST"],
                 "path_prefixes": ["/gmail/v1/users/me/"],
                 "credentials": ["gmail"],
-                "headers": ["X-Goog-User-Project"] } }
+                "headers": ["X-Goog-User-Project"] } },
+    { "blob": { "read": true } }
   ] }
 ```
+
+The two capabilities are **independent**. `{"blob": {"read": true}}` (#106)
+lets a module read the memory's stored bytes by content address — the
+attachment a trigger's connector already filed — through the same broker on
+the same token, and grants no network. A module that parses attachments and
+calls nothing declares only `blob`; one that calls an API and reads nothing
+declares only `http`. Read-only, by address only: there is no enumeration, no
+write, and no namespace access, so a module fetches bytes it was handed a
+`cas://` reference to and cannot browse the memory. Every read lands as a
+`blob_read` Observation naming the address and the byte count.
+
+A blob-only module still needs a grant, because the token is what identifies
+the caller: `--tool-egress 'parse_attachments::'` names neither a credential
+nor a method, minting a token and authorizing no egress whatsoever.
+
+⚠️ **Embedded backend only.** The read is lock-free precisely because it goes
+to the `.blobs` sidecar without opening the database — and that sidecar is an
+embedded-backend thing. On PostgreSQL a blob lives in-schema, so
+`areev::blob_get` returns a `501` naming the limitation rather than reporting
+the attachment as missing. On that backend a tool can open the memory
+directly anyway (see [Backend divergence](#backend-divergence-reading-the-memory-mid-run-85)),
+so the capability is closing an embedded-tier gap.
 
 `headers` names the non-credential request headers the module may set, and is
 deny-by-default like `credentials`: declaring none permits none. A name the
@@ -435,6 +458,10 @@ What is enforced, and where:
 | a malformed declaration | CAL write, and again at resolve | write rejected / `RUN-E018` |
 | the runtime with no broker, or no `--tool-egress` for this tool | dispatch | node fails, naming the missing flag |
 | a module importing `areev::fetch` undeclared | sandbox instantiation | `ForbiddenImport`, by name, before one instruction |
+| a module importing `areev::blob_get` without `{"blob": {"read": true}}` | sandbox instantiation | `ForbiddenImport` — gated on the DECLARATION, not the runtime, so an http-only module never gains it |
+| a blob read by a caller that declared no `blob` capability | broker, per read | 403 + a journaled refusal |
+| a blob read when the host wired no memory | broker, per read | 503 — declaring is not granting on this door either |
+| a malformed or unknown `cas://` address | broker, per read | 404 — the address is the only way in, so there is nothing to enumerate |
 | host / path / method / credential / header outside the declaration | broker, per call **and per redirect hop** | 403 + a journaled refusal |
 | a request header the broker owns (`Authorization`, `Cookie`, `Host`, `Proxy-Authorization`, or one carrying a configured credential) | broker, per call — before the call budget is spent | 403 + a journaled refusal; the answer is the same for every caller, so it costs nothing to ask |
 | a malformed header name, or a value containing CR/LF | broker, per call | 400 — header injection is refused as malformed, not merely denied |
@@ -491,9 +518,12 @@ the storage tier, and it silently decides whether an agent design is portable:
 
 - **Embedded (Turso file)**: no — the file lock is exclusive, so even a pure
   `RECALL` from inside a tool is refused (`STO-E001`). Use the doors that
-  exist: `areev blob get` reads CAS attachments lock-free, and a **trigger's
-  `--context-query`** has the evaluator assemble a saved query's result into
-  the run input before the run starts ([triggers](triggers.md)).
+  exist: `areev blob get` reads CAS attachments lock-free, a **capability
+  tool** reads them with `areev::blob_get` through the broker (#106, above),
+  and a **trigger's `--context-query`** has the evaluator assemble a saved
+  query's result into the run input before the run starts
+  ([triggers](triggers.md)). All three are lock-free by construction, which is
+  why they work while the run holds the file.
 - **PostgreSQL (server tier)**: yes — any number of handles may hold the same
   schema and reads never block (MVCC), so a tool may open the memory and
   query it mid-run. If your production target is Postgres, tools can read

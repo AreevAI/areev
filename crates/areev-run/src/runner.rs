@@ -1137,6 +1137,7 @@ impl Runner {
         // audit grains. Runs drive sequentially, so whatever is already present
         // belongs to an earlier one and is not ours to journal.
         let mut calls_journaled: usize = self.executor.calls().len();
+        let mut blob_reads_journaled: usize = self.executor.blob_reads().len();
         let mut in_flight: usize = 0;
         let mut st = st;
         let mut events = initial_events;
@@ -1486,6 +1487,27 @@ impl Runner {
                                 .map_err(err_run)?;
                         }
                         calls_journaled = calls.len();
+                        // And the other mediated door (#106): every stored
+                        // byte a capability tool opened. Same boundary, same
+                        // skip-cursor, same not-a-journal-entry status — the
+                        // tool this exists for parses untrusted attachments,
+                        // so "which bytes did it actually read" is evidence an
+                        // incident asks for first.
+                        let reads = self.executor.blob_reads();
+                        for r in reads.iter().skip(blob_reads_journaled) {
+                            self.facade
+                                .with_store(|m| {
+                                    journal::write_blob_read(
+                                        m,
+                                        &run_id,
+                                        r,
+                                        clock,
+                                        &self.principal,
+                                    )
+                                })
+                                .map_err(err_run)?;
+                        }
+                        blob_reads_journaled = reads.len();
                         let h = self
                             .facade
                             .with_store(|m| {

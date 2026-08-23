@@ -1443,6 +1443,332 @@ fn guest_headers_are_journaled_with_their_values() {
     );
 }
 
+// ---- #106: reading CAS blobs through the same broker ----------------------
+
+/// Post a blob request to the broker's `/blob` path, returning
+/// `(http status, raw body)`. Raw, not JSON: a success answer is the blob's
+/// own bytes, which is the whole point of that door.
+fn ask_blob(broker_url: &str, token: &str, uri: &str) -> (u16, Vec<u8>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let addr = broker_url.trim_start_matches("http://");
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    let body = json!({ "uri": uri }).to_string();
+    let head = format!(
+        "POST /blob HTTP/1.1\r\nHost: {addr}\r\nX-Areev-Egress-Token: {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body.as_bytes()).unwrap();
+    s.flush().unwrap();
+
+    let mut reader = BufReader::new(s);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let status: u16 = line.split_whitespace().nth(1).unwrap_or("0").parse().unwrap_or(0);
+    let mut len = 0usize;
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+            break;
+        }
+        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+            len = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).unwrap();
+    (status, buf)
+}
+
+/// A memory with one blob in it, and the CAS uri that addresses it.
+fn memory_with_blob(dir: &std::path::Path, bytes: &[u8]) -> (String, String) {
+    use areev_store::Areev;
+    let path = dir.join("m.db").to_str().unwrap().to_string();
+    let mut m = Areev::open(&path).unwrap();
+    let uri = m.put_blob(bytes).unwrap();
+    drop(m);
+    (path, uri)
+}
+
+/// The use case: a declared module reads the attachment it was handed, and
+/// gets the bytes themselves rather than JSON wrapping them.
+#[test]
+fn a_declared_module_reads_a_blob_through_the_broker() {
+    let dir = tempfile::TempDir::new().unwrap();
+    // Deliberately not valid UTF-8 and deliberately starting with `{`: a real
+    // attachment is arbitrary bytes, and anything that sniffed the payload to
+    // decide "is this an error?" would misread exactly this.
+    let payload = b"{\x00\x01\x02 not json, not utf8 \xff\xfe".to_vec();
+    let (db, uri) = memory_with_blob(dir.path(), &payload);
+
+    let broker = Broker::start(
+        EgressPolicy::default(),
+        Default::default(),
+        EgressGrants::new().grant("parse_attachments", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.serve_blobs(&db);
+    broker.declare(
+        "parse_attachments",
+        declaration(json!([{"blob": {"read": true}}])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("parse_attachments").unwrap().to_string();
+
+    let (code, body) = ask_blob(broker.url(), &token, &uri);
+    assert_eq!(code, 200);
+    assert_eq!(body, payload, "the bytes arrive verbatim, not re-encoded");
+
+    let reads = broker.blob_reads();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].caller, "parse_attachments");
+    assert_eq!(reads[0].uri, uri);
+    assert_eq!(reads[0].bytes, payload.len());
+}
+
+/// Declaring is the only key, so not declaring is refused — including for the
+/// callers that CAN reach the network. An http capability is not a blob one.
+#[test]
+fn an_undeclared_module_cannot_read_a_blob() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (db, uri) = memory_with_blob(dir.path(), b"secret attachment");
+
+    let broker = Broker::start(
+        EgressPolicy::default(),
+        Default::default(),
+        EgressGrants::new()
+            .grant("http_only", CallerGrant::new().method("POST"))
+            .grant("plain", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.serve_blobs(&db);
+    // Declares http, and nothing about blobs.
+    broker.declare(
+        "http_only",
+        declaration(json!([{"http": {"hosts": ["https://api.example.com"], "methods": ["POST"]}}])),
+        CapabilityLimits::default(),
+    );
+
+    for caller in ["http_only", "plain"] {
+        let token = broker.token_for(caller).unwrap().to_string();
+        let (code, body) = ask_blob(broker.url(), &token, &uri);
+        assert_eq!(code, 403, "'{caller}' did not declare the blob capability");
+        assert!(
+            !body.windows(6).any(|w| w == b"secret"),
+            "and got none of the bytes"
+        );
+    }
+    assert!(broker.blob_reads().is_empty(), "nothing was read");
+}
+
+/// A module may fetch bytes it was handed a reference to, and cannot go
+/// looking for others: the address is the only way in, and a malformed or
+/// unknown one is an error rather than a browse.
+#[test]
+fn a_blob_read_is_by_content_address_only() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (db, _uri) = memory_with_blob(dir.path(), b"stored");
+
+    let broker = Broker::start(
+        EgressPolicy::default(),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.serve_blobs(&db);
+    broker.declare(
+        "t",
+        declaration(json!([{"blob": {"read": true}}])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("t").unwrap().to_string();
+
+    for bad in [
+        "",
+        "not-a-uri",
+        "file:///etc/passwd",
+        "../../etc/passwd",
+        "cas://sha256:short",
+        // A well-formed address for a blob this memory does not hold.
+        "cas://sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    ] {
+        let (code, _) = ask_blob(broker.url(), &token, bad);
+        assert_eq!(code, 404, "{bad:?} is not readable");
+    }
+    assert!(broker.blob_reads().is_empty(), "and none of them counted as a read");
+}
+
+/// Declared, but the host wired no memory: refused rather than served from
+/// somewhere unexpected. Declaring is not granting on this door either.
+#[test]
+fn a_blob_read_needs_the_host_to_have_wired_a_memory() {
+    let broker = Broker::start(
+        EgressPolicy::default(),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.declare(
+        "t",
+        declaration(json!([{"blob": {"read": true}}])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, _) = ask_blob(
+        broker.url(),
+        &token,
+        "cas://sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    );
+    assert_eq!(code, 503, "no memory wired, so nothing to read");
+}
+
+/// The token is the caller's identity on this door too: an unauthenticated
+/// process on the same box gets nothing.
+#[test]
+fn a_blob_read_without_a_token_is_refused() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (db, uri) = memory_with_blob(dir.path(), b"attachment");
+    let broker = Broker::start(
+        EgressPolicy::default(),
+        Default::default(),
+        EgressGrants::new().grant("t", CallerGrant::new()),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.serve_blobs(&db);
+    broker.declare(
+        "t",
+        declaration(json!([{"blob": {"read": true}}])),
+        CapabilityLimits::default(),
+    );
+
+    let (code, _) = ask_blob(broker.url(), "not-a-real-token", &uri);
+    assert_eq!(code, 401);
+    assert!(broker.blob_reads().is_empty());
+}
+
+/// The audit half, end to end: a blob a tool read is auditable from the
+/// memory, on the same superstep boundary as a brokered call.
+///
+/// This is the property that made routing blob reads through the broker the
+/// right design rather than reading the sidecar inside the sandbox: a read
+/// performed in the subprocess has no way back to the driver to be journaled,
+/// and the tool this capability exists for is the one that parses untrusted
+/// attachments — precisely where a hole in the audit trail is least
+/// affordable.
+#[test]
+fn a_blob_read_is_auditable_from_the_memory() {
+    use areev_cal::AreevFacade;
+    use areev_core::types::{Grain, Tool, ToolKind, Workflow};
+    use areev_run::{CommandExecutor, EgressHandle, RunOptions, Runner, ScriptedClock};
+    use areev_store::Areev;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let mut m = Areev::open(&db).unwrap();
+    let uri = m.put_blob(b"an invoice PDF, pretend").unwrap();
+    let facade = Arc::new(AreevFacade::new(m));
+
+    let def = Tool::new("parse_attachments")
+        .kind(ToolKind::Definition)
+        .tool_description("reads stored bytes")
+        .created_at(500)
+        .namespace("ops");
+    let dh = facade.with_store(|m| m.add(&def)).unwrap();
+    let plan = facade
+        .with_store(|m| {
+            m.add(
+                &Workflow::new(vec!["parse_attachments".into()])
+                    .bind("parse_attachments", &dh.to_hex())
+                    .created_at(600)
+                    .namespace("ops"),
+            )
+        })
+        .unwrap();
+
+    // A grant naming neither a credential nor a method: it mints the token
+    // that identifies the caller and authorizes no egress at all — the shape
+    // a module that only reads attachments takes.
+    let broker = Arc::new(
+        Broker::start(
+            EgressPolicy::default(),
+            Default::default(),
+            EgressGrants::new().grant("parse_attachments", CallerGrant::new()),
+            "RUN-E022",
+        )
+        .unwrap(),
+    );
+    broker.serve_blobs(&db);
+    broker.declare(
+        "parse_attachments",
+        declaration(json!([{"blob": {"read": true}}])),
+        CapabilityLimits::default(),
+    );
+
+    let exec = CommandExecutor::new(&format!(
+        "curl -s -X POST -H \"X-Areev-Egress-Token: $AREEV_EGRESS_TOKEN\" \
+           -d '{{\"uri\":\"{uri}\"}}' \"$AREEV_EGRESS_URL/blob\" >/dev/null; \
+         echo '{{\"parsed\":true}}'"
+    ))
+    .with_egress(EgressHandle::new(Arc::clone(&broker)));
+
+    let runner = Runner {
+        facade: Arc::clone(&facade),
+        clock: Arc::new(ScriptedClock::new(
+            (0..200).map(|i| 1_755_000_000_000 + i * 10).collect(),
+        )),
+        executor: Arc::new(exec),
+        llm: None,
+        observer: None,
+        ns: "ops".into(),
+        principal: "user:runner".into(),
+    };
+    runner
+        .start(
+            &plan,
+            "r-blob",
+            json!({}),
+            &RunOptions {
+                budgets: Default::default(),
+                ask_ttl_sec: None,
+                workers: 1,
+                on_dangling: areev_run::OnDangling::Redispatch,
+                llm_max_tokens: None,
+                inject_crash: None,
+            },
+        )
+        .unwrap();
+
+    let obs = facade
+        .with_store(|m| {
+            m.recent_live_scoped(
+                &[areev_core::authz::HARNESS_NS.to_string()],
+                Some(areev_core::types::GrainType::Observation),
+                50,
+            )
+        })
+        .unwrap();
+    let read = obs
+        .iter()
+        .find(|g| g.get_str("observation_kind") == Some("blob_read"))
+        .expect("the read was journaled");
+
+    assert_eq!(read.get_str("run_id"), Some("r-blob"));
+    assert_eq!(read.get_str("caller"), Some("parse_attachments"));
+    assert_eq!(read.get_str("blob"), Some(uri.as_str()));
+    // The address names the bytes; the bytes themselves are not in the grain.
+    assert!(
+        !format!("{read:?}").contains("an invoice PDF"),
+        "the content must not ride an immutable replicating grain: {read:?}"
+    );
+}
+
 /// The declaration binds every hop, not just the first. An upstream on a
 /// DECLARED path answers `302` pointing at an undeclared path on the same
 /// (host-granted) origin — without the per-hop check, a redirect walks the

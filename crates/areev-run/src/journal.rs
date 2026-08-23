@@ -251,6 +251,44 @@ pub fn write_egress_call(
     m.add(&obs)
 }
 
+/// Record one CAS blob a capability tool READ, as a Tier-2 Observation (#106).
+///
+/// The other half of the mediated-I/O trail. `write_egress_call` records what
+/// a module sent; this records what it opened — and for the tool this
+/// capability exists for, parsing an attachment that arrived from outside,
+/// what it opened is the more interesting question. "Which bytes did the thing
+/// that processes untrusted input actually process" is the first thing an
+/// incident asks.
+///
+/// The `cas://` address IS the content hash, so naming it names exactly the
+/// bytes without putting a mailbox attachment into an immutable, replicating
+/// grain — the same reason bodies are recorded as digests.
+///
+/// Deliberately NOT a journal entry, exactly like its two siblings: replay
+/// never sees it, so `verify` stays byte-identical whether or not a broker was
+/// configured. Evidence about the run, not a step of it.
+pub fn write_blob_read(
+    m: &mut Areev,
+    run_id: &str,
+    read: &crate::broker::BlobRead,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let caller = if read.caller.is_empty() { "connector" } else { &read.caller };
+    let mut obs = Observation::new(principal, "system")
+        .subject(&format!("run:{run_id}"))
+        .object(&read.uri)
+        .namespace(HARNESS_NS)
+        .created_at(clock_ms as i64);
+    let ex = &mut obs.common.extra_fields;
+    ex.insert("run_id".into(), json!(run_id));
+    ex.insert("observation_kind".into(), json!("blob_read"));
+    ex.insert("caller".into(), json!(caller));
+    ex.insert("blob".into(), json!(read.uri));
+    ex.insert("bytes".into(), json!(read.bytes));
+    m.add(&obs)
+}
+
 /// Write a checkpoint State grain, chained by `derived_from`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_checkpoint(

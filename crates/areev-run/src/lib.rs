@@ -28,7 +28,9 @@ pub mod runner;
 pub mod stream;
 
 pub use clock::{Clock, ScriptedClock, SystemClock};
-pub use broker::{Broker, CallerGrant, CapabilityLimits, Credential, EgressCall, EgressGrants};
+pub use broker::{
+    BlobRead, Broker, CallerGrant, CapabilityLimits, Credential, EgressCall, EgressGrants,
+};
 // The capability vocabulary lives in areev-core, beside the grain field it
 // validates, because `areev-cal`'s write path sits BELOW this crate and has to
 // reach the same parser (#101). Re-exported so a host writing against the

@@ -352,9 +352,13 @@ stories (#101):
 | Runtime | Import set | Determinism |
 |---|---|---|
 | `wasm32-areev` | `areev::emit` | pure — **re-execution-provable** |
-| `wasm32-areev-io` | `+ areev::fetch` | deterministic **modulo journaled effects** |
+| `wasm32-areev-io` | `+ areev::fetch`, `+ areev::blob_get` | deterministic **modulo journaled effects** |
 
-`alloc` is a guest *export* the host calls, not an import, in both.
+`alloc` is a guest *export* the host calls, not an import, in both. The two
+capability imports are linked **independently**: `fetch` off the pinned
+runtime, `blob_get` off the pinned declaration, so an http module does not
+silently gain the ability to read stored bytes and a blob module gets no
+network.
 
 Until 1.6.0 the rule was absolute — *a Tier C module cannot make a network
 call, so a connector will never be one* — and that was the reason the tier
@@ -425,6 +429,20 @@ Four properties make it a capability system rather than a hole:
   declaration binds **every redirect hop**, exactly as the allowlist does: a
   `302` on a declared host must not walk a module from its declared paths to
   an endpoint the host-side grant happens to tolerate.
+- **Stored bytes are mediated on the same terms as the network** (#106). A
+  module that declares `{"blob": {"read": true}}` may read CAS blobs by
+  content address, through the same broker on the same token — so the guest
+  gets **neither a socket nor a file descriptor**, and every read is journaled
+  as a `blob_read`. Read-only and address-only: no enumeration, no write, no
+  namespace access, so a module reaches bytes it was handed a reference to and
+  cannot browse the memory. The import is linked off the pinned *declaration*
+  rather than the runtime string, because unlike egress there is no host-side
+  grant that narrows it afterwards — which also means an `http` module does not
+  quietly acquire it. Routing the read through the broker rather than letting
+  the sandbox open the file is what makes the journal possible at all: a read
+  performed inside the subprocess has no way back to the driver to be recorded,
+  and attachment parsing is precisely the workload where an unrecorded read
+  matters most.
 - **Every call is journaled**, not just the refusals. See below.
 
 Also out, permanently: guest-visible clock and RNG (that is the determinism
@@ -565,6 +583,7 @@ loses at most one superstep of evidence:
 |---|---|---|
 | `egress_refusal` | caller, destination, reason | per distinct `(caller, destination, reason)` |
 | `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name**, caller-set request headers **with values** | none |
+| `blob_read` | caller, `cas://` address, byte count | none |
 
 The dedup difference is deliberate: a refusal is a policy fact and forty
 retries against one blocked host are one of them, but a successful call is an

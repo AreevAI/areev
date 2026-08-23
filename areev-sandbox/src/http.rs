@@ -37,6 +37,23 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 /// there is no place here for a translation bug, and the guest ABI stays
 /// exactly the broker ABI.
 pub fn post_json(url: &str, token: &str, body: &[u8], max_response_bytes: usize) -> Result<Vec<u8>, String> {
+    post(url, "/", token, body, max_response_bytes).map(|(_, b)| b)
+}
+
+/// Post to one of the broker's paths, returning `(status, body)`.
+///
+/// `areev::fetch` ignores the status — the broker answers it with JSON either
+/// way, and forwarding verbatim is that hop's whole contract. `areev::blob_get`
+/// needs it: its success answer is raw bytes and its failures are JSON, so the
+/// status is what tells them apart. Sniffing the payload to guess which one
+/// arrived would misread a PDF that happens to start with `{`.
+pub fn post(
+    url: &str,
+    path: &str,
+    token: &str,
+    body: &[u8],
+    max_response_bytes: usize,
+) -> Result<(u16, Vec<u8>), String> {
     let addr = authority(url)?;
     let stream = TcpStream::connect(&addr).map_err(|e| format!("connecting to the broker at {addr}: {e}"))?;
     stream.set_read_timeout(Some(TIMEOUT)).ok();
@@ -50,8 +67,14 @@ pub fn post_json(url: &str, token: &str, body: &[u8], max_response_bytes: usize)
         return Err("broker token contains a control character".into());
     }
 
+    // Same argument as the token, one line down: the path is ours, never the
+    // guest's, but a request line it could break is worth one `if`.
+    if path.chars().any(|c| c.is_control() || c == ' ') {
+        return Err("broker path contains a control character".into());
+    }
+
     let head = format!(
-        "POST / HTTP/1.1\r\nHost: {addr}\r\nX-Areev-Egress-Token: {token}\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nX-Areev-Egress-Token: {token}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
@@ -66,6 +89,7 @@ pub fn post_json(url: &str, token: &str, body: &[u8], max_response_bytes: usize)
     if !line.starts_with("HTTP/1.") {
         return Err("the broker did not answer with HTTP".into());
     }
+    let status: u16 = line.split_whitespace().nth(1).unwrap_or("0").parse().unwrap_or(0);
 
     let mut content_length: Option<usize> = None;
     loop {
@@ -94,7 +118,7 @@ pub fn post_json(url: &str, token: &str, body: &[u8], max_response_bytes: usize)
             reader
                 .read_exact(&mut buf)
                 .map_err(|e| format!("reading the broker's response body: {e}"))?;
-            Ok(buf)
+            Ok((status, buf))
         }
         None => {
             // The broker always sends a Content-Length; read to EOF under the
@@ -111,7 +135,7 @@ pub fn post_json(url: &str, token: &str, body: &[u8], max_response_bytes: usize)
                      refused rather than truncated"
                 ));
             }
-            Ok(buf)
+            Ok((status, buf))
         }
     }
 }

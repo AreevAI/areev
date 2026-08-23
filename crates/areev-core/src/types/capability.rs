@@ -302,10 +302,22 @@ pub struct HttpCapability {
     headers: BTreeSet<String>,
 }
 
+/// The `blob` capability: may a module read the memory's stored bytes (#106).
+///
+/// Read-only, and only by content address. There is no enumeration, no write,
+/// and no namespace access — a module can fetch bytes it was handed a `cas://`
+/// reference to and nothing more, so the guarantee that a module cannot browse
+/// the memory survives having this at all.
+#[derive(Debug, Clone, Default)]
+pub struct BlobCapability {
+    read: bool,
+}
+
 /// Everything one Definition declares.
 #[derive(Debug, Clone, Default)]
 pub struct Declaration {
     http: Option<HttpCapability>,
+    blob: Option<BlobCapability>,
 }
 
 impl Declaration {
@@ -339,9 +351,15 @@ impl Declaration {
                     }
                     out.http = Some(parse_http(body)?);
                 }
+                "blob" => {
+                    if out.blob.is_some() {
+                        return Err("'capabilities' declares 'blob' more than once".into());
+                    }
+                    out.blob = Some(parse_blob(body)?);
+                }
                 other => {
                     return Err(format!(
-                        "'capabilities' entry '{other}' is not recognized; accepted: http"
+                        "'capabilities' entry '{other}' is not recognized; accepted: http, blob"
                     ))
                 }
             }
@@ -352,6 +370,15 @@ impl Declaration {
     /// Does this declaration admit the `areev::fetch` import at all?
     pub fn declares_http(&self) -> bool {
         self.http.is_some()
+    }
+
+    /// Does this declaration admit the `areev::blob_get` import at all (#106)?
+    ///
+    /// `{"blob": {"read": false}}` declares the capability and then declines
+    /// it, which is a module saying it wants no blob access — the import is
+    /// not linked, exactly as if the entry were absent.
+    pub fn declares_blob_read(&self) -> bool {
+        self.blob.as_ref().is_some_and(|b| b.read)
     }
 
     /// May the module make this call?
@@ -493,6 +520,29 @@ fn parse_http(body: &serde_json::Value) -> Result<HttpCapability> {
     Ok(HttpCapability { hosts, methods, path_prefixes, credentials, headers })
 }
 
+fn parse_blob(body: &serde_json::Value) -> Result<BlobCapability> {
+    let obj = body
+        .as_object()
+        .ok_or("'capabilities' entry 'blob' must be an object")?;
+    for k in obj.keys() {
+        if k.as_str() != "read" {
+            return Err(format!(
+                "'capabilities.blob' key '{k}' is not recognized; accepted: read"
+            ));
+        }
+    }
+    // Spelled as an explicit `read: true` rather than an empty object, so the
+    // declaration says what it wants rather than implying it, and so a future
+    // `write` has an obvious place to go without changing this shape.
+    let read = match obj.get("read") {
+        None => return Err("'capabilities.blob' must name 'read'".into()),
+        Some(v) => v
+            .as_bool()
+            .ok_or("'capabilities.blob.read' must be a boolean")?,
+    };
+    Ok(BlobCapability { read })
+}
+
 fn string_list(v: Option<&serde_json::Value>, field: &str) -> Result<Vec<String>> {
     let Some(v) = v.filter(|v| !v.is_null()) else {
         return Ok(Vec::new());
@@ -630,6 +680,59 @@ mod tests {
                 "'{name}' is refused and the message points at credentials: {e}"
             );
         }
+    }
+
+    #[test]
+    fn the_blob_capability_is_declared_explicitly() {
+        let d = decl(json!([{"blob": {"read": true}}]));
+        assert!(d.declares_blob_read());
+        // …and declines just as explicitly. `read: false` is a module saying
+        // it wants none, which must not link the import.
+        assert!(!decl(json!([{"blob": {"read": false}}])).declares_blob_read());
+        // The absence of the capability is not permission, same as http.
+        assert!(!Declaration::default().declares_blob_read());
+        assert!(!gmail().declares_blob_read());
+    }
+
+    #[test]
+    fn the_two_capabilities_are_independent() {
+        // The tool #106 exists for — parsing an attachment that arrived from
+        // outside — wants stored bytes and NO network at all. Declaring blob
+        // must not imply http, or the safest module would get the widest gate.
+        let blob_only = decl(json!([{"blob": {"read": true}}]));
+        assert!(blob_only.declares_blob_read());
+        assert!(!blob_only.declares_http());
+        assert_eq!(
+            blob_only.permits("https://anywhere.example/", "GET", None, &[]),
+            Err(CapabilityDenied::Undeclared { kind: "http" })
+        );
+
+        let both = decl(json!([
+            {"http": {"hosts": ["https://api.example.com"], "methods": ["POST"]}},
+            {"blob": {"read": true}}
+        ]));
+        assert!(both.declares_http() && both.declares_blob_read());
+    }
+
+    #[test]
+    fn a_malformed_blob_capability_is_refused() {
+        for bad in [
+            json!([{"blob": {}}]),                       // says nothing
+            json!([{"blob": {"read": "yes"}}]),          // not a boolean
+            json!([{"blob": {"read": true, "write": true}}]), // no write, ever
+            json!([{"blob": true}]),                     // not an object
+        ] {
+            assert!(
+                Declaration::parse(&bad).is_err(),
+                "{bad} must be refused rather than read loosely"
+            );
+        }
+        // And declared twice is a contradiction, not a last-one-wins.
+        assert!(Declaration::parse(&json!([
+            {"blob": {"read": true}},
+            {"blob": {"read": false}}
+        ]))
+        .is_err());
     }
 
     #[test]

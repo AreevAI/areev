@@ -216,6 +216,92 @@ const FETCHER: &str = r#"
       (i32.load (local.get $r)))))
 "#;
 
+/// A guest that asks the host for a stored blob, then emits what came back.
+///
+/// Same shape as [`FETCHER`] — the `blob_get` ABI is one more function, not
+/// one more pattern — so the reply framing here is identical.
+const BLOB_READER: &str = r#"
+(module
+  (import "areev" "emit" (func $emit (param i32 i32)))
+  (import "areev" "blob_get" (func $blob_get (param i32 i32) (result i32)))
+  (memory (export "memory") 1 4)
+  (global $bump (mut i32) (i32.const 2048))
+  (func (export "alloc") (param $n i32) (result i32)
+    (local $p i32)
+    (local.set $p (global.get $bump))
+    (global.set $bump (i32.add (global.get $bump) (local.get $n)))
+    (local.get $p))
+  ;; {"uri":"cas://sha256:00…00"}  — 8 + 13 + 64 + 2 = 87 bytes
+  (data (i32.const 16) "{\22uri\22:\22cas://sha256:0000000000000000000000000000000000000000000000000000000000000000\22}")
+  (func (export "run") (param $ptr i32) (param $len i32)
+    (local $r i32)
+    (local.set $r (call $blob_get (i32.const 16) (i32.const 87)))
+    (if (i32.lt_s (local.get $r) (i32.const 0))
+      (then
+        (call $emit (i32.const 16) (i32.const 0))
+        (return)))
+    (call $emit
+      (i32.add (local.get $r) (i32.const 4))
+      (i32.load (local.get $r)))))
+"#;
+
+/// The blob gate is linked, not guarded — the same treatment `fetch` gets.
+#[test]
+fn a_module_importing_blob_get_is_refused_unless_the_host_allowed_it() {
+    // Refused by NAME at instantiation, before one instruction. And note the
+    // gate is per-capability: allowing `fetch` does not allow `blob_get`, so
+    // the widest existing grant still does not open this door.
+    for limits in [Limits::default(), Limits { allow_fetch: true, ..Default::default() }] {
+        let e = run(&wasm(BLOB_READER), &serde_json::Value::Null, &limits).unwrap_err();
+        match e {
+            SandboxError::ForbiddenImport { ref module, ref name } => {
+                assert_eq!(module, "areev");
+                assert_eq!(name, "blob_get");
+            }
+            other => panic!("got {other}"),
+        }
+    }
+}
+
+/// And the converse: allowing blobs does not allow the network.
+#[test]
+fn allowing_blobs_does_not_link_fetch() {
+    let limits = Limits { allow_blob: true, ..Default::default() };
+    let e = run(&wasm(FETCHER), &serde_json::Value::Null, &limits).unwrap_err();
+    match e {
+        SandboxError::ForbiddenImport { ref name, .. } => assert_eq!(name, "fetch"),
+        other => panic!("got {other}"),
+    }
+}
+
+/// With the capability allowed but no broker wired, a blob read is a typed
+/// error the guest can read — never a silent success, and never a read from
+/// somewhere the host did not name.
+#[test]
+fn a_blob_module_with_no_broker_gets_an_error_it_can_read() {
+    let _guard = env_lock();
+    std::env::remove_var("AREEV_EGRESS_URL");
+    std::env::remove_var("AREEV_EGRESS_TOKEN");
+    let limits = Limits { allow_blob: true, ..Default::default() };
+    let out = run(&wasm(BLOB_READER), &serde_json::Value::Null, &limits).unwrap();
+    let err = out.output["error"].as_str().unwrap_or_default();
+    assert!(err.contains("no broker"), "got {}", out.output);
+    assert_eq!(out.blob_reads, 1, "the attempt is still counted");
+}
+
+/// A pure module is unaffected by the second gate existing, and its outcome
+/// stays byte-identical: `blob_reads` is omitted when zero.
+#[test]
+fn a_pure_module_is_unchanged_by_the_blob_gate() {
+    let limits = Limits { allow_blob: true, ..Default::default() };
+    let out = run(&wasm(ECHO), &serde_json::json!({ "x": 1 }), &limits).unwrap();
+    assert_eq!(out.output, serde_json::json!({ "ok": true }));
+    assert_eq!(out.blob_reads, 0);
+    let json = serde_json::to_value(&out).unwrap();
+    assert!(json.get("blob_reads").is_none(), "omitted when zero: {json}");
+    assert!(json.get("fetches").is_none(), "and so is the 1.6 field: {json}");
+}
+
 /// The same guest, but the host never opted in.
 #[test]
 fn a_module_importing_fetch_is_refused_unless_the_host_allowed_it() {

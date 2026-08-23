@@ -571,6 +571,62 @@ fn the_capability_runtime_passes_allow_fetch_to_the_sandbox() {
     assert!(argv.contains("--fuel 5000"), "{argv}");
 }
 
+/// `--allow-blob` comes off the DECLARATION, not the runtime string (#106).
+///
+/// The asymmetry with `--allow-fetch` is the point: egress has a host-side
+/// grant behind it that narrows the runtime's permission afterwards, so that
+/// flag can be broad. A blob read has no second key — the declaration is the
+/// only thing that says yes — so an http-only module must not get the import
+/// merely for being `wasm32-areev-io`.
+#[cfg(unix)]
+#[test]
+fn allow_blob_is_passed_only_when_the_module_declared_it() {
+    for (caps, want_blob) in [
+        (gmail_caps(), false),
+        (json!([{"blob": {"read": true}}]), true),
+        (
+            json!([
+                {"http": {"hosts": ["https://gmail.googleapis.com"], "methods": ["POST"],
+                          "credentials": ["gmail"]}},
+                {"blob": {"read": true}}
+            ]),
+            true,
+        ),
+        // Declared and declined: the import stays unlinked.
+        (json!([{"blob": {"read": false}}]), false),
+    ] {
+        let rig = Rig::new();
+        let uri = rig.put_blob(b"\0asm-io-module");
+        let plan = plan_with_capabilities(
+            &rig,
+            &uri,
+            "wasm32-areev-io",
+            Some(caps.clone()),
+            Some(json!({"max_blob_bytes": 2048})),
+        );
+        let fake = fake_sandbox(&rig, "fake-sandbox-blob.sh");
+        let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+            .allow(&uri)
+            .cache_dir(rig.dir.join("cache"))
+            .sandbox_cmd(fake.to_str().unwrap())
+            .with_egress(areev_run::EgressHandle::new(capability_broker()));
+        let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+        let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+        assert_eq!(outcome, RunOutcome::Completed);
+
+        let records = rig.facade.with_store(|m| m.step_actions("ops", &plan, None, 10)).unwrap();
+        let grain = rig.facade.with_store(|m| m.get(&records[0].1)).unwrap();
+        let argv = grain.get_str("tool_content").unwrap_or_default().to_string();
+        assert_eq!(
+            argv.contains("--allow-blob"),
+            want_blob,
+            "declaration {caps} should{} open the blob gate: {argv}",
+            if want_blob { "" } else { " not" }
+        );
+        assert!(argv.contains("--max-blob-bytes 2048"), "the ceiling rides too: {argv}");
+    }
+}
+
 /// A capability module with no broker configured fails with the fix named,
 /// rather than starting and having every call refused by a broker that is not
 /// there.

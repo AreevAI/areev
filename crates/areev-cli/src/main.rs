@@ -2891,7 +2891,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
         // ── areev run: the governed workflow runtime (governed-agents §8) ──
         "run" => {
-            return run_run(m, &ns, &flags, &positional);
+            return run_run(m, &db, &ns, &flags, &positional);
         }
         // ── areev eval: evalsets + the §7.4 gating edge ──
         "eval" => {
@@ -3267,6 +3267,11 @@ fn run_retention(
 /// time-travel / in-flight migration.
 fn run_run(
     m: Areev,
+    // The memory's own path, threaded in so the broker can serve this run's
+    // CAS blobs to a declared capability tool (#106). Taken from the resolved
+    // `--db` rather than from the open handle, because the lock-free blob read
+    // deliberately works from the path and never the handle.
+    db: &str,
     ns: &str,
     flags: &HashMap<String, String>,
     positional: &[String],
@@ -3287,6 +3292,13 @@ fn run_run(
     let egress: Option<areev_run::EgressHandle> = match run_stack::build_egress(flags)? {
         None => None,
         Some(broker) => {
+            // The other mediated door (#106): a module that declared
+            // `{"blob": {"read": true}}` reads stored bytes through this same
+            // broker, on this same token. Wired from the run's own memory
+            // path, and by path rather than by handle — `read_blob_offline`
+            // takes no lock, so serving an attachment never contends with the
+            // driver's exclusive hold on the file it came from.
+            broker.serve_blobs(db);
             let broker = Arc::new(broker);
             broker_guard = Some(Arc::clone(&broker));
             Some(areev_run::EgressHandle::new(broker))

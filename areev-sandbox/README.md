@@ -5,7 +5,8 @@ set. Invoked as a subprocess.
 
 ```bash
 areev-sandbox --module extract.wasm [--fuel N] [--max-pages N] \
-              [--allow-fetch] [--max-response-bytes N] < input.json
+              [--allow-fetch] [--max-response-bytes N] \
+              [--allow-blob] [--max-blob-bytes N] < input.json
 ```
 
 JSON on stdin, JSON on stdout, one process per invocation — the same contract as
@@ -35,7 +36,10 @@ content-addressed tool, and it forbade exactly the I/O real agents need.
 | Engine runtime | Import set | Determinism |
 |---|---|---|
 | `wasm32-areev` | `areev::emit` | pure — **re-execution-provable** |
-| `wasm32-areev-io` | `+ areev::fetch` | deterministic **modulo journaled effects** |
+| `wasm32-areev-io` | `+ areev::fetch`, `+ areev::blob_get` | deterministic **modulo journaled effects** |
+
+`--allow-blob` links the second one, and is derived from the module's
+declaration rather than its runtime — see `areev::blob_get` below.
 
 The guest still gets no socket. It gets one unforgeable capability to **ask the
 host**, and this binary forwards to the engine's credential broker over
@@ -112,6 +116,39 @@ nondeterminism is what durable-execution engines spend enormous machinery
 taming, and it would add an ordering side channel to a boundary whose whole
 point is that it leaks nothing.
 
+### `areev::blob_get(ptr, len) -> i32`
+
+**In**: a UTF-8 JSON request naming ONE content address. There is no
+enumeration and no name lookup, so a module reads bytes it was handed a
+reference to and cannot go looking for others:
+
+```json
+{ "uri": "cas://sha256:<64 hex>" }
+```
+
+**Out**: the same `[u32 little-endian length][bytes]` framing `fetch` uses —
+one more function, not one more pattern — except the bytes are the **blob
+itself** rather than JSON wrapping it. A blob is arbitrary binary; putting it
+through JSON would mean base64, which costs a third of the size and obliges
+every guest to carry a decoder to read its own attachment. On failure the
+payload is `{"error": "…"}` instead, and this binary tells the two apart by the
+broker's HTTP status rather than by sniffing a payload that might legitimately
+begin with `{`. A **negative** return still means the host could not place a
+response at all.
+
+The read goes through the same broker on the same token, for the same reason
+the network does: a module that could read the `.blobs` sidecar itself would be
+a module with a file descriptor, and — decisively — a read performed in this
+process has no way back to the engine to be journaled. The tool this exists for
+parses untrusted attachments, which is exactly where a hole in the audit trail
+is least affordable. Every read lands in the memory as a `blob_read`
+Observation naming the address and the byte count.
+
+`--allow-blob` is derived from the module's **declaration**
+(`{"blob": {"read": true}}`), not from its runtime, unlike `--allow-fetch`:
+egress has a host-side grant behind it that narrows the runtime's permission
+afterwards, and a blob read has no such second key.
+
 ## Limits
 
 | Limit | Default | Stops |
@@ -121,14 +158,16 @@ point is that it leaks nothing.
 | memory pages (declared max) | 256 (16 MiB) | a guest ballooning linear memory |
 | payload | 8 MiB | an oversized input or result |
 | response bytes (`--max-response-bytes`) | 1 MiB | an upstream ballooning the guest's memory |
+| blob bytes (`--max-blob-bytes`) | 8 MiB | one stored attachment ballooning the guest's memory |
 
 Overruns are typed errors, never truncation — a tool handed half a response
 computes a wrong answer with nothing to show for it.
 
 Fuel use is deterministic for a given module and input, which is what makes a
 **pure** Tier C tool re-execution-provable. A module that made brokered calls is
-deterministic only modulo those calls; the outcome's `fetches` count is how you
-tell the two apart.
+deterministic only modulo those calls; the outcome's `fetches` and `blob_reads`
+counts are how you tell the two apart. Both are omitted when zero, so a pure
+module's outcome stays byte-identical.
 
 ## Why this is a standalone package
 

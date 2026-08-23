@@ -42,6 +42,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The sandbox needed no change — it forwards the guest's JSON verbatim, so the
   guest ABI is the broker ABI.
 
+- **Capability tools can read CAS blobs** (#106). A Tool grain declares
+  `{"blob": {"read": true}}` and its module gains `areev::blob_get`, reading
+  one stored blob by content address. This closes the gap that left a whole
+  class of tool stuck outside Tier C: a trigger's connector already files email
+  attachments as CAS blobs, and the tool that parses them is the one that most
+  wants sandboxing — its input is untrusted by construction — yet it was the
+  one tool that structurally could not be, because `wasm32-areev-io` could
+  reach the network but not the bytes the memory already held.
+
+  Read-only, and by address only: no enumeration, no write, no namespace
+  access, so a module fetches bytes it was handed a `cas://` reference to and
+  cannot browse the memory. The two capabilities are independent — a module
+  that parses attachments and calls nothing declares only `blob` — and gated
+  asymmetrically on purpose: `--allow-fetch` derives from the pinned runtime,
+  because a host-side grant narrows it afterwards, while `--allow-blob` derives
+  from the pinned *declaration*, because nothing narrows a blob read after the
+  fact.
+
+  **The read goes through the broker, not the sandbox**, and that is the
+  design's substance rather than a detail. Reading the `.blobs` sidecar
+  directly from the subprocess looks free — the read is lock-free, which is
+  what already lets `areev blob get` work mid-run — but the subprocess is
+  handed no memory path, cannot take `areev-store` without giving up the
+  five-dependency standalone posture that makes it a credible boundary, reads
+  nothing on the Postgres backend, and has **no channel back to the driver**:
+  stdout is the guest's result and the stderr fuel line is prose. A read
+  performed there could not be journaled, putting the hole in the evidence
+  exactly where the untrusted bytes are. Through the broker, every read lands
+  as a `blob_read` Observation naming the address and byte count, drained on
+  the same superstep boundary as `egress_call` — and the guarantee becomes one
+  sentence: **the guest gets neither a socket nor a file descriptor.**
+
+  Success answers raw bytes rather than JSON, since a blob is binary and
+  base64 would tax every guest with a decoder to read its own attachment;
+  errors stay JSON and are told apart by status, never by sniffing a payload
+  that may legitimately begin with `{`. Ceiling is `runtime_limits.max_blob_bytes`
+  (default 8 MiB, the payload cap). Embedded backend only — on PostgreSQL a
+  blob lives in-schema, so the call returns a `501` naming the limitation
+  rather than reporting the attachment as missing.
+
 ### Changed
 
 - **The framework adapters moved out of this repo.** `areev-langgraph` and
