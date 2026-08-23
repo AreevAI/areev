@@ -18,22 +18,43 @@ authority, in steps you can inspect, undo, and re-measure.
   and what the agent did comes back as the evidence its next improvement is proposed from.</em>
 </p>
 
-Every enterprise wants an adaptive agent. Almost none will accept one that
-changes itself unsupervised. Areev's answer is to make improvement an
-**operation with a gate on it**: the agent proposes, a named person disposes,
-the change carries a written reason and a stored inverse, and afterwards the
-system re-measures whether it actually helped.
+Every team that ships an agent wants the same next thing: an agent that
+**gets better from its own experience**. Almost none ship one, because the
+hard part is not the learning — it is four production problems that model
+quality cannot solve:
 
-It is a memory engine you **embed** — the agent's knowledge *and* its
-execution history in one content-addressed file, queried with a real query
-language ([CAL](docs/cal-reference.md)), with no server in the recall path.
-One substrate answers both questions a serious deployment asks: **what should
-this agent recall right now?** and **what did it do, on whose authority, and
-can we take it back?**
+**Trust.** An agent that rewrites its own instructions, memory, or tools
+unsupervised is undeployable in any serious environment — not because it
+won't improve, but because when it does, nobody can say what changed, or
+why. "The agent learned" is not an answer a security review, an auditor,
+or the [EU AI Act](docs/eu-ai-act.md) accepts.
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,212 tests · 80.1% coverage** | **`FORGET SUBJECT`** is one operation |
-|:---:|:---:|:---:|:---:|
-| [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
+**Evidence.** Improvement has to be learned *from* something. In most
+stacks the agent's history is scattered across a vector store, a tracing
+SaaS, and application logs — three systems, three lifecycles, no shared
+identity. A proposal built on evidence you cannot cite is a guess with
+confidence attached.
+
+**Blast radius.** A change that helps this week can regress next week on
+different inputs. Without a stored inverse and a scheduled re-measurement,
+every improvement is a one-way door — so careful teams rationally refuse
+them all, and the agent stays frozen at day-one behavior.
+
+**Authority.** When a change does land, someone approved it — or nobody
+did. If the system cannot name the approver, their written reason, and the
+exact change applied, the audit trail is a Slack thread.
+
+Areev turns these four from policy documents into mechanics. Improvement
+becomes an **operation with a gate on it**: the agent proposes from its own
+recorded history, citing its evidence by hash; a named person disposes,
+with a written reason; every apply stores its inverse; and the system
+re-measures afterwards whether the change actually helped — a late
+regression proposes its own revert. The gate is enforceable rather than
+aspirational because the agent's knowledge *and* its execution history
+live in one content-addressed substrate, queried with a real query
+language ([CAL](docs/cal-reference.md)) — one place that answers both
+questions a serious deployment asks: **what should this agent recall right
+now?** and **what did it do, on whose authority, and can we take it back?**
 
 Three honest limits, because they are the reason this is deployable: it
 improves the agent's **memory, never model weights** (Areev ships no trainer);
@@ -45,7 +66,7 @@ metric; it stays an explicit grant from the host.
 
 ---
 
-## The problem — and the solution
+## Five ways agent memory rots
 
 <p align="center">
   <img src="docs/assets/problem-solution.png" width="900"
@@ -105,6 +126,10 @@ not raise the same evidence twice. Both scripts assert their own results and
 | **[Areev Trigger](docs/triggers.md)** — the cadence | Standing rules that start workflows — eight kinds, from cron to memory-predicates | The rule is a **grain**, so the cadence travels with the memory. **No daemon** — evaluation is a cheap idempotent command |
 | **[CAL](docs/cal-reference.md)** — the context | A query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit | A turn needs a *budget-shaped* prompt, and deterministic allocation is what makes a replay comparable |
 | **[The store](docs/why-areev.md#storage-a-plain-sqlite-file-or-a-postgres-schema)** — the record | A provenance graph in a plain **SQLite file** ([Turso](https://github.com/tursodatabase/turso)), or a **PostgreSQL** schema for the server tier | **~30 µs** recall in-process; one conformance suite pins both backends to identical semantics |
+
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,288 tests · 80.1% coverage** | **`FORGET SUBJECT`** is one operation |
+|:---:|:---:|:---:|:---:|
+| [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
 ---
 
