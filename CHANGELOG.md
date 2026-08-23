@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-08-23
+
 ### Added
 
 - **Capability tools can set non-credential request headers** (#105). A
@@ -96,6 +98,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The Hermes provider smoke, which rode the removed `adapters` CI job for
   its maturin-built venv, now runs as the last step of the `python` job (and
   so on macOS as well as Linux).
+- **The console's memory graph draws entities, not values.** Every fact's
+  right-hand side used to become a node, so `amount: 4400.00`,
+  `currency: USD` and `payment_terms: net_45` were drawn as peers of the
+  people and vendors they describe — the demo memory rendered as 91 nodes and
+  126 edges for the ~35 entities it actually holds, which is a hairball
+  rather than a graph. An object is now kept only when the memory also knows
+  something *about* it (it is a subject somewhere too) or it arrived through a
+  relation that points at an entity (`vendor`, `owner`, `reports_to`,
+  `headquartered_in`, …), with a literal-shaped veto so an unfamiliar schema
+  cannot smuggle a scalar back in. The same file now draws as 35 nodes and 36
+  edges with no orphans. A memory whose relations are not recognised could be
+  filtered down to nothing, so a graph left with fewer than three linked
+  entities falls back to unfiltered rather than showing an empty canvas.
+- **The graph is legible and reproducible.** Labels are placed by priority —
+  the focused node, then the relations coming off it, then names, near before
+  far — each trying several positions before it is dropped, with the node
+  circles treated as obstacles, so names no longer stack on each other or
+  print across a node. Start positions are seeded from the node name instead
+  of `Math.random()`, so a file lays out the same way on every reload and a
+  re-shot screenshot is byte-identical. A rebuild that places nothing new
+  keeps the positions it has, which stops the rewind scrubber re-converging
+  the whole layout under the cursor on every drag.
+- The graph legend said "Things they like", which read as a personal-assistant
+  memory and misnamed every invoice and process in a business one; it is now
+  "Everything else", alongside "Projects & processes".
+- The console rail carries the full v2 lockup (the A, `reev`, and the
+  improvement loop) rather than the A beside a text "Areev" — two bitmaps,
+  because `BRAND.md` wants the white `reev` as its own artwork rather than a
+  CSS recolor. All ten README screenshots were re-shot against the real
+  console, as a console change requires.
 
 ## [1.6.0] — 2026-08-23
 
@@ -1649,6 +1681,7 @@ ecosystem adapters, and the enterprise plane.
   (`bench`, `voice_loop`) run as examples.
 
 [Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.0...HEAD
+[1.6.1]: https://github.com/AreevAI/areev/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AreevAI/areev/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/AreevAI/areev/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/AreevAI/areev/compare/v1.5.0...v1.5.1

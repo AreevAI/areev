@@ -1,13 +1,13 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "crates": 17,
   "rust": {
     "files": 275,
-    "physical_lines": 164996,
+    "physical_lines": 165005,
     "source_code": 78979,
-    "test_code": 47356,
+    "test_code": 47358,
     "unit_test_code": 22096,
-    "integration_test_code": 25260,
+    "integration_test_code": 25262,
     "example_code": 669,
     "test_functions": 2309,
     "test_ratio": 0.6,
@@ -49,9 +49,9 @@
     {
       "name": "areev-run",
       "files": 20,
-      "physical": 13162,
+      "physical": 13171,
       "source_code": 5182,
-      "test_code": 4650,
+      "test_code": 4652,
       "tests": 145
     },
     {
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 52,
-    "lines": 22184
+    "lines": 22244
   },
   "error_codes": 91,
   "bindings": {

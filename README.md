@@ -182,6 +182,32 @@ its state with the [pip adapters](docs/quickstart.md#keep-your-langgraph-or-crew
 
 ---
 
+## See it yourself
+
+The demo memory behind every screenshot is committed to this repo — 466
+grains, 9 governed runs, 13 real recommendations, one open fork:
+
+```bash
+areev ui --db data/demo.db --ns accounting     # → http://127.0.0.1:7437
+```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
+    <img src="demo/screens/graph-light.png" width="900"
+         alt="The Areev console: the entities in an agent's memory — people, vendors, invoices, processes — drawn as a provenance graph around a focused person, with a rewind scrubber along the bottom">
+  </picture>
+</p>
+
+<p align="center"><em>The people, vendors, invoices and processes this agent knows — as a graph you can walk, and rewind.<br>
+A real console over the real <a href="data/demo.db"><code>demo.db</code></a> in this repo. Nothing here is a mockup.</em></p>
+
+Rebuild it from scratch with [`scripts/build_demo.sh`](scripts/build_demo.sh):
+every run in it is a real journal and every recommendation is a real analyzer
+output, not rows written to look convincing.
+
+---
+
 ## The execution graph — runs a person can gate
 
 <p align="center">
@@ -317,30 +343,6 @@ How each number is produced, and the benchmark receipts:
 [LoCoMo accuracy + honesty metrics](crates/areev-bench/RESULTS.md).
 
 ---
-
-## See it yourself
-
-The demo memory behind every screenshot is committed to this repo — 466
-grains, 9 governed runs, 13 real recommendations, one open fork:
-
-```bash
-areev ui --db data/demo.db --ns accounting     # → http://127.0.0.1:7437
-```
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
-    <img src="demo/screens/graph-light.png" width="900"
-         alt="The Areev console: an agent's memory as a provenance graph, with a rewind scrubber along the bottom">
-  </picture>
-</p>
-
-<p align="center"><em>Every memory the agent holds, as a graph you can walk — and rewind.<br>
-A real console over the real <a href="data/demo.db"><code>demo.db</code></a> in this repo. Nothing here is a mockup.</em></p>
-
-Rebuild it from scratch with [`scripts/build_demo.sh`](scripts/build_demo.sh):
-every run in it is a real journal and every recommendation is a real analyzer
-output, not rows written to look convincing.
 
 ## Documentation
 
