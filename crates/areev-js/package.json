@@ -1,5 +1,5 @@
 {
-  "name": "areev",
+  "name": "@areev/areev",
   "version": "1.6.0",
   "description": "Node.js bindings for Areev, the embedded memory engine for AI agents.",
   "license": "MIT OR Apache-2.0",

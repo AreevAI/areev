@@ -201,12 +201,15 @@ EOF
 
 ## Notes
 
-- Registry names: `areev` on crates.io, PyPI, and npm (unscoped, since
-  1.5.1 — npm support granted the similarity-filter exception and released
-  the `areev-win32-x64-msvc` security hold on 2026-08-22). The scoped
-  `@areev/*` twins (1.2.3–1.5.1) are **deprecated pointers**: never publish
-  new versions to them, and never "un-deprecate" — existing installs keep
-  resolving them forever.
+- Registry names: `areev` on crates.io and PyPI. On npm, the *unscoped*
+  `areev` name is still blocked by npm's similarity filter (403 against
+  `argv`) — a support ticket is open, but as of the 1.6.0 release npm still
+  publishes under the pre-1.5.1 scoped names, `@areev/areev` +
+  `@areev/areev-<platform>`. Check `crates/areev-js/package.json`'s `name`
+  field for which is currently live before assuming either — CLAUDE.md's
+  Status section is the source of truth. `areev-win32-x64-msvc`'s SEPARATE
+  security hold (unrelated to the similarity filter) was released
+  2026-08-22; don't conflate the two the way an earlier pass here did.
 - crates.io rate-limits NEW crate names hard (burst ~5, slow refill, 429
   with retry-after); existing-crate version publishes are much milder.
   Retry on 429 AND on upload timeouts — a timed-out upload may still have

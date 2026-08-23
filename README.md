@@ -132,7 +132,7 @@ Measured on the devices themselves, clock-certified:
 ```bash
 cargo install areev          # the CLI    (prebuilt binaries: see the quickstart)
 pip install areev            # Python
-npm install areev     # Node
+npm install @areev/areev     # Node (unscoped `areev` is pending an npm exception)
 ```
 
 Store a fact, recall it, hand it to a model:

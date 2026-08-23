@@ -2,16 +2,19 @@
 
 Node.js (napi-rs) bindings for Areev, the embedded memory engine for AI agents.
 
-`areev-js` is the napi-rs native addon that exposes Areev to Node.js as the
-`areev` package. It mirrors the Python binding with the same thin,
-version-stable FFI convention: scalar arguments in, JSON strings out for
-anything structured, and errors thrown as JavaScript `Error`s. Because the
-underlying engine is native, this is a compiled Node addon rather than WASM. One
-memory is one file, opened with a namespace, giving JavaScript agents durable
-add / recall / supersede / forget over content-addressed memory.
+`areev-js` is the napi-rs native addon that exposes Areev to Node.js, published
+as `@areev/areev` — the unscoped `areev` name is pending an npm similarity-filter
+exception (npm's spam filter reads it as too close to `argv`); the scoped
+package is not a fork, just the current install name. It mirrors the Python
+binding with the same thin, version-stable FFI convention: scalar arguments
+in, JSON strings out for anything structured, and errors thrown as JavaScript
+`Error`s. Because the underlying engine is native, this is a compiled Node
+addon rather than WASM. One memory is one file, opened with a namespace,
+giving JavaScript agents durable add / recall / supersede / forget over
+content-addressed memory.
 
 ```js
-const { Areev } = require('areev')
+const { Areev } = require('@areev/areev')
 
 const mem = new Areev('caller.db', 'caller') // 3rd arg: passphrase for AES-256 at rest
 const h = await mem.addFact('john', 'prefers', 'tea', 0.95)

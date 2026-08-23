@@ -194,6 +194,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   indistinguishable from the connection having failed. The broker's contract
   is to answer with the response, so it now does.
 
+- **The Node binding publishes as `@areev/areev` again, not `areev`.** npm's
+  similarity filter still 403s the unscoped name against `argv` — the
+  1.5.2 release attempted it twice (once before, once after an unrelated SBOM
+  fix) and both times the four platform packages published while the main
+  package failed, leaving a broken partial release on the registry. A
+  support ticket for the unscoped name is open; until it resolves, `npm
+  install @areev/areev` is correct and `npm install areev` is not. crates.io
+  and PyPI are unaffected.
+
 ### Not in this release
 
 Deliberately out of #101's first phase: verify-by-re-execution against the
