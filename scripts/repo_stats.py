@@ -339,7 +339,7 @@ def collect() -> dict:
             r"\b[A-Z]{3}-E\d{3}\b", err_path.read_text(encoding="utf-8")
         )))
 
-    py = walk(REPO / "adapters", {".py"}) + walk(REPO / "crates", {".py"})
+    py = walk(REPO / "crates", {".py"})
     ts = walk(REPO / "crates" / "areev-js", {".mjs", ".ts"})
 
     coverage = None

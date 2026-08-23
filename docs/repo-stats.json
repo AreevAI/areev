@@ -3,24 +3,24 @@
   "crates": 17,
   "rust": {
     "files": 275,
-    "physical_lines": 163098,
-    "source_code": 78475,
-    "test_code": 46548,
-    "unit_test_code": 21959,
-    "integration_test_code": 24589,
+    "physical_lines": 163376,
+    "source_code": 78555,
+    "test_code": 46633,
+    "unit_test_code": 21995,
+    "integration_test_code": 24638,
     "example_code": 669,
-    "test_functions": 2285,
+    "test_functions": 2288,
     "test_ratio": 0.59,
-    "test_share": 37.2
+    "test_share": 37.3
   },
   "per_crate": [
     {
       "name": "areev-cal",
       "files": 39,
-      "physical": 54361,
-      "source_code": 23854,
-      "test_code": 18275,
-      "tests": 984
+      "physical": 54391,
+      "source_code": 23861,
+      "test_code": 18287,
+      "tests": 985
     },
     {
       "name": "areev-store",
@@ -49,10 +49,10 @@
     {
       "name": "areev-run",
       "files": 20,
-      "physical": 11600,
-      "source_code": 4793,
-      "test_code": 3955,
-      "tests": 129
+      "physical": 11848,
+      "source_code": 4866,
+      "test_code": 4028,
+      "tests": 131
     },
     {
       "name": "areev-loop",
@@ -152,12 +152,12 @@
     }
   ],
   "docs": {
-    "files": 51,
-    "lines": 21521
+    "files": 52,
+    "lines": 21972
   },
   "error_codes": 91,
   "bindings": {
-    "python_files": 27,
+    "python_files": 13,
     "node_test_files": 4
   },
   "coverage": {

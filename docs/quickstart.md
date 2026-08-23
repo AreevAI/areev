@@ -146,9 +146,10 @@ event: [`triggers.md`](triggers.md) · compliance maps:
 
 ## Keep your LangGraph or CrewAI stack — govern its state
 
-You don't have to adopt the runtime to get the governance. Two pip adapters
-(in [`adapters/`](../adapters/)) put Areev underneath the framework you
-already run:
+You don't have to adopt the runtime to get the governance. Two pip adapters —
+[`areev-langgraph`](https://pypi.org/project/areev-langgraph/) and
+[`areev-crewai`](https://pypi.org/project/areev-crewai/) — put Areev
+underneath the framework you already run:
 
 ```python
 # LangGraph: a checkpointer where one thread = one memory file you can
@@ -171,6 +172,11 @@ index rows with a receipt** — the right-to-erasure demo; and the trace/audit
 mirrors are honest about loss: `best-effort` mode counts every dropped event,
 `guaranteed` mode backpressures and never drops (the only mode a compliance
 story may cite).
+
+Both adapters live outside this repo and are **not under active
+development** — 1.0.0 is on PyPI and works against current Areev, but new
+releases wait on demand. If you want either moved forward, say so in an
+[issue](https://github.com/AreevAI/areev/issues) and we will un-park them.
 
 ## Rust
 

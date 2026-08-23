@@ -206,30 +206,10 @@ jobs:
           python -m pip install --upgrade pip maturin pytest
           maturin develop -m crates/areev-py/Cargo.toml
           pytest crates/areev-py/tests/ -v
-
-  adapters:
-    # The Wave-3 ecosystem adapters against PINNED upstream majors
-    # (langgraph-checkpoint >=4.2,<5; crewai >=1.10,<2) — the compatibility
-    # matrix's floor. A weekly canary against unpinned latest is
-    # adapters-canary.yml's job, not this one.
-    name: python adapters (langgraph + crewai)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      - uses: Swatinem/rust-cache@v2
-      - name: Build areev + install adapters + pytest
-        run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip maturin pytest
-          maturin develop -m crates/areev-py/Cargo.toml
-          pip install "langgraph>=1.0,<2" "langgraph-checkpoint>=4.2,<5" "crewai>=1.10,<2"
-          pip install -e adapters/areev-langgraph -e adapters/areev-crewai
-          pytest adapters/areev-langgraph/tests adapters/areev-crewai/tests -v
+      # The Hermes MemoryProvider plugin needs exactly what this job already
+      # built — a maturin `areev` in .venv — and nothing else. It used to
+      # ride the `adapters` job's venv for that reason; that job left with
+      # the adapters (AreevAI/areev-adapters), the plugin did not.
       - name: Hermes provider smoke
         run: |
           . .venv/bin/activate
