@@ -68,26 +68,75 @@ pub fn build_egress(
     if creds.is_none() && hosts.is_none() && tools.is_none() {
         return Ok(None);
     }
+    // How long a MINTED credential may be reused, and which variables a
+    // resolver may see (#113). Both are host config and apply to every
+    // dynamic source this process configures.
+    let ttl_secs = match flag(flags, "credential-ttl") {
+        None => None,
+        Some(v) => Some(
+            v.trim()
+                .parse::<u64>()
+                .map_err(|_| format!("--credential-ttl: expected whole seconds, got {v:?}"))?,
+        ),
+    };
+    let resolver_env: Vec<String> = flag(flags, "resolver-env")
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let mut credentials = std::collections::BTreeMap::new();
-    // name -> owning run principal, for `--credential name=VAR@principal`.
+    // name -> owning run principal, for `--credential name=VAR@principal` and
+    // its source-agnostic sibling `--credential name@principal=…`.
     let mut owners: Vec<(String, String)> = Vec::new();
     for pair in creds.iter().flat_map(|v| v.split(',')) {
         let pair = pair.trim();
         if pair.is_empty() {
             continue;
         }
-        let (name, spec) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("--credential: expected name=ENV_VAR[@principal], got {pair:?}"))?;
-        // The value is READ here from a variable the host named. A secret
-        // on a command line is a secret in shell history and in `ps`. An
-        // optional `@principal` binds the credential to a run principal (#101).
-        let (cred, owner) = areev_run::Credential::bearer_from_env_spec(spec.trim())?;
-        let name = name.trim().to_string();
+        let (lhs, spec) = pair.split_once('=').ok_or_else(|| {
+            format!(
+                "--credential: expected name=ENV_VAR[@principal], name[@principal]=cmd:COMMAND, \
+                 or name[@principal]=vault:PATH#FIELD, got {pair:?} — note that a comma \
+                 separates credentials, so a resolver command containing one belongs in a script"
+            )
+        })?;
+        // The principal may be named on the NAME side, which is the only
+        // unambiguous place for a `cmd:` source: a command can contain '@'
+        // anywhere, so splitting one on it would bind the credential to a
+        // principal the operator never wrote (#113).
+        let (name, name_owner) = match lhs.trim().split_once('@') {
+            Some((n, p)) if !p.trim().is_empty() => (n.trim(), Some(p.trim().to_string())),
+            Some(_) => {
+                return Err(format!(
+                    "--credential {pair:?}: empty principal after '@' — write name=SOURCE for an \
+                     unbound credential, or name@principal=SOURCE to bind one"
+                ))
+            }
+            None => (lhs.trim(), None),
+        };
+        if name.is_empty() {
+            return Err(format!("--credential {pair:?}: the credential has no name"));
+        }
+        // An env-var value is READ here from a variable the host named — a
+        // secret on a command line is a secret in shell history and in `ps`.
+        // A `cmd:`/`vault:` source reads nothing yet; it is minted per TTL
+        // window at call time, inside the broker.
+        let (source, spec_owner) = areev_run::CredentialSource::from_spec(spec.trim())?;
+        let owner = match (name_owner, spec_owner) {
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "--credential {pair:?}: names a principal on both sides of '=' — pick one"
+                ))
+            }
+            (a, b) => a.or(b),
+        };
+        let name = name.to_string();
         if let Some(o) = owner {
             owners.push((name.clone(), o));
         }
-        credentials.insert(name, cred);
+        credentials.insert(name, source.with_resolver_config(ttl_secs, &resolver_env));
     }
     let policy = match &hosts {
         // Absent means unrestricted, and is reported as such rather than
@@ -111,23 +160,74 @@ pub fn build_egress(
         if spec.is_empty() {
             continue;
         }
+        // A URL anywhere in the spec is an operator writing `cred@https://host`
+        // for the #112 pairing. Split on ':' that would leave `https` sitting
+        // in the host position — a pairing that matches nothing while reading
+        // as a restriction. Caught here, where the whole spec is still intact
+        // and the message can say what to write instead.
+        if spec.contains("://") {
+            return Err(format!(
+                "--tool-egress {spec:?}: pair a credential with a BARE hostname \
+                 (cred@api.example.com), not a URL — this spec is colon-delimited, so a scheme \
+                 or port would tear it apart; scheme and port are narrowed by --allow-host"
+            ));
+        }
         let mut parts = spec.split(':');
         let tool = parts.next().unwrap_or("").trim();
         if tool.is_empty() {
             return Err(format!(
-                "--tool-egress: expected tool:cred+cred:METHOD+METHOD, got {spec:?}"
+                "--tool-egress: expected tool:cred[@host]+cred[@host]:METHOD+METHOD, got {spec:?}"
             ));
         }
         let mut g = areev_run::CallerGrant::new();
         for c in parts.next().unwrap_or("").split('+').map(str::trim) {
-            if !c.is_empty() {
-                g = g.credential(c);
+            if c.is_empty() {
+                continue;
             }
+            // `cred@host` pairs the credential with where it may be sent
+            // (#112); a bare `cred` keeps the older any-host meaning.
+            g = match c.split_once('@') {
+                Some((name, host)) => {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(format!(
+                            "--tool-egress {spec:?}: {c:?} has no credential name before '@'"
+                        ));
+                    }
+                    let host = areev_run::AllowedHost::parse_host_pattern(host, "--tool-egress")?;
+                    g.credential_for(name, vec![host])
+                }
+                None => g.credential(c),
+            };
         }
         for m in parts.next().unwrap_or("").split('+').map(str::trim) {
-            if !m.is_empty() {
-                g = g.method(m);
+            if m.is_empty() {
+                continue;
             }
+            // Validated rather than accepted verbatim: an unrecognized token
+            // here used to become a method nothing would ever match, so a
+            // typo — or a port that survived the colon split — produced a
+            // grant that silently refused every write at runtime.
+            let upper = m.to_ascii_uppercase();
+            if !matches!(
+                upper.as_str(),
+                "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
+            ) {
+                // A field of digits is almost always a port that survived the
+                // colon split (`cred@host:8443`), so say that rather than
+                // leaving the operator to work back from "8443 is not a method".
+                let hint = if m.chars().all(|c| c.is_ascii_digit()) {
+                    " — if you meant a port, drop it: a credential↔host pairing \
+                     names the host, and the port is narrowed by --allow-host"
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "--tool-egress {spec:?}: {m:?} is not an HTTP method; accepted: \
+                     GET, HEAD, POST, PUT, PATCH, DELETE{hint}"
+                ));
+            }
+            g = g.method(&upper);
         }
         grants = grants.grant(tool, g);
     }

@@ -1,0 +1,76 @@
+# The container image is packaging for the same binary the main CI already
+# tests, so this workflow runs only when the packaging itself — or the
+# dependency lockfile it compiles — changes. A full in-container release
+# build on every PR would double CI time for no new signal.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - docker-compose.yml
+      - Cargo.lock
+      - .github/workflows/docker.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - docker-compose.yml
+      - Cargo.lock
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: image build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the image
+        run: docker build -t areev .
+
+      - name: the CLI works with zero flags ($AREEV_DB default)
+        run: |
+          docker volume create areev-smoke
+          docker run --rm -v areev-smoke:/data areev add john prefers "window seat"
+          docker run --rm -v areev-smoke:/data areev recall john | grep -q "window seat"
+
+      - name: the console serves with a token, and refuses without one
+        run: |
+          docker run -d --name ui -v areev-smoke:/data -e AREEV_UI_TOKEN=smoke \
+            -p 127.0.0.1:7437:7437 areev \
+            ui --db /data/areev.db --ns caller --addr 0.0.0.0:7437 --allow-remote \
+               --token-env AREEV_UI_TOKEN
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS -H "Authorization: Bearer smoke" http://127.0.0.1:7437/api/stats; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { docker logs ui; exit 1; }
+          if curl -fsS http://127.0.0.1:7437/api/stats; then
+            echo "unauthenticated read succeeded — the token gate is broken"; exit 1
+          fi
+          docker rm -f ui
+
+      - name: the heartbeat ticks
+        run: |
+          docker run -d --name hb -v areev-smoke:/data -e AREEV_HEARTBEAT_SECS=1 \
+            areev heartbeat --ns caller
+          sleep 4
+          docker logs hb 2>&1 | grep -q "areev heartbeat: evaluating every 1s"
+          docker rm -f hb
+
+      - name: the compose files parse
+        run: |
+          AREEV_UI_TOKEN=x docker compose config -q
+          AREEV_UI_TOKEN=x POSTGRES_PASSWORD=x docker compose -f docker/compose.fleet.yml config -q

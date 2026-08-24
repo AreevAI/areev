@@ -30,6 +30,19 @@ against the release's `SHA256SUMS`. Or grab an archive straight from the
 notebook, where the wheel covers the memory and the loop but `areev ui` (the
 web console, including the review queue) lives in the binary.
 
+Or run it as a container — the repo's [`Dockerfile`](../Dockerfile) builds
+the binary with the Postgres and TLS features already compiled in (a stock
+install has neither):
+
+```bash
+git clone https://github.com/AreevAI/areev && cd areev
+docker build -t areev .
+docker run --rm -v areev-data:/data areev add john prefers "window seat"
+```
+
+The image serves every role — console and a trigger heartbeat —
+and maps onto AWS / GCP / Azure / Kubernetes: [`docker.md`](docker.md).
+
 Embedding the store in a Rust project? Add the library crates instead of the CLI:
 
 ```bash

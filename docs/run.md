@@ -246,10 +246,63 @@ field. Three rules are deliberate:
 - **Naming a credential is not being allowed to use it.** The tool chooses
   *which* by name; the host decides whether it may. One tool's token buys
   nothing of another's scope.
+- **Being allowed to use it is not being allowed to send it anywhere.** Write
+  `cred@host` to pair a credential with the hostname it may go to:
+
+  ```bash
+  --tool-egress 'sync:gmail@gmail.googleapis.com+sheets@sheets.googleapis.com:POST'
+  ```
+
+  A tool that reads a mailbox and writes a sheet needs both secrets, and
+  without the pairing nothing stops it sending the mailbox token to the sheets
+  API — a bug reaches that as easily as malice. The host is a **bare
+  hostname** (`*.example.com` works); scheme and port are narrowed by
+  `--allow-host`, because this spec is colon-delimited and a URL would tear
+  apart in it. An unpaired `cred` keeps its old meaning: any host the rest of
+  the chain permits.
 
 The grant is host configuration, never a grain — a Definition declaring its own
 reach would be a permission arriving in the same bundle as the code it
 authorizes.
+
+### Where a credential comes from
+
+`--credential NAME=ENV_VAR` reads the value once, at startup. That is right for
+a static API key and wrong for everything a cloud issues: an access token
+expires in about an hour, so a heartbeat running overnight starts failing with
+someone else's `401` and nothing in your logs says why.
+
+Two more sources resolve **at call time**, inside the broker:
+
+```bash
+# anything that prints a token on stdout
+--credential 'sheets=cmd:gcloud auth print-access-token'
+--credential 'zoho=cmd:vault kv get -field=token secret/zoho'
+--credential 'db=cmd:aws secretsmanager get-secret-value --secret-id db --query SecretString --output text'
+
+# or read Vault/OpenBao directly, with no vault binary in the image
+--credential 'sheets=vault:secret/data/google#access_token' \
+  --resolver-env VAULT_ADDR,VAULT_TOKEN
+```
+
+The tool still names a label and holds nothing — only where the value came
+from changed. Four things worth knowing:
+
+- **Values are cached for `--credential-ttl` seconds** (default 300) and minted
+  again after, so revoking a secret upstream takes effect without a restart.
+- **A failing resolver refuses the call.** It never falls through to an
+  unauthenticated request, and the error names *which* credential failed
+  without ever repeating what the resolver printed.
+- **`--resolver-env` is how a resolver gets its own credentials.** Those
+  variables are withheld from every *other* subprocess and re-admitted only for
+  resolvers, which otherwise see little more than `PATH` and `HOME`. Naming
+  them is not optional bookkeeping: a `VAULT_TOKEN` left ambient is readable by
+  every `--tool-cmd` you run, and it can fetch every secret, not just this one.
+- **Bind a principal on the name side** for these — `--credential
+  'sheets@user:alice=cmd:…'` — because a command may itself contain `@`.
+
+A resolver command containing a comma has to live in a script: commas separate
+credentials in this flag.
 
 **A refusal is journaled, not just logged.** It reaches the tool as a `403`
 carrying `RUN-E022`, prints to stderr when the run ends, *and* lands in the
@@ -422,6 +475,30 @@ refused **at write time**, so a module that tries to declare the credential
 channel is unwritable rather than writable-and-refused-later. Matching is
 case-insensitive, because HTTP field names are.
 
+**One `http` block per service.** `capabilities` may carry several, and a call
+must be admitted by a **single** block in full — its host *and* its path *and*
+its method *and* its credential *and* its headers. That is what keeps a
+two-service tool from sending one service's secret to the other:
+
+```json
+"capabilities": [
+  { "http": { "hosts": ["https://gmail.googleapis.com"],
+              "methods": ["GET"], "credentials": ["gmail"] } },
+  { "http": { "hosts": ["https://sheets.googleapis.com"],
+              "methods": ["POST"], "credentials": ["sheets"] } }
+]
+```
+
+Merged into one block, that declaration would permit `gmail` on a Sheets
+request — the lists are read as a pairing per block, never as two independent
+memberships. Blocks are alternatives, so writing several can only narrow: a
+call refused by every block is refused, and the refusal names the pairing
+(*"it declares both, but no single capability pairs them"*) rather than
+pretending the credential was undeclared. The host-side `--tool-egress
+'sync:gmail@gmail.googleapis.com:GET'` expresses the same pairing, and both are
+checked — a declaration arrives with the tool, so it is never the only thing
+deciding where a secret may go.
+
 **`capabilities` declares; it never grants.** The effective set is
 `declared ∩ host-granted`, checked on every call, so the declaration can only
 narrow what `--allow-host` / `--credential` / `--tool-egress` already permitted.
@@ -483,7 +560,7 @@ run for user A must not reach user B's data or credentials:
   unrestricted egress policy (no `--allow-host`) still cannot reach loopback,
   link-local, private-range or cloud-metadata addresses on its declaration
   alone — a synced memory can declare any host it likes, and reaching the
-  local console, the hub, or `169.254.169.254` takes an explicit
+  local console or `169.254.169.254` takes an explicit
   `--allow-host` entry, the operator's auditable act. The rule binds every
   redirect hop too. Non-capability callers (connectors, `--tool-cmd` tools)
   are unaffected: their reach was always pure host config. (Syntactic only —
@@ -800,8 +877,9 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 - `Send` targets host-bound nodes only in v1.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
-- One memory = one writer: while a driver holds the file, other writers
-  (including a second `areev run` on the same file) are refused with
+- One memory = one writer: while a driver holds the file, another process
+  (including a second `areev run` on the same file) is refused at open by
+  the OS file lock (`STO-E001`); a second handle inside the same process is
   `STO-E002`. Respond-then-resume across processes works because each verb
   opens, works, and closes.
 

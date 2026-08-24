@@ -6,6 +6,126 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-08-24
+
+### Removed
+
+- **`areev hub` (the "areevd" sync daemon) and the `/api/segment*` endpoints.**
+  Areev no longer runs a networked sync service. Replication is what it already
+  was underneath — `areev stream` writes generations of `.mgb` segments into a
+  directory, `areev follow` applies them — and moving that directory is now
+  always the deployment's job (rsync, object storage, a shared volume). Gone with it: `UiServer::into_hub`, `POST /api/segment`,
+  `GET /api/segment`, `GET /api/segments`, the hub `--retain` archive sweeper,
+  and the console's "Sync across apps" settings tab (`#settings/sync` now lands
+  on the Agent tab).
+
+  The forcing argument is that a hub token is one shared secret over an entire
+  memory — anyone holding it could pull every segment, which is the whole file
+  — and a bundle push is an op-log replay that never crosses the facade's verb
+  checks, so the per-principal credential map governing every other write path
+  had no purchase on it. A surface that can only be all-or-nothing cannot
+  participate in the authorization model the rest of the system is built on.
+  Rationale in full: ARCHITECTURE.md §10, "Sync is file-to-file; Areev runs no
+  networked sync service".
+
+  **Migrating:** a fleet that pushed segments to a hub replaces the HTTP hop
+  with a directory the peers share (`areev stream --to DIR --retain 30d` on the
+  writer, `areev follow --from DIR` on each reader). A deployment that needed
+  concurrent writers against one memory belongs on the **Postgres backend**
+  (`feature = "postgres"`, one memory = one schema), which is the supported
+  answer and always was.
+
+### Added
+
+- **Brokered credentials can be minted per call instead of read once** (#113).
+  `--credential` accepted only an environment variable, which made every
+  brokered secret static for the life of the process — the wrong shape for the
+  credentials capability tools actually use. A Google access token expires
+  roughly hourly, so an unattended heartbeat needed a refresh step outside
+  Areev that it could silently get wrong, and a run parked on a human gate for
+  a day resumed with yesterday's token. Vault and secret-manager users had it
+  sharper: their whole model is short TTLs and central revocation, and an
+  environment variable defeats both.
+
+  Two more sources resolve **inside the broker, at call time**:
+
+  ```bash
+  --credential 'sheets=cmd:gcloud auth print-access-token'
+  --credential 'sheets=vault:secret/data/google#access_token' --resolver-env VAULT_ADDR,VAULT_TOKEN
+  ```
+
+  `cmd:` takes the command's trimmed stdout through the same subprocess seam
+  `--tool-cmd` and `--embed-cmd` use, so it covers `vault`, `gcloud`, `aws` and
+  `az` with no vendor client in the dependency graph; `vault:` reads a
+  Vault/OpenBao KV secret natively (v1 and v2) so a container needs no `vault`
+  binary. What the guest sees is unchanged — it names a label and holds
+  nothing.
+
+  Values are cached for `--credential-ttl` (default 300s) and minted again
+  after, so a revocation upstream takes effect without a restart. A resolver
+  that errors, times out, or returns nothing **refuses the call** rather than
+  sending it unauthenticated, and the error names which credential failed
+  without ever repeating what the resolver printed. A minted value is
+  validated as an HTTP header value, because one containing CR/LF would forge
+  a second header on every request it rides. A 401 on a minted credential
+  always invalidates the cached value and re-issues the request exactly once —
+  but only for `GET`/`HEAD`: a write that 401'd may already have been applied
+  upstream, and the broker does not get to guess.
+
+  `--resolver-env VAR,…` names the variables a resolver needs for its **own**
+  authentication. They are registered as secrets (withheld from every
+  subprocess seam) and re-admitted only for resolver spawns, which run under
+  `EnvPolicy::ClearExcept`. This is load-bearing rather than tidy: a
+  `VAULT_TOKEN` left ambient is readable by every `--tool-cmd` child and can
+  fetch *every* secret, not just the one it was for — #100's leak, one level
+  up. Bind a principal on the name side for these sources (`--credential
+  'sheets@user:alice=cmd:…'`), because a command may itself contain `@`.
+  `Credential`'s `Debug` is now redacted. Available on `areev run`, `areev
+  trigger run`, and both bindings' `credentials_json`.
+  Setup per platform: `docs/cookbook.md` §19. Rationale: ARCHITECTURE.md §10,
+  "A brokered credential's source is a seam, resolved in the broker".
+
+### Security
+
+- **A brokered credential is now bound to a host, not only to a caller**
+  (#112). `capabilities.http` carried `hosts` and `credentials` as independent
+  lists and the permit check tested them independently, so **any declared
+  credential could be attached to any declared host** — and a second `http`
+  entry was refused outright, so a tool talking to two services had no way to
+  say which secret belonged to which. A tool that reads a mailbox and writes a
+  sheet could therefore send the mailbox token to the sheets API: the
+  confused-deputy case the broker exists to prevent, reachable by an ordinary
+  bug (one wrong label in the guest) as easily as by malice.
+
+  Both halves of `declared ∩ host-granted` can now express the pairing, and
+  both are checked. `capabilities` accepts **repeated `http` blocks**, and a
+  call must be admitted by ONE block as a whole tuple `(host, path, method,
+  credential, headers)`. The host-side grant gained the same:
+  `--tool-egress 'sync:gmail@gmail.googleapis.com:POST'` pairs a credential
+  with the bare hostname it may reach (`*.example.com` works; scheme and port
+  stay with `--allow-host`, because the spec is colon-delimited and a URL
+  would tear apart in it). A refusal that names both halves reads apart from
+  an undeclared credential — different bugs, different fixes.
+
+  **Compatible in both directions.** A single-block declaration behaves exactly
+  as before, an unpaired grant still means any host the rest of the chain
+  permits, and N blocks admit the union of N tuples rather than the
+  cross-product their merger produced — so the change can only narrow.
+  `CapabilityDenied` gains a `CredentialHost` variant and `CallerGrant`'s
+  `credentials` field is now private behind `credential()` /
+  `credential_for()`; `Broker::start` takes `CredentialSource` values
+  (`Credential` converts with `.into()`).
+  Rationale: ARCHITECTURE.md §10, "A brokered credential is bound to a host,
+  not only to a caller".
+
+  **Scope:** this covers the `areev run` path — brokered tools and capability
+  tools. A *trigger connector* still holds every credential the trigger
+  configured for any host in its `allowed_outbound_hosts`: one connector runs
+  per evaluation pass, so its grant is derived from the credential list rather
+  than written, and it carries no declaration. Unchanged from previous
+  releases, now noted in `docs/triggers.md`; give a trigger only the
+  credentials its connector needs.
+
 ## [1.6.1] — 2026-08-23
 
 ### Added
@@ -1680,7 +1800,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.2...HEAD
+[1.6.2]: https://github.com/AreevAI/areev/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AreevAI/areev/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AreevAI/areev/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/AreevAI/areev/compare/v1.5.1...v1.5.2

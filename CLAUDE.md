@@ -53,6 +53,8 @@ python3 scripts/coverage.py --lcov lcov.info --check      # what CI asserts (2-p
 
 scripts/build_demo.sh               # rebuild data/demo.db (the README's demo memory)
 node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens   # re-shoot its screenshots
+
+docker build -t areev .             # the container image (postgres+tls features on) — docs/docker.md
 ```
 
 - **Do not run blanket `cargo fmt`** — the tree is not uniformly rustfmt-clean
@@ -117,7 +119,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-run` | The `areev run` driver (a host, peer of areev-mcp): journal (intent=Pending Tool grain, result=supersession re-stating identity), checkpoints, resume with same-key crash redelivery, HITL respond with separation of duties, budgets, cancel, journal-consistent `verify`; plus the two host-boundary controls shared with `areev-trigger` — the content-addressed code executor (`executor_uri` behind a host-side pin) and the credential broker + outbound allowlist | yes |
 | `areev-trigger` | Standing rules that start workflows: the `Trigger` grain's eight kinds over four primitives, the one-shot `trigger run` evaluator (claim, cursor, backoff, catch-up), the connector contract (same JSON-on-stdio shape as `--tool-cmd`), composite gates with correlation windows, and heartbeat rendering (the egress broker moved to `areev-run` so tools could share it). No daemon: cadence is data, evaluation is a command — `docs/triggers.md` | — |
 | `areev-mcp` | Stdio MCP server (see below) | — |
-| `areev-server` | Web console + areevd hub (see below) | — |
+| `areev-server` | Web console (see below) | — |
 | `areev` | The `areev` binary (see below) | — |
 | `areev-py` | PyO3 bindings (see below) | — |
 | `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy) | — |
@@ -193,7 +195,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 
 Every public surface has a canonical doc, and a change to the surface is
 incomplete until that doc moved with it. This applies to every feature
-family (`areev run`, `areev loop`, `areev anonymize`, hub/console, …):
+family (`areev run`, `areev loop`, `areev anonymize`, the console, …):
 
 | You changed… | You must also update… |
 |---|---|
@@ -227,6 +229,34 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
 [`ERROR_CODES.md`](ERROR_CODES.md). Format/uniqueness are test-enforced
 (`error_code_tests`, `test_all_error_codes_have_unique_codes`).
 
+## Agent workflows — plan → run → history → improve
+
+The core of agent execution. A plan is a **Workflow grain** (nodes, edges
+with `cond`/`max_cycles`, node→Tool `bindings`, `retries`, + `name`/`reducers`
+extra fields); `nodes[0]` is the entry and **edge declaration order is
+semantic** (canonical evaluation order). The execution graph is *derived*,
+twice: `PlanGraph::build` (`areev-run-core/src/plan.rs`, pure V1–V6 —
+unique/reachable nodes, conditions parse, Tarjan SCC + every-cycle-bounded,
+back-edge classification for mid-graph loop re-entry) then
+`RunManifest::resolve` (`areev-run/src/manifest.rs`, V3/V7 — bindings frozen
+at run start into host/client/subgraph/abstract executors, so a superseded
+plan never changes a running run). The grain itself is immutable input:
+runs point back at it via `mg:step_action:<node>` links, triggers point at
+it by hash, and every edit is a supersession minting a **new hash** —
+after which triggers must be re-pointed (they do NOT follow heads).
+Lifecycle: author (CAL `ADD workflow` graph syntax — note `* N` = retries,
+not `max_cycles`; JSON `add` for bounded cycles/reducers; console) → run
+(`areev run *`) → history (CAL `HISTORY`, `run-trace`, `runs-touching`,
+`step-actions`) → improve (`areev loop run`'s `run_outcome` flags failure/
+cost per plan hash → human review → `SUPERSEDE workflow` applies →
+`outcome_review` measures and proposes reverts; CAL `REVERT` parses but is
+unsupported — revert = supersede back). Playbook with the full checklist:
+`.claude/skills/areev-agent-workflows`; the user-facing guide (architecture,
+grain selection, dynamic planning, do/don't) is
+`examples/how-to-create-an-areev-agent.md`; references: `docs/run.md`
+("Authoring a plan", "The run ↔ memory join"), `docs/loop.md`,
+`docs/triggers.md`.
+
 ## Smaller crates
 
 - **areev-mcp**: 25 tools (`areev_recall/search/nearest/add/supersede/forget/remember/cal`,
@@ -251,12 +281,13 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   default**; `with_auth(token)` (CLI `areev ui --token-env VAR`) requires the
   token on **every** request — browsers via the native HTTP Basic prompt (any
   username, password = token), scripts via `Authorization: Bearer` — and a 401
-  carries `WWW-Authenticate: Basic` so browsers prompt. `into_hub(token, dir)`
-  is the separate hub mode (CLI `areev hub`, where `--token-env` is
-  **mandatory**): bearer auth on POSTs + the `/api/segment*` surface, which is
-  gated on **reads too** — only the non-segment reads are open. Both `ui` and
-  `hub` can also terminate TLS natively (`--tls-cert`/`--tls-key`, the
-  non-default `tls` build feature, rustls) — the documented default remains a
+  carries `WWW-Authenticate: Basic` so browsers prompt. Without `auth_all`
+  the token guards mutating requests only; reads stay open. There is **no
+  networked sync surface** — `areev hub` and `/api/segment*` were removed on
+  2026-08-24 (ARCHITECTURE.md §10, "Sync is file-to-file"); replication is
+  `areev stream`/`follow` over a directory. `ui` can also terminate TLS
+  natively (`--tls-cert`/`--tls-key`, the non-default `tls` build feature,
+  rustls) — the documented default remains a
   TLS-terminating reverse proxy in front of the loopback bind
   (`docs/deployment-profile.md`); native TLS is for deployments with nowhere
   to run one. Base64 for Basic is hand-rolled (no dep). Body cap 1 MiB.
@@ -281,13 +312,12 @@ renumber or reuse one. Source of truth for text is inline on `AreevError`
   serialize them.
   Read-only `GET /api/config` reports effective config + file-vs-host
   reconciliation warnings.
-  `tests/multichannel_tests.rs` is the §8 acceptance test (voice + WhatsApp +
-  email sharing one memory via the hub). The `/api/run/*` surface (list /
+  The `/api/run/*` surface (list /
   inspect / respond / cancel) + the console Runs tab are the runtime's HITL
   queue: **`run.respond` refuses shared-token and anonymous callers** — only
   a per-principal credential (`areev ui --auth`) may approve, because the
   approver's identity IS the audit record; cancel keeps the low bar.
-- **areev**: ~29 verbs (incl. `hub`, `migrate` from other memory systems,
+- **areev**: ~28 verbs (incl. `migrate` from other memory systems,
   `reindex`, the graph/time reads `related`/`entity-at`/`step-actions`, the
   join `run-trace`/`runs-touching`, and the DSAR read `subject-report`),
   hand-rolled `parse_args` → HashMap; global `--embed-cmd` installs
@@ -327,8 +357,8 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 
 ## Naming
 
-Brand "Areev", CLI binary `areev` (package/crate `areev`), hub daemon
-"areevd", Python module `areev`, npm packages `@areev/areev` +
+Brand "Areev", CLI binary `areev` (package/crate `areev`), Python module
+`areev`, npm packages `@areev/areev` +
 `@areev/areev-<platform>` (unscoped `areev`/`areev-<platform>` is the intent
 once npm's similarity-filter exception lands — see Status above — not yet
 in effect; don't call the scoped names "deprecated" until it does). The OMS

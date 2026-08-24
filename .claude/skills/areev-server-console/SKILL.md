@@ -1,17 +1,18 @@
 ---
 name: areev-server-console
-description: Playbook for areev-server — the hand-rolled std-only HTTP/1.1 server, its three auth modes (loopback-unauthenticated ui / with_auth token / into_hub bearer), the drive-by/body-cap/Origin security invariants, and the embedded console.html (whose design source is the Paper file "Areev"). Use before editing crates/areev-server/src/{lib.rs,console.html} or adding an endpoint, and always re-read docs/security-model.md when touching auth, bind, or the request surface.
+description: Playbook for areev-server — the hand-rolled std-only HTTP/1.1 server, its two auth modes (loopback-unauthenticated ui / with_auth token) plus the per-principal credential map, the drive-by/body-cap/Origin security invariants, and the embedded console.html (whose design source is the Paper file "Areev"). Use before editing crates/areev-server/src/{lib.rs,console.html} or adding an endpoint, and always re-read docs/security-model.md when touching auth, bind, or the request surface.
 ---
 
-# The server, hub & console
+# The server & console
 
 `areev-server` is a **hand-rolled, std-only** HTTP/1.1 server —
 `std::net::TcpListener`, **one request per connection**, no framework, no async
-runtime (invariant 6: dependency-light). It serves the web console and the
-`areevd` sync hub. The console is a single embedded file:
+runtime (invariant 6: dependency-light). It serves the web console — and
+nothing else; there is no networked sync surface. The console is a single
+embedded file:
 `const CONSOLE_HTML = include_str!("console.html")` (`lib.rs:17`).
 
-## The three modes (auth is the load-bearing distinction)
+## The two modes (auth is the load-bearing distinction)
 
 - **`ui` (default)** — binds **loopback** and is **unauthenticated**. Fine for a
   local console; never expose it off-host.
@@ -20,13 +21,16 @@ runtime (invariant 6: dependency-light). It serves the web console and the
   username, password = token); scripts via `Authorization: Bearer`. A 401 must
   carry `WWW-Authenticate: Basic` so browsers prompt. Base64 for Basic is
   **hand-rolled** (no dep) — keep it correct.
-- **`into_hub(token, dir)`** (`lib.rs:123`; CLI `areev hub --dir DIR
-  --token-env VAR`) — the separate `areevd` hub: **bearer auth on POSTs** + the
-  whole `/api/segment*` surface, which is gated on **reads too** (listing and
-  pulling a bundle both need the key); only the non-segment reads stay open.
-  `into_hub` is not `ui` with auth — different route set. `--token-env` is
-  mandatory for `areev hub`: there is no trusted-local-operator default,
-  because a hub exists to be written to by other machines.
+
+A shared token is all-or-nothing over the whole memory. `with_credentials`
+(CLI `areev ui --auth FILE`) is the per-principal alternative — and the only
+one `run.respond` accepts, since the approver's identity is the audit record.
+
+**Removed, do not re-add:** `into_hub` / `areev hub` / `/api/segment*` were
+deleted on 2026-08-24. A networked write surface that takes one shared secret
+over an entire memory cannot participate in the authorization model — see
+ARCHITECTURE.md §10, "Sync is file-to-file; Areev runs no networked sync
+service". Replication is `areev stream`/`follow` over a directory.
 
 ## Security invariants — do not regress
 
@@ -43,8 +47,9 @@ runtime (invariant 6: dependency-light). It serves the web console and the
 ## Adding an endpoint
 
 1. Route it in `handle_request` (`lib.rs:175`) — match method + path.
-2. Enforce the mode's auth **first** (a new hub POST needs bearer; a new console
-   route needs the `with_auth` check when a token is set).
+2. Enforce the mode's auth **first** (a new POST needs the token when one is
+   set; a mutation that carries an identity needs the credential map, not the
+   shared token).
 3. Apply the body cap + Origin check for any POST.
 4. Return proper status + headers (401 carries `WWW-Authenticate: Basic`).
 5. If the endpoint reflects store state as JSON, follow the store contract; a
@@ -99,9 +104,6 @@ renders the real JS and is enough to catch a blank list or a thrown boot.
 cargo test -p areev-server
 ```
 - `tests/http_smoke.rs` — the request/response surface + auth behavior.
-- `tests/multichannel_tests.rs` — the **§8 acceptance test**: voice + WhatsApp +
-  email sharing one memory through the hub (push/pull). Keep it green; it is the
-  end-to-end proof the hub replicates correctly.
 
 Then run the [[areev-invariants]] gate. If you touched the request parser or
 auth, treat it as a security-sensitive change and review accordingly.

@@ -548,7 +548,7 @@ the registry, visibly.
 An entry the file carries that the running build cannot load — a template
 written before a limit was tightened, a row from a newer version — is skipped
 rather than failing the open, and reported: on stderr from `areev cal` / `repl`
-/ `serve` / `ui` / `hub`, and in `warnings` on `GET /api/config`. It stays in
+/ `serve` / `ui`, and in `warnings` on `GET /api/config`. It stays in
 the file, so an older or newer build can still read it; overwriting the entry
 is what loses it.
 

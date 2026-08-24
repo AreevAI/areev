@@ -27,7 +27,6 @@ top of that.
 | CLI (`areev`) | local process | the invoking user | filesystem perms |
 | MCP server (`serve --mcp`) | stdio | the parent process that spawned it | inherited |
 | Web console (`areev ui`) | HTTP/1.1 | **loopback only by default** | none, or `--token-env` (Basic/Bearer on every request) |
-| Sync hub (`areevd`) | HTTP/1.1 | networked peers | bearer token (writes + sync) |
 
 ## Data at rest
 
@@ -128,23 +127,20 @@ top of that.
 - ⚠️ **Losing the `.kdf` sidecar** means the passphrase can no longer re-derive
   the key. Back the sidecar up alongside the database.
 
-## Data in transit (sync & hub)
+## Data in transit (sync)
 
 - Sync ships **bundles/segments** (`.mgb`) of immutable grains between files and
   peers. Applied grains are re-hashed on import; a grain whose content does not
   match its content address (SHA-256) is rejected.
-- The **hub** (`areevd`, started with `areev hub --dir DIR --token-env VAR`)
-  requires a **bearer token** on all mutating and segment endpoints — including
-  `GET /api/segment*`, so listing and pulling bundles are gated too, not just
-  pushes. The token is compared in **constant time**. Segment names are
-  sanitized to a single path component (no directory traversal). `--token-env`
-  is **mandatory** for `areev hub`: unlike the console there is no
-  trusted-local-operator default, because a hub exists to be written to by other
-  machines. A pushed segment is an **op-log replay**: it adds grains and
-  applies tombstones — including erasure tombstones, which is how a subject's
-  erasure reaches the hub's store (a tombstone deletes only the exact grain
-  hash it names, and its sole-referenced CAS attachments; it can never delete
-  by predicate).
+- Sync is **file-to-file, not a service**: `areev stream` writes generations
+  of segments into a directory and `areev follow` applies new ones from it, so
+  the transport is whatever moves that directory (rsync, object storage, a
+  shared volume) and its authentication is that transport's. Areev ships no
+  networked sync endpoint — the removed `areev hub` was the last one.
+- An applied segment is an **op-log replay**: it adds grains and applies
+  tombstones — including erasure tombstones, which is how a subject's erasure
+  reaches a replica (a tombstone deletes only the exact grain hash it names,
+  and its sole-referenced CAS attachments; it can never delete by predicate).
 - The **web console** (`areev ui`) is unauthenticated by default (loopback,
   trusted local operator). Pass `--token-env <VAR>` to require a shared secret
   on **every** request — the console page, all reads, and all writes. Browsers
@@ -190,15 +186,15 @@ top of that.
 ### Known limitations in transit
 
 - ⚠️ **TLS is optional and non-default; plaintext is what you get if you don't
-  ask for it.** Both `areev ui` and `areev hub` can terminate TLS natively via
-  the non-default `tls` build feature (`--tls-cert`/`--tls-key`, rustls — no
-  plaintext downgrade, tested), or you can front either with a
-  **TLS-terminating reverse proxy**, which stays the documented default
-  deployment shape (see `docs/deployment-profile.md`) — native TLS exists for
-  deployments with nowhere to run one, not as a replacement for the proxy
-  profile. A plain build/run of either surface is plaintext HTTP either way.
-  Both refuse to bind a non-loopback address unless you pass `--allow-remote`
-  (and even then warn loudly). `--token-env` authentication is **not** a
+  ask for it.** `areev ui` can terminate TLS natively via the non-default
+  `tls` build feature (`--tls-cert`/`--tls-key`, rustls — no plaintext
+  downgrade, tested), or you can front it with a **TLS-terminating reverse
+  proxy**, which stays the documented default deployment shape (see
+  `docs/deployment-profile.md`) — native TLS exists for deployments with
+  nowhere to run one, not as a replacement for the proxy profile. A plain
+  build/run of the console is plaintext HTTP either way.
+  It refuses to bind a non-loopback address unless you pass `--allow-remote`
+  (and even then warns loudly). `--token-env` authentication is **not** a
   substitute for TLS: without it (native or proxied), the token and all
   memory still cross the wire in the clear, so `--token-env` guards against
   unauthorized clients but not against a network eavesdropper.
@@ -214,7 +210,7 @@ top of that.
   set. Truncation of a consistent store is indistinguishable from
   "never written" using the file alone; to detect it, compare against an
   **external anchor** — the op high-water mark of an `areev stream` segment
-  directory, a bundle, or a hub replica.
+  directory, a bundle, or a follower replica.
 
 ## Input handling
 
@@ -284,7 +280,7 @@ top of that.
 - Memory-safety, panics, or resource exhaustion reachable from untrusted `.mg`
   blobs, bundles, or imported segments.
 - Injection, path traversal, or auth bypass in CAL, the store, the MCP server,
-  or the console/hub.
+  or the console.
 - Cryptographic weaknesses in the encryption or crypto-erasure paths.
 - Secret or data leakage in error messages, logs, or `Debug` output.
 
@@ -403,7 +399,9 @@ Four properties make it a capability system rather than a hole:
   `--tool-egress` grant independently. Both are checked on every call, so a
   declaration can only ever narrow. Default deny throughout: no declaration
   means no reach, no declared methods means read-only, no declared credentials
-  means none, no declared headers means none.
+  means none, no declared headers means none. `capabilities` may carry
+  **several `http` blocks**, and one block must admit a call in full — that is
+  what binds a credential to a host rather than merely to a tool (#112, below).
 - **The credential channel is not writable from the guest.** A module may set
   the non-credential headers enterprise APIs demand — `X-Goog-User-Project`,
   `anthropic-version`, a tenant id — and may not set `Authorization`,
@@ -494,6 +492,26 @@ Six properties are worth stating because each closes a specific hole:
 - **Scope is per caller.** The token is also what lets one port serve N pool
   workers and still tell them apart, so one tool's grant buys nothing of
   another's. A caller with no grant never receives the broker's address.
+- **Scope is also per destination** (#112, fixed in 1.6.2). Until then a
+  credential was scoped to a *caller* and nothing more, so a tool that
+  legitimately talks to two services could attach either service's secret to
+  the other's request — a one-line exfiltration channel that an ordinary bug
+  reaches as easily as malice. Both halves of `declared ∩ host-granted` can
+  now express the pairing, and both are checked. On the declaration side,
+  `capabilities` may carry **repeated `http` blocks** and a call must be
+  admitted by ONE block as a whole tuple `(host, path, method, credential,
+  headers)`; two services become two blocks and the cross-pairing has nowhere
+  to be written. On the host side, `--tool-egress 'send:gmail@gmail.googleapis
+  .com:POST'` pairs a granted credential with the bare hostname it may be sent
+  to. The grant's host is a *hostname* pattern rather than a URL because the
+  spec is colon-delimited and a scheme or port would tear it apart; scheme and
+  port narrowing stays in `--allow-host` and the declaration, which the call
+  must also satisfy. Both readings use one matcher, so a pairing cannot be
+  read more loosely than the allowlist entry beside it. An unpaired grant
+  keeps its old meaning — any host the rest of the chain permits — so nothing
+  deployed narrows silently. The pairing is judged once, at dispatch entry,
+  which is sufficient precisely because a credential rides a redirect only
+  while the chain has never left its starting origin.
 - **Writes are deny-by-default.** A grant naming no method may only `GET`/
   `HEAD`.
 - **The credential variable is withheld from children** (#100, fixed in
@@ -509,6 +527,55 @@ Six properties are worth stating because each closes a specific hole:
   left three open. The sandbox seam additionally spawns under
   `EnvPolicy::ClearExcept` — a wasm host has no claim on the operator's
   environment, and under #101 it is also the process holding a broker token.
+- **A credential may be minted per call rather than read once** (#113, added
+  in 1.6.2). `--credential NAME=ENV_VAR` makes every brokered secret static
+  for the life of the process, which is the wrong shape for the credentials
+  capability tools actually use: a cloud access token expires roughly hourly,
+  so an unattended heartbeat needed a refresh step outside Areev that it could
+  silently get wrong, and a run parked on a human gate for a day resumed with
+  yesterday's token. Two further sources resolve **inside the broker at call
+  time**: `NAME=cmd:COMMAND` takes the command's trimmed stdout, and
+  `NAME=vault:PATH#FIELD` reads a Vault/OpenBao KV secret over `$VAULT_ADDR` /
+  `$VAULT_TOKEN`. What the guest sees is unchanged — it names a label and
+  holds nothing. Six properties make this a narrowing rather than a new
+  surface:
+  - **The resolver runs in the engine, never in the sandbox** — the same
+    reasoning that put blob reads through the broker: the trusted party
+    performs the privileged act, so it can also bound, record, and fail it.
+    Resolving in the guest would mean handing the guest the vault's own
+    credential, which is one class *worse* than the static token it replaces.
+  - **Fail closed.** A resolver that errors, times out (30s), or returns
+    nothing refuses the call and journals a refusal; it never falls through to
+    an unauthenticated request, which is the 401-hours-later failure this
+    exists to remove.
+  - **The error names the credential, never the output.** stdout is by
+    definition the secret and stderr is written by a script that may have
+    echoed it, so neither is repeated into the response, the journal, or a log.
+  - **A minted value is validated like any other input.** Empty is refused,
+    and so is anything that is not a valid HTTP header value — a resolver
+    returning CR/LF would otherwise forge a second header on every request its
+    credential rides.
+  - **The resolver's own authentication is carved out of every other child.**
+    A `$VAULT_TOKEN` can fetch *all* the secrets, so leaving it ambient would
+    reopen the #100 leak one level up. `--resolver-env VAR,…` registers those
+    variables as secrets — withheld from every subprocess seam — and
+    re-admits them only for resolver spawns, which run under
+    `EnvPolicy::ClearExcept` and see nothing else.
+  - **Values are cached for `--credential-ttl` (default 300s) and re-minted
+    after**, so a revocation upstream takes effect without restarting
+    anything. A 401 on a minted credential always invalidates the cached
+    value, and re-issues the request exactly once — but only for `GET`/`HEAD`.
+    A write that 401'd may still have been applied upstream, and the broker is
+    not entitled to guess; its caller sees the 401 with a fresh credential
+    waiting for the retry it chooses to make. **Both attempts are journaled** —
+    a request that went out carrying a credential is an effect whether or not
+    its response reached the caller.
+
+  A principal is bound on the NAME side for these sources
+  (`--credential 'sheets@user:alice=cmd:…'`) because a command may itself
+  contain `@`, and mis-parsing one would bind the credential to an owner the
+  operator never wrote. `Credential`'s `Debug` is redacted for the same class
+  of reason a resolver's output is never quoted.
 - **The allowlist governs every hop, not just the first** (#99, fixed in
   1.6.0). The HTTP client used to follow up to ten redirects on its own while
   the allowlist was checked once, on the caller-supplied URL, before dispatch
@@ -547,8 +614,8 @@ Six properties are worth stating because each closes a specific hole:
 - **A capability declaration cannot reach private space by itself.** Under an
   unrestricted egress policy a capability tool is still refused loopback,
   link-local, private-range and cloud-metadata destinations — a synced memory
-  declares hosts freely, so reaching the local console, the hub, or the
-  metadata service takes an explicit `--allow-host` entry. This binds every
+  declares hosts freely, so reaching the local console or the metadata
+  service takes an explicit `--allow-host` entry. This binds every
   redirect hop, and leaves connectors and `--tool-cmd` tools (pure host config)
   untouched. The check canonicalizes the alternate IPv4 literal encodings a
   libc resolver honours — decimal (`http://2852039166/` is the metadata

@@ -73,16 +73,14 @@ pub struct UiServer {
     facade: std::sync::Arc<AreevFacade>,
     executor: CalExecutor,
     db_label: String,
-    /// Shared secret required for access when set. In hub mode it guards only
-    /// mutating/sync endpoints (`Bearer`); in console-auth mode (`auth_all`) it
-    /// guards every request via `Bearer` **or** HTTP `Basic` (password = token).
+    /// Shared secret required for access when set. It guards mutating
+    /// endpoints (`Bearer`); in console-auth mode (`auth_all`) it guards
+    /// every request via `Bearer` **or** HTTP `Basic` (password = token).
     token: Option<String>,
     /// When true, *every* request requires the token — the console page, all
     /// reads, and all writes — and a `401` carries `WWW-Authenticate: Basic` so
-    /// browsers prompt. Set by [`UiServer::with_auth`]; hub mode leaves it off.
+    /// browsers prompt. Set by [`UiServer::with_auth`].
     auth_all: bool,
-    /// Directory for received segments (areevd hub mode).
-    segment_dir: Option<String>,
     /// When false (the default), reject any request whose `Host` header is not
     /// loopback — the standard DNS-rebinding defense for a localhost service.
     /// Set true only when the operator intentionally serves to other hosts
@@ -206,7 +204,6 @@ impl UiServer {
             db_label,
             token: None,
             auth_all: false,
-            segment_dir: None,
             allow_remote: false,
             loop_policy: None,
             credentials: None,
@@ -306,17 +303,6 @@ impl UiServer {
         self
     }
 
-    /// May this request's session read the raw sync surface? A segment is a
-    /// whole-memory op-log export, so it takes `read` on every namespace —
-    /// a principal granted read on one namespace must not be able to pull
-    /// the file wholesale through `/api/segment`. Owner sessions (every
-    /// non-credential-map deployment) pass unchanged.
-    fn session_may_sync(&self) -> bool {
-        self.facade
-            .authz()
-            .allows(areev_core::authz::Verb::Read, "*")
-    }
-
     /// The loop engine for a request: builtins + the host policy when one
     /// was attached.
     fn engine(&self) -> Engine {
@@ -361,18 +347,6 @@ impl UiServer {
         self.allow_destructive_ops = allow;
         self.rebuild_executor();
         self
-    }
-
-    /// areevd mode: require `Authorization: Bearer <token>` on POST
-    /// endpoints and accept segment push/pull under `dir`.
-    pub fn into_hub(mut self, token: Option<String>, dir: &str) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        self.token = token;
-        self.segment_dir = Some(dir.to_string());
-        // The hub is a network service (segment push/pull from other nodes), so
-        // non-loopback Hosts are expected — writes stay bearer-gated.
-        self.allow_remote = true;
-        Ok(self)
     }
 
     /// Bind and return the listener (lets callers learn the ephemeral port).
@@ -662,9 +636,10 @@ impl UiServer {
         bearer: Option<&str>,
         sso_identity: Option<&str>,
     ) -> (&'static str, &'static str, Vec<u8>) {
-        // Auth: console-auth mode (`auth_all`) guards every request; hub mode
-        // guards only mutating + sync endpoints. The credential arrives as a
-        // Bearer token or an HTTP Basic password (see `handle_request`).
+        // Auth: console-auth mode (`auth_all`) guards every request;
+        // otherwise the token guards only mutating endpoints. The credential
+        // arrives as a Bearer token or an HTTP Basic password (see
+        // `handle_request`).
         //
         // A credential map changes WHO a request is, not WHETHER the shared
         // secret is required. When both are configured, a map token
@@ -674,7 +649,7 @@ impl UiServer {
         // downgrade a `--token-env` console to an open `anonymous` one.
         let mut shared_secret_ok = false;
         if let Some(tok) = &self.token {
-            let guarded = self.auth_all || method == "POST" || path.starts_with("/api/segment");
+            let guarded = self.auth_all || method == "POST";
             shared_secret_ok = bearer.is_some_and(|b| ct_eq(b.as_bytes(), tok.as_bytes()));
             let known = shared_secret_ok
                 || sso_identity.is_some()
@@ -911,12 +886,10 @@ impl UiServer {
                         "user_id_override": cfg.user_id_override,
                     },
                     "server": {
-                        "hub_mode": self.segment_dir.is_some(),
                         "auth_required": self.token.is_some(),
                         // true = every request is authenticated (console-auth);
-                        // false with auth_required = hub mode (writes/sync only).
+                        // false with auth_required = writes only.
                         "auth_all": self.auth_all,
-                        "segment_dir": self.segment_dir,
                     },
                     "persistence": "per-process (host-supplied at open) — not stored in the .db",
                 }))
@@ -1103,71 +1076,6 @@ impl UiServer {
                 })),
                 Err(e) => ok_json(json!({"ok": false, "error": e.to_string()})),
             },
-            ("POST", "/api/segment") => {
-                // A pushed segment is imported straight into the live store,
-                // so it is a write — and one that never crosses the facade's
-                // verb checks. Gate it on the bound session's `write`, or a
-                // principal with no write grant could add grains here that
-                // `POST /api/cal` refuses it.
-                if let Err(e) = self
-                    .facade
-                    .authz()
-                    .check(areev_core::authz::Verb::Write, "*")
-                {
-                    return ("403 Forbidden", "application/json",
-                            json!({"ok": false, "error": e.to_string()}).to_string().into_bytes());
-                }
-                // push: body = raw MGB1 bundle; applied immediately + archived
-                let Some(dir) = &self.segment_dir else {
-                    return ("400 Bad Request", "application/json",
-                            br#"{"ok":false,"error":"not in hub mode"}"#.to_vec());
-                };
-                let name = q("name").unwrap_or_else(|| format!("push-{}.mgb", now_label()));
-                let Some(safe) = safe_segment_name(&name) else {
-                    return ("400 Bad Request", "application/json",
-                            br#"{"ok":false,"error":"invalid segment name"}"#.to_vec());
-                };
-                let path = format!("{dir}/{safe}");
-                if std::fs::write(&path, body).is_err() {
-                    return ("500 Internal Server Error", "application/json",
-                            br#"{"ok":false,"error":"write failed"}"#.to_vec());
-                }
-                match self.facade.with_store(|m| m.import_bundle(&path)) {
-                    Ok(st) => ok_json(json!({"ok": true, "applied": st.applied, "skipped": st.skipped, "stored": safe})),
-                    Err(e) => ok_json(json!({"ok": false, "error": e.to_string()})),
-                }
-            }
-            ("GET", "/api/segments") | ("GET", "/api/segment") if !self.session_may_sync() => (
-                "403 Forbidden",
-                "application/json",
-                br#"{"ok":false,"error":"AUT-E001: this session lacks read on the whole memory"}"#.to_vec(),
-            ),
-            ("GET", "/api/segments") => {
-                let Some(dir) = &self.segment_dir else {
-                    return ok_json(json!([]));
-                };
-                let mut names: Vec<String> = std::fs::read_dir(dir)
-                    .map(|d| d.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-                        .filter(|n| n.ends_with(".mgb")).collect())
-                    .unwrap_or_default();
-                names.sort();
-                ok_json(json!(names))
-            }
-            ("GET", "/api/segment") => {
-                let Some(dir) = &self.segment_dir else {
-                    return ("400 Bad Request", "application/json", b"{}".to_vec());
-                };
-                let name = q("name").unwrap_or_default();
-                let Some(safe) = safe_segment_name(&name) else {
-                    return ("400 Bad Request", "application/json",
-                            br#"{"ok":false,"error":"invalid segment name"}"#.to_vec());
-                };
-                match std::fs::read(format!("{dir}/{safe}")) {
-                    Ok(b) => ("200 OK", "application/octet-stream", b),
-                    Err(_) => ("404 Not Found", "application/json",
-                               br#"{"ok":false,"error":"no such segment"}"#.to_vec()),
-                }
-            }
             // ── Areev Loop API (§5.4) — GETs are reads (token-less OK); the POST
             //    mutations are guarded above (token-less → 401). ────────────
             // ── /api/run/*: the governed runtime's console surface ──
@@ -1553,13 +1461,6 @@ fn origin_is_local(origin: &str) -> bool {
     host_is_local(host_port)
 }
 
-fn now_label() -> String {
-    format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0))
-}
-
 fn ok_json(v: Value) -> (&'static str, &'static str, Vec<u8>) {
     ("200 OK", "application/json", v.to_string().into_bytes())
 }
@@ -1674,27 +1575,6 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 fn basic_auth_password(b64: &str) -> Option<String> {
     let text = String::from_utf8(base64_decode(b64)?).ok()?;
     text.split_once(':').map(|(_user, pass)| pass.to_string())
-}
-
-/// Sanitize a client-supplied segment name into a single safe filename.
-/// Strips anything outside `[A-Za-z0-9-._]`, then requires the result to be
-/// exactly one normal path component — rejecting empty names, `.`/`..`, and
-/// path separators so a push/pull cannot escape the segment directory.
-fn safe_segment_name(name: &str) -> Option<String> {
-    let safe: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
-        .collect();
-    if safe.is_empty() || safe.len() > 128 {
-        return None;
-    }
-    let mut comps = std::path::Path::new(&safe).components();
-    match (comps.next(), comps.next()) {
-        (Some(std::path::Component::Normal(c)), None) if c.to_str() == Some(safe.as_str()) => {
-            Some(safe)
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -1847,7 +1727,7 @@ mod loop_route_tests {
 
 #[cfg(test)]
 mod security_tests {
-    use super::{base64_decode, basic_auth_password, ct_eq, safe_segment_name};
+    use super::{base64_decode, basic_auth_password, ct_eq};
 
     #[test]
     fn ct_eq_matches_only_equal() {
@@ -1884,20 +1764,6 @@ mod security_tests {
         assert_eq!(basic_auth_password("****"), None); // not base64
     }
 
-    #[test]
-    fn safe_segment_name_blocks_traversal() {
-        assert_eq!(safe_segment_name("push-123.mgb").as_deref(), Some("push-123.mgb"));
-        assert_eq!(safe_segment_name(".."), None);
-        assert_eq!(safe_segment_name("."), None);
-        assert_eq!(safe_segment_name(""), None);
-        // Separators are stripped, so any accepted name is a single component
-        // that cannot escape the segment directory.
-        for probe in ["../../etc/passwd", "/etc/passwd", "a/../b", "foo/bar"] {
-            if let Some(s) = safe_segment_name(probe) {
-                assert!(!s.contains('/') && s != ".." && s != ".", "unsafe: {s}");
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2421,7 +2287,7 @@ mod memory_scoped_token_tests {
     use areev_core::types::{Fact, Grain};
     use areev_store::Areev;
 
-    /// The enterprise-plane hub rule: one auth file, per-memory token
+    /// The enterprise-plane rule: one auth file, per-memory token
     /// scopes — a token listed for memory A is an UNKNOWN token on
     /// memory B's server.
     #[test]
@@ -2571,13 +2437,13 @@ mod tls_tests {
         handle.join().unwrap();
     }
 
-    /// `with_tls` composes with `into_hub` the same way it does with plain
-    /// `ui` mode — `into_hub` only sets the token/segment-dir/allow-remote
-    /// fields, not the connection layer, so a hub server terminates TLS
-    /// identically. Pins the CLI wiring that lets `areev hub --tls-cert
-    /// ... --tls-key ...` work, not just `areev ui`.
+    /// `with_tls` composes with `with_auth` — `with_auth` only sets the
+    /// token/auth_all fields, not the connection layer, so an authenticated
+    /// console terminates TLS identically to an open one. Pins the CLI
+    /// wiring that lets `areev ui --token-env VAR --tls-cert ... --tls-key
+    /// ...` work, not just `areev ui --tls-cert ...`.
     #[test]
-    fn hub_mode_terminates_tls_the_same_way_as_ui_mode() {
+    fn an_authenticated_console_terminates_tls_the_same_way() {
         let dir = tempfile::tempdir().unwrap();
         let Some((cert, key)) = self_signed(dir.path()) else {
             eprintln!("skipping: no openssl binary");
@@ -2585,10 +2451,8 @@ mod tls_tests {
         };
         let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
         let facade = AreevFacade::with_session(store, Some("caller".into()), None);
-        let segments = dir.path().join("segments");
-        let server = UiServer::new(facade, "hub-tls-test".into())
-            .into_hub(Some("hub-token".into()), segments.to_str().unwrap())
-            .unwrap()
+        let server = UiServer::new(facade, "auth-tls-test".into())
+            .with_auth("console-token".into())
             .with_tls(&cert, &key)
             .unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2615,13 +2479,16 @@ mod tls_tests {
         let session = rustls::ClientConnection::new(config, name).unwrap();
         let tcp = std::net::TcpStream::connect(addr).unwrap();
         let mut tls = rustls::StreamOwned::new(session, tcp);
-        tls.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        tls.write_all(
+            b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+              Authorization: Bearer console-token\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
         let mut response = String::new();
         let _ = tls.read_to_string(&mut response);
         assert!(
             response.starts_with("HTTP/1.1 200"),
-            "hub should terminate TLS the same way ui does: {}",
+            "an authenticated console should terminate TLS like an open one: {}",
             &response[..response.len().min(120)]
         );
         handle.join().unwrap();

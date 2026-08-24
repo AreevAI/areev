@@ -1,0 +1,58 @@
+# One agent, one embedded memory file, one process at a time.
+#
+# The embedded backend takes an EXCLUSIVE OS file lock: the console and the
+# heartbeat are two processes, so they cannot hold /data/agent.db at the same
+# moment — the second open fails with STO-E001 rather than corrupting the
+# first. Pick the role this memory needs right now:
+#
+#   AREEV_UI_TOKEN=$(openssl rand -hex 16) docker compose --profile console up
+#       → browse and approve at http://127.0.0.1:7437 (password = the token)
+#   docker compose --profile heartbeat up
+#       → evaluate declared triggers on a cadence (stop the console first)
+#
+# To run the console AND the heartbeat concurrently against ONE memory, move
+# the memory to the Postgres backend — docker/compose.fleet.yml is that
+# topology, with a second agent to show the fleet pattern. Guide:
+# docs/docker.md
+
+services:
+  console:
+    profiles: ["console"]
+    build: .
+    image: areev:latest
+    # Inside a container the server must bind 0.0.0.0 to be reachable, which
+    # needs --allow-remote — so the exposure control moves to the port
+    # publish below (loopback) plus the token. Put a TLS-terminating proxy in
+    # front before publishing beyond 127.0.0.1 (docs/deployment-profile.md).
+    command:
+      ["ui", "--db", "/data/agent.db", "--ns", "agent",
+       "--addr", "0.0.0.0:7437", "--allow-remote",
+       "--token-env", "AREEV_UI_TOKEN"]
+    environment:
+      AREEV_UI_TOKEN: ${AREEV_UI_TOKEN:?set AREEV_UI_TOKEN (openssl rand -hex 16)}
+    ports:
+      - "127.0.0.1:7437:7437"
+    volumes:
+      - areev-data:/data
+
+  heartbeat:
+    profiles: ["heartbeat"]
+    build: .
+    image: areev:latest
+    # `heartbeat` is provided by the image: a loop of one-shot
+    # `areev trigger run` ticks (docker/heartbeat.sh). Extra args pass
+    # through to `trigger run`; host config rides the environment.
+    command: ["heartbeat", "--db", "/data/agent.db", "--ns", "agent"]
+    environment:
+      AREEV_HEARTBEAT_SECS: "60"
+      # Fired runs execute tools only if the host provides them — mount your
+      # scripts and point the env at them (docs/triggers.md):
+      # AREEV_RUN_TOOL_CMD: /work/tools.sh
+      # AREEV_RUN_CONNECTOR_CMD: /work/connector.sh
+    # volumes:
+    #   - ./:/work:ro
+    volumes:
+      - areev-data:/data
+
+volumes:
+  areev-data:

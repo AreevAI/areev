@@ -180,9 +180,9 @@ The differentiator is "memory that improves." Be precise about what runs today.
 - Event stream substrate: an **op-log** table (`oplog`) with
   `changes_since(after_op_seq, limit) -> Vec<OpRecord>` —
   `crates/areev-store/src/lib.rs:3069` (`OpRecord` at `:38`). Real, and tailable.
-  Its current consumers are **sync and observability, not learning**: the hub segment
-  push/pull (`crates/areev-server/src/lib.rs:352`), the CLI `.log`/follow
-  (`crates/areev-cli/src/main.rs:613`), plus tests/benches.
+  Its current consumers are **sync and observability, not learning**: the CLI
+  `.log`/`stream`/`follow` (`crates/areev-cli/src/main.rs:613`), plus
+  tests/benches.
 - Derived-intelligence *data model* exists: skill proficiency
   (`Skill::with_proficiency`, `practice_count`, `strategies` —
   `crates/areev-core/src/types/skill.rs:153`) and provenance values `"inferred"` /

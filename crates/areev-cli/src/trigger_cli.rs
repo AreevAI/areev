@@ -180,6 +180,22 @@ fn evaluator(
     // nobody is watching. `build_egress` above validated the same list, so
     // this cannot reach a different verdict; it is spelled out rather than
     // assumed, because the two would drift the first time either moved.
+    // Resolver settings ride with each dynamic source, exactly as they do on
+    // the run path — one parse, one meaning, both hosts.
+    let ttl_secs = match flag(flags, "credential-ttl") {
+        None => None,
+        Some(v) => Some(
+            v.trim()
+                .parse::<u64>()
+                .map_err(|_| format!("--credential-ttl: expected whole seconds, got {v:?}"))?,
+        ),
+    };
+    let resolver_env: Vec<String> = flag(flags, "resolver-env")
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut credentials = std::collections::BTreeMap::new();
     if let Some(spec) = flag(flags, "credential") {
         for pair in spec.split(',') {
@@ -187,16 +203,26 @@ fn evaluator(
             if pair.is_empty() {
                 continue;
             }
-            let (name, spec) = pair
-                .split_once('=')
-                .ok_or_else(|| format!("--credential: expected name=ENV_VAR[@principal], got {pair:?}"))?;
+            let (lhs, spec) = pair.split_once('=').ok_or_else(|| {
+                format!(
+                    "--credential: expected name=ENV_VAR[@principal], \
+                     name[@principal]=cmd:COMMAND, or name[@principal]=vault:PATH#FIELD, \
+                     got {pair:?}"
+                )
+            })?;
             // The `@principal` owner qualifier governs a credential's use in a
             // started RUN, and is enforced on that run's broker (built by
             // `build_egress` above). This is the connector-poll broker — the
             // trigger's own standing egress, not a per-user run — so the owner
             // is parsed off and dropped here rather than breaking the read.
-            let (cred, _owner) = areev_run::Credential::bearer_from_env_spec(spec.trim())?;
-            credentials.insert(name.trim().to_string(), cred);
+            // Both spellings are dropped: on the name side (any source) and on
+            // the value side (the env-var form's own grammar).
+            let name = lhs.trim().split_once('@').map(|(n, _)| n).unwrap_or(lhs).trim();
+            let (source, _owner) = areev_run::CredentialSource::from_spec(spec.trim())?;
+            credentials.insert(
+                name.to_string(),
+                source.with_resolver_config(ttl_secs, &resolver_env),
+            );
         }
     }
 

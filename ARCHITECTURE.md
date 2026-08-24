@@ -689,7 +689,7 @@ crates — the memory stack, and the Areev Loop self-improvement engine:
 | **areev-loop-adapter** | areev-loop, cal, store, core | The Areev substrate adapter: implements `areev_loop::OmsSubstrate` over `AreevFacade` so `areev loop` runs against real `.mg`/Turso files, plus the recall-telemetry sidecar. |
 | **areev-llm** | areev-loop | Out-of-box LLM provider backends (OpenAI-compatible, Anthropic, Ollama) implementing `areev_loop::LlmBackend` over a small blocking HTTP client — isolates the HTTP surface so the core crates stay dependency-light. |
 | **areev-mcp** | cal, core, store, areev-loop, areev-loop-adapter | The stdio MCP server — eight memory- and improvement-semantic tools (six memory + `areev_loop` / `areev_recommendations`) over newline-delimited JSON-RPC 2.0. See the [MCP reference](docs/mcp-reference.md). |
-| **areev-server** | cal, context, core, store, areev-loop, areev-loop-adapter | A dependency-light HTTP/1.1 web console (loopback, read-only without a token) plus the `/api/loop/*` routes and Areev Loop console tab, and an optional sync-hub mode with bearer-token auth. |
+| **areev-server** | cal, context, core, store, areev-loop, areev-loop-adapter | A dependency-light HTTP/1.1 web console (loopback, read-only without a token) plus the `/api/loop/*` routes and Areev Loop console tab, with optional `--token-env` bearer/Basic auth on every request. |
 | **areev** | all of the above | The `areev` binary: ~27 verbs (`add`, `recall`, `cal`, `history`, `log`, `bundle`, `import`, `migrate`, `reindex`, `verify`, `serve --mcp`, `ui`, `repl`, `remember`, `init`, `loop`, …). |
 | **areev-py** | cal, context, core, store, areev-loop, areev-loop-adapter | Python bindings (`import areev`); scalars in, JSON strings out. |
 | **areev-bench** | most of the stack | Reproducible accuracy and latency benchmark harnesses (latency, honesty, LoCoMo accuracy, `loop_precision`, `loop_reflection`). |
@@ -711,7 +711,7 @@ surface is a smaller attack surface and a smaller thing to keep building for
 years. Think twice before adding a dependency.
 
 **Recorded exception — rustls (non-default `tls` feature).** Native TLS for
-`areev ui`/`areev hub` exists for deployments with nowhere to put the
+`areev ui` exists for deployments with nowhere to put the
 documented TLS-terminating proxy (edge boxes, appliances). Hand-rolling TLS
 is the one thing nobody should ever do, so this is a deliberate exception to
 the policy above, scoped three ways: rustls only (the boring, auditable
@@ -1170,6 +1170,63 @@ Providers are individually feature-gated, and a third-party model router
 path, and a regulated build should be able to state that its artifact cannot
 reach one.
 
+### A brokered credential is bound to a host, not only to a caller
+
+**Decision (2026-08-24, issue #112):** a capability declaration's
+`capabilities` field may carry **repeated `http` blocks**, and a call is
+permitted only when ONE block admits the whole tuple `(host, path, method,
+credential, headers)`. The host-side grant expresses the same pairing:
+`--tool-egress 'send:gmail@gmail.googleapis.com:POST'`.
+
+Until 1.6.2 `hosts` and `credentials` were independent membership tests with
+nothing relating them, and a second `http` entry was refused outright — so a
+tool that legitimately reads a mailbox and writes a sheet had to merge both
+services into one block, after which nothing stopped it attaching the mailbox
+token to the sheet request. That is the confused-deputy case the broker exists
+to prevent, and a *bug* reaches it as easily as malice: one wrong label in the
+guest. `path_prefixes` had already established the direction — #101 added it
+because a host-only grant structurally cannot close the exfiltration case of
+POSTing to an allowed host's upload endpoint — and this is the same argument
+one level up.
+
+Blocks are alternatives, so N of them admit the union of N tuples rather than
+the cross-product their merger produced: the change can only narrow, and a
+single-block declaration behaves exactly as it did. Both halves carry the
+pairing rather than the declaration alone, because a declaration arrives with
+the tool and a grant does not — the same "intent travels, authority does not"
+split that keeps grants out of grains.
+
+### A brokered credential's source is a seam, resolved in the broker
+
+**Decision (2026-08-24, issue #113):** `--credential` accepts `cmd:COMMAND`
+and `vault:PATH#FIELD` beside a bare environment-variable name, resolved by
+the **broker** at call time and cached for `--credential-ttl` (default 300s).
+
+The same argument already accepted for LLM backends (above, #45), applied to
+brokered egress: a value read once from the environment is static for the life
+of the process, and the credentials capability tools use are short-lived by
+design. The concrete cost was an unattended heartbeat whose hourly token had
+to be refreshed by something outside Areev, and a run parked on a human gate
+resuming with yesterday's secret.
+
+`cmd:` is the primary form and subsumes the rest — `vault kv get`, `gcloud
+auth print-access-token`, `aws secretsmanager get-secret-value` — through the
+same subprocess seam `--tool-cmd` and `--embed-cmd` already use, so no vendor
+client enters the dependency graph. `vault:` is a thin native reader over the
+HTTP client the broker already carries, worth having only because it removes
+the need for a `vault` binary in a container image.
+
+Three placements are load-bearing. The resolver runs in the **engine**, never
+the sandbox, for the reason #106 routed blob reads there: the trusted party
+performs the privileged act, so it can bound, record and fail it — and a
+resolver in the guest would hand the guest the vault credential that fetches
+*every* secret. It **fails closed**, because falling through to an
+unauthenticated request reproduces the 401-hours-later failure this removes.
+And the resolver's own authentication is **carved out of every other child**
+(`--resolver-env`, re-admitted only for resolver spawns under `ClearExcept`),
+because leaving a vault token ambient would reopen #100's leak one level up,
+with a secret that is strictly more powerful than the one it fetches.
+
 ### LIMIT bounds the answer, not the search for it
 
 **Decision (2026-08-19, issue #43):** any post-retrieval pipeline stage that
@@ -1256,6 +1313,64 @@ The seam that makes it safe is that the dependency arrow crosses the boundary
 exactly once, through a published artifact — the same reason `areev-js` is a
 standalone package rather than a workspace member.
 
+### Sync is file-to-file; Areev runs no networked sync service
+
+**Decision (2026-08-24):** `areev hub` (the "areevd" daemon) and its
+`/api/segment*` endpoints are **removed**. Replication stays what it already
+was underneath — `areev stream` writes generations of `.mgb` segments into a
+directory and `areev follow` applies new ones from it — and the transport for
+that directory is now always someone else's: rsync, object storage, a shared
+volume, a scheduled copy. Areev ships no service whose job
+is to receive a memory over the network.
+
+The forcing argument is that the hub was a second answer to a question the
+tree already answered, and the weaker one. Both paths moved the same bundles
+through the same `import_bundle` replay; the hub added an HTTP listener, a
+mandatory shared bearer token, a path-traversal-sanitized filename surface,
+and a `--retain` archive sweeper of its own, to reach a place a directory
+already reached. That is a networked write surface — the highest-consequence
+kind of code in the tree — carried for parity, not for capability.
+
+What clinched it is that the token could not be made to fit. A hub token is
+one shared secret over an entire memory: anyone holding it could list and pull
+every segment in the directory, which is the whole file. The per-principal
+credential map that governs every other write path (`areev ui --auth`) has no
+purchase on a bundle push, because a segment is an op-log replay that never
+crosses the facade's verb checks — the push route had to re-check `write` on
+`*` by hand, and the pull routes `read` on `*`. A surface that can only ever
+be all-or-nothing is a surface that cannot participate in the authorization
+model the rest of the system is built on.
+
+What this costs, stated plainly: multi-writer fan-in over a network is no
+longer a thing Areev does for you. A deployment that needs concurrent writers
+against one memory has an answer, and it is the **Postgres backend** (one
+memory = one schema, real concurrent writers, someone else's HA story) — not
+a bespoke daemon in front of a single-writer file. The removal also deleted
+the §8 multi-channel acceptance test, whose transport between the voice edge
+and the shared memory *was* the segment push; the properties it pinned
+(cross-channel fork, contested tips) remain covered by the store's fork tests,
+but the end-to-end scenario is not currently re-staged over the directory
+path.
+
+### The container image is packaging, not a fourth tier
+
+**Decision (2026-08-24):** the repo ships a `Dockerfile` (and compose files)
+building the one `areev` binary with the `postgres` and `tls` features
+compiled in — and nothing changes shape. No daemon, scheduler, or HTTP
+trigger surface enters the binary: the image's only addition is `heartbeat`,
+a shell loop of one-shot `areev trigger run` ticks, which is the "dumb
+heartbeat" the trigger design already required the host to provide. The
+`k8s-cronjob` render target has emitted `image: areev:latest` since triggers
+shipped; the Dockerfile makes that name real.
+
+The topology consequence is stated rather than papered over: containers put
+every role in its own process, so the embedded backend's exclusive file lock
+means one container owns a memory at a time (the second open is refused),
+and "console + heartbeat + app instances, concurrently, on one memory" is by
+construction the Postgres tier. The compose files encode this — role
+profiles over one volume for the embedded file, a fleet file over schemas
+for the concurrent shape. Guide: [docs/docker.md](docs/docker.md).
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves
@@ -1293,17 +1408,18 @@ Areev has no platform dependency. Three tiers cover a multi-channel fleet:
    `DROP SCHEMA … CASCADE` and `pg_dump -n`. The op-log/bundle wire format
    is backend-independent, so edge files sync into a Postgres-backed memory
    with the same `MGB1` bundles.
-3. **Hub (`areevd`)** — an optional self-hosted daemon that owns a directory of
-   memory files (one writer queue each), serves HTTP/MCP recall/add for
-   latency-tolerant channels, serves subscriptions, and handles bundle
-   push/pull. It shards by hashing the memory key; with no cross-file
-   transactions, scaling is adding shards.
-4. **Object storage** — the segment archive and restore source.
+3. **Object storage** — the segment archive and restore source, reached by
+   `areev stream`/`follow` writing and reading a directory rather than by
+   any Areev-run service.
+
+Every tier deploys from one container image (`docker build -t areev .`): the
+console and the trigger heartbeat are roles of the same image, and which
+roles may hold one memory concurrently is exactly the embedded-versus-
+Postgres choice above — [docs/docker.md](docs/docker.md).
 
 Organization/category knowledge fans out read-only to every edge via pull
 subscriptions, which is what keeps a session's `ASSEMBLE` local: a session opens
 the user file and attaches local org replicas as read-only mounts. See the
-[security model](docs/security-model.md) for the trust boundaries of the console
-and hub, and [SECURITY.md](SECURITY.md) to report a vulnerability.
-</content>
-</invoke>
+[security model](docs/security-model.md) for the trust boundaries of the
+console, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+

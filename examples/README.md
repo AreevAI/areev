@@ -4,6 +4,11 @@ Copy-paste-runnable material for Areev + Areev Loop. These are docs-with-files,
 not a package — clone the repo (they are not shipped in `pip`/`npm`/`cargo`
 installs). See [`docs/loop.md`](../docs/loop.md) for the full guide.
 
+Building your own? Start with
+[`how-to-create-an-areev-agent.md`](how-to-create-an-areev-agent.md) — the
+architecture, which grain to use when, the autonomy spectrum up to dynamic
+planning, and the do/don't list these examples follow.
+
 Two tiers: [`agents/`](agents/) are **vertical agents** — a whole job, end to
 end — and everything else teaches **one seam** (a protocol, a policy file, a
 contract). Agent examples must run keyless against committed fixtures, with

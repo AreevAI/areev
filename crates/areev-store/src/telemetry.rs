@@ -16,7 +16,7 @@
 //!   the benched recall (~136µs) or 50ms voice-cadence budgets.
 //! - **Host-only** mode (`off | aggregate | full`), never persisted in the
 //!   main file — telemetry is host config, not a file-truth.
-//! - It **never syncs** (the hub carries the memory file only) and is
+//! - It **never syncs** (bundles carry the memory file only) and is
 //!   rebuildable, so losing it costs evidence detail, never state.
 
 use crate::db::{with_txn, Db, TursoDb};

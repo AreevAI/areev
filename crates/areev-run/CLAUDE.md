@@ -118,6 +118,40 @@ evidence. Responding and resuming are separate acts.
 
 ## Brokered egress (`broker.rs`, `egress.rs`) and capability tools
 
+**How one tool call reaches the network, in order.** Every gate below is in
+`serve_one` unless noted, every one is deny-by-default, and a tool that fails
+any of them gets a journaled refusal rather than a quiet fallback:
+
+1. **The tool holds no secret.** It receives `AREEV_EGRESS_URL` +
+   `AREEV_EGRESS_TOKEN` and posts a *description* of the call it wants. This is
+   a reverse broker, not a forward proxy — injecting `Authorization` into an
+   HTTPS request would otherwise mean terminating TLS with a CA the tool
+   trusts. The cost is real and stated: a brokered connector cannot use a
+   vendor SDK, because an SDK makes its own sockets.
+2. **Who is calling** — the per-caller token (`mint_token`, unguessable);
+   loopback is not an authorization, and the token is also what lets one port
+   serve N pool workers and still tell them apart. No grant → no token → the
+   tool cannot even see the broker (`register_capability` says so at start).
+3. **Where it may go** — `EgressPolicy` (`--allow-host`), re-checked on every
+   redirect hop, plus the private/loopback/metadata deny for capability tools
+   under an unrestricted policy.
+4. **What it declared** — `declared ∩ host-granted`, one `http` block must
+   admit the whole tuple (#112). Budget spent BEFORE this, so probing is not
+   free.
+5. **Which verb** — `CallerGrant.permits_method`; naming no method means read.
+6. **Which credential, and to which host** — `permits_credential` (#112).
+7. **Where that credential comes from** — `resolve_credential`: a static env
+   value, or one minted per TTL window by a command or Vault (#113). Fails
+   closed.
+8. **What comes back** — response headers never cross the boundary, the body is
+   scrubbed of any reflected credential, the read is bounded, and the call is
+   journaled by credential NAME and body DIGEST, never by value.
+
+Securing this with a vault is step 7 and only step 7: a vault changes where a
+secret is *issued*, and steps 1–6 are what still decide where it may be *sent*.
+Neither replaces the other — see `docs/security-model.md` and
+`docs/cookbook.md`'s "Minting credentials from a vault".
+
 - **The broker follows redirects itself** (#99, 1.6.0) — `max_redirects(0)` +
   `http_status_as_error(false)` on the agent, then a hop loop in `dispatch`.
   ureq's auto-follow made the allowlist a check on where a request *started*,
@@ -135,6 +169,85 @@ evidence. Responding and resuming are separate acts.
   there, not at each host's flag parsing, because FOUR hosts read credentials
   (`areev run`, `areev trigger run`, areev-py, areev-js). The CLI additionally
   registers the `areev-loop` mirror at its choke point.
+- **A credential is bound to a HOST, not only to a caller** (#112) — two
+  halves, both required, because only one of them travels with the tool:
+  - *Declared*: `Declaration.http` is a `Vec`, and `permits` needs ONE block to
+    admit the whole tuple `(host, path, method, credential, headers)`.
+    `HttpCapability::permits` is the per-block check; `Declaration::permits`
+    loops and reports the refusal that got FURTHEST (`rank`), so the message
+    does not depend on the order blocks were written in. A credential the
+    declaration DOES carry, refused because no block paired it with this
+    destination, is upgraded to `CapabilityDenied::CredentialHost` — "asked for
+    something it never declared" and "sent the right secret to the wrong
+    service" are different bugs and must read differently in an audit trail.
+  - *Granted*: `CallerGrant.credentials` is a map name → hosts (empty = any,
+    the pre-1.6.2 meaning, so nothing narrows silently). `--tool-egress
+    'send:gmail@gmail.googleapis.com:POST'` writes it. The host is a BARE
+    hostname because that spec is colon-delimited — a URL would tear apart at
+    its own `://` and at any port — parsed by
+    `AllowedHost::parse_host_pattern`, which is the same matcher with
+    `scheme`/`port` left `None`, NOT a second one (`run_stack.rs` rejects a
+    spec containing `://` with a message saying what to write instead).
+  - Checked **once at dispatch entry**, not per hop, and that is sound only
+    because `left_origin` retires the credential the moment the chain leaves
+    its start origin. If that latch ever loosens, `permits_credential` moves
+    into the hop loop with it.
+- **A credential's SOURCE is a seam (`CredentialSource`), resolved in the
+  broker at call time** (#113) — `Static` (env var, as before), `Command`
+  (stdout of `cmd:…`), `Vault` (`vault:PATH#FIELD` over `$VAULT_ADDR` /
+  `$VAULT_TOKEN`, KV v1 and v2 both tried against the operator's verbatim
+  path). `Broker::start` takes sources, not values; `Credential` converts with
+  `.into()` so there is one constructor and no second start path.
+  - **Where it runs matters more than what it runs.** The resolver is engine
+    code, never sandbox code — #106's reasoning again: the trusted party
+    performs the privileged act, so it can bound, record and fail it. A
+    resolver in the guest hands the guest a credential that fetches *all* the
+    others.
+  - **Fail closed**, always: a resolver that errors, times out
+    (`RESOLVER_TIMEOUT`, 30s) or returns empty refuses the call and journals a
+    refusal. Never an unauthenticated request — that is the
+    401-hours-later-on-a-cron failure this feature exists to delete.
+  - **Never quote the resolver.** stdout IS the secret and stderr is written by
+    a script that may have echoed it, so neither reaches the response, the
+    journal, or a log line. The error names the credential and the failure
+    kind. `Credential`'s `Debug` is hand-written and redacted for the same
+    reason (a derived one puts the secret in every `{:?}`).
+  - **A minted value is validated like any other input** — `validate_minted`
+    refuses empty and anything that is not a valid HTTP header value, because
+    a resolver returning CR/LF would forge a second header on every request its
+    credential rides.
+  - **TTL + one bounded retry.** Cached per `--credential-ttl` (default 300s,
+    `DEFAULT_CREDENTIAL_TTL`). A 401 on a *dynamic* source ALWAYS invalidates
+    the cache; it re-issues the request only for `GET`/`HEAD`. A write that
+    401'd may already have been applied upstream and the broker does not get to
+    guess — the caller sees the 401 with a fresh credential waiting. The retry
+    is bounded by construction (there is no loop), and `headers` is reassigned
+    to the refreshed pair so the reflection scrub still scrubs what actually
+    rode. **Both attempts are journaled**: a request that went out carrying a
+    credential is an effect whether or not its response reached the caller, and
+    `calls()` is un-deduplicated precisely because forty calls are forty
+    things that happened. The retry deliberately does NOT spend a second
+    `max_calls` unit — the budget bounds what the MODULE asked for, and it did
+    not ask for this one.
+  - **The env carve-out is the subtle part.** A resolver needs its OWN auth
+    (`VAULT_TOKEN`, `AWS_PROFILE`), which is a secret one class *more* powerful
+    than the credential it fetches. Under the default `InheritExcept` that
+    variable would sit in every `--tool-cmd` child — #100's leak, one level up.
+    So `--resolver-env` registers those names as secrets (withheld everywhere)
+    and `CredentialSource::spawn_policy` re-admits them for resolvers only,
+    under `ClearExcept` + `minimal_allow()`. A resolver that names nothing gets
+    `PATH`/`HOME` and little else, which is enough for `gcloud`/`aws` to find
+    their own config.
+  - **Principal binding moves to the NAME side for dynamic sources** —
+    `--credential 'sheets@user:alice=cmd:…'`. A command can contain `@`
+    anywhere (`curl -u svc@example.com`), so `from_spec` deliberately parses no
+    owner out of a `cmd:`/`vault:` spec; mis-binding an owner would break the
+    per-principal isolation the owner map exists for. The bare env form keeps
+    its `VAR@principal` grammar, which is unambiguous because a variable name
+    cannot contain `@`.
+  - **Known limit**: `--credential` is comma-separated, so a resolver command
+    containing a comma must live in a script. The parser says so when a
+    fragment has no `=`.
 - **`declared ∩ host-granted`** (#101) — `Broker::declare(caller, Declaration,
   CapabilityLimits)` adds a per-caller layer that `serve_one` checks ALONGSIDE
   the grant, never instead of it. A caller with no declaration (every
@@ -200,6 +313,15 @@ evidence. Responding and resuming are separate acts.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.
 - Subgraph ask-bubbling; `run_trace` fork splicing (the `mg:fork_of` Fact is
   the index; the CLI splice view is not built yet).
+- #112 does not reach the TRIGGER CONNECTOR path. `Evaluator::poll` builds its
+  grant with `g.credential(name)` for every configured credential (unpaired,
+  any host) and a connector has no `Declaration`, so neither half of the
+  pairing applies: a trigger holding two services' credentials can still send
+  either to any host in its `allowed_outbound_hosts`. Not a regression — that
+  is how it always behaved — but the run path is now stricter than the trigger
+  path, and closing it needs a grant grammar on the trigger side (there is no
+  `--tool-egress` there: one connector runs per pass, so the grant is derived
+  from the credential list rather than written). Stated in `docs/triggers.md`.
 - #101 P2/P3: verify-by-re-execution against the recorded call log (needs the
   per-call record to be a replayable structure, not an Observation), and
   connectors resolved as capability tools by content address (needs the trigger

@@ -463,57 +463,6 @@ fn encrypted_open_without_passphrase_hints_at_kdf_sidecar() {
     );
 }
 
-/// `areev hub` is the sync hub (`areevd`). Unlike the console it is a network
-/// service by construction, so the shared key is mandatory and a non-loopback
-/// bind must be opted into — both refusals happen before anything is served.
-#[test]
-fn hub_requires_a_key_and_guards_the_bind_address() {
-    let dir = TempDir::new().unwrap();
-    let db = dir.path().join("hub.db");
-    let db = db.to_str().unwrap();
-    let seg = dir.path().join("segments");
-    let seg = seg.to_str().unwrap();
-
-    // no --token-env at all
-    let (ok, _o, err) = areev(&["hub", "-d", db, "--dir", seg]);
-    assert!(!ok, "hub without a token must refuse to start");
-    assert!(err.contains("--token-env"), "no pointer to --token-env in: {err}");
-
-    // named variable is not set
-    let (ok, _o, err) = areev(&["hub", "-d", db, "--dir", seg, "--token-env", "AREEV_UNSET_VAR"]);
-    assert!(!ok, "hub with an unset token variable must refuse to start");
-    assert!(err.contains("is not set"), "unhelpful message: {err}");
-
-    // set but empty
-    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
-        .args(["hub", "-d", db, "--dir", seg, "--token-env", "AREEV_EMPTY_VAR"])
-        .env("AREEV_EMPTY_VAR", "   ")
-        .output()
-        .expect("spawn areev");
-    assert!(!out.status.success(), "hub with an empty token must refuse to start");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("token is empty"),
-        "unhelpful message: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    // a real key, but bound off-loopback without --allow-remote
-    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
-        .args([
-            "hub", "-d", db, "--dir", seg, "--token-env", "AREEV_HUB_TEST_KEY",
-            "--addr", "0.0.0.0:0",
-        ])
-        .env("AREEV_HUB_TEST_KEY", "a-real-key")
-        .output()
-        .expect("spawn areev");
-    assert!(!out.status.success(), "off-loopback hub must require --allow-remote");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("non-loopback") && err.contains("--allow-remote"),
-        "bind guard message is unclear: {err}"
-    );
-}
-
 /// The graph and as-of reads used to be reachable only by linking the crate.
 #[test]
 fn cli_graph_and_temporal_verbs() {

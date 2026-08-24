@@ -87,21 +87,24 @@ a fingerprint.
 These are **requirements**, not suggestions. The article map above assumes
 them; a deployment that skips one has a finding waiting.
 
-1. **One hub per trust domain.** `areev hub`'s bearer token is a single
-   shared secret over the whole segment surface — anyone holding it can
-   list and pull *every* segment in that hub's directory. A hub shared
-   across tenants is a cross-tenant disclosure, not a misconfiguration.
-   Multi-tenant, HA, or compliance-heavy deployments belong on the
-   **Postgres backend** (one memory = one schema, `DROP SCHEMA` is
-   memory-level erasure); the hub is for personal/edge file sync.
+1. **One memory per trust domain.** A memory is the unit of erasure and of
+   isolation, and `areev ui --token-env`'s bearer token is a single shared
+   secret over the whole of it — anyone holding it reads every namespace in
+   that memory. One memory shared across tenants is a cross-tenant
+   disclosure, not a misconfiguration. Multi-tenant, HA, or
+   compliance-heavy deployments belong on the **Postgres backend** (one
+   memory = one schema, `DROP SCHEMA` is memory-level erasure); the
+   embedded file backend is for personal/edge use. Per-principal
+   credentials (`areev ui --auth`) narrow *within* a memory; they do not
+   make one memory safe to share across trust domains.
 2. **TLS-terminating proxy for anything non-loopback.** All Areev HTTP is
    plaintext by design (no HTTP framework, no TLS stack — see
    `security-model.md`). The token protects against unauthorized callers,
    never against an eavesdropper. Loopback-only, or front it with a proxy.
 3. **A documented archive-retention window.** Erasure tombstones replicate
-   forward and delete on replicas, but bundles, `areev stream` generations,
-   and hub segment directories are *point-in-time archives* — they hold
-   pre-erasure bytes until they age out. Configure the window explicitly
+   forward and delete on replicas, but bundles and `areev stream`
+   generations are *point-in-time archives* — they hold pre-erasure bytes
+   until they age out. Configure the window explicitly
    (§3) and state it in your DPIA. This is the same treatment DPA guidance
    accepts for database backups and WAL archives: erasure reaches archives
    within a bounded, documented, honored window.
@@ -160,7 +163,6 @@ archives older than the window:
 
 ```bash
 areev stream --db memory.db --to /var/lib/areev/archive --retain 30d
-areev hub    --dir /var/lib/areev/hub --token-env AREEV_HUB_TOKEN --retain 30d
 areev stream --db memory.db --to /var/lib/areev/archive --checkpoint   # force one now
 ```
 

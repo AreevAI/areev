@@ -1190,6 +1190,11 @@ areev trigger status --db ap.db --ns accounting   # what fired, what is due
 so a dev memory restored from prod cannot inherit prod's cursor and silently
 skip real work.
 
+In containers the heartbeat is an image command — `docker run areev heartbeat
+--ns accounting` loops the same one-shot evaluation on `$AREEV_HEARTBEAT_SECS`
+ticks; compose files and the multi-agent fleet pattern are in
+[`docker.md`](docker.md).
+
 If your host already embeds Areev, skip the binary — every subcommand above is a
 binding method, so the process holding the memory can fire its own rules:
 
@@ -1202,6 +1207,117 @@ Full reference: [`triggers.md`](triggers.md).
 
 ---
 
+## 19. Minting credentials from a vault
+
+An agent that calls a real API needs a real secret, and the usual arrangement —
+export it and hope — has two problems. It is static, so a cloud token that
+expires hourly breaks an overnight heartbeat; and it is ambient, so every tool
+subprocess can read it out of its own environment and skip the broker entirely.
+
+Areev's answer is in two halves, and it matters that they are separate:
+
+| Half | Question | Mechanism |
+|---|---|---|
+| The broker | where may a secret be **sent**? | `--allow-host`, `--tool-egress`, the tool's `capabilities` |
+| The source | where does a secret **come from**? | `--credential NAME=…` |
+
+A vault only improves the second. It does not remove the broker: a perfectly
+minted 5-minute token handed to a compromised tool is still exfiltrated in
+under five minutes. Run both.
+
+### The source, in one flag
+
+```bash
+# 1. static, as before — right for an API key that does not rotate
+--credential zoho=ZOHO_TOKEN
+
+# 2. any command that prints a token on stdout — the general form
+--credential 'sheets=cmd:gcloud auth print-access-token'
+
+# 3. Vault / OpenBao natively, so a container needs no vault binary
+--credential 'sheets=vault:secret/data/google#access_token' \
+--resolver-env VAULT_ADDR,VAULT_TOKEN
+```
+
+Form 2 is the one to reach for first: it needs no vendor client in Areev and it
+covers every provider below. Values are cached for `--credential-ttl` seconds
+(default 300) and minted again after, so a revocation upstream takes effect
+without restarting anything.
+
+### Per platform
+
+Each row is a `cmd:` resolver. The auth column is what makes it work with **no
+secret on disk** — that is the property worth optimizing for, and it is what
+`--resolver-env` then has to carry.
+
+| Platform | Store | How the resolver authenticates | Resolver |
+|---|---|---|---|
+| AWS | Secrets Manager | EC2 instance role / ECS task role | `cmd:aws secretsmanager get-secret-value --secret-id sheets --query SecretString --output text` |
+| GCP | Secret Manager | attached service account / Workload Identity | `cmd:gcloud secrets versions access latest --secret=sheets` |
+| Azure | Key Vault | Managed Identity | `cmd:az keyvault secret show --vault-name kv --name sheets --query value -o tsv` |
+| Self-hosted | Vault or OpenBao | AppRole, KMS auto-unseal | `vault:secret/data/sheets#token` or `cmd:vault kv get -field=token secret/sheets` |
+| Any | short-lived cloud token | ambient credentials | `cmd:gcloud auth print-access-token` |
+
+On the three managed services the resolver needs only its platform's ambient
+identity, so `--resolver-env` often names nothing at all — the CLI finds its
+config under `$HOME`, which resolvers already get. Self-hosted Vault is the
+case that needs `--resolver-env VAULT_ADDR,VAULT_TOKEN`.
+
+### Self-hosted, with Docker
+
+OpenBao is the MPL-licensed fork of Vault and the one to default to for a new
+self-hosted deployment. Beside the compose file in [`docker.md`](docker.md):
+
+```yaml
+  openbao:
+    image: openbao/openbao:latest
+    command: ["server", "-config=/bao/config.hcl"]
+    volumes:
+      - bao-data:/bao/data
+      - ./docker/bao.hcl:/bao/config.hcl:ro
+
+  heartbeat:
+    image: areev:latest
+    command:
+      ["heartbeat", "--db", "/data/agent.db", "--ns", "agent",
+       "--credential", "gmail=vault:secret/data/google#access_token",
+       "--resolver-env", "VAULT_ADDR,VAULT_TOKEN"]
+    environment:
+      VAULT_ADDR: http://openbao:8200
+      VAULT_TOKEN_FILE: /run/secrets/bao_token   # read it into VAULT_TOKEN at entry
+```
+
+Use `raft` integrated storage (the recommended backend) and auto-unseal against
+a cloud KMS; on the PostgreSQL deployment profile a vault can share the
+Postgres *server* in its own database, so you add no new storage system.
+
+**Never store secrets in the Areev memory itself.** Grains are immutable,
+content-addressed and they *replicate* — `areev stream`/`follow` would carry
+every secret to every replica, and a supersession cannot actually remove the
+old value. A declaration names a credential; it never carries one.
+
+### Two things the flags do that are easy to miss
+
+- **`--resolver-env` is a carve-out, not a pass-through.** The variables it
+  names are withheld from every *other* subprocess and re-admitted only for
+  resolvers. That is the point: a `VAULT_TOKEN` left ambient is readable by
+  every `--tool-cmd` you run, and unlike the credential it fetches, it can
+  fetch *all* of them.
+- **A failing resolver refuses the call.** It never sends the request
+  unauthenticated, and the error names which credential failed without
+  repeating what the resolver printed. Check for it in the audit trail the way
+  you check for any other refusal:
+
+```bash
+areev cal 'RECALL observations WHERE namespace = "agent:harness"' --db agent.db
+# → observation_kind "egress_refusal", reason "credential 'sheets' could not be resolved"
+```
+
+Full rules: [`run.md`](run.md#where-a-credential-comes-from) and
+[`security-model.md`](security-model.md).
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
@@ -1209,6 +1325,7 @@ Full reference: [`triggers.md`](triggers.md).
 - [`mcp-reference.md`](mcp-reference.md) — the MCP tools
 - [`triggers.md`](triggers.md) — the eight trigger kinds, in full
 - [`run.md`](run.md) — the governed workflow runtime
+- [`docker.md`](docker.md) — the container image: compose, heartbeat, cloud deploys
 - [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)
 - [`../FAQ.md`](../FAQ.md) — concepts and comparisons
 - [`../SECURITY.md`](../SECURITY.md) — trust model and hardening

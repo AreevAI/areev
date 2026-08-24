@@ -225,7 +225,7 @@ can see memory *utility*, not just internal consistency.
   voice-loop recall p50 stays ~82µs with telemetry on). The buffer drains
   off-path.
 - **Encrypted under the same key** as the main file (crypto-erasure covers it),
-  **never syncs** (the hub carries the memory file only), **rebuildable** —
+  **never syncs** (bundles carry the memory file only), **rebuildable** —
   losing it costs evidence detail, never state. `FORGET` synchronously scrubs
   it. Modes: `off` | `aggregate` (rollups) | `full` (+ a per-recall ring log).
   A host-scoped `run_id` may be attached to full rows for trajectory joins; it
