@@ -16,6 +16,12 @@ name-reservation/
 
 # example scratch output (smoke.sh writes the "posted" sheet and outbox here)
 examples/agents/*/out/
+# Agent-example language stacks: run artifacts, deps, and the Rust stack's
+# detached lockfile (path deps make it drift with every release bump).
+examples/agents/*/*/out/
+examples/agents/*/typescript/node_modules/
+examples/agents/*/typescript/package-lock.json
+examples/agents/*/rust/Cargo.lock
 
 # python bytecode
 __pycache__/

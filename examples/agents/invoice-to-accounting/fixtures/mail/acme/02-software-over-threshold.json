@@ -1,0 +1,14 @@
+{
+  "amount": 4400.0,
+  "attachment": "INV-CC-88602.pdf",
+  "category": "Software",
+  "client": "acme",
+  "confidence": 0.96,
+  "currency": "USD",
+  "message_id": "<INV-CC-88602@cobaltcloud.example>",
+  "scanned": false,
+  "sender": "billing@cobaltcloud.example",
+  "subject": "Invoice INV-CC-88602 \u2014 annual licences",
+  "thread": "thr-acme-0002",
+  "vendor": "Cobalt Cloud"
+}

@@ -13,7 +13,11 @@ list learned from building the [vertical agents](agents/) in this repo.
 
 Working example to keep open beside this:
 [`agents/invoice-to-accounting/`](agents/invoice-to-accounting/) — the full
-pattern in a few files. Canonical references:
+pattern in one file per language (Python, TypeScript, Rust — same plan,
+same content address), with corrections taken by email reply and the loop
+scheduled. Shared how-to material for every agent example — email
+providers, deployment, testing — lives in
+[`agents/docs/`](agents/docs/). Canonical references:
 [`docs/run.md`](../docs/run.md) (the runtime),
 [`docs/triggers.md`](../docs/triggers.md) (activation),
 [`docs/loop.md`](../docs/loop.md) (self-improvement),

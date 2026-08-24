@@ -362,4 +362,5 @@ conversation — your call.
   JSONL, with its edit history: [`migrate.md`](migrate.md).
 - **See a real agent end to end**: the
   [invoice-to-accounting example](../examples/agents/invoice-to-accounting/)
-  runs keyless in CI, both chapters.
+  runs keyless in CI, both chapters — the same agent in Python, TypeScript,
+  and Rust, one file each, minting one content-addressed plan.

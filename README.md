@@ -84,35 +84,41 @@ proves it with a deterministic benchmark, no LLM in the loop:
 
 ## Sixty seconds
 
-An accounts-payable agent, no credentials, no network, no model key:
+An accounts-payable agent that takes corrections **by email reply** — no
+credentials, no network, no model key:
 
 ```bash
-cargo install areev
+pip install areev
 git clone https://github.com/AreevAI/areev && cd areev/examples/agents/invoice-to-accounting
-./smoke.sh        # week one — it does the job, under governance
+python/smoke.sh    # week one — it does the job, under governance
 ```
 
 Small invoices post themselves; one over the threshold **parks for a person**
 (the starter cannot approve its own run); a scanned page **fails loudly**
-instead of posting a blank row. Then week two:
+instead of posting a blank row; and a misspelled vendor comes back corrected
+by reply — the run cycles until the approver says yes, and the correction
+becomes a fact. Then week two:
 
 ```bash
-./improve.sh      # week two — it proposes its own fix, you decide
+python/improve.sh  # week two — it proposes its own fix, you decide
 ```
 
 ```
-loop: ran — proposed 1 (0 deduped, 0 auto-applied) across 11 analyzer(s)
-   HIGH  Workflow fc991baf5ead failed 4/8 recent runs (50%): parse_attachments:
+the misspelled vendor from week one now posts itself   # the correction became memory
+   HIGH  Workflow 3da2300c1296 failed 4/9 recent runs (44%): parse_attachments:
          pdftotext produced 0 characters - attachment is a scanned image
-   origin     builtin — deterministic, no model was called
-   the engine cannot execute its own advice — it is advisory (LOP-E011)
-approved 776d33d9e246          # a person, with a written reason
+   the engine cannot execute its own advice -- it is advisory
+   a decision with no written reason is refused
+   approved by user:dev_rao, lesson recorded against the vendor
 ```
 
-That is the whole product in one screen: it found a real pattern in **its own
-run journals**, refused to act on it, a named person approved it, and it will
-not raise the same evidence twice. Both scripts assert their own results and
-[CI runs them on every release](.github/workflows/ci.yml).
+That is the whole product in one screen: a human's correction became memory
+the agent recalls, it found a real pattern in **its own run journals**,
+refused to act on it, a named person approved it, and it will not raise the
+same evidence twice. The same agent ships in **Python, TypeScript, and
+Rust** — one file each, and all three mint the *identical* content-addressed
+plan. Every script asserts its own results and
+[CI runs all three on every release](.github/workflows/ci.yml).
 **[→ the full walkthrough](examples/agents/invoice-to-accounting/)**
 
 ---

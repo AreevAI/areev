@@ -1,165 +1,225 @@
 # invoice → accounting
 
-An accounts-payable mailbox. Invoices arrive, get extracted, and land in the
-expense sheet — except the ones a person has to look at first, which park until
-somebody says yes.
+An accounts-payable desk that runs on email. Vendors send PDF invoices to a
+mailbox; the agent parses them, extracts expense rows, emails the approver,
+takes corrections **by reply** until the approver says yes, posts the
+approved row to a spreadsheet — and, on a schedule, reads its own history
+back and proposes its own fixes, which a person signs off.
 
-Nothing here needs a credential, a network, or a model key. That is the point:
-the whole thing runs from committed fixtures, so CI proves it on every release
-and it cannot rot quietly between them.
-
-```bash
-cargo build --release -p areev     # once, from the repo root
-cd examples/agents/invoice-to-accounting
-./smoke.sh        # week one — it does the job, under governance
-./improve.sh      # week two — it proposes its own fix, you decide
 ```
+ vendor                        the areev invoice agent                     approver
+───────►  ap mailbox  ──poll──►  parse ─► extract ─► validate ──clear──►  post row ─► reply
+ "invoice   (O365 /   trigger      │                    │                  to sheet    to
+  attached"  Gmail)                │ no text layer      │ needs review        ▲       vendor
+                                   ▼                    ▼                     │
+                                 FAILED,          email the ask ─────►  [ a person ]
+                                 loudly                 ▲    "approve | revise | reject"
+                                                        │                     │
+                                                        └── apply corrections ┘
+                                                            (bounded cycle, ≤3)
+```
+
+And the second loop, the one that makes it *self-improving* — scheduled, not
+magic: every correction and every failed run is already a grain in the
+agent's memory, so improvement is CAL queries over its own record:
+
+```
+ runs, corrections, tool calls ──► areev loop (deterministic analyzers,
+        (the journal)               scheduled: cron / heartbeat / CI)
+                                          │ Recommendation + evidence, by hash
+                                          ▼
+                                    [ a person ] ──approve/reject, signed──►  new facts,
+                                          ▲                                   new aliases,
+   next run's context ◄── saved CAL queries assemble the lessons back ◄───────┘
+```
+
+Nothing here needs a credential, a network, or a model key: the whole thing
+runs from committed fixtures, so CI proves it on every release. The live
+mailbox connectors ([`connectors/`](connectors/)) are opt-in behind env vars.
+
+## Run it — pick your language
+
+The same agent is implemented three times, **one file per language**, each
+embedding Areev in-process through its own binding. All three expose the
+same subcommands, are driven by the same two act scripts, and — because
+every seeder pins `created_at` — **mint the identical plan hash**: three
+languages, one content-addressed agent.
+
+| Stack | Needs | Run |
+|---|---|---|
+| [`python/`](python/) | `pip install areev` | `python/smoke.sh` then `python/improve.sh` |
+| [`typescript/`](typescript/) | node ≥ 22.6, `npm i @areev/areev` (in-tree: a built `crates/areev-js`) | `typescript/smoke.sh` then `typescript/improve.sh` |
+| [`rust/`](rust/) | a Rust toolchain | `rust/smoke.sh` then `rust/improve.sh` |
+
+Or everything at once (what CI runs): [`../run-smokes.sh`](../run-smokes.sh).
 
 A few seconds later:
 
 ```
-2 posted, 1 refused, 1 approval recorded against a named person.
+OK -- 3 posted, 1 refused, 1 correction round-tripped, 2 approvals signed by name.
+OK -- 1 correction became memory, 1 pattern found in 9 runs, 1 decision signed by name.
 ```
 
-and then:
+## Week one — `smoke.sh`
 
-```
-1 pattern found in 8 runs, 1 decision recorded against a named person.
-```
+Four invoices arrive across two client mailboxes:
 
-## What just happened
-
-```
-                         ┌── under 2,500 ─────────────────────────┐
-                         │                                        ▼
-invoice ─▶ parse ─▶ extract ─▶ validate ─▶ ask ─▶ [ a person ] ─▶ post ─▶ reply
-             │                                         │
-             │ no text layer                           │ rejected
-             ▼                                         ▼
-          FAILED                                 reply, never post
-```
-
-Three invoices go in:
-
-| Fixture | What it is | What the run does |
+| Mail | What it is | What the run does |
 |---|---|---|
-| `01-under-threshold.json` | 860 USD of freight | Posts itself. Nobody is woken up for a small, confident row. |
-| `02-needs-approval.json` | 4,400 USD of software | **Parks.** A person approves it, and their name goes on the posted row. |
-| `03-scanned-page.json` | A photographed invoice | **Fails.** The parser gets no text and says so, rather than posting a blank row. |
+| acme / Meridian Freight, 860 USD | small and confident | **Posts itself.** Nobody is woken up. |
+| acme / Cobalt Cloud, 4,400 USD | over the client's threshold | **Parks.** Dana approves by reply; their name goes on the row. |
+| acme / a photographed page | no text layer | **Fails, loudly.** A silent empty extraction posts a blank row; this one stops. |
+| brightco / "Cobolt Cloud", 1,900 USD | misspelled vendor, low confidence | **Parks.** Priya replies `revise` + `Vendor: Cobalt Cloud`; the run goes **around the cycle** — corrections merged, re-asked — then `approve` posts the corrected row. |
 
-The third one is the one worth staring at. A pipeline that "handles" an
-unreadable attachment by extracting nothing writes a row of nulls into your
-books. This one stops.
+Three governance properties are asserted, not narrated:
 
-## The four things this is actually demonstrating
+- **The agent cannot approve its own ask.** The desk emails itself an
+  approval and the runtime refuses — the responder principal structurally
+  cannot be the one that started the run.
+- **Redelivery is one run, not two.** Another heartbeat tick over the same
+  mailbox starts nothing (`--dedup-key /message_id`).
+- **The correction became memory at the moment it was approved**: the alias
+  `Cobolt Cloud → Cobalt Cloud` lands as a fact in `org.brightco.vendors`,
+  and the correction itself is recorded as a failed `extract_rows` outcome
+  the loop can cluster.
 
-**A plan is data, so it travels.** `plan.mgb` is an ordinary memory bundle
-carrying seven tool definitions and the workflow that binds them. `smoke.sh`
-imports it into an empty file. Its content address is
-`fc991baf…` on every machine, because a plan is a grain and a grain is its
-bytes.
+## Weeks two and three — `improve.sh`
 
-**The approver cannot be the requester.** `smoke.sh` tries to approve the
-parked run as `agent:ap-intake` — the principal that *started* it — and asserts
-that the runtime refuses. Separation of duties is a property of the operation,
-not a policy someone remembers to enforce.
+More mail. Northgate keeps emailing photographs. And the payoff of week
+one's correction shows up before any model or loop is involved: the same
+misspelled vendor arrives again, the trigger's declared context now carries
+the alias fact, extraction canonicalizes the name and settles the confidence
+question — **the invoice that needed a person in week one posts itself in
+week three.**
 
-**The threshold is a memory, not a constant.** `amount_at_or_above:2500_usd
-route_to human_review` is stored as a fact. That is what makes it something
-`areev loop` can later propose changing, with a written reason and a rollback.
+Then the desk reads its own record:
 
-**Afterwards, it is queryable.** `areev run-trace --run-id large` returns the
-run's journal, out of the same file the vendor terms live in. There is no
-separate log to join against.
+- **It briefs itself out of its own memory.** `desk_pulse` — a saved CAL
+  query stored *in the memory file* — assembles the plan, the tool
+  definitions, recent activity, and the lessons under a token budget. That
+  briefing is what a scheduled improvement pass hands to a model: the agent
+  describing its current setup — its queries, grains, and workflows — from
+  the same file it runs on.
+- **`areev loop run` finds the pattern**: `HIGH — Workflow 3da2300c1296
+  failed 4/9 recent runs (44%): parse_attachments: … scanned image`. The
+  analyzers are deterministic; no model key was involved. (The smoke also
+  shows tuning them to a low-volume desk via `set_analyzer_config` — at
+  four invoices a week, the stock thresholds would stay silent a quarter.)
+- **The gate holds**: the engine refuses to apply its own advisory finding,
+  and refuses any decision without a written reason. A person approves,
+  signing name and reasoning; the lesson is recorded against the vendor; a
+  second loop run proposes nothing — the same evidence does not nag.
 
-## Week two: it proposes its own fix
+## What this example is teaching
 
-`./improve.sh` runs another five invoices through the same plan. Three of them
-are photographs — a new vendor, Northgate, emails scans of their invoices, and
-a photograph has no text layer.
+**A plan is data and travels as its hash.** The workflow (9 nodes, a
+client-gated approval, a `max_cycles`-bounded correction cycle) is authored
+as a grain via JSON `add` — from Python, TypeScript, and Rust — and all
+three seeders produce the same content address. `run-smokes.sh` asserts it.
 
-Read one at a time, those are three unlucky days. Nobody files a ticket for a
-single stuck invoice. Counted, they are a pattern with a cause, and that is
-what `areev loop run` does — over the runs' own journals, with **no model key
-and no training**:
-
-```
-HIGH  Workflow fc991baf5ead failed 4/8 recent runs (50%): parse_attachments:
-      pdftotext produced 0 characters - attachment is a scanned image
-analyzer   loop.run_outcome/1  (confidence 0.8)
-evidence   8 grains cited, by hash
-origin     builtin — deterministic, no model was called
-```
-
-Then it stops, because this is the part that has to be boring. The script
-asserts two refusals:
-
-```
-the engine cannot execute its own advice — it is advisory (LOP-E011)
-a decision with no written reason is refused
-```
-
-A person approves it, signing their name and their reasoning:
-
-```bash
-areev loop approve <REC> --as user:dev_rao \
-  --because "Northgate emails photographs; OCR them before parse instead of failing the run"
-```
-
-and the lesson becomes memory the agent recalls next time it meets that vendor:
+**Three keys, three jobs** (conflating them is the classic modeling error):
 
 ```
-<fact confidence="0.90" date="2026-08-20">northgate_supply invoice_delivery
-  photographed pages — OCR before parse</fact>
+run_id     = message id      one governed run per inbound email
+session_id = thread id       the conversation, spans runs
+subject    = vendor/invoice  the thing itself, spans threads
 ```
 
-Run the loop again and it proposes nothing: the same evidence does not become a
-second recommendation. An agent that nags is an agent you turn off.
+**Namespaces are the multi-tenant design.** The desk serves many clients;
+each client's knowledge lives in its own subtree, and the read side scopes
+by prefix:
 
-**What this is not.** The loop did not change the workflow, and it cannot. This
-finding is advisory — it tells a person that a plan is failing and cites the
-runs that prove it. Nothing here retrains a model, and Areev never will.
+```
+org.ops                 the runtime lane: plan, tool definitions, triggers,
+                        run journals, raw mail events    (never policied!)
+org.acme                client rules (the review threshold is a FACT here)
+org.acme.vendors        aliases, payment terms, lessons
+org.brightco            second client, same shape
+org.brightco.vendors
+```
+
+One query reads the whole desk (`WHERE namespace = "org.*"` — what
+`extract_ctx` and the loop do); one client is `"org.acme.*"`; **writes,
+grants, retention and erasure take exact namespaces only** — a wildcard
+never widens a destructive surface. Under a bound principal the prefix
+expansion fails closed against the session's grants.
+
+**Keep operational grains out of policied namespaces.** The example sets an
+egress-anonymization policy (audit mode) on the client subtrees and
+deliberately **never** on `org.ops` — a rewriter that turns dates into
+`[DATE_1]` and 64-char hashes into `[PERSON_1]` breaks plans, bindings, and
+every piece of operational JSON it touches. Content namespaces get policy;
+the ops lane does not.
+
+**Retrieval and presentation ship inside the agent.** `extract_ctx` (what
+extraction gets to know: skill instructions, desk facts, the email thread)
+and `desk_pulse` are `DEFINE QUERY` rows in the file itself; the trigger
+*declares* its context (`--context-query "extract_ctx($session = /thread)"`)
+and the evaluator assembles it at fire time. Tune the prompt recipe with
+`DROP QUERY` + `DEFINE` — no agent redeploy, and the queries replicate with
+the memory.
+
+**The tools and the mailbox are subprocess seams.** `agent tools` and
+`agent connector` are JSON-on-stdio, one process per invocation — the same
+contract in all three languages, and the reason the mock and the live
+connectors are interchangeable.
+
+## Going live
+
+The mock connector and tools are the only fake parts. To make it real:
+
+1. **Mailbox** — swap the mock for a live connector:
+   [`connectors/outlook_graph.py`](connectors/outlook_graph.py) (Microsoft
+   365 / Outlook, the default most desks want) or
+   [`connectors/gmail.py`](connectors/gmail.py) (Google Workspace — the
+   pattern proven by a production deployment). Both are stdlib-only,
+   env-gated, and return attachments as blobs the evaluator stores in the
+   CAS. Setup, auth, and the payload contract:
+   [`../docs/email-providers.md`](../docs/email-providers.md).
+2. **Tools** — replace the `tools` subcommand's mock handlers: `pdftotext`
+   for parse, a model call for extract (`temperature 0`, strict JSON), your
+   spreadsheet API for post (Microsoft Graph workbook append, Google Sheets
+   `values:append`). Keep each handler idempotent on `row_key`. Hand
+   credentials to the run, not the tool: `--credential NAME=ENV_VAR`
+   + `--allow-host` broker them so the token never enters the tool process.
+3. **Reply classification** — the deterministic classifier here (verb +
+   `Field: value` lines, quoted text stripped, marker in the subject) is the
+   floor; add an LLM interpretation leg only for replies it cannot classify,
+   and leave genuine questions unactioned for a person.
+4. **Schedule both loops** — the ingest heartbeat (`agent ingest` every
+   couple of minutes) and the improvement pass (`agent improve` nightly).
+   Set `LOOP_LLM_CMD` to any [`../../llm/`](../../llm/) backend and the
+   nightly pass adds verified LLM reflection over the same CAL-assembled
+   context — DISCOVER→GROUND→VERIFY, every model finding grounded in
+   grains before it can become a recommendation.
+   Cron, launchd, or the repo's Docker image with its `heartbeat` role —
+   including the embedded-vs-Postgres storage decision:
+   [`../docs/deploy.md`](../docs/deploy.md).
+5. **Tighten identity** — the smoke maps email senders to principals; in
+   production, approvals deserve per-principal credentials (`areev ui
+   --auth`, where `run.respond` refuses shared-token callers) and grants in
+   the file (`GRANT run.respond ON org.ops TO "user:dana" …`).
 
 ## The pieces
 
 ```
-plan.mgb        the workflow + its 7 tool definitions, as a portable bundle
-tools.py        the host tools: JSON on stdin, JSON on stdout, one process per call
-fixtures/       eight invoices — clean, over-threshold, and unreadable scans
-smoke.sh        week one, with assertions. Non-zero on drift.
-improve.sh      week two: the loop finds the pattern, a person decides. Also asserted.
+python/  typescript/  rust/   the same agent, one file each, own binding
+smoke.sh, improve.sh          the two acts -- language-neutral assertions,
+                              driven through each stack's 3-line wrapper
+fixtures/mail/<client>/       nine synthetic invoices ("MAIL_UPTO" is the clock)
+fixtures/replies/             approve / revise / reject replies, with markers
+connectors/                   the LIVE mailbox pollers (env-gated, never CI)
 ```
-
-`tools.py` is the only file you would replace to make this real. Point
-`append_sheet` at your accounting API instead of a JSONL file, and the plan,
-the journal, the approval gate, and the audit trail do not change. If that API
-needs a token, hand it to the run rather than the tool:
-
-```bash
-areev run start --workflow <WF> --run-id inv-1 --tool-cmd ./tools.py \
-  --credential books=BOOKS_TOKEN \
-  --allow-host 'https://books.example.com' \
-  --tool-egress 'append_sheet:books:POST'
-```
-
-The tool gets a broker address and a capability token, never the secret — and a
-tool with no grant gets nothing.
 
 ## Where to go next
 
-- [`docs/run.md`](../../../docs/run.md) — the runtime: journal, checkpoints,
-  resume, budgets, `verify`
-- [`docs/triggers.md`](../../../docs/triggers.md) — how the mailbox wakes this
-  up on a cadence, without a daemon
-- [`docs/loop.md`](../../../docs/loop.md) — turning the corrections a human
-  makes here into proposed changes
-
-## Regenerating the plan
-
-`plan.mgb` is built from the same seeder as the README's demo memory, on a
-fixed clock so its content address does not move:
-
-```bash
-cargo run --release -p areev-store --example seed_accounting_demo -- /tmp/plan.db --plan-only
-areev bundle --db /tmp/plan.db --out examples/agents/invoice-to-accounting/plan.mgb
-```
+- [`../../how-to-create-an-areev-agent.md`](../../how-to-create-an-areev-agent.md)
+  — the assembly manual this example follows
+- [`../../../docs/run.md`](../../../docs/run.md) — the runtime: journal,
+  budgets, asks, `verify`
+- [`../../../docs/triggers.md`](../../../docs/triggers.md) — the trigger
+  model and the connector contract
+- [`../../../docs/loop.md`](../../../docs/loop.md) — analyzers, gates, the
+  recommendation lifecycle
+- [`../../../docs/cal-reference.md`](../../../docs/cal-reference.md) — CAL,
+  `DEFINE QUERY`, templates, ASSEMBLE

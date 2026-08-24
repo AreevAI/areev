@@ -1,0 +1,14 @@
+{
+  "amount": 1900.0,
+  "attachment": "INV-CC-90114.pdf",
+  "category": "Software",
+  "client": "brightco",
+  "confidence": 0.58,
+  "currency": "USD",
+  "message_id": "<INV-CC-90114@cobaltcloud.example>",
+  "scanned": false,
+  "sender": "billing@cobaltcloud.example",
+  "subject": "Invoice INV-CC-90114 \u2014 usage",
+  "thread": "thr-brightco-0001",
+  "vendor": "Cobolt Cloud"
+}

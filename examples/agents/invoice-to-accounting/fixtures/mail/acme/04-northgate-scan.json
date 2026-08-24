@@ -1,0 +1,14 @@
+{
+  "amount": 590.0,
+  "attachment": "IMG_2214.pdf",
+  "category": "Office Supply",
+  "client": "acme",
+  "confidence": 0.2,
+  "currency": "USD",
+  "message_id": "<INV-NG-2214@northgate.example>",
+  "scanned": true,
+  "sender": "accounts@northgate.example",
+  "subject": "Invoice NG-2214",
+  "thread": "thr-acme-0010",
+  "vendor": "Northgate Supply"
+}
