@@ -227,7 +227,12 @@ pub struct Evaluator {
     /// Credentials the broker may attach, by name. Values live here and never
     /// in a grain or a connector's environment: a declaration names a
     /// credential, it never carries one.
-    pub credentials: std::collections::BTreeMap<String, areev_run::Credential>,
+    /// A SOURCE per name, not a resolved value (#113): the heartbeat is the
+    /// path that most needs short-lived credentials, because it is the one
+    /// nobody is watching. An env-var source resolves once, as before; a
+    /// `cmd:`/`vault:` source is minted per TTL window inside the broker, so a
+    /// cadence that outlives a token's hour does not start 401'ing overnight.
+    pub credentials: std::collections::BTreeMap<String, areev_run::CredentialSource>,
     pub ns: String,
     pub principal: String,
 }

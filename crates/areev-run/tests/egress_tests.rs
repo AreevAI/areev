@@ -184,7 +184,7 @@ fn a_tool_receives_a_broker_address_and_a_token_but_never_the_secret() {
     std::env::set_var("AREEV_TEST_ZOHO", "super-secret-value");
     let broker = Broker::start(
         EgressPolicy::unrestricted(),
-        [("zoho".to_string(), areev_run::Credential::bearer_from_env("AREEV_TEST_ZOHO").unwrap())]
+        [("zoho".to_string(), areev_run::Credential::bearer_from_env("AREEV_TEST_ZOHO").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new()
@@ -436,7 +436,7 @@ fn a_same_origin_redirect_keeps_the_credential() {
     std::env::set_var("AREEV_TEST_REDIR_CRED", "s3cr3t");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_REDIR_CRED").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_REDIR_CRED").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
@@ -480,7 +480,7 @@ fn a_cross_origin_redirect_is_followed_without_the_credential() {
     std::env::set_var("AREEV_TEST_XORIGIN_CRED", "do-not-forward");
     let broker = Broker::start(
         policy_for(&[first.origin(), other.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_XORIGIN_CRED").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_XORIGIN_CRED").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
@@ -520,7 +520,7 @@ fn a_credential_is_not_re_attached_after_the_chain_leaves_and_returns_to_the_ori
     std::env::set_var("AREEV_TEST_BOUNCE_CRED", "do-not-return");
     let broker = Broker::start(
         policy_for(&[first.origin(), other.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_BOUNCE_CRED").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_BOUNCE_CRED").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
@@ -663,7 +663,7 @@ fn the_credential_variable_is_withheld_from_children_while_still_exported() {
     let broker = Arc::new(
         Broker::start(
             EgressPolicy::unrestricted(),
-            [("api".to_string(), cred)].into_iter().collect(),
+            [("api".to_string(), cred.into())].into_iter().collect(),
             EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
             "RUN-E022",
         )
@@ -768,7 +768,7 @@ fn a_declaration_cannot_widen_what_the_host_granted() {
     std::env::set_var("AREEV_TEST_UNGRANTED", "never-attached");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("gmail".to_string(), Credential::bearer_from_env("AREEV_TEST_UNGRANTED").unwrap())]
+        [("gmail".to_string(), Credential::bearer_from_env("AREEV_TEST_UNGRANTED").unwrap().into())]
             .into_iter()
             .collect(),
         // The host grants the tool NO credential and only reads.
@@ -856,7 +856,7 @@ fn a_successful_call_is_recorded_with_digests_and_never_a_body() {
     std::env::set_var("AREEV_TEST_RECORDED", "secret-value-here");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_RECORDED").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_RECORDED").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api").method("POST")),
@@ -905,7 +905,7 @@ fn a_credential_reflected_in_a_response_body_is_scrubbed() {
     std::env::set_var("AREEV_TEST_REFLECT", "reflect-me-please");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_REFLECT").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_REFLECT").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
@@ -1177,7 +1177,7 @@ fn a_guest_cannot_set_the_headers_the_broker_owns() {
     std::env::set_var("AREEV_TEST_OWNED_HDR", "s3cret-value");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_OWNED_HDR").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_OWNED_HDR").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new()
@@ -1222,7 +1222,7 @@ fn a_guest_cannot_overwrite_a_header_carrying_a_configured_credential() {
         policy_for(&[site.origin()]),
         [(
             "api".to_string(),
-            Credential::Header { name: "X-Api-Key".into(), value: "s3cret".into() },
+            Credential::Header { name: "X-Api-Key".into(), value: "s3cret".into() }.into(),
         )]
         .into_iter()
         .collect(),
@@ -1864,7 +1864,7 @@ fn an_owned_credential_is_refused_for_a_different_principal() {
     assert_eq!(owner.as_deref(), Some("user:alice"), "the owner parses off the spec");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), cred)].into_iter().collect(),
+        [("api".to_string(), cred.into())].into_iter().collect(),
         // The TOOL grant admits the credential; ownership is the second gate.
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
         "RUN-E022",
@@ -1902,7 +1902,7 @@ fn an_owned_credential_fails_closed_with_no_bound_principal() {
     let (cred, _) = Credential::bearer_from_env_spec("AREEV_TEST_OWNED2@user:alice").unwrap();
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), cred)].into_iter().collect(),
+        [("api".to_string(), cred.into())].into_iter().collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
         "RUN-E022",
     )
@@ -1928,7 +1928,7 @@ fn an_unowned_credential_ignores_the_run_principal() {
     std::env::set_var("AREEV_TEST_UNOWNED", "shared");
     let broker = Broker::start(
         policy_for(&[site.origin()]),
-        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_UNOWNED").unwrap())]
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_UNOWNED").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
@@ -2093,7 +2093,7 @@ fn the_driver_binds_the_run_principal_for_owned_credentials() {
     let broker = Arc::new(
         Broker::start(
             policy_for(&[site.origin()]),
-            [("api".to_string(), cred)].into_iter().collect(),
+            [("api".to_string(), cred.into())].into_iter().collect(),
             EgressGrants::new().grant("reach", CallerGrant::new().credential("api")),
             "RUN-E022",
         )
@@ -2137,4 +2137,753 @@ fn the_driver_binds_the_run_principal_for_owned_credentials() {
         refusals.iter().any(|r| r.reason.contains("bound to principal 'user:alice'")),
         "the driver bound bob and the broker refused: {refusals:?}"
     );
+}
+
+// ---- #112: a credential is bound to a host, not merely to a caller ---------
+
+use areev_run::{AllowedHost, CredentialSource};
+
+/// The exposure, stated as a test: a tool that legitimately holds two
+/// services' credentials must not be able to send one service's secret to the
+/// other.
+///
+/// Both servers are on the allowlist and the caller is granted both
+/// credentials, which is exactly the shape that used to permit this — `hosts`
+/// and `credentials` were independent membership tests with nothing relating
+/// them. The pairing is what refuses it, and it is the HOST-side half: the
+/// declaration travels with the tool, so it cannot be the only thing deciding
+/// where a secret may go.
+///
+/// `localhost` and `127.0.0.1` name the two hosts because both test servers
+/// bind loopback — different names, genuinely different hosts to the matcher.
+#[test]
+fn a_paired_credential_is_refused_at_a_host_it_was_not_paired_with() {
+    let mail = Upstream::start(vec![("/m", 200, Vec::new(), "{\"ok\":true}")]);
+    let sheets = Upstream::start(vec![("/s", 200, Vec::new(), "{\"ok\":true}")]);
+    let mail_origin = format!("http://localhost:{}", mail.port);
+
+    std::env::set_var("AREEV_TEST_PAIRED_MAIL", "mail-secret");
+    let broker = Broker::start(
+        // Both destinations are allowed outright — the allowlist is not what
+        // is doing the work here.
+        policy_for(&[mail_origin.clone(), sheets.origin()]),
+        [(
+            "gmail".to_string(),
+            Credential::bearer_from_env("AREEV_TEST_PAIRED_MAIL").unwrap().into(),
+        )]
+        .into_iter()
+        .collect(),
+        EgressGrants::new().grant(
+            "t",
+            CallerGrant::new()
+                .credential_for("gmail", vec![AllowedHost::parse_host_pattern("localhost", "t").unwrap()]),
+        ),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    // The pairing's own host: allowed, and the secret rides.
+    let (code, _) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{mail_origin}/m"), "method": "GET", "credential": "gmail" }),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(
+        mail.requests()[0].2.as_deref(),
+        Some("bearer mail-secret"),
+        "the paired host still gets the credential"
+    );
+
+    // The other service: refused, and NOT sent unauthenticated either — the
+    // request must not reach it at all.
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/s", sheets.origin()), "method": "GET", "credential": "gmail" }),
+    );
+    assert_eq!(code, 403, "{body}");
+    assert_eq!(body["code"], json!("RUN-E022"));
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("different one"),
+        "the message says the grant pairs it elsewhere: {body}"
+    );
+    assert!(
+        sheets.requests().is_empty(),
+        "no byte may reach the unpaired host: {:?}",
+        sheets.requests()
+    );
+
+    // And it is audit evidence, worded apart from a credential that was never
+    // granted at all.
+    let refusals = broker.refusals();
+    assert!(
+        refusals.iter().any(|r| r.reason.contains("only for other hosts")),
+        "{refusals:?}"
+    );
+}
+
+/// An UNPAIRED grant keeps meaning what it always meant: any host the rest of
+/// the chain permits. Making the pairing available must not silently narrow
+/// every deployment that never asked for one.
+#[test]
+fn an_unpaired_grant_still_reaches_every_allowed_host() {
+    let a = Upstream::start(vec![("/a", 200, Vec::new(), "{}")]);
+    let b = Upstream::start(vec![("/b", 200, Vec::new(), "{}")]);
+    std::env::set_var("AREEV_TEST_UNPAIRED", "shared-secret");
+    let broker = Broker::start(
+        policy_for(&[a.origin(), b.origin()]),
+        [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_UNPAIRED").unwrap().into())]
+            .into_iter()
+            .collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    for (up, path) in [(&a, "/a"), (&b, "/b")] {
+        let (code, body) = ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}{path}", up.origin()), "method": "GET", "credential": "api" }),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(up.requests()[0].2.as_deref(), Some("bearer shared-secret"));
+    }
+}
+
+/// The DECLARED half of the same pairing, through the broker: a two-block
+/// declaration cannot cross-pair even when the host grant is unpaired and
+/// permissive. Both halves have to hold, and this is the one that a tool
+/// carries with it.
+#[test]
+fn a_declared_two_service_tool_cannot_cross_pair_its_credentials() {
+    let mail = Upstream::start(vec![("/m", 200, Vec::new(), "{}")]);
+    let sheets = Upstream::start(vec![("/s", 200, Vec::new(), "{}")]);
+    let mail_origin = format!("http://localhost:{}", mail.port);
+    let sheets_origin = format!("http://localhost:{}", sheets.port);
+
+    std::env::set_var("AREEV_TEST_DECL_MAIL", "mail-secret");
+    std::env::set_var("AREEV_TEST_DECL_SHEETS", "sheets-secret");
+    let broker = Broker::start(
+        policy_for(&[mail_origin.clone(), sheets_origin.clone()]),
+        [
+            (
+                "gmail".to_string(),
+                Credential::bearer_from_env("AREEV_TEST_DECL_MAIL").unwrap().into(),
+            ),
+            (
+                "sheets".to_string(),
+                Credential::bearer_from_env("AREEV_TEST_DECL_SHEETS").unwrap().into(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        // Deliberately UNPAIRED and holding both: the grant is not what
+        // refuses here.
+        EgressGrants::new().grant(
+            "t",
+            CallerGrant::new().credential("gmail").credential("sheets").method("GET"),
+        ),
+        "RUN-E022",
+    )
+    .unwrap();
+    broker.declare(
+        "t",
+        declaration(json!([
+            {"http": {"hosts": [mail_origin], "credentials": ["gmail"]}},
+            {"http": {"hosts": [sheets_origin], "credentials": ["sheets"]}}
+        ])),
+        CapabilityLimits::default(),
+    );
+    let token = broker.token_for("t").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("http://localhost:{}/s", sheets.port),
+            "method": "GET",
+            "credential": "gmail"
+        }),
+    );
+    assert_eq!(code, 403, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("no single capability pairs them"),
+        "the declared half refuses it by name: {body}"
+    );
+    assert!(sheets.requests().is_empty());
+    // Its own credential still reaches its own service.
+    let (code, _) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("http://localhost:{}/m", mail.port),
+            "method": "GET",
+            "credential": "gmail"
+        }),
+    );
+    assert_eq!(code, 200);
+}
+
+// ---- #113: a credential can be MINTED per call, not only read once ---------
+
+/// A resolver command whose stdout becomes the credential. The guest still
+/// names a label and holds nothing — only where the value came from changed.
+#[cfg(unix)]
+#[test]
+fn a_command_sourced_credential_is_minted_and_attached() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{\"ok\":true}")]);
+    let (source, owner) = CredentialSource::from_spec("cmd:printf minted-token").unwrap();
+    assert!(owner.is_none(), "a cmd: spec parses no principal out of its command");
+
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(site.requests()[0].2.as_deref(), Some("bearer minted-token"));
+}
+
+/// A counter-file resolver, so "how many times was it minted" is observable.
+#[cfg(unix)]
+fn counting_resolver(tag: &str) -> (String, std::path::PathBuf) {
+    let counter = std::env::temp_dir().join(format!("areev-mint-{tag}.count"));
+    let _ = std::fs::remove_file(&counter);
+    let c = counter.display();
+    (
+        format!(
+            "cmd:n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); printf %s \"$n\" > {c}; \
+             printf 'tok%s' \"$n\""
+        ),
+        counter,
+    )
+}
+
+/// Resolving per HTTP call would fork a process per call, so a minted value is
+/// cached for its TTL — and re-minted once the TTL lapses, which is what lets
+/// a revocation upstream take effect without restarting anything.
+#[cfg(unix)]
+#[test]
+fn a_minted_credential_is_cached_for_its_ttl_and_reminted_after_it() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    let (spec, counter) = counting_resolver("ttl");
+
+    let cached = CredentialSource::from_spec(&spec).unwrap().0.with_resolver_config(Some(300), &[]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), cached)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    for _ in 0..3 {
+        let (code, _) = ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+        );
+        assert_eq!(code, 200);
+    }
+    let seen: Vec<_> = site.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(
+        seen,
+        vec![Some("bearer tok1".into()); 3],
+        "one mint served all three calls: {seen:?}"
+    );
+    drop(broker);
+
+    // A zero TTL is the same code path with the window closed: every call
+    // mints again.
+    let _ = std::fs::remove_file(&counter);
+    let fresh = CredentialSource::from_spec(&spec).unwrap().0.with_resolver_config(Some(0), &[]);
+    let site2 = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    let broker = Broker::start(
+        policy_for(&[site2.origin()]),
+        [("api".to_string(), fresh)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    for _ in 0..2 {
+        ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/x", site2.origin()), "method": "GET", "credential": "api" }),
+        );
+    }
+    let seen: Vec<_> = site2.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(seen, vec![Some("bearer tok1".into()), Some("bearer tok2".into())], "{seen:?}");
+    let _ = std::fs::remove_file(&counter);
+}
+
+/// Fail CLOSED. A resolver that exits non-zero must refuse the call, not send
+/// it unauthenticated — the unauthenticated version surfaces hours later as a
+/// 401 from someone else's API, which is the failure this feature removes.
+///
+/// And the error names the credential WITHOUT quoting the resolver: stdout is
+/// by definition the secret, and stderr is written by a script that may have
+/// echoed it.
+#[cfg(unix)]
+#[test]
+fn a_failing_resolver_refuses_the_call_rather_than_sending_it_unauthenticated() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    let source = CredentialSource::from_spec("cmd:echo leaked-secret >&2; exit 7").unwrap().0;
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(code, 403, "{body}");
+    assert_eq!(body["code"], json!("RUN-E022"));
+    let text = body["error"].as_str().unwrap_or_default();
+    assert!(text.contains("api"), "it names which credential failed: {text}");
+    assert!(
+        !text.contains("leaked-secret"),
+        "and never repeats the resolver's own output: {text}"
+    );
+    assert!(site.requests().is_empty(), "nothing may be sent unauthenticated");
+    // The operator's journal carries WHY; the resolver's own output still
+    // reaches neither side.
+    let refusals = broker.refusals();
+    assert!(
+        refusals.iter().any(|r| r.reason.contains("api") && r.reason.contains("resolver exited")),
+        "{refusals:?}"
+    );
+    assert!(refusals.iter().all(|r| !r.reason.contains("leaked-secret")), "{refusals:?}");
+}
+
+/// A resolver is an input like any other. One that returns CR/LF would author
+/// a second header on every request its credential rides — header injection
+/// sourced from the one place this subsystem would otherwise trust.
+#[cfg(unix)]
+#[test]
+fn a_resolver_returning_a_control_character_or_nothing_is_refused() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    for (spec, why) in [
+        ("cmd:printf 'tok\\r\\nX-Injected: 1'", "control characters"),
+        ("cmd:true", "empty output"),
+    ] {
+        let source = CredentialSource::from_spec(spec).unwrap().0;
+        let broker = Broker::start(
+            policy_for(&[site.origin()]),
+            [("api".to_string(), source)].into_iter().collect(),
+            EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+            "RUN-E022",
+        )
+        .unwrap();
+        let token = broker.token_for("t").unwrap().to_string();
+        let (code, body) = ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+        );
+        assert_eq!(code, 403, "{why} must be refused: {body}");
+    }
+    assert!(site.requests().is_empty());
+}
+
+/// The expiry case the seam exists for: a cached token lapses upstream before
+/// its TTL lapses here. A GET is idempotent, so the broker re-mints and
+/// re-issues exactly once rather than handing back a 401 nobody can explain.
+#[cfg(unix)]
+#[test]
+fn an_unauthorized_get_remints_once_and_retries() {
+    let site = Upstream::start(vec![("/x", 401, Vec::new(), "expired")]);
+    let (spec, counter) = counting_resolver("401get");
+    let source = CredentialSource::from_spec(&spec).unwrap().0.with_resolver_config(Some(300), &[]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+    );
+    // The upstream 401s whatever we send, so the caller still learns that —
+    // the broker brokered the call successfully and reports the upstream's own
+    // status in the payload. The point is that a FRESH credential was tried
+    // before giving up.
+    assert_eq!(code, 200, "the broker answered");
+    assert_eq!(body["status"], json!(401), "and relays the upstream's status: {body}");
+    let seen: Vec<_> = site.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(
+        seen,
+        vec![Some("bearer tok1".into()), Some("bearer tok2".into())],
+        "one retry, with a newly minted credential: {seen:?}"
+    );
+
+    // BOTH attempts are journaled. A request that went out carrying a
+    // credential is an effect whether or not its response reached the caller,
+    // and an audit trail claiming one call where two happened is a false
+    // record.
+    let calls = broker.calls();
+    assert_eq!(calls.len(), 2, "the discarded attempt is evidence too: {calls:?}");
+    assert!(calls.iter().all(|c| c.status == 401 && c.credential.as_deref() == Some("api")));
+    let _ = std::fs::remove_file(&counter);
+}
+
+/// …and NOT for a write. A POST that 401'd may still have been applied
+/// upstream, and the broker is not entitled to guess. The stale value is still
+/// invalidated, so the caller's own retry gets a fresh one.
+#[cfg(unix)]
+#[test]
+fn an_unauthorized_post_is_not_replayed_but_the_credential_is_still_invalidated() {
+    let site = Upstream::start(vec![("/w", 401, Vec::new(), "expired")]);
+    let (spec, counter) = counting_resolver("401post");
+    let source = CredentialSource::from_spec(&spec).unwrap().0.with_resolver_config(Some(300), &[]);
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api").method("POST")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let call = || {
+        ask(
+            broker.url(),
+            &token,
+            json!({
+                "url": format!("{}/w", site.origin()),
+                "method": "POST",
+                "body": "{}",
+                "credential": "api"
+            }),
+        )
+    };
+    call();
+    assert_eq!(site.requests().len(), 1, "a write is never replayed by the broker");
+    // The caller's own retry gets a freshly minted credential, because the
+    // 401 invalidated the cached one even though it did not re-issue.
+    call();
+    let seen: Vec<_> = site.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(
+        seen,
+        vec![Some("bearer tok1".into()), Some("bearer tok2".into())],
+        "{seen:?}"
+    );
+    let _ = std::fs::remove_file(&counter);
+}
+
+/// The environment carve-out (#113). A resolver's own authentication —
+/// `VAULT_TOKEN` and friends — is a secret one class more powerful than the
+/// credential it fetches, because it can fetch all of them. It reaches the
+/// RESOLVER and nothing else: the resolver runs under `ClearExcept`, so an
+/// ambient variable is invisible to it unless the operator named it.
+#[cfg(unix)]
+#[test]
+fn a_resolver_sees_only_the_variables_the_operator_named() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    std::env::set_var("AREEV_TEST_RESOLVER_AUTH", "vault-master-token");
+    let spec = "cmd:printf %s \"${AREEV_TEST_RESOLVER_AUTH:-absent}\"";
+
+    // Not named: the resolver cannot see it, and says so.
+    let blind = CredentialSource::from_spec(spec).unwrap().0;
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), blind)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(site.requests()[0].2.as_deref(), Some("bearer absent"));
+    drop(broker);
+
+    // Named via --resolver-env: it reaches the resolver, and only it.
+    let site2 = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    let allowed = CredentialSource::from_spec(spec)
+        .unwrap()
+        .0
+        .with_resolver_config(None, &["AREEV_TEST_RESOLVER_AUTH".to_string()]);
+    let broker = Broker::start(
+        policy_for(&[site2.origin()]),
+        [("api".to_string(), allowed)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site2.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(site2.requests()[0].2.as_deref(), Some("bearer vault-master-token"));
+    std::env::remove_var("AREEV_TEST_RESOLVER_AUTH");
+}
+
+/// A resolved credential must not be printable. A derived `Debug` puts the
+/// secret into any error chain or `{:?}` a host reaches for while debugging,
+/// which is how one ends up in a log file that outlives the process.
+#[test]
+fn a_credential_never_debug_prints_its_value() {
+    std::env::set_var("AREEV_TEST_DEBUG_REDACT", "hunter2");
+    let c = Credential::bearer_from_env("AREEV_TEST_DEBUG_REDACT").unwrap();
+    let printed = format!("{c:?}");
+    assert!(!printed.contains("hunter2"), "{printed}");
+    assert!(printed.contains("redacted"), "{printed}");
+
+    let h = Credential::Header { name: "X-Api-Key".into(), value: "hunter2".into() };
+    let printed = format!("{h:?}");
+    assert!(!printed.contains("hunter2"), "{printed}");
+    assert!(printed.contains("X-Api-Key"), "the NAME survives — it is what a reader needs");
+    std::env::remove_var("AREEV_TEST_DEBUG_REDACT");
+}
+
+/// The spec grammar, including the one asymmetry worth pinning: a command may
+/// contain '@', so a `cmd:` source never parses a principal out of it — the
+/// name side is where a principal goes for those.
+#[test]
+fn the_credential_spec_grammar_parses_three_sources() {
+    std::env::set_var("AREEV_TEST_SPEC_VAR", "v");
+    let (s, owner) = CredentialSource::from_spec("AREEV_TEST_SPEC_VAR@user:alice").unwrap();
+    assert!(matches!(s, CredentialSource::Static(_)));
+    assert_eq!(owner.as_deref(), Some("user:alice"), "the env form still binds an owner");
+
+    let (s, owner) = CredentialSource::from_spec("cmd:curl -u svc@example.com https://x").unwrap();
+    assert!(matches!(s, CredentialSource::Command { .. }));
+    assert!(owner.is_none(), "an '@' inside a command is part of the command");
+
+    let (s, owner) = CredentialSource::from_spec("vault:secret/data/google#access_token").unwrap();
+    match s {
+        CredentialSource::Vault { path, field, .. } => {
+            assert_eq!(path, "secret/data/google");
+            assert_eq!(field, "access_token");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(owner.is_none());
+
+    for bad in ["cmd:", "cmd:   ", "vault:secret/data/google", "vault:#field", "vault:path#"] {
+        assert!(CredentialSource::from_spec(bad).is_err(), "{bad:?} must not parse");
+    }
+    std::env::remove_var("AREEV_TEST_SPEC_VAR");
+}
+
+/// `VAULT_ADDR`/`VAULT_TOKEN` are process-global, so the tests that set them
+/// must not run at the same moment — one would read the other's address and
+/// resolve against the wrong server.
+static VAULT_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The native `vault:` reader, against a stand-in for Vault's KV API.
+///
+/// Worth testing rather than trusting because it is the one resolver Areev
+/// implements itself instead of shelling out: the token must ride the
+/// `X-Vault-Token` header, both KV shapes must be read from the operator's
+/// verbatim path, and a failure must name the path without ever repeating the
+/// secret.
+#[test]
+fn a_vault_sourced_credential_reads_both_kv_shapes_and_fails_by_name() {
+    let vault = Upstream::start(vec![
+        // KV v2 nests the secret under data.data; v1 puts it at data.
+        ("/v1/secret/data/g", 200, Vec::new(), r#"{"data":{"data":{"access_token":"v2-minted"}}}"#),
+        ("/v1/kv/g", 200, Vec::new(), r#"{"data":{"access_token":"v1-minted"}}"#),
+        ("/v1/secret/data/nope", 403, Vec::new(), r#"{"errors":["permission denied"]}"#),
+    ]);
+    let _serialized = VAULT_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    std::env::set_var("VAULT_ADDR", vault.origin());
+    std::env::set_var("VAULT_TOKEN", "root-token");
+
+    let call = |path: &str| {
+        let source = CredentialSource::from_spec(&format!("vault:{path}#access_token")).unwrap().0;
+        let broker = Broker::start(
+            policy_for(&[site.origin()]),
+            [("api".to_string(), source)].into_iter().collect(),
+            EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+            "RUN-E022",
+        )
+        .unwrap();
+        let token = broker.token_for("t").unwrap().to_string();
+        ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+        )
+    };
+
+    assert_eq!(call("secret/data/g").0, 200);
+    assert_eq!(call("kv/g").0, 200);
+    let seen: Vec<_> = site.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(seen, vec![Some("bearer v2-minted".into()), Some("bearer v1-minted".into())]);
+
+    // The token authenticates to vault by header, never in the URL.
+    let asked = vault.requests();
+    assert!(
+        asked.iter().all(|r| r
+            .3
+            .iter()
+            .any(|(k, v)| k == "x-vault-token" && v == "root-token")),
+        "every vault read presents the token as a header: {asked:?}"
+    );
+
+    // A refusal names the path and what to check in the OPERATOR's journal —
+    // the guest is told only that its credential is unavailable.
+    let (code, body) = call("secret/data/nope");
+    assert_eq!(code, 403, "{body}");
+    let text = body["error"].as_str().unwrap_or_default();
+    assert!(!text.contains("secret/data/nope") && !text.contains("root-token"), "{text}");
+    assert!(site.requests().len() == 2, "a failed mint sends nothing");
+
+    std::env::remove_var("VAULT_ADDR");
+    std::env::remove_var("VAULT_TOKEN");
+}
+
+/// A contradictory grant — the same credential written both paired and
+/// unpaired — stays PAIRED whichever order the two arrive in. The alternative
+/// is a restriction that silently disappears depending on argument order.
+#[test]
+fn a_pairing_cannot_be_widened_back_by_an_unpaired_grant() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    std::env::set_var("AREEV_TEST_NO_WIDEN", "s");
+    let elsewhere = || AllowedHost::parse_host_pattern("elsewhere.example", "t").unwrap();
+
+    for (label, grant) in [
+        ("paired then unpaired", CallerGrant::new().credential_for("api", vec![elsewhere()]).credential("api")),
+        ("unpaired then paired", CallerGrant::new().credential("api").credential_for("api", vec![elsewhere()])),
+    ] {
+        let broker = Broker::start(
+            policy_for(&[site.origin()]),
+            [("api".to_string(), Credential::bearer_from_env("AREEV_TEST_NO_WIDEN").unwrap().into())]
+                .into_iter()
+                .collect(),
+            EgressGrants::new().grant("t", grant),
+            "RUN-E022",
+        )
+        .unwrap();
+        let token = broker.token_for("t").unwrap().to_string();
+        let (code, body) = ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+        );
+        assert_eq!(code, 403, "{label}: the pairing must survive: {body}");
+    }
+    assert!(site.requests().is_empty());
+    std::env::remove_var("AREEV_TEST_NO_WIDEN");
+}
+
+/// A 401 from a host the credential never reached must NOT invalidate it.
+///
+/// The chain leaves its start origin, so `left_origin` drops the credential —
+/// a 401 from the redirect target says that host wanted its own auth, not that
+/// ours expired. Without the `credential_sent` guard an allowed third-party
+/// host reached only by redirect would decide when the cache is flushed, and
+/// since the flush repopulates and the next call repeats it, the TTL cache
+/// collapses into one resolver subprocess per call.
+#[cfg(unix)]
+#[test]
+fn a_401_from_a_hop_the_credential_never_reached_does_not_remint() {
+    let other = Upstream::start(vec![("/y", 401, Vec::new(), "want my own auth")]);
+    let start = Upstream::start(vec![]);
+    start.add_route(("/go", 302, header("Location", &format!("{}/y", other.origin())), ""));
+
+    let (spec, counter) = counting_resolver("nocrossmint");
+    let source = CredentialSource::from_spec(&spec).unwrap().0.with_resolver_config(Some(300), &[]);
+    let broker = Broker::start(
+        policy_for(&[start.origin(), other.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    for _ in 0..3 {
+        ask(
+            broker.url(),
+            &token,
+            json!({ "url": format!("{}/go", start.origin()), "method": "GET", "credential": "api" }),
+        );
+    }
+
+    // The credential rode only the first hop of each chain, and one mint
+    // served all three calls — no re-mint, no cache thrash.
+    let seen: Vec<_> = start.requests().iter().map(|r| r.2.clone()).collect();
+    assert_eq!(seen, vec![Some("bearer tok1".into()); 3], "{seen:?}");
+    assert!(
+        other.requests().iter().all(|r| r.2.is_none()),
+        "the off-origin hop never sees the credential: {:?}",
+        other.requests()
+    );
+    let _ = std::fs::remove_file(&counter);
+}
+
+/// A resolver failure tells the GUEST only that the credential is unavailable,
+/// and the operator the rest.
+///
+/// The detail names infrastructure a capability tool has no business learning
+/// — a vault's address, its mount, the secret's path — and that tool may be
+/// code that arrived in a synced memory. Same split the principal-binding
+/// refusal makes: the journal carries what the operator needs.
+#[test]
+fn a_resolver_failure_tells_the_guest_nothing_about_the_vault() {
+    let _serialized = VAULT_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{}")]);
+    std::env::set_var("VAULT_ADDR", "http://vault.internal.example:8200");
+    std::env::set_var("VAULT_TOKEN", "root-token");
+    let source = CredentialSource::from_spec("vault:secret/data/payroll#token").unwrap().0;
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(code, 403, "{body}");
+    let text = body["error"].as_str().unwrap_or_default();
+    for leaked in ["vault.internal.example", "secret/data/payroll", "root-token"] {
+        assert!(!text.contains(leaked), "the guest must not learn {leaked:?}: {text}");
+    }
+    assert!(text.contains("api") && text.contains("did not resolve"), "{text}");
+
+    // …while the operator's audit trail carries the diagnostic.
+    let refusals = broker.refusals();
+    assert!(
+        refusals.iter().any(|r| r.reason.contains("secret/data/payroll")),
+        "the journal keeps what the guest was denied: {refusals:?}"
+    );
+    assert!(
+        refusals.iter().all(|r| !r.reason.contains("root-token")),
+        "and never the token itself: {refusals:?}"
+    );
+    std::env::remove_var("VAULT_ADDR");
+    std::env::remove_var("VAULT_TOKEN");
 }

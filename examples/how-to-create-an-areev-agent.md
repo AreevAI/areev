@@ -167,7 +167,10 @@ is always an intersection: *declared ∩ granted ∩ host-configured*.
   namespace names (or `*` alone) — never prefix patterns.
 - **Capability declarations on Tool grains** — the `capabilities` field:
   allowed hosts/methods/path-prefixes, named credentials, extra headers,
-  `{"blob": {"read": true}}`. A tool reaches at most what it declared.
+  `{"blob": {"read": true}}`. A tool reaches at most what it declared. Write
+  **one `http` block per service**: a call must be admitted by a single block
+  in full, so a tool holding two services' credentials cannot send one
+  service's secret to the other.
 - **`locked_params`** — arguments frozen in the definition; the model or
   caller cannot override them.
 - **`runtime` + `runtime_limits`** — sandbox selection and its ceilings

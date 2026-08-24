@@ -2673,16 +2673,18 @@ impl Areev {
         if let Some(raw) = credentials_json {
             let map: std::collections::BTreeMap<String, String> =
                 serde_json::from_str(&raw).map_err(|e| {
-                    err(format!("credentials_json: expected {{\"name\": \"ENV_VAR\"}}: {e}"))
+                    err(format!("credentials_json: expected {{\"name\": \"ENV_VAR|cmd:CMD|vault:PATH#FIELD\"}}: {e}"))
                 })?;
             for (name, spec) in map {
                 // `@principal` binds a credential to a run principal for its
                 // use in a started RUN (#101); this connector-poll path is the
                 // trigger's own standing egress, so the owner is dropped here.
-                let (c, _owner) = areev_run::Credential::bearer_from_env_spec(&spec).map_err(|e| {
-                    err(format!("credential {name:?} names ${spec}, which is not set: {e}"))
-                })?;
-                credentials.insert(name, c);
+                // A `cmd:`/`vault:` spec names a resolver instead of a
+                // variable (#113) and is minted at call time inside the
+                // broker — the value still never reaches the connector.
+                let (source, _owner) = areev_run::CredentialSource::from_spec(&spec)
+                    .map_err(|e| err(format!("credential {name:?}: {e}")))?;
+                credentials.insert(name, source);
             }
         }
 

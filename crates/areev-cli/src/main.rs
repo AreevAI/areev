@@ -114,7 +114,8 @@ COMMANDS:
                                       and gates member aliases for a
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
-           [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR]
+           [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR|cmd:CMD|vault:P#F]
+           [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
            [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
@@ -134,6 +135,9 @@ COMMANDS:
                                       --credential names an env var whose value
                                       the egress broker attaches on the way out,
                                       so the connector never holds the token.
+                                      cmd:/vault: MINT one per call instead —
+                                      what an unattended heartbeat wants, since
+                                      a token minted at boot expires by morning.
                                       The budget flags are the ones `run start`
                                       takes, and bound the runs a firing starts
   trigger  render --target cron|launchd|systemd|k8s-cronjob
@@ -222,13 +226,28 @@ COMMANDS:
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--sandbox-cmd 'areev-sandbox']
            [--credential NAME=ENV_VAR[@PRINCIPAL],...] [--allow-host URL,...]
-           [--tool-egress TOOL:CRED+CRED:METHOD+METHOD,...];
+           [--tool-egress TOOL:CRED[@HOST]+...:METHOD+METHOD,...]
+           [--credential-ttl SECS] [--resolver-env VAR,...];
            --credential/--allow-host/--tool-egress broker a tool's outbound
            calls: it gets the broker's address and a capability token, never
            the secret. A tool with no grant gets nothing, and a grant naming
            no method may only read. NAME=ENV_VAR@PRINCIPAL binds the
            credential to a run principal, so a run executing as anyone else is
-           refused it — for a process holding several principals' secrets;
+           refused it — for a process holding several principals' secrets.
+           CRED@HOST pairs a credential with the bare hostname it may be sent
+           to, so a tool holding two services' secrets cannot send one to the
+           other. A credential can also be MINTED per call instead of read
+           from the environment: NAME=cmd:COMMAND takes the command's stdout
+           (`cmd:gcloud auth print-access-token`, `cmd:vault kv get -field=t
+           secret/x`) and NAME=vault:PATH#FIELD reads Vault/OpenBao directly
+           over $VAULT_ADDR/$VAULT_TOKEN — both cached for --credential-ttl
+           (default 300s), re-minted after it, and refused rather than sent
+           unauthenticated if the resolver fails. Bind a principal to a minted
+           credential on the NAME side (NAME@PRINCIPAL=cmd:...), because a
+           command may itself contain '@'. --resolver-env names the variables
+           a resolver needs for its OWN authentication ($VAULT_TOKEN,
+           $AWS_PROFILE): they are withheld from every other subprocess and
+           re-admitted only for resolvers;
            --allow-executor pins the content address of a code-carrying tool
            (a Definition whose executor_uri names a cas:// blob). Nothing
            code-carrying runs unpinned, because the blob travels with the
@@ -1087,14 +1106,49 @@ fn run() -> Result<(), String> {
     if let Some(list) = flag(&flags, "credential") {
         for pair in list.split(',') {
             if let Some((_, spec)) = pair.split_once('=') {
+                let spec = spec.trim();
+                // A `cmd:` spec names no variable to withhold — the secret is
+                // minted at call time and never sits in the environment at
+                // all, which is the point of #113. Skipping it also keeps a
+                // shell command from being registered as a nonsense variable
+                // name.
+                if spec.starts_with("cmd:") {
+                    continue;
+                }
+                // A `vault:` spec DOES imply variables: the broker reads
+                // `$VAULT_TOKEN` (and friends) in-process to authenticate.
+                // `CredentialSource::from_spec` registers them in the core
+                // registry; the loop mirror is only reachable from here, so
+                // both are done at this choke point like every other secret.
+                if spec.starts_with("vault:") {
+                    for var in ["VAULT_TOKEN", "VAULT_ADDR", "VAULT_NAMESPACE"] {
+                        areev_core::proc::deny_env_var(var);
+                        areev_loop::proc::deny_env_var(var);
+                    }
+                    continue;
+                }
                 // The spec may carry a `VAR@principal` owner (#101); the deny
                 // list wants the bare variable name, so strip the qualifier.
-                let var = spec.trim().split_once('@').map(|(v, _)| v).unwrap_or(spec).trim();
+                let var = spec.split_once('@').map(|(v, _)| v).unwrap_or(spec).trim();
                 if !var.is_empty() {
                     areev_core::proc::deny_env_var(var);
                     areev_loop::proc::deny_env_var(var);
                 }
             }
+        }
+    }
+    // `--resolver-env` names the variables a credential RESOLVER needs for its
+    // own authentication — `VAULT_TOKEN`, `AWS_PROFILE`, a service-account
+    // path (#113). Registering them here is the load-bearing half: a vault
+    // token is a secret one class more powerful than the credential it
+    // fetches, since it can fetch all of them, and leaving it in the ambient
+    // environment would put it inside every `--tool-cmd` subprocess — the #100
+    // leak reopened one level up. Withheld from every child here, and
+    // re-admitted only for resolver spawns (`CredentialSource::spawn_policy`).
+    if let Some(list) = flag(&flags, "resolver-env") {
+        for var in list.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+            areev_core::proc::deny_env_var(var);
+            areev_loop::proc::deny_env_var(var);
         }
     }
 

@@ -219,7 +219,7 @@ fn a_pinned_blob_reaches_the_credential_broker_on_the_same_terms() {
     std::env::set_var("AREEV_TEST_ZOHO2", "super-secret-value");
     let broker = Broker::start(
         EgressPolicy::unrestricted(),
-        [("zoho".to_string(), areev_run::Credential::bearer_from_env("AREEV_TEST_ZOHO2").unwrap())]
+        [("zoho".to_string(), areev_run::Credential::bearer_from_env("AREEV_TEST_ZOHO2").unwrap().into())]
             .into_iter()
             .collect(),
         EgressGrants::new().grant("poster", CallerGrant::new().credential("zoho").method("POST")),

@@ -1170,6 +1170,63 @@ Providers are individually feature-gated, and a third-party model router
 path, and a regulated build should be able to state that its artifact cannot
 reach one.
 
+### A brokered credential is bound to a host, not only to a caller
+
+**Decision (2026-08-24, issue #112):** a capability declaration's
+`capabilities` field may carry **repeated `http` blocks**, and a call is
+permitted only when ONE block admits the whole tuple `(host, path, method,
+credential, headers)`. The host-side grant expresses the same pairing:
+`--tool-egress 'send:gmail@gmail.googleapis.com:POST'`.
+
+Until 1.6.2 `hosts` and `credentials` were independent membership tests with
+nothing relating them, and a second `http` entry was refused outright — so a
+tool that legitimately reads a mailbox and writes a sheet had to merge both
+services into one block, after which nothing stopped it attaching the mailbox
+token to the sheet request. That is the confused-deputy case the broker exists
+to prevent, and a *bug* reaches it as easily as malice: one wrong label in the
+guest. `path_prefixes` had already established the direction — #101 added it
+because a host-only grant structurally cannot close the exfiltration case of
+POSTing to an allowed host's upload endpoint — and this is the same argument
+one level up.
+
+Blocks are alternatives, so N of them admit the union of N tuples rather than
+the cross-product their merger produced: the change can only narrow, and a
+single-block declaration behaves exactly as it did. Both halves carry the
+pairing rather than the declaration alone, because a declaration arrives with
+the tool and a grant does not — the same "intent travels, authority does not"
+split that keeps grants out of grains.
+
+### A brokered credential's source is a seam, resolved in the broker
+
+**Decision (2026-08-24, issue #113):** `--credential` accepts `cmd:COMMAND`
+and `vault:PATH#FIELD` beside a bare environment-variable name, resolved by
+the **broker** at call time and cached for `--credential-ttl` (default 300s).
+
+The same argument already accepted for LLM backends (above, #45), applied to
+brokered egress: a value read once from the environment is static for the life
+of the process, and the credentials capability tools use are short-lived by
+design. The concrete cost was an unattended heartbeat whose hourly token had
+to be refreshed by something outside Areev, and a run parked on a human gate
+resuming with yesterday's secret.
+
+`cmd:` is the primary form and subsumes the rest — `vault kv get`, `gcloud
+auth print-access-token`, `aws secretsmanager get-secret-value` — through the
+same subprocess seam `--tool-cmd` and `--embed-cmd` already use, so no vendor
+client enters the dependency graph. `vault:` is a thin native reader over the
+HTTP client the broker already carries, worth having only because it removes
+the need for a `vault` binary in a container image.
+
+Three placements are load-bearing. The resolver runs in the **engine**, never
+the sandbox, for the reason #106 routed blob reads there: the trusted party
+performs the privileged act, so it can bound, record and fail it — and a
+resolver in the guest would hand the guest the vault credential that fetches
+*every* secret. It **fails closed**, because falling through to an
+unauthenticated request reproduces the 401-hours-later failure this removes.
+And the resolver's own authentication is **carved out of every other child**
+(`--resolver-env`, re-admitted only for resolver spawns under `ClearExcept`),
+because leaving a vault token ambient would reopen #100's leak one level up,
+with a secret that is strictly more powerful than the one it fetches.
+
 ### LIMIT bounds the answer, not the search for it
 
 **Decision (2026-08-19, issue #43):** any post-retrieval pipeline stage that

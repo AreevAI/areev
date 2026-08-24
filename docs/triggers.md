@@ -520,6 +520,38 @@ request. The token never enters the connector's process. Posta's CB4A calls this
 Model A; Cloudflare shipped it in April 2026, Deno in February, and it is the
 whole of Nango's product.
 
+**Mint the credential instead of exporting it.** A heartbeat is the path that
+most needs this, because it is the one nobody is watching: a cloud access token
+exported when the container started has expired by morning, and the failure
+arrives as an unexplained `401` from someone else's API. Name a resolver rather
+than a variable and the broker mints one per call, cached for
+`--credential-ttl` (default 300s):
+
+```bash
+areev trigger run --db agent.db \
+  --credential 'gmail=cmd:gcloud auth print-access-token' \
+  --connector-cmd ./gmail-poll.sh
+
+# or straight from Vault / OpenBao, with no vault binary in the image
+areev trigger run --db agent.db \
+  --credential 'gmail=vault:secret/data/google#access_token' \
+  --resolver-env VAULT_ADDR,VAULT_TOKEN
+```
+
+A resolver that fails refuses the call rather than sending it unauthenticated,
+and `--resolver-env` keeps the resolver's own credentials out of every other
+subprocess. Full rules in [run.md](run.md#where-a-credential-comes-from).
+
+⚠️ **A connector's credentials are not paired to hosts.** On the run path a
+credential can be bound to the host it may reach (`--tool-egress
+'sync:gmail@gmail.googleapis.com:POST'`, and the tool's own declaration). A
+connector has neither: one connector runs per evaluation pass, so its grant is
+derived from the credential list rather than written, and it holds every
+credential you configured for **any** host in `allowed_outbound_hosts`. Give a
+trigger only the credentials its connector actually needs, and prefer one
+connector per service — the same "one capability tool per service" guidance the
+run path had before the pairing existed.
+
 Why this rather than a sandbox: a polling connector legitimately needs the
 network *and* the credential, so isolation does not constrain what actually goes
 wrong. The January 2026 n8n community-node compromise exfiltrated decrypted
@@ -667,10 +699,21 @@ One deliberate difference from the CLI:
   omission, and the failure would otherwise surface as an unexplained 401 from
   someone else's API.
 
-`credentials_json` maps a credential **name** to the **environment variable**
-its value is read from, never to the value itself — the same discipline as
-`--credential NAME=ENV_VAR`, so a secret never crosses the FFI boundary as a
-literal.
+`credentials_json` maps a credential **name** to where its value comes from —
+an **environment variable**, or a `cmd:`/`vault:` resolver — never to the value
+itself, the same discipline as `--credential`, so a secret never crosses the
+FFI boundary as a literal:
+
+```python
+credentials_json=json.dumps({
+    "gmail":  "GMAIL_TOKEN",                          # read once, at startup
+    "sheets": "cmd:gcloud auth print-access-token",   # minted per call
+    "zoho":   "vault:secret/data/zoho#token",         # from Vault / OpenBao
+})
+```
+
+A `@principal` owner qualifier is accepted on the environment form and dropped
+here: this is the trigger's own standing egress, not a per-user run.
 
 There is still no daemon. `trigger_run` is a call the host makes on its own
 heartbeat, and `trigger_render` writes the config for one.

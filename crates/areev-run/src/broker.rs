@@ -56,12 +56,33 @@ type Result<T> = std::result::Result<T, String>;
 const MAX_BODY: usize = 1024 * 1024;
 
 /// How a credential is attached to an outbound request.
-#[derive(Debug, Clone)]
+///
+/// This is the RESOLVED value. Where it came from is [`CredentialSource`],
+/// which may mint a fresh one per call.
+#[derive(Clone)]
 pub enum Credential {
     /// `Authorization: Bearer <value>`
     Bearer(String),
     /// A named header carrying the value verbatim.
     Header { name: String, value: String },
+}
+
+/// Redacted, deliberately (#113).
+///
+/// A derived `Debug` puts the secret itself into any error chain, panic
+/// message, or `{:?}` a host reaches for while debugging — which is how a
+/// credential ends up in a log file that outlives the process holding it. The
+/// same reasoning already redacts `executor_uri` (SR-F5). The variant and the
+/// header NAME survive, because those are what a reader actually needs.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::Bearer(_) => f.write_str("Bearer([redacted])"),
+            Credential::Header { name, .. } => {
+                write!(f, "Header {{ name: {name:?}, value: [redacted] }}")
+            }
+        }
+    }
 }
 
 impl Credential {
@@ -132,6 +153,245 @@ impl Credential {
     }
 }
 
+/// How long a minted credential may be reused before it is minted again.
+///
+/// 300s: short enough that a rotation or revocation upstream takes effect
+/// within a superstep or two, long enough that a plan making a call per node
+/// does not spawn a resolver per call. A cloud access token's own lifetime is
+/// typically an hour, so this is well inside it.
+pub const DEFAULT_CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Wall-clock ceiling on one resolver. A vault round-trip is milliseconds and
+/// a cloud CLI's token mint is a second or two; past this something is wedged,
+/// and the call it was for should fail rather than hold a superstep open.
+const RESOLVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A credential is a token, not a payload. 64 KiB is orders of magnitude above
+/// any real one and still bounds a resolver that decides to print a file.
+const RESOLVER_MAX_OUTPUT: usize = 64 * 1024;
+
+/// Where a credential's value comes from (#113).
+///
+/// ## Why the source is a seam
+///
+/// Until 1.6.1 a brokered credential could only be an environment variable,
+/// which made every brokered secret **static for the life of the process** —
+/// the wrong shape for the credentials capability tools actually use. A Google
+/// access token expires roughly hourly, so an unattended heartbeat needed a
+/// refresh step outside Areev that it could silently get wrong; a run parked
+/// on a human gate for a day resumed with yesterday's token; and a long-lived
+/// secret sitting in an environment is the very leak surface #100 narrowed.
+/// Vault and secret-manager users have it sharper still: their whole model is
+/// short TTLs and central revocation, and an env var defeats both.
+///
+/// So the source became a seam, resolved by the BROKER at call time — the same
+/// subprocess-seam pattern `--tool-cmd`, `--embed-cmd` and `--llm-cmd` already
+/// use. What the guest sees does not change at all: it names a credential by
+/// label and holds nothing, exactly as before.
+///
+/// ## Why the resolver runs here and not in the sandbox
+///
+/// The same reasoning #106 used to route blob reads through the broker: the
+/// trusted party performs the privileged act, so it is also the party that can
+/// record it, bound it, and fail it closed. A resolver in the guest would mean
+/// handing the guest the vault's own credential — one class *worse* than the
+/// static token this replaces.
+#[derive(Debug, Clone)]
+pub enum CredentialSource {
+    /// Read once, from an environment variable, at configuration time. The
+    /// pre-1.6.2 behaviour and still the default: no subprocess, no cache, no
+    /// failure mode at call time.
+    Static(Credential),
+    /// Minted by running a command and taking its stdout (#113).
+    ///
+    /// The one that subsumes the rest — `vault kv get`, `gcloud auth
+    /// print-access-token`, `aws secretsmanager get-secret-value` — with no
+    /// vendor client in the dependency graph. Never put a literal secret in
+    /// the command: it is host configuration and is printable as such.
+    Command {
+        command: String,
+        ttl: std::time::Duration,
+        /// Variables passed through to the resolver, and ONLY to it — the
+        /// resolver's own auth (`VAULT_TOKEN`, `AWS_PROFILE`, …). See
+        /// [`CredentialSource::spawn_policy`] for why this list exists at all.
+        pass_env: Vec<String>,
+    },
+    /// Read from HashiCorp Vault or OpenBao's KV API over its HTTP interface.
+    ///
+    /// A convenience over the same interface `Command` offers, and worth
+    /// having natively for one concrete reason: a container that resolves this
+    /// way needs no `vault` binary in the image. `VAULT_ADDR` and
+    /// `VAULT_TOKEN` (plus optional `VAULT_NAMESPACE`) come from this
+    /// process's environment and are registered as secrets, so no child sees
+    /// them.
+    Vault {
+        /// The API path verbatim, including KV v2's `data/` segment:
+        /// `secret/data/google`. Not synthesised, because guessing a mount's
+        /// version for the operator is how a working path becomes a 404.
+        path: String,
+        /// Which field of the secret carries the token.
+        field: String,
+        ttl: std::time::Duration,
+    },
+}
+
+impl From<Credential> for CredentialSource {
+    fn from(c: Credential) -> Self {
+        CredentialSource::Static(c)
+    }
+}
+
+impl CredentialSource {
+    /// Parse the value half of a `--credential NAME=<spec>` pair.
+    ///
+    /// Three forms, discriminated by prefix, with the bare form unchanged:
+    ///
+    /// | Spec | Source |
+    /// |---|---|
+    /// | `SHEETS_TOKEN` / `SHEETS_TOKEN@user:alice` | environment variable |
+    /// | `cmd:gcloud auth print-access-token` | [`CredentialSource::Command`] |
+    /// | `vault:secret/data/google#access_token` | [`CredentialSource::Vault`] |
+    ///
+    /// ## Why only the bare form parses `@principal`
+    ///
+    /// An environment variable name cannot contain `@`, so `VAR@user:alice`
+    /// splits unambiguously — that is the 1.6.0 grammar and it keeps working.
+    /// A **command** can contain `@` anywhere (`curl -u svc@example.com`), so
+    /// splitting one on `@` would silently re-read part of the command as a
+    /// principal and bind the credential to the wrong owner. Getting that
+    /// wrong is not cosmetic: the owner is what stops one principal's run
+    /// spending another's secret. So for `cmd:`/`vault:` the whole remainder
+    /// is the source, and a principal is named on the NAME side instead —
+    /// `--credential 'sheets@user:alice=cmd:…'`, where the name is ours and
+    /// carries no such ambiguity.
+    pub fn from_spec(spec: &str) -> Result<(CredentialSource, Option<String>)> {
+        let spec = spec.trim();
+        if let Some(rest) = spec.strip_prefix("cmd:") {
+            let command = rest.trim();
+            if command.is_empty() {
+                return Err("credential spec 'cmd:' names no command".into());
+            }
+            return Ok((
+                CredentialSource::Command {
+                    command: command.to_string(),
+                    ttl: DEFAULT_CREDENTIAL_TTL,
+                    pass_env: Vec::new(),
+                },
+                None,
+            ));
+        }
+        if let Some(rest) = spec.strip_prefix("vault:") {
+            let (path, field) = rest.trim().split_once('#').ok_or_else(|| {
+                format!(
+                    "credential spec {spec:?}: a vault source is written \
+                     vault:<path>#<field>, e.g. vault:secret/data/google#access_token"
+                )
+            })?;
+            let (path, field) = (path.trim(), field.trim());
+            if path.is_empty() || field.is_empty() {
+                return Err(format!(
+                    "credential spec {spec:?}: both the path and the field must be non-empty"
+                ));
+            }
+            // Reading the names is what registers them, exactly as
+            // `bearer_from_env` does (#100) — a credential this process can
+            // resolve must be one its children cannot.
+            for var in ["VAULT_TOKEN", "VAULT_ADDR", "VAULT_NAMESPACE"] {
+                areev_core::proc::deny_env_var(var);
+            }
+            return Ok((
+                CredentialSource::Vault {
+                    path: path.to_string(),
+                    field: field.to_string(),
+                    ttl: DEFAULT_CREDENTIAL_TTL,
+                },
+                None,
+            ));
+        }
+        let (cred, owner) = Credential::bearer_from_env_spec(spec)?;
+        Ok((CredentialSource::Static(cred), owner))
+    }
+
+    /// Apply host-level resolver settings. No-op on a static source, which has
+    /// nothing to mint and nothing to cache.
+    pub fn with_resolver_config(
+        mut self,
+        ttl_secs: Option<u64>,
+        resolver_env: &[String],
+    ) -> CredentialSource {
+        match &mut self {
+            CredentialSource::Static(_) => {}
+            CredentialSource::Command { ttl, pass_env, .. } => {
+                if let Some(s) = ttl_secs {
+                    // Clamped so `Instant + ttl` cannot overflow downstream.
+                    // ~136 years is past any honest intent and short of the
+                    // panic.
+                    *ttl = std::time::Duration::from_secs(s.min(u64::from(u32::MAX)));
+                }
+                pass_env.extend(resolver_env.iter().cloned());
+            }
+            CredentialSource::Vault { ttl, .. } => {
+                if let Some(s) = ttl_secs {
+                    // Clamped so `Instant + ttl` cannot overflow downstream.
+                    // ~136 years is past any honest intent and short of the
+                    // panic.
+                    *ttl = std::time::Duration::from_secs(s.min(u64::from(u32::MAX)));
+                }
+            }
+        }
+        self
+    }
+
+    /// Is this source re-mintable — i.e. worth invalidating and retrying when
+    /// an upstream answers 401?
+    fn is_dynamic(&self) -> bool {
+        !matches!(self, CredentialSource::Static(_))
+    }
+
+    fn ttl(&self) -> std::time::Duration {
+        match self {
+            CredentialSource::Static(_) => std::time::Duration::ZERO,
+            CredentialSource::Command { ttl, .. } | CredentialSource::Vault { ttl, .. } => *ttl,
+        }
+    }
+
+    /// The policy a resolver subprocess runs under.
+    ///
+    /// `ClearExcept`, not the `InheritExcept` the other seams use, and that
+    /// asymmetry is the whole point. The resolver needs its OWN credential —
+    /// `VAULT_TOKEN`, an AWS profile, a service-account path — which is a
+    /// secret one class more powerful than the one it fetches: it can fetch
+    /// all of them. Under `InheritExcept` that variable would sit in the
+    /// environment of every `--tool-cmd` subprocess too, which is exactly the
+    /// leak #100 closed for the credential itself, reopened one level up.
+    ///
+    /// So the operator names those variables (`--resolver-env`), they are
+    /// registered as secrets so ordinary children never see them, and they are
+    /// re-admitted HERE, for resolvers only. A resolver that names nothing
+    /// gets `PATH`/`HOME` and little else — enough for `gcloud` or `aws` to
+    /// find their own config, and nothing ambient beyond it.
+    fn spawn_policy(pass_env: &[String]) -> areev_core::proc::SpawnPolicy {
+        let mut allow = areev_core::proc::EnvPolicy::minimal_allow();
+        allow.extend(pass_env.iter().cloned());
+        areev_core::proc::SpawnPolicy {
+            timeout: Some(RESOLVER_TIMEOUT),
+            max_output_bytes: RESOLVER_MAX_OUTPUT,
+            env: areev_core::proc::EnvPolicy::ClearExcept { allow },
+            stderr: areev_core::proc::StderrMode::Pipe,
+            current_dir: None,
+        }
+    }
+}
+
+/// Why a grant refused a credential (#112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialDenied {
+    /// The caller was never granted this credential under any host.
+    NotGranted,
+    /// It holds the credential, but not for this destination.
+    WrongHost,
+}
+
 /// What one caller may do through the broker.
 ///
 /// Deny by default in both directions: a caller with no grant may do nothing,
@@ -139,29 +399,81 @@ impl Credential {
 /// write, and the write verb is exactly the one worth making deliberate.
 #[derive(Debug, Clone, Default)]
 pub struct CallerGrant {
-    /// Credential names this caller may ask for. Empty = none.
-    pub credentials: std::collections::BTreeSet<String>,
+    /// Credential names this caller may ask for, each optionally narrowed to
+    /// the hosts it may be sent TO (#112). Absent name = not granted; an
+    /// empty host list = any host the rest of the chain already permits, which
+    /// is what an unpaired `--tool-egress 'tool:cred:POST'` means and what
+    /// every grant meant before the pairing existed.
+    ///
+    /// Private, unlike the `pub` set it replaces, because the invariant is now
+    /// "a name and its hosts are decided together": a caller reaching in to
+    /// add a bare name could silently widen a pairing an operator wrote.
+    credentials: BTreeMap<String, Vec<areev_core::types::capability::AllowedHost>>,
     /// Methods it may issue. Empty = `GET`/`HEAD` only.
-    pub methods: std::collections::BTreeSet<String>,
+    methods: std::collections::BTreeSet<String>,
 }
 
 impl CallerGrant {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Grant a credential for any host the allowlist and declaration permit.
     pub fn credential(mut self, name: &str) -> Self {
-        self.credentials.insert(name.to_string());
+        self.credentials.entry(name.to_string()).or_default();
         self
     }
+
+    /// Grant a credential ONLY for these hosts (#112).
+    ///
+    /// The host-side half of the pairing. Without it, the declaration alone
+    /// carries the credential↔host binding — and a declaration is the half
+    /// that arrives with the tool, so a compromised or simply wrong one could
+    /// pair a credential with a host the operator never intended.
+    ///
+    /// Repeated calls accumulate hosts. Mixing this with
+    /// [`CallerGrant::credential`] for one name — `gmail@a.example+gmail`, an
+    /// operator contradicting themselves — leaves the name PAIRED whichever
+    /// order the two arrive in: `credential` never clears an existing host
+    /// list, and `credential_for` narrows an empty one. There is deliberately
+    /// no way to widen a pairing back, because the alternative is a
+    /// restriction that silently disappears depending on argument order.
+    pub fn credential_for(
+        mut self,
+        name: &str,
+        hosts: Vec<areev_core::types::capability::AllowedHost>,
+    ) -> Self {
+        self.credentials.entry(name.to_string()).or_default().extend(hosts);
+        self
+    }
+
     pub fn method(mut self, m: &str) -> Self {
         self.methods.insert(m.trim().to_ascii_uppercase());
         self
     }
+
     fn permits_method(&self, method: &str) -> bool {
         if self.methods.is_empty() {
             return matches!(method, "GET" | "HEAD");
         }
         self.methods.contains(method)
+    }
+
+    /// May this caller spend `name` on a request to `url` (#112)?
+    ///
+    /// Checked once, at dispatch entry, and deliberately not per redirect hop:
+    /// the credential rides a hop only while the chain has never left its
+    /// starting origin (`dispatch`'s `left_origin` latch), so the destination
+    /// this pairing judged is the only destination the secret can reach. If
+    /// that latch ever loosens, this has to move into the hop loop with it.
+    fn permits_credential(&self, name: &str, url: &str) -> std::result::Result<(), CredentialDenied> {
+        let Some(hosts) = self.credentials.get(name) else {
+            return Err(CredentialDenied::NotGranted);
+        };
+        if hosts.is_empty() || hosts.iter().any(|h| h.permits_url(url)) {
+            return Ok(());
+        }
+        Err(CredentialDenied::WrongHost)
     }
 }
 
@@ -208,6 +520,202 @@ impl EgressGrants {
     fn callers(&self) -> Vec<String> {
         self.by_caller.keys().cloned().collect()
     }
+}
+
+/// One credential minted and held until it expires.
+struct CachedCredential {
+    value: Credential,
+    expires_at: std::time::Instant,
+}
+
+/// The resolved-credential cache: name -> what was minted and when it lapses.
+type CredentialCache = Arc<std::sync::Mutex<BTreeMap<String, CachedCredential>>>;
+
+/// Resolve `name` to a value, minting it if there is nothing fresh cached.
+///
+/// ## Why this is cached at all
+///
+/// Resolving per HTTP call would spawn a process per call — a plan that pages
+/// through an API would fork a `gcloud` per page. The TTL is the compromise,
+/// and it is short by default so that revoking a secret upstream takes effect
+/// here without anyone restarting anything.
+///
+/// ## Fail closed, and say only which credential failed
+///
+/// A resolver that errors, times out, or returns nothing must refuse the call.
+/// Falling through to an unauthenticated request would produce a 401 from
+/// someone else's API hours later — the exact failure mode this feature exists
+/// to remove. And the error names the CREDENTIAL, never the resolver's output:
+/// stdout is by definition the secret, and stderr is written by a script that
+/// may have echoed it. An operator who wants their resolver's diagnostics
+/// redirects them inside their own command.
+fn resolve_credential(
+    name: &str,
+    source: &CredentialSource,
+    cache: &CredentialCache,
+) -> std::result::Result<Credential, String> {
+    if let CredentialSource::Static(c) = source {
+        return Ok(c.clone());
+    }
+    let now = std::time::Instant::now();
+    if let Ok(guard) = cache.lock() {
+        if let Some(hit) = guard.get(name) {
+            if hit.expires_at > now {
+                return Ok(hit.value.clone());
+            }
+        }
+    }
+    let value = match source {
+        CredentialSource::Static(_) => unreachable!("handled above"),
+        CredentialSource::Command { command, pass_env, .. } => {
+            mint_from_command(name, command, pass_env)?
+        }
+        CredentialSource::Vault { path, field, .. } => mint_from_vault(name, path, field)?,
+    };
+    let token = Credential::Bearer(value);
+    if let Ok(mut guard) = cache.lock() {
+        // `Instant + Duration` PANICS on overflow, and this runs inside the
+        // cache lock on the broker's accept-loop thread — an operator typo of
+        // an absurd `--credential-ttl` would take the whole broker down, not
+        // just this call. Falling back to `now` means "already expired", which
+        // degrades to minting per call: slow, never wrong, never fatal. The
+        // CLI also clamps, so this is the belt under those braces.
+        let expires_at = now.checked_add(source.ttl()).unwrap_or(now);
+        guard.insert(
+            name.to_string(),
+            CachedCredential { value: token.clone(), expires_at },
+        );
+    }
+    Ok(token)
+}
+
+/// Drop a cached value so the next call mints a new one.
+fn invalidate_credential(name: &str, cache: &CredentialCache) {
+    if let Ok(mut guard) = cache.lock() {
+        guard.remove(name);
+    }
+}
+
+/// stdout of a resolver command, trimmed, as the credential value.
+fn mint_from_command(
+    name: &str,
+    command: &str,
+    pass_env: &[String],
+) -> std::result::Result<String, String> {
+    use std::process::Command;
+    // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The Windows
+    // command string must go through raw_arg — Command::arg MSVC-quotes
+    // embedded quotes, which cmd.exe does not parse.
+    #[cfg(not(windows))]
+    let mut shell = Command::new("/bin/sh");
+    #[cfg(not(windows))]
+    shell.arg("-c").arg(command);
+    #[cfg(windows)]
+    let mut shell = Command::new("cmd");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        shell.raw_arg("/C").raw_arg(command);
+    }
+    let policy = CredentialSource::spawn_policy(pass_env);
+    let out = areev_core::proc::run(shell, None, &[], &policy)
+        .map_err(|e| format!("credential '{name}': its resolver could not be started ({e})"))?;
+    if out.timed_out {
+        return Err(format!(
+            "credential '{name}': its resolver exceeded {}s and was killed",
+            RESOLVER_TIMEOUT.as_secs()
+        ));
+    }
+    if !out.status.success() {
+        // Deliberately without stderr — see this module's fail-closed note.
+        return Err(format!(
+            "credential '{name}': its resolver exited with {}",
+            out.status
+        ));
+    }
+    validate_minted(name, String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// A minted value has to survive the same scrutiny a declared header does.
+///
+/// A resolver that returns a value containing CR or LF would let whatever
+/// wrote it author a second header on every request the credential rides —
+/// header injection sourced from the one input this subsystem was otherwise
+/// treating as trusted. Empty is refused for a duller reason: a script that
+/// prints nothing on failure is common, and an empty bearer token is an
+/// unauthenticated request wearing an `Authorization` header.
+fn validate_minted(name: &str, value: &str) -> std::result::Result<String, String> {
+    if value.is_empty() {
+        return Err(format!("credential '{name}': its resolver returned nothing"));
+    }
+    if !areev_core::types::capability::is_valid_header_value(value) {
+        return Err(format!(
+            "credential '{name}': its resolver returned a value that is not a valid HTTP header \
+             value — a control character here would forge a second header on every request"
+        ));
+    }
+    Ok(value.to_string())
+}
+
+/// Read one field of a KV secret from Vault or OpenBao.
+///
+/// Both KV versions are tried against the SAME path the operator wrote: v2
+/// nests the secret under `data.data`, v1 puts it at `data`. Trying both is
+/// not guesswork about the mount — the path is verbatim either way — it just
+/// spares an operator from having to know which shape their mount returns.
+fn mint_from_vault(name: &str, path: &str, field: &str) -> std::result::Result<String, String> {
+    let missing = |var: &str| {
+        format!("credential '{name}': a vault source needs {var} in this process's environment")
+    };
+    let addr = std::env::var("VAULT_ADDR").map_err(|_| missing("VAULT_ADDR"))?;
+    let token = std::env::var("VAULT_TOKEN").map_err(|_| missing("VAULT_TOKEN"))?;
+    let url = format!("{}/v1/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
+    // Every leg is bounded, including the BODY read. ureq's default leaves
+    // `recv_body` unset, and this runs inline on the broker's accept loop — so
+    // a `$VAULT_ADDR` that answers headers promptly and then drips the body
+    // would stop the broker accepting anything at all, hanging every tool in
+    // the run rather than failing this one call. `RESOLVER_TIMEOUT` promises
+    // the opposite, so it has to cover the whole exchange.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(5)))
+        .timeout_recv_response(Some(RESOLVER_TIMEOUT))
+        .timeout_recv_body(Some(RESOLVER_TIMEOUT))
+        .timeout_global(Some(RESOLVER_TIMEOUT))
+        .build()
+        .into();
+    let mut req = agent.get(&url).header("X-Vault-Token", &token);
+    if let Ok(ns) = std::env::var("VAULT_NAMESPACE") {
+        req = req.header("X-Vault-Namespace", &ns);
+    }
+    // The status and the path are safe to report — neither is the secret —
+    // and without them a misconfigured mount is undiagnosable.
+    let mut resp = req
+        .call()
+        .map_err(|e| format!("credential '{name}': vault at {url} did not answer ({e})"))?;
+    let status = resp.status().as_u16();
+    if status != 200 {
+        return Err(format!(
+            "credential '{name}': vault answered {status} for {path} — check the path, the \
+             token's policy, and (for KV v2) that the path includes its 'data/' segment"
+        ));
+    }
+    // Read then parse with serde_json rather than ureq's own `read_json`,
+    // which would mean turning on a ureq feature for a single call site.
+    let text = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|_| format!("credential '{name}': vault's answer could not be read"))?;
+    let body: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| format!("credential '{name}': vault's answer was not JSON"))?;
+    let found = body
+        .pointer("/data/data")
+        .and_then(|d| d.get(field))
+        .or_else(|| body.pointer("/data").and_then(|d| d.get(field)))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            format!("credential '{name}': vault's secret at {path} has no string field '{field}'")
+        })?;
+    validate_minted(name, found.trim())
 }
 
 /// An unguessable per-caller capability token.
@@ -365,9 +873,14 @@ pub struct Broker {
 
 impl Broker {
     /// Start a broker on an ephemeral loopback port.
+    ///
+    /// Takes SOURCES rather than resolved values (#113). A static credential
+    /// is one — `Credential` converts with `.into()` — so a host that reads an
+    /// environment variable and one that mints per call reach the same
+    /// constructor, and there is no second start path to drift from this one.
     pub fn start(
         policy: EgressPolicy,
-        credentials: BTreeMap<String, Credential>,
+        credentials: BTreeMap<String, CredentialSource>,
         grants: EgressGrants,
         refusal_code: &'static str,
     ) -> Result<Broker> {
@@ -394,6 +907,11 @@ impl Broker {
         let (calls_t, declared_t) = (Arc::clone(&calls), Arc::clone(&declared));
         let (owners_t, principal_t) = (Arc::clone(&credential_owners), Arc::clone(&run_principal));
         let (blobs_t, blob_reads_t) = (Arc::clone(&blobs), Arc::clone(&blob_reads));
+        // Minted credentials live for a TTL and no longer (#113). Held by the
+        // BROKER rather than by each source so one invalidation — the 401
+        // path — has a single place to reach.
+        let cache: CredentialCache = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let cache_t = Arc::clone(&cache);
 
         // One token per caller, minted before the listener serves anything.
         let mut tokens = BTreeMap::new();
@@ -426,6 +944,7 @@ impl Broker {
                             stream,
                             &policy,
                             &credentials,
+                            &cache_t,
                             &refusals_t,
                             &calls_t,
                             &declared_t,
@@ -794,7 +1313,8 @@ fn note_refusal(refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>, r: EgressR
 fn serve_one(
     mut stream: TcpStream,
     policy: &EgressPolicy,
-    credentials: &BTreeMap<String, Credential>,
+    credentials: &BTreeMap<String, CredentialSource>,
+    cache: &CredentialCache,
     refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
     calls: &Arc<std::sync::Mutex<Vec<EgressCall>>>,
     declared: &Arc<std::sync::Mutex<BTreeMap<String, Declared>>>,
@@ -1115,6 +1635,10 @@ fn serve_one(
     // chooses WHICH credential by name; it can never name a value it was not
     // given, and no value ever crosses back to it.
     let mut headers: Vec<(String, String)> = Vec::new();
+    // Kept so the 401 path below knows whether re-minting is even possible: a
+    // static credential that draws a 401 is simply wrong, and retrying it
+    // would spend a second call to be told so again.
+    let mut credential_source: Option<&CredentialSource> = None;
     if let Some(name) = &req.credential {
         // Owned credentials bind to a RUN principal, not just to a tool. The
         // grant says which tools may ask; this says which runs may be
@@ -1166,45 +1690,95 @@ fn serve_one(
                 );
             }
         }
-        // Scoped per caller: naming a credential is not the same as being
-        // allowed to use it, which is the whole of the RBAC story here.
-        if !grant.credentials.contains(name) {
+        // Scoped per caller AND per destination: naming a credential is not
+        // the same as being allowed to use it, and being allowed to use it is
+        // not the same as being allowed to send it *there* (#112). The host
+        // half of the pairing, checked beside the declared half above — the
+        // declaration travels with the tool, so it cannot be the only thing
+        // deciding where a secret may go.
+        if let Err(denied) = grant.permits_credential(name, &req.url) {
+            let (reason, detail) = match denied {
+                CredentialDenied::NotGranted => (
+                    format!("credential '{name}' is not granted to this caller"),
+                    format!("caller '{caller}' may not use credential '{name}'"),
+                ),
+                CredentialDenied::WrongHost => (
+                    format!(
+                        "credential '{name}' is granted to this caller only for other hosts"
+                    ),
+                    format!(
+                        "caller '{caller}' may not send credential '{name}' to this host — the \
+                         grant pairs it with a different one"
+                    ),
+                ),
+            };
             note_refusal(
                 refusals,
                 EgressRefusal {
                     caller: caller.clone(),
                     destination: req.url.clone(),
-                    reason: format!("credential '{name}' is not granted to this caller"),
+                    reason,
                 },
             );
             return respond(
                 &mut stream,
                 403,
+                &serde_json::json!({ "error": detail, "code": refusal_code }).to_string(),
+            );
+        }
+        let Some(source) = credentials.get(name) else {
+            return respond(
+                &mut stream,
+                400,
                 &serde_json::json!({
-                    "error": format!("caller '{caller}' may not use credential '{name}'"),
-                    "code": refusal_code
+                    "error": format!("no credential named '{name}' is configured for this run")
                 })
                 .to_string(),
             );
-        }
-        match credentials.get(name) {
-            Some(Credential::Bearer(v)) => {
+        };
+        // Resolved HERE, at call time, which is what lets a source mint a
+        // fresh short-lived token per TTL window rather than per process
+        // (#113). A static source is a clone and cannot fail.
+        match resolve_credential(name, source, cache) {
+            Ok(Credential::Bearer(v)) => {
                 headers.push(("Authorization".into(), format!("Bearer {v}")))
             }
-            Some(Credential::Header { name, value }) => {
-                headers.push((name.clone(), value.clone()))
-            }
-            None => {
+            Ok(Credential::Header { name, value }) => headers.push((name.clone(), value.clone())),
+            // Fail CLOSED: no credential, no call.
+            //
+            // The detail goes to the OPERATOR (the journaled refusal), and the
+            // guest is told only that the credential could not be resolved —
+            // the same split the principal-binding refusal makes above, for the
+            // same reason. A resolver diagnostic names infrastructure the guest
+            // has no business learning: a vault's address, its mount, the
+            // secret's path and field. The caller is code that may have arrived
+            // in a synced memory; that its credential is unavailable is all it
+            // needs, and all it gets. Neither side ever sees what the resolver
+            // printed.
+            Err(detail) => {
+                note_refusal(
+                    refusals,
+                    EgressRefusal {
+                        caller: caller.clone(),
+                        destination: req.url.clone(),
+                        reason: detail,
+                    },
+                );
                 return respond(
                     &mut stream,
-                    400,
+                    403,
                     &serde_json::json!({
-                        "error": format!("no credential named '{name}' is configured for this run")
+                        "error": format!(
+                            "caller '{caller}' could not be given credential '{name}' — its \
+                             source did not resolve; the run's audit trail records why"
+                        ),
+                        "code": refusal_code
                     })
                     .to_string(),
-                )
+                );
             }
         }
+        credential_source = Some(source);
     }
 
     // The static list of broker-owned names is not the whole credential
@@ -1249,7 +1823,7 @@ fn serve_one(
         );
     }
 
-    match dispatch(
+    let mut outcome = dispatch(
         &req.url,
         &method,
         req.body.as_deref(),
@@ -1261,24 +1835,113 @@ fn serve_one(
         capability.as_ref().map(|(l, _)| l.max_response_bytes),
         &caller,
         refusals,
-    ) {
-        Dispatched::Answered { status, mut body, final_url, redirects, credential_sent } => {
+    );
+
+    // A 401 on a MINTED credential is the expiry case this seam exists for
+    // (#113): the cached token lapsed upstream before its TTL lapsed here.
+    // Invalidate it always — the next call then mints a fresh one — and
+    // re-issue this call only when doing so is safe.
+    //
+    // "Safe" is decided by the METHOD, which the broker knows because it is
+    // the party that dispatched it. GET and HEAD are idempotent, so replaying
+    // one costs nothing and turns "the token expired mid-run" from an incident
+    // into a non-event. Anything that may have changed state upstream is NOT
+    // replayed: a POST that 401'd may still have been applied, and the broker
+    // is not entitled to guess. Its caller sees the 401 and decides, with a
+    // freshly-minted credential waiting for the retry.
+    //
+    // Bounded to one re-issue by construction — there is no loop here.
+    if let (Some(name), Some(source)) = (&req.credential, credential_source) {
+        // `credential_sent` is load-bearing here, not decoration. A chain that
+        // left its start origin drops the credential (`left_origin`), so a 401
+        // from the redirect TARGET says nothing about our token — it says that
+        // host wanted its own auth. Without this guard an allowed third-party
+        // host reached only by redirect would decide when our credential cache
+        // is flushed, and since the flush repopulates and the next call repeats
+        // it, the TTL cache would collapse into one resolver subprocess per
+        // call: exactly the per-call fork the cache exists to prevent.
+        let unauthorized =
+            matches!(&outcome, Dispatched::Answered { status: 401, credential_sent: true, .. });
+        if unauthorized && source.is_dynamic() {
+            invalidate_credential(name, cache);
+            if matches!(method.as_str(), "GET" | "HEAD") {
+                if let Ok(fresh) = resolve_credential(name, source, cache) {
+                    // The discarded attempt is still an EFFECT: a request went
+                    // out, carrying a credential, and an upstream answered it.
+                    // Journaling only the retry would let the audit trail say
+                    // one call happened where two did — and `calls()` is
+                    // deliberately not deduplicated precisely because forty
+                    // successful calls are forty things that happened. The
+                    // caller never sees this response; the record does.
+                    if let Dispatched::Answered {
+                        status, body, final_url, redirects, credential_sent,
+                    } = &outcome
+                    {
+                        note_call(
+                            calls,
+                            EgressCall {
+                                caller: caller.clone(),
+                                method: method.clone(),
+                                url: final_url.clone(),
+                                status: *status,
+                                redirects: *redirects,
+                                request_digest: req.body.as_deref().map(digest),
+                                // Scrubbed before digesting, exactly as the
+                                // returned body is: an endpoint that echoed
+                                // the expired token must not put it inside a
+                                // digest either.
+                                response_digest: digest(&scrub_reflected(body.clone(), &headers)),
+                                response_bytes: body.len(),
+                                credential: if *credential_sent {
+                                    req.credential.clone()
+                                } else {
+                                    None
+                                },
+                                headers: if *credential_sent {
+                                    req.headers.clone()
+                                } else {
+                                    BTreeMap::new()
+                                },
+                            },
+                        );
+                    }
+                    let refreshed: Vec<(String, String)> = match fresh {
+                        Credential::Bearer(v) => {
+                            vec![("Authorization".into(), format!("Bearer {v}"))]
+                        }
+                        Credential::Header { name, value } => vec![(name, value)],
+                    };
+                    outcome = dispatch(
+                        &req.url,
+                        &method,
+                        req.body.as_deref(),
+                        &refreshed,
+                        &guest_headers,
+                        policy,
+                        grant,
+                        capability.as_ref().map(|(_, d)| d),
+                        capability.as_ref().map(|(l, _)| l.max_response_bytes),
+                        &caller,
+                        refusals,
+                    );
+                    // The reflection scrub below iterates `headers`, so the
+                    // value it must scrub is the one that actually rode the
+                    // retried request.
+                    headers = refreshed;
+                }
+            }
+        }
+    }
+
+    match outcome {
+        Dispatched::Answered { status, body, final_url, redirects, credential_sent } => {
             // Credential reflection: an echo or a verbose error endpoint can
             // bounce the injected `Authorization` back in its BODY, and that
             // body goes to the guest and (as a digest) into the audit trail.
             // Response HEADERS never cross this boundary at all — the broker
             // answers with `{status, body}` and nothing else — so the body is
             // the only channel, and it is scrubbed rather than trusted.
-            for (_, value) in &headers {
-                if value.len() >= 8 && body.contains(value.as_str()) {
-                    body = body.replace(value.as_str(), "[redacted-credential]");
-                }
-                if let Some(bare) = value.strip_prefix("Bearer ") {
-                    if bare.len() >= 8 && body.contains(bare) {
-                        body = body.replace(bare, "[redacted-credential]");
-                    }
-                }
-            }
+            let body = scrub_reflected(body, &headers);
             note_call(
                 calls,
                 EgressCall {
@@ -1353,6 +2016,32 @@ fn serve_one(
             &serde_json::json!({ "error": format!("upstream: {e}") }).to_string(),
         ),
     }
+}
+
+/// Replace any injected credential value the upstream echoed back.
+///
+/// An echo or a verbose error endpoint can bounce the injected `Authorization`
+/// back in its BODY, and that body goes to the guest and (as a digest) into
+/// the audit trail. Response HEADERS never cross this boundary at all — the
+/// broker answers with `{status, body}` and nothing else — so the body is the
+/// only channel, and it is scrubbed rather than trusted.
+///
+/// A free function rather than inline, so that every path which digests or
+/// returns a body scrubs it under the same rule. The 401-retry path journals a
+/// second body, and two audit rows recorded under different rules would be a
+/// quiet inconsistency in the one record meant to be authoritative.
+fn scrub_reflected(mut body: String, headers: &[(String, String)]) -> String {
+    for (_, value) in headers {
+        if value.len() >= 8 && body.contains(value.as_str()) {
+            body = body.replace(value.as_str(), "[redacted-credential]");
+        }
+        if let Some(bare) = value.strip_prefix("Bearer ") {
+            if bare.len() >= 8 && body.contains(bare) {
+                body = body.replace(bare, "[redacted-credential]");
+            }
+        }
+    }
+    body
 }
 
 /// `sha256:<hex>` over a body. The audit trail records what was sent and

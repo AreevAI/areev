@@ -166,6 +166,16 @@ Three honest caveats before you wire production:
   `--token-env`/`--passphrase-env`/`--credential` are scrubbed from tool
   subprocess environments.
 
+  Better still on a platform that issues short-lived tokens: don't put the
+  secret in the environment at all. `--credential 'x=cmd:…'` mints one per call
+  from the container's own ambient identity (ECS task role, Workload Identity,
+  Managed Identity), and `--credential 'x=vault:PATH#FIELD'` reads Vault or
+  OpenBao directly, so nothing long-lived sits in the task definition. This
+  matters most for the **heartbeat**, whose token would otherwise be minted at
+  container start and expire before morning. Per-platform resolvers and a
+  compose fragment for OpenBao:
+  [`cookbook.md` §19](cookbook.md#19-minting-credentials-from-a-vault).
+
 ## See also
 
 - [`deployment-profile.md`](deployment-profile.md) — the reviewed production

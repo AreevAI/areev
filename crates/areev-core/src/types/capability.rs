@@ -43,17 +43,72 @@ type Result<T> = std::result::Result<T, String>;
 /// Shared by [`HttpCapability`] and `areev_run::EgressPolicy` on purpose: a
 /// declaration must not be readable more loosely than the grant it has to fit
 /// inside, and two matchers is two readings.
+///
+/// ## The scheme-and-port-agnostic form (#112)
+///
+/// [`AllowedHost::parse_host_pattern`] builds the same type with `scheme` and
+/// `port` left open, which is how a **credential↔host grant** names its host:
+/// `--tool-egress 'send:gmail@gmail.googleapis.com:POST'`. The reason is
+/// mechanical rather than philosophical — `--tool-egress` is a colon-delimited
+/// spec, so a URL prefix inside one would tear apart at its own `://` and at
+/// any port — and it is safe because the grant is never the only gate. Scheme
+/// and port narrowing lives where colons are not a delimiter: `--allow-host`
+/// and the declaration, both of which the call must ALSO satisfy.
+///
+/// Written as one type with two constructors rather than a second matcher
+/// beside it, because the hostname rules (the wildcard's leading dot, the
+/// bare-`*` refusal, case folding) must read identically everywhere they are
+/// applied, and the surest way to keep two readings in agreement is to have one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllowedHost {
-    scheme: String,
+    /// `None` matches any scheme — only [`AllowedHost::parse_host_pattern`]
+    /// produces it, and only for a grant that pairs a credential to a host.
+    scheme: Option<String>,
     /// Host, possibly with a leading `*.` wildcard.
     host: String,
-    port: u16,
+    /// `None` matches any port, on the same terms as `scheme`.
+    port: Option<u16>,
 }
 
 impl AllowedHost {
     pub fn parse(spec: &str) -> Result<AllowedHost> {
         Self::parse_labeled(spec, "allowed_outbound_hosts")
+    }
+
+    /// Parse a bare hostname pattern — `gmail.googleapis.com`,
+    /// `*.googleapis.com` — matching that host on ANY scheme and port (#112).
+    ///
+    /// A URL is refused rather than accepted-and-misread: `https://x` split on
+    /// a colon leaves `https` sitting in the host position, which would match
+    /// nothing while looking like a policy.
+    pub fn parse_host_pattern(spec: &str, field: &str) -> Result<AllowedHost> {
+        let spec = spec.trim();
+        let bad = |why: &str| format!("{field} host {spec:?}: {why}");
+        if spec.contains("://") || spec.contains('/') {
+            return Err(bad(
+                "must be a bare hostname, not a URL — the scheme and port are narrowed by \
+                 the outbound allowlist and the tool's own declaration",
+            ));
+        }
+        if spec.contains(':') {
+            return Err(bad(
+                "must not carry a port — this pairing names a host, and the port is narrowed \
+                 by the outbound allowlist",
+            ));
+        }
+        if spec.is_empty() {
+            return Err(bad("host is empty"));
+        }
+        // The same refusal `parse_labeled` gives, for the same reason: a bare
+        // `*` would pair a credential with the entire internet while reading
+        // as a restriction.
+        if spec == "*" {
+            return Err(bad(
+                "a bare '*' pairs this credential with every host — name the host, or omit \
+                 the pairing to allow any host the grant already permits",
+            ));
+        }
+        Ok(AllowedHost { scheme: None, host: spec.to_lowercase(), port: None })
     }
 
     /// Same grammar, but the error names the field the entry came from — a
@@ -92,11 +147,21 @@ impl AllowedHost {
                  the allowlist entirely to say so explicitly",
             ));
         }
-        Ok(AllowedHost { scheme: scheme.to_string(), host: host.to_lowercase(), port })
+        Ok(AllowedHost {
+            scheme: Some(scheme.to_string()),
+            host: host.to_lowercase(),
+            port: Some(port),
+        })
     }
 
     pub fn matches(&self, scheme: &str, host: &str, port: u16) -> bool {
-        if self.scheme != scheme || self.port != port {
+        // `None` on either side is the host-pattern form (#112), which matches
+        // any scheme or port because something else in the chain — the
+        // allowlist, the declaration — is what narrows those.
+        if self.scheme.as_deref().is_some_and(|s| s != scheme) {
+            return false;
+        }
+        if self.port.is_some_and(|p| p != port) {
             return false;
         }
         let host = host.to_lowercase();
@@ -250,6 +315,15 @@ pub enum CapabilityDenied {
     Method { method: String },
     /// The credential is outside the declared set.
     Credential { name: String },
+    /// The credential IS declared, but not for this destination (#112).
+    ///
+    /// Distinct from [`CapabilityDenied::Credential`] because the two send an
+    /// operator to different places: "you never declared that credential" is a
+    /// missing declaration, while this is a declaration that names both halves
+    /// and never paired them — the confused-deputy case, where a tool that
+    /// legitimately holds two services' credentials sends one service's secret
+    /// to the other.
+    CredentialHost { name: String, destination: String },
     /// The request header is outside the declared set (#105).
     Header { name: String },
 }
@@ -276,6 +350,11 @@ impl std::fmt::Display for CapabilityDenied {
             CapabilityDenied::Credential { name } => write!(
                 f,
                 "asked for credential '{name}', which its declared capability does not name"
+            ),
+            CapabilityDenied::CredentialHost { name, destination } => write!(
+                f,
+                "tried to send credential '{name}' to '{destination}' — it declares both, but no \
+                 single capability pairs them"
             ),
             CapabilityDenied::Header { name } => write!(
                 f,
@@ -314,9 +393,24 @@ pub struct BlobCapability {
 }
 
 /// Everything one Definition declares.
+///
+/// `http` is a LIST, and that is the whole of the #112 fix. Until 1.6.1 a
+/// second `http` entry was refused, so a tool that talks to two services had
+/// to merge them into one block — and the permit check tested `hosts` and
+/// `credentials` as independent memberships, never as a pairing. A declaration
+/// naming Gmail and OpenRouter, with credentials for both, therefore permitted
+/// the Gmail token to be attached to an OpenRouter request: a one-line
+/// exfiltration channel that a *bug* reaches as easily as malice.
+///
+/// With a list, each block is checked as a WHOLE TUPLE and a call needs one
+/// block to admit all of `(host, path, method, credential, headers)`. Two
+/// services become two blocks and the cross-pairing has nowhere to be
+/// expressed. This can only ever narrow: a single block behaves exactly as it
+/// did, and N blocks admit the union of N tuples rather than the cross-product
+/// their merger would have.
 #[derive(Debug, Clone, Default)]
 pub struct Declaration {
-    http: Option<HttpCapability>,
+    http: Vec<HttpCapability>,
     blob: Option<BlobCapability>,
 }
 
@@ -345,12 +439,12 @@ impl Declaration {
             }
             let (kind, body) = obj.iter().next().expect("len checked above");
             match kind.as_str() {
-                "http" => {
-                    if out.http.is_some() {
-                        return Err("'capabilities' declares 'http' more than once".into());
-                    }
-                    out.http = Some(parse_http(body)?);
-                }
+                // Repeated deliberately (#112): a second `http` block is how a
+                // tool that reaches two services says so without letting
+                // either one's credential travel to the other. `blob` below
+                // stays single, because it has no pairing to express — two
+                // `read` flags would be a contradiction, not a scope.
+                "http" => out.http.push(parse_http(body)?),
                 "blob" => {
                     if out.blob.is_some() {
                         return Err("'capabilities' declares 'blob' more than once".into());
@@ -369,7 +463,7 @@ impl Declaration {
 
     /// Does this declaration admit the `areev::fetch` import at all?
     pub fn declares_http(&self) -> bool {
-        self.http.is_some()
+        !self.http.is_empty()
     }
 
     /// Does this declaration admit the `areev::blob_get` import at all (#106)?
@@ -386,10 +480,18 @@ impl Declaration {
     /// The DECLARED half of `declared ∩ host-granted`; the broker checks the
     /// host grant separately and both must pass.
     /// Header names this declaration admits, lowercased. Empty = none.
+    ///
+    /// The UNION across blocks, which is the honest answer to "could this tool
+    /// ever set that header" and deliberately NOT what authorizes one: only
+    /// [`Declaration::permits`] does that, and it asks per block.
     pub fn permitted_headers(&self) -> impl Iterator<Item = &str> {
         self.http.iter().flat_map(|h| h.headers.iter().map(String::as_str))
     }
 
+    /// May the module make this call? One block must admit the whole tuple.
+    ///
+    /// The DECLARED half of `declared ∩ host-granted`; the broker checks the
+    /// host grant separately and both must pass.
     pub fn permits(
         &self,
         url: &str,
@@ -397,13 +499,74 @@ impl Declaration {
         credential: Option<&str>,
         header_names: &[String],
     ) -> std::result::Result<(), CapabilityDenied> {
-        let Some(http) = &self.http else {
+        if self.http.is_empty() {
             return Err(CapabilityDenied::Undeclared { kind: "http" });
-        };
-        if !http.hosts.iter().any(|h| h.permits_url(url)) {
+        }
+        // Every block gets a vote and one `Ok` carries it, so blocks are
+        // alternatives rather than constraints stacked on each other. What
+        // survives the loop is the refusal that got FURTHEST — a block that
+        // matched the host and stopped at the credential explains more than
+        // one that never matched the host at all, and reporting the first
+        // failure instead would make the message depend on declaration order.
+        let mut furthest: Option<CapabilityDenied> = None;
+        for http in &self.http {
+            match http.permits(url, method, credential, header_names) {
+                Ok(()) => return Ok(()),
+                Err(denied) => {
+                    if furthest.as_ref().is_none_or(|f| rank(&denied) > rank(f)) {
+                        furthest = Some(denied);
+                    }
+                }
+            }
+        }
+        let denied = furthest.expect("a non-empty http list voted at least once");
+        // The #112 case, named for what it is. A credential this declaration
+        // DOES carry, refused because no one block paired it with where the
+        // call was going, is not the same story as a credential it never
+        // named — and an operator reading the audit trail needs to be able to
+        // tell "the tool asked for something it never declared" from "the tool
+        // tried to send the right secret to the wrong service".
+        if let (CapabilityDenied::Credential { name }, Some(asked)) = (&denied, credential) {
+            if self.http.iter().any(|h| h.credentials.contains(asked)) {
+                return Err(CapabilityDenied::CredentialHost {
+                    name: name.clone(),
+                    destination: url.to_string(),
+                });
+            }
+        }
+        Err(denied)
+    }
+}
+
+/// How far into a block's gates a refusal got, so the most informative one is
+/// what a multi-block declaration reports. Order mirrors the check order in
+/// [`HttpCapability::permits`].
+fn rank(d: &CapabilityDenied) -> u8 {
+    match d {
+        CapabilityDenied::Undeclared { .. } => 0,
+        CapabilityDenied::Host { .. } => 1,
+        CapabilityDenied::Path { .. } => 2,
+        CapabilityDenied::Method { .. } => 3,
+        CapabilityDenied::Credential { .. } | CapabilityDenied::CredentialHost { .. } => 4,
+        CapabilityDenied::Header { .. } => 5,
+    }
+}
+
+impl HttpCapability {
+    /// Does THIS block admit the whole tuple? Every gate is checked against
+    /// one block's own lists, which is what makes the block a pairing rather
+    /// than five independent memberships (#112).
+    fn permits(
+        &self,
+        url: &str,
+        method: &str,
+        credential: Option<&str>,
+        header_names: &[String],
+    ) -> std::result::Result<(), CapabilityDenied> {
+        if !self.hosts.iter().any(|h| h.permits_url(url)) {
             return Err(CapabilityDenied::Host { destination: url.to_string() });
         }
-        if !http.path_prefixes.is_empty() {
+        if !self.path_prefixes.is_empty() {
             let path = url_path(url);
             // A prefix match on the LITERAL path is bypassable by anything the
             // upstream normalizes after we compared: `/declared/../../admin`
@@ -413,26 +576,26 @@ impl Declaration {
             // so evasive shapes are refused outright instead — a legitimate
             // API path has no business containing any of them.
             if path_evades_prefix_match(&path)
-                || !http.path_prefixes.iter().any(|p| path.starts_with(p.as_str()))
+                || !self.path_prefixes.iter().any(|p| path.starts_with(p.as_str()))
             {
                 return Err(CapabilityDenied::Path { path });
             }
         }
-        let permitted_method = if http.methods.is_empty() {
+        let permitted_method = if self.methods.is_empty() {
             matches!(method, "GET" | "HEAD")
         } else {
-            http.methods.contains(method)
+            self.methods.contains(method)
         };
         if !permitted_method {
             return Err(CapabilityDenied::Method { method: method.to_string() });
         }
         if let Some(name) = credential {
-            if !http.credentials.contains(name) {
+            if !self.credentials.contains(name) {
                 return Err(CapabilityDenied::Credential { name: name.to_string() });
             }
         }
         for name in header_names {
-            if !http.headers.contains(&name.trim().to_ascii_lowercase()) {
+            if !self.headers.contains(&name.trim().to_ascii_lowercase()) {
                 return Err(CapabilityDenied::Header { name: name.to_string() });
             }
         }
@@ -712,6 +875,162 @@ mod tests {
             {"blob": {"read": true}}
         ]));
         assert!(both.declares_http() && both.declares_blob_read());
+    }
+
+    /// The two-service tool #112 is about: reads a mailbox, writes a sheet.
+    fn two_services() -> Declaration {
+        decl(json!([
+            {"http": {
+                "hosts": ["https://gmail.googleapis.com"],
+                "methods": ["POST"],
+                "credentials": ["gmail"]
+            }},
+            {"http": {
+                "hosts": ["https://sheets.googleapis.com"],
+                "methods": ["POST"],
+                "credentials": ["sheets"]
+            }}
+        ]))
+    }
+
+    #[test]
+    fn a_credential_cannot_be_sent_to_another_blocks_host() {
+        // #112, the whole point. Before the fix `hosts` and `credentials` were
+        // independent membership tests, so a declaration naming both services
+        // let either one's secret be attached to the other's request — a
+        // one-line exfiltration channel reachable by an ordinary bug.
+        let d = two_services();
+        assert!(matches!(
+            d.permits("https://sheets.googleapis.com/v4/spreadsheets", "POST", Some("gmail"), &[]),
+            Err(CapabilityDenied::CredentialHost { .. })
+        ));
+        assert!(matches!(
+            d.permits("https://gmail.googleapis.com/gmail/v1/x", "POST", Some("sheets"), &[]),
+            Err(CapabilityDenied::CredentialHost { .. })
+        ));
+        // …while each credential still reaches its OWN service, or the fix
+        // would just be a break.
+        assert!(d
+            .permits("https://gmail.googleapis.com/gmail/v1/x", "POST", Some("gmail"), &[])
+            .is_ok());
+        assert!(d
+            .permits("https://sheets.googleapis.com/v4/spreadsheets", "POST", Some("sheets"), &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn the_pairing_refusal_names_both_halves_and_reads_apart_from_an_undeclared_one() {
+        // An operator reading the audit trail must be able to tell "asked for
+        // something it never declared" from "tried to send the right secret to
+        // the wrong service" — different bugs, different fixes.
+        let d = two_services();
+        let paired = d
+            .permits("https://sheets.googleapis.com/v4/x", "POST", Some("gmail"), &[])
+            .unwrap_err();
+        let text = paired.to_string();
+        assert!(text.contains("gmail"), "{text}");
+        assert!(text.contains("sheets.googleapis.com"), "{text}");
+        assert!(text.contains("no single capability pairs them"), "{text}");
+
+        // A credential the declaration does not carry at all stays the older,
+        // plainer refusal.
+        assert!(matches!(
+            d.permits("https://sheets.googleapis.com/v4/x", "POST", Some("stripe"), &[]),
+            Err(CapabilityDenied::Credential { .. })
+        ));
+    }
+
+    #[test]
+    fn blocks_are_alternatives_and_never_widen_each_other() {
+        // Each block is checked as a WHOLE tuple, so N blocks admit the union
+        // of N tuples — never the cross-product merging them would produce.
+        // Here: a read-only block and a write block on different hosts.
+        let d = decl(json!([
+            {"http": {"hosts": ["https://ro.example.com"]}},
+            {"http": {"hosts": ["https://rw.example.com"], "methods": ["POST"]}}
+        ]));
+        assert!(d.permits("https://ro.example.com/x", "GET", None, &[]).is_ok());
+        assert!(d.permits("https://rw.example.com/x", "POST", None, &[]).is_ok());
+        // The method from the OTHER block does not leak across.
+        assert!(matches!(
+            d.permits("https://ro.example.com/x", "POST", None, &[]),
+            Err(CapabilityDenied::Method { .. })
+        ));
+        // A host named nowhere is still a host refusal.
+        assert!(matches!(
+            d.permits("https://evil.example/x", "GET", None, &[]),
+            Err(CapabilityDenied::Host { .. })
+        ));
+    }
+
+    #[test]
+    fn a_single_block_declaration_behaves_exactly_as_it_did() {
+        // The compatibility half of #112: making `http` a list must not change
+        // what one block means, or every deployed capability tool shifts.
+        let d = gmail();
+        assert!(d.declares_http());
+        assert!(d
+            .permits(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                "POST",
+                Some("gmail"),
+                &[]
+            )
+            .is_ok());
+        assert!(matches!(
+            d.permits("https://evil.example/gmail/v1/users/me/x", "POST", Some("gmail"), &[]),
+            Err(CapabilityDenied::Host { .. })
+        ));
+    }
+
+    #[test]
+    fn the_reported_refusal_is_the_one_that_got_furthest_not_the_first_declared() {
+        // Otherwise the message an operator reads depends on the order the
+        // author happened to write the blocks in.
+        let d = decl(json!([
+            {"http": {"hosts": ["https://other.example.com"], "credentials": ["a"]}},
+            {"http": {"hosts": ["https://api.example.com"], "methods": ["POST"]}}
+        ]));
+        // Block 1 fails at the host, block 2 gets to the method. The method
+        // refusal is the informative one even though it is declared second.
+        assert!(matches!(
+            d.permits("https://api.example.com/x", "DELETE", None, &[]),
+            Err(CapabilityDenied::Method { .. })
+        ));
+    }
+
+    #[test]
+    fn a_host_pattern_pairs_by_name_and_keeps_the_hostname_rules() {
+        // The grant-side form (#112): no scheme, no port, because
+        // `--tool-egress` is colon-delimited and a URL would tear apart in it.
+        let h = AllowedHost::parse_host_pattern("gmail.googleapis.com", "--tool-egress").unwrap();
+        assert!(h.permits_url("https://gmail.googleapis.com/x"));
+        assert!(h.permits_url("http://gmail.googleapis.com:8080/x"), "any scheme, any port");
+        assert!(!h.permits_url("https://sheets.googleapis.com/x"));
+        // The userinfo trick is closed here too, because this is the same matcher.
+        assert!(!h.permits_url("https://gmail.googleapis.com@evil.com/x"));
+
+        // The wildcard reads exactly as it does in an allowlist entry.
+        let w = AllowedHost::parse_host_pattern("*.googleapis.com", "--tool-egress").unwrap();
+        assert!(w.permits_url("https://sheets.googleapis.com/x"));
+        assert!(!w.permits_url("https://googleapis.com/x"), "the apex is not a subdomain");
+        assert!(!w.permits_url("https://evil-googleapis.com/x"), "lookalike");
+    }
+
+    #[test]
+    fn a_host_pattern_refuses_a_url_a_port_and_the_bare_star() {
+        // Each of these would otherwise be misread rather than refused: split
+        // on a colon, `https://x` leaves `https` sitting in the host position,
+        // matching nothing while looking like a policy.
+        for bad in ["https://gmail.googleapis.com", "//gmail.googleapis.com", "host/path"] {
+            let e = AllowedHost::parse_host_pattern(bad, "--tool-egress").unwrap_err();
+            assert!(e.contains("bare hostname"), "{bad}: {e}");
+        }
+        let e = AllowedHost::parse_host_pattern("api.example.com:8443", "--tool-egress").unwrap_err();
+        assert!(e.contains("port"), "{e}");
+        let e = AllowedHost::parse_host_pattern("*", "--tool-egress").unwrap_err();
+        assert!(e.contains("every host"), "{e}");
+        assert!(AllowedHost::parse_host_pattern("", "--tool-egress").is_err());
     }
 
     #[test]

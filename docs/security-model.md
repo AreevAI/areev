@@ -399,7 +399,9 @@ Four properties make it a capability system rather than a hole:
   `--tool-egress` grant independently. Both are checked on every call, so a
   declaration can only ever narrow. Default deny throughout: no declaration
   means no reach, no declared methods means read-only, no declared credentials
-  means none, no declared headers means none.
+  means none, no declared headers means none. `capabilities` may carry
+  **several `http` blocks**, and one block must admit a call in full — that is
+  what binds a credential to a host rather than merely to a tool (#112, below).
 - **The credential channel is not writable from the guest.** A module may set
   the non-credential headers enterprise APIs demand — `X-Goog-User-Project`,
   `anthropic-version`, a tenant id — and may not set `Authorization`,
@@ -490,6 +492,26 @@ Six properties are worth stating because each closes a specific hole:
 - **Scope is per caller.** The token is also what lets one port serve N pool
   workers and still tell them apart, so one tool's grant buys nothing of
   another's. A caller with no grant never receives the broker's address.
+- **Scope is also per destination** (#112, fixed in 1.6.2). Until then a
+  credential was scoped to a *caller* and nothing more, so a tool that
+  legitimately talks to two services could attach either service's secret to
+  the other's request — a one-line exfiltration channel that an ordinary bug
+  reaches as easily as malice. Both halves of `declared ∩ host-granted` can
+  now express the pairing, and both are checked. On the declaration side,
+  `capabilities` may carry **repeated `http` blocks** and a call must be
+  admitted by ONE block as a whole tuple `(host, path, method, credential,
+  headers)`; two services become two blocks and the cross-pairing has nowhere
+  to be written. On the host side, `--tool-egress 'send:gmail@gmail.googleapis
+  .com:POST'` pairs a granted credential with the bare hostname it may be sent
+  to. The grant's host is a *hostname* pattern rather than a URL because the
+  spec is colon-delimited and a scheme or port would tear it apart; scheme and
+  port narrowing stays in `--allow-host` and the declaration, which the call
+  must also satisfy. Both readings use one matcher, so a pairing cannot be
+  read more loosely than the allowlist entry beside it. An unpaired grant
+  keeps its old meaning — any host the rest of the chain permits — so nothing
+  deployed narrows silently. The pairing is judged once, at dispatch entry,
+  which is sufficient precisely because a credential rides a redirect only
+  while the chain has never left its starting origin.
 - **Writes are deny-by-default.** A grant naming no method may only `GET`/
   `HEAD`.
 - **The credential variable is withheld from children** (#100, fixed in
@@ -505,6 +527,55 @@ Six properties are worth stating because each closes a specific hole:
   left three open. The sandbox seam additionally spawns under
   `EnvPolicy::ClearExcept` — a wasm host has no claim on the operator's
   environment, and under #101 it is also the process holding a broker token.
+- **A credential may be minted per call rather than read once** (#113, added
+  in 1.6.2). `--credential NAME=ENV_VAR` makes every brokered secret static
+  for the life of the process, which is the wrong shape for the credentials
+  capability tools actually use: a cloud access token expires roughly hourly,
+  so an unattended heartbeat needed a refresh step outside Areev that it could
+  silently get wrong, and a run parked on a human gate for a day resumed with
+  yesterday's token. Two further sources resolve **inside the broker at call
+  time**: `NAME=cmd:COMMAND` takes the command's trimmed stdout, and
+  `NAME=vault:PATH#FIELD` reads a Vault/OpenBao KV secret over `$VAULT_ADDR` /
+  `$VAULT_TOKEN`. What the guest sees is unchanged — it names a label and
+  holds nothing. Six properties make this a narrowing rather than a new
+  surface:
+  - **The resolver runs in the engine, never in the sandbox** — the same
+    reasoning that put blob reads through the broker: the trusted party
+    performs the privileged act, so it can also bound, record, and fail it.
+    Resolving in the guest would mean handing the guest the vault's own
+    credential, which is one class *worse* than the static token it replaces.
+  - **Fail closed.** A resolver that errors, times out (30s), or returns
+    nothing refuses the call and journals a refusal; it never falls through to
+    an unauthenticated request, which is the 401-hours-later failure this
+    exists to remove.
+  - **The error names the credential, never the output.** stdout is by
+    definition the secret and stderr is written by a script that may have
+    echoed it, so neither is repeated into the response, the journal, or a log.
+  - **A minted value is validated like any other input.** Empty is refused,
+    and so is anything that is not a valid HTTP header value — a resolver
+    returning CR/LF would otherwise forge a second header on every request its
+    credential rides.
+  - **The resolver's own authentication is carved out of every other child.**
+    A `$VAULT_TOKEN` can fetch *all* the secrets, so leaving it ambient would
+    reopen the #100 leak one level up. `--resolver-env VAR,…` registers those
+    variables as secrets — withheld from every subprocess seam — and
+    re-admits them only for resolver spawns, which run under
+    `EnvPolicy::ClearExcept` and see nothing else.
+  - **Values are cached for `--credential-ttl` (default 300s) and re-minted
+    after**, so a revocation upstream takes effect without restarting
+    anything. A 401 on a minted credential always invalidates the cached
+    value, and re-issues the request exactly once — but only for `GET`/`HEAD`.
+    A write that 401'd may still have been applied upstream, and the broker is
+    not entitled to guess; its caller sees the 401 with a fresh credential
+    waiting for the retry it chooses to make. **Both attempts are journaled** —
+    a request that went out carrying a credential is an effect whether or not
+    its response reached the caller.
+
+  A principal is bound on the NAME side for these sources
+  (`--credential 'sheets@user:alice=cmd:…'`) because a command may itself
+  contain `@`, and mis-parsing one would bind the credential to an owner the
+  operator never wrote. `Credential`'s `Debug` is redacted for the same class
+  of reason a resolver's output is never quoted.
 - **The allowlist governs every hop, not just the first** (#99, fixed in
   1.6.0). The HTTP client used to follow up to ten redirects on its own while
   the allowlist was checked once, on the caller-supplied URL, before dispatch
