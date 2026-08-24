@@ -216,12 +216,15 @@ jobs:
           python examples/hermes/test_provider.py
 
   agent-example:
-    # The keyless floor, enforced. `examples/agents/` promises every agent
-    # example runs end to end with no credential, no network and no model key
-    # — an untested example in the flagship repo is wrong at exactly the
-    # moment somebody is evaluating, so the promise is a job, not a README
-    # claim.
-    name: agent example (keyless)
+    # The keyless floor, enforced — in every language. `examples/agents/`
+    # promises each agent example runs end to end with no credential, no
+    # network and no model key, in Python, TypeScript AND Rust, and that
+    # every stack mints the identical content-addressed plan (created_at is
+    # pinned; run-smokes.sh compares the hashes). An untested example in the
+    # flagship repo is wrong at exactly the moment somebody is evaluating,
+    # so the promise is a job, not a README claim — the SAME entry point a
+    # developer runs locally before pushing (docs: examples/agents/docs/testing.md).
+    name: agent examples (keyless, 3 languages)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -229,18 +232,27 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       - uses: Swatinem/rust-cache@v2
-      - name: invoice → accounting, end to end
+      - name: Build the Python binding into a venv (maturin)
         run: |
-          cargo build --release -p areev
-          AREEV="$PWD/target/release/areev" examples/agents/invoice-to-accounting/smoke.sh
-      # The second chapter: the loop reads those runs back, finds the failure
-      # pattern, and a person decides. Asserts the two refusals that make it
-      # safe to leave on — the engine cannot apply its own finding, and no
-      # decision is recorded without a written reason.
-      - name: the loop proposes, a person decides
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip maturin
+          maturin develop --release -m crates/areev-py/Cargo.toml
+      - name: Build the Node binding (napi)
+        run: cd crates/areev-js && npm ci && npm run build
+      # Both acts of every agent, in all three stacks, plus the
+      # cross-language plan-hash comparison. CARGO_TARGET_DIR points the
+      # detached Rust stack at the cached workspace target so its path deps
+      # do not recompile from scratch.
+      - name: Every agent, every language — smoke + improve
         run: |
-          AREEV="$PWD/target/release/areev" examples/agents/invoice-to-accounting/improve.sh
+          . .venv/bin/activate
+          CARGO_TARGET_DIR="$PWD/target" REQUIRE="python typescript rust" \
+            examples/agents/run-smokes.sh
 
   tls:
     # The non-default native-TLS feature (the recorded rustls exception):

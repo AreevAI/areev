@@ -1,0 +1,9 @@
+{
+  "name": "invoice-to-accounting-agent",
+  "private": true,
+  "type": "module",
+  "description": "invoice -> accounting on Areev, the TypeScript stack; run: ./smoke.sh",
+  "dependencies": {
+    "@areev/areev": "^1"
+  }
+}

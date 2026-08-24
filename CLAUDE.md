@@ -346,9 +346,11 @@ thirteen recommendations `areev loop run` genuinely computed. Rebuild it with
 `scripts/build_demo.sh` (seeder → saved queries → fork → trigger → runs →
 loop → WAL checkpoint), then re-shoot with `scripts/shoot_console.mjs`
 against a running `areev ui`. **A console change means re-shooting** — the
-README quotes the UI, so a stale screenshot is a stale claim. The seeder's
-`--plan-only` mode is on a fixed clock so the example's committed `plan.mgb`
-keeps its content address.
+README quotes the UI, so a stale screenshot is a stale claim. The demo
+seeder no longer feeds `examples/agents/invoice-to-accounting/` — that
+example authors its own plan from three language stacks (Python/TS/Rust,
+`created_at` pinned so all three mint one hash, asserted by
+`examples/agents/run-smokes.sh`); its working rules are its own CLAUDE.md.
 
 ## Local artifacts (gitignored, don't commit or rely on)
 

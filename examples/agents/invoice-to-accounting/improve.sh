@@ -1,117 +1,102 @@
 #!/bin/sh
-# Week two of the same accounts-payable agent.
+# Weeks two and three of the same AP desk.
 #
-# `smoke.sh` is the agent doing its job under governance. This is the part that
-# comes after: five more invoices arrive, three of them fail, and the agent
-# proposes its own fix — from its own history, with no model key and no
-# training. A person decides whether it is right.
+# smoke.sh is the agent doing its job under governance. This is what comes
+# after: more mail arrives, one vendor keeps emailing photographs, and the
+# desk (a) already benefits from the correction a person made in week one --
+# the same misspelled vendor now posts itself -- and (b) reads its own run
+# history back and proposes a fix a person decides on.
 #
-# The failures are not random. One vendor emails photographs of invoices, and
-# a photograph has no text layer. Read one at a time they look like three
-# unlucky days. Counted, they are a pattern with a cause.
-#
-#   ./improve.sh              run it and assert the result
-#   AREEV=/path/to/areev ./improve.sh    use a specific binary
-#
-# Exits non-zero on any drift, so CI can run it on every release.
+# Same contract as smoke.sh: run it through a language wrapper that exports
+# AGENT and AGENT_OUT. Exits non-zero on any drift.
 set -eu
-
 cd "$(dirname "$0")"
-AREEV=${AREEV:-$(command -v areev || echo ../../../target/release/areev)}
-NS=accounting
-DB=${DB:-out/accounting.db}
-TOOLS="python3 $(pwd)/tools.py"
 
-[ -x "$AREEV" ] || { echo "no areev binary — set AREEV=/path/to/areev, or run: cargo build --release -p areev" >&2; exit 1; }
+: "${AGENT:?run me through a language wrapper: python/improve.sh, typescript/improve.sh or rust/improve.sh}"
+: "${AGENT_OUT:?}"
+SHEET="$AGENT_OUT/sheet.jsonl"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+jget() { python3 -c 'import json,sys; d=json.load(sys.stdin)
+for k in sys.argv[1:]:
+    d = d[int(k)] if isinstance(d, list) else d.get(k)
+print(d)' "$@"; }
 
-# Week one has to have happened — this chapter reads its journals.
-if [ ! -f "$DB" ]; then
+# Week one has to have happened -- this chapter reads its journals.
+if [ ! -d "$AGENT_OUT" ]; then
   say "0. week one first"
-  AREEV="$AREEV" ./smoke.sh >/dev/null
-  echo "   ran ./smoke.sh — 3 invoices, 2 posted"
+  "$(dirname "$AGENT_OUT")/smoke.sh" >/dev/null
+  echo "   ran smoke.sh -- 4 invoices, 3 posted"
 fi
 
-export SHEET_OUT="$(pwd)/out/sheet.jsonl"
-export OUTBOX_OUT="$(pwd)/out/outbox.jsonl"
+# ── 1. two more weeks of mail ─────────────────────────────────────────────
+# MAIL_UPTO is the fixture clock; advancing it is how "later" arrives.
+say "1. more mail: three more photographed pages, and a familiar misspelling"
+sleep 1.2
+STARTED=$(MAIL_UPTO=99 $AGENT ingest | jget runs_started)
+[ "$STARTED" = "5" ] || fail "expected 5 new runs, got $STARTED"
 
-WF=$("$AREEV" cal 'RECALL workflows LIMIT 1' --db "$DB" --ns "$NS" \
-     | python3 -c 'import json,sys; print(json.load(sys.stdin)["grains"][0]["hash"])')
-
-# ── 1. another week of mail ────────────────────────────────────────────────
-say "1. five more invoices arrive"
-for f in 04-northgate-scan 05-northgate-scan 06-meridian-clean 07-northgate-scan 08-cobalt-clean; do
-  id=$(echo "$f" | cut -d- -f1)
-  printf '   %-22s ' "$f"
-  "$AREEV" run start --db "$DB" --ns "$NS" --workflow "$WF" --run-id "wk2-$id" \
-    --input "$(cat "fixtures/$f.json")" --tool-cmd "$TOOLS" --as agent:ap-intake 2>&1 \
-    | tail -1 \
-    | python3 -c 'import json,sys
-r = json.loads(sys.stdin.read())["finished"]
-print("posted" if r == "Completed" else "FAILED at parse — the page has no text layer")'
-done
-
-TOTAL=$("$AREEV" run list --db "$DB" --ns "$NS" \
-        | python3 -c 'import json,sys; rs=json.load(sys.stdin); print(len(rs), sum(1 for r in rs if r["outcome"]=="failed"))')
-echo "   runs so far: $TOTAL (total, failed)"
-[ "$TOTAL" = "8 4" ] || { echo "FAIL: expected 8 runs with 4 failures, got $TOTAL"; exit 1; }
-
-# ── 2. the loop reads its own history back ─────────────────────────────────
-# No model key. Eleven deterministic analyzers over the grains the runs wrote.
-say "2. the agent looks at its own record"
-"$AREEV" loop run --db "$DB" --ns "$NS" 2>&1 | head -2
-
-REC=$("$AREEV" loop list --db "$DB" --ns "$NS" | awk 'NR==1 {print $1}')
-[ -n "$REC" ] || { echo "FAIL: the loop proposed nothing"; exit 1; }
-
-say "3. what it found"
-"$AREEV" loop show "$REC" --db "$DB" --ns "$NS" \
-  | python3 -c '
+# ── 2. the payoff of week one's correction ────────────────────────────────
+# In week one this exact shape -- "Cobolt Cloud", low confidence -- parked
+# for a person. Priya corrected it once; the alias became a fact in
+# org.brightco.vendors; the trigger's declared context now carries it; and
+# extraction canonicalizes the vendor and settles the confidence question.
+# Same mail shape, no human in the loop the second time.
+say "2. the misspelled vendor from week one now posts itself"
+python3 - "$SHEET" <<'EOF' || exit 1
 import json, sys
-r = json.load(sys.stdin)
-sev, summary = r["severity"].upper(), r["summary"]
-analyzer, conf = r["analyzer"], r["confidence"]
-cited, origin = len(r["evidence"]), r["origin"]["kind"]
-print(f"   {sev}  {summary}")
-print(f"   analyzer   {analyzer}  (confidence {conf})")
-print(f"   evidence   {cited} grains cited, by hash")
-print(f"   origin     {origin} — deterministic, no model was called")
-'
+rows = [json.loads(l) for l in open(sys.argv[1])]
+again = [r for r in rows if r["row_key"].startswith("<INV-CC-90188")]
+assert again, "the week-two Cobolt invoice did not post at all"
+assert again[0]["vendor"] == "Cobalt Cloud", again[0]
+assert again[0]["approved_by"] == "auto", \
+    "it should not have needed a person this time: %r" % again[0]
+EOF
+echo "   posted as 'Cobalt Cloud', approved_by auto -- the correction became memory"
 
-# ── 4. the gate ────────────────────────────────────────────────────────────
-# Two refusals worth watching, because they are what makes this safe to leave
-# switched on: the engine will not act on its own finding, and no human
-# decision is recorded without a written reason.
-say "4. what the loop is NOT allowed to do"
+# ── 3. the desk briefs itself ─────────────────────────────────────────────
+# The briefing is a saved CAL query IN the memory file (desk_pulse): the
+# plan, the tool definitions, recent activity and the lessons, assembled
+# under a token budget. This is the context a scheduled improvement pass
+# hands to a model -- the agent describing its own current setup.
+say "3. the desk briefs itself out of its own memory"
+BRIEF=$($AGENT brief)
+echo "$BRIEF" | grep -q "invoice-to-accounting" || fail "the briefing does not name the plan"
+echo "$BRIEF" | grep -q "alias_of" || fail "the briefing does not carry the learned alias"
+echo "   plan, tools, lessons -- one saved query, one budget"
 
-if "$AREEV" loop apply "$REC" --db "$DB" --ns "$NS" --because "let the engine fix it" >/dev/null 2>&1; then
-  echo "FAIL: the engine applied its own advisory finding"; exit 1
+# ── 4. the loop reads the record ──────────────────────────────────────────
+say "4. areev loop: deterministic analyzers over the desk's own journals"
+IMPROVED=$($AGENT improve)
+REC=$(echo "$IMPROVED" | jget pending 0 hash)
+[ -n "$REC" ] && [ "$REC" != "None" ] || fail "the loop proposed nothing"
+echo "$IMPROVED" | jget pending 0 summary | sed 's/^/   /'
+
+# ── 5. the gate ───────────────────────────────────────────────────────────
+say "5. what the loop is NOT allowed to do"
+if $AGENT decide "$REC" apply --because "let the engine fix it" --as user:dev_rao >/dev/null 2>&1; then
+  fail "the engine applied its own advisory finding"
 fi
-echo "   the engine cannot execute its own advice — it is advisory (LOP-E011)"
-
-if "$AREEV" loop approve "$REC" --db "$DB" --ns "$NS" >/dev/null 2>&1; then
-  echo "FAIL: a decision was recorded with no reason"; exit 1
+echo "   the engine cannot execute its own advice -- it is advisory"
+if $AGENT decide "$REC" approve --as user:dev_rao >/dev/null 2>&1; then
+  fail "a decision was recorded with no reason"
 fi
 echo "   a decision with no written reason is refused"
 
-# ── 5. a person decides ────────────────────────────────────────────────────
-say "5. a person decides, and signs it"
-"$AREEV" loop approve "$REC" --db "$DB" --ns "$NS" --as user:dev_rao \
-  --because "Northgate emails photographs; OCR them before parse instead of failing the run"
+# ── 6. a person decides, and signs it ─────────────────────────────────────
+say "6. a person decides, and signs it"
+$AGENT decide "$REC" approve \
+  --because "Northgate emails photographs; OCR them before parse instead of failing the run" \
+  --as user:dev_rao >/dev/null
+$AGENT teach org.acme.vendors "Northgate Supply" invoice_delivery \
+  "photographed pages -- OCR before parse" >/dev/null
+echo "   approved by user:dev_rao, lesson recorded against the vendor"
 
-# The finding is advisory, so the fix is the operator's to make. What changes
-# is the memory the agent recalls the next time it meets this vendor.
-"$AREEV" add northgate_supply invoice_delivery "photographed pages — OCR before parse" \
-  --db "$DB" --ns "$NS" >/dev/null
-echo "   recorded against the vendor:"
-"$AREEV" recall northgate_supply --db "$DB" --ns "$NS" --render sml | sed 's/^/     /'
+# ── 7. it does not nag ────────────────────────────────────────────────────
+say "7. run the loop again"
+PENDING=$($AGENT improve | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["pending"]))')
+[ "$PENDING" = "0" ] || fail "the same finding was proposed twice"
+echo "   deduped -- the same evidence does not become a second recommendation"
 
-# ── 6. it does not nag ─────────────────────────────────────────────────────
-say "6. run the loop again"
-"$AREEV" loop run --db "$DB" --ns "$NS" 2>&1 | head -1
-PENDING=$("$AREEV" loop list --db "$DB" --ns "$NS" 2>/dev/null | grep -c . || true)
-[ "$PENDING" = "0" ] || { echo "FAIL: the same finding was proposed twice"; exit 1; }
-echo "   deduped — the same evidence does not become a second recommendation"
-
-printf '\n\033[32mOK\033[0m — 1 pattern found in 8 runs, 1 decision recorded against a named person.\n'
+printf '\n\033[32mOK\033[0m -- 1 correction became memory, 1 pattern found in 9 runs, 1 decision signed by name.\n'

@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."
 REPO=$(pwd)
 OUT=${1:-$HOME/Documents/areev/demo.db}
 AREEV=$REPO/target/release/areev
-TOOLS="python3 $REPO/examples/agents/invoice-to-accounting/tools.py"
+TOOLS="python3 $REPO/scripts/demo_tools.py"
 NS=accounting
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

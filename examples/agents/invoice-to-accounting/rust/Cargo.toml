@@ -1,0 +1,34 @@
+# The Rust stack of the invoice-to-accounting example. A standalone crate,
+# NOT a member of the repo's cargo workspace (the empty [workspace] table
+# below detaches it) -- same posture as crates/areev-js.
+#
+# In-tree it builds against the sibling crates by path so a release that
+# changes a surface fixes this example in the same commit. Outside the repo,
+# replace the path deps with the published crates:
+#
+#   areev-store = "1"      areev-cal = "1"      areev-core = "1"
+#   areev-run = "1"        areev-trigger = "1"
+#   areev-loop = "1"       areev-loop-adapter = "1"
+[package]
+name = "invoice-to-accounting-agent"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+areev-core = { path = "../../../../crates/areev-core" }
+areev-store = { path = "../../../../crates/areev-store" }
+areev-cal = { path = "../../../../crates/areev-cal" }
+areev-run = { path = "../../../../crates/areev-run" }
+areev-trigger = { path = "../../../../crates/areev-trigger" }
+areev-loop = { path = "../../../../crates/areev-loop" }
+areev-loop-adapter = { path = "../../../../crates/areev-loop-adapter" }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"

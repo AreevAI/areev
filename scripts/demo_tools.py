@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Host tools for the invoice-to-accounting example.
+"""Host tools for the README demo memory (scripts/build_demo.sh).
+
+Formerly examples/agents/invoice-to-accounting/tools.py; the example now
+carries its own richer per-language tools, while the committed data/demo.db
+keeps the seeder-era behavior this file preserves.
 
 One process per invocation, the seam every Areev surface uses:
 

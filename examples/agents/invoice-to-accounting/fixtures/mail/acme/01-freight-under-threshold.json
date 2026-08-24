@@ -1,0 +1,14 @@
+{
+  "amount": 860.0,
+  "attachment": "INV-MF-4471.pdf",
+  "category": "Logistics",
+  "client": "acme",
+  "confidence": 0.97,
+  "currency": "USD",
+  "message_id": "<INV-MF-4471@meridianfreight.example>",
+  "scanned": false,
+  "sender": "billing@meridianfreight.example",
+  "subject": "Invoice INV-MF-4471 \u2014 August freight",
+  "thread": "thr-acme-0001",
+  "vendor": "Meridian Freight"
+}
