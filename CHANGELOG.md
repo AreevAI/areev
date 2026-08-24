@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-08-24
+
 ### Removed
 
 - **`areev hub` (the "areevd" sync daemon) and the `/api/segment*` endpoints.**
@@ -32,8 +34,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   concurrent writers against one memory belongs on the **Postgres backend**
   (`feature = "postgres"`, one memory = one schema), which is the supported
   answer and always was.
-
-## [1.6.1] — 2026-08-23
 
 ### Added
 
@@ -84,6 +84,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trigger run`, and both bindings' `credentials_json`.
   Setup per platform: `docs/cookbook.md` §19. Rationale: ARCHITECTURE.md §10,
   "A brokered credential's source is a seam, resolved in the broker".
+
+### Security
+
+- **A brokered credential is now bound to a host, not only to a caller**
+  (#112). `capabilities.http` carried `hosts` and `credentials` as independent
+  lists and the permit check tested them independently, so **any declared
+  credential could be attached to any declared host** — and a second `http`
+  entry was refused outright, so a tool talking to two services had no way to
+  say which secret belonged to which. A tool that reads a mailbox and writes a
+  sheet could therefore send the mailbox token to the sheets API: the
+  confused-deputy case the broker exists to prevent, reachable by an ordinary
+  bug (one wrong label in the guest) as easily as by malice.
+
+  Both halves of `declared ∩ host-granted` can now express the pairing, and
+  both are checked. `capabilities` accepts **repeated `http` blocks**, and a
+  call must be admitted by ONE block as a whole tuple `(host, path, method,
+  credential, headers)`. The host-side grant gained the same:
+  `--tool-egress 'sync:gmail@gmail.googleapis.com:POST'` pairs a credential
+  with the bare hostname it may reach (`*.example.com` works; scheme and port
+  stay with `--allow-host`, because the spec is colon-delimited and a URL
+  would tear apart in it). A refusal that names both halves reads apart from
+  an undeclared credential — different bugs, different fixes.
+
+  **Compatible in both directions.** A single-block declaration behaves exactly
+  as before, an unpaired grant still means any host the rest of the chain
+  permits, and N blocks admit the union of N tuples rather than the
+  cross-product their merger produced — so the change can only narrow.
+  `CapabilityDenied` gains a `CredentialHost` variant and `CallerGrant`'s
+  `credentials` field is now private behind `credential()` /
+  `credential_for()`; `Broker::start` takes `CredentialSource` values
+  (`Credential` converts with `.into()`).
+  Rationale: ARCHITECTURE.md §10, "A brokered credential is bound to a host,
+  not only to a caller".
+
+  **Scope:** this covers the `areev run` path — brokered tools and capability
+  tools. A *trigger connector* still holds every credential the trigger
+  configured for any host in its `allowed_outbound_hosts`: one connector runs
+  per evaluation pass, so its grant is derived from the credential list rather
+  than written, and it carries no declaration. Unchanged from previous
+  releases, now noted in `docs/triggers.md`; give a trigger only the
+  credentials its connector needs.
+
+## [1.6.1] — 2026-08-23
+
+### Added
 
 - **Capability tools can set non-credential request headers** (#105). A
   brokered `areev::fetch` request takes an optional `headers` map, and a Tool
@@ -207,45 +252,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.6.0] — 2026-08-23
 
 ### Security
-
-- **A brokered credential is now bound to a host, not only to a caller**
-  (#112). `capabilities.http` carried `hosts` and `credentials` as independent
-  lists and the permit check tested them independently, so **any declared
-  credential could be attached to any declared host** — and a second `http`
-  entry was refused outright, so a tool talking to two services had no way to
-  say which secret belonged to which. A tool that reads a mailbox and writes a
-  sheet could therefore send the mailbox token to the sheets API: the
-  confused-deputy case the broker exists to prevent, reachable by an ordinary
-  bug (one wrong label in the guest) as easily as by malice.
-
-  Both halves of `declared ∩ host-granted` can now express the pairing, and
-  both are checked. `capabilities` accepts **repeated `http` blocks**, and a
-  call must be admitted by ONE block as a whole tuple `(host, path, method,
-  credential, headers)`. The host-side grant gained the same:
-  `--tool-egress 'sync:gmail@gmail.googleapis.com:POST'` pairs a credential
-  with the bare hostname it may reach (`*.example.com` works; scheme and port
-  stay with `--allow-host`, because the spec is colon-delimited and a URL
-  would tear apart in it). A refusal that names both halves reads apart from
-  an undeclared credential — different bugs, different fixes.
-
-  **Compatible in both directions.** A single-block declaration behaves exactly
-  as before, an unpaired grant still means any host the rest of the chain
-  permits, and N blocks admit the union of N tuples rather than the
-  cross-product their merger produced — so the change can only narrow.
-  `CapabilityDenied` gains a `CredentialHost` variant and `CallerGrant`'s
-  `credentials` field is now private behind `credential()` /
-  `credential_for()`; `Broker::start` takes `CredentialSource` values
-  (`Credential` converts with `.into()`).
-  Rationale: ARCHITECTURE.md §10, "A brokered credential is bound to a host,
-  not only to a caller".
-
-  **Scope:** this covers the `areev run` path — brokered tools and capability
-  tools. A *trigger connector* still holds every credential the trigger
-  configured for any host in its `allowed_outbound_hosts`: one connector runs
-  per evaluation pass, so its grant is derived from the credential list rather
-  than written, and it carries no declaration. Unchanged from previous
-  releases, now noted in `docs/triggers.md`; give a trigger only the
-  credentials its connector needs.
 
 - **The outbound allowlist now governs every redirect hop, not just the first**
   (#99). The broker's HTTP agent followed up to ten redirects on its own, while
@@ -1794,7 +1800,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.2...HEAD
+[1.6.2]: https://github.com/AreevAI/areev/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AreevAI/areev/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AreevAI/areev/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/AreevAI/areev/compare/v1.5.1...v1.5.2

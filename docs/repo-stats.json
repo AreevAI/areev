@@ -1,17 +1,17 @@
 {
-  "version": "1.6.1",
+  "version": "1.6.2",
   "crates": 17,
   "rust": {
     "files": 274,
-    "physical_lines": 164588,
-    "source_code": 78781,
-    "test_code": 47232,
-    "unit_test_code": 22084,
-    "integration_test_code": 25148,
+    "physical_lines": 166539,
+    "source_code": 79363,
+    "test_code": 47935,
+    "unit_test_code": 22200,
+    "integration_test_code": 25735,
     "example_code": 669,
-    "test_functions": 2306,
+    "test_functions": 2329,
     "test_ratio": 0.6,
-    "test_share": 37.5
+    "test_share": 37.7
   },
   "per_crate": [
     {
@@ -33,26 +33,26 @@
     {
       "name": "areev-core",
       "files": 49,
-      "physical": 16638,
-      "source_code": 8497,
-      "test_code": 4175,
-      "tests": 277
-    },
-    {
-      "name": "areev-cli",
-      "files": 18,
-      "physical": 13863,
-      "source_code": 5583,
-      "test_code": 5510,
-      "tests": 164
+      "physical": 16957,
+      "source_code": 8572,
+      "test_code": 4291,
+      "tests": 284
     },
     {
       "name": "areev-run",
       "files": 20,
-      "physical": 13171,
-      "source_code": 5182,
-      "test_code": 4652,
-      "tests": 145
+      "physical": 14614,
+      "source_code": 5557,
+      "test_code": 5239,
+      "tests": 161
+    },
+    {
+      "name": "areev-cli",
+      "files": 18,
+      "physical": 14043,
+      "source_code": 5717,
+      "test_code": 5510,
+      "tests": 164
     },
     {
       "name": "areev-loop",
@@ -73,7 +73,7 @@
     {
       "name": "areev-trigger",
       "files": 12,
-      "physical": 5052,
+      "physical": 5057,
       "source_code": 1646,
       "test_code": 2000,
       "tests": 114
@@ -97,8 +97,8 @@
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 3275,
-      "source_code": 2494,
+      "physical": 3277,
+      "source_code": 2493,
       "test_code": 0,
       "tests": 0
     },
@@ -113,8 +113,8 @@
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 2913,
-      "source_code": 2123,
+      "physical": 2915,
+      "source_code": 2122,
       "test_code": 0,
       "tests": 0
     },
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 53,
-    "lines": 22612
+    "lines": 23074
   },
   "error_codes": 91,
   "bindings": {
