@@ -19,107 +19,23 @@ authority, in steps you can inspect, undo, and re-measure.
 </p>
 
 Every team that ships an agent wants the same next thing: an agent that
-**gets better from its own experience**. Almost none ship one, because the
-hard part is not the learning — it is four production problems that model
-quality cannot solve:
+**gets better from its own experience**. Almost none ship one — because an
+agent that rewrites its own memory unsupervised fails every security review
+on the same four questions: **what changed, on what evidence, on whose
+authority, and can we take it back?**
 
-**Trust.** An agent that rewrites its own instructions, memory, or tools
-unsupervised is undeployable in any serious environment — not because it
-won't improve, but because when it does, nobody can say what changed, or
-why. "The agent learned" is not an answer a security review, an auditor,
-or the [EU AI Act](docs/eu-ai-act.md) accepts.
+Areev makes all four mechanical. The agent **proposes** from its own
+recorded history, citing evidence by hash; a named person **approves**, with
+a written reason; every apply **stores its inverse**; and the change is
+**re-measured** afterwards — a late regression proposes its own revert. This
+is enforceable rather than aspirational because the agent's knowledge *and*
+its execution history live in one content-addressed store, queried with one
+language ([CAL](docs/cal-reference.md)).
 
-**Evidence.** Improvement has to be learned *from* something. In most
-stacks the agent's history is scattered across a vector store, a tracing
-SaaS, and application logs — three systems, three lifecycles, no shared
-identity. A proposal built on evidence you cannot cite is a guess with
-confidence attached.
-
-**Blast radius.** A change that helps this week can regress next week on
-different inputs. Without a stored inverse and a scheduled re-measurement,
-every improvement is a one-way door — so careful teams rationally refuse
-them all, and the agent stays frozen at day-one behavior.
-
-**Authority.** When a change does land, someone approved it — or nobody
-did. If the system cannot name the approver, their written reason, and the
-exact change applied, the audit trail is a Slack thread.
-
-Areev turns these four from policy documents into mechanics. Improvement
-becomes an **operation with a gate on it**: the agent proposes from its own
-recorded history, citing its evidence by hash; a named person disposes,
-with a written reason; every apply stores its inverse; and the system
-re-measures afterwards whether the change actually helped — a late
-regression proposes its own revert. The gate is enforceable rather than
-aspirational because the agent's knowledge *and* its execution history
-live in one content-addressed substrate, queried with a real query
-language ([CAL](docs/cal-reference.md)) — one place that answers both
-questions a serious deployment asks: **what should this agent recall right
-now?** and **what did it do, on whose authority, and can we take it back?**
-
-Three honest limits, because they are the reason this is deployable: it
-improves the agent's **memory, never model weights** (Areev ships no trainer);
-**nothing applies itself** — auto-apply is off unless a host policy grants it,
-and never for destructive or LLM-originated changes; and **there is no
-daemon** — everything runs when you run it. Autonomy is never earned by a
-metric; it stays an explicit grant from the host.
+Three honest limits, by design: it improves **memory, never model weights** ·
+**nothing applies itself** without an explicit host grant · **no daemon** —
+everything runs when you run it.
 [The full argument →](docs/why-areev.md)
-
----
-
-## Five ways agent memory rots
-
-<p align="center">
-  <img src="docs/assets/problem-solution.png" width="900"
-       alt="Five ways agent memory rots and Areev's structural answer to each: duplicates collapse to one content-addressed grain; edits supersede with history kept (1 current, 0 stale); every grain traces to the run that made it (100% provenance); intent is journaled before the effect under the same idempotency key; and FORGET SUBJECT makes erasure one operation that reaches replicas">
-</p>
-
-Vector-store memory fails quietly — duplicates crowd the prompt, stale values
-outrank current ones, provenance is a log grep, a crash pays twice, and
-erasure is a project. Areev makes each failure structurally impossible, and
-proves it with a deterministic benchmark, no LLM in the loop:
-`cargo run -p areev-bench --bin honesty_metrics`.
-[Each failure, in detail →](docs/why-areev.md#the-problem)
-
----
-
-## Sixty seconds
-
-An accounts-payable agent that takes corrections **by email reply** — no
-credentials, no network, no model key:
-
-```bash
-pip install areev
-git clone https://github.com/AreevAI/areev && cd areev/examples/agents/invoice-to-accounting
-python/smoke.sh    # week one — it does the job, under governance
-```
-
-Small invoices post themselves; one over the threshold **parks for a person**
-(the starter cannot approve its own run); a scanned page **fails loudly**
-instead of posting a blank row; and a misspelled vendor comes back corrected
-by reply — the run cycles until the approver says yes, and the correction
-becomes a fact. Then week two:
-
-```bash
-python/improve.sh  # week two — it proposes its own fix, you decide
-```
-
-```
-the misspelled vendor from week one now posts itself   # the correction became memory
-   HIGH  Workflow 3da2300c1296 failed 4/9 recent runs (44%): parse_attachments:
-         pdftotext produced 0 characters - attachment is a scanned image
-   the engine cannot execute its own advice -- it is advisory
-   a decision with no written reason is refused
-   approved by user:dev_rao, lesson recorded against the vendor
-```
-
-That is the whole product in one screen: a human's correction became memory
-the agent recalls, it found a real pattern in **its own run journals**,
-refused to act on it, a named person approved it, and it will not raise the
-same evidence twice. The same agent ships in **Python, TypeScript, and
-Rust** — one file each, and all three mint the *identical* content-addressed
-plan. Every script asserts its own results and
-[CI runs all three on every release](.github/workflows/ci.yml).
-**[→ the full walkthrough](examples/agents/invoice-to-accounting/)**
 
 ---
 
@@ -133,76 +49,48 @@ plan. Every script asserts its own results and
 | **[CAL](docs/cal-reference.md)** — the context | A query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit | A turn needs a *budget-shaped* prompt, and deterministic allocation is what makes a replay comparable |
 | **[The store](docs/why-areev.md#storage-a-plain-sqlite-file-or-a-postgres-schema)** — the record | A provenance graph in a plain **SQLite file** ([Turso](https://github.com/tursodatabase/turso)), or a **PostgreSQL** schema for the server tier | **~30 µs** recall in-process; one conformance suite pins both backends to identical semantics |
 
+Every screen below is the real console over the demo memory committed to
+this repo — click through:
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="#see-it-yourself--the-knowledge-graph">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="demo/screens/graph-dark.png">
+          <img src="demo/screens/graph-light.png" alt="The knowledge graph — entities in the agent's memory drawn as a provenance graph with a rewind scrubber">
+        </picture>
+      </a>
+      <br><sub><b>The knowledge graph</b><br>walk and rewind what it knows</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="#the-learning-loop--self-improvement-with-a-gate-on-it">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="demo/screens/suggestions-dark.png">
+          <img src="demo/screens/suggestions-light.png" alt="The review queue — findings from the learning loop, each with evidence and an Apply or Dismiss decision">
+        </picture>
+      </a>
+      <br><sub><b>The learning loop</b><br>it proposes, you dispose</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="#the-execution-graph--runs-a-person-can-gate">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="demo/screens/runs-dark.png">
+          <img src="demo/screens/runs-light.png" alt="The Runs page — governed runs grouped as waiting on you and finished, with Approve and Refuse buttons">
+        </picture>
+      </a>
+      <br><sub><b>Governed runs</b><br>a person on the gate</sub>
+    </td>
+  </tr>
+</table>
+
 | **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,306 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
 ---
 
-## Fast enough for the edge
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-latency-dark.svg">
-  <img src="docs/assets/bench-latency-light.svg" width="820"
-       alt="Recall latency measured at p50: 9 to 158 microseconds across every surface on an Apple M4 Max, 361 microseconds in-process on a 2016 Raspberry Pi 3, and flat latency from 500 to 8,000 grains on both a Pi 3 and a 2018 Intel NUC">
-</picture>
-
-Recall is **microseconds, not milliseconds**, because there is no server in
-the recall path — fast enough inside a real-time voice agent's 50 ms frame,
-where a network call cannot go. The same engine, installed with
-`pip install areev` in 16 seconds, serves recall on a **$35 Raspberry Pi 3
-from 2016** at ~361 µs — **flat from 500 to 8,000 grains**, so a device can
-accumulate memory for months and answer as fast on day 200 as on day 1.
-Measured on the devices themselves, clock-certified:
-[RESULTS.md](crates/areev-bench/RESULTS.md).
-
----
-
-## Getting started
-
-```bash
-cargo install areev          # the CLI    (prebuilt binaries: see the quickstart)
-pip install areev            # Python
-npm install @areev/areev     # Node (unscoped `areev` is pending an npm exception)
-```
-
-Store a fact, recall it, hand it to a model:
-
-```bash
-areev add    john prefers "window seat"
-areev recall john --render sml              # → a model-ready context block
-areev ui                                    # → the web console
-```
-
-Give Claude Code (or any MCP client) persistent memory in one line:
-
-```bash
-claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
-```
-
-Or skip the toolchains entirely — the repo's [`Dockerfile`](Dockerfile)
-builds the same binary with the Postgres and TLS features already on:
-
-```bash
-docker build -t areev .
-docker run --rm -v areev-data:/data areev add john prefers "window seat"
-AREEV_UI_TOKEN=$(openssl rand -hex 16) docker compose --profile console up
-```
-
-The image serves every role — console and a trigger heartbeat —
-and one box runs a whole fleet of agents, one memory each. Containers,
-compose files, and the AWS / GCP / Azure / Kubernetes mappings:
-[docs/docker.md](docs/docker.md).
-
-Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
-backend, encryption at rest, migration from other stores, and fleet sync:
-**[docs/quickstart.md](docs/quickstart.md)**. Task recipes:
-[cookbook](docs/cookbook.md). Keep your LangGraph or CrewAI stack and govern
-its state with the [pip adapters](docs/quickstart.md#keep-your-langgraph-or-crewai-stack--govern-its-state).
-
----
-
-## See it yourself
+## See it yourself — the knowledge graph
 
 The demo memory behind every screenshot is committed to this repo — 466
 grains, 9 governed runs, 13 real recommendations, one open fork:
@@ -225,41 +113,6 @@ A real console over the real <a href="data/demo.db"><code>demo.db</code></a> in 
 Rebuild it from scratch with [`scripts/build_demo.sh`](scripts/build_demo.sh):
 every run in it is a real journal and every recommendation is a real analyzer
 output, not rows written to look convincing.
-
----
-
-## The execution graph — runs a person can gate
-
-<p align="center">
-  <img src="docs/assets/run-lifecycle.png" width="900"
-       alt="The governed run lifecycle: a trigger fires (cron, webhook, or poll), intent is journaled before the effect, the host executes the tool, a person decides under separation of duties, and the run is provable afterwards with areev run verify — every step landing as a grain in the journal, replayable and byte-compared">
-</p>
-
-Every agent framework executes graphs; almost none can *prove* an execution
-afterwards. Here the plan is a grain, the run is a journal in the same file,
-and the approver is a node in the graph. An effect is written down **before**
-it is allowed to happen, so a crash-window effect is redelivered under the
-same idempotency key instead of paid twice — and `areev run verify` re-drives
-the whole run from its journal and byte-compares every checkpoint.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/runs-dark.png">
-    <img src="demo/screens/runs-light.png" width="900"
-         alt="The Runs page of the Areev console: nine governed runs grouped as Waiting on you and Finished — six posted, one refused by a person, one failed honestly, one waiting with Approve and Refuse buttons">
-  </picture>
-</p>
-
-<p align="center"><em>Nine real runs: six posted, one a person <strong>refused</strong>, one that failed honestly, one still waiting.<br>
-Approving requires <strong>your own</strong> sign-in — the approver's identity <em>is</em> the audit record.</em></p>
-
-LangGraph-grade control flow (Send fan-out, subgraphs, typed reducers,
-streaming, time-travel forks) with budgets that actually stop the run and a
-kill switch whose drain time is **measured** into the oversight report
-([EU AI Act Art. 12/14 map](docs/eu-ai-act.md)). Standing rules start runs on
-a schedule or an event with **no daemon** — the cadence is data
-([triggers](docs/triggers.md)). Full guide: [docs/run.md](docs/run.md) ·
-hands-on: [quickstart](docs/quickstart.md#run-a-governed-workflow-areev-run).
 
 ---
 
@@ -303,6 +156,129 @@ evalset, admitted through a clean recorded gating run, and revocable — the
 gate cannot be weakened by the thing it gates (Rule E1). Areev still never
 trains and ships no trainer: it supplies the corpus, grades the result, and
 owns the lineage. [The tuning seam →](docs/why-areev.md#the-tuning-seam-governed-corpora-for-your-own-slm)
+
+---
+
+## The execution graph — runs a person can gate
+
+<p align="center">
+  <img src="docs/assets/run-lifecycle.png" width="900"
+       alt="The governed run lifecycle: a trigger fires (cron, webhook, or poll), intent is journaled before the effect, the host executes the tool, a person decides under separation of duties, and the run is provable afterwards with areev run verify — every step landing as a grain in the journal, replayable and byte-compared">
+</p>
+
+Every agent framework executes graphs; almost none can *prove* an execution
+afterwards. Here the plan is a grain, the run is a journal in the same file,
+and the approver is a node in the graph. An effect is written down **before**
+it is allowed to happen, so a crash-window effect is redelivered under the
+same idempotency key instead of paid twice — and `areev run verify` re-drives
+the whole run from its journal and byte-compares every checkpoint.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="demo/screens/runs-dark.png">
+    <img src="demo/screens/runs-light.png" width="900"
+         alt="The Runs page of the Areev console: nine governed runs grouped as Waiting on you and Finished — six posted, one refused by a person, one failed honestly, one waiting with Approve and Refuse buttons">
+  </picture>
+</p>
+
+<p align="center"><em>Nine real runs: six posted, one a person <strong>refused</strong>, one that failed honestly, one still waiting.<br>
+Approving requires <strong>your own</strong> sign-in — the approver's identity <em>is</em> the audit record.</em></p>
+
+LangGraph-grade control flow (Send fan-out, subgraphs, typed reducers,
+streaming, time-travel forks) with budgets that actually stop the run and a
+kill switch whose drain time is **measured** into the oversight report
+([EU AI Act Art. 12/14 map](docs/eu-ai-act.md)). Standing rules start runs on
+a schedule or an event with **no daemon** — the cadence is data
+([triggers](docs/triggers.md)). Full guide: [docs/run.md](docs/run.md) ·
+hands-on: [quickstart](docs/quickstart.md#run-a-governed-workflow-areev-run).
+
+---
+
+## Five ways agent memory rots
+
+<p align="center">
+  <img src="docs/assets/problem-solution.png" width="900"
+       alt="Five ways agent memory rots and Areev's structural answer to each: duplicates collapse to one content-addressed grain; edits supersede with history kept (1 current, 0 stale); every grain traces to the run that made it (100% provenance); intent is journaled before the effect under the same idempotency key; and FORGET SUBJECT makes erasure one operation that reaches replicas">
+</p>
+
+Vector-store memory fails quietly — duplicates crowd the prompt, stale values
+outrank current ones, provenance is a log grep, a crash pays twice, and
+erasure is a project. Areev makes each failure structurally impossible, and
+proves it with a deterministic benchmark, no LLM in the loop:
+`cargo run -p areev-bench --bin honesty_metrics`.
+[Each failure, in detail →](docs/why-areev.md#the-problem)
+
+---
+
+## Getting started
+
+```bash
+cargo install areev          # the CLI    (prebuilt binaries: see the quickstart)
+pip install areev            # Python
+npm install @areev/areev     # Node (unscoped `areev` is pending an npm exception)
+```
+
+Store a fact, recall it, hand it to a model:
+
+```bash
+areev add    john prefers "window seat"
+areev recall john --render sml              # → a model-ready context block
+areev ui                                    # → the web console
+```
+
+Give Claude Code (or any MCP client) persistent memory in one line:
+
+```bash
+claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
+```
+
+Or skip the toolchains entirely — the repo's [`Dockerfile`](Dockerfile)
+builds the same binary with the Postgres and TLS features already on:
+
+```bash
+docker build -t areev .
+docker run --rm -v areev-data:/data areev add john prefers "window seat"
+AREEV_UI_TOKEN=$(openssl rand -hex 16) docker compose --profile console up
+```
+
+The image serves every role — console and a trigger heartbeat —
+and one box runs a whole fleet of agents, one memory each. Containers,
+compose files, and the AWS / GCP / Azure / Kubernetes mappings:
+[docs/docker.md](docs/docker.md).
+
+Want a complete agent, not a snippet?
+[`examples/agents/invoice-to-accounting`](examples/agents/invoice-to-accounting/)
+is an accounts-payable agent that takes corrections **by email reply** — no
+credentials, no network, no model key. `python/smoke.sh` runs week one (it
+does the job, under governance); `python/improve.sh` runs week two (it
+proposes its own fix from its run journals, and you decide). The same agent
+ships in **Python, TypeScript, and Rust** — one file each, and all three mint
+the *identical* content-addressed plan.
+
+Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
+backend, encryption at rest, migration from other stores, and fleet sync:
+**[docs/quickstart.md](docs/quickstart.md)**. Task recipes:
+[cookbook](docs/cookbook.md). Keep your LangGraph or CrewAI stack and govern
+its state with the [pip adapters](docs/quickstart.md#keep-your-langgraph-or-crewai-stack--govern-its-state).
+
+---
+
+## Fast enough for the edge
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-latency-dark.svg">
+  <img src="docs/assets/bench-latency-light.svg" width="820"
+       alt="Recall latency measured at p50: 9 to 158 microseconds across every surface on an Apple M4 Max, 361 microseconds in-process on a 2016 Raspberry Pi 3, and flat latency from 500 to 8,000 grains on both a Pi 3 and a 2018 Intel NUC">
+</picture>
+
+Recall is **microseconds, not milliseconds**, because there is no server in
+the recall path — fast enough inside a real-time voice agent's 50 ms frame,
+where a network call cannot go. The same engine, installed with
+`pip install areev` in 16 seconds, serves recall on a **$35 Raspberry Pi 3
+from 2016** at ~361 µs — **flat from 500 to 8,000 grains**, so a device can
+accumulate memory for months and answer as fast on day 200 as on day 1.
+Measured on the devices themselves, clock-certified:
+[RESULTS.md](crates/areev-bench/RESULTS.md).
 
 ---
 
