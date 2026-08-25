@@ -133,7 +133,7 @@ jobs:
           fi
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}${{ matrix.suffix }}
           path: |
@@ -181,7 +181,7 @@ jobs:
           mkdir -p dist
           cp crates/areev-cli/areev.cdx.json "dist/areev-${VERSION}-cargo.cdx.json"
           test -s "dist/areev-${VERSION}-cargo.cdx.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-sbom
           path: dist/*.cdx.json
