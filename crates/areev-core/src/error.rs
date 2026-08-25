@@ -92,6 +92,24 @@ pub enum AreevError {
     /// actually happened is that a *refusal to downgrade to plaintext* saved
     /// the operator from an unencrypted connection they did not ask for.
     TlsUnavailable(String),
+    /// A write was attempted through a handle opened with `read_only: true`
+    /// (`AreevOptions::read_only`). Refused at the store layer on BOTH
+    /// backends — on postgres this is what stands between a least-privilege
+    /// SELECT-only role and a raw `42501 permission denied`; on the embedded
+    /// backend there is no privilege system to fail against, so the store
+    /// enforces the same contract itself, which is what lets one conformance
+    /// case cover both.
+    ReadOnly(String),
+    /// A read-only open could not verify the schema/tables it expected to
+    /// find (postgres only — the embedded backend bootstraps its own file
+    /// regardless of `read_only`). Distinct from [`Storage`](Self::Storage)
+    /// because the fix differs: "schema absent" needs someone to create and
+    /// migrate it; "schema present but not initialized" needs the owning
+    /// role to open it read-write once to finish bootstrap. A read-only role
+    /// can do neither itself — that is the whole point of the least-privilege
+    /// grant — so the message says which one it is rather than surfacing the
+    /// raw permission-denied Postgres gives for `CREATE SCHEMA`/DDL.
+    ReadOnlyOpenFailed(String),
     SupersessionConflict(Hash),
     CryptoError(String),
     AccumulateRetryExhausted,
@@ -126,6 +144,8 @@ impl AreevError {
             Self::Storage(_) => "STO-E001",
             Self::StoreBusy(_) => "STO-E002",
             Self::TlsUnavailable(_) => "STO-E003",
+            Self::ReadOnly(_) => "STO-E004",
+            Self::ReadOnlyOpenFailed(_) => "STO-E005",
             Self::CryptoError(_) => "CRY-E001",
             // These originate in CAL ACCUMULATE semantics and bubble up
             // through the store, so they keep their CAL-domain codes.
@@ -155,6 +175,8 @@ impl std::fmt::Display for AreevError {
             Self::Storage(m) => write!(f, "STO-E001: storage error: {m}"),
             Self::StoreBusy(m) => write!(f, "STO-E002: store busy: {m}"),
             Self::TlsUnavailable(m) => write!(f, "STO-E003: {m}"),
+            Self::ReadOnly(m) => write!(f, "STO-E004: refusing write on a read-only memory: {m}"),
+            Self::ReadOnlyOpenFailed(m) => write!(f, "STO-E005: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AccumulateRetryExhausted => write!(f, "CAL-E083: ACCUMULATE retry budget exhausted"),
             Self::AccumulateInternal(m) => write!(f, "CAL-E084: ACCUMULATE internal failure: {m}"),
@@ -189,6 +211,8 @@ mod error_code_tests {
             AreevError::Storage("x".into()),
             AreevError::StoreBusy("x".into()),
             AreevError::TlsUnavailable("x".into()),
+            AreevError::ReadOnly("x".into()),
+            AreevError::ReadOnlyOpenFailed("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),

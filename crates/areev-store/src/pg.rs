@@ -204,7 +204,18 @@ impl PgDb {
     /// `IF NOT EXISTS` DDL is racy without one (the loser gets a spurious
     /// 23505 on pg_namespace/pg_type). The lock is transaction-free and
     /// explicitly released, so it never outlives the bootstrap.
-    pub(crate) fn open(url: &str, schema: &str, bootstrap: &[&str]) -> Result<Self> {
+    ///
+    /// `read_only` skips ALL of that — no advisory lock, no `CREATE SCHEMA`,
+    /// no `bootstrap` statements (`PG_SCHEMA`'s DDL + `PG_SEED`'s upserts) —
+    /// because a least-privilege SELECT-only role can issue none of them:
+    /// Postgres checks the `CREATE` privilege on the database before it
+    /// checks whether the schema already exists, and it checks table
+    /// OWNERSHIP before it checks whether an index already exists, so even
+    /// fully-idempotent `IF NOT EXISTS` DDL 42501s for such a role on a
+    /// schema that is already there (issue #127). Instead it pins
+    /// `search_path` (a session command any role may issue) and VERIFIES
+    /// with SELECT-only probes — see [`Self::verify_read_only`].
+    pub(crate) fn open(url: &str, schema: &str, bootstrap: &[&str], read_only: bool) -> Result<Self> {
         if schema.is_empty()
             || schema.len() > 63
             || !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -224,41 +235,48 @@ impl PgDb {
         // every block_on below), and REFUSES a DSN that asks for encryption a
         // build without `postgres-tls` cannot give it.
         let client = crate::pgtls::connect(&rt, url)?;
-        rt.block_on(async {
-            client
-                .query_one(
-                    "SELECT pg_advisory_lock(hashtext('areev_bootstrap'), hashtext($1))",
-                    &[&schema],
-                )
-                .await
-                .map_err(pg_err)?;
-            let boot = async {
+        if read_only {
+            rt.block_on(Self::verify_read_only(&client, schema))?;
+        } else {
+            rt.block_on(async {
                 client
-                    .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                    .query_one(
+                        "SELECT pg_advisory_lock(hashtext('areev_bootstrap'), hashtext($1))",
+                        &[&schema],
+                    )
                     .await
                     .map_err(pg_err)?;
-                client
-                    .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
-                    .await
-                    .map_err(pg_err)?;
-                for sql in bootstrap {
-                    client.batch_execute(sql).await.map_err(|e| {
-                        AreevError::Storage(format!("bootstrap failed: {} — in: {sql}", pg_err(e)))
-                    })?;
+                let boot = async {
+                    client
+                        .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                        .await
+                        .map_err(pg_err)?;
+                    client
+                        .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
+                        .await
+                        .map_err(pg_err)?;
+                    for sql in bootstrap {
+                        client.batch_execute(sql).await.map_err(|e| {
+                            AreevError::Storage(format!(
+                                "bootstrap failed: {} — in: {sql}",
+                                pg_err(e)
+                            ))
+                        })?;
+                    }
+                    Ok::<_, AreevError>(())
                 }
-                Ok::<_, AreevError>(())
-            }
-            .await;
-            // Release even on failure — the session (and any pooler behind
-            // it) may outlive this open attempt.
-            let _ = client
-                .query_one(
-                    "SELECT pg_advisory_unlock(hashtext('areev_bootstrap'), hashtext($1))",
-                    &[&schema],
-                )
                 .await;
-            boot
-        })?;
+                // Release even on failure — the session (and any pooler behind
+                // it) may outlive this open attempt.
+                let _ = client
+                    .query_one(
+                        "SELECT pg_advisory_unlock(hashtext('areev_bootstrap'), hashtext($1))",
+                        &[&schema],
+                    )
+                    .await;
+                boot
+            })?;
+        }
         Ok(Self {
             rt,
             url: url.to_string(),
@@ -268,6 +286,70 @@ impl PgDb {
             in_txn: std::cell::Cell::new(false),
             stats: RefCell::new(None),
         })
+    }
+
+    /// The read-only counterpart to the bootstrap block above: pin
+    /// `search_path` (harmless for any role), then confirm with SELECT-only
+    /// probes that there is something real to point it at — never attempt
+    /// to create anything. Distinguishes the two failure modes an operator
+    /// must act on differently: a schema that was never created/migrated at
+    /// all, versus one that exists but is missing tables this build's
+    /// bootstrap would have added (a partial or outdated migration) — both
+    /// need an owning role to run bootstrap read-write, but "absent" also
+    /// means the schema name itself may be wrong.
+    ///
+    /// The table list mirrors exactly what `finish_open` reads
+    /// unconditionally right after `open()` returns (`meta`, `terms`,
+    /// `grains`, `oplog`, `fts_doc`) — not the full `PG_SCHEMA` list — so a
+    /// pass here is precisely "the read path this crate always takes on
+    /// open will not immediately fail with `undefined table`".
+    async fn verify_read_only(
+        client: &tokio_postgres::Client,
+        schema: &str,
+    ) -> Result<()> {
+        client
+            .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
+            .await
+            .map_err(pg_err)?;
+        let exists = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+                &[&schema],
+            )
+            .await
+            .map_err(pg_err)?
+            .get::<_, bool>(0);
+        if !exists {
+            return Err(AreevError::ReadOnlyOpenFailed(format!(
+                "postgres schema {schema:?} does not exist — a read-only open never runs \
+                 bootstrap DDL (CREATE SCHEMA included), so it cannot create it. Either the \
+                 schema name is wrong, or the memory has never been created: have the owning \
+                 role open it read-write once (or run the migration), then retry read-only"
+            )));
+        }
+        const CORE_TABLES: &[&str] = &["meta", "terms", "grains", "oplog", "fts_doc"];
+        let mut missing: Vec<&str> = Vec::new();
+        for table in CORE_TABLES {
+            let qualified = format!("\"{schema}\".{table}");
+            let present = client
+                .query_one("SELECT to_regclass($1) IS NOT NULL", &[&qualified])
+                .await
+                .map_err(pg_err)?
+                .get::<_, bool>(0);
+            if !present {
+                missing.push(table);
+            }
+        }
+        if !missing.is_empty() {
+            return Err(AreevError::ReadOnlyOpenFailed(format!(
+                "postgres schema {schema:?} exists but is not fully initialized — missing \
+                 table(s): {} — a read-only open never runs bootstrap DDL to add them. Have the \
+                 owning role open this memory read-write once to finish migrating it, then \
+                 retry read-only",
+                missing.join(", ")
+            )));
+        }
+        Ok(())
     }
 
     /// Is this error the CONNECTION dying, as opposed to the statement failing?
@@ -1101,7 +1183,10 @@ mod tests {
     #[test]
     fn schema_name_validation() {
         for bad in ["", "has space", "semi;colon", "quote\"", "9leading", &"x".repeat(64)] {
-            assert!(PgDb::open("postgres://ignored", bad, &[]).is_err(), "{bad:?} must be rejected");
+            assert!(
+                PgDb::open("postgres://ignored", bad, &[], false).is_err(),
+                "{bad:?} must be rejected"
+            );
         }
     }
 }

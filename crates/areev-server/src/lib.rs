@@ -28,6 +28,13 @@ const MAX_HEADERS: usize = 100;
 /// timeout cannot bound a slow-drip client (each byte resets it), so a watchdog
 /// shuts the socket down at this deadline.
 const REQUEST_DEADLINE_SECS: u64 = 30;
+/// Issue #126: an auth-failure streak from one source IP idle longer than
+/// this is treated as reset rather than accumulated against forever.
+const AUTH_FAILURE_IDLE_SECS: u64 = 15 * 60;
+/// Cap on distinct source IPs tracked for auth-failure throttling — the key
+/// space is attacker-controlled, so this bounds the memory an attacker can
+/// force the map to hold.
+const MAX_AUTH_FAILURE_IPS: usize = 4096;
 
 
 /// One accepted connection: plaintext, or TLS when the server was built
@@ -73,6 +80,14 @@ pub struct UiServer {
     facade: std::sync::Arc<AreevFacade>,
     executor: CalExecutor,
     db_label: String,
+    /// `db_label`, redacted for DISPLAY (issue #124): every response body,
+    /// the served HTML, and any startup log line must use this, never the
+    /// raw label — on the Postgres backend `db_label` is a DSN with an
+    /// inline password. Computed once in `UiServer::new` via `redact_dsn`.
+    /// The raw `db_label` is kept only for the `resolve_for_memory` call
+    /// sites below, which must keep comparing against the exact `--db`
+    /// value a credential map's `memories` entry is written as.
+    db_label_display: String,
     /// Shared secret required for access when set. It guards mutating
     /// endpoints (`Bearer`); in console-auth mode (`auth_all`) it guards
     /// every request via `Bearer` **or** HTTP `Basic` (password = token).
@@ -86,6 +101,16 @@ pub struct UiServer {
     /// Set true only when the operator intentionally serves to other hosts
     /// (CLI `--allow-remote`), where a non-loopback `Host` is expected.
     allow_remote: bool,
+    /// Origins (issue #125), normalized, whose cross-origin **POST**s are
+    /// accepted even though they are not loopback. The Origin drive-by
+    /// check is NOT lifted by `allow_remote` — HTTP Basic is browser-cached
+    /// and re-attached cross-site, so Origin is the only thing telling the
+    /// console's own page apart from an attacker's page riding a viewer's
+    /// cached credential. This is the exact-match allowlist an operator
+    /// populates instead (CLI `--allow-origin`), one entry per
+    /// [`allow_origin`](Self::allow_origin) call. No wildcards, no
+    /// suffix/subdomain matching.
+    allowed_origins: Vec<String>,
     /// Host loop policy (§6.2) applied to the `/api/loop/*` engine — the
     /// same `loop-policy.json` the CLI takes (`areev ui --policy`). Absent →
     /// the closed default: nothing auto-applies, nothing is denied. Host
@@ -131,6 +156,22 @@ pub struct UiServer {
     /// mismatch, so timing cannot reveal which one matched or how many are
     /// configured.
     sso_secrets: Vec<String>,
+    /// Auth-failure counter (issue #126), keyed by source IP — the port is
+    /// deliberately excluded, since a NAT'd or proxied attacker's source
+    /// port varies per connection while the IP does not. Each entry is
+    /// `(consecutive failures, last-failure time)`; see
+    /// `note_auth_failure`/`reset_auth_failures`. The map is
+    /// attacker-controlled key space (one entry per source IP that ever
+    /// fails once) and is bounded at `MAX_AUTH_FAILURE_IPS` for exactly that
+    /// reason. The lock is held only for the map bookkeeping itself, never
+    /// across a response write.
+    ///
+    /// This counts and logs — it does **not** delay or lock out. See
+    /// `note_auth_failure` for why: `serve` is a strictly serial accept
+    /// loop, so any per-request sleep here would be a lever an
+    /// unauthenticated caller pulls to stall the console for everyone, not
+    /// just themselves.
+    auth_failures: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
 }
 
 /// Per-request principal binding. The server handles one request at a
@@ -197,14 +238,17 @@ impl Drop for RequestBinding<'_> {
 
 impl UiServer {
     pub fn new(facade: AreevFacade, db_label: String) -> Self {
+        let db_label_display = redact_dsn(&db_label);
         UiServer {
             facade: std::sync::Arc::new(facade),
             executor: CalExecutor::new(CalExecutorConfig::default())
                 .with_governance(std::sync::Arc::new(areev_loop_adapter::LoopGovernance::new())),
             db_label,
+            db_label_display,
             token: None,
             auth_all: false,
             allow_remote: false,
+            allowed_origins: Vec::new(),
             loop_policy: None,
             credentials: None,
             allow_destructive_ops: CalExecutorConfig::default().allow_destructive_ops,
@@ -212,6 +256,7 @@ impl UiServer {
             tls_config: None,
             sso_header: None,
             sso_secrets: Vec::new(),
+            auth_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -320,6 +365,33 @@ impl UiServer {
         self
     }
 
+    /// Accept a cross-origin **POST** whose `Origin` header exactly matches
+    /// this origin (scheme + host[:port], compared case-insensitively with a
+    /// single trailing `/` ignored). Call once per origin to allow — there
+    /// is no wildcard or subdomain form, by design: naming
+    /// `https://console.example.com` must never thereby accept
+    /// `https://evil-console.example.com`.
+    ///
+    /// `--allow-remote` does **not** imply this. The Origin check exists
+    /// because the console authenticates browsers with HTTP Basic, which the
+    /// browser caches and re-attaches to cross-site requests — Origin is the
+    /// only thing telling the console's own page apart from an attacker's
+    /// page riding a viewer's cached credential, so it is CSRF protection,
+    /// not defence in depth, and it stays enforced on every non-loopback
+    /// origin except the ones named here.
+    pub fn allow_origin(mut self, origin: impl Into<String>) -> Self {
+        self.allowed_origins.push(normalize_origin(&origin.into()));
+        self
+    }
+
+    /// Whether `origin` (a request's raw `Origin` header value) matches one
+    /// of the operator-configured [`allow_origin`](Self::allow_origin)
+    /// entries, after normalizing both sides identically. Exact match only.
+    fn origin_is_allowed(&self, origin: &str) -> bool {
+        let normalized = normalize_origin(origin);
+        self.allowed_origins.contains(&normalized)
+    }
+
     /// Require a shared secret on **every** request (the console page, reads,
     /// and writes). Browsers authenticate through the native `Basic` prompt
     /// (any username; password = `token`); scripts may send `Authorization:
@@ -390,6 +462,83 @@ impl UiServer {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         self.tls_config = Some(std::sync::Arc::new(config));
         Ok(self)
+    }
+
+    /// Record one failed authentication attempt from `ip` (issue #126) and
+    /// return the new consecutive-failure count — for the caller to LOG,
+    /// never to sleep on. An entry idle for more than
+    /// `AUTH_FAILURE_IDLE_SECS` is treated as reset rather than accumulating
+    /// forever. The map is bounded at `MAX_AUTH_FAILURE_IPS` — the key is
+    /// one attacker-controlled source IP per entry, so an unbounded map here
+    /// would itself be a memory-exhaustion vector; past the cap, the
+    /// stalest entry is evicted before the new one is inserted. The lock is
+    /// held only for this bookkeeping — never across the response write.
+    ///
+    /// **Deliberately no artificial delay or lockout on this count.**
+    /// `UiServer::serve` is a strictly SERIAL accept loop — one connection
+    /// handled at a time, per its own doc comment — so a `std::thread::sleep`
+    /// here, before a response is written, would not slow down one
+    /// attacker: it would stall the entire console for every caller,
+    /// including the operator, behind whatever backoff an unauthenticated
+    /// caller chooses to trigger by sending bad credentials. That trade is
+    /// worse than the problem this counter exists to fix (a 401 that reads
+    /// as ordinary traffic in the log). Rate limiting belongs in front of
+    /// this server — the TLS-terminating proxy the deployment profile
+    /// already calls for — where it can also see the caller's real address;
+    /// this count and the log line built from it are what such a rule is
+    /// written against. Do not reintroduce a sleep/lockout here without
+    /// first making the accept loop concurrent.
+    fn note_auth_failure(&self, ip: std::net::IpAddr) -> u32 {
+        let now = std::time::Instant::now();
+        let idle = Duration::from_secs(AUTH_FAILURE_IDLE_SECS);
+        let mut map = self
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get_mut(&ip) {
+            Some((n, last)) if now.duration_since(*last) < idle => {
+                *n = n.saturating_add(1);
+                *last = now;
+                *n
+            }
+            Some(entry) => {
+                *entry = (1, now);
+                1
+            }
+            None => {
+                if map.len() >= MAX_AUTH_FAILURE_IPS {
+                    if let Some(stalest) =
+                        map.iter().min_by_key(|(_, (_, last))| *last).map(|(k, _)| *k)
+                    {
+                        map.remove(&stalest);
+                    }
+                }
+                map.insert(ip, (1, now));
+                1
+            }
+        }
+    }
+
+    /// Clear a source IP's failure streak after it authenticates successfully.
+    fn reset_auth_failures(&self, ip: std::net::IpAddr) {
+        let mut map = self
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.remove(&ip);
+    }
+
+    /// Test-only peek at a source IP's current consecutive-failure count (0
+    /// if it has none). There is no sleep/lockout to observe via timing —
+    /// see `note_auth_failure` — so tests read the counter directly instead.
+    #[cfg(test)]
+    fn auth_failure_count_for_test(&self, ip: std::net::IpAddr) -> u32 {
+        self.auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&ip)
+            .map(|(n, _)| *n)
+            .unwrap_or(0)
     }
 
     /// Wrap an accepted socket per the TLS posture. The handshake happens
@@ -540,9 +689,16 @@ impl UiServer {
         }
 
         // Cross-origin drive-by protection: browsers attach an Origin header
-        // to cross-site requests. Only loopback pages (the console itself)
-        // may mutate; curl/CLI clients send no Origin and pass through.
-        if method == "POST" && origin.as_deref().is_some_and(|o| !origin_is_local(o)) {
+        // to cross-site requests. Only loopback pages (the console itself),
+        // or an origin the operator explicitly allowlisted with
+        // --allow-origin (issue #125), may mutate; curl/CLI clients send no
+        // Origin and pass through. `--allow-remote` does NOT lift this on
+        // its own — see `allow_origin`'s doc comment for why.
+        if method == "POST"
+            && origin
+                .as_deref()
+                .is_some_and(|o| !origin_is_local(o) && !self.origin_is_allowed(o))
+        {
             let payload = br#"{"ok":false,"error":"cross-origin request rejected"}"#;
             drop(reader);
             let mut out = conn;
@@ -555,6 +711,11 @@ impl UiServer {
             return out.flush();
         }
 
+        // Captured before the move below: issue #126's failure counter needs
+        // to know whether a proxy secret was PRESENTED at all (a
+        // wrong-guess attempt to count), independent of `sso_identity`,
+        // which by then only ever reflects a *proven* identity.
+        let proxy_secret_presented = proxy_secret.is_some();
         // The identity header is TRUSTED only when the proxy proved itself
         // (constant-time secret check). A forged header without the secret
         // is silently ignored — the request proceeds as whatever its other
@@ -575,6 +736,33 @@ impl UiServer {
         };
         let (status, ctype, payload) =
             self.route(&method, &path, &body, bearer.as_deref(), sso_identity.as_deref());
+
+        // Auth-failure count + log (issue #126). Only when this server has
+        // SOME auth mechanism configured, AND a credential was actually
+        // PRESENTED (a Bearer/Basic value, or a proxy secret) — a plain
+        // unauthenticated request (a token-less console's read-only-write
+        // refusal, a browser's very first Basic-auth probe with no
+        // Authorization header at all) attempted nothing and has no failure
+        // to count. The token itself is never logged, not even a prefix.
+        //
+        // Deliberately no in-process delay or lockout here — see the
+        // comment on `note_auth_failure` for why an artificial delay would
+        // itself be the more dangerous bug on this server.
+        let auth_configured =
+            self.token.is_some() || self.credentials.is_some() || !self.sso_secrets.is_empty();
+        let credential_presented = bearer.is_some() || proxy_secret_presented;
+        if auth_configured && credential_presented {
+            if let Ok(peer) = raw.peer_addr() {
+                let ip = peer.ip();
+                if status.starts_with("401") {
+                    let consecutive = self.note_auth_failure(ip);
+                    eprintln!("areev: console auth FAILED from {ip} ({consecutive} consecutive)");
+                } else {
+                    self.reset_auth_failures(ip);
+                }
+            }
+        }
+
         // On a console-auth 401, challenge with Basic so browsers show the
         // native login prompt (any username; password = token).
         let auth_challenge = if self.auth_all && status.starts_with("401") {
@@ -720,7 +908,7 @@ impl UiServer {
                 "200 OK",
                 "text/html; charset=utf-8",
                 CONSOLE_HTML
-                    .replace("{{DB}}", &html_escape(&self.db_label))
+                    .replace("{{DB}}", &html_escape(&self.db_label_display))
                     .into_bytes(),
             ),
             ("POST", "/api/cal") => {
@@ -759,7 +947,7 @@ impl UiServer {
                 let stats = self.facade.with_store(|m| m.stats());
                 match stats {
                     Ok(s) => ok_json(json!({
-                        "db": self.db_label,
+                        "db": self.db_label_display,
                         "grains": s.grains, "current": s.current,
                         "triples": s.triples, "terms": s.terms,
                         "ops": s.ops, "events_indexed": s.events_indexed,
@@ -850,7 +1038,7 @@ impl UiServer {
                 });
                 ok_json(json!({
                     "ok": true,
-                    "db": self.db_label,
+                    "db": self.db_label_display,
                     "warnings": warnings,
                     "anonymization": anonymization,
                     "file": {
@@ -1461,6 +1649,61 @@ fn origin_is_local(origin: &str) -> bool {
     host_is_local(host_port)
 }
 
+/// Normalize an origin (an `Origin` header value, or an operator-configured
+/// `--allow-origin` entry) for EXACT comparison: lowercase, with a single
+/// trailing `/` dropped. Nothing else — this only makes two spellings of the
+/// same origin compare equal; it does not validate shape (the CLI's
+/// `--allow-origin` parser does that at startup).
+fn normalize_origin(origin: &str) -> String {
+    let trimmed = origin.trim();
+    trimmed.strip_suffix('/').unwrap_or(trimmed).to_ascii_lowercase()
+}
+
+/// Redact a DISPLAY copy of a connection-string / file-path DB label
+/// (issue #124): if `label` has a `scheme://[user[:pass]@]host...` shape and
+/// the userinfo carries a password, replace the password with `***`.
+/// Anything else — a plain file path (no `://`), a DSN with no userinfo, or
+/// userinfo with no password — is returned byte-for-byte unchanged.
+///
+/// **DISPLAY ONLY.** The raw label is still what
+/// `CredentialMap::resolve_for_memory` (`areev-core/src/authz.rs`) matches a
+/// token's `memories` scope against via an exact string compare — never swap
+/// in this redacted form at those call sites, or every `--auth FILE`
+/// deployment that scopes a token to a Postgres memory silently breaks.
+///
+/// Hand-rolled (no URL crate, per the workspace's dependency-light policy):
+/// only the AUTHORITY segment — between `://` and the first `/`, `?`, or `#`
+/// that follows — is considered, and within it the LAST `@` is taken as the
+/// userinfo delimiter. RFC 3986 allows a percent-encoded `@` in a password
+/// and real passwords contain literal `@` too, so an earlier `@` is presumed
+/// to be *inside* the password rather than a second delimiter; and a `:` or
+/// `@` appearing later — in a query string, say — is outside the authority
+/// entirely and is never mistaken for userinfo.
+pub fn redact_dsn(label: &str) -> String {
+    let Some(scheme_end) = label.find("://") else {
+        return label.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &label[authority_start..];
+    let authority_len = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_len];
+    let Some(at) = authority.rfind('@') else {
+        return label.to_string();
+    };
+    let userinfo = &authority[..at];
+    let Some(colon) = userinfo.find(':') else {
+        return label.to_string();
+    };
+    let user = &userinfo[..colon];
+    let mut out = String::with_capacity(label.len());
+    out.push_str(&label[..authority_start]);
+    out.push_str(user);
+    out.push_str(":***@");
+    out.push_str(&authority[at + 1..]);
+    out.push_str(&rest[authority_len..]);
+    out
+}
+
 fn ok_json(v: Value) -> (&'static str, &'static str, Vec<u8>) {
     ("200 OK", "application/json", v.to_string().into_bytes())
 }
@@ -1727,7 +1970,7 @@ mod loop_route_tests {
 
 #[cfg(test)]
 mod security_tests {
-    use super::{base64_decode, basic_auth_password, ct_eq};
+    use super::{base64_decode, basic_auth_password, ct_eq, normalize_origin, redact_dsn};
 
     #[test]
     fn ct_eq_matches_only_equal() {
@@ -1764,6 +2007,76 @@ mod security_tests {
         assert_eq!(basic_auth_password("****"), None); // not base64
     }
 
+    // ── redact_dsn (issue #124) ─────────────────────────────────────────
+
+    #[test]
+    fn redact_dsn_hides_a_password() {
+        assert_eq!(
+            redact_dsn("postgresql://rounic:SUPERSECRET@pg-x:5432/rounic?sslmode=verify-full&schema=desk_invoice"),
+            "postgresql://rounic:***@pg-x:5432/rounic?sslmode=verify-full&schema=desk_invoice",
+        );
+    }
+
+    #[test]
+    fn redact_dsn_leaves_no_password_alone() {
+        assert_eq!(redact_dsn("postgres://user@host:5432/db"), "postgres://user@host:5432/db");
+    }
+
+    #[test]
+    fn redact_dsn_leaves_no_userinfo_alone() {
+        assert_eq!(redact_dsn("postgres://host:5432/db"), "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redact_dsn_leaves_a_plain_file_path_alone() {
+        assert_eq!(redact_dsn("demo.db"), "demo.db");
+        assert_eq!(redact_dsn("/var/lib/areev/demo.db"), "/var/lib/areev/demo.db");
+    }
+
+    #[test]
+    fn redact_dsn_hides_a_percent_encoded_password() {
+        // %40 is an encoded '@' inside the password — the LITERAL '@' that
+        // ends the authority is the one after it.
+        assert_eq!(
+            redact_dsn("postgres://user:pa%40ss@host:5432/db"),
+            "postgres://user:***@host:5432/db",
+        );
+    }
+
+    #[test]
+    fn redact_dsn_hides_a_password_with_a_literal_at_sign() {
+        // The LAST '@' in the authority is the userinfo/host boundary, so a
+        // literal '@' inside the password is presumed to be part of it.
+        assert_eq!(
+            redact_dsn("postgres://user:p@ss@host:5432/db"),
+            "postgres://user:***@host:5432/db",
+        );
+    }
+
+    #[test]
+    fn redact_dsn_ignores_colon_and_at_in_the_query_string() {
+        assert_eq!(
+            redact_dsn("postgres://user:pass@host:5432/db?options=-c%20foo:bar@baz"),
+            "postgres://user:***@host:5432/db?options=-c%20foo:bar@baz",
+        );
+    }
+
+    #[test]
+    fn redact_dsn_handles_empty_string() {
+        assert_eq!(redact_dsn(""), "");
+    }
+
+    // ── normalize_origin (issue #125) ───────────────────────────────────
+
+    #[test]
+    fn normalize_origin_lowercases_and_drops_one_trailing_slash() {
+        assert_eq!(normalize_origin("https://Console.Example.com"), "https://console.example.com");
+        assert_eq!(normalize_origin("https://console.example.com/"), "https://console.example.com");
+        assert_eq!(
+            normalize_origin("HTTPS://Console.Example.com/"),
+            "https://console.example.com",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2698,5 +3011,255 @@ mod sso_tests {
         );
         let orphan: Vec<_> = nav.difference(&sections).collect();
         assert!(orphan.is_empty(), "nav items with no page section: {orphan:?}");
+    }
+}
+
+/// Issue #124: the console must never disclose the password half of a
+/// Postgres DSN, at any of its three display surfaces, while the RAW label
+/// keeps working as the credential map's `memories` comparison key.
+#[cfg(test)]
+mod dsn_redaction_tests {
+    use super::UiServer;
+    use areev_cal::AreevFacade;
+    use areev_core::authz::{CredentialMap, AUTHZ_NS, REL_PERMITS};
+    use areev_core::types::{Fact, Grain};
+    use areev_store::Areev;
+
+    const DSN: &str = "postgresql://u:SUPERSECRET@h:5432/d?sslmode=require";
+
+    fn server() -> UiServer {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        UiServer::new(facade, DSN.to_string())
+    }
+
+    fn text(r: &(&str, &str, Vec<u8>)) -> String {
+        String::from_utf8_lossy(&r.2).to_string()
+    }
+
+    #[test]
+    fn stats_config_and_html_redact_the_dsn_password_but_keep_the_host() {
+        let s = server();
+        for (method, path) in [("GET", "/api/stats"), ("GET", "/api/config"), ("GET", "/")] {
+            let r = s.route(method, path, b"", None, None);
+            let body = text(&r);
+            assert!(!body.contains("SUPERSECRET"), "{path} leaked the password: {body}");
+            assert!(body.contains("h:5432"), "{path} redacted more than the password: {body}");
+        }
+    }
+
+    /// Redaction is DISPLAY ONLY: a credential map's `memories` entry is
+    /// documented as the raw `--db` value, and it must still resolve —
+    /// proving the redacted form never leaked into the auth-comparison
+    /// path (`resolve_for_memory`'s exact string compare).
+    #[test]
+    fn credential_map_memories_entry_still_matches_the_raw_dsn() {
+        std::env::set_var("AREEV_DSN_TOK", "dsn-scoped-secret");
+        let map_json = format!(
+            r#"{{"version":1,"tokens":[{{"env":"AREEV_DSN_TOK","principal":"agent:sync","memories":["{DSN}"]}}]}}"#
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        store
+            .add(
+                &Fact::new("agent:sync", REL_PERMITS, "read,write ON caller")
+                    .namespace(AUTHZ_NS)
+                    .created_at(1_000),
+            )
+            .unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        let s = UiServer::new(facade, DSN.to_string())
+            .with_credentials(CredentialMap::from_json(&map_json).unwrap());
+
+        const WRITE: &[u8] = br#"{"query":"ADD fact SET subject = \"x\" SET relation = \"r\" SET object = \"o\" SET namespace = \"caller\" REASON \"t\""}"#;
+        let r = s.route("POST", "/api/cal", WRITE, Some("dsn-scoped-secret"), None);
+        let body = text(&r);
+        assert!(r.0.starts_with("200") && !body.contains("AUT-E001"), "{body}");
+    }
+}
+
+/// Issue #125: `--allow-origin` lets an exact origin's cross-origin POSTs
+/// through, without weakening the check for anyone else — no wildcards, no
+/// suffix/subdomain matching. The Origin header is parsed in
+/// `handle_request` (not `route`), so these go over a real socket.
+#[cfg(test)]
+mod origin_tests {
+    use super::UiServer;
+    use areev_cal::AreevFacade;
+    use areev_store::Areev;
+    use std::io::{Read, Write};
+
+    fn server() -> UiServer {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        UiServer::new(facade, "origin-test".into())
+    }
+
+    /// POST a read-only CAL query (works token-less on an open console) with
+    /// an optional `Origin` header, returning the raw HTTP response text.
+    fn post_with_origin(server: &UiServer, origin: Option<&str>) -> String {
+        let body: &[u8] = br#"{"query":"RECALL facts WHERE subject = \"acme\""}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                if let Ok((s, _)) = listener.accept() {
+                    let _ = server.handle(s);
+                }
+            });
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            let origin_header = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+            let req = format!(
+                "POST /api/cal HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{origin_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            c.write_all(req.as_bytes()).unwrap();
+            c.write_all(body).unwrap();
+            let mut out = String::new();
+            let _ = c.read_to_string(&mut out);
+            out
+        })
+    }
+
+    #[test]
+    fn matching_allowed_origin_is_accepted() {
+        let s = server().allow_origin("https://console.example.com");
+        let r = post_with_origin(&s, Some("https://console.example.com"));
+        assert!(r.contains("HTTP/1.1 200"), "{r}");
+    }
+
+    #[test]
+    fn non_matching_origin_is_still_rejected() {
+        let s = server().allow_origin("https://console.example.com");
+        let r = post_with_origin(&s, Some("https://not-allowed.example.com"));
+        assert!(r.contains("403"), "{r}");
+        assert!(r.contains("cross-origin request rejected"), "{r}");
+    }
+
+    #[test]
+    fn a_subdomain_of_an_allowed_origin_is_rejected_not_matched() {
+        // The allowlist entry is the console's real origin; a lookalike
+        // subdomain must not be accepted by suffix matching.
+        let s = server().allow_origin("https://console.example.com");
+        let r = post_with_origin(&s, Some("https://evil-console.example.com"));
+        assert!(r.contains("403"), "{r}");
+    }
+
+    #[test]
+    fn loopback_origin_still_works_with_no_allowlist_set() {
+        let s = server();
+        let r = post_with_origin(&s, Some("http://127.0.0.1:7437"));
+        assert!(r.contains("HTTP/1.1 200"), "{r}");
+    }
+
+    #[test]
+    fn no_origin_header_still_works() {
+        let s = server();
+        let r = post_with_origin(&s, None);
+        assert!(r.contains("HTTP/1.1 200"), "{r}");
+    }
+
+    #[test]
+    fn matching_origin_differing_only_in_case_and_trailing_slash_is_accepted() {
+        let s = server().allow_origin("https://console.example.com");
+        let r = post_with_origin(&s, Some("HTTPS://Console.Example.com/"));
+        assert!(r.contains("HTTP/1.1 200"), "{r}");
+    }
+}
+
+/// Issue #126: repeated bad credentials from one source IP are COUNTED and
+/// LOGGED in a stable, greppable shape — but never delayed or locked out
+/// in-process (`serve` is a strictly serial accept loop; see
+/// `note_auth_failure`'s doc comment for why a sleep here would itself be a
+/// denial-of-service lever). A request that never presented a credential at
+/// all has nothing to fail and is never counted.
+#[cfg(test)]
+mod auth_failure_tracking_tests {
+    use super::UiServer;
+    use areev_cal::AreevFacade;
+    use areev_store::Areev;
+    use std::io::{Read, Write};
+    use std::net::IpAddr;
+
+    const LOCALHOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+    fn server() -> UiServer {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        UiServer::new(facade, "auth-failure-test".into()).with_auth("right-token".into())
+    }
+
+    /// GET `/` with an optional `Authorization: Bearer` header, over a real
+    /// socket (the counter hooks `handle_request`, not `route`).
+    fn get_root(server: &UiServer, bearer: Option<&str>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                if let Ok((s, _)) = listener.accept() {
+                    let _ = server.handle(s);
+                }
+            });
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            let auth_header = bearer
+                .map(|t| format!("Authorization: Bearer {t}\r\n"))
+                .unwrap_or_default();
+            let req = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth_header}Connection: close\r\n\r\n");
+            c.write_all(req.as_bytes()).unwrap();
+            let mut out = String::new();
+            let _ = c.read_to_string(&mut out);
+            out
+        })
+    }
+
+    #[test]
+    fn a_bare_request_is_401_but_not_counted() {
+        let s = server();
+        // No credential presented at all: 401 (auth_all guards every
+        // request), but nothing was attempted, so it must not be counted —
+        // a token-less probe is not an attack attempt.
+        let bare = get_root(&s, None);
+        assert!(bare.contains("HTTP/1.1 401"), "{bare}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 0, "a bare request has nothing to fail");
+    }
+
+    #[test]
+    fn a_wrong_token_is_401_and_is_counted() {
+        let s = server();
+        let wrong = get_root(&s, Some("guess"));
+        assert!(wrong.contains("HTTP/1.1 401"), "{wrong}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 1);
+
+        let wrong_again = get_root(&s, Some("guess"));
+        assert!(wrong_again.contains("HTTP/1.1 401"), "{wrong_again}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 2, "consecutive failures accumulate");
+    }
+
+    #[test]
+    fn a_right_token_after_a_streak_succeeds_immediately_and_resets_it() {
+        let s = server();
+        for _ in 0..5 {
+            let r = get_root(&s, Some("guess"));
+            assert!(r.contains("HTTP/1.1 401"), "{r}");
+        }
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 5);
+
+        // The right token succeeds on the very next request — no in-process
+        // delay or lockout, even mid-streak (that decision is the proxy's).
+        let ok = get_root(&s, Some("right-token"));
+        assert!(ok.contains("HTTP/1.1 200"), "{ok}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 0, "success resets the streak");
+
+        // The next wrong guess starts a fresh streak at 1, not 6.
+        let r = get_root(&s, Some("guess"));
+        assert!(r.contains("HTTP/1.1 401"), "{r}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 1);
     }
 }

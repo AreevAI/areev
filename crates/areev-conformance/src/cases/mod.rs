@@ -9,6 +9,7 @@ mod heads_forks;
 mod meta_registry;
 mod ns_scope;
 mod oplog_import;
+mod read_only;
 mod run_journal;
 mod supersede_forget;
 
@@ -19,5 +20,6 @@ pub use heads_forks::*;
 pub use meta_registry::*;
 pub use ns_scope::*;
 pub use oplog_import::*;
+pub use read_only::*;
 pub use run_journal::*;
 pub use supersede_forget::*;

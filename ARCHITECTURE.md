@@ -1403,6 +1403,48 @@ Azure Flexible Server. Contract:
 contract"; threat framing: [docs/security-model.md](docs/security-model.md)
 §"The Postgres transport".
 
+### A read-only open is a property of the handle, not a privilege to negotiate
+
+**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`) opens
+a memory that refuses every write in-process with `STO-E004`, and on the
+Postgres backend issues **no DDL at all** — no `CREATE SCHEMA`, no
+`CREATE … IF NOT EXISTS` index maintenance, no seed, no advisory lock. It
+verifies instead, with SELECT-only probes, that the schema exists and is
+bootstrapped, and refuses by name (`STO-E005`) when it is not. On the
+embedded backend the same flag refuses writes identically and refuses to
+*create* an absent file, so one conformance case pins both backends against
+one contract.
+
+The reason this has to be a capability of the handle, rather than simply not
+calling a write method, is that **Postgres checks privilege before it checks
+existence**. `CREATE SCHEMA IF NOT EXISTS` needs `CREATE` on the *database*
+whether or not the schema is already there, and `CREATE UNIQUE INDEX IF NOT
+EXISTS` needs *ownership* of the table whether or not the index is already
+there. Bootstrap ran on every open, so the narrowest role that could open an
+existing, fully migrated memory was its owner: a dashboard, a reporting job,
+or a console that does nothing but read had to be handed write authority over
+the memory it reads. There was no grant that yielded a read-only connection —
+walking the privileges up just moved the failure.
+
+Two things follow deliberately. The refusal is **Areev's, not the database's**:
+a `SELECT`-only role would otherwise discover it cannot write from a raw
+`42501 must be owner of table grains` surfacing mid-operation from inside the
+driver, which names an index rather than the thing the caller did wrong. And
+the flag is backend-agnostic even though only one backend has the privilege
+problem — a read-only handle that silently permitted writes on files while
+refusing them on Postgres would make the two backends mean different things,
+which the conformance suite exists to prevent.
+
+This compounded with a second finding to become the reason it shipped now:
+the console displayed its own DSN, so the over-privileged credential a
+read-only console was forced to hold reached every console viewer. Raised as
+[#127](https://github.com/AreevAI/areev/issues/127) and
+[#124](https://github.com/AreevAI/areev/issues/124) from a fleet deployment on
+Azure Flexible Server. Least-privilege `GRANT` recipe:
+[docs/deployment-profile.md](docs/deployment-profile.md); store contract:
+[crates/areev-store/CLAUDE.md](crates/areev-store/CLAUDE.md) §"Read-only
+opens".
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

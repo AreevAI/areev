@@ -31,12 +31,26 @@ pub trait Backend {
     /// isolation unit.
     fn open_named(&self, name: &str) -> Areev;
 
+    /// Like [`open_named_with`](Self::open_named_with) but returns the
+    /// `Result` instead of panicking on failure — for cases that assert a
+    /// REFUSED open (e.g. `read_only` against a name nothing has ever
+    /// created). Each backend still performs whatever bookkeeping
+    /// `open_named_with` would (Postgres schema registration for Drop
+    /// cleanup), so a refused open still cleans up after itself.
+    fn try_open_named_with(
+        &self,
+        name: &str,
+        opts: areev_store::AreevOptions,
+    ) -> areev_core::error::Result<Areev>;
+
     /// [`open_named`](Self::open_named) with explicit host options — the seam
     /// for capabilities that are host config rather than file-truths (an
     /// `anon_key`, an embedder). Each backend routes to its own
     /// `open_with`-family constructor, so a case can assert that a capability
     /// behaves identically whether the memory is a file or a schema.
-    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev;
+    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev {
+        self.try_open_named_with(name, opts).expect("open store")
+    }
 
     /// A scratch directory for interchange files (bundles). Backend-neutral:
     /// bundles are files regardless of where the store lives.
@@ -60,6 +74,13 @@ impl TursoBackend {
     pub fn new() -> Self {
         Self { dir: tempfile::TempDir::new().expect("tempdir") }
     }
+
+    /// The path `open_named(name)` maps to — for tests that need to assert
+    /// on the file directly (existence, absence) without opening it.
+    /// Mirrors `PgBackend::schema_for`.
+    pub fn path_for(&self, name: &str) -> std::path::PathBuf {
+        self.dir.path().join(format!("{name}.db"))
+    }
 }
 
 impl Backend for TursoBackend {
@@ -68,9 +89,13 @@ impl Backend for TursoBackend {
         Areev::open(path.to_str().expect("utf8 path")).expect("open turso store")
     }
 
-    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev {
+    fn try_open_named_with(
+        &self,
+        name: &str,
+        opts: areev_store::AreevOptions,
+    ) -> areev_core::error::Result<Areev> {
         let path = self.dir.path().join(format!("{name}.db"));
-        Areev::open_with(path.to_str().expect("utf8 path"), opts).expect("open turso store")
+        Areev::open_with(path.to_str().expect("utf8 path"), opts)
     }
 
     fn scratch(&self) -> &Path {
@@ -128,10 +153,14 @@ impl Backend for PgBackend {
         Areev::open_postgres(&self.url, &schema).expect("open postgres store")
     }
 
-    fn open_named_with(&self, name: &str, opts: areev_store::AreevOptions) -> Areev {
+    fn try_open_named_with(
+        &self,
+        name: &str,
+        opts: areev_store::AreevOptions,
+    ) -> areev_core::error::Result<Areev> {
         let schema = format!("{}_{}", self.prefix, name);
         self.opened.borrow_mut().insert(schema.clone());
-        Areev::open_postgres_with(&self.url, &schema, opts).expect("open postgres store")
+        Areev::open_postgres_with(&self.url, &schema, opts)
     }
 
     fn scratch(&self) -> &Path {
@@ -228,6 +257,9 @@ macro_rules! for_each_conformance_case {
         $per_case!(ns_registry_replicates_via_bundles);
         $per_case!(ns_scope_guards_hold);
         $per_case!(ns_scoped_recall_spans_supersession_chains);
+        // read-only opens (least-privilege postgres roles, issue #127)
+        $per_case!(read_only_open_succeeds_and_refuses_every_write);
+        $per_case!(read_only_open_of_missing_memory_refuses_and_creates_nothing);
     };
 }
 

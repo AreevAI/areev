@@ -307,8 +307,42 @@ areev ui --db john.db --addr 127.0.0.1:8080
 areev ui --db john.db --addr 0.0.0.0:8080 --allow-remote
 ```
 
+### Serving the console behind a reverse proxy
+
+`--allow-remote` alone gets you a console you can *see* but not *use*: the
+Origin check still rejects every POST, and CAL runs by POST. That check is
+CSRF protection, not a formality — browsers cache HTTP Basic credentials and
+re-attach them to cross-site requests, so Origin is what tells the console's
+own page apart from an attacker's page riding a viewer's cached login. Name
+your public origin instead of stripping the header at the proxy:
+
+```bash
+export AREEV_TOKEN=$(openssl rand -hex 32)   # entropy IS the control here
+areev ui --db john.db \
+  --token-env AREEV_TOKEN \
+  --allow-origin https://console.example.com \
+  --read-only
+```
+
+`--allow-origin` takes a comma-separated list and matches **exactly** —
+scheme + host[:port], no wildcards, no subdomains — so naming
+`https://console.example.com` never also admits
+`https://evil-console.example.com`.
+
+`--read-only` is worth adding to any console that is only for looking. On the
+Postgres backend it is what makes a least-privilege database role possible at
+all: without it, opening a memory runs schema bootstrap and index maintenance
+on every open, so the connecting role must **own** the schema — see
+[`deployment-profile.md`](deployment-profile.md) for the `GRANT` recipe.
+
+Rate limiting belongs at the proxy, not in `areev`: the console serves one
+connection at a time, and it only ever sees the proxy's IP. `areev` logs each
+failed auth as `areev: console auth FAILED from <ip> (<n> consecutive)` so you
+have something to write a fail2ban-style rule against.
+
 See [`../SECURITY.md`](../SECURITY.md) for the trust model and the operator
-hardening checklist.
+hardening checklist, and [`security-model.md`](security-model.md) for the
+console's auth surface in detail.
 
 ---
 

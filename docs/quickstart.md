@@ -25,7 +25,20 @@ curl -fsSL https://raw.githubusercontent.com/AreevAI/areev/main/scripts/install.
 
 It installs to `~/.local/bin` (`/usr/local/bin` as root; override with
 `AREEV_INSTALL`), pins with `AREEV_VERSION=v1.0.2`, and verifies the download
-against the release's `SHA256SUMS`. Or grab an archive straight from the
+against the release's `SHA256SUMS`.
+
+Two things to know about the Linux assets. They need **GLIBC 2.39 or newer**
+(Ubuntu 24.04+, Debian 13+, RHEL 10+) — on Ubuntu 22.04 the dynamic linker
+fails with a bare `GLIBC_2.39 not found`; use the container image or
+`cargo install` there. And the default build carries **neither the Postgres
+backend nor TLS**, which is what keeps the edge binary dependency-light. For
+the server tier there is a second Linux asset with both compiled in:
+
+```bash
+AREEV_FLAVOR=postgres curl -fsSL https://raw.githubusercontent.com/AreevAI/areev/main/scripts/install.sh | sh
+```
+
+Or grab an archive straight from the
 [Releases page](https://github.com/AreevAI/areev/releases) — handy in a
 notebook, where the wheel covers the memory and the loop but `areev ui` (the
 web console, including the review queue) lives in the binary.
@@ -264,13 +277,22 @@ settle in completion order, not call order.
 One memory = one file is the edge story. In stateless deployments (Cloud Run,
 autoscaled containers) there is no durable disk — so the same store runs over
 **one PostgreSQL schema per memory** instead, behind the non-default
-`postgres` cargo feature:
+`postgres` cargo feature — or, in practice, `postgres-tls`:
 
 ```bash
-cargo install areev --features postgres
+cargo install areev --features postgres-tls
 areev add luis prefers window_seat --db 'postgres://user:pass@host/db?schema=memory_luis'
 areev recall --db 'postgres://user:pass@host/db?schema=memory_luis' --subject luis
 ```
+
+**Which feature?** `postgres` alone speaks plaintext and *refuses* a DSN that
+asks for encryption (`STO-E003`) rather than silently downgrading it. Every
+managed Postgres requires TLS — Azure Flexible Server, RDS with
+`rds.force_ssl`, Cloud SQL — so `postgres-tls`, which honors the DSN's
+`sslmode` and `sslrootcert`, is what a real deployment needs. Prefer
+`postgres` only when the database is reachable over a trusted local socket.
+No toolchain? `AREEV_FLAVOR=postgres` on the install script (above) fetches a
+Linux binary with `postgres-tls` already compiled in.
 
 The bindings ship with the backend built in — the same class takes a DSN
 where it takes a path:
