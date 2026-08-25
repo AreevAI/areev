@@ -5,9 +5,18 @@
 # review queue) out of reach of anywhere without a toolchain: notebooks, Colab,
 # a scratch container, an ops box evaluating the tool.
 #
-# Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch
-# (which builds and uploads artifacts but attaches nothing, so it is safe to
-# use as a dry run).
+# Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
+# A plain manual dispatch builds and uploads artifacts but attaches nothing,
+# so it is safe to use as a dry run. Giving it `attach_to_tag: vX.Y.Z`
+# additionally runs `publish` against that EXISTING release — the backfill
+# path for when `release`'s own run fails partway (a bad matrix leg, one
+# platform's toolchain) after the Release is already public and pypi/npm may
+# already have shipped, so re-publishing the Release to retrigger everything
+# is not an option. It goes through the exact same attest-then-upload steps
+# as a real release, so a backfilled asset is attested identically to one
+# that landed on the first try. Guarded on the input being non-empty so a
+# stray dispatch can never attach by accident; requires the same repo-write
+# access dispatching this workflow already needs.
 #
 # GLIBC baseline: the Linux assets are built on the `ubuntu-latest` /
 # `ubuntu-24.04-arm` images, so they need **GLIBC 2.39 or newer** (Ubuntu
@@ -25,6 +34,14 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      attach_to_tag:
+        description: >-
+          Backfill: attach this run's binaries to an EXISTING published
+          release (e.g. v1.6.4). Leave empty for the normal dry run that
+          builds and uploads artifacts but attaches nothing.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -68,7 +85,16 @@ jobs:
       - name: Install Rust
         run: rustup update stable && rustup target add ${{ matrix.target }}
 
+      # `shell: bash` explicitly: `windows-latest` defaults to PowerShell,
+      # where a bare `\` is not a line continuation — it parsed `--target` as
+      # PowerShell's unary `--` operator and failed the whole leg, which
+      # (matrix jobs report pass/fail as one unit) skipped `publish` for
+      # every platform even though the other seven legs had already
+      # succeeded. Every other `run:` step below already says so explicitly;
+      # this one didn't, because before #123 it was a one-liner with nothing
+      # shell-specific to get wrong.
       - name: Build areev
+        shell: bash
         run: |
           cargo build --release --locked -p areev --bin areev \
             --target ${{ matrix.target }} \
@@ -110,8 +136,16 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          # workflow_dispatch has no tag to read a version from.
-          [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
+          # workflow_dispatch has no tag to read a version from — UNLESS this
+          # is a backfill dispatch, in which case attach_to_tag names the
+          # real version being packaged (must match what `publish` uploads
+          # to below, or the asset names on the release would disagree with
+          # SHA256SUMS's own filenames).
+          if [ "$GITHUB_EVENT_NAME" != "release" ]; then
+            VERSION="${{ inputs.attach_to_tag }}"
+            VERSION="${VERSION#v}"
+            [ -n "$VERSION" ] || VERSION="dev"
+          fi
           NAME="areev-${VERSION}-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/areev${{ matrix.ext }}" "dist/$NAME/"
@@ -170,7 +204,11 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
+          if [ "$GITHUB_EVENT_NAME" != "release" ]; then
+            VERSION="${{ inputs.attach_to_tag }}"
+            VERSION="${VERSION#v}"
+            [ -n "$VERSION" ] || VERSION="dev"
+          fi
           # cargo-cyclonedx takes NEITHER `--locked` nor `-p`, and it ignores
           # `--override-filename`: it writes `<package>.cdx.json` next to each
           # manifest it describes. `--top-level` is also deliberately absent —
@@ -194,9 +232,11 @@ jobs:
     # attached alongside the binaries when it works, and cannot hold them
     # hostage when it does not.
     needs: [build, sbom]
-    # Only a real release has something to attach to; a manual run stops after
-    # build, which makes `workflow_dispatch` a usable dry run.
-    if: github.event_name == 'release'
+    # A real release always has something to attach to. A manual run does
+    # too, but ONLY when explicitly told which existing release (backfill);
+    # otherwise it stops after build, which is what makes a plain
+    # `workflow_dispatch` a safe dry run.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.attach_to_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -231,4 +271,10 @@ jobs:
       - name: Upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          # $GITHUB_REF_NAME is the TAG on a real release, but on a backfill
+          # dispatch it is whatever ref this run was dispatched against
+          # (e.g. `main`) — the release to attach to is attach_to_tag, not
+          # that ref. `gh release upload` fails loudly if the named tag has
+          # no release, rather than silently attaching to the wrong one.
+          TARGET_TAG: ${{ github.event_name == 'release' && github.ref_name || inputs.attach_to_tag }}
+        run: gh release upload "$TARGET_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
