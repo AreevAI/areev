@@ -22,6 +22,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--db` value, so `areev ui --auth FILE` deployments are unaffected
   ([#124](https://github.com/AreevAI/areev/issues/124)).
 
+### Fixed — triggers
+
+- **Superseding a trigger no longer orphans its cursor and its dedup fence.**
+  Evaluation state (`trg:` row) and run ids are now keyed on the **root of the
+  trigger's supersession chain** rather than the declaration's current hash.
+  Re-pointing a trigger at an improved plan is the loop's own Level-1 flow —
+  and because triggers deliberately do not follow supersession heads, the only
+  way to re-point one is to supersede it, which minted a new hash and
+  discarded all of its state. The cursor re-seeded, so a mailbox connector
+  seeking "newest" silently skipped every message that arrived since the last
+  poll while reporting a healthy tick; and the dedup fence reset, so any
+  connector overlap across the re-point re-processed work already done. For a
+  trigger that has never been superseded, root == head and nothing changes;
+  one superseded *before* this fix adopts its existing state under the root
+  key, and run ids minted under the old hash are still recognized as
+  already-processed, so the upgrade cannot itself cause the double-processing
+  it prevents. `areev trigger show` now prints the cursor (and the state key
+  when it differs from the declaration's hash)
+  ([#128](https://github.com/AreevAI/areev/issues/128)).
+- **A refused run start no longer consumes the item.** A firing where any item
+  failed to start was treated as a success: the cursor advanced past the item,
+  `consecutive_failures` reset and `last_error` cleared. A host running a
+  stale executor pin — the window after a `code_revision` recommendation is
+  applied but before the blob is synced — consumed its source one tick at a
+  time while reporting healthy; for a mailbox trigger, silently discarded
+  mail. Such a firing now holds the cursor, increments `consecutive_failures`,
+  records `last_error`, backs off, and does not consume a satisfied
+  composite's correlation key — the same posture `TRG-E011` already took for a
+  connector contract violation. Retrying is safe because the dedup fence is
+  stable (above): items that did start return as duplicates. The report names
+  the held cursor as `cursor_held`
+  ([#129](https://github.com/AreevAI/areev/issues/129)).
+- A latent bug found while fixing the two above: `start_run` wrote the ingest
+  Event — which carries the `run_id` the duplicate check looks for — *before*
+  calling the starter, so a failed start still left a `run_id`-bearing grain
+  behind. Once #129 made retries actually happen, every retry of a failed item
+  would have matched that leftover grain and reported `Duplicate`, stranding
+  it permanently. The Event is now written only for outcomes the dedup check
+  should treat as seen (`Ingested`/`Started`/`Duplicate`), never for a failure.
+
 ### Added
 
 - **`--read-only`, on both backends.** Opens a memory that refuses every

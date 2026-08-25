@@ -68,6 +68,7 @@ errors stay in the substrate's `CAL` domain; `LOP` covers engine semantics
 | `STO-E003` | `TlsUnavailable` | The DSN asks for an encrypted connection this build cannot make — `sslmode=require`/`verify-ca`/`verify-full` on a binary compiled without the `postgres-tls` cargo feature. A **refusal, not a downgrade**: the alternative is connecting in plaintext to a database the operator asked to encrypt |
 | `STO-E004` | `ReadOnly` | A write was attempted through a handle opened with `AreevOptions::read_only` / CLI `--read-only`. Raised on both backends — the postgres backend additionally never attempts the write against the database, so a least-privilege SELECT-only role never sees a raw `42501` |
 | `STO-E005` | `ReadOnlyOpenFailed` | A `read_only: true` postgres open could not verify the schema it was pointed at — names whether the schema is absent (needs creating/migrating) or present but not fully bootstrapped (needs an owning role to open it read-write once) |
+| `STO-E006` | `SupersessionChainTooDeep` | `Areev::supersession_chain`'s backward walk from a grain to its supersession root did not terminate within `MAX_SUPERSESSION_CHAIN_HOPS` (64) hops — the `supersedes` links are cyclic or corrupt, so the walk fails loudly rather than looping forever |
 | `CRY-E001` | `CryptoError` | Key / cipher / signing / erasure failure |
 | `SYS-E001` | `Internal` | Unexpected internal fault (should not happen — file a bug) |
 | `CAL-E083` | `AccumulateRetryExhausted` | ACCUMULATE retry budget exhausted (CAL-domain, bubbles through the store) |

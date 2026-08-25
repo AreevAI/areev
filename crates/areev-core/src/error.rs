@@ -111,6 +111,12 @@ pub enum AreevError {
     /// raw permission-denied Postgres gives for `CREATE SCHEMA`/DDL.
     ReadOnlyOpenFailed(String),
     SupersessionConflict(Hash),
+    /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
+    /// a root within the bounded hop count. Real edit histories terminate in
+    /// a handful of hops; exceeding the bound means the `supersedes` links
+    /// are corrupt (e.g. cyclic) rather than merely long, so the walk fails
+    /// loudly instead of looping the process forever.
+    SupersessionChainTooDeep(Hash),
     CryptoError(String),
     AccumulateRetryExhausted,
     AccumulateInternal(String),
@@ -137,6 +143,7 @@ impl AreevError {
         match self {
             Self::NotFound(_) => "MEM-E001",
             Self::SupersessionConflict(_) => "MEM-E002",
+            Self::SupersessionChainTooDeep(_) => "STO-E006",
             Self::ToolRenderUnsupported(_) => "MEM-E110",
             Self::Format(_) => "FMT-E001",
             Self::Serialization(_) => "FMT-E002",
@@ -168,6 +175,10 @@ impl std::fmt::Display for AreevError {
         match self {
             Self::NotFound(h) => write!(f, "MEM-E001: grain not found: {h}"),
             Self::SupersessionConflict(h) => write!(f, "MEM-E002: already superseded: {h}"),
+            Self::SupersessionChainTooDeep(h) => write!(
+                f,
+                "STO-E006: supersession chain from {h} did not terminate within the bounded walk — the supersedes links may be cyclic or corrupt"
+            ),
             Self::ToolRenderUnsupported(m) => write!(f, "MEM-E110: tool render unsupported: {m}"),
             Self::Format(m) => write!(f, "FMT-E001: format error: {m}"),
             Self::Serialization(m) => write!(f, "FMT-E002: serialization error: {m}"),
@@ -204,6 +215,7 @@ mod error_code_tests {
         vec![
             AreevError::NotFound(h),
             AreevError::SupersessionConflict(h),
+            AreevError::SupersessionChainTooDeep(h),
             AreevError::ToolRenderUnsupported("x".into()),
             AreevError::Format("x".into()),
             AreevError::Serialization("x".into()),

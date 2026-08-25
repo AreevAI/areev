@@ -18,9 +18,11 @@
 //! wasted API call; it can never cause a missed or duplicated firing. That is
 //! the risk profile a lease should carry.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use areev_cal::AreevFacade;
+use areev_core::error::{AreevError, Hash};
 use areev_core::types::{ContentRef, Event, Grain, GrainType, Observation, Trigger, TriggerKind};
 use areev_run::HostToolExecutor;
 use areev_store::TriggerState;
@@ -132,6 +134,14 @@ pub struct EvalReport {
     /// A connector reported a backlog, so this trigger is due again at once
     /// rather than after its interval.
     pub draining: Vec<String>,
+    /// Triggers whose cursor was deliberately left unmoved this pass because
+    /// at least one item in the firing failed to start a run (#129) — the
+    /// Event add failed, declared context was unavailable, or the run
+    /// itself refused. The same page is offered again next tick; whatever
+    /// already started comes back as a `duplicates` count rather than
+    /// double-processing, which is what makes re-polling safe — see #128's
+    /// stable run ids, a prerequisite for this.
+    pub cursor_held: Vec<String>,
 }
 
 /// One trigger considered, for `--dry-run` and `status`.
@@ -171,6 +181,23 @@ pub struct TriggerStatus {
     /// reports it rather than assuming the write path caught everything.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unusable: Option<String>,
+    /// The connector's last reported position, for a trigger that has ever
+    /// polled. Opaque and connector-defined (#128) — surfaced so an operator
+    /// can SEE the state that a re-pointed trigger's evaluation carries
+    /// forward, which before this was invisible even though nothing else
+    /// could carry it by hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// The op-log position, a `memory` trigger's cursor equivalent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_cursor: Option<i64>,
+    /// The hash evaluation state is actually keyed under: `trg:<chain_root>`
+    /// (#128). Equal to `trigger` for a trigger that has never been
+    /// superseded — the common case, unchanged from before this field
+    /// existed. Differs only for a trigger re-pointed by `SUPERSEDE`, where
+    /// it names the ORIGINAL declaration's hash — the identity the cursor
+    /// and dedup fence actually survive under.
+    pub chain_root: String,
 }
 
 /// The declaration's human label, if it has one.
@@ -300,13 +327,17 @@ impl Evaluator {
     pub fn status(&self) -> Result<Vec<TriggerStatus>> {
         let now = self.clock.now_ms();
         let mut out = Vec::new();
+        // One cache for this call, same as a `run()` pass — a chain is
+        // walked at most once even though `declarations()` above may list
+        // the same workflow's triggers repeatedly.
+        let mut chains: HashMap<String, Chain> = HashMap::new();
         for (hash, t) in self.declarations()? {
-            let st = self
-                .facade
-                .with_store(|m| m.trigger_state(&hash))
-                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
-                .map(|(s, _)| s)
-                .unwrap_or_default();
+            let chain = self.resolve_chain(&hash, &mut chains)?;
+            // Read-only: `adopt = false`. `trigger status`/`show` must not
+            // have the side effect of migrating a legacy state row — a real
+            // evaluation pass (`run`/`deliver`) does that; this only
+            // reports whatever it finds, root row or legacy.
+            let (st, _raw) = self.resolve_state(&chain, false)?;
             let unusable = schedule::validate(&t).err().map(|e| e.to_string());
             out.push(TriggerStatus {
                 trigger: hash,
@@ -329,6 +360,9 @@ impl Evaluator {
                 exhausted: st.exhausted,
                 never_fired: st.last_fired_at.is_none() && st.consecutive_failures == 0,
                 unusable,
+                cursor: st.cursor.clone(),
+                op_cursor: st.op_cursor,
+                chain_root: chain.root().to_string(),
             });
         }
         Ok(out)
@@ -370,11 +404,12 @@ impl Evaluator {
                 what: format!("trigger {} is disabled", short(&hash, 12)),
             });
         }
-        let (state, _) = self
-            .facade
-            .with_store(|m| m.trigger_state(&hash))
-            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
-            .unwrap_or_default();
+        // #128 — a single-trigger cache: `deliver` fires exactly one
+        // trigger, so this walks its chain at most once regardless of how
+        // many places below need the root.
+        let mut chains: HashMap<String, Chain> = HashMap::new();
+        let chain = self.resolve_chain(&hash, &mut chains)?;
+        let (state, _raw) = self.resolve_state(&chain, true)?;
         if state.paused {
             return Err(TriggerError::Malformed {
                 what: format!("trigger {} is paused", short(&hash, 12)),
@@ -399,8 +434,19 @@ impl Evaluator {
             )?;
             return Ok(report);
         };
-        let run_id = run_id_for(&hash, trigger.connector.as_deref(), &value);
-        match self.start_run(&trigger, &run_id, &item, &hash, &[]) {
+        // Keyed on the chain ROOT (#128), so a delivery replayed after the
+        // trigger has been re-pointed by `SUPERSEDE` still mints the same id
+        // it always would have. `legacy_run_ids` covers a trigger already
+        // superseded before this fix — the id it would have minted under
+        // its old (then-current) head.
+        let root = chain.root();
+        let run_id = run_id_for(root, trigger.connector.as_deref(), &value);
+        let legacy_run_ids: Vec<String> = chain
+            .legacy()
+            .iter()
+            .map(|h| run_id_for(h, trigger.connector.as_deref(), &value))
+            .collect();
+        match self.start_run(&trigger, &run_id, &legacy_run_ids, &item, &hash, &[]) {
             StartOutcome::Started => report.runs_started = 1,
             StartOutcome::Ingested => report.ingested = 1,
             StartOutcome::Duplicate => report.duplicates = 1,
@@ -421,6 +467,11 @@ impl Evaluator {
     pub fn run(&self, opts: &EvalOptions) -> Result<EvalReport> {
         let mut report = EvalReport::default();
         let now = self.clock.now_ms();
+        // #128 — resolved once per trigger per PASS, never once per item:
+        // every chain walk below goes through this cache, shared with
+        // `record_for_composites` (a composite may be touched by several
+        // members firing in the same pass).
+        let mut chains: HashMap<String, Chain> = HashMap::new();
 
         let declarations = self.declarations()?;
         // Composites are settled after their members, so a gate can be
@@ -446,14 +497,20 @@ impl Evaluator {
                 report.errors.push(format!("{}: {why}", short(&hash, 12)));
                 continue;
             }
-            let stored = self
-                .facade
-                .with_store(|m| m.trigger_state(&hash))
-                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
-            let (state, raw) = match stored {
-                Some((s, r)) => (s, Some(r)),
-                None => (TriggerState::default(), None),
-            };
+            // #128 — every read/write of this trigger's evaluation state
+            // below is keyed on the chain ROOT, not on `hash` (the
+            // declaration's current head): a trigger re-pointed by
+            // `SUPERSEDE` mints a new head for the same standing rule, and
+            // keying state on the head alone would orphan the cursor and
+            // the dedup fence on every applied recommendation. For a
+            // never-superseded trigger root == hash, so this resolves to
+            // exactly the lookup this crate always did — a byte-identical
+            // no-op (pinned by `a_never_superseded_trigger_keys_state_on_its_own_hash`).
+            // `adopt = true`: this is a real evaluation pass with write
+            // access, so a legacy (pre-#128, head-keyed) row found along the
+            // way is migrated under the root.
+            let chain = self.resolve_chain(&hash, &mut chains)?;
+            let (state, raw) = self.resolve_state(&chain, true)?;
 
             if state.paused {
                 report.skipped_paused += 1;
@@ -469,7 +526,7 @@ impl Evaluator {
                     seeded.next_due_at = Some(first);
                     let _ = self
                         .facade
-                        .with_store(|m| m.put_trigger_state(&hash, raw.as_deref(), &seeded))
+                        .with_store(|m| m.put_trigger_state(chain.root(), raw.as_deref(), &seeded))
                         .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
                     report.skipped_not_due += 1;
                     continue;
@@ -490,14 +547,15 @@ impl Evaluator {
                 continue;
             }
 
-            match self.fire(&hash, &trigger, state, raw.as_deref(), now, opts) {
+            match self.fire(&hash, &chain, &trigger, state, raw.as_deref(), now, opts) {
                 // Lost the claim between deciding it was free and taking it.
                 // Normal with several nodes on one heartbeat, and it must not
                 // be counted as work done.
                 Ok(outcome) if outcome.skipped_locked => report.skipped_locked += 1,
                 Ok(outcome) => {
                     if !outcome.fired_items.is_empty() {
-                        if let Err(e) = self.record_for_composites(&hash, &outcome.fired_items, now)
+                        if let Err(e) =
+                            self.record_for_composites(&hash, &outcome.fired_items, now, &mut chains)
                         {
                             report.errors.push(e.to_string());
                         }
@@ -510,6 +568,14 @@ impl Evaluator {
                     report.unidentifiable += outcome.unidentifiable;
                     for why in &outcome.failures {
                         report.errors.push(format!("{hash}: {why}"));
+                    }
+                    // #129 — any start failure in this firing means the
+                    // cursor was deliberately left unmoved (see `fire`'s
+                    // release logic); surfaced apart from `errors` so an
+                    // operator sees WHY the same items come back next tick
+                    // rather than inferring it.
+                    if !outcome.failures.is_empty() {
+                        report.cursor_held.push(hash.clone());
                     }
                     if outcome.draining {
                         report.draining.push(hash.clone());
@@ -524,15 +590,33 @@ impl Evaluator {
         Ok(report)
     }
 
+    // `chain` (#128) is one more independent knob on an already knob-heavy
+    // internal call, in the same spirit as the other `too_many_arguments`
+    // allows in this codebase (areev-store's tuned-recall internals, the
+    // bindings' flat FFI surfaces) — splitting it into a struct would not
+    // make any single call site more readable.
+    #[allow(clippy::too_many_arguments)]
     fn fire(
         &self,
         hash: &str,
+        chain: &Chain,
         trigger: &Trigger,
         state: TriggerState,
         raw: Option<&str>,
         now: i64,
         opts: &EvalOptions,
     ) -> Result<FireOutcome> {
+        // #128 — the claim/release CAS below is keyed on the chain ROOT, not
+        // `hash`. This is the hazard the fix has to get right: `fire` claims
+        // with one key and releases with the same key, so if the two ever
+        // disagreed about which key that is, the release's compare-and-swap
+        // would find no row, `released_ok` would be false, and every firing
+        // of a superseded trigger would permanently report `ClaimLost` — a
+        // trigger that could never usefully claim again. `root` is resolved
+        // exactly once here and reused for every claim/release call in this
+        // function.
+        let root = chain.root();
+
         // Claim. Losing means another evaluator got here first.
         let mut claimed = state.clone();
         claimed.fence = claimed.fence.wrapping_add(1);
@@ -540,7 +624,7 @@ impl Evaluator {
         claimed.lease_until = Some(now + opts.lease.as_millis() as i64);
         let won = self
             .facade
-            .with_store(|m| m.put_trigger_state(hash, raw, &claimed))
+            .with_store(|m| m.put_trigger_state(root, raw, &claimed))
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
         if !won {
             return Ok(FireOutcome { skipped_locked: true, ..Default::default() });
@@ -548,18 +632,20 @@ impl Evaluator {
         // What a later release must present as `expected`.
         let claimed_raw = self
             .facade
-            .with_store(|m| m.trigger_state(hash))
+            .with_store(|m| m.trigger_state(root))
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
             .map(|(_, r)| r);
 
-        let result = self.collect_and_start(hash, trigger, &claimed, now, opts);
+        let result = self.collect_and_start(hash, chain, trigger, &claimed, now, opts);
 
         // Release under the fence, whatever happened.
         let mut released = claimed.clone();
         released.claimed_by = None;
         released.lease_until = None;
         match &result {
-            Ok(outcome) => {
+            // Full success: every item that resolved an identity started (or
+            // was ingested, or was recognized as a duplicate) cleanly.
+            Ok(outcome) if outcome.failures.is_empty() => {
                 released.last_fired_at = Some(now);
                 released.consecutive_failures = 0;
                 released.last_error = None;
@@ -587,6 +673,36 @@ impl Evaluator {
                     schedule::advance_after_firing(trigger, now, now)?
                 };
             }
+            // #129 — at least one item failed to start a run: the Event add
+            // failed, declared context was unavailable, or the run itself
+            // refused (RUN-E018 and friends). All three mean the item was
+            // NOT processed, so this firing must not report itself clean —
+            // that is the opposite posture from the Err arm below, which
+            // this deliberately mirrors:
+            //   - the cursor / op_cursor are left at `claimed`'s values
+            //     (never assigned from `outcome`), so the next pass re-asks
+            //     the connector for the same page instead of skipping past
+            //     unprocessed work;
+            //   - `exhausted` is left at `claimed.exhausted` (false, since a
+            //     due trigger cannot already be exhausted) rather than
+            //     recomputed — a `once` trigger that fails must be allowed
+            //     to retry, not be marked as having had its one shot;
+            //   - `settled_keys` are NOT removed from `partials` — a
+            //     satisfied composite gate whose run refused must stay
+            //     satisfied so it retries, not lose its correlation.
+            // Re-polling the same page is safe BECAUSE run ids are keyed on
+            // the chain root (#128): whatever already started is protected
+            // by `start_run`'s dedup fence and comes back as `Duplicate`,
+            // never a second run. What DID happen is still real —
+            // `runs_started`/`ingested`/`duplicates` in the outcome are not
+            // discarded, only the durable cursor advance is withheld.
+            Ok(outcome) => {
+                released.last_fired_at = Some(now);
+                released.consecutive_failures = claimed.consecutive_failures.saturating_add(1);
+                released.last_error = Some(summarize_failures(&outcome.failures));
+                released.next_due_at =
+                    Some(schedule::backoff_until(trigger, released.consecutive_failures, now));
+            }
             Err(e) => {
                 released.consecutive_failures = claimed.consecutive_failures.saturating_add(1);
                 released.last_error = Some(e.to_string());
@@ -596,7 +712,7 @@ impl Evaluator {
         }
         let released_ok = self
             .facade
-            .with_store(|m| m.put_trigger_state(hash, claimed_raw.as_deref(), &released))
+            .with_store(|m| m.put_trigger_state(root, claimed_raw.as_deref(), &released))
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
         if !released_ok {
             // Our lease expired mid-firing and someone else took over. Their
@@ -616,6 +732,7 @@ impl Evaluator {
     fn collect_and_start(
         &self,
         hash: &str,
+        chain: &Chain,
         trigger: &Trigger,
         state: &TriggerState,
         now: i64,
@@ -655,7 +772,7 @@ impl Evaluator {
                 found
             }
             TriggerKind::Composite => {
-                let keys = self.satisfied_keys(hash, trigger, now)?;
+                let keys = self.satisfied_keys(hash, chain, trigger, now)?;
                 outcome.settled_keys = keys.clone();
                 keys.into_iter()
                     .map(|k| PollItem {
@@ -690,8 +807,21 @@ impl Evaluator {
                 continue;
             };
             outcome.fired_items.push(item.payload.clone());
-            let run_id = run_id_for(hash, trigger.connector.as_deref(), &value);
-            match self.start_run(trigger, &run_id, &item, hash, &refs) {
+            // Keyed on the chain ROOT (#128): the same item seen again after
+            // this trigger has been re-pointed by `SUPERSEDE` still mints
+            // the id it always would have, so `start_run`'s dedup fence
+            // still recognizes it. `legacy_run_ids` is the compatibility
+            // path for a trigger already superseded BEFORE this fix — the
+            // id(s) it would have minted under an older head — and is empty
+            // (so free) for the common never-superseded case.
+            let root = chain.root();
+            let run_id = run_id_for(root, trigger.connector.as_deref(), &value);
+            let legacy_run_ids: Vec<String> = chain
+                .legacy()
+                .iter()
+                .map(|h| run_id_for(h, trigger.connector.as_deref(), &value))
+                .collect();
+            match self.start_run(trigger, &run_id, &legacy_run_ids, &item, hash, &refs) {
                 StartOutcome::Started => outcome.runs_started += 1,
                 StartOutcome::Ingested => outcome.ingested += 1,
                 StartOutcome::Duplicate => outcome.duplicates += 1,
@@ -712,6 +842,7 @@ impl Evaluator {
         member: &str,
         items: &[serde_json::Value],
         now: i64,
+        chains: &mut HashMap<String, Chain>,
     ) -> Result<()> {
         for (chash, composite) in self.declarations()? {
             let Some(alias) = composite.member_alias(member).map(str::to_string) else {
@@ -720,12 +851,12 @@ impl Evaluator {
             if composite.kind != TriggerKind::Composite {
                 continue;
             }
-            let (mut state, raw) = self
-                .facade
-                .with_store(|m| m.trigger_state(&chash))
-                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
-                .map(|(s, r)| (s, Some(r)))
-                .unwrap_or_default();
+            // #128 — the composite's OWN chain, not the member's: state
+            // lives under the composite's root regardless of which member
+            // just fired. Shares the pass-wide cache, so a composite with
+            // several members touched this pass walks its chain once.
+            let chain = self.resolve_chain(&chash, chains)?;
+            let (mut state, raw) = self.resolve_state(&chain, true)?;
 
             for item in items {
                 // No correlate pointer means one global match — every member
@@ -750,14 +881,20 @@ impl Evaluator {
             }
             prune_partials(&mut state, &composite, now);
             self.facade
-                .with_store(|m| m.put_trigger_state(&chash, raw.as_deref(), &state))
+                .with_store(|m| m.put_trigger_state(chain.root(), raw.as_deref(), &state))
                 .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
         }
         Ok(())
     }
 
     /// Which correlation keys currently satisfy this composite's gate.
-    fn satisfied_keys(&self, hash: &str, trigger: &Trigger, now: i64) -> Result<Vec<String>> {
+    fn satisfied_keys(
+        &self,
+        hash: &str,
+        chain: &Chain,
+        trigger: &Trigger,
+        now: i64,
+    ) -> Result<Vec<String>> {
         let predicate = trigger
             .predicate
             .as_ref()
@@ -777,9 +914,13 @@ impl Evaluator {
             }
         }
 
+        // #128 — this composite's own partials live under its chain root.
+        // No adoption dance needed here: by the time `fire` reaches
+        // `collect_and_start` for this trigger, `run()`'s loop has already
+        // resolved (and, if needed, adopted) this exact root's state row.
         let (state, _) = self
             .facade
-            .with_store(|m| m.trigger_state(hash))
+            .with_store(|m| m.trigger_state(chain.root()))
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
             .unwrap_or_default();
 
@@ -1056,10 +1197,17 @@ impl Evaluator {
     }
 
     /// Record the item as an Event and start the bound workflow.
+    ///
+    /// `legacy_run_ids` (#128) covers a trigger that was superseded BEFORE
+    /// this fix shipped, when the run id was minted from the (then-current)
+    /// head rather than the chain root: each entry is the id this same item
+    /// would have gotten under an older head. Empty for a never-superseded
+    /// trigger, so it costs nothing in the common case.
     fn start_run(
         &self,
         trigger: &Trigger,
         run_id: &str,
+        legacy_run_ids: &[String],
         item: &PollItem,
         trigger_hash: &str,
         content_refs: &[ContentRef],
@@ -1077,29 +1225,59 @@ impl Evaluator {
         if seen {
             return StartOutcome::Duplicate;
         }
+        // #128 compat — an item already processed under a pre-fix
+        // (head-keyed) run id must still be recognized, or a trigger
+        // superseded before this fix reprocesses its whole backlog the
+        // first time it is evaluated after upgrading.
+        for legacy_id in legacy_run_ids {
+            let seen_legacy = self
+                .facade
+                .with_store(|m| m.run_grains(&self.ns, legacy_id, 0, 1))
+                .map(|g| !g.is_empty())
+                .unwrap_or(false);
+            if seen_legacy {
+                return StartOutcome::Duplicate;
+            }
+        }
 
-        let mut event = Event::new(&item.payload.to_string())
-            .namespace(&self.ns)
-            .extra_field("trigger", serde_json::json!(trigger_hash))
-            .extra_field("run_id", serde_json::json!(run_id));
-        if let Some(c) = &trigger.connector {
-            event = event.extra_field("connector", serde_json::json!(c));
-        }
-        // #93 — the item's stored blobs, referenced the same way a
-        // host-driven ingest references them: through `content_refs`, which
-        // is what keeps them alive through GC, carries them in bundles, and
-        // lets erasure's sole-reference reclamation find them.
-        for cr in content_refs {
-            event = event.content_ref(cr.clone());
-        }
-        if let Err(e) = self.facade.with_store(|m| m.add(&event)) {
-            return StartOutcome::Failed(format!("ingest: {e}"));
-        }
+        // The ingest Event is built here but — #129 — WRITTEN only once the
+        // outcome is one this dedup check should treat as "seen": Ingested
+        // (no starter, so the Event itself IS the completed unit of work),
+        // Started, or a starter-reported Duplicate (the runtime already has
+        // it covered, possibly from elsewhere). A starter-reported `Failed`
+        // writes NOTHING, so a retry's `seen` check above finds nothing and
+        // genuinely retries `starter.start()` — before this, the Event was
+        // always written first, so a failed start still left a `run_id`-
+        // bearing grain behind that made every future retry of the SAME
+        // item look like an already-processed duplicate, permanently
+        // stranding it despite #129's cursor hold.
+        let build_event = || {
+            let mut event = Event::new(&item.payload.to_string())
+                .namespace(&self.ns)
+                .extra_field("trigger", serde_json::json!(trigger_hash))
+                .extra_field("run_id", serde_json::json!(run_id));
+            if let Some(c) = &trigger.connector {
+                event = event.extra_field("connector", serde_json::json!(c));
+            }
+            // #93 — the item's stored blobs, referenced the same way a
+            // host-driven ingest references them: through `content_refs`,
+            // which is what keeps them alive through GC, carries them in
+            // bundles, and lets erasure's sole-reference reclamation find
+            // them.
+            for cr in content_refs {
+                event = event.content_ref(cr.clone());
+            }
+            event
+        };
+
         let Some(starter) = &self.starter else {
             // Ingest-only: the item is recorded, nothing is executed. Reported
             // as ingested rather than as a run, because claiming a run started
             // when none did would make the report lie.
-            return StartOutcome::Ingested;
+            return match self.facade.with_store(|m| m.add(&build_event())) {
+                Ok(_) => StartOutcome::Ingested,
+                Err(e) => StartOutcome::Failed(format!("ingest: {e}")),
+            };
         };
         let mut input = serde_json::json!({
             "trigger": trigger_hash,
@@ -1128,8 +1306,21 @@ impl Evaluator {
         // reference with (#73): `sha256:<hex>` validated, listed, and reported
         // `waiting` forever, then died here on `FMT-E001: invalid hex hash`.
         match starter.start(trigger.workflow_hash(), run_id, input) {
-            StartResult::Started => StartOutcome::Started,
-            StartResult::Duplicate => StartOutcome::Duplicate,
+            // The run is durably underway (or already was, started elsewhere)
+            // before we ever try to write the ingest Event, so a failure to
+            // write it here does not need to be reported as a failed firing:
+            // a retry would find `starter.start()` itself now reporting
+            // `Duplicate` (the runtime's own dedup), never a second run. Best
+            // effort is enough; the Event is audit/context linkage, not the
+            // run's own record of itself.
+            StartResult::Started => {
+                let _ = self.facade.with_store(|m| m.add(&build_event()));
+                StartOutcome::Started
+            }
+            StartResult::Duplicate => {
+                let _ = self.facade.with_store(|m| m.add(&build_event()));
+                StartOutcome::Duplicate
+            }
             StartResult::Failed(why) => StartOutcome::Failed(why),
         }
     }
@@ -1238,6 +1429,10 @@ impl Evaluator {
         }
         if !outcome.failures.is_empty() {
             obs = obs.extra_field("failures", serde_json::json!(outcome.failures));
+            // #129 — names WHY the cursor did not move this firing, so the
+            // audit record does not require the reader to infer it from
+            // `duplicates` staying flat on the next firing.
+            obs = obs.extra_field("cursor_held", serde_json::json!(true));
         }
         if outcome.seeded {
             obs = obs.extra_field("seeded", serde_json::json!(true));
@@ -1249,6 +1444,171 @@ impl Evaluator {
             .with_store(|m| m.add_if_novel(&obs))
             .map(|_| ())
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })
+    }
+
+    /// Resolve (and cache) the supersession chain for one trigger's head
+    /// hash within one evaluation pass (#128).
+    ///
+    /// `cache` lives on the CALLER's stack — a fresh `HashMap` per `run()`,
+    /// `deliver()`, or `status()` invocation — so a chain is walked AT MOST
+    /// ONCE per trigger per pass no matter how many items it fires or how
+    /// many composites settle against it in that pass. Do not add a call
+    /// site that walks the chain per item; thread the already-resolved
+    /// [`Chain`] through instead, the way `fire`/`collect_and_start` do.
+    fn resolve_chain(&self, hash: &str, cache: &mut HashMap<String, Chain>) -> Result<Chain> {
+        if let Some(c) = cache.get(hash) {
+            return Ok(c.clone());
+        }
+        let h = Hash::from_hex(hash).map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+        let hashes: Vec<String> = self
+            .facade
+            .with_store(|m| m.supersession_chain(&h))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+            .into_iter()
+            .map(|hh| hh.to_hex())
+            .collect();
+        let chain = Chain(hashes);
+        cache.insert(hash.to_string(), chain.clone());
+        Ok(chain)
+    }
+
+    /// Read a trigger's evaluation state through its resolved chain, with
+    /// compatibility for a trigger superseded BEFORE #128 shipped (its state
+    /// was keyed on the head hash of the moment, not the chain root).
+    ///
+    /// Always tries the ROOT key first. For a trigger that has never been
+    /// superseded this is the ONLY path ever taken — `chain.root() ==` the
+    /// hash this crate always keyed state on — so the common case is a
+    /// byte-identical lookup to before this feature existed.
+    ///
+    /// If the root row is absent, every other hash in the chain
+    /// (`chain.legacy()`) is checked for a row written under an older head.
+    /// Several may exist if the trigger was superseded more than once
+    /// before upgrading; [`state_is_more_advanced`] picks whichever
+    /// represents the most real progress, so the survivor is never the one
+    /// that would silently throw away a further-along cursor.
+    ///
+    /// `adopt = true` persists the found legacy state under the root and
+    /// deletes the legacy row — write the new row FIRST, delete the legacy
+    /// row SECOND, so a crash in between leaves a harmless duplicate (the
+    /// legacy row is simply never consulted again once the root row exists)
+    /// rather than losing the cursor. Pass `true` only from a caller that
+    /// already owns write access for real evaluation work (`run`,
+    /// `deliver`, composite settlement); `status`/`show` pass `false` so a
+    /// pure inspection command has no side effect. Adoption is best-effort
+    /// against a read-only-opened memory: `STO-E004` is swallowed and the
+    /// found state is still returned, just not yet persisted — the next
+    /// pass with write access adopts it.
+    fn resolve_state(&self, chain: &Chain, adopt: bool) -> Result<(TriggerState, Option<String>)> {
+        let root = chain.root();
+        if let Some((state, raw)) = self
+            .facade
+            .with_store(|m| m.trigger_state(root))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+        {
+            return Ok((state, Some(raw)));
+        }
+
+        let mut best: Option<(&str, TriggerState)> = None;
+        for legacy_hash in chain.legacy() {
+            if let Some((state, _raw)) = self
+                .facade
+                .with_store(|m| m.trigger_state(legacy_hash))
+                .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+            {
+                let better = best
+                    .as_ref()
+                    .is_none_or(|(_, current)| state_is_more_advanced(&state, current));
+                if better {
+                    best = Some((legacy_hash.as_str(), state));
+                }
+            }
+        }
+        let Some((legacy_hash, state)) = best else {
+            // No row anywhere in the chain: a genuinely new trigger.
+            return Ok((TriggerState::default(), None));
+        };
+        if !adopt {
+            return Ok((state, None));
+        }
+
+        // `expected=None` only claims an ABSENT row (`INSERT OR IGNORE`), so
+        // losing a race to another evaluator adopting the same legacy row
+        // concurrently is a no-op, never a clobber — either way the legacy
+        // row is redundant now.
+        match self.facade.with_store(|m| m.put_trigger_state(root, None, &state)) {
+            Ok(_) => {}
+            Err(AreevError::ReadOnly(_)) => return Ok((state, None)),
+            Err(e) => return Err(TriggerError::Storage { detail: e.to_string() }),
+        }
+        if let Err(e) = self.facade.with_store(|m| m.clear_trigger_state(legacy_hash)) {
+            if !matches!(e, AreevError::ReadOnly(_)) {
+                return Err(TriggerError::Storage { detail: e.to_string() });
+            }
+        }
+        let (state, raw) = self
+            .facade
+            .with_store(|m| m.trigger_state(root))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?
+            .ok_or_else(|| TriggerError::Storage {
+                detail: format!(
+                    "adopted trigger state for {root} vanished immediately after writing"
+                ),
+            })?;
+        Ok((state, Some(raw)))
+    }
+}
+
+/// A trigger's supersession chain for the duration of one evaluation pass:
+/// every content-address hash in its edit history, HEAD (the declaration's
+/// current hash — what the caller resolved from) first, ROOT last (#128).
+///
+/// Evaluation state (`trg:<hash>`) and derived run ids are keyed on the
+/// ROOT, never the head: a Trigger grain re-pointed by `SUPERSEDE` mints a
+/// new head hash for the SAME standing rule (`docs/loop.md`'s
+/// propose→approve→apply cycle re-points a trigger exactly this way), and
+/// keying on the head alone would orphan the cursor and the dedup fence
+/// every time a recommendation is applied. For a trigger that has never
+/// been superseded, `root() == head`, so every key derived from it is
+/// byte-identical to what this crate always computed — the no-op guarantee
+/// the fix has to preserve.
+#[derive(Debug, Clone)]
+struct Chain(Vec<String>);
+
+impl Chain {
+    /// The key evaluation state and run ids are actually resolved against.
+    fn root(&self) -> &str {
+        self.0.last().map(String::as_str).expect("a chain always has at least its head")
+    }
+
+    /// Every hash besides the root — the identities a pre-#128 evaluator
+    /// might have keyed state or a run id under. Empty for a
+    /// never-superseded trigger, so the compatibility paths that walk this
+    /// cost nothing in the common case.
+    fn legacy(&self) -> &[String] {
+        &self.0[..self.0.len() - 1]
+    }
+}
+
+/// Which of two legacy state rows found along a chain is "further along"
+/// and should be adopted, when more than one exists (a trigger superseded
+/// more than once before #128 shipped). `last_fired_at` is the most direct
+/// evidence of real progress across every trigger kind — the row that
+/// fired most recently is the row whose cursor best reflects what has
+/// actually been processed. `op_cursor` (a `memory` trigger's position) and
+/// then "has this row ever polled at all" break a tie where neither
+/// candidate has ever fired.
+fn state_is_more_advanced(candidate: &TriggerState, current_best: &TriggerState) -> bool {
+    (candidate.last_fired_at, candidate.op_cursor, candidate.cursor.is_some())
+        > (current_best.last_fired_at, current_best.op_cursor, current_best.cursor.is_some())
+}
+
+/// One line for `released.last_error` (#129): several items in one firing
+/// can fail for different reasons, and `last_error` is a single string.
+fn summarize_failures(failures: &[String]) -> String {
+    match failures {
+        [one] => one.clone(),
+        many => format!("{} item(s) failed to start: {}", many.len(), many.join("; ")),
     }
 }
 
@@ -1304,6 +1664,16 @@ enum StartOutcome {
 /// normative for the same reason: `source` + `id` is unique, `id` alone is only
 /// unique within a producer. Two connectors sharing an id space must not
 /// collide.
+///
+/// **`trigger_hash` is the chain ROOT (#128), not necessarily the
+/// declaration's current head.** A `Trigger` grain re-pointed by
+/// `SUPERSEDE` mints a new head for the same standing rule, and this
+/// function has no way to know that on its own — a caller that passed the
+/// head would mint a fresh id for an item already processed under the old
+/// head, defeating the very dedup fence this function exists to provide.
+/// Every call site resolves the root once per pass (`Evaluator::
+/// resolve_chain`) and passes that; this function's signature and hashing
+/// are otherwise unchanged.
 pub fn run_id_for(trigger_hash: &str, connector: Option<&str>, dedup_value: &str) -> String {
     let mut h = Sha256::new();
     h.update(b"areev-trigger:v1");

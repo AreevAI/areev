@@ -207,6 +207,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(forget_missing_grain_is_not_found);
         $per_case!(add_if_novel_dedupes_current_value);
         $per_case!(reasserting_superseded_value_is_novel);
+        $per_case!(supersession_chain_walks_to_the_first_grain);
         // heads / forks / merge
         $per_case!(concurrent_supersede_forks_then_merges);
         $per_case!(provisional_head_election_is_deterministic);

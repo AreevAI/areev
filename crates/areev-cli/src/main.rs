@@ -151,7 +151,10 @@ COMMANDS:
                                       `trigger run`
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
-                                      reported, not silent)
+                                      reported, not silent). `show` also
+                                      surfaces the cursor and, for a
+                                      superseded declaration, the state key
+                                      its evaluation actually lives under
   trigger  pause <T> --because \"why\" | resume <T> --because \"why\"
                                       operational brake; unlike the
                                       declaration's own enabled flag it stays

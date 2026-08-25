@@ -92,6 +92,25 @@ pub fn add_if_novel_dedupes_current_value(b: &dyn Backend) {
     assert!(inserted2);
 }
 
+/// `supersession_chain` — the #128 trigger-state-keying primitive — must
+/// walk identically on both backends: head-first, root-last, a single-hop
+/// chain for a never-superseded grain (the case the fix's no-op guarantee
+/// rests on).
+pub fn supersession_chain_walks_to_the_first_grain(b: &dyn Backend) {
+    let mut m = b.open();
+    let h1 = m.add(&fact("ns", "x", "state", "v1")).unwrap();
+    assert_eq!(m.supersession_chain(&h1).unwrap(), vec![h1], "never-superseded: chain is itself alone");
+
+    let mut v2 = fact("ns", "x", "state", "v2");
+    let h2 = m.supersede(&h1, &mut v2).unwrap();
+    let mut v3 = fact("ns", "x", "state", "v3");
+    let h3 = m.supersede(&h2, &mut v3).unwrap();
+
+    assert_eq!(m.supersession_chain(&h3).unwrap(), vec![h3, h2, h1], "head-first, root-last");
+    assert_eq!(m.supersession_chain(&h2).unwrap(), vec![h2, h1]);
+    assert_eq!(m.supersession_chain(&h1).unwrap(), vec![h1]);
+}
+
 pub fn reasserting_superseded_value_is_novel(b: &dyn Backend) {
     // Novelty is by CURRENT head value, not full history: re-asserting a
     // superseded old value counts as novel (documented, deliberate).

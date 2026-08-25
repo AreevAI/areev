@@ -3,15 +3,15 @@
   "crates": 17,
   "rust": {
     "files": 277,
-    "physical_lines": 168661,
-    "source_code": 80272,
-    "test_code": 48441,
-    "unit_test_code": 22564,
-    "integration_test_code": 25877,
+    "physical_lines": 169623,
+    "source_code": 80474,
+    "test_code": 48792,
+    "unit_test_code": 22565,
+    "integration_test_code": 26227,
     "example_code": 669,
-    "test_functions": 2370,
-    "test_ratio": 0.6,
-    "test_share": 37.6
+    "test_functions": 2382,
+    "test_ratio": 0.61,
+    "test_share": 37.7
   },
   "per_crate": [
     {
@@ -25,17 +25,17 @@
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 21799,
-      "source_code": 10059,
-      "test_code": 5371,
-      "tests": 269
+      "physical": 21914,
+      "source_code": 10082,
+      "test_code": 5411,
+      "tests": 273
     },
     {
       "name": "areev-core",
       "files": 49,
-      "physical": 16990,
-      "source_code": 8581,
-      "test_code": 4294,
+      "physical": 17002,
+      "source_code": 8587,
+      "test_code": 4295,
       "tests": 284
     },
     {
@@ -49,8 +49,8 @@
     {
       "name": "areev-cli",
       "files": 18,
-      "physical": 14199,
-      "source_code": 5831,
+      "physical": 14229,
+      "source_code": 5852,
       "test_code": 5510,
       "tests": 164
     },
@@ -63,20 +63,20 @@
       "tests": 137
     },
     {
+      "name": "areev-trigger",
+      "files": 12,
+      "physical": 5842,
+      "source_code": 1785,
+      "test_code": 2310,
+      "tests": 122
+    },
+    {
       "name": "areev-context",
       "files": 8,
       "physical": 5236,
       "source_code": 1899,
       "test_code": 2421,
       "tests": 90
-    },
-    {
-      "name": "areev-trigger",
-      "files": 12,
-      "physical": 5057,
-      "source_code": 1646,
-      "test_code": 2000,
-      "tests": 114
     },
     {
       "name": "areev-run-core",
@@ -121,8 +121,8 @@
     {
       "name": "areev-conformance",
       "files": 15,
-      "physical": 2392,
-      "source_code": 1447,
+      "physical": 2412,
+      "source_code": 1460,
       "test_code": 353,
       "tests": 12
     },
@@ -153,9 +153,9 @@
   ],
   "docs": {
     "files": 53,
-    "lines": 23523
+    "lines": 23703
   },
-  "error_codes": 94,
+  "error_codes": 95,
   "bindings": {
     "python_files": 13,
     "node_test_files": 4

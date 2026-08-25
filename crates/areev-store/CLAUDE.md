@@ -357,6 +357,27 @@ paused, consecutive_failures, last_error) rides `trg:<trigger-hash>`.
 Conformance (both backends): `trigger_state_never_replicates`,
 `meta_cas_admits_one_claimer_and_fences_the_loser`.
 
+**`Areev::supersession_chain(&Hash) -> Result<Vec<Hash>>`** walks a grain's
+`supersedes` column backward from the given hash to the first grain in its
+edit history (no existing accessor exposed a single grain's `supersedes`
+field outside `history()`'s own raw SQL, so this is the one place that does —
+`history()`'s multi-grain walk stays separate since it also needs `blob`/
+`superseded_by` and serves a different contract). Returns every hash visited,
+**head first, root last**; a never-superseded grain's chain is itself alone.
+Bounded at `MAX_SUPERSESSION_CHAIN_HOPS` (64, `pub const`) — exceeding it
+returns `AreevError::SupersessionChainTooDeep` (`STO-E006`) rather than
+looping forever, since a cyclic `supersedes` graph is corrupt data, not slow
+data. A hash missing from the index (forgotten, or unknown) stops the walk
+where it is, the same "tolerate the missing link" posture `history()` takes.
+
+This is a general store primitive, not trigger-specific, but its motivating
+caller is `areev-trigger`'s evaluator (#128): a `Trigger` grain re-pointed by
+`SUPERSEDE` mints a new head for the same standing rule, and keying `trg:`
+state (and derived run ids) on the head alone orphans the cursor and dedup
+fence on every applied recommendation — see `docs/triggers.md` "Superseding
+a trigger keeps its cursor". Conformance (both backends):
+`supersession_chain_walks_to_the_first_grain`.
+
 ## memory_tool.rs
 
 Anthropic memory-tool backend: `view/create/str_replace/insert/delete/rename`

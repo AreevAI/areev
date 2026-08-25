@@ -1028,6 +1028,13 @@ const HOLD_PREFIX: &str = "hold:";
 /// success. Same reasoning that keeps a saved query's `last_run_at` local.
 const TRG_PREFIX: &str = "trg:";
 
+/// Bound on [`Areev::supersession_chain`]'s backward walk. A real edit
+/// history — a human or the loop applying a `SUPERSEDE` — is a handful of
+/// hops deep; this is generous headroom while still failing loudly
+/// (`SupersessionChainTooDeep`) on data that is somehow cyclic rather than
+/// looping the process forever.
+pub const MAX_SUPERSESSION_CHAIN_HOPS: usize = 64;
+
 const MIN_READER_VERSION_KEY: &str = "min_reader_version";
 
 /// File-truth: the link indexes (`prov_idx`, `run_idx`, `related_to`
@@ -6837,6 +6844,62 @@ impl Areev {
             }
         }
         Ok(out)
+    }
+
+    /// Walk a grain's `supersedes` chain backward from `hash` to its root —
+    /// the first grain in its edit history, the one with no `supersedes` of
+    /// its own. Returns every hash visited, **head first, root last**
+    /// (`out[0] == *hash`, `out.last()` is the root); for a grain that has
+    /// never been superseded the chain is the single-element `[*hash]`, so
+    /// `out.last() == hash` — the no-op case callers key correctness on
+    /// (#128).
+    ///
+    /// This is the one primitive both halves of a caller's problem share:
+    /// the root is the stable identity to key durable state on, and the
+    /// intermediate hashes are exactly the OLD identities a pre-fix caller
+    /// might have keyed state on instead — a single walk serves both without
+    /// re-walking per lookup. `areev-trigger`'s evaluator is the motivating
+    /// caller (`crates/areev-trigger/CLAUDE.md`... see `docs/triggers.md`
+    /// "Idempotency"): a `Trigger` grain re-pointed by `SUPERSEDE` mints a
+    /// new content address for the same standing rule, and state keyed on
+    /// the head alone would orphan every time the declaration is edited.
+    ///
+    /// A hash missing from the index (forgotten, or simply unknown) stops
+    /// the walk where it is rather than erroring — the same "tolerate the
+    /// missing link" posture [`Self::history`] takes for a chain a tombstone
+    /// legitimately shortened.
+    ///
+    /// Bounded at [`MAX_SUPERSESSION_CHAIN_HOPS`]: a real edit history is a
+    /// handful of supersessions deep, never cyclic. Exceeding the bound
+    /// returns [`AreevError::SupersessionChainTooDeep`] rather than looping
+    /// the process forever — a cyclic `supersedes` graph is corrupt data,
+    /// not slow data, and must fail loudly rather than hang whatever called
+    /// in.
+    pub fn supersession_chain(&self, hash: &Hash) -> Result<Vec<Hash>> {
+        let mut out = vec![*hash];
+        let mut cur = *hash;
+        for _ in 0..MAX_SUPERSESSION_CHAIN_HOPS {
+            let rows = self.db.query(
+                "SELECT supersedes FROM grains WHERE hash = ?1",
+                vec![pb(cur.as_bytes().to_vec())],
+            )?;
+            let supersedes = match rows.first() {
+                Some(row) => row.blob(0).and_then(|b| Hash::try_from_bytes(&b).ok()),
+                // Unknown to the index: stop here rather than erroring — the
+                // caller still gets everything real that was walked.
+                None => return Ok(out),
+            };
+            match supersedes {
+                Some(parent) => {
+                    out.push(parent);
+                    cur = parent;
+                }
+                // `supersedes` is NULL: this grain supersedes nothing, so it
+                // is the root.
+                None => return Ok(out),
+            }
+        }
+        Err(AreevError::SupersessionChainTooDeep(*hash))
     }
 
     /// Vector leg: cosine top-k over embedded grain text (brute force —
