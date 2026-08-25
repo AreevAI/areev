@@ -70,11 +70,21 @@ jobs:
         run: cargo test -p areev-conformance --features postgres
       - name: Store unit tests with the postgres feature
         run: cargo test -p areev-store --features postgres --lib
+      # `postgres-tls` is a SEPARATE build, not a superset in test terms: the
+      # refusal path (STO-E003, "asks for encryption, gets none") only exists
+      # in the build above, and the verifiers only exist in this one. Its
+      # handshake tests need no database — they stand up a throwaway CA and a
+      # fake Postgres on loopback — so they belong wherever the feature
+      # compiles.
+      - name: Store unit tests with the postgres-tls feature
+        run: cargo test -p areev-store --features postgres-tls --lib
       # The workspace clippy job lints default features only; without this
       # the feature-gated backend would accumulate warnings invisibly (and
       # docs.rs builds all-features, so it must at least compile clean).
       - name: Clippy with the postgres feature
         run: cargo clippy -p areev-store -p areev-conformance --features postgres --all-targets -- -D warnings
+      - name: Clippy with the postgres-tls feature
+        run: cargo clippy -p areev-store -p areev-conformance --features postgres-tls --all-targets -- -D warnings
       # The bindings against a REAL postgres — the deployment surface the
       # server tier exists for. (The python/node jobs have no database, so
       # their postgres tests skip there; this is where they run.)

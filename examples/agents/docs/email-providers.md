@@ -66,6 +66,13 @@ refuses the whole poll with the cursor unmoved (`TRG-E011`).
    (chmod 600, override via `OUTLOOK_TOKEN_CACHE`).
 3. A shared/desk mailbox: set `AP_MAILBOX=ap@yourdesk.example` to poll
    `/users/<address>` instead of `/me`.
+4. The connector polls `…/mailFolders/inbox/messages`, **not** `/messages`.
+   Graph's `/messages` spans every folder, so a desk that sends its own
+   approval mail re-ingests it out of Sent Items on the next tick — with a
+   new message id, which is exactly what `/message_id` dedup cannot catch.
+   Attachment listings deliberately carry no `$select`: `contentBytes` is
+   declared on `fileAttachment`, not on the base `attachment` type the
+   collection is typed as, so selecting it 400s the whole request.
 
 ## Google Workspace setup (once)
 

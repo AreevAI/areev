@@ -71,6 +71,40 @@ files, the trigger heartbeat, and the AWS/GCP/Azure/Kubernetes mappings — is
 The numbers below are measured against `pgvector/pgvector:pg16` on loopback
 Docker (Apple M4 Max). Treat them as shape, not as managed-database figures.
 
+**Transport security: the DSN decides, and the build can only refuse.**
+Compile with the `postgres-tls` cargo feature (on in the container image, on
+in both bindings, off in the stock `areev` binary) and the DSN's `sslmode`
+is honored with libpq's exact ladder:
+
+| `sslmode` | encrypted | chain checked | hostname checked |
+|---|---|---|---|
+| `disable` | no | — | — |
+| `prefer` (the default when you omit it) | if the server offers it | no | no |
+| `require` | yes | no | no |
+| `verify-ca` | yes | yes | no |
+| `verify-full` | yes | yes | yes |
+
+**`require` does not validate anything** — that is libpq's meaning, not a
+shortcut taken here, and it is deliberate: AWS RDS signs with its own
+`rds-ca-*` roots, so a `require` that quietly checked Mozilla's trust store
+would fail every stock RDS DSN. **Use `verify-full`**, and add
+`sslrootcert=/path/to/provider-ca.pem` wherever the provider signs with a
+private root (RDS does; Azure Flexible Server's DigiCert chain is already in
+the compiled-in Mozilla bundle). `sslrootcert=system` and omitting it both
+mean that compiled-in bundle — no OS trust store is read, which is the only
+promise a static binary can keep. Client certificates are not supported.
+
+A binary built *without* the feature refuses `require` and above with
+**`STO-E003`**, naming the feature; it never downgrades to plaintext. That
+refusal is the whole point — the failure mode being prevented is a DSN that
+asks for encryption and silently gets none. `disable` and `prefer` behave
+identically with and without the feature, so no existing deployment changes.
+
+This makes the local TLS-terminating proxy (Cloud SQL Auth Proxy, PgBouncer
+with a TLS upstream) optional rather than mandatory. It is still the right
+answer when the proxy is also pooling or doing IAM auth — point the DSN at it
+with `sslmode=disable`.
+
 **Connections per handle: 1, or 2 with telemetry.** One `tokio_postgres`
 client per `Areev` handle, plus a second for the recall-telemetry sidecar. The
 **bindings default telemetry to `aggregate`**, so a stock Node or Python handle

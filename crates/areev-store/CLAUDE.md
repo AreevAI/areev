@@ -23,6 +23,20 @@ transports implement it:
   `set_embedder` (dim mismatch = hard refusal), CAS blobs live in an
   in-schema table, and `prefers_batched_reads = true`. Page cipher and the
   telemetry sidecar are file-backend-only and rejected at open.
+  **Every session opens through `pgtls::connect`** (src/pgtls.rs) — the one
+  place a Postgres socket is made, for `open`, `reconnect`, and
+  `drop_postgres_schema` alike. It splits `sslmode`/`sslrootcert` out of the
+  DSN (the driver rejects `sslrootcert` as an unknown option and knows only
+  three of libpq's five `sslmode` rungs), maps the mode onto a driver mode
+  plus a rustls certificate verifier, and spawns the connection future. The
+  verification semantics are **libpq's**: `require` encrypts without
+  validating, only `verify-ca`/`verify-full` check the chain — because RDS
+  signs with private roots and a stricter `require` would break every stock
+  RDS DSN. Behind `feature = "postgres-tls"`; without it a DSN asking for
+  `require` or above is refused (**`STO-E003`**), never downgraded to
+  plaintext, and `disable`/`prefer` behave exactly as before. Pinned by a
+  real handshake against a throwaway rcgen CA (`pgtls::handshake_tests`),
+  which is what proves `verify-full` actually verifies.
 
 In-memory counters (`next_seq/next_op/next_term/hlc_last`, BM25 stats)
 loaded on open are authoritative only on the embedded backend

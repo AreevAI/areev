@@ -151,10 +151,19 @@ one-writer rule above.
 
 Three honest caveats before you wire production:
 
-- **The Postgres connection is plaintext today** (`tokio-postgres` with
-  `NoTls`). Keep the database on a private network with the containers, or
-  route through a TLS-wrapping local proxy (Cloud SQL Auth Proxy, PgBouncer
-  with TLS upstream). Do not point a DSN across the open internet.
+- **The Postgres connection encrypts when the DSN says so.** This image is
+  built with `postgres-tls`, so the DSN carries the decision: append
+  `sslmode=verify-full` (plus `sslrootcert=/path/to/ca.pem` when the provider
+  signs with its own root, as AWS RDS does) and the connection is validated
+  end to end. `sslmode` follows libpq exactly — `require` encrypts without
+  checking the certificate, only the `verify-*` pair validates it — so
+  **`require` is not the safe rung it sounds like**. Omitting `sslmode`
+  leaves libpq's `prefer` default, which is best-effort and unvalidated;
+  name the mode. A build *without* the feature refuses an encrypting DSN by
+  name (`STO-E003`) rather than connecting in the clear. The local-proxy
+  pattern (Cloud SQL Auth Proxy, PgBouncer with a TLS upstream) still works
+  and is still right where the proxy is doing something else too — point the
+  DSN at it with `sslmode=disable`.
 - **There is no official published image yet.** `docker build` from a
   release tag and push to the registry your platform pulls from (ECR /
   Artifact Registry / ACR). Multi-arch: `docker buildx build --platform

@@ -17,6 +17,20 @@ categories = ["database-implementations", "caching"]
 # schema (one memory = one schema). Non-default so edge builds stay
 # dependency-light; see docs/postgres-backend-plan.md.
 postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time"]
+# Native TLS for the Postgres transport (`sslmode=` / `sslrootcert=` in the
+# DSN). Non-default for the same reason `postgres` is, but every managed
+# Postgres either defaults to or requires TLS on the wire — Azure Flexible
+# Server's `require_secure_transport`, RDS's `rds.force_ssl`, Cloud SQL — so
+# a fleet on a managed backend wants this on. Without it a DSN asking for
+# `sslmode=require` (or stricter) is REFUSED by name, never downgraded.
+# rustls only, matching areev-server's `tls` exception; no OpenSSL.
+postgres-tls = [
+    "postgres",
+    "dep:tokio-postgres-rustls",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+]
 
 [dependencies]
 areev-core = { path = "../areev-core", version = "1.6.0" }
@@ -25,6 +39,16 @@ areev-core = { path = "../areev-core", version = "1.6.0" }
 turso = "=0.7.2"
 tokio = { version = "1", features = ["rt", "sync"] }
 tokio-postgres = { version = "0.7", optional = true }
+# `postgres-tls` only. The canonical rustls integration for tokio-postgres —
+# taken rather than hand-rolled because it also computes the
+# `tls_server_end_point` channel binding SCRAM-SHA-256-PLUS needs, which means
+# reading the server certificate's signature algorithm out of DER. Same rule
+# as `aes-gcm`/`hkdf` above: don't hand-roll the crypto-adjacent part.
+# rustls/webpki-roots are already in the workspace graph (ureq, areev-server).
+tokio-postgres-rustls = { version = "0.14", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-pki-types = { version = "1.15", features = ["std"], optional = true }
+webpki-roots = { version = "1", optional = true }
 # Passphrase key derivation (Argon2id) + zeroization of key material.
 argon2 = "0.5"
 zeroize = "1"
@@ -48,6 +72,11 @@ serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# `postgres-tls` tests only: mints a throwaway CA + leaf so the TLS legs can be
+# proven against a real handshake without a Postgres server (and without a
+# private key committed to this repo). Cargo has no optional dev-dependencies,
+# so it compiles on the default test path too; the tests that use it do not.
+rcgen = "0.14"
 
 [package.metadata.docs.rs]
 all-features = true

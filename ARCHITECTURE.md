@@ -1371,6 +1371,38 @@ construction the Postgres tier. The compose files encode this — role
 profiles over one volume for the embedded file, a fleet file over schemas
 for the concurrent shape. Guide: [docs/docker.md](docs/docker.md).
 
+### The DSN decides the Postgres transport; a build can only refuse
+
+**Decision (2026-08-25):** the Postgres backend speaks TLS natively behind
+`feature = "postgres-tls"`, and the DSN — not a flag, not a host config — says
+how. `sslmode` follows libpq's five rungs exactly and `sslrootcert` names a
+provider's root bundle, because that string already lives in the operator's
+secret manager and already means something; inventing a second spelling for it
+would make one of the two wrong. rustls with compiled-in webpki roots, the
+same dependency-policy exception `areev ui`'s `tls` feature took.
+
+Two parts of that are load-bearing enough to name. First, **`require` does not
+validate**, faithfully to libpq: AWS RDS signs with its own `rds-ca-*` roots,
+so a `require` that quietly checked the public trust store would fail every
+stock RDS DSN and teach operators to reach for `disable` — a stricter default
+that produces a weaker deployment. `verify-full` is the mode the docs push,
+and `sslrootcert` is what makes it reachable on a private root. Second, a
+build **without** the feature meeting an encrypting DSN **refuses**
+(`STO-E003`) instead of connecting in the clear; `disable`/`prefer` are
+unchanged, so nothing existing moves.
+
+What this retires is a shape the deployment docs previously had to prescribe:
+a PgBouncer or Cloud SQL Auth Proxy inserted purely to compensate for a
+missing client capability — an extra component *inside* the trust boundary,
+and one more thing to hold a credential. The proxy stays supported for the
+cases where it earns its place (pooling, IAM auth); it is no longer the price
+of encryption. Raised as
+[#117](https://github.com/AreevAI/areev/issues/117) from a fleet deployment on
+Azure Flexible Server. Contract:
+[docs/deployment-profile.md](docs/deployment-profile.md) §"Postgres connection
+contract"; threat framing: [docs/security-model.md](docs/security-model.md)
+§"The Postgres transport".
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

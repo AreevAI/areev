@@ -12,6 +12,12 @@ publish = false
 
 [features]
 postgres = ["areev-store/postgres"]
+# Run the Pg case list against a server that requires TLS (a managed backend):
+# `DATABASE_URL='postgres://…?sslmode=verify-full' cargo test -p areev-conformance
+#  --features postgres-tls`. Everything that goes through a `Areev` handle works;
+# the outage case skips, because its `pg_terminate_backend` side channel is a
+# raw NoTls connection rather than a store session.
+postgres-tls = ["postgres", "areev-store/postgres-tls"]
 
 [dependencies]
 areev-core = { path = "../areev-core" }

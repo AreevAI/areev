@@ -414,6 +414,12 @@ fn parse_anon_key(hex: &str) -> Result<[u8; 32], String> {
 /// telemetry rides the memory's schema). Encryption keys don't apply here —
 /// the `--passphrase-env` path derives them from a `.kdf` sidecar next to a
 /// FILE, so a DSN is rejected before derivation.
+///
+/// Transport security is the DSN's business, not a flag's: `sslmode=` and
+/// `sslrootcert=` ride through `split_schema_url` untouched and are honored by
+/// the store (`feature = "postgres-tls"`; without it an encrypting DSN is
+/// refused with `STO-E003` rather than downgraded). See
+/// `docs/deployment-profile.md` §"Postgres connection contract".
 #[cfg(feature = "postgres")]
 fn open_postgres_store(
     db: &str,

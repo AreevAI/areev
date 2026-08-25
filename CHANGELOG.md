@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Native TLS for the Postgres backend** (`postgres-tls` cargo feature) —
+  the DSN's `sslmode` (libpq's full five-rung ladder, including `verify-ca`
+  and `verify-full`, which the driver does not understand on its own) and
+  `sslrootcert` are honored, so a managed Postgres that requires encryption
+  on the wire — Azure Flexible Server's `require_secure_transport`, RDS's
+  `rds.force_ssl`, Cloud SQL — connects without inserting a TLS-wrapping
+  proxy inside the trust boundary. rustls with compiled-in webpki roots, no
+  OpenSSL. On in the container image and in both bindings; off in the stock
+  `areev` binary, where an encrypting DSN is now **refused by name
+  (`STO-E003`) rather than downgraded to plaintext**. `sslmode=disable` and
+  the `prefer` default are unchanged, so no existing deployment moves.
+  Note that `require` follows libpq and encrypts *without* validating the
+  certificate — use `verify-full`, with `sslrootcert` where the provider
+  signs with a private root ([#117](https://github.com/AreevAI/areev/issues/117)).
+
+### Fixed
+
+- Postgres connect-time failures now carry their cause. These never reach a
+  server, so they have no SQLSTATE, and `pg_err` reported only the driver's
+  `Display` — "error connecting to server". A TLS rejection lands in exactly
+  that class, where "invalid peer certificate: UnknownIssuer" is the whole
+  diagnosis.
+- **`outlook_graph.py` (invoice-to-accounting example): two live-only bugs.**
+  The attachment listing's `$select` named `contentBytes`, which is declared
+  on `microsoft.graph.fileAttachment` and not on the base `attachment` type
+  the collection is typed as — Graph answered `400 BadRequest` and every
+  message with an attachment failed the poll. And the poll read `/messages`,
+  which spans **all** folders, so the desk's own approval mail came back out
+  of Sent Items as a fresh candidate invoice on the next tick (with a new
+  message id, so `/message_id` dedup could not catch it); it now reads
+  `…/mailFolders/inbox/messages`. Neither reproduces under the keyless CI
+  floor, which uses the fixture connector by design
+  ([#118](https://github.com/AreevAI/areev/issues/118)).
+
 ## [1.6.2] — 2026-08-24
 
 ### Removed
