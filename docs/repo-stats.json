@@ -1,5 +1,5 @@
 {
-  "version": "1.6.3",
+  "version": "1.6.4",
   "crates": 17,
   "rust": {
     "files": 277,
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 53,
-    "lines": 23703
+    "lines": 23706
   },
   "error_codes": 95,
   "bindings": {
