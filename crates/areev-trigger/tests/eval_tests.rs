@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 
 const NS: &str = "ops";
 const WF: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+/// A second plan hash — what a `SUPERSEDE workflow` re-point looks like from
+/// the trigger's side (#128 tests).
+const WF2: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const T0: i64 = 1_767_225_600_000; // 2026-01-01T00:00:00Z
 
 /// A connector whose answers a test scripts, recording what it was asked.
@@ -74,6 +77,59 @@ impl RunStarter for FakeStarter {
     }
 }
 
+/// A starter that refuses to start a run for one specific item id (matched
+/// against the item's `/id` field in the run input) and behaves like
+/// [`FakeStarter`] for everything else — for exercising #129's
+/// partial-failure posture. `fail_when` can be cleared mid-test to simulate
+/// the underlying cause getting fixed.
+#[derive(Default)]
+struct FlakyStarter {
+    fail_when: Mutex<Option<String>>,
+    started: Mutex<Vec<String>>,
+}
+
+impl RunStarter for FlakyStarter {
+    fn start(&self, _workflow: &str, run_id: &str, input: Value) -> StartResult {
+        let mut s = self.started.lock().unwrap();
+        if s.iter().any(|id| id == run_id) {
+            return StartResult::Duplicate;
+        }
+        // `input["item"]` IS the connector's item `payload` (the trigger
+        // wraps it once, not twice — see `docs/triggers.md` "What the run
+        // receives").
+        let item_id = input["item"]["id"].as_str().unwrap_or_default();
+        if self.fail_when.lock().unwrap().as_deref() == Some(item_id) {
+            return StartResult::Failed(format!("simulated refusal for {item_id}"));
+        }
+        s.push(run_id.to_string());
+        StartResult::Started
+    }
+}
+
+/// A starter that refuses to start a run for one specific FIRING trigger
+/// (matched against the run input's `trigger` field) and otherwise starts
+/// normally — for exercising #129 at a composite's own firing while its
+/// members still start fine.
+#[derive(Default)]
+struct FailForTrigger {
+    trigger: String,
+    started: Mutex<Vec<String>>,
+}
+
+impl RunStarter for FailForTrigger {
+    fn start(&self, _workflow: &str, run_id: &str, input: Value) -> StartResult {
+        let mut s = self.started.lock().unwrap();
+        if s.iter().any(|id| id == run_id) {
+            return StartResult::Duplicate;
+        }
+        if input["trigger"].as_str() == Some(self.trigger.as_str()) {
+            return StartResult::Failed("simulated refusal".into());
+        }
+        s.push(run_id.to_string());
+        StartResult::Started
+    }
+}
+
 struct Rig {
     _dir: tempfile::TempDir,
     facade: Arc<AreevFacade>,
@@ -96,6 +152,16 @@ impl Rig {
     fn declare(&self, t: Trigger) -> String {
         let t = t.created_at(T0).namespace(NS);
         self.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+    }
+
+    /// Re-point a declaration by superseding it — what `SUPERSEDE workflow`
+    /// followed by re-pointing the trigger looks like from the store's side
+    /// (`docs/loop.md`'s apply step). Mints a NEW trigger hash; the caller's
+    /// old hash string is untouched.
+    fn supersede(&self, old: &str, created_at_ms: i64, t: Trigger) -> String {
+        let old_hash = areev_core::error::Hash::from_hex(old).unwrap();
+        let mut t = t.created_at(created_at_ms).namespace(NS);
+        self.facade.with_store(|m| m.supersede(&old_hash, &mut t)).unwrap().to_hex()
     }
 
     fn evaluator(&self, connector: Option<Arc<dyn HostToolExecutor>>) -> Evaluator {
@@ -1500,4 +1566,353 @@ fn a_declarations_name_reaches_status_and_is_not_invented_when_absent() {
     assert_eq!(name_of(&named).as_deref(), Some("nightly-invoice-sweep"));
     assert_eq!(name_of(&blank), None);
     assert_eq!(name_of(&unnamed), None);
+}
+
+// ---- #128: superseding a trigger must not orphan its cursor or dedup fence
+
+#[test]
+fn a_never_superseded_trigger_s_run_id_matches_the_head_hash() {
+    // The no-op guarantee (#128): with no supersession, the chain root IS
+    // the head, so the run id the evaluator actually mints is
+    // byte-identical to `run_id_for` fed the head hash directly — exactly
+    // what this crate computed before chain resolution existed.
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(json!([{ "id": "a", "payload": { "id": "m-a" } }]), Some("c2"), false),
+    ]);
+    let ev = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    ev.run(&opts()).unwrap();
+
+    let expected = areev_trigger::eval::run_id_for(&h, Some("gmail"), "m-a");
+    let started = rig.starter.started.lock().unwrap();
+    assert_eq!(started.as_slice(), &[expected]);
+}
+
+#[test]
+fn a_never_superseded_trigger_s_status_reports_its_own_hash_as_the_chain_root() {
+    // Same no-op guarantee, from `status`'s side: the exposed `chain_root`
+    // equals the trigger's own hash until it is ever superseded.
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    let status = rig.evaluator(None).status().unwrap();
+    let row = status.iter().find(|s| s.trigger == h).unwrap();
+    assert_eq!(row.chain_root, h);
+}
+
+#[test]
+fn superseding_a_trigger_keeps_its_cursor_and_dedup_fence() {
+    // The issue #128 repro shape: seed -> poll -> supersede -> poll again.
+    let rig = Rig::new();
+    let h1 = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let item = json!([{ "id": "m1", "payload": { "id": "m-1" } }]);
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),   // seed
+        ok(item.clone(), Some("c2"), false), // first real poll: starts a run
+    ]);
+    let ev = rig.evaluator(Some(conn.clone() as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    let first = ev.run(&opts()).unwrap();
+    assert_eq!(first.runs_started, 1, "{:?}", first.errors);
+    assert_eq!(rig.state(&h1).cursor.as_deref(), Some("c2"));
+
+    // Applying a loop recommendation re-points the trigger at a new plan —
+    // a supersession, minting a NEW content address (`docs/loop.md`).
+    let h2 = rig.supersede(
+        &h1,
+        T0 + 1,
+        Trigger::new(TriggerKind::Polling, WF2).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    assert_ne!(h1, h2, "supersede mints a new content address");
+
+    // A third connector reply: if the cursor orphaned, the evaluator would
+    // seed again ("newest") and skip everything, rather than asking from c2.
+    conn.replies.lock().unwrap().push(ok(item, Some("c3"), false));
+    rig.clock.advance(60_000);
+    let second = ev.run(&opts()).unwrap();
+
+    let reqs = conn.requests.lock().unwrap();
+    assert_eq!(
+        reqs.last().unwrap()["cursor"],
+        json!("c2"),
+        "the poll after supersede must carry the cursor forward, not seed"
+    );
+    drop(reqs);
+
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    assert_eq!(
+        second.runs_started, 0,
+        "the same item replayed after supersede must not start a second run"
+    );
+    assert_eq!(second.duplicates, 1, "…it must be recognized as a duplicate instead");
+}
+
+#[test]
+fn legacy_state_from_before_the_fix_is_adopted_under_the_root() {
+    // Two supersessions BEFORE evaluating under the new scheme: h2 is the
+    // head a pre-#128 evaluator would have kept state under while it was
+    // live (between the first and second supersede); h3 is the current
+    // head. The root of h3's chain is h1, which — in this simulated
+    // "already superseded before the fix" scenario — has NO row of its own.
+    let rig = Rig::new();
+    let h1 = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let h2 = rig.supersede(
+        &h1,
+        T0 + 1,
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let _h3 = rig.supersede(
+        &h2,
+        T0 + 2,
+        Trigger::new(TriggerKind::Polling, WF2).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+
+    // A pre-#128 evaluator's state row, written under h2 — the exact shape
+    // `run()` used to key on before chain resolution existed.
+    let legacy = areev_store::TriggerState {
+        cursor: Some("legacy-cursor-77".into()),
+        last_fired_at: Some(T0),
+        next_due_at: Some(T0 + 60_000),
+        ..Default::default()
+    };
+    rig.facade.with_store(|m| m.put_trigger_state(&h2, None, &legacy)).unwrap();
+    assert!(
+        rig.facade.with_store(|m| m.trigger_state(&h1)).unwrap().is_none(),
+        "the root genuinely has no row in this scenario"
+    );
+
+    // A reply that only makes sense if the evaluator resumed from the
+    // legacy cursor rather than re-seeding.
+    let conn = FakeConnector::new(vec![ok(json!([]), Some("legacy-cursor-78"), false)]);
+    let ev = rig.evaluator(Some(conn.clone() as Arc<dyn HostToolExecutor>));
+    rig.clock.advance(60_000);
+    ev.run(&opts()).unwrap();
+
+    let reqs = conn.requests.lock().unwrap();
+    assert_eq!(
+        reqs[0]["cursor"],
+        json!("legacy-cursor-77"),
+        "adoption must carry the legacy cursor forward, not seed"
+    );
+    drop(reqs);
+
+    // Adopted under the ROOT (h1) …
+    let (adopted, _raw) = rig.facade.with_store(|m| m.trigger_state(&h1)).unwrap().unwrap();
+    assert_eq!(
+        adopted.cursor.as_deref(),
+        Some("legacy-cursor-78"),
+        "the poll that just ran advanced the now-adopted state"
+    );
+    // … and the legacy row under h2 is gone.
+    assert!(
+        rig.facade.with_store(|m| m.trigger_state(&h2)).unwrap().is_none(),
+        "the legacy row must be removed once adopted"
+    );
+}
+
+#[test]
+fn legacy_run_ids_from_before_the_fix_are_still_recognized_as_duplicates() {
+    // Simulates a trigger already superseded once before #128: the run id
+    // this item minted was keyed on h2 (root of ITS OWN single-node chain
+    // at the time), and after a second supersede to h3, the chain root
+    // moves to h1 — so the item's existing run must be found via
+    // `chain.legacy()`, not just the root.
+    let rig = Rig::new();
+    let h1 = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let h2 = rig.supersede(
+        &h1,
+        T0 + 1,
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+
+    // The item already started a run keyed on h2, the way a pre-#128
+    // evaluator would have while h2 was the live head.
+    let legacy_run_id = areev_trigger::eval::run_id_for(&h2, Some("gmail"), "m-1");
+    let legacy_event = areev_core::types::Event::new(&json!({ "id": "m-1" }).to_string())
+        .namespace(NS)
+        .extra_field("trigger", json!(h2))
+        .extra_field("run_id", json!(legacy_run_id));
+    rig.facade.with_store(|m| m.add(&legacy_event)).unwrap();
+
+    let h3 = rig.supersede(
+        &h2,
+        T0 + 2,
+        Trigger::new(TriggerKind::Polling, WF2).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+
+    let item = json!([{ "id": "m1", "payload": { "id": "m-1" } }]);
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false), // seed
+        ok(item, Some("c2"), false),
+    ]);
+    let ev = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+
+    assert_eq!(
+        r.runs_started, 0,
+        "an item already started under a legacy (pre-#128) head must not start again"
+    );
+    assert_eq!(r.duplicates, 1);
+    let _ = h3;
+}
+
+#[test]
+fn claim_and_release_agree_on_the_key_across_a_supersede() {
+    // If `fire`'s claim and release ever disagreed about which hash keys the
+    // state row, the release's compare-and-swap would find no row and the
+    // pass would report `ClaimLost` — this is what would fail if a call
+    // site were left keyed on the head instead of the resolved root.
+    let rig = Rig::new();
+    let h1 = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    rig.evaluator(None).run(&opts()).unwrap();
+
+    let _h2 = rig.supersede(&h1, T0 + 1, Trigger::new(TriggerKind::Interval, WF2).interval_secs(60));
+    rig.clock.advance(60_000);
+    let r = rig.evaluator(None).run(&opts()).unwrap();
+
+    assert!(r.errors.is_empty(), "a claim/release key mismatch surfaces as ClaimLost: {:?}", r.errors);
+    assert_eq!(r.claimed, 1);
+    assert_eq!(r.runs_started, 1);
+}
+
+// ---- #129: a refused run start must not consume the item ------------------
+
+#[test]
+fn a_failed_start_holds_the_cursor_and_backs_off_without_losing_the_gate() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let two_items = json!([
+        { "id": "ok-1", "payload": { "id": "m-ok" } },
+        { "id": "bad-1", "payload": { "id": "m-bad" } }
+    ]);
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),          // seed
+        ok(two_items.clone(), Some("c2"), false),  // first real poll: mixed outcome
+    ]);
+    let flaky = Arc::new(FlakyStarter {
+        fail_when: Mutex::new(Some("m-bad".into())),
+        started: Mutex::new(Vec::new()),
+    });
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn.clone() as Arc<dyn HostToolExecutor>),
+        starter: Some(Arc::clone(&flaky) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+
+    assert_eq!(r.runs_started, 1, "the item that could start, did");
+    assert_eq!(r.errors.len(), 1, "the refusal is reported: {:?}", r.errors);
+    assert_eq!(r.cursor_held, vec![h.clone()], "the failure must hold this trigger's cursor");
+
+    let st = rig.state(&h);
+    assert_eq!(
+        st.cursor.as_deref(),
+        Some("c1"),
+        "the cursor must NOT advance to c2 — one item in the page was not processed"
+    );
+    assert_eq!(st.consecutive_failures, 1);
+    assert!(st.last_error.is_some(), "last_error must be set, not cleared");
+    assert!(
+        st.next_due_at.unwrap() > rig.clock.now_ms(),
+        "backoff must push next_due_at out rather than spinning at full interval"
+    );
+
+    // The stale pin gets fixed; the next tick re-polls the SAME page.
+    *flaky.fail_when.lock().unwrap() = None;
+    conn.replies.lock().unwrap().push(ok(two_items, Some("c2"), false));
+    rig.clock.advance(60_000);
+    let r2 = ev.run(&opts()).unwrap();
+
+    assert_eq!(r2.runs_started, 1, "only the previously-failed item starts fresh");
+    assert_eq!(r2.duplicates, 1, "the already-started item is recognized, not double-processed");
+    assert!(r2.errors.is_empty(), "{:?}", r2.errors);
+    assert!(r2.cursor_held.is_empty());
+
+    let st2 = rig.state(&h);
+    assert_eq!(st2.cursor.as_deref(), Some("c2"), "now that both items are handled, the cursor advances");
+    assert_eq!(st2.consecutive_failures, 0);
+    assert!(st2.last_error.is_none());
+
+    // The connector was asked for the SAME cursor on both real polls — proof
+    // the held cursor really re-offered the same page.
+    let reqs = conn.requests.lock().unwrap();
+    assert_eq!(reqs[1]["cursor"], json!("c1"));
+    assert_eq!(reqs[2]["cursor"], json!("c1"), "the retry must re-ask from c1, not c2");
+}
+
+#[test]
+fn a_composite_whose_run_refuses_keeps_its_settled_correlation_key() {
+    // A satisfied composite gate whose OWN run refuses to start must stay
+    // satisfied — consuming the correlation on a refusal would lose the
+    // match permanently, since nothing re-fires the member on its own.
+    let rig = Rig::new();
+    let a = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("src").interval_secs(60).dedup_key("/id"),
+    );
+    // A composite needs at least two declared members to be coherent
+    // (TRG-E001) — `b` is a `Manual` member (never polls, so it cannot
+    // interfere with `a`'s connector script) and the OR means the gate is
+    // satisfied by `a` alone.
+    let b = rig.declare(Trigger::new(TriggerKind::Manual, WF));
+    let cond = areev_trigger::predicate::parse_predicate("src = true OR other = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF)
+            .member("src", &a)
+            .member("other", &b)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+            .correlate("/thread"),
+    );
+
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false), // seed the member
+        ok(json!([{ "id": "1", "payload": { "id": "1", "thread": "T1" } }]), Some("c2"), false),
+    ]);
+    let starter = Arc::new(FailForTrigger { trigger: composite.clone(), started: Mutex::new(Vec::new()) });
+    let ev = Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector: Some(conn as Arc<dyn HostToolExecutor>),
+        starter: Some(starter as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    };
+
+    ev.run(&opts()).unwrap(); // seed the member
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+
+    assert_eq!(r.runs_started, 1, "the member's own run starts fine: {:?}", r.errors);
+    assert!(!r.errors.is_empty(), "the composite's own refusal must be reported");
+    assert!(r.cursor_held.contains(&composite), "the composite's firing must be reported as cursor-held");
+
+    let st = rig.state(&composite);
+    assert!(
+        st.partials.contains_key("T1"),
+        "a satisfied gate whose run refused must keep its correlation, got {:?}",
+        st.partials
+    );
 }

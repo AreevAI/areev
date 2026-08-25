@@ -462,3 +462,55 @@ fn two_handles_on_different_files_coexist() {
     assert_eq!(a.count().unwrap(), 1);
     assert_eq!(b.count().unwrap(), 1);
 }
+
+// ---- supersession_chain (#128's store primitive) --------------------------
+
+#[test]
+fn chain_root_of_a_never_superseded_grain_is_itself() {
+    let (mut m, _d) = open_mem();
+    let h = m.add(&fact("ns", "x", "state", "v1")).unwrap();
+    let chain = m.supersession_chain(&h).unwrap();
+    assert_eq!(chain, vec![h], "a never-superseded grain's chain is itself alone");
+}
+
+#[test]
+fn chain_root_walks_back_to_the_first_grain_in_the_history() {
+    let (mut m, _d) = open_mem();
+    let h1 = m.add(&fact("ns", "x", "state", "v1")).unwrap();
+    let mut v2 = fact("ns", "x", "state", "v2");
+    let h2 = m.supersede(&h1, &mut v2).unwrap();
+    let mut v3 = fact("ns", "x", "state", "v3");
+    let h3 = m.supersede(&h2, &mut v3).unwrap();
+
+    // Head-first, root-last, from any point in the chain.
+    assert_eq!(m.supersession_chain(&h3).unwrap(), vec![h3, h2, h1]);
+    assert_eq!(m.supersession_chain(&h2).unwrap(), vec![h2, h1]);
+    assert_eq!(m.supersession_chain(&h1).unwrap(), vec![h1]);
+}
+
+#[test]
+fn chain_root_stops_at_a_hash_missing_from_the_index() {
+    // A grain the index has never seen (or that was forgotten) is not an
+    // error — the walk stops with whatever it found, the same "tolerate the
+    // missing link" posture `history()` already takes.
+    let (m, _d) = open_mem();
+    let unknown = areev_core::error::Hash::try_from_bytes(&[7u8; 32]).unwrap();
+    assert_eq!(m.supersession_chain(&unknown).unwrap(), vec![unknown]);
+}
+
+#[test]
+fn chain_root_refuses_a_chain_longer_than_the_bound_instead_of_looping() {
+    let (mut m, _d) = open_mem();
+    let mut head = m.add(&fact("ns", "x", "state", "v0")).unwrap();
+    // One more hop than the bound allows.
+    for i in 1..=(areev_store::MAX_SUPERSESSION_CHAIN_HOPS + 1) {
+        let mut next = fact("ns", "x", "state", &format!("v{i}"));
+        head = m.supersede(&head, &mut next).unwrap();
+    }
+    let err = m.supersession_chain(&head).unwrap_err();
+    assert!(
+        matches!(err, areev_core::error::AreevError::SupersessionChainTooDeep(_)),
+        "expected SupersessionChainTooDeep, got {err:?}"
+    );
+    assert!(err.to_string().starts_with("STO-E006"));
+}

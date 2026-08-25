@@ -9,6 +9,15 @@
 # (which builds and uploads artifacts but attaches nothing, so it is safe to
 # use as a dry run).
 #
+# GLIBC baseline: the Linux assets are built on the `ubuntu-latest` /
+# `ubuntu-24.04-arm` images, so they need **GLIBC 2.39 or newer** (Ubuntu
+# 24.04+, Debian 13+, RHEL 10+). On an older distro — Ubuntu 22.04 carries
+# 2.35 and is supported until 2027 — the dynamic linker fails with a raw
+# `version 'GLIBC_2.39' not found`, which says nothing useful. Use the
+# container image, `cargo install areev`, or build from source there. This is
+# stated on the Releases page and in docs/quickstart.md; keep the three in
+# step if the runner image moves.
+#
 # No secrets. `GITHUB_TOKEN` with `contents: write` is enough to upload assets.
 name: release-cli
 
@@ -22,7 +31,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.target }}${{ matrix.suffix }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -32,13 +41,27 @@ jobs:
           # cannot compile turso's mimalloc/zstd C deps ("no option
           # -Wdate-time"); a native arm64 gcc has no such issue. Same reason
           # release-pypi.yml uses this runner — keep the two in step.
-          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "" }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "" }
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "", features: "", suffix: "" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "", suffix: "" }
           # macOS runners are arm64; x86_64 cross-compiles cleanly there
           # because Apple ships both SDKs.
-          - { runner: macos-latest,     target: x86_64-apple-darwin,       ext: "" }
-          - { runner: macos-latest,     target: aarch64-apple-darwin,      ext: "" }
-          - { runner: windows-latest,   target: x86_64-pc-windows-msvc,    ext: ".exe" }
+          - { runner: macos-latest,     target: x86_64-apple-darwin,       ext: "", features: "", suffix: "" }
+          - { runner: macos-latest,     target: aarch64-apple-darwin,      ext: "", features: "", suffix: "" }
+          - { runner: windows-latest,   target: x86_64-pc-windows-msvc,    ext: ".exe", features: "", suffix: "" }
+          # Server-tier Linux builds (#123). The default assets deliberately
+          # carry NEITHER postgres nor TLS — that is what keeps the edge
+          # binary dependency-light. But the docs point at Postgres as the
+          # server-tier backend, so without these the released binary was the
+          # one artifact that could not run the deployment shape the docs
+          # recommend, and the alternative was a 15-minute compile.
+          #
+          # `postgres-tls`, not `postgres`: the plain feature REFUSES a DSN
+          # carrying `sslmode=` (STO-E003), and Azure Flexible Server, RDS
+          # with `rds.force_ssl` and Cloud SQL all require TLS. A
+          # postgres-only asset would hit a second wall one step later.
+          # Linux only — the server tier does not deploy on macOS/Windows.
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "", features: "postgres-tls", suffix: "-postgres" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "postgres-tls", suffix: "-postgres" }
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +69,10 @@ jobs:
         run: rustup update stable && rustup target add ${{ matrix.target }}
 
       - name: Build areev
-        run: cargo build --release --locked -p areev --bin areev --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked -p areev --bin areev \
+            --target ${{ matrix.target }} \
+            ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }}
 
       # Fail here rather than shipping a binary that cannot start. A release
       # asset nobody ran is worth less than no asset at all.
@@ -63,6 +89,22 @@ jobs:
           "$BIN" add --db "$RUNNER_TEMP/smoke.db" --ns caller john prefers tea
           "$BIN" recall --db "$RUNNER_TEMP/smoke.db" --ns caller --subject john | grep -q tea
 
+          # The whole point of the -postgres asset is that it HAS the backend,
+          # so prove it rather than trusting the feature flag reached the
+          # build. Port 1 refuses instantly: a working build fails to CONNECT,
+          # a mis-built one fails with "lacks the postgres backend". The
+          # sslmode= is deliberate — it also proves this is postgres-tls and
+          # not plain postgres, which would refuse the DSN with STO-E003.
+          if [ -n "${{ matrix.features }}" ]; then
+            out="$("$BIN" recall --db 'postgresql://u:p@127.0.0.1:1/none?sslmode=require&schema=smoke' \
+                     --ns caller --subject john 2>&1 || true)"
+            printf '%s\n' "$out"
+            case "$out" in
+              *"lacks the postgres backend"*) echo "::error::postgres feature missing from the -postgres asset"; exit 1 ;;
+              *"STO-E003"*)                   echo "::error::built with plain postgres, not postgres-tls"; exit 1 ;;
+            esac
+          fi
+
       - name: Package
         shell: bash
         run: |
@@ -70,7 +112,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           # workflow_dispatch has no tag to read a version from.
           [ "$GITHUB_EVENT_NAME" = "release" ] || VERSION="dev"
-          NAME="areev-${VERSION}-${{ matrix.target }}"
+          NAME="areev-${VERSION}-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/areev${{ matrix.ext }}" "dist/$NAME/"
           cp README.md LICENSE-MIT LICENSE-APACHE "dist/$NAME/"
@@ -93,7 +135,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cli-${{ matrix.target }}
+          name: cli-${{ matrix.target }}${{ matrix.suffix }}
           path: |
             dist/*.tar.gz
             dist/*.zip

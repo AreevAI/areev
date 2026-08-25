@@ -475,6 +475,18 @@ fn show(
         if let Some(name) = &found.name {
             println!("name         {name}");
         }
+        // Printed only when it differs from `trigger` — i.e. only for a
+        // declaration that has been re-pointed by `SUPERSEDE` (#128).
+        // Evaluation state (cursor, dedup fence) follows the ORIGINAL
+        // trigger's hash, not this head, so an operator hunting for "why
+        // does the cursor look stale" needs the key it is actually under.
+        if found.chain_root != found.trigger {
+            println!(
+                "state key    trg:{}  (this trigger was superseded — state follows the \
+                 original declaration, not this head)",
+                found.chain_root
+            );
+        }
         println!("kind         {}", found.kind);
         println!("workflow     {}", found.workflow);
         println!("enabled      {}", found.enabled);
@@ -486,6 +498,12 @@ fn show(
         match found.last_fired_at {
             Some(t) => println!("last fired   {t}"),
             None => println!("last fired   never"),
+        }
+        if let Some(c) = &found.cursor {
+            println!("cursor       {c}");
+        }
+        if let Some(c) = found.op_cursor {
+            println!("op cursor    {c}");
         }
         if found.exhausted {
             println!("exhausted    yes — a one-shot past its instant; it will not fire again");
@@ -606,8 +624,17 @@ fn evaluate(
         // would recreate the silence this counter exists to break.
         let unusable =
             if report.unusable > 0 { format!(" · unusable {}", report.unusable) } else { String::new() };
+        // #129 — named explicitly rather than left for the operator to infer
+        // from duplicates staying flat next tick: a held cursor means at
+        // least one item in that trigger's firing failed to start, so the
+        // same page will come back next pass.
+        let cursor_held = if report.cursor_held.is_empty() {
+            String::new()
+        } else {
+            format!(" · cursor held on {} trigger(s)", report.cursor_held.len())
+        };
         println!(
-            "claimed {} · items {} · {started} · duplicates {} · not due {} · locked {}{unusable}",
+            "claimed {} · items {} · {started} · duplicates {} · not due {} · locked {}{unusable}{cursor_held}",
             report.claimed,
             report.items,
             report.duplicates,

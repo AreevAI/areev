@@ -1028,6 +1028,13 @@ const HOLD_PREFIX: &str = "hold:";
 /// success. Same reasoning that keeps a saved query's `last_run_at` local.
 const TRG_PREFIX: &str = "trg:";
 
+/// Bound on [`Areev::supersession_chain`]'s backward walk. A real edit
+/// history — a human or the loop applying a `SUPERSEDE` — is a handful of
+/// hops deep; this is generous headroom while still failing loudly
+/// (`SupersessionChainTooDeep`) on data that is somehow cyclic rather than
+/// looping the process forever.
+pub const MAX_SUPERSESSION_CHAIN_HOPS: usize = 64;
+
 const MIN_READER_VERSION_KEY: &str = "min_reader_version";
 
 /// File-truth: the link indexes (`prov_idx`, `run_idx`, `related_to`
@@ -1111,6 +1118,26 @@ pub struct AreevOptions {
     /// agent-facing hosts opt into `Aggregate`. The sidecar is encrypted under
     /// this same key when `encryption_key` is set. See [`telemetry`].
     pub telemetry: TelemetryMode,
+    /// Open refusing every write, on both backends. `false` by default.
+    ///
+    /// On postgres this is what makes a least-privilege SELECT-only role a
+    /// usable credential: bootstrap (schema/table DDL, `PG_SEED`) is skipped
+    /// entirely and the open instead VERIFIES the schema and its core tables
+    /// exist via SELECT-only probes, failing with a coded error
+    /// (`STO-E005`) that says whether the schema is absent or merely
+    /// unmigrated — never attempting the DDL a read-only role cannot pass.
+    /// On the embedded backend there is no privilege system to fail
+    /// against, so `open` proceeds exactly as it does read-write (this
+    /// process still owns the file and may need to self-heal a stale
+    /// index), and every write API instead refuses at the point of the
+    /// call — same error, same code, on both backends, which is what lets
+    /// one conformance case cover both.
+    ///
+    /// Refusal happens at the store layer (`STO-E004`), not by hoping the
+    /// backend's own privilege system raises first — a raw Postgres
+    /// `42501` would otherwise be the only signal, undiagnosable to a
+    /// caller that never learns which grant it lacked.
+    pub read_only: bool,
 }
 
 impl Default for AreevOptions {
@@ -1133,6 +1160,7 @@ impl Default for AreevOptions {
             encryption_key: None,
             anon_key: None,
             telemetry: TelemetryMode::Off,
+            read_only: false,
         }
     }
 }
@@ -1696,6 +1724,10 @@ pub struct Areev {
     hlc_last: i64,
     entity_rels: HashSet<String>,
     index_text: bool,
+    /// `AreevOptions::read_only`, carried onto the open handle. Checked by
+    /// [`check_writable`](Self::check_writable) at every write entry point —
+    /// see that function for the enumerated list.
+    read_only: bool,
     /// Lazily-filled token -> `fts_vocab.id` cache. Not preloaded at open:
     /// the text vocabulary is far larger than the triple dictionary and
     /// reading it eagerly would put corpus-sized work back into every open.
@@ -1791,6 +1823,34 @@ impl Areev {
         explicit: Option<AreevOptions>,
         telemetry_mode: TelemetryMode,
     ) -> Result<Self> {
+        // A read-only handle attaches no telemetry sidecar: its flush is a
+        // write (on close, and after any explicit flush), which is exactly
+        // what this mode refuses — and on postgres the sidecar rides the
+        // SAME schema, so it would need the write grant a least-privilege
+        // role by definition does not have. See `open_postgres_internal` for
+        // the identical override on that backend.
+        let read_only = explicit.as_ref().is_some_and(|o| o.read_only);
+        // A read-only open must never bring a memory into existence — that is
+        // itself a write, and on the embedded backend `TursoDb::open` (plus
+        // the `-wal` file and, further down, the `.blobs` dir) would happily
+        // create an empty one, turning a typo'd path into a silent "this
+        // memory is empty" instead of "this memory does not exist". Checked
+        // BEFORE anything touches the filesystem — `OpenFileGuard::claim`
+        // only registers the path in-process, so ordering against it does
+        // not matter, but it must run before `TursoDb::open`. Only the main
+        // file's presence is checked: an absent `-wal`/`.blobs` sidecar next
+        // to an existing, freshly-checkpointed file is normal and must still
+        // open. Mirrors postgres's "schema absent" `STO-E005` — same code,
+        // same shape of message, backend-appropriate wording.
+        if read_only && !std::path::Path::new(path).exists() {
+            return Err(AreevError::ReadOnlyOpenFailed(format!(
+                "memory file {path:?} does not exist — a read-only open never creates one. \
+                 Open it read-write once (drop --read-only / read_only: true) to create the \
+                 memory, then retry read-only"
+            )));
+        }
+        let telemetry_overridden = read_only && telemetry_mode != TelemetryMode::Off;
+        let telemetry_mode = if telemetry_overridden { TelemetryMode::Off } else { telemetry_mode };
         // Keep the AEAD key only in a Zeroizing buffer for the duration of the
         // open; the raw copies (options + this local) are wiped once the engine
         // has ingested it, so no unzeroized key bytes linger on the heap.
@@ -1807,6 +1867,14 @@ impl Areev {
             dbh.execute(sql, vec![])?;
         }
         let mut warnings: Vec<String> = Vec::new();
+        if telemetry_overridden {
+            warnings.push(
+                "telemetry disabled: this open asked for a telemetry sidecar, but a \
+                 read-only handle attaches none (its flush is itself a write) — the \
+                 request was downgraded to off rather than refused"
+                    .into(),
+            );
+        }
         if enc_key.is_some() {
             warnings.push(
                 "encryption-at-rest ON (AES-256-GCM): the memory database and the .blobs CAS \
@@ -1892,18 +1960,37 @@ impl Areev {
                 ));
             }
         }
+        let read_only = explicit.as_ref().is_some_and(|o| o.read_only);
+        // A read-only handle attaches no telemetry sidecar: `Telemetry::
+        // open_pg` bootstraps `telem_*` tables in the SAME schema via its
+        // own `PgDb::open` — a least-privilege role can no more create
+        // those than the main schema's tables — and its flush is a write
+        // regardless of backend. See `open_internal` for the file-backend
+        // mirror of this override.
+        let telemetry_overridden = read_only && telemetry_mode != TelemetryMode::Off;
+        let telemetry_mode = if telemetry_overridden { TelemetryMode::Off } else { telemetry_mode };
+        let mut warnings: Vec<String> = Vec::new();
+        if telemetry_overridden {
+            warnings.push(
+                "telemetry disabled: this open asked for a telemetry sidecar, but a \
+                 read-only handle attaches none (its flush is itself a write) — the \
+                 request was downgraded to off rather than refused"
+                    .into(),
+            );
+        }
         // DDL + seeding run inside PgDb::open, under the schema's bootstrap
         // advisory lock — concurrent openers of a brand-new memory would
-        // otherwise race the IF NOT EXISTS statements.
+        // otherwise race the IF NOT EXISTS statements. Skipped entirely
+        // under `read_only` — see `pg::PgDb::open`.
         let mut bootstrap: Vec<&str> = Vec::with_capacity(pg::PG_SCHEMA.len() + pg::PG_SEED.len());
         bootstrap.extend_from_slice(pg::PG_SCHEMA);
         bootstrap.extend_from_slice(pg::PG_SEED);
-        let dbh: Box<dyn Db> = Box::new(pg::PgDb::open(url, schema, &bootstrap)?);
+        let dbh: Box<dyn Db> = Box::new(pg::PgDb::open(url, schema, &bootstrap, read_only)?);
         let telemetry = match telemetry_mode {
             TelemetryMode::Off => None,
             mode => Some(Telemetry::open_pg(url, schema, mode)?),
         };
-        Self::finish_open(dbh, explicit, BlobStore::Table, telemetry, Vec::new(), None)
+        Self::finish_open(dbh, explicit, BlobStore::Table, telemetry, warnings, None)
     }
 
     /// Backend-independent tail of every open: meta reconciliation and
@@ -1991,6 +2078,34 @@ impl Areev {
         };
 
         let mut opts = match explicit {
+            Some(o) if o.read_only => {
+                // A read-only open never re-stamps — honoring a request that
+                // disagrees with the file's declaration would need exactly
+                // the write this mode exists to refuse. Fresh file/schema
+                // (no declaration yet) has nothing to conflict with, so the
+                // requested settings simply apply for this session only.
+                if let Some(d) = declared_text {
+                    if d != o.index_text {
+                        return Err(AreevError::ReadOnly(format!(
+                            "requested index_text={} differs from the file's declared \
+                             index_text={} — a read-only open cannot re-stamp it. Open \
+                             read-write once to change the declaration, or drop the explicit \
+                             index_text setting",
+                            o.index_text, d
+                        )));
+                    }
+                }
+                if let Some(ref d) = declared_rels {
+                    if *d != o.entity_relations {
+                        return Err(AreevError::ReadOnly(
+                            "requested entity_relations differ from the file's declared set — \
+                             a read-only open cannot re-stamp it"
+                                .into(),
+                        ));
+                    }
+                }
+                o
+            }
             Some(o) => {
                 if let Some(d) = declared_text {
                     if d != o.index_text {
@@ -2022,6 +2137,9 @@ impl Areev {
                 // Telemetry is host config, not a file-truth: a bare `open()`
                 // never turns it on.
                 telemetry: TelemetryMode::Off,
+                // A bare `open()`/`open_postgres()` (no explicit options) is
+                // never read-only — that needs an explicit `AreevOptions`.
+                read_only: false,
             },
         };
         // The plaintext key now lives only inside the storage engine (turso keeps
@@ -2029,23 +2147,30 @@ impl Areev {
         // open options so no unzeroized key bytes linger.
         opts.encryption_key.zeroize();
 
-        // Stamp declarations + create the FTS index if wanted.
-        dbh.execute(
-            "INSERT OR REPLACE INTO meta(k, v) VALUES ('text_index', ?1)",
-            vec![pt(if opts.index_text { "1" } else { "0" })],
-        )?;
-        let mut rels: Vec<&String> = opts.entity_relations.iter().collect();
-        rels.sort();
-        let rels = serde_json::to_string(&rels).unwrap_or_else(|_| "[]".into());
-        dbh.execute(
-            "INSERT OR REPLACE INTO meta(k, v) VALUES ('entity_relations', ?1)",
-            vec![pt(&rels)],
-        )?;
-        // Files written before the BM25 leg moved off Turso's experimental
-        // FTS carry an `idx_fts` index that nothing reads any more, and
-        // that still taxes every write to this table. Drop it on sight.
-        // Absent (the normal case) it errors; that is not a problem.
-        let _ = dbh.execute("DROP INDEX idx_fts", vec![]);
+        // Stamp declarations + create the FTS index if wanted. Skipped
+        // entirely under `read_only`: a least-privilege postgres role has no
+        // UPDATE/INSERT grant on `meta`, and on any backend a read-only
+        // handle must not write regardless — these stamps are idempotent
+        // no-ops on an already-declared file, so skipping them costs
+        // nothing when there is nothing new to declare (checked above).
+        if !opts.read_only {
+            dbh.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES ('text_index', ?1)",
+                vec![pt(if opts.index_text { "1" } else { "0" })],
+            )?;
+            let mut rels: Vec<&String> = opts.entity_relations.iter().collect();
+            rels.sort();
+            let rels = serde_json::to_string(&rels).unwrap_or_else(|_| "[]".into());
+            dbh.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES ('entity_relations', ?1)",
+                vec![pt(&rels)],
+            )?;
+            // Files written before the BM25 leg moved off Turso's experimental
+            // FTS carry an `idx_fts` index that nothing reads any more, and
+            // that still taxes every write to this table. Drop it on sight.
+            // Absent (the normal case) it errors; that is not a problem.
+            let _ = dbh.execute("DROP INDEX idx_fts", vec![]);
+        }
 
         // Load dictionary + counters.
         let mut dict = HashMap::new();
@@ -2077,6 +2202,7 @@ impl Areev {
             hlc_last,
             entity_rels: opts.entity_relations,
             index_text: opts.index_text,
+            read_only: opts.read_only,
             fts_vocab: HashMap::new(),
             fts_docs,
             fts_total_len,
@@ -2124,16 +2250,25 @@ impl Areev {
         // found" — the worst failure available, since it is indistinguishable
         // from an honest empty result. Rebuild once, here, and say so.
         if store.index_text && indexed_text > 0 && store.fts_docs == 0 {
-            store.rebuild_text_index()?;
-            // Report documents indexed, not the rebuild's backfill count —
-            // that counts rows whose text column was NULL, which is zero on
-            // exactly the files this branch exists for.
-            let indexed = store.fts_docs;
-            store.warnings.push(format!(
-                "text index rebuilt on open ({indexed} grains): this file was written when the \
-                 BM25 leg used Turso's experimental FTS index, which is no longer used. \
-                 One-time; later opens skip it"
-            ));
+            if store.read_only {
+                store.warnings.push(
+                    "text index needs a one-time rebuild (this file predates the current BM25 \
+                     leg) but this is a read-only open, which never writes — free-text recall \
+                     will answer empty until an operator opens the memory read-write once"
+                        .into(),
+                );
+            } else {
+                store.rebuild_text_index()?;
+                // Report documents indexed, not the rebuild's backfill count —
+                // that counts rows whose text column was NULL, which is zero on
+                // exactly the files this branch exists for.
+                let indexed = store.fts_docs;
+                store.warnings.push(format!(
+                    "text index rebuilt on open ({indexed} grains): this file was written when the \
+                     BM25 leg used Turso's experimental FTS index, which is no longer used. \
+                     One-time; later opens skip it"
+                ));
+            }
         }
 
         // Same reasoning for the link indexes (`prov_idx`, `run_idx`, and the
@@ -2148,7 +2283,20 @@ impl Areev {
         // does not match the current version heals too, so widening what the
         // indexes hold is a constant bump rather than a migration.
         if meta.get(LINK_INDEX_KEY).map(String::as_str) != Some(LINK_INDEX_VERSION) {
-            if grain_count > 0 {
+            if store.read_only {
+                if grain_count > 0 {
+                    store.warnings.push(
+                        "link indexes (provenance/run correlation/related_to) need a one-time \
+                         rebuild but this is a read-only open, which never writes — those reads \
+                         will answer empty until an operator opens the memory read-write once, \
+                         or runs `areev reindex`"
+                            .into(),
+                    );
+                }
+                // Nothing else to do: the stamp itself is a write, so a
+                // read-only open re-checks (and re-warns) every time rather
+                // than claiming the heal ran.
+            } else if grain_count > 0 {
                 let rows = store.rebuild_link_indexes()?;
                 store.warnings.push(format!(
                     "link indexes rebuilt on open ({rows} rows across {grain_count} grains): this \
@@ -2169,22 +2317,73 @@ impl Areev {
         // no blob deserialization; serialized against concurrent writers the
         // same way rebuild_link_indexes is.
         if meta.get(NS_REGISTRY_KEY).map(String::as_str) != Some(NS_REGISTRY_VERSION) {
-            store.rebuild_ns_registry()?;
-            if grain_count > 0 {
-                store.warnings.push(format!(
-                    "namespace registry rebuilt on open ({grain_count} grains): this file was \
-                     written before namespaces were registered for prefix scoping. One-time; \
-                     later opens skip it"
-                ));
+            if store.read_only {
+                if grain_count > 0 {
+                    store.warnings.push(
+                        "namespace registry needs a one-time rebuild but this is a read-only \
+                         open, which never writes — prefix-scoped recall (\"org.*\") will answer \
+                         empty until an operator opens the memory read-write once, or runs \
+                         `areev reindex`"
+                            .into(),
+                    );
+                }
+            } else {
+                store.rebuild_ns_registry()?;
+                if grain_count > 0 {
+                    store.warnings.push(format!(
+                        "namespace registry rebuilt on open ({grain_count} grains): this file was \
+                         written before namespaces were registered for prefix scoping. One-time; \
+                         later opens skip it"
+                    ));
+                }
             }
         }
 
         Ok(store)
     }
 
+    /// Refuse a write on a handle opened with `read_only: true`
+    /// (`AreevOptions::read_only` / CLI `--read-only`). The single gate every
+    /// mutating entry point calls first, so a read-only handle never reaches
+    /// the SQL layer for a write, on EITHER backend:
+    ///
+    /// - grain writes: `add`/`add_if_novel` (`add_batch_inner`,
+    ///   `add_dyn_if_novel`), `supersede`, `forget`, `forget_subject`/
+    ///   `forget_older_than` (`erase_where`), `merge_heads`, bundle import
+    ///   (`insert_blob`), and reindex (`rebuild_text_index`,
+    ///   `rebuild_link_indexes`, `rebuild_ns_registry`) — but NOT their
+    ///   internal self-heal calls from `finish_open`, which `read_only`
+    ///   skips outright (with a warning) rather than failing the open;
+    /// - meta-row writes: `meta_put`/`meta_delete`/`meta_cas`, the ONE choke
+    ///   point behind retention/anon policies, saved queries and custom
+    ///   templates, trigger state, and the embedding/min-reader-version
+    ///   provenance stamps;
+    /// - CAS blob writes: `put_blob`, `gc_blobs` (`get_blob` is a read and
+    ///   stays open);
+    /// - the postgres-only lazy DDL in `set_embedder` (`ensure_embeddings`'s
+    ///   `vector(dim)` column).
+    ///
+    /// `reserve_write` alone is NOT the gate: on postgres its `UPDATE …
+    /// RETURNING` runs through the driver's `query` path, not `execute`, so
+    /// a check placed only inside it would still miss `intern_term`'s
+    /// `INSERT … RETURNING` and the raw `blobs`/`meta` writes that never
+    /// allocate an id block at all. Gating every function above (most of
+    /// which call `reserve_write` as part of their own write) is what
+    /// actually covers every write path; see the crate's CLAUDE.md for the
+    /// full audit this enumerates.
+    fn check_writable(&self, op: &str) -> Result<()> {
+        if self.read_only {
+            return Err(AreevError::ReadOnly(format!(
+                "cannot {op} — this memory handle was opened with read_only: true"
+            )));
+        }
+        Ok(())
+    }
+
     /// Rebuild `ns_reg` from `grains` (one grouped scan) and stamp the file
     /// current. Idempotent; also the self-heal target for count drift.
     fn rebuild_ns_registry(&mut self) -> Result<()> {
+        self.check_writable("reindex the namespace registry")?;
         let dbr = self.db.as_ref();
         with_txn(dbr, || {
             // Zero-id reservation serializes against concurrent writers on
@@ -2209,14 +2408,36 @@ impl Areev {
     /// silently mixing vector spaces.
     pub fn set_embedder(&mut self, e: Box<dyn EmbedBackend>) {
         let (model, dim) = (e.model().to_string(), e.dim());
+        // Read-only handles never reach `ensure_embeddings`: on postgres
+        // that call ALTERs the table (`vec vector(dim)`) and a least-
+        // privilege SELECT-only role cannot, so this refuses the same way
+        // every other write path does rather than surfacing a raw `42501`.
+        // The embedder still installs when the memory already declares a
+        // matching column (the `Some((m, d))` arm below never touches the
+        // database), so vector recall keeps working against an
+        // already-provisioned memory.
+        if self.read_only && self.meta_embed.is_none() {
+            self.warnings.push(format!(
+                "vector recall disabled — embedder {model}@{dim} not installed: {}",
+                AreevError::ReadOnly(
+                    "this memory has no declared embedding provenance yet, and a read-only \
+                     handle cannot create the vector column"
+                        .into()
+                )
+            ));
+            return;
+        }
         // Make the vector storage usable FIRST (the postgres backend creates
         // its vector(dim) table here and hard-refuses a dim mismatch). On
         // failure the embedder is NOT installed — recall fails soft to the
         // structural/BM25 legs instead of every add failing mid-transaction.
-        if let Err(err) = self.db.ensure_embeddings(dim) {
-            self.warnings
-                .push(format!("vector recall disabled — embedder {model}@{dim} not installed: {err}"));
-            return;
+        if !self.read_only {
+            if let Err(err) = self.db.ensure_embeddings(dim) {
+                self.warnings.push(format!(
+                    "vector recall disabled — embedder {model}@{dim} not installed: {err}"
+                ));
+                return;
+            }
         }
         match &self.meta_embed {
             Some((m, d)) => {
@@ -2333,6 +2554,7 @@ impl Areev {
     }
 
     pub fn meta_put(&self, key: &str, value: &str) -> Result<()> {
+        self.check_writable("write a meta row")?;
         self.db.execute(
             "INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)",
             vec![pt(key), pt(value)],
@@ -2342,6 +2564,7 @@ impl Areev {
 
     /// Delete a single `meta` row. A missing key is not an error.
     pub fn meta_delete(&self, key: &str) -> Result<()> {
+        self.check_writable("delete a meta row")?;
         self.db.execute("DELETE FROM meta WHERE k = ?1", vec![pt(key)])?;
         Ok(())
     }
@@ -2370,6 +2593,7 @@ impl Areev {
     /// one writer. That is the intent for lease rows; do not reach for this on a
     /// row whose fields are independently owned.
     pub fn meta_cas(&self, key: &str, expected: Option<&str>, new: &str) -> Result<bool> {
+        self.check_writable("write a meta row")?;
         let affected = match expected {
             None => self.db.execute(
                 "INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)",
@@ -3114,6 +3338,7 @@ impl Areev {
     /// Errors when the file declares text indexing off — reopen with
     /// `index_text: true` (CLI `--index-text true`) first.
     pub fn rebuild_text_index(&mut self) -> Result<usize> {
+        self.check_writable("reindex the text index")?;
         if !self.index_text {
             return Err(AreevError::Validation(
                 "text indexing is off for this file — reopen it with text indexing on \
@@ -3405,6 +3630,7 @@ impl Areev {
     }
 
     fn add_dyn_if_novel(&mut self, grain: &dyn AddableDyn) -> Result<(Hash, bool)> {
+        self.check_writable("add a grain")?;
         let (blob, _hash) = grain.serialize_dyn()?;
         let gv = extract_view(&deserialize_blob(&blob)?);
         if let (Some(sj), Some(rl), Some(ob)) =
@@ -3621,6 +3847,7 @@ impl Areev {
     }
 
     fn add_batch_inner(&mut self, grains: &[&dyn AddableDyn]) -> Result<Vec<Hash>> {
+        self.check_writable("add a grain")?;
         // Adding a grain that is already stored is a no-op, not an error.
         //
         // A content address IS the content: two byte-identical grains are one
@@ -3730,6 +3957,7 @@ impl Areev {
     /// cleared first, so running it twice is not double-counting. Reads every
     /// blob once, so it is a maintenance operation, not a hot path.
     pub fn rebuild_link_indexes(&mut self) -> Result<usize> {
+        self.check_writable("reindex the link indexes")?;
         // Warm pass, outside the transaction: intern every dictionary term
         // the current snapshot's links/runs need (interning is autocommit by
         // convention). The transaction below re-reads its own consistent
@@ -4715,6 +4943,7 @@ impl Areev {
     /// Sets `derived_from` on the new grain; the old grain's blob is never
     /// touched — only its index-layer fields change.
     pub fn supersede<G: Grain + 'static>(&mut self, old: &Hash, new_grain: &mut G) -> Result<Hash> {
+        self.check_writable("supersede a grain")?;
         // Old head must exist and be current.
         let rows = self.db.query(
             "SELECT seq, ns, s, p, svt FROM grains WHERE hash = ?1",
@@ -4873,6 +5102,7 @@ impl Areev {
     /// Forget (erase from hot store) — writes a tombstone to the op-log.
     /// File-level crypto-erasure remains the strong path.
     pub fn forget(&mut self, hash: &Hash) -> Result<()> {
+        self.check_writable("forget a grain")?;
         // Pre-transaction read for the (ns,s,p) key only. The SEQ is
         // deliberately not taken from here: it is re-resolved under the row
         // lock inside the transaction (a concurrent forget + re-add can move
@@ -5471,6 +5701,7 @@ impl Areev {
             /// scrubbed post-commit, not just the bare subject.
             identity_names: Vec<String>,
         }
+        self.check_writable("erase (forget-subject / retention sweep)")?;
         self.db.begin()?;
         let r = (|| -> Result<EraseOut> {
             let mut out = EraseOut {
@@ -6615,6 +6846,62 @@ impl Areev {
         Ok(out)
     }
 
+    /// Walk a grain's `supersedes` chain backward from `hash` to its root —
+    /// the first grain in its edit history, the one with no `supersedes` of
+    /// its own. Returns every hash visited, **head first, root last**
+    /// (`out[0] == *hash`, `out.last()` is the root); for a grain that has
+    /// never been superseded the chain is the single-element `[*hash]`, so
+    /// `out.last() == hash` — the no-op case callers key correctness on
+    /// (#128).
+    ///
+    /// This is the one primitive both halves of a caller's problem share:
+    /// the root is the stable identity to key durable state on, and the
+    /// intermediate hashes are exactly the OLD identities a pre-fix caller
+    /// might have keyed state on instead — a single walk serves both without
+    /// re-walking per lookup. `areev-trigger`'s evaluator is the motivating
+    /// caller (`crates/areev-trigger/CLAUDE.md`... see `docs/triggers.md`
+    /// "Idempotency"): a `Trigger` grain re-pointed by `SUPERSEDE` mints a
+    /// new content address for the same standing rule, and state keyed on
+    /// the head alone would orphan every time the declaration is edited.
+    ///
+    /// A hash missing from the index (forgotten, or simply unknown) stops
+    /// the walk where it is rather than erroring — the same "tolerate the
+    /// missing link" posture [`Self::history`] takes for a chain a tombstone
+    /// legitimately shortened.
+    ///
+    /// Bounded at [`MAX_SUPERSESSION_CHAIN_HOPS`]: a real edit history is a
+    /// handful of supersessions deep, never cyclic. Exceeding the bound
+    /// returns [`AreevError::SupersessionChainTooDeep`] rather than looping
+    /// the process forever — a cyclic `supersedes` graph is corrupt data,
+    /// not slow data, and must fail loudly rather than hang whatever called
+    /// in.
+    pub fn supersession_chain(&self, hash: &Hash) -> Result<Vec<Hash>> {
+        let mut out = vec![*hash];
+        let mut cur = *hash;
+        for _ in 0..MAX_SUPERSESSION_CHAIN_HOPS {
+            let rows = self.db.query(
+                "SELECT supersedes FROM grains WHERE hash = ?1",
+                vec![pb(cur.as_bytes().to_vec())],
+            )?;
+            let supersedes = match rows.first() {
+                Some(row) => row.blob(0).and_then(|b| Hash::try_from_bytes(&b).ok()),
+                // Unknown to the index: stop here rather than erroring — the
+                // caller still gets everything real that was walked.
+                None => return Ok(out),
+            };
+            match supersedes {
+                Some(parent) => {
+                    out.push(parent);
+                    cur = parent;
+                }
+                // `supersedes` is NULL: this grain supersedes nothing, so it
+                // is the root.
+                None => return Ok(out),
+            }
+        }
+        Err(AreevError::SupersessionChainTooDeep(*hash))
+    }
+
     /// Vector leg: cosine top-k over embedded grain text (brute force —
     /// exact search at per-memory scale, per M0 measurements).
     /// Semantic nearest-neighbours to `text` among current grains, optionally
@@ -7659,6 +7946,7 @@ impl Areev {
         relation: &str,
         merged: &mut G,
     ) -> Result<Hash> {
+        self.check_writable("merge heads")?;
         let tips = self.heads(ns, subject, relation)?;
         if tips.len() < 2 {
             return Err(AreevError::Validation(format!(
@@ -8059,6 +8347,7 @@ impl Areev {
     /// Store bytes in the per-memory CAS; returns the `cas://sha256:` URI.
     /// Idempotent — content addressing dedupes by construction.
     pub fn put_blob(&mut self, bytes: &[u8]) -> Result<String> {
+        self.check_writable("put a blob")?;
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(bytes);
         let hex = hex::encode(digest);
@@ -8125,6 +8414,7 @@ impl Areev {
     /// an encrypted memory — on a plaintext one there is no key to seal
     /// under, and silently doing nothing would read as success.
     pub fn encrypt_blobs(&mut self) -> Result<(usize, usize)> {
+        self.check_writable("encrypt blobs")?;
         let Some(key) = self.blob_key.as_deref().copied() else {
             return Err(AreevError::Validation(
                 "encrypt_blobs needs an encrypted memory — open it with its key \
@@ -8183,6 +8473,7 @@ impl Areev {
     /// it while writers are quiescent (a blob uploaded but not yet
     /// referenced by its grain's commit looks unreferenced to the scan).
     pub fn gc_blobs(&mut self) -> Result<usize> {
+        self.check_writable("garbage-collect blobs")?;
         // Collect referenced hashes from live grains.
         let blobs: Vec<Vec<u8>> = self
             .db
@@ -8341,6 +8632,7 @@ impl Areev {
 
     /// Insert one already-serialized grain (bundle import path).
     fn insert_blob(&mut self, blob: Vec<u8>, hash: Hash, op: i64, hlc_in: i64) -> Result<()> {
+        self.check_writable("import a bundle")?;
         let pr = self.prep_from_blob(blob, hash, false)?;
         let ram_seq = self.next_seq;
         self.next_seq += 1;

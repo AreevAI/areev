@@ -147,6 +147,40 @@ Conformance: `a_handle_recovers_from_a_database_outage` in
 raised on this backend, and concurrent writers block and serialise at
 `reserve_write` rather than erroring.
 
+**Least-privilege read-only role (`--read-only`, issue #127).** Without
+`--read-only`, the role that opens a memory **must own the schema** —
+bootstrap (`CREATE SCHEMA IF NOT EXISTS`, every `PG_SCHEMA` DDL statement,
+`PG_SEED`'s counter upserts) runs on **every** open, not just the first, and
+Postgres checks the `CREATE` privilege on the database before it checks
+whether the schema already exists, and table OWNERSHIP before it checks
+whether an index already exists — so even fully idempotent `IF NOT EXISTS`
+DDL 42501s a role that merely has SELECT on an already-migrated schema. A
+dashboard, a reporting job, or a read-only console had no way to be handed
+anything narrower than the owning credential.
+
+`--read-only` (`AreevOptions::read_only` in the bindings) fixes this: the
+open skips bootstrap entirely and instead verifies the schema and its core
+tables exist via SELECT-only probes, so a role with exactly these grants can
+open an existing, already-migrated memory and recall from it — and gets a
+coded refusal (`STO-E004`) on any write, never a raw `42501`:
+
+```sql
+GRANT CONNECT ON DATABASE areev TO areev_readonly;
+GRANT USAGE ON SCHEMA "<schema>" TO areev_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA "<schema>" TO areev_readonly;
+-- Tables created by a LATER migration need this too, or they silently sit
+-- outside the grant until someone re-runs the GRANT SELECT above by hand:
+ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>"
+  GRANT SELECT ON TABLES TO areev_readonly;
+```
+
+Run the owning role's normal (non-`--read-only`) open at least once first —
+`--read-only` never creates the schema, so there must be something for these
+grants to point at. The motivating consumer is `areev ui --read-only`: paired
+with #124 (the console no longer displays its own DSN), a read-only console
+instance never needs — and never holds — write authority over the memory it
+renders.
+
 ## SSO note (trusted-header mode)
 
 The proxy shared secret (`--sso-secret-env`) is an **impersonation-grade

@@ -7,6 +7,13 @@
 #   AREEV_VERSION   tag to install (default: the latest release)
 #   AREEV_INSTALL   install directory (default: ~/.local/bin, or /usr/local/bin
 #                  when running as root)
+#   AREEV_FLAVOR    "" (default) or "postgres" — the server-tier Linux build
+#                  with the postgres+TLS backend compiled in. The default
+#                  assets deliberately have neither, which is what keeps the
+#                  edge binary dependency-light.
+#
+# The Linux assets need GLIBC 2.39+ (Ubuntu 24.04+). On an older distro use
+# the container image or `cargo install areev`.
 #
 # POSIX sh on purpose — this has to run in a bare container or a notebook cell.
 # Windows is not covered: download the .zip from the Releases page.
@@ -33,6 +40,20 @@ case "$arch" in
 esac
 target="${arch_part}-${os_part}"
 
+# ---- flavor ----------------------------------------------------------------
+# The server-tier build is Linux-only, so refuse early and by name rather than
+# letting the download 404 into "no prebuilt binary for <target>", which sends
+# the reader looking for the wrong problem.
+flavor=""
+case "${AREEV_FLAVOR:-}" in
+  ""|default) ;;
+  postgres)
+    [ "$os_part" = "unknown-linux-gnu" ] \
+      || die "AREEV_FLAVOR=postgres is built for Linux only; on $os use 'cargo install areev --features postgres-tls'"
+    flavor="-postgres" ;;
+  *) die "unknown AREEV_FLAVOR '${AREEV_FLAVOR}' — expected '' or 'postgres'" ;;
+esac
+
 # ---- version ---------------------------------------------------------------
 have curl || have wget || die "needs curl or wget"
 fetch() {  # fetch <url> <dest|-->
@@ -58,7 +79,7 @@ fi
 [ -n "$version" ] || die "could not determine a release to install; set AREEV_VERSION"
 
 plain="${version#v}"
-asset="${BIN}-${plain}-${target}.tar.gz"
+asset="${BIN}-${plain}-${target}${flavor}.tar.gz"
 base="https://github.com/$REPO/releases/download/$version"
 
 # ---- download + verify -----------------------------------------------------
@@ -67,7 +88,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 printf 'downloading %s (%s)\n' "$asset" "$version" >&2
 fetch "$base/$asset" "$tmp/$asset" \
-  || die "no prebuilt binary for $target in $version — see https://github.com/$REPO/releases"
+  || die "no prebuilt binary for ${target}${flavor} in $version — see https://github.com/$REPO/releases"
 
 # The release carries one SHA256SUMS for every asset. Verify when we can hash;
 # say so plainly when we cannot, rather than implying a check that did not run.
@@ -92,10 +113,19 @@ elif [ "$(id -u)" = "0" ]; then dest="/usr/local/bin"
 else dest="$HOME/.local/bin"
 fi
 mkdir -p "$dest"
-install -m 755 "$tmp/${BIN}-${plain}-${target}/$BIN" "$dest/$BIN" 2>/dev/null \
-  || { cp "$tmp/${BIN}-${plain}-${target}/$BIN" "$dest/$BIN" && chmod 755 "$dest/$BIN"; }
+install -m 755 "$tmp/${BIN}-${plain}-${target}${flavor}/$BIN" "$dest/$BIN" 2>/dev/null \
+  || { cp "$tmp/${BIN}-${plain}-${target}${flavor}/$BIN" "$dest/$BIN" && chmod 755 "$dest/$BIN"; }
 
-printf 'installed %s to %s\n' "$("$dest/$BIN" --version)" "$dest/$BIN" >&2
+# Run it before claiming success. The usual failure here is a GLIBC too old
+# for the release image (2.39+), which the dynamic linker reports as a bare
+# `version 'GLIBC_2.39' not found` — true, and useless on its own.
+if ! ver="$("$dest/$BIN" --version 2>&1)"; then
+  printf '%s\n' "$ver" >&2
+  die "the installed binary will not run on this system. If that mentions GLIBC,
+  these assets need 2.39+ (Ubuntu 24.04+). Use the container image
+  (https://github.com/$REPO/blob/main/docs/docker.md) or 'cargo install $BIN'."
+fi
+printf 'installed %s to %s\n' "$ver" "$dest/$BIN" >&2
 case ":$PATH:" in
   *":$dest:"*) ;;
   *) printf '\n%s is not on your PATH. Add it:\n  export PATH="%s:$PATH"\n' "$dest" "$dest" >&2 ;;

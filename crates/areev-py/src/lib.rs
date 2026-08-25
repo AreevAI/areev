@@ -125,7 +125,10 @@ fn open_postgres_from_dsn(
     _anon_key: Option<[u8; 32]>,
 ) -> areev_core::error::Result<RustAreev> {
     Err(AreevError::Validation(
-        "this build lacks the postgres backend (rebuild with the `postgres` feature)".into(),
+        "this build lacks the postgres backend — rebuild the wheel with the \
+             `postgres-tls` feature (maturin build --release --features postgres-tls) and \
+             install it; plain `postgres` alone refuses any DSN carrying sslmode=, which most \
+             managed Postgres (Azure, RDS, Cloud SQL) requires".into(),
     ))
 }
 
@@ -2875,7 +2878,10 @@ fn drop_postgres_schema(py: Python<'_>, url: String, schema: String) -> PyResult
 #[cfg(not(feature = "postgres"))]
 #[pyfunction]
 fn drop_postgres_schema(_py: Python<'_>, _url: String, _schema: String) -> PyResult<()> {
-    Err(err("this build lacks the postgres backend (rebuild with the `postgres` feature)"))
+    Err(err("this build lacks the postgres backend — rebuild the wheel with the \
+             `postgres-tls` feature (maturin build --release --features postgres-tls) and \
+             install it; plain `postgres` alone refuses any DSN carrying sslmode=, which most \
+             managed Postgres (Azure, RDS, Cloud SQL) requires"))
 }
 
 /// Read one CAS blob from a memory's `.blobs` sidecar without opening the
