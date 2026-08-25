@@ -61,7 +61,9 @@ Turso transitively includes [tantivy](https://github.com/quickwit-oss/tantivy)
 | pyo3 (areev-py only) | MIT OR Apache-2.0 |
 | napi, napi-derive (areev-js only) | MIT |
 | tokio-postgres (areev-store, `postgres` feature) | MIT OR Apache-2.0 |
-| rustls, rustls-pki-types (areev-server, `tls` feature) | Apache-2.0 OR ISC OR MIT |
+| rustls, rustls-pki-types (areev-server `tls` feature; areev-store `postgres-tls` feature) | Apache-2.0 OR ISC OR MIT |
+| tokio-postgres-rustls (areev-store, `postgres-tls` feature) | MIT |
+| webpki-roots (areev-llm; areev-store `postgres-tls` feature) | CDLA-Permissive-2.0 |
 
 "MIT OR Apache-2.0" dependencies are used under Apache-2.0. Full license
 texts ship in each crate's source distribution via crates.io.
