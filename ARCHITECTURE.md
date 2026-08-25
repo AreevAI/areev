@@ -469,9 +469,28 @@ for profile and booking-style workloads, and the default for constrained
 
 **Embedders and rerankers are traits** (`EmbedBackend`, `RerankBackend`). Areev
 ships no mandatory external service: bring a remote HTTP embedder, a local
-model, or nothing at all. Because a memory file records its embedding provenance
-(model + dimension) in its `meta` table, a mismatched embedder warns rather than
-silently mixing vector spaces.
+model, or nothing at all. `EmbedBackend::embed` is **synchronous** — the store
+is a sync API over a private current-thread runtime, and an async embedder
+would push that async-ness through every call that can write. So a remote
+embedder is reached one of three ways: implement the trait with a blocking
+client (Rust), `set_embedder_command` (a subprocess, any language), or compute
+vectors host-side and carry them on with the external seam
+(`add_with_embedding` / `set_grain_embedding`, and `addEmbedding` on the
+bindings) — the route for a host that must keep the endpoint credential
+in-process. The in-process callback the Node and Python bindings accept is
+sync for the same reason, so it cannot itself perform I/O.
+
+Because a memory file records its embedding provenance (model + dimension) in
+its `meta` table, a mismatched embedder warns rather than silently mixing
+vector spaces. Provenance is stamped only once a vector is actually stored: a
+declaration the memory cannot serve is worse than none.
+
+**Vector recall on the PostgreSQL tier is an exact scan.** `pgvector`'s `<=>`
+runs over `embeddings.vec` with no ANN index, so latency is linear in corpus
+size — measured on loopback, `RECALL … ABOUT` is ~25 ms p50 at 2k grains and
+~100 ms at 10k. An optional HNSW index is contemplated
+(`docs/postgres-backend-proposal.md`) and not yet shipped; until it is, size a
+Postgres corpus against that slope rather than against the embedded tier's.
 
 Bounded graph reads sit on the same indexes: 1-hop neighborhoods, relation-filtered
 k-hop traversal, bounded shortest paths (for "why does the agent believe X"

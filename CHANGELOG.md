@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The external-embedding seam works with no embedder installed.**
+  `set_grain_embedding` (`addEmbedding` on the bindings) never called
+  `ensure_embeddings`, the DDL that creates the PostgreSQL `vector(dim)`
+  column — only `set_embedder` did. A host that computes its own vectors,
+  which is the seam's whole purpose, therefore hit
+  `42703 column "vec" of relation "embeddings" does not exist` on a memory
+  that had never installed an embedder, and every later `nearest_vector`
+  failed the same way. Worse, provenance was stamped *before* the write:
+  the memory ended up declaring an embedding space it had no column to
+  hold, weakening the guarantee `ARCHITECTURE.md` §6 rests on. The DDL now
+  runs first and provenance is recorded only after the vector is stored —
+  a refused write leaves the declaration untouched. A no-op on the embedded
+  backend, so both tiers keep identical semantics; pinned by two
+  `areev-conformance` cases that run against both.
+
+### Changed
+
+- **`ARCHITECTURE.md` §6 now says what the embedder seam actually offers.**
+  It advertised "bring a remote HTTP embedder" without noting that
+  `EmbedBackend::embed` is synchronous, so an in-process async embedder is
+  not expressible from the bindings — the three routes that do work are now
+  named. It also now states that vector recall on the PostgreSQL tier is an
+  exact scan with latency linear in corpus size, with measured figures: an
+  undocumented ceiling is harder to design around than a documented one.
+
 ## [1.6.3] — 2026-08-25
 
 ### Added

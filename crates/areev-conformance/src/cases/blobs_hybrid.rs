@@ -162,3 +162,43 @@ pub fn forget_reclaims_sole_referenced_blob(b: &dyn Backend) {
     );
     assert!(peer.get_blob(&shared).is_ok());
 }
+
+/// The external seam with no embedder installed. On Postgres the `vector(dim)`
+/// column is created lazily and only `set_embedder` reached that DDL, so this
+/// route failed `42703` — and stamped provenance anyway.
+pub fn external_vectors_need_no_embedder(b: &dyn Backend) {
+    let mut m = b.open();
+    assert!(m.declared_embedding().is_none(), "a fresh memory declares no vectors");
+
+    let a = m.add(&fact("caller", "john", "drinks", "espresso")).unwrap();
+    let c = m.add(&fact("caller", "john", "eats", "toast")).unwrap();
+
+    let mut v1 = vec![0.0f32; 8];
+    v1[0] = 1.0;
+    let mut v2 = vec![0.0f32; 8];
+    v2[1] = 1.0;
+    m.set_grain_embedding(&a, &v1).unwrap();
+    m.set_grain_embedding(&c, &v2).unwrap();
+
+    let (model, dim) = m.declared_embedding().expect("a stored vector declares provenance");
+    assert_eq!((model, dim), ("external", 8));
+
+    let near = m.nearest_vector("caller", None, None, &v1, 2).unwrap();
+    assert_eq!(near[0].0, a, "the matching vector must rank first");
+    assert!(near[0].1 > 0.9, "self-similarity should be ~1, got {}", near[0].1);
+}
+
+/// Provenance must not outlive a failed write.
+pub fn a_refused_vector_declares_nothing(b: &dyn Backend) {
+    let mut m = b.open();
+    let a = m.add(&fact("caller", "john", "drinks", "espresso")).unwrap();
+    m.set_grain_embedding(&a, &[0.5f32; 8]).unwrap();
+
+    assert!(m.set_grain_embedding(&a, &[0.5f32; 9]).is_err(), "a dim change must be refused");
+    assert_eq!(
+        m.declared_embedding().map(|(x, d)| (x.to_string(), d)),
+        Some(("external".to_string(), 8)),
+        "a refused write must not move declared provenance"
+    );
+}
+
