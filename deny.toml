@@ -32,8 +32,9 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     # The Mozilla CA-certificate bundle shipped by `webpki-roots` (pulled via
-    # ureq → rustls for the out-of-box LLM provider HTTPS calls). A permissive
-    # data license, not copyleft.
+    # ureq → rustls for the out-of-box LLM provider HTTPS calls, and via
+    # areev-store's `postgres-tls` feature for the Postgres transport). A
+    # permissive data license, not copyleft.
     "CDLA-Permissive-2.0",
 ]
 
