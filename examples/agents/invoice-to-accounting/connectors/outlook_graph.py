@@ -28,6 +28,10 @@ second can leave one behind until the next mail arrives -- and any overlap
 re-fetched after a crash is swallowed by the trigger's `/message_id` dedup,
 which is the guarantee that actually matters.
 
+The poll reads the **Inbox**, not `/messages` -- see `inbox()` for why that
+distinction is the difference between a desk that drains and one that keeps
+re-ingesting its own approval mail.
+
 Never run by CI: the keyless floor uses the fixture connector instead.
 """
 
@@ -129,12 +133,31 @@ def base_path():
     return f"users/{shared}" if shared else "me"
 
 
+def inbox():
+    """The collection to poll.
+
+    NOT `/messages`: that spans every folder, so the desk's own `send_ask` /
+    `reply_email` copies sit in Sent Items with a fresh `receivedDateTime`
+    and come back as candidate invoices on the next tick. `/message_id`
+    dedup does not save you -- a sent message is a different message id.
+    A path that deliberately wants mail filed elsewhere can still ask for
+    `{base_path()}/messages`; the default poll must not.
+    """
+    return f"{base_path()}/mailFolders/inbox/messages"
+
+
 def flatten(msg, tok, mailbox):
     """One Graph message -> the workflow's input shape + its blobs."""
     attachments, blobs = [], []
     if msg.get("hasAttachments"):
-        listing = graph(f"{base_path()}/messages/{msg['id']}/attachments", tok,
-                        **{"$select": "name,contentType,contentBytes"})
+        # No `$select` here on purpose. `contentBytes` is declared on
+        # microsoft.graph.fileAttachment, not on the base attachment type the
+        # collection is typed as, so naming it 400s the whole request
+        # ("Could not find a property named 'contentBytes'") and every message
+        # with an attachment fails the poll. Keeping a $select would mean
+        # casting the collection (/attachments/microsoft.graph.fileAttachment),
+        # which is more machinery than the skip below is worth.
+        listing = graph(f"{base_path()}/messages/{msg['id']}/attachments", tok)
         for a in listing.get("value", []):
             if not a.get("contentBytes"):
                 continue  # itemAttachment / referenceAttachment: not file bytes
@@ -170,13 +193,13 @@ def poll(req):
     cursor = req.get("cursor")
     if cursor is None:
         # Seed: record where the mailbox is now, fire nothing.
-        newest = graph(f"{base_path()}/messages", tok, **{
+        newest = graph(inbox(), tok, **{
             "$orderby": "receivedDateTime desc", "$top": 1,
             "$select": "receivedDateTime"})
         rows = newest.get("value", [])
         seed = rows[0]["receivedDateTime"] if rows else "1970-01-01T00:00:00Z"
         return {"items": [], "cursor": seed, "more": False}
-    listing = graph(f"{base_path()}/messages", tok, **{
+    listing = graph(inbox(), tok, **{
         "$filter": f"receivedDateTime gt {cursor}",
         "$orderby": "receivedDateTime asc",
         "$top": req.get("max_items", 100),

@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`outlook_graph.py` (invoice-to-accounting example): two live-only bugs.**
+  The attachment listing's `$select` named `contentBytes`, which is declared
+  on `microsoft.graph.fileAttachment` and not on the base `attachment` type
+  the collection is typed as — Graph answered `400 BadRequest` and every
+  message with an attachment failed the poll. And the poll read `/messages`,
+  which spans **all** folders, so the desk's own approval mail came back out
+  of Sent Items as a fresh candidate invoice on the next tick (with a new
+  message id, so `/message_id` dedup could not catch it); it now reads
+  `…/mailFolders/inbox/messages`. Neither reproduces under the keyless CI
+  floor, which uses the fixture connector by design
+  ([#118](https://github.com/AreevAI/areev/issues/118)).
+
 ## [1.6.2] — 2026-08-24
 
 ### Removed
