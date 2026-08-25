@@ -30,14 +30,32 @@ use crate::{pi, pt};
 /// tokio-postgres's `Display` is just "db error" — the server's message and
 /// SQLSTATE live in the source chain. Surface them, or every failure is
 /// undiagnosable.
-fn pg_err(e: tokio_postgres::Error) -> AreevError {
+///
+/// The no-SQLSTATE arm walks the chain by hand for the same reason: a
+/// connect-time failure never reaches a server, so it has no SQLSTATE, and
+/// its `Display` alone is "error connecting to server". That is the class a
+/// TLS rejection lands in — "invalid peer certificate: UnknownIssuer" is the
+/// whole diagnosis, and it sits one level down.
+pub(crate) fn pg_err(e: tokio_postgres::Error) -> AreevError {
     match e.as_db_error() {
         Some(db) => AreevError::Storage(format!(
             "postgres error {}: {}",
             db.code().code(),
             db.message()
         )),
-        None => db_err(e),
+        None => {
+            let mut msg = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            // Bounded: a `source()` implementation that cycles would otherwise
+            // hang the caller, and no real chain here is deeper than three.
+            for _ in 0..8 {
+                let Some(cause) = source else { break };
+                msg.push_str(": ");
+                msg.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            AreevError::Storage(msg)
+        }
     }
 }
 
@@ -200,15 +218,12 @@ impl PgDb {
             .enable_all()
             .build()
             .map_err(db_err)?;
-        let (client, connection) = rt
-            .block_on(tokio_postgres::connect(url, tokio_postgres::NoTls))
-            .map_err(pg_err)?;
-        // The connection future must be driven for the client to make
-        // progress; the current-thread runtime polls it inside every
-        // block_on below.
-        rt.spawn(async move {
-            let _ = connection.await;
-        });
+        // `pgtls::connect` reads the DSN's `sslmode`/`sslrootcert`, spawns the
+        // connection future onto this runtime (it must be driven for the
+        // client to make progress; the current-thread runtime polls it inside
+        // every block_on below), and REFUSES a DSN that asks for encryption a
+        // build without `postgres-tls` cannot give it.
+        let client = crate::pgtls::connect(&rt, url)?;
         rt.block_on(async {
             client
                 .query_one(
@@ -283,13 +298,7 @@ impl PgDb {
     /// session-local state has to be restored — `search_path` — and the two
     /// caches that belonged to the old session have to go.
     fn reconnect(&self) -> Result<()> {
-        let (client, connection) = self
-            .rt
-            .block_on(tokio_postgres::connect(&self.url, tokio_postgres::NoTls))
-            .map_err(pg_err)?;
-        self.rt.spawn(async move {
-            let _ = connection.await;
-        });
+        let client = crate::pgtls::connect(&self.rt, &self.url)?;
         self.rt.block_on(client.batch_execute(&format!(
             "SET search_path TO \"{}\", public, ext",
             self.schema
@@ -951,11 +960,7 @@ pub fn drop_postgres_schema(url: &str, schema: &str) -> Result<()> {
         .enable_all()
         .build()
         .map_err(db_err)?;
-    let (client, connection) =
-        rt.block_on(tokio_postgres::connect(url, tokio_postgres::NoTls)).map_err(pg_err)?;
-    rt.spawn(async move {
-        let _ = connection.await;
-    });
+    let client = crate::pgtls::connect(&rt, url)?;
     rt.block_on(client.batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE")))
         .map_err(pg_err)
 }

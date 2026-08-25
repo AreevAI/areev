@@ -28,3 +28,4 @@ tempfile = "3"
 
 [features]
 postgres = ["areev-store/postgres"]
+postgres-tls = ["postgres", "areev-store/postgres-tls"]

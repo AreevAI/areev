@@ -18,8 +18,14 @@ publish = false
 # and `Areev("postgres://…?schema=<name>")` must work from a stock
 # `pip install areev`. The dependency-light default stays with the `areev`
 # CLI and the store crate.
-default = ["postgres"]
+# `postgres-tls` rides with it for the same reason: the managed Postgres a
+# binding user points at (Azure Flexible Server, RDS, Cloud SQL) requires TLS
+# on the wire, and a wheel installer cannot recompile to add a cargo feature.
+# rustls is already in this crate's graph via areev-llm's HTTP client, so the
+# artifact grows by a connector, not by a TLS stack.
+default = ["postgres", "postgres-tls"]
 postgres = ["areev-store/postgres"]
+postgres-tls = ["postgres", "areev-store/postgres-tls"]
 
 [lib]
 name = "areev"

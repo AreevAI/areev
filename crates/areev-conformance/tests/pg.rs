@@ -275,10 +275,26 @@ fn file_only_capabilities_are_rejected() {
 /// Terminating every backend on the database (the obvious way to write it)
 /// also kills the connections of every other test sharing the server, since
 /// cargo runs them in parallel.
+///
+/// The one case in this suite that needs its OWN connection rather than a
+/// `Areev` handle — the side channel that issues `pg_terminate_backend`. It
+/// speaks `NoTls`, so a DSN that demands encryption skips this test rather
+/// than failing it: the store's own sessions handle TLS (`pgtls::connect`),
+/// this probe does not.
 #[test]
 fn a_handle_recovers_from_a_database_outage() {
     let Some(b) = backend() else { return };
     let base = pg_url().unwrap();
+    if base.contains("sslmode=require")
+        || base.contains("sslmode=verify")
+        || base.contains("sslrootcert=")
+    {
+        eprintln!(
+            "skipping a_handle_recovers_from_a_database_outage: the pg_terminate_backend \
+             side channel connects with NoTls, and this DSN demands encryption"
+        );
+        return;
+    }
     let schema = b.schema_for("outage");
     const APP: &str = "areev_outage_probe";
     let sep = if base.contains('?') { '&' } else { '?' };

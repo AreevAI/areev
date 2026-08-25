@@ -1,6 +1,7 @@
-# The areev container image: the one `areev` binary, built with the two
+# The areev container image: the one `areev` binary, built with the three
 # non-default features a container deployment wants — `postgres` (the server
-# tier, --db postgres://…?schema=<name>) and `tls` (native rustls for
+# tier, --db postgres://…?schema=<name>), `postgres-tls` (encryption on that
+# DSN, which every managed Postgres requires) and `tls` (native rustls for
 # deployments with nowhere to run a terminating proxy).
 #
 #   docker build -t areev .
@@ -18,7 +19,7 @@ COPY . .
 # binary is copied out because the target dir does not survive the RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p areev --bin areev --features postgres,tls \
+    cargo build --release --locked -p areev --bin areev --features postgres,postgres-tls,tls \
     && cp target/release/areev /usr/local/bin/areev
 
 FROM debian:bookworm-slim

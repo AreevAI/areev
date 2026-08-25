@@ -183,6 +183,43 @@ top of that.
 - The HTTP server bounds per-connection bytes, caps header size/count, and sets
   read/write timeouts (slowloris mitigation).
 
+### The Postgres transport
+
+The `postgres` backend puts a network hop where the embedded backend has a
+file, so it gets its own transport contract. Build with the **`postgres-tls`**
+cargo feature (on in the container image and in both bindings, off in the
+stock `areev` binary) and the DSN's `sslmode` is honored with libpq's exact
+ladder — `disable`, `prefer`, `require`, `verify-ca`, `verify-full` — plus
+`sslrootcert=` for a provider's own root bundle. rustls with compiled-in
+webpki roots; no OpenSSL, matching `areev ui`'s `tls` feature. Client
+certificates are not supported.
+
+Two properties are the security-relevant ones:
+
+- **`require` encrypts but validates nothing**, exactly as libpq defines it.
+  It is not the safe rung its name suggests. **`verify-full` is** — use it,
+  and name `sslrootcert` when the provider signs with a private root (AWS RDS
+  does; Azure Flexible Server's chain is publicly trusted). This deviation
+  from "strictest by default" is deliberate and narrow: a `require` that
+  silently validated would fail every stock RDS DSN, which teaches operators
+  to reach for `disable`.
+- **A build without the feature refuses, it does not downgrade.** A DSN
+  asking for `require` or above fails with `STO-E003` naming the missing
+  feature. The failure being prevented is the one that has no symptom: asking
+  for encryption and getting plaintext.
+
+`disable` and `prefer` behave identically with and without the feature, so
+enabling it changes no existing deployment. The TLS-terminating local proxy
+(Cloud SQL Auth Proxy, PgBouncer with a TLS upstream) remains supported and
+is still right when it is also pooling or doing IAM auth — point the DSN at
+it with `sslmode=disable`.
+
+Verification is pinned by a real handshake against a throwaway CA
+(`pgtls::handshake_tests` in `areev-store`): that `require` completes against
+an untrusted issuer, that `verify-full` refuses the same certificate, that
+`sslrootcert` makes that private CA trusted, and that `verify-ca` drops only
+the hostname check.
+
 ### Known limitations in transit
 
 - ⚠️ **TLS is optional and non-default; plaintext is what you get if you don't

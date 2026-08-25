@@ -86,6 +86,12 @@ pub enum AreevError {
     /// Another writer holds this memory (single-writer-per-memory is
     /// enforced, not advisory, on backends that can arbitrate it).
     StoreBusy(String),
+    /// The connection to a backing store asks for transport encryption this
+    /// build cannot provide. Its own code because the alternative — reporting
+    /// a generic validation failure — reads as a typo in the DSN, when what
+    /// actually happened is that a *refusal to downgrade to plaintext* saved
+    /// the operator from an unencrypted connection they did not ask for.
+    TlsUnavailable(String),
     SupersessionConflict(Hash),
     CryptoError(String),
     AccumulateRetryExhausted,
@@ -119,6 +125,7 @@ impl AreevError {
             Self::Validation(_) => "VAL-E001",
             Self::Storage(_) => "STO-E001",
             Self::StoreBusy(_) => "STO-E002",
+            Self::TlsUnavailable(_) => "STO-E003",
             Self::CryptoError(_) => "CRY-E001",
             // These originate in CAL ACCUMULATE semantics and bubble up
             // through the store, so they keep their CAL-domain codes.
@@ -147,6 +154,7 @@ impl std::fmt::Display for AreevError {
             Self::Validation(m) => write!(f, "VAL-E001: validation error: {m}"),
             Self::Storage(m) => write!(f, "STO-E001: storage error: {m}"),
             Self::StoreBusy(m) => write!(f, "STO-E002: store busy: {m}"),
+            Self::TlsUnavailable(m) => write!(f, "STO-E003: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AccumulateRetryExhausted => write!(f, "CAL-E083: ACCUMULATE retry budget exhausted"),
             Self::AccumulateInternal(m) => write!(f, "CAL-E084: ACCUMULATE internal failure: {m}"),
@@ -180,6 +188,7 @@ mod error_code_tests {
             AreevError::Validation("x".into()),
             AreevError::Storage("x".into()),
             AreevError::StoreBusy("x".into()),
+            AreevError::TlsUnavailable("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),

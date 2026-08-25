@@ -65,6 +65,7 @@ errors stay in the substrate's `CAL` domain; `LOP` covers engine semantics
 | `VAL-E001` | `Validation` | Invalid request/input (e.g. RECALL with neither subject nor query) |
 | `STO-E001` | `Storage` | Turso storage-layer failure |
 | `STO-E002` | `StoreBusy` | Another writer holds this memory. Raised when a **second handle** is opened on a file this process already has open — the embedded backend is single-writer per file, and a second handle keeps its own sequence/dictionary allocators. Not raised on the Postgres backend, which admits multiple concurrent writers per memory by design |
+| `STO-E003` | `TlsUnavailable` | The DSN asks for an encrypted connection this build cannot make — `sslmode=require`/`verify-ca`/`verify-full` on a binary compiled without the `postgres-tls` cargo feature. A **refusal, not a downgrade**: the alternative is connecting in plaintext to a database the operator asked to encrypt |
 | `CRY-E001` | `CryptoError` | Key / cipher / signing / erasure failure |
 | `SYS-E001` | `Internal` | Unexpected internal fault (should not happen — file a bug) |
 | `CAL-E083` | `AccumulateRetryExhausted` | ACCUMULATE retry budget exhausted (CAL-domain, bubbles through the store) |

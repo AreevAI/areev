@@ -14,6 +14,8 @@
 mod db;
 #[cfg(feature = "postgres")]
 pub mod pg;
+#[cfg(feature = "postgres")]
+mod pgtls;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};

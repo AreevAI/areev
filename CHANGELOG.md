@@ -6,8 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Native TLS for the Postgres backend** (`postgres-tls` cargo feature) —
+  the DSN's `sslmode` (libpq's full five-rung ladder, including `verify-ca`
+  and `verify-full`, which the driver does not understand on its own) and
+  `sslrootcert` are honored, so a managed Postgres that requires encryption
+  on the wire — Azure Flexible Server's `require_secure_transport`, RDS's
+  `rds.force_ssl`, Cloud SQL — connects without inserting a TLS-wrapping
+  proxy inside the trust boundary. rustls with compiled-in webpki roots, no
+  OpenSSL. On in the container image and in both bindings; off in the stock
+  `areev` binary, where an encrypting DSN is now **refused by name
+  (`STO-E003`) rather than downgraded to plaintext**. `sslmode=disable` and
+  the `prefer` default are unchanged, so no existing deployment moves.
+  Note that `require` follows libpq and encrypts *without* validating the
+  certificate — use `verify-full`, with `sslrootcert` where the provider
+  signs with a private root ([#117](https://github.com/AreevAI/areev/issues/117)).
+
 ### Fixed
 
+- Postgres connect-time failures now carry their cause. These never reach a
+  server, so they have no SQLSTATE, and `pg_err` reported only the driver's
+  `Display` — "error connecting to server". A TLS rejection lands in exactly
+  that class, where "invalid peer certificate: UnknownIssuer" is the whole
+  diagnosis.
 - **`outlook_graph.py` (invoice-to-accounting example): two live-only bugs.**
   The attachment listing's `$select` named `contentBytes`, which is declared
   on `microsoft.graph.fileAttachment` and not on the base `attachment` type

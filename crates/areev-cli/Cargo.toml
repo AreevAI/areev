@@ -20,6 +20,10 @@ path = "src/main.rs"
 # `areev --db postgres://…?schema=<name>` — the server-tier backend. Non-
 # default: the published edge binary stays dependency-light.
 postgres = ["areev-store/postgres"]
+# TLS on the DSN (`sslmode=`/`sslrootcert=`), so a managed Postgres that
+# requires encryption needs no proxy hop. Without it such a DSN is refused
+# (STO-E003), never downgraded.
+postgres-tls = ["postgres", "areev-store/postgres-tls"]
 # Native TLS for `areev ui` (rustls; the recorded dependency
 # exception). Non-default: the proxy pattern stays the documented default.
 tls = ["areev-server/tls"]
