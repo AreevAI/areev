@@ -515,15 +515,28 @@ mod tests {
     }
 
     /// #133: `--allow-executor`'s fixed 300s ceiling had no host override at
-    /// all. A 1s `--executor-timeout` on a `--tool-cmd` that sleeps for 30s
+    /// all. A 1s `--executor-timeout` on a `--tool-cmd` that never exits
     /// must fail well inside this test's own timeout, not the old default —
     /// proof the flag actually reaches the constructed executor, not just
     /// that it parses.
+    ///
+    /// The command busy-loops on shell builtins (`:`, `while`) rather than
+    /// calling an external command like `sleep`: `/bin/sh -c` runs a
+    /// compound command like this entirely inside its own process (nothing
+    /// to exec into), so the DIRECT child IS the looping process on every
+    /// shell — unlike `sh -c "sleep 30"`, whose tail-call-into-`sleep`
+    /// optimization is shell-specific (observed on bash, not on Linux CI's
+    /// `/bin/sh`) and left the previous version of this test relying on a
+    /// grandchild-outlives-its-parent gap `SpawnOutput::timed_out` does not
+    /// close (see `areev-core::proc`'s module doc on process-group kill
+    /// being separate, not-yet-done work).
     #[cfg(unix)]
     #[test]
     fn executor_timeout_flag_shortens_the_ceiling_a_tool_cmd_runs_under() {
-        let exec =
-            tool_executor(&flags(&[("tool-cmd", "sleep 30"), ("executor-timeout", "1")]), None);
+        let exec = tool_executor(
+            &flags(&[("tool-cmd", "while :; do :; done"), ("executor-timeout", "1")]),
+            None,
+        );
         let started = std::time::Instant::now();
         let result = exec.execute("work", "h", &serde_json::json!({}), "k");
         assert!(
