@@ -1,11 +1,21 @@
 //! Tool-failure clustering (T0) — the flagship analyzer. Groups error Tool
 //! grains (captured tool calls) by (tool_name, normalized error signature) and
 //! fires when a cluster is frequent (≥ min_count) AND is either a meaningful
-//! share of that tool's calls (≥ min_rate) OR a large absolute count
-//! (≥ min_abs) — so high-volume, moderate-rate failures aren't hidden. Emits a
-//! memory lesson. Because the signature is derived from
+//! share of that signature's OPPORTUNITIES (≥ min_rate) OR a large absolute
+//! count (≥ min_abs) — so high-volume, moderate-rate failures aren't hidden.
+//! Emits a memory lesson. Because the signature is derived from
 //! attacker-influenceable tool output, this analyzer never auto-applies
 //! (§6.3) — its manifest is `Never`.
+//!
+//! **Opportunities, not all calls.** The rate denominator is the tool's
+//! successful calls plus this cluster — NOT every call to the tool. A call
+//! that failed at an earlier check never reached the failure being scored, so
+//! counting it as an opportunity understates every mode. Using all calls made
+//! sibling failure modes mask each other: the more distinct ways a tool broke,
+//! the smaller each mode's share, so the tools failing in the most ways were
+//! the hardest to learn from — backwards. Measured on a real agent trace (150
+//! tasks, 772 calls, 139 failures across 5 modes) the old denominator put
+//! every mode between 9% and 30% and the analyzer proposed nothing at all.
 
 use crate::analyzer::{AnalyzeCtx, Analyzer};
 use crate::analyzers::bound_evidence;
@@ -48,7 +58,9 @@ impl ToolFailureClustering {
                         default: 0.4,
                         min: 0.0,
                         max: 1.0,
-                        description: "Minimum share of the tool's calls.".into(),
+                        description: "Minimum share of this signature's opportunities \
+                                      (the tool's successes plus this cluster)."
+                            .into(),
                     },
                     ParamSpec::Int {
                         name: "min_abs".into(),
@@ -97,6 +109,7 @@ impl Analyzer for ToolFailureClustering {
         // each member carries its namespace so the lesson can land where the
         // evidence lives.
         let mut tool_totals: BTreeMap<String, usize> = BTreeMap::new();
+        let mut tool_errors: BTreeMap<String, usize> = BTreeMap::new();
         let mut clusters: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
         for e in &tools {
             let Some(tool) = e.tool_name() else {
@@ -104,6 +117,7 @@ impl Analyzer for ToolFailureClustering {
             };
             *tool_totals.entry(tool.to_string()).or_default() += 1;
             if e.is_error() {
+                *tool_errors.entry(tool.to_string()).or_default() += 1;
                 let sig = normalize_signature(e.tool_content().unwrap_or(""));
                 clusters
                     .entry((tool.to_string(), sig))
@@ -122,8 +136,13 @@ impl Analyzer for ToolFailureClustering {
                 continue;
             }
             let count = members.len();
-            let total = tool_totals.get(&tool).copied().unwrap_or(count).max(1);
-            let rate = count as f64 / total as f64;
+            // Opportunities = this tool's successful calls + this cluster.
+            // Calls that failed some OTHER way never reached this failure, so
+            // they are not opportunities to exhibit it (see the module docs).
+            let calls = tool_totals.get(&tool).copied().unwrap_or(count);
+            let errors = tool_errors.get(&tool).copied().unwrap_or(count);
+            let opportunities = calls.saturating_sub(errors).saturating_add(count).max(1);
+            let rate = count as f64 / opportunities as f64;
             // Fire on a meaningful cluster that is EITHER a high share of the
             // tool's calls OR a large absolute count — so a tool called 1000×
             // at a 30% failure rate (300 real failures) isn't hidden by the
@@ -195,7 +214,9 @@ impl Analyzer for ToolFailureClustering {
                     metric: "tool_error_recurrence".into(),
                     baseline: 0.0,
                     unit: "count".into(),
-                    n: total as u64,
+                    // Sample size is the set the rate was computed over — this
+                    // signature's opportunities, not every call to the tool.
+                    n: opportunities as u64,
                     window: format!("{}d", ctx.params().get_int("window_days")),
                     subject: Some(tool.clone()),
                     namespace: None,
@@ -296,6 +317,47 @@ mod tests {
         }
         let drafts = sub.analyze_with(&ToolFailureClustering::new(), 10_000, &[("min_abs", serde_json::json!(10))]);
         assert_eq!(drafts.len(), 1, "high-volume moderate-rate cluster fires via min_abs");
+    }
+
+    #[test]
+    fn sibling_failure_modes_do_not_mask_each_other() {
+        // The shape a real agent trace produced: one tool, several distinct
+        // failure modes, none of them a large absolute count. Scored against
+        // ALL calls every mode sat under the rate gate and the analyzer went
+        // silent on 93 real failures; scored against each mode's own
+        // opportunities (successes + that mode) the dominant one fires.
+        let mut sub = TestSubstrate::new();
+        for _ in 0..46 {
+            sub.add_tool_call("refund", true, "rate_limited 429");
+        }
+        for _ in 0..33 {
+            sub.add_tool_call("refund", true, "approval_required");
+        }
+        for _ in 0..14 {
+            sub.add_tool_call("refund", true, "cancel_before_refund");
+        }
+        for _ in 0..59 {
+            sub.add_tool_call("refund", false, "ok");
+        }
+        let drafts = sub.analyze(&ToolFailureClustering::new(), 10_000);
+        // 46 / (59 + 46) = 43.8% clears the 40% gate; the smaller siblings
+        // (33/92 = 36%, 14/73 = 19%) stay below it and stay silent.
+        assert_eq!(drafts.len(), 1, "the dominant mode fires, its siblings do not");
+        assert_eq!(drafts[0].evidence.len(), 46);
+    }
+
+    #[test]
+    fn a_mode_that_is_a_small_share_of_its_own_opportunities_stays_silent() {
+        // The denominator change must not turn every recurring error into a
+        // lesson: 5 failures against 95 successes is 5%, still silent.
+        let mut sub = TestSubstrate::new();
+        for _ in 0..5 {
+            sub.add_tool_call("search", true, "boom 500");
+        }
+        for _ in 0..95 {
+            sub.add_tool_call("search", false, "ok");
+        }
+        assert!(sub.analyze(&ToolFailureClustering::new(), 10_000).is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 Areev Loop: 11 pending recommendation(s) for this memory (review with `areev loop list`, act with approve/apply/reject --because):
-  [high] e6a247d2d0e5  Tool "stripe_refund" failed 5 times (83% of calls): rate limited # retry later
+  [high] e6a247d2d0e5  Tool "stripe_refund" failed 5 times (83% of the calls that could fail this way): rate limited # retry later
   [medium] 05b36525f669  "deploy" holds 2 live values for functional relation "region"
   [medium] 42706660479c  Entity "acme/tier" has 3 competing heads
   … and 8 more

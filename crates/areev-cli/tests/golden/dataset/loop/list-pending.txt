@@ -1,4 +1,4 @@
-e6a247d2d0e5  high    loop.tool_failure/1           Tool "stripe_refund" failed 5 times (83% of calls): rate limited # retry later
+e6a247d2d0e5  high    loop.tool_failure/1           Tool "stripe_refund" failed 5 times (83% of the calls that could fail this way): rate limited # retry later
 05b36525f669  medium  loop.contradiction_sweep/1    "deploy" holds 2 live values for functional relation "region"
 e85c9b01850e  medium  loop.contradiction_sweep/1    "sam" holds 2 live values for functional relation "lives_in"
 42706660479c  medium  loop.fork_surfacing/1         Entity "acme/tier" has 3 competing heads

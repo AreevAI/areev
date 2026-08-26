@@ -53,7 +53,8 @@ fn builtin_template(id: &str) -> Option<&'static str> {
             "\"{subject}\" holds {count} live values for functional relation \"{relation}\""
         }
         "tool_failure.cluster" => {
-            "Tool \"{tool}\" failed {count} times ({rate}% of calls): {signature}"
+            "Tool \"{tool}\" failed {count} times ({rate}% of the calls that could \
+             fail this way): {signature}"
         }
         "staleness.expired" => "Expire \"{subject}\": past its declared valid_to ({age_days}d ago)",
         "fork.multi_head" => "Entity \"{entity}\" has {count} competing heads",

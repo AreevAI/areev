@@ -132,7 +132,7 @@ help?):
 
 | Analyzer | Fires on | Proposes |
 |---|---|---|
-| `tool_failure` | ≥N Tool-grain errors clustered by (tool, normalized signature), at ≥40% of a tool's calls **or** a large absolute count (so high-volume, moderate-rate failures aren't hidden) | a memory lesson (never auto-applies — evidence-derived text) |
+| `tool_failure` | ≥N Tool-grain errors clustered by (tool, normalized signature), at ≥40% of that signature's **opportunities** — the tool's successful calls plus this cluster, *not* every call to the tool, because a call that failed some other way never reached this failure — **or** a large absolute count (so high-volume, moderate-rate failures aren't hidden) | a memory lesson (never auto-applies — evidence-derived text) |
 | `duplicate_sweep` | exact-duplicate facts (NFC + case-fold) and near-duplicate observations (Jaccard) | consolidation (SUPERSEDE the extras) |
 | `contradiction_sweep` | ≥2 live values under a functional relation (seeded list: `deploy_target`, `lives_in`, `tier`, … — extendable per domain via `extra_relations`) | resolve to the latest value |
 | `fork_surfacing` | an entity with >1 live head | a merge (approval-required — a merge is lossy, never auto-applies) |

@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`loop.tool_failure` scores a failure mode against its own opportunities,
+  not every call to the tool.** The rate gate divided a cluster by the tool's
+  *total* calls, so sibling failure modes masked each other: the more distinct
+  ways a tool broke, the smaller each mode's share, and the tools failing in
+  the most ways were the hardest to learn from. On a real 150-task agent trace
+  (772 calls, 139 failures across 5 modes) every mode landed between 9% and
+  30% and the analyzer proposed **nothing at all** — the flagship analyzer was
+  effectively blind to a competent agent, whose failures spread across
+  signatures instead of concentrating in one. The denominator is now the
+  tool's successful calls plus the cluster being scored, since a call that
+  failed at an earlier check never reached the failure under test. On that
+  same trace the loop now proposes the dominant mode (46 failures, 44% of its
+  opportunities) while its smaller siblings correctly stay silent. Recurrence
+  metrics carry the matching sample size, and the rendered summary no longer
+  says "% of calls" for a rate that is not over calls.
+
 ## [1.6.5] — 2026-08-26
 
 ### Fixed
