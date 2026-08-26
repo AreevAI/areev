@@ -149,6 +149,65 @@ top of that.
   compared in constant time, and a `401` carries `WWW-Authenticate: Basic` so
   browsers prompt. Naming an env var (not a flag) keeps the secret out of argv
   and shell history.
+- **The token's entropy is the only control on this path.** Use at least 32
+  hex characters for `--token-env`; there is **no in-process rate limit or
+  lockout** (see the next bullet for why, and where that control actually
+  belongs). **HTTP Basic is browser-cached, and there is no logout**: the
+  browser remembers the credential for the console's origin and re-attaches
+  it automatically, including to cross-site requests — which is exactly why
+  the Origin check below is load-bearing rather than defence in depth, not
+  an additional layer over some other primary control. Closing the tab does
+  not clear a cached Basic credential, so an operator who demos the console
+  to someone leaves that browser authenticated until it is restarted or its
+  saved credentials are cleared by hand. A `SameSite=Strict; HttpOnly;
+  Secure` session cookie is the intended future fix for both the caching and
+  the logout gap and is tracked separately — it does **not** exist yet; do
+  not rely on session semantics this release does not have.
+- **Auth failures are counted and logged, deliberately not delayed or
+  locked out in-process.** Every wrong credential is logged to stderr in one
+  stable, greppable shape — `areev: console auth FAILED from <ip> (<n>
+  consecutive)` (never the presented token, not even a prefix) — with `<n>`
+  the consecutive count from that source IP (port excluded), so an operator
+  can drive a fail2ban-style rule off the log line. A successful auth from
+  that IP resets its streak, and a streak idle for 15+ minutes resets on its
+  own; the tracker is bounded (a few thousand source IPs, oldest evicted
+  first) so it cannot itself become a memory-exhaustion vector — it is
+  attacker-controlled key space (one entry per source IP). It never fires
+  for a request that presented no credential at all (a token-less console's
+  plain write refusal, a browser's first Basic-auth probe): there is
+  nothing to have failed.
+
+  There is no delay or lockout attached to this count, on purpose. `areev
+  ui` serves one connection at a time, so a per-request sleep before the
+  response would not slow down one attacker — it would let an
+  unauthenticated caller stall the console for every user, the operator
+  included, by sending a handful of bad credentials and repeating. A fast
+  lockout has the mirror problem: behind the TLS-terminating reverse proxy
+  that is the documented default deployment shape
+  (`docs/deployment-profile.md`), every request arrives from the *proxy's*
+  IP, so an IP-keyed lockout would lock out every legitimate user at once
+  on the first attacker who triggered it. Rate limiting belongs at that
+  proxy, which is also the only place in the request path that can see the
+  caller's real address — write the fail2ban-style rule against the
+  **proxy's own access log**, not against `areev`'s, and expect the IP
+  `areev` logs to be the proxy's own once one is in front of it.
+- **Cross-origin POSTs are rejected by default** (drive-by/CSRF
+  protection), and `--allow-remote` does **not** lift this. Because HTTP
+  Basic is browser-cached and reattached cross-site (previous bullet),
+  Origin is the only thing telling the console's own page apart from an
+  attacker's page riding a viewer's cached credential — so the check stays
+  enforced even when the operator has opted into non-loopback binding.
+  `--allow-origin ORIGIN[,ORIGIN...]` names the exact origin(s) — typically
+  the reverse proxy's public hostname — allowed to POST cross-origin:
+  **exact match only** (scheme + host\[:port\], case-insensitive, one
+  trailing `/` ignored), no wildcards, no subdomain matching, so naming
+  `https://console.example.com` never thereby accepts
+  `https://evil-console.example.com`. A console fronted by a reverse proxy
+  no longer needs to strip or rewrite the `Origin` header to work around
+  the check (a workaround that would have defeated its purpose) — name the
+  proxy's public origin instead. An `http://` (non-TLS) non-loopback origin
+  is accepted but warns loudly at startup: Basic credentials would still
+  cross the wire in the clear to that origin.
 - **Multi-principal console** (`areev ui --auth areev-auth.json`): the credential
   map resolves a token to a *principal name*; the rights come from the memory
   file's own grant grains, and unauthenticated requests run as `anonymous`
@@ -219,6 +278,33 @@ Verification is pinned by a real handshake against a throwaway CA
 an untrusted issuer, that `verify-full` refuses the same certificate, that
 `sslrootcert` makes that private CA trusted, and that `verify-ca` drops only
 the hostname check.
+
+### Connection strings are redacted at every console display surface
+
+The console (`areev ui`) never shows a Postgres DSN's password back to a
+viewer. The served HTML, `GET /api/stats`, and `GET /api/config` all display
+a **redacted** copy of the `--db` value —
+`postgresql://user:***@host:5432/db`, password replaced, host and the rest
+of the DSN left intact so the display stays useful for confirming which
+memory is open. Redaction happens only at these display surfaces; nothing in
+the store, the op-log, or an exported bundle is affected — a DSN never
+reaches a grain.
+
+This is deliberately **display only**. A per-principal credential map
+(`areev ui --auth FILE`) scopes a token to a memory via its `memories` list,
+matched against the exact `--db` value with a plain string compare
+(`CredentialMap::resolve_for_memory`) — write that entry as the **raw** DSN
+you pass to `--db`, not the redacted form the console shows. The two are
+intentionally different strings for different audiences: the raw value is an
+internal comparison key that never leaves the process; the redacted form is
+what a viewer's browser receives.
+
+Redaction is not a substitute for least privilege. Prefer a Postgres role
+scoped to the one schema the console needs (`GRANT` on that schema only, no
+superuser, no cross-schema visibility) over relying on the console to keep a
+broadly-privileged DSN's password out of view — a role that can only see its
+own schema limits the blast radius of a credential leak the console never
+causes, not just the one this redaction closes.
 
 ### Known limitations in transit
 

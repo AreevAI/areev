@@ -33,6 +33,136 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exact scan with latency linear in corpus size, with measured figures: an
   undocumented ceiling is harder to design around than a documented one.
 
+## [1.6.4] — 2026-08-26
+
+### Security
+
+- **The console no longer discloses its own database password.** `areev ui`
+  rendered the `--db` value into the served HTML and returned it from
+  `GET /api/stats` and `GET /api/config`. On the Postgres backend that value
+  is a DSN carrying an inline password, so a console **read** token — the
+  thing you hand a colleague so they can look at one namespace of one
+  memory — also handed over authority across every schema on that server,
+  and on many managed setups the ability to create roles and databases. All
+  three surfaces now show a redacted copy
+  (`postgresql://user:***@host:5432/db?sslmode=verify-full`), keeping the
+  host, database, schema and options readable for diagnostics. Redaction is
+  display-only: a credential map's `memories` entry still matches the **raw**
+  `--db` value, so `areev ui --auth FILE` deployments are unaffected
+  ([#124](https://github.com/AreevAI/areev/issues/124)).
+
+### Fixed — triggers
+
+- **Superseding a trigger no longer orphans its cursor and its dedup fence.**
+  Evaluation state (`trg:` row) and run ids are now keyed on the **root of the
+  trigger's supersession chain** rather than the declaration's current hash.
+  Re-pointing a trigger at an improved plan is the loop's own Level-1 flow —
+  and because triggers deliberately do not follow supersession heads, the only
+  way to re-point one is to supersede it, which minted a new hash and
+  discarded all of its state. The cursor re-seeded, so a mailbox connector
+  seeking "newest" silently skipped every message that arrived since the last
+  poll while reporting a healthy tick; and the dedup fence reset, so any
+  connector overlap across the re-point re-processed work already done. For a
+  trigger that has never been superseded, root == head and nothing changes;
+  one superseded *before* this fix adopts its existing state under the root
+  key, and run ids minted under the old hash are still recognized as
+  already-processed, so the upgrade cannot itself cause the double-processing
+  it prevents. `areev trigger show` now prints the cursor (and the state key
+  when it differs from the declaration's hash)
+  ([#128](https://github.com/AreevAI/areev/issues/128)).
+- **A refused run start no longer consumes the item.** A firing where any item
+  failed to start was treated as a success: the cursor advanced past the item,
+  `consecutive_failures` reset and `last_error` cleared. A host running a
+  stale executor pin — the window after a `code_revision` recommendation is
+  applied but before the blob is synced — consumed its source one tick at a
+  time while reporting healthy; for a mailbox trigger, silently discarded
+  mail. Such a firing now holds the cursor, increments `consecutive_failures`,
+  records `last_error`, backs off, and does not consume a satisfied
+  composite's correlation key — the same posture `TRG-E011` already took for a
+  connector contract violation. Retrying is safe because the dedup fence is
+  stable (above): items that did start return as duplicates. The report names
+  the held cursor as `cursor_held`
+  ([#129](https://github.com/AreevAI/areev/issues/129)).
+- A latent bug found while fixing the two above: `start_run` wrote the ingest
+  Event — which carries the `run_id` the duplicate check looks for — *before*
+  calling the starter, so a failed start still left a `run_id`-bearing grain
+  behind. Once #129 made retries actually happen, every retry of a failed item
+  would have matched that leftover grain and reported `Duplicate`, stranding
+  it permanently. The Event is now written only for outcomes the dedup check
+  should treat as seen (`Ingested`/`Started`/`Duplicate`), never for a failure.
+
+### Added
+
+- **`--read-only`, on both backends.** Opens a memory that refuses every
+  write with `STO-E004` and, on Postgres, issues no DDL at all — no
+  `CREATE SCHEMA`, no `CREATE … IF NOT EXISTS` index maintenance, no seed,
+  no advisory lock — verifying with SELECT-only probes instead and refusing
+  by name (`STO-E005`) when the schema is absent or not bootstrapped. This
+  is what makes a least-privilege Postgres role possible: because Postgres
+  checks privilege *before* existence, `CREATE SCHEMA IF NOT EXISTS` needed
+  `CREATE` on the database and `CREATE UNIQUE INDEX IF NOT EXISTS` needed
+  *ownership* of the table even when both already existed — so the narrowest
+  role that could open an existing, fully migrated memory was its owner, and
+  anything that merely reads (a dashboard, a reporting job, `areev ui`) had
+  to be given write authority over it. `docs/deployment-profile.md` carries
+  the `GRANT` recipe ([#127](https://github.com/AreevAI/areev/issues/127)).
+- **`areev ui --allow-origin ORIGIN[,ORIGIN...]`** — the missing half of
+  `--allow-remote`. A remotely served console loaded and read fine but
+  rejected every POST, and CAL runs by POST, so the whole query surface was
+  dead: `--allow-remote` lifts the Host check, and nothing lifted the Origin
+  check. The check itself stays — browsers re-attach cached HTTP Basic
+  credentials to cross-site requests, so Origin is what distinguishes the
+  console's own page from an attacker's page riding a viewer's login.
+  Operators now name their public origin instead of stripping the header at
+  the proxy. Exact match on scheme + host[:port]; no wildcards, no subdomain
+  matching ([#125](https://github.com/AreevAI/areev/issues/125)).
+- **Server-tier Linux release assets.** Every release now also carries
+  `areev-<v>-{x86_64,aarch64}-unknown-linux-gnu-postgres.tar.gz`, built with
+  `--features postgres-tls`, so the deployment shape the docs recommend no
+  longer requires a 15-minute compile. The stock assets keep neither feature,
+  which is what keeps the edge binary dependency-light. `install.sh` fetches
+  them with `AREEV_FLAVOR=postgres`
+  ([#123](https://github.com/AreevAI/areev/issues/123)).
+- **Console auth failures are counted and logged** in one stable, greppable
+  shape — `areev: console auth FAILED from <ip> (<n> consecutive)`, never the
+  presented token — so a `401` is separable from ordinary traffic and an
+  operator can drive a fail2ban-style rule off it. Deliberately no in-process
+  delay or lockout: the console serves one connection at a time, so a
+  per-request sleep would let an unauthenticated caller stall it for
+  everyone, and behind the reverse proxy the deployment profile requires,
+  every request arrives from the proxy's IP, where an IP lockout would lock
+  out every user at once. Rate limiting belongs at that proxy, which is also
+  the only place that can see the caller's real address
+  ([#126](https://github.com/AreevAI/areev/issues/126)).
+
+### Fixed
+
+- The "this build lacks the postgres backend" error named the `postgres`
+  feature. `postgres` alone *refuses* a DSN carrying `sslmode=`
+  (`STO-E003`), and Azure Flexible Server, RDS with `rds.force_ssl` and
+  Cloud SQL all require TLS — so anyone following the hint exactly hit a
+  second wall one step later. It now names `postgres-tls`, and mentions the
+  prebuilt asset. Same correction in `docs/quickstart.md` and in the two
+  equivalent `areev-py` messages
+  ([#123](https://github.com/AreevAI/areev/issues/123)).
+- `scripts/install.sh` now runs the binary before reporting success. The
+  Linux assets need **GLIBC 2.39** (the release runner image), so on Ubuntu
+  22.04 — in support until 2027 — the install "succeeded" and the binary then
+  failed with a bare `version 'GLIBC_2.39' not found`. The baseline is now
+  stated in `docs/quickstart.md` and on the workflow
+  ([#123](https://github.com/AreevAI/areev/issues/123)).
+
+### Documented
+
+- `docs/security-model.md` gains the console's full auth surface: that the
+  token's entropy is the only control on that path, that HTTP Basic is
+  browser-cached and re-attached cross-site (which is *why* the Origin check
+  is load-bearing rather than defence in depth), and that there is
+  consequently **no logout** — closing the tab does not clear the credential.
+  A `SameSite=Strict; HttpOnly; Secure` session cookie is the intended fix
+  for both and is tracked separately; it does not exist yet
+  ([#126](https://github.com/AreevAI/areev/issues/126)).
+
 ## [1.6.3] — 2026-08-25
 
 ### Added
@@ -1865,7 +1995,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.3...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.4...HEAD
+[1.6.4]: https://github.com/AreevAI/areev/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/AreevAI/areev/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/AreevAI/areev/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AreevAI/areev/compare/v1.6.0...v1.6.1

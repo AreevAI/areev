@@ -1422,6 +1422,108 @@ Azure Flexible Server. Contract:
 contract"; threat framing: [docs/security-model.md](docs/security-model.md)
 §"The Postgres transport".
 
+### Trigger evaluation state follows the supersession chain, not the head hash
+
+**Decision (2026-08-25):** a trigger's cursor, lease, fence and item-dedup
+identity are keyed on the **root of its supersession chain**, not on the
+declaration's current content address. `trg:<root>` rather than `trg:<head>`,
+and `run_id_for` takes the root.
+
+The forcing case is the loop's own Level-1 flow. Improving a plan is
+`SUPERSEDE workflow` → new plan hash → **re-point the triggers**, because
+triggers deliberately do not follow supersession heads (a running rule must
+not silently start executing a plan nobody pointed it at). But the only way to
+re-point a trigger is to change its `workflow` field — which is itself a
+supersession, minting a new *trigger* hash. Keying state on that hash meant
+every re-point orphaned the trigger's entire evaluation state: the cursor
+re-seeded, so a mailbox connector seeking "newest" silently skipped everything
+that arrived since the last poll while reporting a healthy tick; and the dedup
+fence reset, so any connector overlap across the re-point re-ran work already
+done — for an agent that emails people, a duplicate ask to a human.
+
+So the identity had to change, and the choice is between two readings of what
+a supersession *is*. Treating each hash as its own rule makes re-pointing a
+rule indistinguishable from declaring a new one, which is why the state was
+lost. Treating the chain as one rule that has been edited matches what the
+declaration means to an operator and what the loop does to it. The chain root
+is the stable name for that rule; the head is a name for its current text.
+
+Two properties keep this shippable. For a trigger that has **never** been
+superseded root == head, so keys and run ids are byte-identical to before —
+the change is invisible to every deployment that has not hit the bug. And for
+one superseded *before* this landed, the old state is adopted under the root
+key and pre-existing run ids are still recognized as already-processed, so the
+upgrade does not itself cause the double-processing it prevents. Raised as
+[#128](https://github.com/AreevAI/areev/issues/128). Contract:
+[docs/triggers.md](docs/triggers.md) §"Idempotency".
+
+### A refused firing holds the cursor
+
+**Decision (2026-08-25):** when any item in a firing fails to start, the
+trigger's cursor does not advance, `consecutive_failures` increments and the
+next evaluation backs off — the same posture a connector contract violation
+(`TRG-E011`) already took, now extended from "the poll was malformed" to "the
+run would not start".
+
+Previously a per-item start failure was collected into the report and the
+firing was still treated as a success: cursor advanced, `consecutive_failures`
+reset, `last_error` cleared. A host running a stale executor pin — precisely
+the window after a `code_revision` recommendation is applied but before the
+blob is synced — consumed its source one tick at a time while reporting
+healthy. For a mailbox trigger that is silently discarded mail.
+
+Re-polling the same page is safe only because the dedup fence is stable, which
+is why this decision depends on the one above: items that did start come back
+as duplicates, and only the item that failed is retried. The cost is a poison
+pill — an item that can never start holds the cursor behind it — and that is
+the intended trade. A trigger that stops loudly and backs off can be fixed;
+one that eats its source while reporting success cannot even be noticed. The
+report names the held cursor (`cursor_held`) so the reason the same items
+return is visible rather than inferred. Raised as
+[#129](https://github.com/AreevAI/areev/issues/129).
+
+### A read-only open is a property of the handle, not a privilege to negotiate
+
+**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`) opens
+a memory that refuses every write in-process with `STO-E004`, and on the
+Postgres backend issues **no DDL at all** — no `CREATE SCHEMA`, no
+`CREATE … IF NOT EXISTS` index maintenance, no seed, no advisory lock. It
+verifies instead, with SELECT-only probes, that the schema exists and is
+bootstrapped, and refuses by name (`STO-E005`) when it is not. On the
+embedded backend the same flag refuses writes identically and refuses to
+*create* an absent file, so one conformance case pins both backends against
+one contract.
+
+The reason this has to be a capability of the handle, rather than simply not
+calling a write method, is that **Postgres checks privilege before it checks
+existence**. `CREATE SCHEMA IF NOT EXISTS` needs `CREATE` on the *database*
+whether or not the schema is already there, and `CREATE UNIQUE INDEX IF NOT
+EXISTS` needs *ownership* of the table whether or not the index is already
+there. Bootstrap ran on every open, so the narrowest role that could open an
+existing, fully migrated memory was its owner: a dashboard, a reporting job,
+or a console that does nothing but read had to be handed write authority over
+the memory it reads. There was no grant that yielded a read-only connection —
+walking the privileges up just moved the failure.
+
+Two things follow deliberately. The refusal is **Areev's, not the database's**:
+a `SELECT`-only role would otherwise discover it cannot write from a raw
+`42501 must be owner of table grains` surfacing mid-operation from inside the
+driver, which names an index rather than the thing the caller did wrong. And
+the flag is backend-agnostic even though only one backend has the privilege
+problem — a read-only handle that silently permitted writes on files while
+refusing them on Postgres would make the two backends mean different things,
+which the conformance suite exists to prevent.
+
+This compounded with a second finding to become the reason it shipped now:
+the console displayed its own DSN, so the over-privileged credential a
+read-only console was forced to hold reached every console viewer. Raised as
+[#127](https://github.com/AreevAI/areev/issues/127) and
+[#124](https://github.com/AreevAI/areev/issues/124) from a fleet deployment on
+Azure Flexible Server. Least-privilege `GRANT` recipe:
+[docs/deployment-profile.md](docs/deployment-profile.md); store contract:
+[crates/areev-store/CLAUDE.md](crates/areev-store/CLAUDE.md) §"Read-only
+opens".
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

@@ -357,6 +357,27 @@ paused, consecutive_failures, last_error) rides `trg:<trigger-hash>`.
 Conformance (both backends): `trigger_state_never_replicates`,
 `meta_cas_admits_one_claimer_and_fences_the_loser`.
 
+**`Areev::supersession_chain(&Hash) -> Result<Vec<Hash>>`** walks a grain's
+`supersedes` column backward from the given hash to the first grain in its
+edit history (no existing accessor exposed a single grain's `supersedes`
+field outside `history()`'s own raw SQL, so this is the one place that does —
+`history()`'s multi-grain walk stays separate since it also needs `blob`/
+`superseded_by` and serves a different contract). Returns every hash visited,
+**head first, root last**; a never-superseded grain's chain is itself alone.
+Bounded at `MAX_SUPERSESSION_CHAIN_HOPS` (64, `pub const`) — exceeding it
+returns `AreevError::SupersessionChainTooDeep` (`STO-E006`) rather than
+looping forever, since a cyclic `supersedes` graph is corrupt data, not slow
+data. A hash missing from the index (forgotten, or unknown) stops the walk
+where it is, the same "tolerate the missing link" posture `history()` takes.
+
+This is a general store primitive, not trigger-specific, but its motivating
+caller is `areev-trigger`'s evaluator (#128): a `Trigger` grain re-pointed by
+`SUPERSEDE` mints a new head for the same standing rule, and keying `trg:`
+state (and derived run ids) on the head alone orphans the cursor and dedup
+fence on every applied recommendation — see `docs/triggers.md` "Superseding
+a trigger keeps its cursor". Conformance (both backends):
+`supersession_chain_walks_to_the_first_grain`.
+
 ## memory_tool.rs
 
 Anthropic memory-tool backend: `view/create/str_replace/insert/delete/rename`
@@ -379,6 +400,101 @@ dispatcher and wraps the load in defer/rebuild_text_index; the CLI dispatcher
 (`run_migrate` in areev) adds the basic-memory vault walk.
 `tests/migrate_tests.rs` + areev `tests/migrate_smoke.rs` gate it.
 
+## Read-only opens (`AreevOptions::read_only`, issue #127)
+
+Backend-agnostic contract: `read_only: bool` (default `false`) makes a handle
+refuse every write, on EITHER backend, with the same coded error
+(**`STO-E004`**) — what lets one conformance case (`cases/read_only.rs`)
+cover both. The bar it exists to clear: on postgres, opening an existing,
+fully-migrated memory should not require handing the caller write authority,
+because Postgres checks `CREATE` on the database before it checks whether a
+schema exists, and table OWNERSHIP before it checks whether an index exists —
+so even fully idempotent `IF NOT EXISTS` DDL 42501s a least-privilege
+SELECT-only role. `docs/deployment-profile.md` has the grant recipe;
+`areev ui --read-only` is the motivating consumer (paired with #124, so a
+read-only console never needs a writable DSN).
+
+- **Postgres open (`pg::PgDb::open`)**: `read_only` skips the bootstrap
+  advisory lock, `CREATE SCHEMA`, `PG_SCHEMA`'s DDL and `PG_SEED`'s upserts
+  entirely — none of it runs. It still issues `SET search_path` (a session
+  command any role may issue), then VERIFIES with SELECT-only probes
+  (`PgDb::verify_read_only`): schema existence via
+  `information_schema.schemata`, then `to_regclass` on the five tables
+  `finish_open` unconditionally reads right after open (`meta`, `terms`,
+  `grains`, `oplog`, `fts_doc` — not the full `PG_SCHEMA` list). Failure is
+  **`STO-E005`**, worded to distinguish "schema absent" (wrong name, or the
+  memory was never created) from "schema present but not fully initialized"
+  (an owning role needs to open it read-write once to finish bootstrap) —
+  those need different operator actions, so the message names which one it
+  is rather than surfacing a raw `42501`.
+- **Embedded open**: proceeds exactly as read-write for an EXISTING file —
+  there is no privilege system to fail against, and this process already
+  owns the file — so a stale index still self-heals and file declarations
+  still get read normally. But `read_only` must never bring a memory into
+  existence — the postgres analogue of "schema absent" — so `open_internal`
+  checks the main file's presence with `std::path::Path::exists` BEFORE
+  anything touches the filesystem (before `TursoDb::open`, which would
+  otherwise create the `.db` file and, once anything reads/writes through
+  it, a `-wal`; before `finish_open`'s `create_dir_all` for `.blobs`).
+  Absent, it refuses with **`STO-E005`** naming the path, mirroring
+  postgres's wording — creating nothing. Only the MAIN file's absence
+  refuses: an existing file with no `-wal`/`.blobs` yet (freshly
+  checkpointed, or never blobbed) opens normally. Once past that check,
+  `read_only` only starts mattering at the first write call.
+- **`finish_open`'s own writes** (both backends: the `text_index`/
+  `entity_relations` meta stamps, the legacy `idx_fts` drop, and the three
+  self-heal rebuilds — text index, link indexes, namespace registry) are
+  skipped under `read_only` rather than attempted-then-blocked, so a
+  read-only open of a memory that would otherwise self-heal still succeeds;
+  it pushes an `open_warnings()` note instead ("needs a one-time rebuild...
+  read-only open, which never writes"). An explicit `index_text`/
+  `entity_relations` that disagrees with the file's declaration is refused
+  up front (`STO-E004`) rather than silently ignored, since honoring it
+  would need the same write.
+- **The telemetry sidecar is never attached under `read_only`**, on either
+  backend, even if the caller asked for it — its flush is itself a write
+  (on close and on explicit flush), and on postgres `Telemetry::open_pg`
+  bootstraps `telem_*` tables in the SAME schema via its own `PgDb::open`,
+  which a least-privilege role can no more do than the main schema's
+  tables. The store only warns (`open_warnings()`) when the CALLER passed a
+  non-`Off` `telemetry_mode` — the CLI's own default (`--telemetry`
+  unspecified resolves telemetry straight to `Off` once `--read-only` is
+  set, rather than asking for `Aggregate` and having the store downgrade
+  it) never triggers this, so `areev … --read-only` is silent on a plain
+  invocation; an explicit `--telemetry aggregate|full --read-only` still
+  gets the warning, since that combination genuinely is a caller asking for
+  something read-only cannot provide. The store's warning text names no
+  specific API (no Rust field, no CLI flag) since it serves every binding.
+- **A missing memory + a real one behave IDENTICALLY across backends**:
+  `read_only_open_of_missing_memory_refuses_and_creates_nothing`
+  (conformance, both backends via `Backend::try_open_named_with`, which
+  returns the `Result` `open_named_with` panics on) asserts `STO-E005` and
+  that a subsequent normal open still finds a genuinely empty memory; the
+  embedded-only twin in `tests/read_only_tests.rs` additionally reads the
+  directory before/after, since "creates nothing" is a filesystem claim
+  postgres has no analogue for.
+- **The write gate**: `Areev::check_writable` is the single function every
+  mutating entry point calls first — not `Db::reserve_write` alone, because
+  on postgres `reserve_write`'s `UPDATE … RETURNING` runs through the
+  driver's `query` path, not `execute`, so a check placed only inside it
+  would miss `intern_term`'s `INSERT … RETURNING` and the raw `blobs`/`meta`
+  writes that never allocate an id block at all. It is called from: every
+  grain-write entry point (`add`/`add_if_novel`, `supersede`, `forget`,
+  `forget_subject`/`forget_older_than`, `merge_heads`, bundle import,
+  `rebuild_text_index`/`rebuild_link_indexes`/`rebuild_ns_registry` i.e.
+  `areev reindex` — NOT their internal self-heal calls from `finish_open`,
+  which are skipped outright as above); `meta_put`/`meta_delete`/`meta_cas`
+  (the one choke point behind retention/anon policies, saved queries and
+  templates, trigger state, and the embedding/min-reader-version provenance
+  stamps — audited by grepping every direct `self.db.execute` for `INSERT`/
+  `UPDATE`/`DELETE` in `lib.rs`); `put_blob`/`gc_blobs`/`encrypt_blobs`
+  (CAS — `get_blob` is a read and stays open); and `set_embedder`'s call
+  into `ensure_embeddings` (postgres's lazy `vector(dim)` column DDL — the
+  embedder still installs when the memory already declares matching
+  provenance, since that path touches no database).
+- Reads are untouched: `recall`/`recall_hybrid*`/`search_*`/CAL `SELECT`
+  never call `check_writable`.
+
 ## Turso gotchas (documented in-code)
 
 - `experimental_index_method(true)` is required at open.
@@ -400,6 +516,14 @@ dispatcher and wraps the load in defer/rebuild_text_index; the CLI dispatcher
 - `multilingual_vector_tests.rs` — `TrigramEmbed` test backend, EN/AR/ZH.
 - `bundle_blob_tests.rs` — CAS + bundle replication.
 - `memtool_remember_tests.rs` — memory-tool cookbook flows, `remember()`.
+- `read_only_tests.rs` — `AreevOptions::read_only`: succeeds against an
+  existing memory, refuses every write family with `STO-E004`, reads
+  unaffected, conflicting explicit `index_text` refused up front, a missing
+  memory refuses with `STO-E005` and creates NOTHING on disk (directory
+  read before/after), and an existing file with no `-wal`/`.blobs` sidecars
+  still opens. The cross-backend twins are `areev-conformance`'s
+  `read_only_open_succeeds_and_refuses_every_write` and
+  `read_only_open_of_missing_memory_refuses_and_creates_nothing`.
 
 Benchmarks: `cargo run --release -p areev-store --example bench` (latency
 gates: recall p50 < 200µs, latest < 100µs) and `--example voice_loop`

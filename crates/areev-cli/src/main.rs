@@ -151,7 +151,10 @@ COMMANDS:
                                       `trigger run`
   trigger  list | show <T> | status   what is declared, and what has actually
                                       fired (a trigger that never fired is
-                                      reported, not silent)
+                                      reported, not silent). `show` also
+                                      surfaces the cursor and, for a
+                                      superseded declaration, the state key
+                                      its evaluation actually lives under
   trigger  pause <T> --because \"why\" | resume <T> --because \"why\"
                                       operational brake; unlike the
                                       declaration's own enabled flag it stays
@@ -307,10 +310,17 @@ COMMANDS:
                                       install a Tier-1 NER detector (JSON
                                       probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
-  ui       [--addr HOST:PORT] [--allow-remote] [--token-env VAR] [--no-destructive-ops]
-           [--tls-cert PATH --tls-key PATH]
+  ui       [--addr HOST:PORT] [--allow-remote] [--allow-origin ORIGIN[,ORIGIN...]]
+           [--token-env VAR] [--no-destructive-ops] [--tls-cert PATH --tls-key PATH]
            [--sso-header NAME --sso-secret-env VAR [--sso-secret-env-next VAR]]
                                       web console (default 127.0.0.1:7437).
+                                      --allow-origin accepts a cross-origin
+                                      POST from an EXACT origin (comma-
+                                      separated for more than one; no
+                                      wildcards) — the Origin check is not
+                                      lifted by --allow-remote, so a console
+                                      behind a reverse proxy needs its public
+                                      origin named here to be usable.
                                       --sso-secret-env-next opens a rotation
                                       window: both secrets prove the proxy, so
                                       the fleet moves over one node at a time
@@ -332,6 +342,27 @@ validates the principal against a credential map, and `areev ui --auth FILE`
 serves the console in multi-principal mode (tokens → principals,
 unauthenticated = read-only \"anonymous\").
 
+Console auth (--token-env VAR): the token's entropy is the ONLY control on
+this path — use at least 32 hex characters; comparison against the presented
+credential is constant-time. Browsers authenticate via HTTP Basic, which the
+browser caches per origin and RE-ATTACHES AUTOMATICALLY, including on
+cross-site requests — so the Origin check (--allow-origin, above) is
+load-bearing, not defence in depth. There is no logout: closing the tab does
+not clear a cached Basic credential, so a browser used to demo the console
+stays authenticated until it is restarted or its saved credentials are
+cleared. A wrong token is counted per source IP and logged to stderr as
+\"console auth FAILED from <ip> (<n> consecutive)\" (greppable for a
+fail2ban-style rule; the token itself is never logged) — but it is NOT
+delayed or locked out in-process: `ui` serves one connection at a time, so a
+sleep before responding would let an unauthenticated caller stall the
+console for everyone, and behind a reverse proxy every request logs the
+PROXY's IP anyway, so an IP lockout here would lock out every user at once.
+Rate limiting belongs at that proxy (the documented default deployment
+shape) — write the fail2ban-style rule against its access log, not this
+one. A SameSite/HttpOnly/Secure session cookie is the intended future fix
+for the caching/logout problem above and is tracked separately — it does
+not exist yet.
+
 Encryption at rest: add --passphrase-env <VAR> to any command to derive an
 AES-256 key (Argon2id) from the passphrase in environment variable VAR. The
 non-secret salt is kept in a <memory.db>.kdf sidecar — back it up with the db.
@@ -345,7 +376,16 @@ persisted; rotating it is a crypto-erasure of the mapping table.
 Vector recall: add --embed-cmd 'CMD' [--embed-model NAME] to any command to
 install a command embedder — CMD gets the text on stdin and must print a JSON
 array of numbers. Turns on the vector leg for search/serve, and embeds grains
-written by add/remember/migrate.";
+written by add/remember/migrate.
+
+Read-only: add --read-only to any command to open the memory refusing every
+write (add/supersede/forget/reindex/blob-put and so on fail with a coded
+STO-E004 error); reads and CAL SELECT work normally. On postgres this also
+skips schema/table bootstrap, so a role holding only CONNECT + USAGE + SELECT
+grants can open an existing, already-migrated memory — see
+docs/deployment-profile.md for the grant recipe. --read-only combined with an
+explicit --index-text is refused up front (--index-text always re-stamps the
+file's declaration, which read-only mode cannot do).";
 
 fn flag(args: &HashMap<String, String>, k: &str) -> Option<String> {
     args.get(k).cloned()
@@ -426,19 +466,24 @@ fn open_postgres_store(
     tel_mode: areev_store::TelemetryMode,
     explicit_index: Option<&str>,
     anon_key: Option<[u8; 32]>,
+    read_only: bool,
 ) -> Result<Areev, String> {
     let (url, schema) = areev_store::pg::split_schema_url(db).map_err(|e| e.to_string())?;
     // An --anon-key-env key is the whole reason the mapping vault and
     // value-derived tokens are reachable on this backend at all: Postgres
     // refuses `encryption_key` (a page-cipher capability), so without a
     // host-supplied root there is no key material to derive them from.
-    if explicit_index.is_some() || anon_key.is_some() {
+    // --read-only also forces the explicit-options path: it needs an
+    // `AreevOptions` to carry even when nothing else does, so the least-
+    // privilege open (skip bootstrap, verify instead) actually happens.
+    if explicit_index.is_some() || anon_key.is_some() || read_only {
         let o = areev_store::AreevOptions {
             index_text: explicit_index
                 .map(|v| !matches!(v, "false" | "0" | "off" | "no"))
                 .unwrap_or(areev_store::AreevOptions::default().index_text),
             anon_key,
             telemetry: tel_mode,
+            read_only,
             ..Default::default()
         };
         Areev::open_postgres_with(&url, &schema, o)
@@ -456,9 +501,18 @@ fn open_postgres_store(
     _tel_mode: areev_store::TelemetryMode,
     _explicit_index: Option<&str>,
     _anon_key: Option<[u8; 32]>,
+    _read_only: bool,
 ) -> Result<Areev, String> {
+    // Name `postgres-tls`, not `postgres`: the bare `postgres` feature
+    // REFUSES any DSN carrying `sslmode=` (that gate is `postgres-tls`'s
+    // job), and every managed Postgres that requires TLS on the wire —
+    // Azure Flexible Server, RDS with `rds.force_ssl`, Cloud SQL — needs
+    // exactly that. `cargo install areev` itself is real (crates.io has it);
+    // only the feature name was wrong.
     Err("this build lacks the postgres backend — reinstall with \
-         `cargo install areev --features postgres` (or build with --features postgres)"
+         `cargo install areev --features postgres-tls` (or build with \
+         --features postgres-tls), or grab the `-postgres` asset from a \
+         GitHub release, which ships the backend already compiled in"
         .into())
 }
 
@@ -1345,12 +1399,25 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         None => None,
     };
 
+    // `--read-only` computed up front (also used just below by `tel_mode`,
+    // and again further down for the `--index-text` conflict check and the
+    // open itself).
+    let read_only = flags.contains_key("read-only");
+
     // Recall-telemetry sidecar (host capability, §8): the agent-host default is
     // `aggregate`; `--telemetry off|aggregate|full` overrides. It is NOT a
-    // file-truth, so it never re-stamps the file's declarations.
+    // file-truth, so it never re-stamps the file's declarations. A read-only
+    // handle attaches no sidecar regardless (its flush is a write) — when the
+    // caller never asked for telemetry, resolve straight to `Off` so there is
+    // nothing for the store to override (and nothing to warn about) on the
+    // common `--read-only` path. An EXPLICIT `--telemetry aggregate|full`
+    // together with `--read-only` is a real, deliberate conflict, so that
+    // still flows through unchanged and the store's own override/warning
+    // applies.
     let tel_mode = match flag(&flags, "telemetry") {
         Some(v) => areev_store::TelemetryMode::parse(&v)
             .ok_or_else(|| format!("--telemetry: unknown mode '{v}' (off|aggregate|full)"))?,
+        None if read_only => areev_store::TelemetryMode::Off,
         None => areev_store::TelemetryMode::Aggregate,
     };
 
@@ -1377,10 +1444,22 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // them. --index-text is an explicit, deliberate re-stamp; encryption is a
     // host-supplied capability that also requires open_with.
     let explicit_index = flag(&flags, "index-text");
+    // --index-text always re-stamps the file's declaration (a write); a
+    // read-only handle can never honor that, so refuse up front rather than
+    // failing partway through open with a less legible error.
+    if read_only && explicit_index.is_some() {
+        return Err(
+            "--read-only cannot be combined with an explicit --index-text: --index-text \
+             always re-stamps the file's declaration, and a read-only open never writes. \
+             Drop --index-text (a read-only open honors whatever the file already declares) \
+             or drop --read-only"
+                .into(),
+        );
+    }
     let mut m = if is_pg_url {
-        open_postgres_store(&db, tel_mode, explicit_index.as_deref(), anon_key)?
+        open_postgres_store(&db, tel_mode, explicit_index.as_deref(), anon_key, read_only)?
     } else {
-        if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() {
+        if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() || read_only {
             let mut o = areev_store::AreevOptions::default();
             if let Some(v) = &explicit_index {
                 o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
@@ -1390,6 +1469,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             o.anon_key = anon_key;
             o.telemetry = tel_mode;
+            o.read_only = read_only;
             Areev::open_with(&db, o)
         } else if tel_mode != areev_store::TelemetryMode::Off {
             // Honor the file's declarations AND attach the telemetry sidecar.
@@ -2418,6 +2498,79 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             if allow_remote {
                 server = server.allow_remote(true);
+            }
+            // Cross-origin POST allowlist (issue #125). The console's Origin
+            // drive-by check is NOT lifted by --allow-remote: HTTP Basic is
+            // cached by the browser and re-attached cross-site, so Origin is
+            // the only thing telling the console's own page apart from an
+            // attacker's page riding a viewer's cached credential.
+            // --allow-origin names the exact origin(s) (the reverse proxy's
+            // public hostname) permitted to POST cross-origin instead —
+            // comma-separated for more than one, no wildcards, no subdomain
+            // matching. (`parse_args` overwrites a repeated flag rather than
+            // accumulating it, so comma-separation is the only list form.)
+            if let Some(raw) = flag(&flags, "allow-origin") {
+                fn validate_origin(o: &str) -> Result<String, String> {
+                    let o = o.trim();
+                    if o.is_empty() {
+                        return Err("--allow-origin: empty origin".to_string());
+                    }
+                    if o == "*" {
+                        return Err(
+                            "--allow-origin: '*' is not accepted — name the exact origin(s) \
+                             allowed to POST"
+                                .to_string(),
+                        );
+                    }
+                    let (scheme, rest) = if let Some(r) = o.strip_prefix("https://") {
+                        ("https", r)
+                    } else if let Some(r) = o.strip_prefix("http://") {
+                        ("http", r)
+                    } else {
+                        return Err(format!("--allow-origin {o}: must start with http:// or https://"));
+                    };
+                    if rest.contains('@') {
+                        return Err(format!("--allow-origin {o}: must not contain userinfo"));
+                    }
+                    if rest.contains('?') || rest.contains('#') {
+                        return Err(format!("--allow-origin {o}: must not contain a query or fragment"));
+                    }
+                    let host = rest.strip_suffix('/').unwrap_or(rest);
+                    if host.is_empty() {
+                        return Err(format!("--allow-origin {o}: missing host"));
+                    }
+                    if host.contains('/') {
+                        return Err(format!(
+                            "--allow-origin {o}: must not contain a path beyond an optional \
+                             trailing '/'"
+                        ));
+                    }
+                    Ok(format!("{scheme}://{host}"))
+                }
+
+                let mut origins = Vec::new();
+                for part in raw.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let normalized = validate_origin(part)?;
+                    if normalized.starts_with("http://")
+                        && !addr_is_loopback(normalized.trim_start_matches("http://"))
+                    {
+                        eprintln!(
+                            "areev: WARNING — --allow-origin {normalized} is http:// \
+                             (non-TLS) and non-loopback; a Basic credential the browser \
+                             caches for that origin would cross the wire in the clear."
+                        );
+                    }
+                    server = server.allow_origin(normalized.clone());
+                    origins.push(normalized);
+                }
+                if origins.is_empty() {
+                    return Err("--allow-origin: no origins given".to_string());
+                }
+                eprintln!("areev: cross-origin POSTs accepted from: {}", origins.join(", "));
             }
             if flags.contains_key("no-destructive-ops") {
                 server = server.allow_destructive_ops(false);

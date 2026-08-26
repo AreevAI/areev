@@ -14,7 +14,7 @@ systemd's `Persistent=true` take.
 | Part | Lives in | Replicates |
 |---|---|---|
 | **Declaration** — what to watch, how often, what to start | a `Trigger` grain (`0x0D`) | yes |
-| **Evaluation state** — next due, cursor, lease, fence | a `trg:<hash>` row in the store's `meta` table | **no** |
+| **Evaluation state** — next due, cursor, lease, fence | a `trg:<hash>` row in the store's `meta` table — `<hash>` is the trigger's supersession-**chain root**, not necessarily its current head (see "Superseding a trigger" below) | **no** |
 | **Firing record** — what fired, what it produced | an Observation in `agent:triggers`, plus Events and runs | yes |
 
 The split is deliberate. Replicating evaluation state is wrong twice over: two
@@ -353,6 +353,13 @@ always mints the same id — and `areev run start` refuses a duplicate. Connecto
 replay, overlapping cursors, and two nodes racing all produce **one run and one
 recorded skip**.
 
+**`trigger` here is the declaration's supersession-chain ROOT (1.6.x, #128),
+not necessarily its current head.** Applying a loop recommendation re-points a
+trigger at a new plan via `SUPERSEDE`, which mints a NEW content address for
+the same standing rule — see [loop.md](loop.md) and "Superseding a trigger"
+below. Evaluation state is keyed the same way, for the same reason: the
+declaration edits, the standing rule does not.
+
 That is why correctness here does not rest on the lease. The lease only stops
 two nodes making the same expensive connector call; losing it costs an API call,
 never a missed or duplicated firing.
@@ -366,11 +373,83 @@ only reports "created".
 position and stops. Otherwise declaring a mailbox trigger would start a run for
 every message in history.
 
+### Superseding a trigger keeps its cursor (1.6.x, #128)
+
+`SUPERSEDE workflow` mints a new plan hash, and the how-to guide says to
+re-point the trigger at it — triggers do not follow supersession heads. The
+only way to re-point one is to edit its `workflow` field, which is itself a
+supersession and mints a **new trigger hash**. Before this fix, that new hash
+looked like a brand-new declaration to the evaluator: its cursor re-seeded (a
+mailbox connector silently skips everything that arrived since the old
+trigger's last poll, reported as a healthy tick) and its dedup fence reset
+(the run id is derived from the trigger hash, so a new hash mints a new id for
+an item already processed — a duplicate ask to a human, for an agent that
+emails people).
+
+The fix resolves the declaration's supersession chain — walking `supersedes`
+backward from the current head to the first grain in its edit history — and
+keys evaluation state and run ids on that **chain root** instead of the head.
+For a trigger that has never been superseded, root and head are the same
+hash, so this is a byte-identical no-op: only an already-superseded trigger's
+behavior changes, and it was already broken. The chain is resolved once per
+trigger per evaluation pass, never per item.
+
+A trigger superseded BEFORE this fix shipped has state and run ids keyed on
+an older, now-orphaned hash. The evaluator adopts it automatically the first
+time it evaluates the trigger post-upgrade: it finds the most-advanced state
+row anywhere in the chain, migrates it under the root, and removes the
+legacy row — a one-time, best-effort operation (skipped, not failed, against
+a read-only-opened memory). An item already started under a pre-fix run id is
+still recognized as a duplicate, so upgrading never replays a trigger's
+backlog.
+
+`areev trigger show <id>` surfaces the resolved state key (only when it
+differs from the trigger's own hash, i.e. only for a superseded declaration)
+alongside the cursor and op-log cursor, so an operator can see directly what
+a re-pointed trigger's evaluation state is doing rather than inferring it.
+
+### A refused run start does not consume the item (1.6.x, #129)
+
+`collect_and_start` can fail to start an individual item's run for three
+reasons — the Event add failed, declared context (`--context-query`) was
+unavailable, or the run itself refused (`RUN-E018` and friends, e.g. a stale
+`--allow-executor` pin in the window between a `code_revision` recommendation
+being applied and its blob syncing) — and all three mean the item was **not**
+processed. A firing where any item hits one of these does not advance the
+cursor or op-log cursor: they stay at the values held before the firing, so
+the next pass asks the connector for the SAME page rather than skipping past
+unprocessed work. `consecutive_failures` increments and `next_due_at` backs
+off the same way a connector failure (`TRG-E004`) does — a stale pin should
+back off, not spin at full interval — and a composite gate that was satisfied
+this pass but whose run refused keeps its correlation key rather than losing
+it, so it can retry rather than needing its members to fire all over again.
+
+Re-polling the same page is safe: whatever already started is protected by
+the run-id dedup fence above (#128 is a prerequisite for this — without a
+stable run id across a page's retry, re-polling would double-process). Partial
+progress within one firing is still real and still reported —
+`runs_started`/`ingested`/`duplicates` are not discarded, only the durable
+cursor advance is withheld. The report's `cursor_held` list names which
+triggers this happened to, and `areev trigger run`'s non-JSON summary prints
+a count, so an operator sees WHY the same items keep coming back rather than
+inferring it from `duplicates` staying flat.
+
+**Binding callers must inspect the returned report.** `areev trigger run`
+already exits non-zero when `errors` is non-empty (an item's start failure
+lands there via the same path a broken connector does), so a CLI heartbeat
+surfaces it. The Python and Node bindings' `trigger_run`/`triggerRun` return
+the report as JSON and never raise — a tick with per-item failures is
+reported IN THE PAYLOAD, not as an exception, so a host embedding either
+binding must check `errors` (and, for #129 specifically, `cursor_held`) on
+every call rather than assuming a returned value means a clean pass.
+
 ### What a firing records
 
 Every firing writes one Observation in `agent:triggers` carrying `trigger`,
 `kind`, `workflow`, `items`, `runs_started`, and `duplicates` — plus, when they
-are not zero, `unidentifiable`, `ingested`, `failures`, and `seeded`.
+are not zero, `unidentifiable`, `ingested`, `failures`, `seeded`, and
+`cursor_held` (#129 — this firing's cursor was deliberately left unmoved
+because at least one item failed to start).
 
 Those conditional fields are what make the record self-explaining. A firing that
 reports `items 5, runs_started 0, duplicates 0` and nothing else is a mystery,

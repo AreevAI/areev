@@ -193,9 +193,14 @@ EOF
   2.31, asserted by a grep over the `.node`. Platform packages publish first,
   the main `areev` package last, so a half-published release never
   advertises a platform that is not on the registry yet.
-- **CLI** (`release-cli.yml`) — five prebuilt `areev` binaries, smoke-tested
-  (`--version`, `add`, `recall`) before upload, attached to the Release with
-  a combined `SHA256SUMS`.
+- **CLI** (`release-cli.yml`) — prebuilt `areev` binaries for every supported
+  platform, smoke-tested (`--version`, `add`, `recall`) before upload,
+  attached to the Release with a combined `SHA256SUMS`. Two of them are the
+  Linux `-postgres` assets, built with `--features postgres-tls` for the
+  server tier; their smoke test additionally proves the backend is really in
+  the binary. The Linux assets carry a **GLIBC 2.39** floor (the runner
+  image) — say so in the release notes, because the failure is a raw
+  dynamic-linker error.
 
 ## 6. Verify
 

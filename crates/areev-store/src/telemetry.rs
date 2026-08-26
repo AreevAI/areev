@@ -233,9 +233,15 @@ impl Telemetry {
     /// its own connection, so flushes never contend with the store's. The
     /// tables ride the schema, so erasure/export cover them like everything
     /// else in the memory.
+    ///
+    /// Never called under `read_only`: `open_postgres_internal` forces
+    /// `telemetry_mode` to `Off` before it would reach here, since this
+    /// bootstraps `telem_*` tables the same way the main schema's open
+    /// does — something a least-privilege role cannot do either. `false` is
+    /// hard-coded rather than threaded through for that reason.
     #[cfg(feature = "postgres")]
     pub fn open_pg(url: &str, schema: &str, mode: TelemetryMode) -> Result<Self> {
-        let db: Box<dyn Db> = Box::new(crate::pg::PgDb::open(url, schema, TELEM_SCHEMA_PG)?);
+        let db: Box<dyn Db> = Box::new(crate::pg::PgDb::open(url, schema, TELEM_SCHEMA_PG, false)?);
         Self::finish(db, mode)
     }
 
