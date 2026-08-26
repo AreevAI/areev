@@ -345,6 +345,44 @@ def test_a_firing_executes_a_pinned_code_carrying_node(tmp_path):
     assert report["runs_started"] == 1, report
 
 
+def test_executor_timeout_secs_overrides_the_fixed_ceiling_on_a_firing(tmp_path):
+    """#133: the fixed 300s ceiling on a pinned code executor had no host
+    override on any surface, including `trigger_deliver`. A 1s
+    `executor_timeout_secs` on a blob that busy-loops forever must return
+    well inside this test's own bound, not the old default.
+
+    The blob loops on shell builtins (`:`, `while`) rather than calling an
+    external command like `sleep`: `allow_executor` runs the blob by exec'ing
+    its own file directly, and only the DIRECT child is guaranteed killed on
+    timeout (`areev-core::proc` tracks process-group kill as separate,
+    not-yet-done work) — a `sleep`-shaped script can fork a grandchild that
+    outlives it, which would make this test's timing bound on a gap this
+    crate does not close.
+    """
+    import time
+
+    m = areev.Areev(str(tmp_path / "d.db"), ns="ops")
+    uri = m.put_blob(b"#!/bin/sh\nwhile :; do :; done\n")
+    addr = uri.removeprefix("cas://sha256:")
+
+    tool = m.add("tool", json.dumps({
+        "tool_name": "slow_validate", "kind": "definition", "executor_uri": uri}))
+    wf = m.add("workflow", json.dumps({
+        "name": "slow", "nodes": ["slow_validate"], "edges": [],
+        "bindings": {"slow_validate": tool}}))
+    trig = m.trigger_add(json.dumps({
+        "kind": "webhook", "workflow": wf, "connector": "c",
+        "dedup_key": ["/id"]}), "a pinned code node that never finishes must still bound its firing")
+
+    started = time.monotonic()
+    report = json.loads(m.trigger_deliver(
+        trig, json.dumps({"id": "a"}), allow_executor=addr,
+        executor_cache=str(tmp_path / "execache"), executor_timeout_secs=1))
+    elapsed = time.monotonic() - started
+    assert elapsed < 10, f"the 1s override must apply — the 300s default would still be looping ({elapsed}s)"
+    assert report["runs_started"] == 1, report
+
+
 def test_a_prefixed_workflow_reference_is_stored_bare_and_still_fires(tmp_path):
     """#73: `sha256:<hex>` was accepted at declaration and unusable at
     evaluation — the evaluator hex-decoded the whole string, so the trigger

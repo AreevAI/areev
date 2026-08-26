@@ -238,6 +238,21 @@ pub fn build_egress(
     Ok(Some(broker))
 }
 
+/// `--executor-timeout`/`$AREEV_RUN_EXECUTOR_TIMEOUT`: the host override for
+/// the fixed 300s wall-clock ceiling every host-executed tool otherwise runs
+/// under (#133) — a document-analysis leg that makes a dozen model calls
+/// needs longer than the `pdftotext`-shaped tool that ceiling was sized for.
+/// `0` means wait forever (the pre-1.3 behaviour, restored on request rather
+/// than by omission, which is how every other zero-means-default flag here
+/// would read it). An unparseable value is silently ignored, same as every
+/// other numeric flag `run_options` reads — the default stands rather than
+/// refusing to start a run over a typo.
+fn executor_timeout(flags: &HashMap<String, String>) -> Option<Option<std::time::Duration>> {
+    flag_or_env(flags, "executor-timeout", "AREEV_RUN_EXECUTOR_TIMEOUT")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) })
+}
+
 /// The executor a run's nodes dispatch through: the `--tool-cmd` subprocess,
 /// wrapped in the pinned code executor when the host authorized one.
 ///
@@ -251,10 +266,14 @@ pub fn tool_executor(
     flags: &HashMap<String, String>,
     egress: Option<&areev_run::EgressHandle>,
 ) -> Arc<dyn HostToolExecutor> {
+    let timeout = executor_timeout(flags);
     let base: Arc<dyn HostToolExecutor> = match flag_or_env(flags, "tool-cmd", "AREEV_RUN_TOOL_CMD")
     {
         Some(cmd) => {
-            let ce = CommandExecutor::new(&cmd);
+            let mut ce = CommandExecutor::new(&cmd);
+            if let Some(t) = timeout {
+                ce = ce.with_timeout(t);
+            }
             Arc::new(match egress {
                 Some(h) => ce.with_egress(h.clone()),
                 None => ce,
@@ -274,6 +293,9 @@ pub fn tool_executor(
             }
             if let Some(cmd) = flag_or_env(flags, "sandbox-cmd", "AREEV_RUN_SANDBOX_CMD") {
                 ce = ce.sandbox_cmd(&cmd);
+            }
+            if let Some(t) = timeout {
+                ce = ce.with_timeout(t);
             }
             if let Some(h) = egress {
                 ce = ce.with_egress(h.clone());
@@ -467,5 +489,52 @@ mod tests {
         // And without it the same node is refused — the pin IS the grant.
         let exec = tool_executor(&flags(&[]), None);
         assert!(!exec.code_allowed("tool-hash", &format!("cas://sha256:{addr}")));
+    }
+
+    #[test]
+    fn executor_timeout_parses_seconds_and_zero_means_wait_forever() {
+        assert_eq!(
+            executor_timeout(&flags(&[])),
+            None,
+            "unset means: the executor's own default stands"
+        );
+        assert_eq!(
+            executor_timeout(&flags(&[("executor-timeout", "45")])),
+            Some(Some(std::time::Duration::from_secs(45)))
+        );
+        assert_eq!(
+            executor_timeout(&flags(&[("executor-timeout", "0")])),
+            Some(None),
+            "0 restores the pre-1.3 wait-forever behaviour, on request rather than by omission"
+        );
+        assert_eq!(
+            executor_timeout(&flags(&[("executor-timeout", "not-a-number")])),
+            None,
+            "an unparseable value is ignored, like every other numeric flag run_options reads"
+        );
+    }
+
+    /// #133: `--allow-executor`'s fixed 300s ceiling had no host override at
+    /// all. A 1s `--executor-timeout` on a `--tool-cmd` that sleeps for 30s
+    /// must fail well inside this test's own timeout, not the old default —
+    /// proof the flag actually reaches the constructed executor, not just
+    /// that it parses.
+    #[cfg(unix)]
+    #[test]
+    fn executor_timeout_flag_shortens_the_ceiling_a_tool_cmd_runs_under() {
+        let exec =
+            tool_executor(&flags(&[("tool-cmd", "sleep 30"), ("executor-timeout", "1")]), None);
+        let started = std::time::Instant::now();
+        let result = exec.execute("work", "h", &serde_json::json!({}), "k");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the override must apply — the 300s default would still be sleeping"
+        );
+        match result {
+            ExecResult::Err { cause, detail } => {
+                assert_eq!(cause, areev_run::FailCause::Timeout, "{detail}");
+            }
+            ExecResult::Ok(v) => panic!("expected a timeout, got {v}"),
+        }
     }
 }

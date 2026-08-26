@@ -1195,6 +1195,45 @@ test('a firing executes a pinned code-carrying node', async () => {
   m.close()
 })
 
+test('executorTimeoutSecs overrides the fixed 300s ceiling on a firing (#133)', async () => {
+  // The blob busy-loops on shell builtins (`:`, `while`) rather than calling
+  // an external command like `sleep`: `allowExecutor` runs the blob by
+  // exec'ing its own file directly, and only the DIRECT child is guaranteed
+  // killed on timeout (areev-core::proc tracks process-group kill as
+  // separate, not-yet-done work) — a `sleep`-shaped script can fork a
+  // grandchild that outlives it, which would make this test's timing bound
+  // on a gap this crate does not close.
+  const dir = mkdtempSync(join(tmpdir(), 'areev-trig-timeout-'))
+  const m = new Areev(join(dir, 't.db'), 'ops')
+
+  const script = '#!/bin/sh\nwhile :; do :; done\n'
+  const uri = await m.putBlob(Buffer.from(script))
+  const addr = uri.replace('cas://sha256:', '')
+
+  const tool = await m.add('tool', JSON.stringify({
+    tool_name: 'slow_validate', kind: 'definition', executor_uri: uri,
+  }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'slow', nodes: ['slow_validate'], edges: [], bindings: { slow_validate: tool },
+  }))
+  const trig = await m.triggerAdd(
+    JSON.stringify({ kind: 'webhook', workflow: wf, connector: 'c', dedup_key: ['/id'] }),
+    'a pinned code node that never finishes must still bound its firing',
+  )
+
+  const started = Date.now()
+  const ran = JSON.parse(await m.triggerDeliver(
+    trig, JSON.stringify({ id: 'a' }), null, null, null, null, null, null,
+    null, null, null, null, null, addr, join(dir, 'execache'), null, 1,
+  ))
+  assert.ok(
+    Date.now() - started < 10_000,
+    'the 1s override must apply — the 300s default would still be looping',
+  )
+  assert.equal(ran.runs_started, 1, JSON.stringify(ran))
+  m.close()
+})
+
 test('a prefixed workflow reference is stored bare and still fires', async () => {
   // #73: `sha256:<hex>` was accepted at declaration and unusable at
   // evaluation — the evaluator hex-decoded the whole string, so the trigger

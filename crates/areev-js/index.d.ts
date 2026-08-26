@@ -456,7 +456,7 @@ export declare class Areev {
    * Start a governed run. Returns the session JSON:
    * `{"finished": …}` or `{"parked": envelope}`.
    */
-  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
+  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null): Promise<string>
   /**
    * Resume a parked/interrupted run from its latest checkpoint.
    *
@@ -464,7 +464,7 @@ export declare class Areev {
    * abstract nodes still has to execute them, and the backend is host config
    * that is deliberately not journaled with the run.
    */
-  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
+  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null): Promise<string>
   /**
    * Answer a pending Client ask. `responder` is REQUIRED — approval
    * separation of duties (responder ≠ triggering principal) is structural.
@@ -561,7 +561,7 @@ export declare class Areev {
    * such a node refuses with `RUN-E018` — the authorization to execute code
    * must come from the host, never from the file that carries it.
    */
-  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
+  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null): Promise<string>
   /**
    * Hand a webhook or manual payload to a trigger. Areev never opens a
    * port: the host owns the listener and hands the payload over.
@@ -569,7 +569,7 @@ export declare class Areev {
    * Takes the same budgets and the same executor pin as `triggerRun`: a
    * delivery starts a real run.
    */
-  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null): Promise<string>
+  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null): Promise<string>
   /** Stop a trigger firing without deleting it. Mandatory reason. */
   triggerPause(trigger: string, because: string): Promise<string>
   /** Let a paused trigger fire again. Mandatory reason. */

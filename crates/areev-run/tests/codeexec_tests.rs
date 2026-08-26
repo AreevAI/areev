@@ -10,8 +10,8 @@ use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, Tool, ToolKind, Workflow};
 use areev_run::{
-    BudgetsSpec, CodeExecutor, ExecResult, HostToolExecutor, OnDangling, RunOptions, Runner,
-    RunSession, ScriptedClock,
+    BudgetsSpec, CodeExecutor, ExecResult, FailCause, HostToolExecutor, OnDangling, RunOptions,
+    Runner, RunSession, ScriptedClock,
 };
 use areev_run_core::RunOutcome;
 use areev_store::Areev;
@@ -191,6 +191,53 @@ fn a_pinned_code_executor_runs_and_its_output_is_the_node_result() {
         produced.get("fell_back_to_tool_cmd").is_none(),
         "a pinned code executor must not fall through to --tool-cmd"
     );
+}
+
+/// #133: `with_timeout` existed on `CodeExecutor` but nothing ever called
+/// it, so the fixed 300s ceiling could never be shortened OR raised for a
+/// pinned blob. This pins the override actually taking effect at dispatch,
+/// not just being accepted by the builder.
+///
+/// The blob busy-loops on shell builtins only (`:`, `while`) rather than
+/// calling an external command like `sleep`: `SpawnOutput::timed_out` only
+/// guarantees the DIRECT child is killed (see `proc.rs`'s module doc on
+/// process-group kill being a deliberately separate, untracked-here piece
+/// of work), and a `sleep`-shaped script can fork a grandchild that
+/// outlives it, which would make this test's timing assert on a gap this
+/// crate does not close.
+#[cfg(unix)]
+#[test]
+fn with_timeout_overrides_the_fixed_ceiling() {
+    let rig = Rig::new();
+    let script = b"#!/bin/sh\nwhile :; do :; done\n";
+    let uri = rig.put_blob(script);
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+
+    let exec = CodeExecutor::new(Arc::new(Fallback))
+        .allow(&addr)
+        .cache_dir(rig.dir.join("execache-timeout"))
+        .with_timeout(Some(std::time::Duration::from_millis(200)));
+
+    let code = areev_run::PreparedCode {
+        uri: uri.clone(),
+        bytes: script.to_vec(),
+        runtime: None,
+        limits: None,
+        capabilities: None,
+    };
+    let started = std::time::Instant::now();
+    let detail = match exec.execute_code("work", "h", &code, &json!({}), "k") {
+        ExecResult::Ok(v) => panic!("expected the override to kill it, got {v}"),
+        ExecResult::Err { cause, detail } => {
+            assert_eq!(cause, FailCause::Timeout, "{detail}");
+            detail
+        }
+    };
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the 200ms override must apply — the 300s default would still be looping"
+    );
+    assert!(detail.contains("exceeded its 0s ceiling"), "{detail}");
 }
 
 #[test]
