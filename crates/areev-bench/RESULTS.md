@@ -437,80 +437,166 @@ Readings:
 
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
-`cargo run --release -p areev-bench --bin selfimprove_aba` — design, honesty
-rules and reproduction: [`SELFIMPROVE.md`](SELFIMPROVE.md).
+`cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,
+pre-registered interpretation and full flag reference:
+[`SELFIMPROVE.md`](SELFIMPROVE.md).
 
-*Pilot run: 2026-08-26 · **one seed**, so labelled pilot — publishable numbers
-need ≥3 (SELFIMPROVE.md "Determinism & stats"). Agent: Qwen3-30B-A3B-Instruct-2507
-via OpenRouter (CoreWeave), temperature 0. Loop LLM stages on: DISCOVER/VERIFY
-on the same model, GROUND on `deepseek-chat` so the proposer never grades
-itself. 150 experience tasks → 772 tool calls → 139 failures; 60 held-out
-tasks, identical set and order in every state. Every model call transcribed in
-[`results/selfimprove-aba-qwen3-30b-seed1-2026-08-26.*`](results/).*
+*Run: 2026-08-26 · **3 seeds** · agent Qwen3-30B-A3B-Instruct-2507 via
+OpenRouter, temperature 0, 6-way eval concurrency. Per seed: 300 experience
+tasks, 100 held-out tasks scored in every state. Loop LLM stages on
+(DISCOVER/VERIFY on the agent model, GROUND on `deepseek-chat` so the proposer
+never grades itself). Every model call transcribed in
+[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](results/).*
 
-The only lever between states is Areev's own governed apply/rollback — the eval
+The only lever between states is Areev's own governed apply/rollback: the eval
 prompt is assembled from live memory on every run, so rollback empties the
-LESSONS section structurally. There is no harness flag.
+LESSONS section structurally. There is no harness flag that changes behaviour.
 
-| state | success | rate | tool errors | mean steps |
-|---|---|---|---|---|
-| A0 before lessons | 24/60 | 40.0% | 64 | 6.6 |
-| B lessons applied | 31/60 | **51.7%** | 61 | 7.0 |
-| A1 lessons rolled back | 23/60 | 38.3% | 66 | 6.7 |
-| B2 lessons re-applied | 32/60 | **53.3%** | 59 | 6.9 |
+| state | seed 1 | seed 2 | seed 3 | mean | avg prompt tokens |
+|---|---|---|---|---|---|
+| A0 before lessons | 35.0% | 42.0% | 40.0% | **39.0%** | 718k |
+| B lessons applied | 59.0% | 61.0% | 59.0% | **59.7%** | 823k |
+| A1 lessons rolled back | 34.0% | 39.0% | 40.0% | **37.7%** | 717k |
+| B2 lessons re-applied | 50.0% | 62.0% | 57.0% | **56.3%** | 818k |
 
-Paired exact McNemar over the shared 60 tasks (`scripts/aba_stats.py`;
+Paired exact McNemar, pooled over all three seeds (`scripts/aba_stats.py`;
 b = failed→passed, c = the reverse):
 
 | transition | b | c | p | reading |
 |---|---|---|---|---|
-| A0 → B | 9 | 2 | 0.065 | applying the lesson improves |
-| B → A1 | 2 | 10 | **0.039** | removing it undoes the gain |
-| A1 → B2 | 10 | 1 | **0.012** | restoring it recovers the gain |
-| A0 → A1 | 0 | 1 | 1.000 | **control** — the two lesson-off states are the same |
-| B → B2 | 4 | 3 | 1.000 | **control** — the two lesson-on states are the same |
+| A0 → B | 70 | 8 | **0.0000** | applying the lessons improves |
+| B → A1 | 8 | 74 | **0.0000** | removing them undoes the gain |
+| A1 → B2 | 65 | 9 | **0.0000** | restoring them recovers it |
+| A0 → A1 | 2 | 6 | 0.289 | **control** — the two lesson-off states agree |
+| B → B2 | 11 | 21 | 0.110 | the two lesson-on states agree |
 
-The controls are the load-bearing rows: lesson-off ≈ lesson-off and lesson-on ≈
-lesson-on, so the swing is not drift, warm-up or provider variance — it tracks
-the presence of the applied lesson and nothing else. A0→B alone would not clear
-p<0.05 at n=60; the two significant transitions and the two null controls are
-what make the causal reading hold.
+Every transition is independently significant in **each** seed, not only
+pooled. The controls are the load-bearing rows: lesson-off ≈ lesson-off, so
+the ~21-point swing tracks the applied lessons rather than drift, warm-up or
+provider variance.
 
-**Governance ledger: 2 proposed, 2 applied, 0 rejected, 0 advisory.** Both rows
-are the same finding — `loop.tool_failure/1`, `refund` failed 46 times (44% of
-the calls that could fail this way) with `rate_limited`. It applies twice
-because a rolled-back hash is terminal: B2 is a *fresh* governed proposal
-(propose → approve → apply), so the run exercises the whole gated path twice.
+### It improves without regressing
 
-That second pass is itself a result: **the loop re-derived the identical lesson
-content from the same evidence** — same subject, same signature, same count,
-same rate; only the proposal timestamp differs. Deterministic re-derivation is
-what makes the restore leg of an ablation meaningful (B2 tests *the same*
-learned state, not a paraphrase of it), and it is structurally unavailable to a
-write path that runs a model on every add — re-running an LLM extraction over
-the same history may store different text.
+Per-rule mishandling (tasks that failed to handle a hidden rule / tasks that
+exercised it), summed over three seeds. A rule is "mishandled" when the agent
+repeats the same error or gives up on it — an unavoidable first failure that
+the agent then handles does not count:
 
-Kept precise, because these bound the claim:
+| hidden rule | A0 | B | change |
+|---|---|---|---|
+| R4 refund/cancel ordering | 34/75 (45%) | **4/75 (5%)** | −40 pts |
+| R5 UTC timestamps | 29/75 (39%) | **15/75 (20%)** | −19 pts |
+| R6 rate-limit recovery | 121/133 (91%) | **101/133 (76%)** | −15 pts |
 
-- **The baseline is no-lesson, not no-memory-system.** A0 and A1 run the bare
-  system prompt: the experience is captured in the memory file, but nothing is
-  rendered into the prompt. So this measures a governed lesson against an
-  unaided agent — it does **not** yet measure it against a passive-retrieval
-  memory that dumps relevant raw history into the prompt. Until the
-  `passive memory` arm runs (SELFIMPROVE.md roadmap), the defensible claim is
-  "the applied lesson caused the gain", **not** "curation beats retrieval".
-  Anyone comparing Areev to a plain memory store should ask for that arm, and
-  it is the next run.
-- **One lesson, one failure mode.** The gain comes from a single applied
-  grain; this is not a claim about the loop's whole analyzer suite.
-- **The LLM stages contributed nothing.** DISCOVER→GROUND→VERIFY ran on every
-  pass and produced **0** findings that survived to the queue. The improvement
-  is entirely from the deterministic analyzer. (LLM findings are advisory by
-  design and cannot be applied at all — SELFIMPROVE.md's roadmap.)
-- **One task was lost to an adapter crash** in A0, scored as a failure; A0 over
-  the 59 clean tasks is 40.7%, which does not change the reading.
-- The run predates committing these changes, so `report.json`'s `git_rev`
-  (`23a1990`) names the release commit, not the working tree that produced it.
+Every rule the loop touched improved and none regressed. That property is not
+automatic — see the passive arm below that halved one failure class while
+doubling another.
+
+### Does the loop beat the store? — the passive-memory arms
+
+The A/B/A/B baseline is an *unaided* agent, which proves the lessons caused
+the gain but not that curated lessons beat plain retrieval. The arms answer
+that: the same store with the loop **off**, the same captured experience, the
+same held-out tasks, LESSONS empty and a context provider in its place.
+Deliberately tilted toward retrieval — each arm sees the full error object,
+strictly more raw detail than a lesson's single summarizing line.
+
+| arm | mean | avg prompt tokens | vs B |
+|---|---|---|---|
+| **B** (governed lessons) | **59.7%** | **823k** | — |
+| `m-steel` per-error recall at the failure | 66.3% | 1,087k (1.3×) | p = 0.090 |
+| `m-all` whole failure history | 57.0% | 5,143k (**6.2×**) | p = 0.230 |
+| `m-llm` history summarized by a model | 57.7% | 1,056k (1.3×) | p = 0.461 |
+
+**No arm beats the loop significantly.** This is the pre-registered `B ≈ M`
+outcome, and the honest reading is parity on accuracy — anyone citing this as
+the loop *outperforming* retrieval is overreading it. `m-steel` led by 13
+points in seed 1 and by 3 and 4 in seeds 2 and 3; that is why single-seed
+numbers are not published.
+
+At parity, the differences that remain are cost and behaviour:
+
+- **Zero model calls to learn.** The lessons are computed by deterministic
+  clustering. `m-llm` pays model calls at write time; every arm pays a
+  per-turn context tax on every task, forever, where a lesson is one line
+  injected once.
+- **`m-all` costs 6.2× the prompt tokens to score lower than B.**
+- **Only the loop improved every rule.** `m-steel` cut R6 mishandling to
+  48/133 (36%) — far better than B — but drove R4 to **67/75 (89%)**, worse
+  than doing nothing at all (45%), because per-error retrieval can only fire
+  *after* the mistake it needed to prevent. `m-all`/`m-llm` are the mirror
+  image: near-perfect on R4/R5, barely better than baseline on R6.
+
+That split is the most useful finding here: curated lessons prevent, retrieval
+repairs, and they fix different failure classes. It argues for a lesson that
+can fire at the decision point — the LLM-authored procedural lesson on
+SELFIMPROVE.md's roadmap — rather than for choosing one approach over the
+other.
+
+### The dataset
+
+A deterministic, in-process "support desk" API with **six hidden rules** the
+agent is never told (pagination must be exhausted; ids must be canonical;
+refunds over $100 need prior approval; refund must precede cancellation;
+timestamps must be UTC; a rate-limited call carries `retry_after_s` and only
+succeeds after waiting). Tasks are template-generated from a seeded entity
+pool and scored by a **programmatic predicate over final environment state** —
+no LLM judge anywhere, so nothing in the score depends on a grader's opinion.
+EXPERIENCE and held-out splits are disjoint by construction: different entity
+pools, different email domains, paraphrased prompts. `--seed N` reproduces
+every task exactly.
+
+### Reproduce
+
+The whole 3-seed run — all four governed states plus three arms, 2,800
+task-runs — cost **~$2.30** in API spend and about 6 hours wall-clock at 6-way
+concurrency. One seed of the governed states alone is **~$0.53**.
+
+```bash
+export OPENROUTER_API_KEY=…
+AGENT='python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507'
+for S in 1 2 3; do
+  cargo run --release -p areev-bench --bin selfimprove_aba -- \
+    --workdir /tmp/aba-s$S --seed $S --experience 300 --eval 100 --workers 6 \
+    --agent-cmd "$AGENT" --mllm-cmd "$AGENT" \
+    --llm-cmd    'python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507' \
+    --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat' \
+    --arms m-steel,m-all,m-llm
+done
+python3 crates/areev-bench/scripts/aba_stats.py /tmp/aba-s1 /tmp/aba-s2 /tmp/aba-s3
+```
+
+`--mock` runs the whole shape keylessly in 0.2s (what CI asserts), but proves
+plumbing only — the deterministic agent complies with any context handed to
+it, so its numbers never rank one approach against another.
+
+### What bounds these numbers
+
+- **One synthetic workload.** Six rules, four task templates, one domain. It
+  was built to make learning *measurable* — known ground truth, no judge, a
+  programmatic score — not to be representative of production traffic. The
+  task mix here is rate-limit-heavy (133 of 300 held-out tasks exercise R6),
+  which favours the failure class retrieval is best at. Results on other
+  workloads may differ in both directions.
+- **A synthetic environment can be gamed by construction.** Ours is committed
+  in `env.rs` with its rules, generators and scoring readable in full, and the
+  agent never sees them — but a reader should treat "we wrote the test and
+  passed it" with the scepticism it deserves and re-run it themselves. That is
+  what the seeds, the committed transcripts and the ~$2 price tag are for.
+- **`B2` sits ~3 points below `B`** (p = 0.110) though the two states are
+  identical, so temperature-0 provider variance is real and bounds how finely
+  any of these numbers can be read.
+- **One model, one size.** Whether the effect holds on a frontier model, or on
+  a smaller one, is unmeasured.
+- **The LLM loop stages contributed nothing.** DISCOVER→GROUND→VERIFY ran on
+  every pass and produced no findings that reached the queue; the entire gain
+  is from the deterministic analyzers.
+
+**More benchmarks are coming.** Next: the learning curve (does accuracy keep
+climbing as experience accumulates?), an adversarial-experience arm (does
+governance hold when the history is misleading?), and a run on a public
+agent-trajectory benchmark rather than a synthetic one. Roadmap in
+[`SELFIMPROVE.md`](SELFIMPROVE.md).
 
 ## Areev Loop analyzer precision (fixture floor)
 
