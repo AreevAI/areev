@@ -89,37 +89,61 @@ this repo — click through:
 Anyone can show a number going up. The honest test is whether the *learning*
 caused it, so we remove what was learned and watch what happens.
 
-One frozen model, the same 60 held-out tasks in the same order, temperature 0.
-The only thing that changes between rows is whether a single lesson Areev
-learned is switched on:
+One frozen model, 100 held-out tasks it has never seen, three seeds,
+temperature 0. The only thing that changes between rows is whether the lessons
+Areev learned are switched on:
 
 | what the memory holds | tasks passed | |
 |---|:---:|---|
-| nothing learned yet | 40.0% | the agent keeps repeating one mistake |
-| the lesson, applied | **51.7%** ▲ | it stops repeating it |
-| the lesson, rolled back | 38.3% ▼ | **the proof** — take it away and the gain leaves with it |
-| the lesson, re-applied | **53.3%** ▲ | put it back and the gain returns |
+| nothing learned yet | 39.0% | the agent keeps repeating its mistakes |
+| the lessons, applied | **59.7%** ▲ | it stops |
+| the lessons, rolled back | 37.7% ▼ | **the proof** — take them away and the gain leaves with them |
+| the lessons, re-applied | **56.3%** ▲ | put them back and it returns |
 
-The lesson, in one line: *`refund` kept failing with `rate_limited` — the agent
-waited, then never retried, and 46 tasks died that way.* Areev clustered those
-failures, cited every one by hash, and proposed a fix. **A person approved it.**
-The next prompt carried it.
+Every one of those transitions is significant at **p < 0.0001** (paired
+McNemar, n=300, and independently significant in each seed), while the two
+"nothing learned" rows are statistically indistinguishable from each other.
+The swing tracks the lessons and nothing else.
+
+**It learned for free.** The lessons came from deterministic clustering over
+the agent's own tool calls — **zero model calls**, no tokens, no extraction
+step. Each one cites the failures it was computed from, by hash.
+
+**It improved without regressing.** Every hidden rule the loop touched got
+better, and none got worse:
+
+| the mistake the agent kept making | before | after |
+|---|:---:|:---:|
+| cancelling a subscription before refunding it | 45% of chances | **5%** |
+| sending timestamps in local time, not UTC | 39% | **20%** |
+| giving up after a rate limit instead of retrying | 91% | **76%** |
+
+**We tried hard to beat it.** The same store with the loop switched *off* —
+raw failure history retrieved into the prompt three different ways, including
+one deliberately given a better hook than semantic search would get — matched
+it but never significantly beat it, while one variant burned **6.2× the
+prompt tokens to score lower**. The retrieval that scored best also *doubled*
+the ordering mistakes above, because it can only fire after a failure it
+needed to prevent.
 
 There is no benchmark mode here. The prompt is assembled from live memory on
-every run, so rolling the lesson back empties it structurally. Two properties
+every run, so rolling the lessons back empties it structurally. Two properties
 of the architecture make the round trip possible: learning is **separate from
-storage**, so the lesson can be removed *while the experience stays* — a
-system whose write path *is* its learning (LLM extraction on every write) has
-nothing to ablate without also losing the memory — and re-applying re-derives
-the lesson **deterministically from the same evidence**, byte-for-byte, which
-a model-in-the-write-path cannot guarantee.
+storage**, so a lesson can be removed *while the experience stays* — a system
+whose write path *is* its learning has nothing to ablate without also losing
+the memory — and re-applying re-derives the lesson **deterministically from
+the same evidence**, which a model in the write path cannot guarantee.
 
-<sub>Single-seed pilot on Qwen3-30B (a small, cheap open-weights model) via
-OpenRouter. Rows 1 and 3 are an agent with no lesson in its prompt, so this
-shows that *the lesson* caused the gain — measuring curation against passive
-retrieval is a separate arm, and it is the next run. The paired significance
-tests, the governance ledger, the honest caveats — including that the optional
-LLM stages contributed nothing here — and every model call transcribed:
+<sub><b>What bounds this:</b> one synthetic workload — six rules the agent is
+never told, scored by a programmatic predicate with no LLM judge — built to
+make learning <i>measurable</i>, not to be representative of production
+traffic. We wrote the test and passed it, so re-run it yourself: the whole
+three-seed comparison costs about <b>$2.30</b> and one seed of the four states
+above about <b>$0.53</b>, on a small open-weights model, with every task and
+model call committed. <b>More benchmarks are coming</b> — a learning curve
+over accumulating experience, an adversarial-experience arm, and a public
+agent-trajectory benchmark. Numbers, per-seed results, significance tests,
+dataset, rerun instructions and the full caveat list:
 <a href="crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof"><b>the A/B/A/B causal proof →</b></a></sub>
 
 ---

@@ -1,0 +1,382 @@
+{
+  "config": {
+    "agent_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "arms": [
+      "m-steel",
+      "m-all",
+      "m-llm"
+    ],
+    "assert_shape": false,
+    "bench": "selfimprove_aba",
+    "context_cmd": null,
+    "db": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/948e5ede-40ed-422a-8911-525405666586/scratchpad/run3-s2/bench.db",
+    "eval": 100,
+    "experience": 300,
+    "git_rev": "5aac29b167be9af558050da725785f529b8ce52e",
+    "ground_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat",
+    "llm_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507",
+    "max_turns": 24,
+    "mllm_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "mock": false,
+    "phase_base_ms": 1700000000000,
+    "reviewer_actor": "user:bench-reviewer",
+    "runner_actor": "agent:bench-runner",
+    "seed": 2,
+    "workdir": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/948e5ede-40ed-422a-8911-525405666586/scratchpad/run3-s2",
+    "workers": 6
+  },
+  "evals": [
+    {
+      "mean_steps": 6.45,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 11,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 11,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 37,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "A0",
+      "success_rate": 0.42,
+      "successes": 42,
+      "tool_errors": 95,
+      "total_steps": 645,
+      "usage": {
+        "completion_tokens": 22750,
+        "prompt_tokens": 707442
+      }
+    },
+    {
+      "mean_steps": 6.82,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 1,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 6,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 32,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "B",
+      "success_rate": 0.61,
+      "successes": 61,
+      "tool_errors": 87,
+      "total_steps": 682,
+      "usage": {
+        "completion_tokens": 23497,
+        "prompt_tokens": 815264
+      }
+    },
+    {
+      "mean_steps": 6.43,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 14,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 38,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "A1",
+      "success_rate": 0.39,
+      "successes": 39,
+      "tool_errors": 100,
+      "total_steps": 643,
+      "usage": {
+        "completion_tokens": 23332,
+        "prompt_tokens": 704341
+      }
+    },
+    {
+      "mean_steps": 6.81,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 2,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 7,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 30,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "B2",
+      "success_rate": 0.62,
+      "successes": 62,
+      "tool_errors": 86,
+      "total_steps": 681,
+      "usage": {
+        "completion_tokens": 23502,
+        "prompt_tokens": 815738
+      }
+    },
+    {
+      "mean_steps": 6.77,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 24,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 8,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 16,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "M-steel",
+      "success_rate": 0.64,
+      "successes": 64,
+      "tool_errors": 123,
+      "total_steps": 677,
+      "usage": {
+        "completion_tokens": 24573,
+        "prompt_tokens": 1061520
+      }
+    },
+    {
+      "mean_steps": 6.94,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 1,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 4,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 33,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "M-all",
+      "success_rate": 0.6,
+      "successes": 60,
+      "tool_errors": 82,
+      "total_steps": 694,
+      "usage": {
+        "completion_tokens": 27322,
+        "prompt_tokens": 5123431
+      }
+    },
+    {
+      "mean_steps": 6.63,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 42,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 0,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 0,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 32,
+          "opportunities": 41,
+          "rule": "R6"
+        }
+      ],
+      "state": "M-llm",
+      "success_rate": 0.61,
+      "successes": 61,
+      "tool_errors": 83,
+      "total_steps": 663,
+      "usage": {
+        "completion_tokens": 24897,
+        "prompt_tokens": 1071484
+      }
+    }
+  ],
+  "ledger": [
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "6b4b469e3197e79f1d2cb51a4233f67b35c8e244d3fbb60ee53463ee1f0cdef5",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 69 times (34% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "dd60870667fa721ccc65f6e6075b13bad36c32fd51b38f081cc987edb216a0a9",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 79 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "d587403bbee5ce9de3fa1eac3fcaf74d8277db92d273df91cc93ec790ef81e11",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 69 times (34% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "dd78ae05fd89d1d855ca4e00d931872c411754b0ce0130a922addfb911c5977f",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 79 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    }
+  ],
+  "ledger_counts": {
+    "advisory": 0,
+    "applied": 4,
+    "apply_failed": 0,
+    "proposed": 4,
+    "rejected": 0
+  }
+}
