@@ -102,6 +102,16 @@ Hard-won guidance from the production deployment:
   cannot set `In-Reply-To` (clients ignore RFC 6068's attempt), so a
   clicked reply may land outside the thread. Resolve replies by thread
   *first*, marker search second.
+- **Not every message in the mailbox is work.** Both connectors drop two
+  kinds before they become items, and a hand-rolled connector must too:
+  *our own asks coming back* (they carry the run marker, the reply path owns
+  them, and a second run can only ever conclude "nothing could be
+  extracted"), and *postmaster mail* — a bounce carries neither the marker
+  nor an invoice, so it parks a run asking a human about a delivery failure,
+  and that ask can bounce in turn. Mind the cursor when you add such a
+  filter: advance it on everything you **looked at**, not on what you
+  returned, or a batch that is entirely bounces leaves it parked and
+  re-fetches the same mail forever.
 - **Email the approver, never the external sender.** Getting that backwards
   emails your vendor an approval link.
 - **Classify deterministically first**: strip quoted history (Gmail's

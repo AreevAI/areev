@@ -38,6 +38,7 @@ Never run by CI: the keyless floor uses the fixture connector instead.
 import base64
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -187,6 +188,43 @@ SELECT = ("id,internetMessageId,conversationId,subject,from,toRecipients,"
           "receivedDateTime,hasAttachments,body")
 
 
+# ── mail that must never become work ──────────────────────────────────────
+# Two kinds, both found running this example against a live tenant:
+#
+#   * our own asks coming back. A reply carries the run marker; the reply
+#     path owns it. Letting it through starts a second run that can only
+#     ever conclude "nothing could be extracted".
+#   * postmaster mail. A bounce carries neither the marker (Exchange
+#     rewrites the subject and drops the body) nor an invoice, so it parks a
+#     run asking a human about a delivery failure — and that ask can bounce
+#     too, which starts the loop again.
+#
+# Duplicated in both connectors on purpose: each is a standalone stdio
+# script with no imports beyond the stdlib, and that is worth more than
+# saving fifteen lines.
+MARKER_RE = re.compile(r"\[areev:[a-z]{2}/[0-9a-f]{12}\]")
+SYSTEM_SUBJECT_RE = re.compile(
+    r"^\s*(undeliverable|undelivered mail|delivery status notification|"
+    r"mail delivery (failed|subsystem)|returned mail|automatic reply|"
+    r"out of office|auto(matic)?[- ]?reply)\b",
+    re.I,
+)
+SYSTEM_SENDER_RE = re.compile(
+    r"^(microsoftexchange[0-9a-f]*@|postmaster@|mailer-daemon@|no-?reply@)", re.I
+)
+
+
+def not_new_work(payload):
+    """True for mail that must not start a run."""
+    email = payload.get("email") or {}
+    subject = email.get("subject") or ""
+    sender = email.get("from") or ""
+    body = (email.get("body") or "")[:4000]
+    if MARKER_RE.search("%s %s" % (subject, body)):
+        return True
+    return bool(SYSTEM_SENDER_RE.match(sender)) or bool(SYSTEM_SUBJECT_RE.match(subject))
+
+
 def poll(req):
     mailbox = os.environ.get("AP_MAILBOX") or (req.get("scope") or "").removeprefix("mailbox:")
     tok = token()
@@ -204,15 +242,20 @@ def poll(req):
         "$orderby": "receivedDateTime asc",
         "$top": req.get("max_items", 100),
         "$select": SELECT})
+    messages = listing.get("value", [])
     items, newest = [], cursor
-    for msg in listing.get("value", []):
-        mid, blobs, payload = flatten(msg, tok, mailbox)
+    for msg in messages:
         newest = max(newest, msg.get("receivedDateTime", newest))
-        if mid:
-            payload["graph_id"] = msg["id"]
-            items.append({"id": mid, "payload": payload, "blobs": blobs})
+        mid, blobs, payload = flatten(msg, tok, mailbox)
+        if not mid or not_new_work(payload):
+            continue
+        payload["graph_id"] = msg["id"]
+        items.append({"id": mid, "payload": payload, "blobs": blobs})
     out = {"items": items, "more": "@odata.nextLink" in listing}
-    if items:
+    # Advance on anything LOOKED AT, not only on what was returned. A batch
+    # that is entirely bounces yields no items, and cursoring on `items`
+    # leaves it parked — re-fetching the same mail on every poll, forever.
+    if messages:
         out["cursor"] = newest
     return out
 
