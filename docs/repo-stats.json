@@ -1,17 +1,17 @@
 {
-  "version": "1.6.4",
+  "version": "1.6.5",
   "crates": 17,
   "rust": {
     "files": 277,
-    "physical_lines": 169623,
-    "source_code": 80474,
-    "test_code": 48792,
-    "unit_test_code": 22565,
-    "integration_test_code": 26227,
+    "physical_lines": 169932,
+    "source_code": 80571,
+    "test_code": 48907,
+    "unit_test_code": 22607,
+    "integration_test_code": 26300,
     "example_code": 669,
-    "test_functions": 2382,
+    "test_functions": 2386,
     "test_ratio": 0.61,
-    "test_share": 37.7
+    "test_share": 37.8
   },
   "per_crate": [
     {
@@ -25,8 +25,8 @@
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 21914,
-      "source_code": 10082,
+      "physical": 21916,
+      "source_code": 10083,
       "test_code": 5411,
       "tests": 273
     },
@@ -41,18 +41,18 @@
     {
       "name": "areev-run",
       "files": 20,
-      "physical": 14614,
+      "physical": 14675,
       "source_code": 5557,
-      "test_code": 5239,
-      "tests": 161
+      "test_code": 5271,
+      "tests": 162
     },
     {
       "name": "areev-cli",
       "files": 18,
-      "physical": 14229,
-      "source_code": 5852,
-      "test_code": 5510,
-      "tests": 164
+      "physical": 14377,
+      "source_code": 5869,
+      "test_code": 5593,
+      "tests": 167
     },
     {
       "name": "areev-loop",
@@ -105,24 +105,24 @@
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 3277,
-      "source_code": 2493,
+      "physical": 3298,
+      "source_code": 2512,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 2921,
-      "source_code": 2128,
+      "physical": 2942,
+      "source_code": 2147,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-conformance",
       "files": 15,
-      "physical": 2412,
-      "source_code": 1460,
+      "physical": 2454,
+      "source_code": 1490,
       "test_code": 353,
       "tests": 12
     },
@@ -145,15 +145,15 @@
     {
       "name": "areev-mcp",
       "files": 1,
-      "physical": 1306,
-      "source_code": 1141,
+      "physical": 1320,
+      "source_code": 1152,
       "test_code": 0,
       "tests": 0
     }
   ],
   "docs": {
     "files": 53,
-    "lines": 23706
+    "lines": 23767
   },
   "error_codes": 95,
   "bindings": {
