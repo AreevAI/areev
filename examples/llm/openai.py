@@ -15,9 +15,10 @@ if req.get("op") == "probe":
 
 from openai import OpenAI  # imported lazily so `probe` needs no dependency
 
-# Instructions are the system prompt; evidence/findings are the (untrusted) user
-# content — never merge them into the system role.
-payload = {k: req[k] for k in ("op", "findings", "evidence") if k in req}
+# Instructions are the system prompt; the rest of the request is the (untrusted)
+# user content — never merge them into the system role. Forward every other key:
+# GROUND sends `claims`, so a fixed key list would empty that stage.
+payload = {k: v for k, v in req.items() if k != "instructions"}
 resp = OpenAI().chat.completions.create(
     model=MODEL,
     response_format={"type": "json_object"},

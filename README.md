@@ -84,7 +84,43 @@ this repo — click through:
   </tr>
 </table>
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,306 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
+### Does the learning actually work? — take it away and see
+
+Anyone can show a number going up. The honest test is whether the *learning*
+caused it, so we remove what was learned and watch what happens.
+
+One frozen model, the same 60 held-out tasks in the same order, temperature 0.
+The only thing that changes between rows is whether a single lesson Areev
+learned is switched on:
+
+| what the memory holds | tasks passed | |
+|---|:---:|---|
+| nothing learned yet | 40.0% | the agent keeps repeating one mistake |
+| the lesson, applied | **51.7%** ▲ | it stops repeating it |
+| the lesson, rolled back | 38.3% ▼ | **the proof** — take it away and the gain leaves with it |
+| the lesson, re-applied | **53.3%** ▲ | put it back and the gain returns |
+
+The lesson, in one line: *`refund` kept failing with `rate_limited` — the agent
+waited, then never retried, and 46 tasks died that way.* Areev clustered those
+failures, cited every one by hash, and proposed a fix. **A person approved it.**
+The next prompt carried it.
+
+There is no benchmark mode here. The prompt is assembled from live memory on
+every run, so rolling the lesson back empties it structurally — and that round
+trip is only possible because every apply stores its inverse. **A memory system
+without governance cannot run this experiment at all.**
+
+<sub>Single-seed pilot on Qwen3-30B (a small, cheap open-weights model) via
+OpenRouter. Rows 1 and 3 are an agent with no lesson in its prompt, so this
+shows that *the lesson* caused the gain — measuring curation against passive
+retrieval is a separate arm, and it is the next run. The paired significance
+tests, the governance ledger, the honest caveats — including that the optional
+LLM stages contributed nothing here — and every model call transcribed:
+<a href="crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof"><b>the A/B/A/B causal proof →</b></a></sub>
+
+---
+
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,435 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 

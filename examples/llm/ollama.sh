@@ -14,7 +14,7 @@ if [ "$op" = "probe" ]; then
 fi
 
 instructions="$(printf '%s' "$req" | jq -r '.instructions')"
-payload="$(printf '%s' "$req" | jq -c '{op, findings, evidence}')"
+payload="$(printf '%s' "$req" | jq -c 'del(.instructions)')"
 
 prompt="$instructions
 

@@ -35,7 +35,7 @@
   "rollbackable": true,
   "severity": "high",
   "status": "pending",
-  "summary": "Tool \"stripe_refund\" failed 5 times (83% of calls): rate limited # retry later",
+  "summary": "Tool \"stripe_refund\" failed 5 times (83% of the calls that could fail this way): rate limited # retry later",
   "target_ref": "entity:lessons/stripe_refund"
 }
 {

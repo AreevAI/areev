@@ -20,6 +20,7 @@ areev-cal = { path = "../areev-cal", version = "1.6.0" }
 areev-context = { path = "../areev-context", version = "1.6.0" }
 areev-server = { path = "../areev-server", version = "1.6.0" }
 areev-loop = { path = "../areev-loop" }
+areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }
 serde_json = "1"
 turso = "0.7.0"

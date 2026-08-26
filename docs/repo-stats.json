@@ -2,16 +2,16 @@
   "version": "1.6.5",
   "crates": 17,
   "rust": {
-    "files": 277,
-    "physical_lines": 169932,
-    "source_code": 80571,
-    "test_code": 48907,
-    "unit_test_code": 22607,
+    "files": 283,
+    "physical_lines": 174274,
+    "source_code": 82944,
+    "test_code": 50101,
+    "unit_test_code": 23801,
     "integration_test_code": 26300,
     "example_code": 669,
-    "test_functions": 2386,
-    "test_ratio": 0.61,
-    "test_share": 37.8
+    "test_functions": 2435,
+    "test_ratio": 0.6,
+    "test_share": 37.7
   },
   "per_crate": [
     {
@@ -57,10 +57,18 @@
     {
       "name": "areev-loop",
       "files": 34,
-      "physical": 11504,
-      "source_code": 7858,
-      "test_code": 1187,
-      "tests": 137
+      "physical": 11567,
+      "source_code": 7864,
+      "test_code": 1217,
+      "tests": 139
+    },
+    {
+      "name": "areev-bench",
+      "files": 15,
+      "physical": 6470,
+      "source_code": 4063,
+      "test_code": 1200,
+      "tests": 50
     },
     {
       "name": "areev-trigger",
@@ -127,14 +135,6 @@
       "tests": 12
     },
     {
-      "name": "areev-bench",
-      "files": 9,
-      "physical": 2191,
-      "source_code": 1696,
-      "test_code": 36,
-      "tests": 3
-    },
-    {
       "name": "areev-loop-adapter",
       "files": 6,
       "physical": 2101,
@@ -153,11 +153,11 @@
   ],
   "docs": {
     "files": 53,
-    "lines": 23767
+    "lines": 23795
   },
   "error_codes": 95,
   "bindings": {
-    "python_files": 13,
+    "python_files": 16,
     "node_test_files": 4
   },
   "coverage": {

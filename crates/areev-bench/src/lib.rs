@@ -10,6 +10,8 @@
 use areev_core::types::{Fact, Grain};
 use areev_store::{AddableDyn, Areev};
 
+pub mod selfimprove;
+
 /// Human/reference verdict for one surfaced finding. Abstention is represented
 /// by the absence of a verdict, so it scores zero rather than as an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
