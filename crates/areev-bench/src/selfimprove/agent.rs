@@ -185,9 +185,16 @@ fn excerpt(s: &str) -> String {
 // MockBackend — the deterministic keyless agent (CI's --mock path)
 // ---------------------------------------------------------------------------
 
-/// Deterministic agent: naive against the hidden rules unless the system
-/// prompt's `## LESSONS` section names a frozen error code, which unlocks the
-/// corresponding learned behavior (mod.rs "The fixed cross-module contract").
+/// Deterministic agent: naive against the hidden rules unless the context it
+/// is given names a frozen error code, which unlocks the corresponding
+/// learned behavior (mod.rs "The fixed cross-module contract"). "Context"
+/// means any of the places the harness can legitimately put it: the system
+/// prompt's `## LESSONS` section (governed lessons), its `## MEMORY` section
+/// (passive-recall arms), or a `[memory]` block appended to a tool result.
+/// The mock models "an agent that uses whatever context it is given" — so
+/// mock M arms prove the provider plumbing end-to-end and NEVER a comparison
+/// between curation and retrieval (a real model decides what to do with
+/// context; the mock obeys it by construction).
 /// State is reconstructed from the messages slice alone — no env access, no
 /// randomness, no clock. R2 (`invalid_id`) never fires here: ids are always
 /// taken verbatim from search results, so there is no naive id-guessing to fix.
@@ -206,7 +213,7 @@ impl ChatBackend for MockBackend {
             .find(|m| m.role == "user")
             .and_then(|m| m.content.as_deref())
             .unwrap_or("");
-        let lessons = Lessons::from_system(system);
+        let lessons = Lessons::from_context(&context_text(system, messages));
         let intent = Intent::from_prompt(user);
         let pairs = collect_pairs(messages);
         let n = messages
@@ -219,8 +226,12 @@ impl ChatBackend for MockBackend {
     }
 }
 
-/// Which learned behaviors the LESSONS section unlocks (one per frozen code;
+/// Which learned behaviors the context unlocks (one per frozen code;
 /// `invalid_id` is recognized in the contract but has no mock behavior).
+/// "Context" is whatever [`context_text`] gathered — a governed `## LESSONS`
+/// section, a passive-recall `## MEMORY` section, or a `[memory]` block on a
+/// tool result. The map is identical for all three: the mock does not care
+/// where a code came from, only that it was given one.
 #[derive(Debug, Default)]
 struct Lessons {
     customer_not_found: bool,
@@ -231,19 +242,40 @@ struct Lessons {
 }
 
 impl Lessons {
-    fn from_system(system: &str) -> Self {
-        let section = match system.find("## LESSONS") {
-            Some(i) => &system[i..],
-            None => return Self::default(),
-        };
+    fn from_context(context: &str) -> Self {
         Self {
-            customer_not_found: section.contains("customer_not_found"),
-            approval_required: section.contains("approval_required"),
-            cancel_before_refund: section.contains("cancel_before_refund"),
-            invalid_timestamp: section.contains("invalid_timestamp"),
-            rate_limited: section.contains("rate_limited"),
+            customer_not_found: context.contains("customer_not_found"),
+            approval_required: context.contains("approval_required"),
+            cancel_before_refund: context.contains("cancel_before_refund"),
+            invalid_timestamp: context.contains("invalid_timestamp"),
+            rate_limited: context.contains("rate_limited"),
         }
     }
+}
+
+/// Everything the harness legitimately handed the agent as *context*, joined
+/// for code scanning. Each chunk starts at its marker and runs to the end of
+/// its string, which is what keeps the scan honest: a tool result's own error
+/// body sits BEFORE its `[memory]` block, so an error the agent just hit can
+/// never unlock the behavior by itself — only a provider that chose to recall
+/// something can. (`## MEMORY` is appended after `## LESSONS`, so when both
+/// exist the first slice already covers the second; the union is the same.)
+fn context_text(system: &str, messages: &[ChatMessage]) -> String {
+    let mut buf = String::new();
+    for marker in ["## LESSONS", super::context::MEMORY_SECTION_HEADING] {
+        if let Some(i) = system.find(marker) {
+            buf.push_str(&system[i..]);
+            buf.push('\n');
+        }
+    }
+    for m in messages.iter().filter(|m| m.role == "tool") {
+        let content = m.content.as_deref().unwrap_or("");
+        if let Some(i) = content.find(super::context::MEMORY_INJECTION_PREFIX) {
+            buf.push_str(&content[i..]);
+            buf.push('\n');
+        }
+    }
+    buf
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,7 +375,17 @@ fn collect_pairs(messages: &[ChatMessage]) -> Vec<Pair> {
         }
         for tc in &m.tool_calls {
             let body = results.get(tc.id.as_str()).copied().unwrap_or("{}");
-            let result: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            // A passive arm's per-error hook appends a `[memory]` block AFTER
+            // the env's JSON body, so the message is no longer parseable as
+            // one value. Split it off: the mock reads its state from the
+            // env's result and its lessons from the block (`context_text`),
+            // and conflating them would make the whole result read as `{}` —
+            // an unrecognized error, silently steering the flow logic.
+            let json_part = body
+                .split(super::context::MEMORY_INJECTION_PREFIX)
+                .next()
+                .unwrap_or(body);
+            let result: Value = serde_json::from_str(json_part).unwrap_or_else(|_| json!({}));
             let args: Value = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| json!({}));
             let is_error = result.get("error").is_some();
             let code = result.pointer("/error/code").and_then(Value::as_str).map(String::from);
@@ -782,25 +824,83 @@ Call one tool at a time and read each result before deciding the next call.\n\
 When the task is done, reply with a short final answer and no tool calls.\n\
 If the task cannot be completed, say so briefly in the final answer.";
 
+/// Frame a provider's output so the prompt carries its marker EXACTLY once.
+///
+/// SELFIMPROVE.md's frozen contract reads as "the provider returns the body,
+/// the caller adds the heading"; `context.rs` reads it the other way and has
+/// each provider emit a complete section — deliberately, so the four arms
+/// produce structurally identical prompt bytes the way `lessons_markdown`
+/// owns its own `## LESSONS` heading. Both are defensible and the difference
+/// is invisible here: the marker is added only when the provider did not
+/// supply it, so a bare body still reaches the model framed (and the mock,
+/// which keys on the marker, can still see it) and a complete section is
+/// never double-headed.
+fn framed(text: &str, marker: &str) -> String {
+    if text.starts_with(marker) {
+        text.to_string()
+    } else {
+        format!("{marker}\n{text}")
+    }
+}
+
 /// Run one task to completion. `steps` counts model turns. A backend `Err`
 /// records `failure_reason: "backend_error: …"` and returns — a flaky
 /// provider must not kill a 900-task run. `on_event` receives one row per
-/// executed tool call ({task_id, turn, tool, args, is_error, code}) plus a
-/// {task_id, turn, error} row on backend failure.
+/// executed tool call ({task_id, turn, tool, args, is_error, code}), a
+/// {task_id, turn, error} row on backend failure, and a
+/// {task_id, turn, provider_error} row whenever `context` returns `Err`.
+///
+/// `lessons_md` and `context` are the two ways memory can reach the prompt,
+/// and the bench passes exactly one of them: the governed states (A0/B/A1/B2)
+/// carry lessons and no provider, the passive arms carry a provider and no
+/// lessons. Mixing them would make an arm's numbers unattributable, so the
+/// XOR is asserted here rather than trusted.
+///
+/// A provider `Err` never fails the task: it is logged to the transcript and
+/// the turn proceeds without that context — the same fail-soft philosophy as
+/// the engine's LLM stages, and the report stays honest because the failure
+/// is in the transcript rather than silently absorbed.
+///
+/// Callable from worker threads: everything borrowed across the call is per
+/// worker (`backend`), per task (`env`, `on_event`), or `Sync` (`lessons_md`,
+/// and `ContextProvider`'s own `Sync + Send` bound).
+// Eight arguments, each one a distinct axis of a single call (backend, env,
+// identity, prompt, the two context sources, the turn cap, the sink). A
+// parameter struct would only move the same list behind a name that no
+// caller reuses — there are four call sites in the tree, all in this crate.
+#[allow(clippy::too_many_arguments)]
 pub fn run_task<E: AgentEnv + ?Sized>(
     backend: &mut dyn ChatBackend,
     env: &mut E,
     task_id: &str,
     task_prompt: &str,
     lessons_md: &str,
+    context: Option<&dyn super::context::ContextProvider>,
     max_turns: u32,
     mut on_event: impl FnMut(&Value),
 ) -> TaskRunRecord {
-    let system = if lessons_md.is_empty() {
+    debug_assert!(
+        lessons_md.is_empty() || context.is_none(),
+        "lessons XOR provider: a passive arm must run with the LESSONS section empty"
+    );
+    let mut system = if lessons_md.is_empty() {
         AGENT_SYSTEM_PROMPT.to_string()
     } else {
         format!("{AGENT_SYSTEM_PROMPT}\n\n{lessons_md}")
     };
+    if let Some(provider) = context {
+        match provider.task_start(task_prompt) {
+            Ok(text) if !text.is_empty() => {
+                system.push_str("\n\n");
+                system.push_str(&framed(&text, super::context::MEMORY_SECTION_HEADING));
+            }
+            Ok(_) => {}
+            // turn 0: before the first model call.
+            Err(e) => {
+                on_event(&json!({ "task_id": task_id, "turn": 0, "provider_error": e }))
+            }
+        }
+    }
     let tools = env.tools();
     let mut messages = vec![ChatMessage::system(&system), ChatMessage::user(task_prompt)];
     let mut calls: Vec<RecordedCall> = Vec::new();
@@ -846,7 +946,40 @@ pub fn run_task<E: AgentEnv + ?Sized>(
             if outcome.is_error {
                 tool_errors += 1;
             }
-            messages.push(ChatMessage::tool_result(&tc.id, &outcome.body));
+            // The per-error hook: a provider may append recall to the FAILING
+            // result the model is about to read (the m-steel injection point).
+            // `RecordedCall` below keeps the env's body verbatim — what the
+            // environment produced is not what the harness chose to add.
+            let mut recall = String::new();
+            if outcome.is_error {
+                if let Some(provider) = context {
+                    match provider.on_tool_error(
+                        task_prompt,
+                        &tc.name,
+                        outcome.code.as_deref().unwrap_or(""),
+                        &outcome.body,
+                    ) {
+                        Ok(text) if !text.is_empty() => {
+                            recall = format!(
+                                "\n\n{}",
+                                framed(&text, super::context::MEMORY_INJECTION_PREFIX)
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => on_event(
+                            &json!({ "task_id": task_id, "turn": turn, "provider_error": e }),
+                        ),
+                    }
+                }
+            }
+            if recall.is_empty() {
+                messages.push(ChatMessage::tool_result(&tc.id, &outcome.body));
+            } else {
+                messages.push(ChatMessage::tool_result(
+                    &tc.id,
+                    &format!("{}{recall}", outcome.body),
+                ));
+            }
             calls.push(RecordedCall {
                 call_id: tc.id.clone(),
                 tool: tc.name.clone(),
@@ -1093,10 +1226,62 @@ mod tests {
     }
 
     fn run_mock(env: &mut DeskDouble, prompt: &str, lessons: &str) -> (TaskRunRecord, Vec<Value>) {
+        run_mock_with(env, prompt, lessons, None)
+    }
+
+    fn run_mock_with(
+        env: &mut DeskDouble,
+        prompt: &str,
+        lessons: &str,
+        context: Option<&dyn crate::selfimprove::context::ContextProvider>,
+    ) -> (TaskRunRecord, Vec<Value>) {
         let mut backend = MockBackend;
         let mut events = Vec::new();
-        let rec = run_task(&mut backend, env, "t1", prompt, lessons, 20, |e| events.push(e.clone()));
+        let rec = run_task(&mut backend, env, "t1", prompt, lessons, context, 20, |e| {
+            events.push(e.clone())
+        });
         (rec, events)
+    }
+
+    /// Local stand-in for the real providers (`context.rs`): returns canned
+    /// markdown at whichever hook it was built for, so the mock's context
+    /// awareness is testable without any ingest or LLM.
+    struct ProviderDouble {
+        at_start: Result<String, String>,
+        at_error: Result<String, String>,
+    }
+
+    impl ProviderDouble {
+        fn at_start(text: &str) -> Self {
+            Self { at_start: Ok(text.to_string()), at_error: Ok(String::new()) }
+        }
+        fn at_error(text: &str) -> Self {
+            Self { at_start: Ok(String::new()), at_error: Ok(text.to_string()) }
+        }
+        fn failing() -> Self {
+            Self {
+                at_start: Err("provider ingest is broken".to_string()),
+                at_error: Err("provider lookup is broken".to_string()),
+            }
+        }
+    }
+
+    impl crate::selfimprove::context::ContextProvider for ProviderDouble {
+        fn label(&self) -> &'static str {
+            "m-double"
+        }
+        fn task_start(&self, _task_prompt: &str) -> Result<String, String> {
+            self.at_start.clone()
+        }
+        fn on_tool_error(
+            &self,
+            _task_prompt: &str,
+            _tool: &str,
+            _code: &str,
+            _body: &str,
+        ) -> Result<String, String> {
+            self.at_error.clone()
+        }
     }
 
     fn tool_seq(rec: &TaskRunRecord) -> Vec<&str> {
@@ -1233,6 +1418,201 @@ mod tests {
         assert!(rec.rule_failures.is_empty());
     }
 
+    // --- passive-recall arms: the mock uses whatever context it is given ----
+
+    /// A `## MEMORY` section unlocks exactly what the same codes unlock from
+    /// `## LESSONS` — the arms differ in where context comes from, never in
+    /// what the mock does with it.
+    #[test]
+    fn memory_section_unlocks_the_same_behaviors_as_lessons() {
+        let recall = "- `search_customers` results were incomplete (customer_not_found)\n\
+                      - `refund` returned rate_limited with retry_after_s\n";
+        let provider = ProviderDouble::at_start(recall);
+        let mut env = DeskDouble::new(Goal::Refund, pages_two());
+        env.want_amount = 50.0;
+        env.refund_429s = 1;
+        let (rec, _) = run_mock_with(&mut env, REFUND_PROMPT, "", Some(&provider));
+        assert!(rec.success, "failure: {}", rec.failure_reason);
+        assert!(rec
+            .calls
+            .iter()
+            .any(|c| c.tool == "search_customers" && c.input_json.contains("\"page\":2")));
+        assert_eq!(env.refunds, vec![("cus_200".to_string(), 50.0)]);
+        assert_eq!(env.waits, vec![7.0]);
+    }
+
+    /// The per-error hook (m-steel's shape): nothing at task start, recall
+    /// appended to the failing result itself, and the mock adapts from there.
+    #[test]
+    fn memory_block_on_a_failing_tool_result_unlocks_the_wait_retry() {
+        let provider =
+            ProviderDouble::at_error("- refund previously answered rate_limited; a wait helped\n");
+        let mut env = DeskDouble::new(Goal::Refund, pages_one());
+        env.want_amount = 50.0;
+        env.refund_429s = 1;
+        let (rec, _) = run_mock_with(&mut env, REFUND_PROMPT, "", Some(&provider));
+        assert!(rec.success, "failure: {}", rec.failure_reason);
+        assert_eq!(env.waits, vec![7.0], "the 429 was answered with a wait, not a hot retry");
+    }
+
+    /// The negative half of the test above, and the honesty check on the
+    /// scan: the 429 body itself carries the string `rate_limited`, and it
+    /// must NOT unlock anything on its own — only a provider that chose to
+    /// recall something can. A provider that returns empty leaves the agent
+    /// exactly as naive as it was.
+    #[test]
+    fn an_error_body_alone_never_unlocks_a_behavior() {
+        let provider = ProviderDouble::at_error("");
+        let mut env = DeskDouble::new(Goal::Refund, pages_one());
+        env.want_amount = 50.0;
+        env.refund_429s = 10;
+        let (rec, _) = run_mock_with(&mut env, REFUND_PROMPT, "", Some(&provider));
+        assert!(!rec.success);
+        assert!(env.waits.is_empty(), "no lesson, no wait — the hot-retry storm stands");
+        assert_eq!(rec.calls.iter().filter(|c| c.tool == "refund").count(), 3);
+    }
+
+    /// Both injection points, pinned to the byte: the section heading in the
+    /// system prompt and the block marker on the tool result are the contract
+    /// the mock (and any live model's prompt) reads.
+    #[test]
+    fn context_reaches_the_prompt_in_the_documented_shape() {
+        #[derive(Default)]
+        struct RecordingMock {
+            inner: MockBackend,
+            systems: Vec<String>,
+            tool_bodies: Vec<String>,
+        }
+        impl ChatBackend for RecordingMock {
+            fn chat(
+                &mut self,
+                messages: &[ChatMessage],
+                tools: &Value,
+            ) -> Result<(ChatMessage, Usage), String> {
+                if let Some(s) =
+                    messages.iter().find(|m| m.role == "system").and_then(|m| m.content.clone())
+                {
+                    self.systems.push(s);
+                }
+                self.tool_bodies = messages
+                    .iter()
+                    .filter(|m| m.role == "tool")
+                    .filter_map(|m| m.content.clone())
+                    .collect();
+                self.inner.chat(messages, tools)
+            }
+        }
+
+        let provider = ProviderDouble {
+            at_start: Ok("start-recall".to_string()),
+            at_error: Ok("error-recall".to_string()),
+        };
+        let mut backend = RecordingMock::default();
+        let mut env = DeskDouble::new(Goal::Refund, pages_one());
+        env.want_amount = 50.0;
+        env.refund_429s = 1;
+        let rec = run_task(
+            &mut backend,
+            &mut env,
+            "t-shape",
+            REFUND_PROMPT,
+            "",
+            Some(&provider),
+            20,
+            |_| {},
+        );
+        assert!(rec.success, "failure: {}", rec.failure_reason);
+        let system = &backend.systems[0];
+        assert!(
+            system.starts_with(AGENT_SYSTEM_PROMPT),
+            "the operator role stays first: {system:?}"
+        );
+        assert!(
+            system.ends_with("\n\n## MEMORY (from passive recall)\nstart-recall"),
+            "memory section shape: {system:?}"
+        );
+        assert!(!system.contains("## LESSONS"), "an M arm carries no lessons: {system:?}");
+        let errored = backend
+            .tool_bodies
+            .iter()
+            .find(|b| b.contains("rate_limited"))
+            .expect("the 429 result");
+        assert!(
+            errored.ends_with("\n\n[memory] Relevant past experience:\nerror-recall"),
+            "memory block shape: {errored:?}"
+        );
+        // The env's own body is untouched in the RECORD — the harness only
+        // added context to what the model reads.
+        let recorded = rec.calls.iter().find(|c| c.is_error).expect("a recorded failure");
+        assert!(!recorded.output_json.contains("[memory]"), "{}", recorded.output_json);
+    }
+
+    /// The other half of the framing seam, and the one the REAL providers
+    /// take: `context.rs` returns a complete section (heading included), so
+    /// the prompt must carry that heading exactly once — a doubled heading
+    /// would still "work" (the mock scans for codes) while quietly corrupting
+    /// every live arm's prompt, which is why it is asserted rather than
+    /// assumed.
+    #[test]
+    fn a_provider_that_frames_its_own_output_is_not_double_headed() {
+        let heading = crate::selfimprove::context::MEMORY_SECTION_HEADING;
+        let prefix = crate::selfimprove::context::MEMORY_INJECTION_PREFIX;
+        assert_eq!(
+            framed(&format!("{heading}\n- already framed\n"), heading),
+            format!("{heading}\n- already framed\n"),
+            "a complete section passes through untouched"
+        );
+        assert_eq!(framed("- bare body\n", heading), format!("{heading}\n- bare body\n"));
+        assert_eq!(framed("- bare body\n", prefix), format!("{prefix}\n- bare body\n"));
+        // End to end through a real provider: exactly one heading, and the
+        // mock still sees the codes inside it.
+        let provider = crate::selfimprove::context::AllProvider::build(vec![
+            crate::selfimprove::context::ExperienceGrain {
+                task_id: "exp-1".to_string(),
+                tool: "refund".to_string(),
+                input_json: "{}".to_string(),
+                output_json: r#"{"error":{"code":"rate_limited"}}"#.to_string(),
+                is_error: true,
+                code: Some("rate_limited".to_string()),
+                rendered: "- `refund` failed with `rate_limited`".to_string(),
+            },
+        ]);
+        let section =
+            crate::selfimprove::context::ContextProvider::task_start(&provider, "any").unwrap();
+        let framed_once = framed(&section, heading);
+        assert_eq!(framed_once.matches(heading).count(), 1, "{framed_once:?}");
+        assert!(Lessons::from_context(&framed_once).rate_limited);
+    }
+
+    /// A provider that errors is logged and stepped over — never fatal. The
+    /// run must be indistinguishable from the no-provider run, because the
+    /// engine's LLM stages fail soft the same way and the transcript, not a
+    /// dead run, is what keeps the report honest.
+    #[test]
+    fn a_failing_provider_is_logged_and_the_task_continues() {
+        let provider = ProviderDouble::failing();
+        let mut env = DeskDouble::new(Goal::Refund, pages_one());
+        env.want_amount = 50.0;
+        env.refund_429s = 10;
+        let (rec, events) = run_mock_with(&mut env, REFUND_PROMPT, "", Some(&provider));
+        assert!(!rec.failure_reason.starts_with("backend_error"), "{}", rec.failure_reason);
+        // Identical to the naive no-context run (an_error_body_alone…).
+        assert_eq!(rec.calls.iter().filter(|c| c.tool == "refund").count(), 3);
+        assert!(env.waits.is_empty());
+        let errors: Vec<&Value> =
+            events.iter().filter(|e| e.get("provider_error").is_some()).collect();
+        assert_eq!(
+            errors[0]["turn"],
+            json!(0),
+            "the task_start failure is logged before the first turn"
+        );
+        assert_eq!(errors[0]["task_id"], json!("t1"));
+        assert!(
+            errors.iter().any(|e| e["turn"].as_u64().unwrap_or(0) > 0),
+            "each failing per-error lookup is logged too: {errors:?}"
+        );
+    }
+
     #[test]
     fn to_utc_z_handles_offsets_and_rollover() {
         assert_eq!(to_utc_z_off("2026-03-01T00:30:00+05:30", None), "2026-02-28T19:00:00Z");
@@ -1334,7 +1714,7 @@ mod tests {
     fn run_task_enforces_the_turn_limit() {
         let mut backend = AlwaysTool;
         let mut env = DeskDouble::new(Goal::Refund, pages_one());
-        let rec = run_task(&mut backend, &mut env, "t-limit", "loop forever", "", 3, |_| {});
+        let rec = run_task(&mut backend, &mut env, "t-limit", "loop forever", "", None, 3, |_| {});
         assert!(!rec.success);
         assert_eq!(rec.failure_reason, "turn_limit");
         assert_eq!(rec.steps, 3);
@@ -1353,8 +1733,9 @@ mod tests {
         let mut backend = FailBackend;
         let mut env = DeskDouble::new(Goal::Refund, pages_one());
         let mut events = Vec::new();
-        let rec =
-            run_task(&mut backend, &mut env, "t-err", "anything", "", 5, |e| events.push(e.clone()));
+        let rec = run_task(&mut backend, &mut env, "t-err", "anything", "", None, 5, |e| {
+            events.push(e.clone())
+        });
         assert!(!rec.success);
         assert_eq!(rec.failure_reason, "backend_error: boom");
         assert_eq!(rec.steps, 0);

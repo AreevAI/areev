@@ -20,21 +20,45 @@
 //! Phases run at strictly increasing engine clocks (base + n·1h, total span
 //! far under the 1-day outcome_review horizon, so no revert fires mid-bench).
 //!
+//! `--arms` adds the passive-memory ladder (SELFIMPROVE.md "Bench 2") after
+//! B2: one extra eval pass per arm over the SAME held-out tasks with the
+//! LESSONS section EMPTY and a `ContextProvider` in its place. The arms are
+//! the same store with the loop OFF — the delta isolates the loop, and it is
+//! attributable because providers read only Tool grains, so the applied
+//! lesson Facts living in the very same memory file cannot leak into an M
+//! prompt.
+//!
 //! `--mock` is the keyless deterministic plumbing reference (CI runs
-//! `--mock --assert-shape`); it is never a learning claim. Live numbers come
-//! from `--agent-cmd` (see SELFIMPROVE.md "Reproduce").
+//! `--mock --assert-shape`); it is never a learning claim, and under `--mock`
+//! an M arm proves the provider PLUMBING only — the mock obeys whatever
+//! context it is handed, so it can never rank curation against retrieval.
+//! Live numbers come from `--agent-cmd` (see SELFIMPROVE.md "Reproduce").
+//!
+//! `--workers N` parallelizes the eval and experience passes. It is an
+//! optimization and never a variable: workers buffer their own transcript
+//! rows, and the main thread writes rows (and the experience phase's
+//! `record_task`) strictly in task-index order, so output is byte-identical
+//! at any worker count and the single-writer store is only ever written from
+//! one thread.
 
+use areev_bench::selfimprove::context::{ContextProvider, ExperienceGrain};
 use areev_bench::selfimprove::memory::Memory;
-use areev_bench::selfimprove::{agent, env, report::Reporter};
+use areev_bench::selfimprove::{agent, context, env, report::Reporter};
 use areev_bench::selfimprove::{EvalSummary, Ledger, RuleId, RuleStat, TaskRunRecord, Usage};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 /// Engine phase clocks: fixed base (determinism rule — never the wall clock
 /// when the value decides behavior), +1h per phase.
 const BASE_MS: i64 = 1_700_000_000_000;
 const HOUR_MS: i64 = 3_600_000;
+
+/// The passive-memory arms, in ladder order (SELFIMPROVE.md "Bench 2").
+const KNOWN_ARMS: [&str; 4] = ["m-steel", "m-all", "m-llm", "m-cmd"];
 
 struct Args {
     workdir: PathBuf,
@@ -45,8 +69,38 @@ struct Args {
     agent_cmd: Option<String>,
     llm_cmd: Option<String>,
     ground_cmd: Option<String>,
+    /// Requested passive arms, deduped, in the order given (empty = the
+    /// A/B/A/B states only, i.e. exactly the pre-arms behavior).
+    arms: Vec<String>,
+    context_cmd: Option<String>,
+    mllm_cmd: Option<String>,
+    workers: usize,
     max_turns: u32,
     assert_shape: bool,
+}
+
+impl Args {
+    fn wants(&self, arm: &str) -> bool {
+        self.arms.iter().any(|a| a == arm)
+    }
+
+    /// The chat adapter the m-llm summarizer runs on: its own flag, else the
+    /// agent's (same protocol, and one model is the honest default).
+    fn mllm_cmd(&self) -> Option<&str> {
+        self.mllm_cmd.as_deref().or(self.agent_cmd.as_deref())
+    }
+}
+
+/// Arm → the `EvalSummary.state` label. `aba_stats.py` keys the passive arms
+/// off the leading "M", so these strings are a cross-tool contract.
+fn arm_state(arm: &str) -> &'static str {
+    match arm {
+        "m-steel" => "M-steel",
+        "m-all" => "M-all",
+        "m-llm" => "M-llm",
+        "m-cmd" => "M-cmd",
+        other => die(&format!("unknown arm {other}")),
+    }
 }
 
 fn die(msg: &str) -> ! {
@@ -59,9 +113,35 @@ fn usage() -> ! {
         "usage: selfimprove_aba --workdir PATH (--mock | --agent-cmd 'CMD')\n\
          \x20                       [--seed N] [--experience N] [--eval N]\n\
          \x20                       [--llm-cmd 'CMD'] [--ground-cmd 'CMD']\n\
-         \x20                       [--max-turns N] [--assert-shape]"
+         \x20                       [--arms m-steel,m-all,m-llm,m-cmd]\n\
+         \x20                       [--context-cmd 'CMD'] [--mllm-cmd 'CMD']\n\
+         \x20                       [--workers N] [--max-turns N] [--assert-shape]"
     );
     std::process::exit(2);
+}
+
+/// `--arms` value → validated, deduped arm list preserving the given order.
+/// An unknown name is a hard error: silently dropping it would publish an arm
+/// table missing the arm someone asked for.
+fn parse_arms(value: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in value.split(',') {
+        let arm = raw.trim();
+        if arm.is_empty() {
+            continue;
+        }
+        if !KNOWN_ARMS.contains(&arm) {
+            eprintln!(
+                "selfimprove_aba: unknown arm {arm:?} (known: {})",
+                KNOWN_ARMS.join(", ")
+            );
+            usage()
+        }
+        if !out.iter().any(|a| a == arm) {
+            out.push(arm.to_string());
+        }
+    }
+    out
 }
 
 fn parse_args() -> Args {
@@ -74,6 +154,10 @@ fn parse_args() -> Args {
     let mut agent_cmd: Option<String> = None;
     let mut llm_cmd: Option<String> = None;
     let mut ground_cmd: Option<String> = None;
+    let mut arms: Vec<String> = Vec::new();
+    let mut context_cmd: Option<String> = None;
+    let mut mllm_cmd: Option<String> = None;
+    let mut workers: usize = 4;
     let mut max_turns: u32 = 24;
     let mut assert_shape = false;
 
@@ -98,6 +182,13 @@ fn parse_args() -> Args {
                     "--agent-cmd" => agent_cmd = Some(value.clone()),
                     "--llm-cmd" => llm_cmd = Some(value.clone()),
                     "--ground-cmd" => ground_cmd = Some(value.clone()),
+                    "--arms" => arms = parse_arms(value),
+                    "--context-cmd" => context_cmd = Some(value.clone()),
+                    "--mllm-cmd" => mllm_cmd = Some(value.clone()),
+                    // A worker count below 1 would run nothing at all.
+                    "--workers" => {
+                        workers = value.parse::<usize>().unwrap_or_else(|_| usage()).max(1)
+                    }
                     "--max-turns" => max_turns = value.parse().unwrap_or_else(|_| usage()),
                     _ => usage(),
                 }
@@ -116,6 +207,14 @@ fn parse_args() -> Args {
         eprintln!("selfimprove_aba: exactly one of --mock / --agent-cmd is required");
         usage()
     }
+    // The external-provider seam is required by, and only meaningful for, the
+    // m-cmd arm — a --context-cmd nobody runs is a silently ignored flag.
+    if arms.iter().any(|a| a == "m-cmd") != context_cmd.is_some() {
+        eprintln!(
+            "selfimprove_aba: --context-cmd is required for --arms m-cmd, and meaningless without it"
+        );
+        usage()
+    }
     Args {
         workdir,
         seed,
@@ -125,6 +224,10 @@ fn parse_args() -> Args {
         agent_cmd,
         llm_cmd,
         ground_cmd,
+        arms,
+        context_cmd,
+        mllm_cmd,
+        workers,
         max_turns,
         assert_shape,
     }
@@ -190,32 +293,89 @@ fn summarize(state: &str, tasks: &[env::Task], records: &[TaskRunRecord]) -> Eva
     }
 }
 
+/// One finished task, tagged with its index in the task list.
+type PooledTask = (usize, TaskRunRecord, Vec<Value>);
+
+/// Run `tasks` across `args.workers` threads and return one
+/// `(record, transcript rows)` per task **in task order**.
+///
+/// The determinism argument, which is the whole design: a worker claims the
+/// next index off an atomic counter, builds its OWN backend and its OWN `Env`
+/// (both per task already), and buffers its transcript rows locally instead
+/// of writing them. Nothing is written from a worker. The main thread sorts
+/// by task index before it writes anything, so `--workers 4` emits exactly
+/// the bytes `--workers 1` does, and the single-writer memory file is only
+/// ever touched from one thread (the experience phase's `record_task`).
+///
+/// `run_task` takes only per-worker (`backend`), per-task (`Env`, the row
+/// buffer) or `Sync` borrows (`Args`, `lessons`, and `ContextProvider`'s own
+/// `Sync + Send` bound), which is what makes this safe to fan out at all.
+fn run_pool(
+    tasks: &[env::Task],
+    args: &Args,
+    lessons: &str,
+    context: Option<&dyn ContextProvider>,
+) -> Vec<(TaskRunRecord, Vec<Value>)> {
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel::<PooledTask>();
+    let workers = args.workers.clamp(1, tasks.len().max(1));
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let next = &next;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(task) = tasks.get(i) else { break };
+                let mut e = env::Env::new(task);
+                let mut backend = make_backend(args);
+                let mut rows: Vec<Value> = Vec::new();
+                let rec = agent::run_task(
+                    backend.as_mut(),
+                    &mut e,
+                    &task.id,
+                    &task.prompt,
+                    lessons,
+                    context,
+                    args.max_turns,
+                    |ev| rows.push(ev.clone()),
+                );
+                // A closed receiver means the main thread is already gone.
+                if tx.send((i, rec, rows)).is_err() {
+                    break;
+                }
+            });
+        }
+        // The workers hold the only remaining senders, so `rx` ends when the
+        // last one finishes.
+        drop(tx);
+        let mut out: Vec<PooledTask> = rx.iter().collect();
+        out.sort_by_key(|(i, _, _)| *i);
+        out.into_iter().map(|(_, rec, rows)| (rec, rows)).collect()
+    })
+}
+
 /// One eval pass: the SAME held-out tasks in the SAME order, fresh Env per
-/// task, `lessons` fetched once by the caller. Eval tool calls are NEVER
-/// recorded into memory — the held-out set must not leak into learning.
+/// task, `lessons` fetched once by the caller (empty on the passive arms,
+/// which pass a `context` provider instead — never both). Eval tool calls are
+/// NEVER recorded into memory: the held-out set must not leak into learning,
+/// and the providers ingest only the experience phase for the same reason.
 fn run_eval(
     state: &str,
     tasks: &[env::Task],
     lessons: &str,
+    context: Option<&dyn ContextProvider>,
     args: &Args,
     reporter: &Reporter,
 ) -> EvalSummary {
     let mut tx = reporter
         .transcript(&format!("transcripts-eval-{state}.jsonl"))
         .unwrap_or_else(|e| die(&format!("open eval-{state} transcript: {e}")));
+    let finished = run_pool(tasks, args, lessons, context);
     let mut records = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        let mut e = env::Env::new(task);
-        let mut backend = make_backend(args);
-        let rec = agent::run_task(
-            backend.as_mut(),
-            &mut e,
-            &task.id,
-            &task.prompt,
-            lessons,
-            args.max_turns,
-            |ev| tx.row(ev),
-        );
+    for (task, (rec, rows)) in tasks.iter().zip(finished) {
+        for row in &rows {
+            tx.row(row);
+        }
         // Per-task outcome row: the paired unit. Aggregates alone cannot
         // support the paired test the stats rule requires (same instances
         // across states), and per-task outcomes cannot be reconstructed
@@ -237,6 +397,45 @@ fn run_eval(
         records.push(rec);
     }
     summarize(state, tasks, &records)
+}
+
+/// Build one passive-memory provider over the captured experience.
+///
+/// This is the ONLY place coupled to `context.rs`'s constructors; everything
+/// else in the bin talks to the frozen `ContextProvider` trait. The second
+/// return is the summarizer's token cost — `Some` only for m-llm, whose model
+/// calls at write time are precisely the thing its column has to price.
+fn build_provider(
+    arm: &str,
+    grains: &[ExperienceGrain],
+    args: &Args,
+) -> (Box<dyn ContextProvider>, Option<Usage>) {
+    match arm {
+        "m-steel" => (Box::new(context::SteelProvider::build(grains.to_vec())), None),
+        "m-all" => (Box::new(context::AllProvider::build(grains.to_vec())), None),
+        "m-llm" => {
+            // Mock mode summarizes deterministically and keylessly: CI runs
+            // this arm, and it must not need a model or a key.
+            let provider = if args.mock {
+                context::LlmProvider::build_mock(grains.to_vec())
+            } else {
+                let cmd = args
+                    .mllm_cmd()
+                    .unwrap_or_else(|| die("m-llm needs --mllm-cmd or --agent-cmd"));
+                context::LlmProvider::build(cmd, grains.to_vec())
+                    .unwrap_or_else(|e| die(&format!("m-llm summarizer: {e}")))
+            };
+            let usage = provider.usage();
+            (Box::new(provider), Some(usage))
+        }
+        "m-cmd" => {
+            let cmd = args.context_cmd.as_deref().expect("validated at parse");
+            let provider = context::CmdProvider::spawn(cmd, grains)
+                .unwrap_or_else(|e| die(&format!("--context-cmd: {e}")));
+            (Box::new(provider), None)
+        }
+        other => die(&format!("unknown arm {other}")),
+    }
 }
 
 fn git_rev() -> String {
@@ -269,20 +468,48 @@ fn print_results(args: &Args, evals: &[EvalSummary], ledger: &Ledger, applied1: 
             "B" => "B  lessons applied",
             "A1" => "A1 lessons rolled back",
             "B2" => "B2 lessons re-applied",
+            // The passive ladder: no lessons in the prompt, a provider instead.
+            "M-steel" => "M-steel per-error recall",
+            "M-all" => "M-all  whole failure history",
+            "M-llm" => "M-llm  summarized notes",
+            "M-cmd" => "M-cmd  external provider",
             other => other,
         }
     }
     for e in evals {
         let mean_steps = if e.n == 0 { 0.0 } else { e.total_steps as f64 / e.n as f64 };
+        // A mock M row is plumbing evidence, and the table outlives the
+        // caveat under it the moment someone screenshots the rows — so the
+        // row carries its own warning. The mock complies with any context it
+        // is handed, which makes "more context" win by construction.
+        let label = if args.mock && e.state.starts_with('M') {
+            format!("{} ⚠ plumbing only", name(&e.state))
+        } else {
+            name(&e.state).to_string()
+        };
         println!(
             "| {} | {}/{} | {:.1}% | {} | {:.1} |",
-            name(&e.state),
+            label,
             e.successes,
             e.n,
             e.success_rate() * 100.0,
             e.tool_errors,
             mean_steps
         );
+    }
+
+    if !args.arms.is_empty() {
+        println!(
+            "\nM-* are the passive-memory arms: the same store with the loop OFF — no lessons in \
+             the prompt, a context provider instead."
+        );
+        if args.mock {
+            println!(
+                "Under --mock they prove the provider plumbing only: the deterministic agent \
+                 complies with any context it is handed, so these rows never rank curation \
+                 against retrieval."
+            );
+        }
     }
 
     // Per-rule recurrence: tasks mishandling / tasks exercising, per state.
@@ -330,7 +557,13 @@ fn print_results(args: &Args, evals: &[EvalSummary], ledger: &Ledger, applied1: 
 
 /// The CI gate for `--mock`: the shape of causality, not a magnitude claim.
 /// (The A1 lessons-empty check is hard-asserted in the pipeline itself.)
-fn check_shape(a0: &EvalSummary, b: &EvalSummary, a1: &EvalSummary, b2: &EvalSummary) {
+///
+/// `evals` is `[A0, B, A1, B2]` followed by one row per requested arm. The
+/// arm checks are PLUMBING assertions and nothing more: the mock complies
+/// with whatever context it is given, so "M-all beats A0" says the provider
+/// reached the prompt, never that retrieval works.
+fn check_shape(evals: &[EvalSummary], eval_n: u32) {
+    let (a0, b, a1, b2) = (&evals[0], &evals[1], &evals[2], &evals[3]);
     let mut fails = Vec::new();
     if b.success_rate() <= a0.success_rate() + 0.1 {
         fails.push(format!(
@@ -353,8 +586,34 @@ fn check_shape(a0: &EvalSummary, b: &EvalSummary, a1: &EvalSummary, b2: &EvalSum
             b.success_rate()
         ));
     }
+    let arms = &evals[4..];
+    for s in arms {
+        if s.n != eval_n {
+            fails.push(format!(
+                "{} ran {} of {eval_n} held-out tasks — an arm must see the SAME set",
+                s.state, s.n
+            ));
+        }
+    }
+    if let Some(m_all) = arms.iter().find(|s| s.state == "M-all") {
+        if m_all.success_rate() <= a0.success_rate() + 0.05 {
+            fails.push(format!(
+                "M-all ({:.3}) must exceed A0 ({:.3}) by more than 0.05 — the mock uses any \
+                 context it is given, so this failing means the provider never reached the prompt",
+                m_all.success_rate(),
+                a0.success_rate()
+            ));
+        }
+    }
     if fails.is_empty() {
         println!("\nassert-shape: PASS (B > A0 + 0.10, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
+        if !arms.is_empty() {
+            let labels: Vec<&str> = arms.iter().map(|s| s.state.as_str()).collect();
+            println!(
+                "assert-shape: PASS arms {} (n = {eval_n} each; plumbing only under --mock)",
+                labels.join(", ")
+            );
+        }
     } else {
         for f in &fails {
             eprintln!("assert-shape FAIL: {f}");
@@ -381,18 +640,14 @@ fn main() {
         let mut tx = reporter
             .transcript("transcripts-experience.jsonl")
             .unwrap_or_else(|e| die(&format!("open experience transcript: {e}")));
-        for task in &exp_tasks {
-            let mut e = env::Env::new(task);
-            let mut backend = make_backend(&args);
-            let rec = agent::run_task(
-                backend.as_mut(),
-                &mut e,
-                &task.id,
-                &task.prompt,
-                "",
-                args.max_turns,
-                |ev| tx.row(ev),
-            );
+        // Workers run the tasks; the main thread alone writes — both the
+        // transcript and the memory, in task-index order. The store is
+        // single-writer per file, and the grain order must not depend on how
+        // many threads happened to be free.
+        for (rec, rows) in run_pool(&exp_tasks, &args, "", None) {
+            for row in &rows {
+                tx.row(row);
+            }
             mem.record_task(&rec).unwrap_or_else(|e| die(&e));
         }
     }
@@ -407,7 +662,7 @@ fn main() {
         die("A0 precondition broken: LESSONS section non-empty before any apply");
     }
     eprintln!("eval A0: {} tasks", eval_tasks.len());
-    let a0 = run_eval("A0", &eval_tasks, &lessons, &args, &reporter);
+    let a0 = run_eval("A0", &eval_tasks, &lessons, None, &args, &reporter);
 
     // 3 LEARN → apply (scripted review: executable non-destructive approved
     // + applied, destructive rejected, advisory ledgered) → eval B.
@@ -420,7 +675,7 @@ fn main() {
         applied1.len()
     );
     let lessons = mem.lessons_markdown().unwrap_or_else(|e| die(&e));
-    let b = run_eval("B", &eval_tasks, &lessons, &args, &reporter);
+    let b = run_eval("B", &eval_tasks, &lessons, None, &args, &reporter);
 
     // 4 ROLLBACK → eval A1. The load-bearing honesty check: rollback changes
     // the FILE, and the file must change the PROMPT to empty.
@@ -429,7 +684,7 @@ fn main() {
     if !lessons.is_empty() {
         die("rollback did not empty the LESSONS section — the causal lever is broken");
     }
-    let a1 = run_eval("A1", &eval_tasks, &lessons, &args, &reporter);
+    let a1 = run_eval("A1", &eval_tasks, &lessons, None, &args, &reporter);
 
     // 5 RE-APPLY → eval B2. RolledBack is terminal per hash, so this is the
     // whole governed path a second time: re-propose → approve → apply.
@@ -445,10 +700,46 @@ fn main() {
         die("re-apply pass applied nothing — B2 would silently equal A1");
     }
     let lessons = mem.lessons_markdown().unwrap_or_else(|e| die(&e));
-    let b2 = run_eval("B2", &eval_tasks, &lessons, &args, &reporter);
+    let b2 = run_eval("B2", &eval_tasks, &lessons, None, &args, &reporter);
+    let mut evals = vec![a0, b, a1, b2];
 
-    // 6 Report: config (every flag + git rev), the merged ledger verbatim
-    // (failures are evidence), the four summaries.
+    // 6 PASSIVE ARMS (--arms) — the same store with the loop OFF, run last so
+    // the governed states are already measured and nothing about them moves.
+    //
+    // Two properties make an arm's number attributable. (a) The prompt: the
+    // LESSONS section is EMPTY here and a `ContextProvider` supplies the
+    // context instead — never both, asserted in `run_task`. (b) The source:
+    // providers ingest `experience_grains()`, which reads only Tool grains
+    // from the experience phase, so the applied lesson Facts sitting in this
+    // very same memory file cannot leak into an M prompt, and neither can the
+    // held-out set. One ingest per arm, before its pass — providers are
+    // read-only afterwards, which is what makes the eval workers safe.
+    if !args.arms.is_empty() {
+        let grains = mem.experience_grains().unwrap_or_else(|e| die(&e));
+        eprintln!("arms: {} experience grains ingested per provider", grains.len());
+        for arm in &args.arms {
+            let state = arm_state(arm);
+            let (provider, summarizer) = build_provider(arm, &grains, &args);
+            eprintln!("eval {state}: {} tasks", eval_tasks.len());
+            let mut summary =
+                run_eval(state, &eval_tasks, "", Some(provider.as_ref()), &args, &reporter);
+            // The summarizer's model calls are part of what this arm COST —
+            // an extraction-at-write-time memory that reported only its read
+            // tokens would be priced dishonestly.
+            if let Some(u) = summarizer {
+                println!(
+                    "m-llm summarizer: {} prompt + {} completion tokens",
+                    u.prompt_tokens, u.completion_tokens
+                );
+                summary.usage.prompt_tokens += u.prompt_tokens;
+                summary.usage.completion_tokens += u.completion_tokens;
+            }
+            evals.push(summary);
+        }
+    }
+
+    // 7 Report: config (every flag + git rev), the merged ledger verbatim
+    // (failures are evidence), the four governed summaries + any arms.
     let mut ledger = Ledger::default();
     ledger.entries.extend(ledger1.entries);
     ledger.entries.extend(ledger2.entries);
@@ -463,6 +754,10 @@ fn main() {
         "agent_cmd": args.agent_cmd,
         "llm_cmd": args.llm_cmd,
         "ground_cmd": args.ground_cmd,
+        "arms": args.arms,
+        "context_cmd": args.context_cmd,
+        "mllm_cmd": args.wants("m-llm").then(|| args.mllm_cmd()).flatten(),
+        "workers": args.workers,
         "max_turns": args.max_turns,
         "assert_shape": args.assert_shape,
         "runner_actor": mem.runner_actor(),
@@ -470,7 +765,6 @@ fn main() {
         "phase_base_ms": BASE_MS,
         "git_rev": git_rev(),
     });
-    let evals = [a0, b, a1, b2];
     reporter
         .write_report(&config, &ledger, &evals)
         .unwrap_or_else(|e| die(&format!("write report: {e}")));
@@ -478,6 +772,167 @@ fn main() {
     print_results(&args, &evals, &ledger, applied1.len(), applied2.len());
 
     if args.assert_shape {
-        check_shape(&evals[0], &evals[1], &evals[2], &evals[3]);
+        check_shape(&evals, args.eval as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mock_args(workers: usize) -> Args {
+        Args {
+            workdir: PathBuf::new(),
+            seed: 7,
+            experience: 0,
+            eval: 6,
+            mock: true,
+            agent_cmd: None,
+            llm_cmd: None,
+            ground_cmd: None,
+            arms: vec![],
+            context_cmd: None,
+            mllm_cmd: None,
+            workers,
+            max_turns: 24,
+            assert_shape: false,
+        }
+    }
+
+    fn rows_of(finished: &[(TaskRunRecord, Vec<Value>)]) -> Vec<Value> {
+        finished.iter().flat_map(|(_, rows)| rows.iter().cloned()).collect()
+    }
+
+    fn outcomes_of(finished: &[(TaskRunRecord, Vec<Value>)]) -> Vec<(String, bool, u32, String)> {
+        finished
+            .iter()
+            .map(|(r, _)| (r.task_id.clone(), r.success, r.steps, r.failure_reason.clone()))
+            .collect()
+    }
+
+    /// The pool is an optimization, never a variable. Transcript bytes and the
+    /// memory write order both derive from task-INDEX order, so four workers
+    /// must produce exactly what one does — otherwise `--workers` would
+    /// quietly become a parameter of the published numbers.
+    #[test]
+    fn the_pool_is_deterministic_across_worker_counts() {
+        let tasks = env::gen_tasks(7, env::Split::Eval, 6);
+        let one = run_pool(&tasks, &mock_args(1), "", None);
+        let four = run_pool(&tasks, &mock_args(4), "", None);
+
+        assert_eq!(one.len(), tasks.len());
+        // Task order, not completion order.
+        let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(outcomes_of(&one).iter().map(|o| o.0.clone()).collect::<Vec<_>>(), ids);
+        assert_eq!(outcomes_of(&one), outcomes_of(&four));
+        // The rows are the transcript: identical sequence, identical bytes.
+        let (a, b) = (rows_of(&one), rows_of(&four));
+        assert!(!a.is_empty(), "the mock must actually call tools");
+        assert_eq!(a, b);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+    }
+
+    /// More workers than tasks must not spin up idle threads that then race
+    /// for an empty queue — and an empty task list must not hang.
+    #[test]
+    fn the_pool_handles_more_workers_than_tasks_and_no_tasks() {
+        let tasks = env::gen_tasks(7, env::Split::Eval, 2);
+        let many = run_pool(&tasks, &mock_args(16), "", None);
+        assert_eq!(many.len(), 2);
+        assert!(run_pool(&[], &mock_args(4), "", None).is_empty());
+    }
+
+    /// Canned provider: proves `Option<&dyn ContextProvider>` really does
+    /// cross into the workers (the trait's `Sync + Send` bound is what allows
+    /// it), and that a shared provider stays deterministic under fan-out.
+    struct ConstProvider;
+
+    impl ContextProvider for ConstProvider {
+        fn label(&self) -> &'static str {
+            "m-const"
+        }
+        fn task_start(&self, _task_prompt: &str) -> Result<String, String> {
+            Ok("- past runs hit rate_limited and invalid_timestamp\n".to_string())
+        }
+        fn on_tool_error(
+            &self,
+            _task_prompt: &str,
+            _tool: &str,
+            _code: &str,
+            _body: &str,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn a_shared_provider_fans_out_and_stays_deterministic() {
+        let tasks = env::gen_tasks(7, env::Split::Eval, 6);
+        let provider = ConstProvider;
+        let one = run_pool(&tasks, &mock_args(1), "", Some(&provider));
+        let four = run_pool(&tasks, &mock_args(4), "", Some(&provider));
+        assert_eq!(outcomes_of(&one), outcomes_of(&four));
+        assert_eq!(rows_of(&one), rows_of(&four));
+        // The context reached the agent: with the codes above the mock waits
+        // out a 429 instead of hot-retrying it, which the bare pool does not.
+        let bare = run_pool(&tasks, &mock_args(1), "", None);
+        assert_ne!(
+            outcomes_of(&one),
+            outcomes_of(&bare),
+            "a provider that names frozen codes must change the mock's behavior"
+        );
+    }
+
+    #[test]
+    fn parse_arms_dedupes_and_keeps_the_given_order() {
+        assert_eq!(parse_arms(""), Vec::<String>::new());
+        assert_eq!(parse_arms("m-all"), vec!["m-all"]);
+        assert_eq!(
+            parse_arms(" m-llm , m-steel ,m-all, m-llm ,"),
+            vec!["m-llm", "m-steel", "m-all"]
+        );
+    }
+
+    /// The arm labels are a cross-tool contract (`aba_stats.py` keys the
+    /// passive arms off the leading "M"), so every known arm must map, and
+    /// map to exactly that shape.
+    #[test]
+    fn every_known_arm_maps_to_an_m_prefixed_state() {
+        for arm in KNOWN_ARMS {
+            let state = arm_state(arm);
+            assert!(state.starts_with("M-"), "{arm} → {state}");
+            assert_eq!(state.to_ascii_lowercase(), arm);
+        }
+    }
+
+    fn summary(state: &str, n: u32, successes: u32) -> EvalSummary {
+        EvalSummary {
+            state: state.to_string(),
+            n,
+            successes,
+            tool_errors: 0,
+            total_steps: n,
+            per_rule: vec![],
+            usage: Usage::default(),
+        }
+    }
+
+    /// `check_shape` exits the process on failure, so the tests here pin the
+    /// PASSING shape: the four governed states plus arms that ran the whole
+    /// held-out set, with M-all clear of A0.
+    #[test]
+    fn check_shape_accepts_the_governed_states_with_arms() {
+        let evals = vec![
+            summary("A0", 10, 3),
+            summary("B", 10, 9),
+            summary("A1", 10, 3),
+            summary("B2", 10, 9),
+            summary("M-steel", 10, 6),
+            summary("M-all", 10, 8),
+        ];
+        check_shape(&evals, 10);
     }
 }

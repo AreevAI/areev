@@ -18,24 +18,48 @@ The A/B/A/B claim needs all three to hold together:
   B→A1   removing the lessons undoes it (the causal step)
   A1→B2  restoring them recovers it
 
+States are DISCOVERED from the run directory, not enumerated, so the
+passive-memory arms (SELFIMPROVE.md "Bench 2") are picked up without editing
+this script. Every discovered M arm is additionally paired against A0 (does
+passive recall beat no memory?) and against B (does curation beat retrieval?)
+— the pre-registered comparisons.
+
 Stdlib only. Multiple RUNDIRs are treated as independent seeds and pooled
 per state pair, with each seed also reported on its own line.
 """
+import glob
 import json
 import math
 import os
 import sys
 
-STATES = ["A0", "B", "A1", "B2"]
-PAIRS = [("A0", "B"), ("B", "A1"), ("A1", "B2"), ("A0", "A1"), ("B", "B2")]
+EVAL_PREFIX = "transcripts-eval-"
+EVAL_SUFFIX = ".jsonl"
+GOVERNED_PAIRS = [("A0", "B"), ("B", "A1"), ("A1", "B2"), ("A0", "A1"), ("B", "B2")]
+
+
+def pairs_for(states):
+    """Governed pairs first, then each discovered M arm vs A0 and vs B.
+
+    An arm is any state whose name starts with M. The match is
+    case-insensitive because the frozen arm labels are lowercase
+    (`m-steel`, `m-all`, `m-llm`, `m-cmd`) while the governed states are
+    upper — a case-sensitive test would silently report nothing.
+    Pairs whose states are absent everywhere are dropped, not printed empty.
+    """
+    present = set(states)
+    out = [p for p in GOVERNED_PAIRS if p[0] in present and p[1] in present]
+    for arm in sorted(s for s in present if s.upper().startswith("M")):
+        out.extend((base, arm) for base in ("A0", "B") if base in present)
+    return out
 
 
 def load_run(d):
     """{state: {task_id: success}} for one run directory."""
     out = {}
-    for state in STATES:
-        path = os.path.join(d, f"transcripts-eval-{state}.jsonl")
-        if not os.path.exists(path):
+    for path in sorted(glob.glob(os.path.join(d, EVAL_PREFIX + "*" + EVAL_SUFFIX))):
+        state = os.path.basename(path)[len(EVAL_PREFIX):-len(EVAL_SUFFIX)]
+        if not state:
             continue
         rows = {}
         with open(path) as fh:
@@ -101,8 +125,12 @@ def main():
     if not runs:
         sys.exit(1)
 
-    print(f"paired McNemar over {len(runs)} run(s): {', '.join(n for n, _ in runs)}\n")
-    for x, y in PAIRS:
+    states = set()
+    for _, r in runs:
+        states |= set(r)
+    print(f"paired McNemar over {len(runs)} run(s): {', '.join(n for n, _ in runs)}")
+    print(f"states: {', '.join(sorted(states))}\n")
+    for x, y in pairs_for(states):
         b, c, n, lines = compare(runs, x, y)
         if n == 0:
             continue

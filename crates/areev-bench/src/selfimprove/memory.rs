@@ -51,6 +51,17 @@ fn review_action(origin: &Origin, proposal: &Proposal, destructive: bool) -> Rev
     }
 }
 
+/// The frozen error code out of a tool-result body (mod.rs: tool errors are
+/// `{"error":{"code":C,…}}`). `None` when the body is not that shape — a
+/// backend flake is not a hidden-rule failure and must not cluster as one.
+fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .pointer("/error/code")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// The Areev bridge for the selfimprove benches.
 pub struct Memory {
     facade: AreevFacade,
@@ -271,6 +282,70 @@ impl Memory {
                 .map_err(|e| format!("rollback {hash}: {e}"))?;
         }
         Ok(())
+    }
+
+    /// Every experience-phase tool call as the passive-memory arms see it, in
+    /// stable recording order.
+    ///
+    /// This is the ONLY thing the M arms read. It is deliberately Tool grains
+    /// only: lessons live as Facts, so no governed lesson can leak into an arm
+    /// that is supposed to be the loop turned OFF.
+    ///
+    /// Ordering is `created_at_ms` then `hash` — the only keys `GrainRecord`
+    /// exposes (there is no seq). Calls recorded inside one millisecond fall
+    /// back to hash order: deterministic, and stable across runs, which is what
+    /// the prompt bytes need; "most recent first" then holds at the granularity
+    /// that matters (across tasks), not within a single burst.
+    pub fn experience_grains(&self) -> Result<Vec<super::context::ExperienceGrain>, String> {
+        let sub = BorrowedSubstrate::new(&self.facade);
+        // ReadOpts::default() is live_only — same read the lesson renderer uses.
+        let mut grains = sub
+            .grains_of_type("tool", Some(&self.ns), ReadOpts::default())
+            .map_err(|e| format!("read tool grains: {e}"))?;
+        grains.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.hash.cmp(&b.hash))
+        });
+        Ok(grains
+            .iter()
+            .map(|g| {
+                let tool = g.tool_name().unwrap_or("unknown").to_string();
+                let is_error = g.is_error();
+                let output_json = g.tool_content().unwrap_or("").to_string();
+                let code = if is_error {
+                    error_code(&output_json)
+                } else {
+                    None
+                };
+                super::context::ExperienceGrain {
+                    // `record_tool_call` writes the thread under `session_id`;
+                    // `parent_task_id` is the OMS-native alias other writers use.
+                    task_id: g
+                        .str_field("session_id")
+                        .or_else(|| g.str_field("parent_task_id"))
+                        .unwrap_or("")
+                        .to_string(),
+                    rendered: super::context::render_line(
+                        &tool,
+                        is_error,
+                        code.as_deref(),
+                        &output_json,
+                    ),
+                    tool,
+                    // `input` round-trips as parsed JSON, not the string that
+                    // was handed in.
+                    input_json: g
+                        .fields
+                        .get("input")
+                        .map(Value::to_string)
+                        .unwrap_or_default(),
+                    output_json,
+                    is_error,
+                    code,
+                }
+            })
+            .collect())
     }
 
     /// The LESSONS prompt section, rendered from LIVE `fails_with` facts in
@@ -507,6 +582,77 @@ mod tests {
         assert_eq!(review_action(&Origin::Builtin, &data, false), ReviewAction::Advisory);
         assert_eq!(review_action(&Origin::Builtin, &cal, true), ReviewAction::Reject);
         assert_eq!(review_action(&Origin::Builtin, &cal, false), ReviewAction::ApproveApply);
+    }
+
+    /// The passive-memory arms' input round-trips through the store: order,
+    /// error-code parsing, is_error, the rendered line, and the task join.
+    #[test]
+    fn experience_grains_round_trip_the_recorded_calls() {
+        let dir = TempDir::new().unwrap();
+        let mem = Memory::create(dir.path()).unwrap();
+        assert!(
+            mem.experience_grains().unwrap().is_empty(),
+            "no experience yet ⇒ the arms have nothing to offer"
+        );
+
+        mem.record_task(&failing_task("refund", "approval_required", 2))
+            .unwrap();
+
+        let grains = mem.experience_grains().unwrap();
+        assert_eq!(grains.len(), 3, "2 failures + 1 success: {grains:?}");
+        assert!(grains.iter().all(|g| g.tool == "refund"));
+        assert!(grains.iter().all(|g| g.task_id == "task-exp-1"), "{grains:?}");
+
+        let errors: Vec<_> = grains.iter().filter(|g| g.is_error).collect();
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors
+                .iter()
+                .all(|g| g.code.as_deref() == Some("approval_required")),
+            "the frozen code must parse out of the body: {errors:?}"
+        );
+        assert!(
+            errors[0].rendered
+                == "- `refund` call failed with `approval_required`: \
+                    {\"error\":{\"code\":\"approval_required\",\"message\":\"blocked by hidden rule\"}}",
+            "rendered: {:?}",
+            errors[0].rendered
+        );
+
+        let ok: Vec<_> = grains.iter().filter(|g| !g.is_error).collect();
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].code, None, "a success carries no code");
+        assert_eq!(ok[0].rendered, "- `refund` call succeeded");
+        assert!(ok[0].output_json.contains("rf_1"), "{:?}", ok[0].output_json);
+        assert!(
+            ok[0].input_json.contains("\"amount\":50"),
+            "input round-trips as JSON: {:?}",
+            ok[0].input_json
+        );
+
+        // Stable across reads — the prompt bytes depend on it.
+        assert_eq!(grains, mem.experience_grains().unwrap());
+    }
+
+    /// Lessons are Facts; the arms read Tool grains. A governed lesson must
+    /// never reach an arm that is supposed to be the loop turned OFF.
+    #[test]
+    fn experience_grains_never_carry_a_lesson() {
+        let dir = TempDir::new().unwrap();
+        let mem = Memory::create(dir.path()).unwrap();
+        mem.record_task(&failing_task("refund", "approval_required", 6))
+            .unwrap();
+        let before = mem.experience_grains().unwrap();
+        let (_, applied) = mem.learn(None, None, T1).unwrap();
+        assert!(!applied.is_empty());
+        assert!(!mem.lessons_markdown().unwrap().is_empty());
+
+        let after = mem.experience_grains().unwrap();
+        assert_eq!(before, after, "applying a lesson must not change the arms' input");
+        assert!(
+            after.iter().all(|g| g.tool == "refund"),
+            "only Tool grains: {after:?}"
+        );
     }
 
     /// A leftover memory file must refuse, not silently resume: lessons from
