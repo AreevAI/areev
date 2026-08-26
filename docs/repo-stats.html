@@ -61,11 +61,11 @@
     <code>scripts/repo_stats.py</code></p>
 
   <div class="tiles">
-      <div class="tile"><div class="v" style="color:var(--test)">48,907</div><div class="l">lines of test code</div></div>
-      <div class="tile"><div class="v" style="color:var(--source)">80,571</div><div class="l">lines of source code</div></div>
-      <div class="tile"><div class="v" style="color:var(--accent)">2,386</div><div class="l">test functions</div></div>
+      <div class="tile"><div class="v" style="color:var(--test)">50,101</div><div class="l">lines of test code</div></div>
+      <div class="tile"><div class="v" style="color:var(--source)">82,944</div><div class="l">lines of source code</div></div>
+      <div class="tile"><div class="v" style="color:var(--accent)">2,435</div><div class="l">test functions</div></div>
       <div class="tile"><div class="v" style="color:var(--accent)">81.0%</div><div class="l">line coverage (source only)</div></div>
-      <div class="tile"><div class="v" style="color:var(--fg)">0.61:1</div><div class="l">test to source</div></div>
+      <div class="tile"><div class="v" style="color:var(--fg)">0.6:1</div><div class="l">test to source</div></div>
       <div class="tile"><div class="v" style="color:var(--fg)">17</div><div class="l">workspace crates</div></div>
       <div class="tile"><div class="v" style="color:var(--fg)">95</div><div class="l">stable error codes</div></div>
   </div>
@@ -81,7 +81,8 @@
       <tr><td><code>areev-core</code></td><td>49</td><td>8,587</td><td>4,295</td><td>284</td><td class="cov"><span class="meter"><i class="good" style="width:84%"></i></span>83.6%</td><td class="muted">80%</td></tr>
       <tr><td><code>areev-run</code></td><td>20</td><td>5,557</td><td>5,271</td><td>162</td><td class="cov"><span class="meter"><i class="good" style="width:84%"></i></span>84.1%</td><td class="muted">79%</td></tr>
       <tr><td><code>areev-cli</code></td><td>18</td><td>5,869</td><td>5,593</td><td>167</td><td class="cov"><span class="meter"><i class="good" style="width:76%"></i></span>75.5%</td><td class="muted">70%</td></tr>
-      <tr><td><code>areev-loop</code></td><td>34</td><td>7,858</td><td>1,187</td><td>137</td><td class="cov"><span class="meter"><i class="good" style="width:93%"></i></span>93.2%</td><td class="muted">90%</td></tr>
+      <tr><td><code>areev-loop</code></td><td>34</td><td>7,864</td><td>1,217</td><td>139</td><td class="cov"><span class="meter"><i class="good" style="width:93%"></i></span>93.2%</td><td class="muted">90%</td></tr>
+      <tr><td><code>areev-bench</code></td><td>15</td><td>4,063</td><td>1,200</td><td>50</td><td class="muted" title="benchmark harnesses — explicit tools you run on purpose (`--bin honesty_metrics`), the same category as examples/">not scored</td><td class="muted">—</td></tr>
       <tr><td><code>areev-trigger</code></td><td>12</td><td>1,785</td><td>2,310</td><td>122</td><td class="cov"><span class="meter"><i class="good" style="width:92%"></i></span>92.2%</td><td class="muted">89%</td></tr>
       <tr><td><code>areev-context</code></td><td>8</td><td>1,899</td><td>2,421</td><td>90</td><td class="cov"><span class="meter"><i class="good" style="width:81%"></i></span>81.4%</td><td class="muted">79%</td></tr>
       <tr><td><code>areev-run-core</code></td><td>8</td><td>1,934</td><td>969</td><td>31</td><td class="cov"><span class="meter"><i class="good" style="width:92%"></i></span>91.9%</td><td class="muted">89%</td></tr>
@@ -90,7 +91,6 @@
       <tr><td><code>areev-js</code></td><td>2</td><td>2,512</td><td>0</td><td>0</td><td class="muted" title="Node (napi) bindings — a STANDALONE package, not a cargo workspace member, so `--workspace` never builds it and it cannot appear in this trace at all; the `node` CI job builds and tests it separately">not scored</td><td class="muted">—</td></tr>
       <tr><td><code>areev-py</code></td><td>2</td><td>2,147</td><td>0</td><td>0</td><td class="muted" title="PyO3 bindings — exercised by pytest in the `python` CI job, which this trace cannot see">not scored</td><td class="muted">—</td></tr>
       <tr><td><code>areev-conformance</code></td><td>15</td><td>1,490</td><td>353</td><td>12</td><td class="cov"><span class="meter"><i class="good" style="width:98%"></i></span>98.1%</td><td class="muted">95%</td></tr>
-      <tr><td><code>areev-bench</code></td><td>9</td><td>1,696</td><td>36</td><td>3</td><td class="muted" title="benchmark harnesses — explicit tools you run on purpose (`--bin honesty_metrics`), the same category as examples/">not scored</td><td class="muted">—</td></tr>
       <tr><td><code>areev-loop-adapter</code></td><td>6</td><td>883</td><td>735</td><td>23</td><td class="cov"><span class="meter"><i class="good" style="width:82%"></i></span>82.4%</td><td class="muted">78%</td></tr>
       <tr><td><code>areev-mcp</code></td><td>1</td><td>1,152</td><td>0</td><td>0</td><td class="cov"><span class="meter"><i class="good" style="width:74%"></i></span>73.7%</td><td class="muted">71%</td></tr>
       </tbody>
@@ -126,14 +126,14 @@
   <div class="wrap">
     <table>
       <tbody>
-        <tr><td>Rust files</td><td>277</td></tr>
-        <tr><td>Physical lines (all Rust)</td><td>169,932</td></tr>
-        <tr><td>Source code (no blanks or comments)</td><td>80,571</td></tr>
-        <tr><td>Unit test code (<code>#[cfg(test)]</code> blocks)</td><td>22,607</td></tr>
+        <tr><td>Rust files</td><td>283</td></tr>
+        <tr><td>Physical lines (all Rust)</td><td>174,274</td></tr>
+        <tr><td>Source code (no blanks or comments)</td><td>82,944</td></tr>
+        <tr><td>Unit test code (<code>#[cfg(test)]</code> blocks)</td><td>23,801</td></tr>
         <tr><td>Integration test code (<code>tests/</code>, <code>benches/</code>)</td><td>26,300</td></tr>
         <tr><td>Example code (<code>examples/</code>)</td><td>669</td></tr>
-        <tr><td>Test functions</td><td>2,386</td></tr>
-        <tr><td>Reference docs</td><td>53 files, 23,767 lines</td></tr>
+        <tr><td>Test functions</td><td>2,435</td></tr>
+        <tr><td>Reference docs</td><td>53 files, 23,795 lines</td></tr>
         <tr><td>Stable error codes</td><td>95</td></tr>
       </tbody>
     </table>

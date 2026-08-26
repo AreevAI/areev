@@ -435,6 +435,66 @@ Readings:
    a phase the firmware is running at 600. Sample `vcgencmd measure_clock arm`
    *during* the phase, never after.
 
+## Areev Loop self-improvement — the A/B/A/B causal proof
+
+`cargo run --release -p areev-bench --bin selfimprove_aba` — design, honesty
+rules and reproduction: [`SELFIMPROVE.md`](SELFIMPROVE.md).
+
+*Pilot run: 2026-08-26 · **one seed**, so labelled pilot — publishable numbers
+need ≥3 (SELFIMPROVE.md "Determinism & stats"). Agent: Qwen3-30B-A3B-Instruct-2507
+via OpenRouter (CoreWeave), temperature 0. Loop LLM stages on: DISCOVER/VERIFY
+on the same model, GROUND on `deepseek-chat` so the proposer never grades
+itself. 150 experience tasks → 772 tool calls → 139 failures; 60 held-out
+tasks, identical set and order in every state. Every model call transcribed in
+[`results/selfimprove-aba-qwen3-30b-seed1-2026-08-26.*`](results/).*
+
+The only lever between states is Areev's own governed apply/rollback — the eval
+prompt is assembled from live memory on every run, so rollback empties the
+LESSONS section structurally. There is no harness flag.
+
+| state | success | rate | tool errors | mean steps |
+|---|---|---|---|---|
+| A0 before lessons | 24/60 | 40.0% | 64 | 6.6 |
+| B lessons applied | 31/60 | **51.7%** | 61 | 7.0 |
+| A1 lessons rolled back | 23/60 | 38.3% | 66 | 6.7 |
+| B2 lessons re-applied | 32/60 | **53.3%** | 59 | 6.9 |
+
+Paired exact McNemar over the shared 60 tasks (`scripts/aba_stats.py`;
+b = failed→passed, c = the reverse):
+
+| transition | b | c | p | reading |
+|---|---|---|---|---|
+| A0 → B | 9 | 2 | 0.065 | applying the lesson improves |
+| B → A1 | 2 | 10 | **0.039** | removing it undoes the gain |
+| A1 → B2 | 10 | 1 | **0.012** | restoring it recovers the gain |
+| A0 → A1 | 0 | 1 | 1.000 | **control** — the two lesson-off states are the same |
+| B → B2 | 4 | 3 | 1.000 | **control** — the two lesson-on states are the same |
+
+The controls are the load-bearing rows: lesson-off ≈ lesson-off and lesson-on ≈
+lesson-on, so the swing is not drift, warm-up or provider variance — it tracks
+the presence of the applied lesson and nothing else. A0→B alone would not clear
+p<0.05 at n=60; the two significant transitions and the two null controls are
+what make the causal reading hold.
+
+**Governance ledger: 2 proposed, 2 applied, 0 rejected, 0 advisory.** Both rows
+are the same finding — `loop.tool_failure/1`, `refund` failed 46 times (44% of
+the calls that could fail this way) with `rate_limited`. It applies twice
+because a rolled-back hash is terminal: B2 is a *fresh* governed proposal
+(propose → approve → apply), so the run exercises the whole gated path twice.
+
+Kept precise, because these bound the claim:
+
+- **One lesson, one failure mode.** The gain comes from a single applied
+  grain; this is not a claim about the loop's whole analyzer suite.
+- **The LLM stages contributed nothing.** DISCOVER→GROUND→VERIFY ran on every
+  pass and produced **0** findings that survived to the queue. The improvement
+  is entirely from the deterministic analyzer. (LLM findings are advisory by
+  design and cannot be applied at all — SELFIMPROVE.md's roadmap.)
+- **One task was lost to an adapter crash** in A0, scored as a failure; A0 over
+  the 59 clean tasks is 40.7%, which does not change the reading.
+- The run predates committing these changes, so `report.json`'s `git_rev`
+  (`23a1990`) names the release commit, not the working tree that produced it.
+
 ## Areev Loop analyzer precision (fixture floor)
 
 `cargo run --release -p areev-bench --bin loop_precision`

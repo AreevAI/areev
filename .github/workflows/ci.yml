@@ -347,6 +347,24 @@ jobs:
   # that ships nothing), and a package.json bump without regenerating index.js
   # breaks require() for anyone with NAPI_RS_ENFORCE_VERSION_CHECK set. Catch
   # it on the PR that introduces it, not on release day.
+  # The self-improvement bench's keyless floor. `--mock` swaps the live model
+  # for a deterministic agent, so this asserts the PLUMBING of the A/B/A/B
+  # causal claim — lessons applied raise held-out success, rollback returns it
+  # to baseline, re-apply recovers it, and rollback really does empty the
+  # LESSONS prompt section. It is never a learning claim (no model runs); the
+  # live numbers come from `--agent-cmd` and are published with transcripts.
+  selfimprove:
+    name: selfimprove A/B/A/B (mock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: A/B/A/B shape holds under the deterministic agent
+        run: |
+          cargo run -p areev-bench --bin selfimprove_aba -- \
+            --workdir "$RUNNER_TEMP/aba" --seed 1 --mock --assert-shape
+
   versions:
     name: versions agree
     runs-on: ubuntu-latest

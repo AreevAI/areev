@@ -147,6 +147,7 @@ dependencies = [
  "areev-core",
  "areev-llm",
  "areev-loop",
+ "areev-loop-adapter",
  "areev-server",
  "areev-store",
  "serde_json",

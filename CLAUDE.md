@@ -44,6 +44,11 @@ cargo run --release -p areev-store --example bench       # latency gates
 cargo run --release -p areev-store --example voice_loop  # 50ms-cadence gate
 cargo run -p areev -- recall --db demo.db --ns caller --subject john
 
+# does the loop actually make an agent better? (crates/areev-bench/SELFIMPROVE.md)
+cargo run -p areev-bench --bin selfimprove_aba -- --workdir /tmp/aba --mock --assert-shape
+#   ^ keyless CI floor: proves the A/B/A/B plumbing, never a learning claim.
+#     Live numbers need --agent-cmd/--llm-cmd (see SELFIMPROVE.md "Reproduce").
+
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
@@ -122,7 +127,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-server` | Web console (see below) | — |
 | `areev` | The `areev` binary (see below) | — |
 | `areev-py` | PyO3 bindings (see below) | — |
-| `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy) | — |
+| `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy, and the **self-improvement** A/B/A/B causal proof — `SELFIMPROVE.md`) | — |
 | `areev-js` | Node (napi) bindings — **standalone package, not a workspace member** (see below) | — |
 
 ## Cross-cutting invariants
