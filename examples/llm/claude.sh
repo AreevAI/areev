@@ -13,9 +13,10 @@ if [ "$op" = "probe" ]; then
   exit 0
 fi
 
-# Keep instructions (the system prompt) separate from evidence text.
+# Keep instructions (the system prompt) separate from evidence text. Forward
+# every other key: GROUND sends `claims`, so a fixed key list would empty it.
 instructions="$(printf '%s' "$req" | jq -r '.instructions')"
-payload="$(printf '%s' "$req" | jq -c '{op, findings, evidence}')"
+payload="$(printf '%s' "$req" | jq -c 'del(.instructions)')"
 
 prompt="$instructions
 
