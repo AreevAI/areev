@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.5] — 2026-08-26
+
 ### Fixed
 
 - **The external-embedding seam works with no embedder installed.**
@@ -1995,7 +1997,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.4...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.5...HEAD
+[1.6.5]: https://github.com/AreevAI/areev/compare/v1.6.4...v1.6.5
 [1.6.4]: https://github.com/AreevAI/areev/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/AreevAI/areev/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/AreevAI/areev/compare/v1.6.1...v1.6.2
