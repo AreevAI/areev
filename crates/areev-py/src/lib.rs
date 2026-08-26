@@ -1517,7 +1517,7 @@ impl Areev {
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
                         llm_max_tokens = None, allow_executor = None, executor_cache = None,
-                        sandbox_cmd = None))]
+                        sandbox_cmd = None, executor_timeout_secs = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1537,6 +1537,7 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<u64>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1546,8 +1547,9 @@ impl Areev {
         // Resolved before the run starts, so a bad model spec or a missing key
         // fails without journaling a run that cannot advance.
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner =
-            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
+        let runner = self.runner_pinned(
+            tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+        );
         let opts =
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
         let session = py
@@ -1563,7 +1565,7 @@ impl Areev {
     /// config that is deliberately not journaled with the run.
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
                         key_env = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1577,10 +1579,12 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<u64>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
-        let runner =
-            self.runner_pinned(tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd);
+        let runner = self.runner_pinned(
+            tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+        );
         let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
         Ok(run_session_json(session).to_string())
@@ -2439,7 +2443,7 @@ impl Areev {
                         node = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2463,10 +2467,11 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<u64>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
-            ExecutorPin { allow_executor, executor_cache, sandbox_cmd },
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
@@ -2492,7 +2497,7 @@ impl Areev {
                         credentials_json = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2513,12 +2518,13 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<u64>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
-            ExecutorPin { allow_executor, executor_cache, sandbox_cmd },
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
@@ -2661,6 +2667,7 @@ impl Areev {
                         pin.allow_executor,
                         pin.executor_cache,
                         pin.sandbox_cmd,
+                        pin.executor_timeout_secs,
                     ),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -2752,13 +2759,16 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        self.runner_pinned(tool_cmd, llm, None, None, None)
+        self.runner_pinned(tool_cmd, llm, None, None, None, None)
     }
 
     /// The pin-aware factory (#87): `allow_executor` is the same comma list
     /// as the CLI's `--allow-executor` — without it, a plan naming a
     /// code-carrying Definition refuses at start (RUN-E018), because the
     /// authorization to execute code must come from the host, never the file.
+    /// `executor_timeout_secs` (#133) overrides the fixed 300s ceiling either
+    /// executor otherwise runs a tool under — `0` waits forever.
+    #[allow(clippy::too_many_arguments)]
     fn runner_pinned(
         &self,
         tool_cmd: Option<String>,
@@ -2766,10 +2776,17 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<u64>,
     ) -> areev_run::Runner {
+        let timeout = executor_timeout_secs
+            .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
         let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
-                std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
+                let mut ce = areev_run::CommandExecutor::new(&cmd);
+                if let Some(t) = timeout {
+                    ce = ce.with_timeout(t);
+                }
+                std::sync::Arc::new(ce)
             }
             _ => {
                 struct NoExec;
@@ -2805,6 +2822,9 @@ impl Areev {
                 if let Some(cmd) = sandbox_cmd {
                     ce = ce.sandbox_cmd(&cmd);
                 }
+                if let Some(t) = timeout {
+                    ce = ce.with_timeout(t);
+                }
                 std::sync::Arc::new(ce)
             }
         };
@@ -2828,6 +2848,7 @@ struct ExecutorPin {
     allow_executor: Option<String>,
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
+    executor_timeout_secs: Option<u64>,
 }
 
 fn run_options(

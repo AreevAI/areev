@@ -366,6 +366,14 @@ pub struct CodeExecutor {
     inner: Arc<dyn HostToolExecutor>,
     allowed: std::collections::BTreeSet<String>,
     cache_dir: std::path::PathBuf,
+    /// Wall-clock ceiling per invocation — same default and same knob shape
+    /// as `CommandExecutor`'s (#133): a pinned blob that makes a dozen model
+    /// calls (a document-analysis leg, say) needs longer than the
+    /// `pdftotext`-shaped tool this default was sized for, and unlike
+    /// `CommandExecutor` nothing surfaced `with_timeout` on any host until
+    /// #133 — every host now exposes it as `executor_timeout_secs` /
+    /// `--executor-timeout`, alongside `allow_executor`/`executor_cache`/
+    /// `sandbox_cmd`.
     timeout: Option<std::time::Duration>,
     egress: Option<EgressHandle>,
     /// The sandbox runner, argv-split (`areev-sandbox` or a path to it).
@@ -381,7 +389,9 @@ impl CodeExecutor {
             inner,
             allowed: Default::default(),
             cache_dir: std::env::temp_dir().join("areev-executors"),
-            timeout: Some(std::time::Duration::from_secs(300)),
+            // Same constant `CommandExecutor::new` uses — one number, so
+            // raising the shared default only ever needs one edit (#133).
+            timeout: Some(areev_core::proc::DEFAULT_TIMEOUT),
             egress: None,
             sandbox_cmd: None,
         }
@@ -417,6 +427,10 @@ impl CodeExecutor {
         self
     }
 
+    /// Override the per-invocation ceiling (#133). `None` means wait
+    /// forever, for a host that genuinely wants that; see the `timeout`
+    /// field doc for why a fixed 300s stopped being the right default for
+    /// every pinned blob.
     pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.timeout = timeout;
         self

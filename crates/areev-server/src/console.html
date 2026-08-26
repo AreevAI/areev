@@ -283,7 +283,7 @@
   /* The full v2 lockup (A + reev + improvement loop), not the A alone —
      two bitmaps because the dark variant sets `reev` in white, which
      BRAND.md requires as its own artwork rather than a CSS recolor. */
-  .brand .logo { height:26px; width:auto; display:block; }
+  .brand .logo { height:31px; width:auto; display:block; }
   .brand .logo.dark { display:none; }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) .brand .logo.light { display:none; }
@@ -315,7 +315,6 @@
   .ent .nm { flex:1; font-size:14.5px; font-weight:500; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .ent .ct { width:22px; flex-shrink:0; text-align:right; font-size:13px; color:var(--faint); font-variant-numeric:tabular-nums; }
   .rail-foot { margin-top:auto; display:flex; flex-direction:column; gap:14px; padding:0 11px 2px; }
-  .health { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); cursor:pointer; }
   .dot { width:7px; height:7px; border-radius:4px; background:var(--ghost); flex-shrink:0; }
   .toggle-row { display:flex; align-items:center; gap:10px; padding-top:14px; border-top:1px solid var(--line); }
   .toggle-row span { flex:1; font-size:13.5px; color:var(--dim); }
@@ -347,7 +346,7 @@
   .pagehead .trail .home:hover { color:var(--accent); }
   /* The "›" sits 1px low against the icon/text either side of it — nudge
      it down that 1px rather than the icon (which is already centred). */
-  .pagehead .trail .sep { font-size:13.5px; color:var(--faint); padding-bottom:1px; }
+  .pagehead .trail .sep { font-size:16px; color:var(--faint); padding-bottom:1px; }
   .pagehead .trail .link { border:0; background:none; padding:0; font:500 13.5px var(--sans); color:var(--dim); cursor:pointer; }
   .pagehead .trail .link:hover { color:var(--accent); }
   .pagehead .ctitle { font:600 13.5px/19px var(--sans); color:var(--ink); letter-spacing:-.01em; }
@@ -676,7 +675,14 @@
   .ns-combo .ns-combo-input { border:0; background:none; padding:0; height:auto; width:100%; min-width:1em;
                               font:600 13px var(--sans); color:var(--ink); cursor:text; }
   .ns-combo .ns-combo-input:focus { outline:none; box-shadow:none; }
-  .ns-combo-arrow { display:flex; align-items:center; color:var(--faint); flex-shrink:0; pointer-events:none; }
+  /* Was pointer-events:none (clicks fell through to the text-cursor pill
+     behind it) — the caret is a dropdown trigger, not part of the typed
+     field, so it gets its own hand cursor instead of inheriting the input's
+     I-beam. Still handled by `wrap`'s mousedown listener: with events no
+     longer passing through, this becomes the event's target, which is not
+     `input`, so that listener's fallback path (focus the input) still
+     fires — same click behavior, just the right cursor over the icon. */
+  .ns-combo-arrow { display:flex; align-items:center; color:var(--faint); flex-shrink:0; cursor:pointer; }
   .ns-combo-menu { position:absolute; z-index:20; top:calc(100% + 4px); right:0; left:auto; min-width:240px;
                    background:var(--surface); border:1px solid var(--line2); border-radius:10px;
                    box-shadow:var(--shadow); max-height:230px; overflow-y:auto; padding:4px; }
@@ -684,6 +690,10 @@
   .ns-combo-opt:hover, .ns-combo-opt.on { background:var(--raise); }
   .ns-combo-opt.hint { color:var(--accent); font-family:var(--mono); font-size:12px; }
   .ns-combo-empty { padding:7px 9px; font-size:13px; color:var(--faint); }
+  /* "All namespaces" always sits last, set apart from whatever real
+     namespaces/hint happen to be above it — a thin rule, not a repeat of
+     the option padding, so it doesn't read as just another row. */
+  .ns-combo-opt.all-ns { margin-top:4px; padding-top:11px; border-top:1px solid var(--hair); }
 
   /* ── suggestions ── */
   /* Page-level stacks own the rhythm between blocks; `.stack` is an inner
@@ -727,12 +737,21 @@
   .kv .k { width:190px; flex-shrink:0; font-size:13.5px; color:var(--dim); }
   .kv .v { flex:1; font-size:14px; color:var(--ink); word-break:break-word; }
 
-  /* ── panel ── */
-  #panelWrap { position:fixed; inset:0; z-index:40; }
-  #panelShade { position:absolute; inset:0; background:rgba(11,13,18,.35); backdrop-filter:blur(2px); }
-  #panel { position:absolute; top:0; right:0; bottom:0; width:min(430px,96vw); background:var(--surface);
-           border-left:1px solid var(--line2); box-shadow:var(--shadow); padding:28px 30px 32px; overflow-y:auto;
-           display:flex; flex-direction:column; gap:24px; }
+  /* ── detail panel: an inline card in the page flow (used to be a
+     floating slide-over that dimmed the whole app behind it). `#panelWrap`
+     carries the same horizontal inset as `.page` so the card lines up with
+     whatever page opened it; `#panel` is the card itself, centred at the
+     usual reading width. "View full screen" expands `#panelWrap` to cover
+     the viewport instead — for content too long to read comfortably in the
+     column, not for every open — and the card sheds its own chrome since
+     the wrap is now playing that role. ── */
+  #panelWrap { padding:24px 56px 56px 48px; }
+  #panel { width:100%; max-width:var(--wide); margin:0 auto; background:var(--surface);
+           border:1px solid var(--line2); border-radius:16px; box-shadow:var(--card-shadow);
+           padding:28px 30px 32px; overflow-y:auto; display:flex; flex-direction:column; gap:24px; }
+  #panelWrap.full { position:fixed; inset:0; z-index:45; background:var(--surface);
+                    padding:44px 56px 56px; overflow-y:auto; }
+  #panelWrap.full #panel { border:0; box-shadow:none; border-radius:0; padding:0; }
   .pgroup { display:flex; flex-direction:column; gap:14px; padding-top:20px; border-top:1px solid var(--hair); }
   .step { display:flex; gap:14px; }
   .step .rail { display:flex; flex-direction:column; align-items:center; width:10px; flex-shrink:0; gap:4px; }
@@ -740,10 +759,9 @@
   .step .bul.past { background:var(--surface); border:1.5px solid var(--line2); }
   .step .ln { width:1px; flex:1; background:var(--line); }
 
-  /* ── dev sidebar ── */
-  #devbar { width:330px; flex-shrink:0; background:var(--bg); border-left:1px solid var(--line);
-            padding:26px 22px 28px; display:flex; flex-direction:column; gap:24px; position:sticky; top:0;
-            height:100vh; overflow-y:auto; }
+  /* ── developer tab (Settings → Developer) — used to be a sidebar fixed to
+     the right of every page; now it's a normal card in Settings, present
+     only once `dev-only` reveals its tab. ── */
   .oprow { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--hair);
            cursor:pointer; font-family:var(--mono); font-size:11.5px; }
   .oprow .t { width:30px; flex-shrink:0; color:var(--ghost); }
@@ -759,7 +777,6 @@
   #toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg);
            border-radius:10px; padding:10px 20px; font-size:14px; z-index:99; box-shadow:var(--shadow); display:none; }
 
-  @media (max-width:1180px) { #devbar { display:none !important; } }
   @media (max-width:900px) { #rail { display:none; } .page { padding:28px 22px 44px; } }
 
   /* Last word: `hidden` must beat every id-level display rule above. */
@@ -829,9 +846,6 @@
     </div>
 
     <div class="rail-foot">
-      <div class="health" id="health" title="check every stored memory against its content address">
-        <span class="dot" id="hdot"></span><span id="htext">checking…</span>
-      </div>
       <div class="toggle-row" id="whorow" style="display:none;border:0;padding-top:0">
         <span id="whoami" title="the principal this session is bound to">…</span>
         <button id="signbtn" style="background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0">Sign in</button>
@@ -841,10 +855,14 @@
   </nav>
 
   <main id="main">
-    <!-- ── MEMORY ── -->
+    <!-- ── MEMORY ──
+         Namespace picker scopes the List view, the Graph view, and the Ask
+         bar all at once (MEM_NS) — it sits above both view modes rather
+         than inside either. ── -->
     <section class="page" id="page-memory">
       <div style="display:flex;align-items:flex-end;gap:16px" class="wide">
         <div id="memCrumb" style="flex:1;min-width:0"></div>
+        <span id="memNsHost"></span>
         <div class="seg" id="mview">
           <button class="on" data-v="list">List</button>
           <button data-v="graph">Graph</button>
@@ -955,9 +973,19 @@
       <div class="wide" id="sugList"><div class="empty">loading…</div></div>
     </section>
 
-    <!-- ── RUNS: the governed runtime viewer + HITL approval queue ── -->
+    <!-- ── RUNS: the governed runtime viewer + HITL approval queue.
+         Namespace picker shares WF_NS with Workflows/Tools (same rationale:
+         a run executes a plan, and the plan's namespace IS the run's) —
+         but unlike those pages, an unpicked namespace here means "every
+         run" (today's existing behavior, unchanged), not "the bound
+         default" — a run's own bookkeeping lives in a fixed system
+         namespace, so "the bound default" is not a run's natural home the
+         way it is a fact's. ── -->
     <section class="page" id="page-runs" hidden>
-      <div id="runCrumb" class="wide"></div>
+      <div class="wide" style="display:flex;align-items:flex-start;gap:16px">
+        <div id="runCrumb" style="flex:1;min-width:0"></div>
+        <span id="runNsHost"></span>
+      </div>
       <div class="wide" id="runList"><div class="empty">loading…</div></div>
     </section>
 
@@ -1016,12 +1044,16 @@
 
     <!-- ── SETTINGS (formerly "Connect" — the Agent tab plus General,
          which now also carries what used to sit in the rail-foot:
-         developer mode and dark mode) ── -->
+         developer mode and dark mode. Developer is a third tab, itself
+         `dev-only` — it used to be a fixed card pinned to the right of
+         every page; now it's one more tab, present only once Developer
+         mode is actually on.) ── -->
     <section class="page" id="page-settings" hidden>
       <div id="setCrumb" class="wide"></div>
       <div class="tabs wide" id="conTabs">
         <button class="on" data-c="agent">Your agent</button>
         <button data-c="general">General</button>
+        <button class="dev-only" data-c="developer">Developer</button>
       </div>
       <div class="wide" id="conBody"></div>
     </section>
@@ -1072,27 +1104,14 @@
         <div id="qmore" hidden></div>
       </div>
     </section>
-  </main>
 
-  <aside id="devbar" class="dev-only dev-flex">
-    <div style="display:flex;flex-direction:column;gap:11px">
-      <span class="sec-label">STORE</span>
-      <div id="devStats"></div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0">
-      <span class="sec-label" style="padding-bottom:12px">OP LOG</span>
-      <div id="devLog"></div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:9px;margin-top:auto">
-      <span class="sec-label">CAL</span>
-      <span class="tiny">Every view here runs CAL underneath. The full workbench —
-        history, saved queries, templates and every output format — lives on the Query page.</span>
-      <button class="btn ghost sm" id="devQuery">Open Query →</button>
-    </div>
-  </aside>
+    <!-- ── grain detail: a dedicated inline card, appended right after
+         whichever page opened it, with its own "view full screen" mode
+         (see #panelWrap.full above) rather than a floating slide-over. ── -->
+    <div id="panelWrap" hidden><div id="panel"></div></div>
+  </main>
 </div>
 
-<div id="panelWrap" hidden><div id="panelShade"></div><aside id="panel"></aside></div>
 <div id="toast"></div>
 
 <script>
@@ -1126,6 +1145,12 @@ const EDIT_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><
   + 'stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 const LOCK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.8"/>'
   + '<path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+/* The detail panel's "view full screen" toggle — four corners pulling
+   outward to expand, the same four pulling back in to collapse. */
+const EXPAND_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" '
+  + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const COLLAPSE_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M4 15v5h5M20 9V4h-5M20 15v5h-5" '
+  + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 /* An inline-editable title/description field: always the same <input>, in
    display state or focused/active state — never swapped for another
    element — so becoming editable never shifts the layout around it. A
@@ -1307,7 +1332,9 @@ function ctxText(f) {
   }
   return '';
 }
-function preview(f) {
+/* `full`: skip the 140-char clamp — the one place this matters is the
+   detail panel, which exists precisely to show what a list row cannot. */
+function preview(f, full) {
   if (!f) return '';
   const v = f.object != null ? f.object : f.content != null ? f.content
     : f.description != null ? f.description : f.tool_content != null ? f.tool_content
@@ -1315,6 +1342,7 @@ function preview(f) {
     : ctxText(f) ? ctxText(f)
     : f.data != null ? JSON.stringify(f.data) : '';
   const s = typeof v === 'string' ? v : JSON.stringify(v);
+  if (full) return s;
   return s.length > 140 ? s.slice(0, 140) + '…' : s;
 }
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -1334,12 +1362,13 @@ const REL_PHRASE = {
    unbroken 1.5 KB of JSON has no wrap opportunities — it just blows the
    column out sideways. */
 const MAX_SAY = 180;
-const clampText = s => s.length > MAX_SAY ? s.slice(0, MAX_SAY).trimEnd() + '…' : s;
-function predicate(g) {
+/* `full`: skip the clamp — see preview() above. */
+const clampText = (s, full) => (!full && s.length > MAX_SAY) ? s.slice(0, MAX_SAY).trimEnd() + '…' : s;
+function predicate(g, full) {
   const f = g.fields || {};
   if (g.type === 'fact') {
     const r = f.relation || '', o = f.object;
-    const os = clampText(typeof o === 'string' ? o : JSON.stringify(o == null ? '' : o));
+    const os = clampText(typeof o === 'string' ? o : JSON.stringify(o == null ? '' : o), full);
     const tpl = REL_PHRASE[r];
     if (tpl) return tpl.replace('{o}', os);
     if (!r) return os;
@@ -1349,7 +1378,7 @@ function predicate(g) {
   if (g.type === 'tool') {
     const name = f.tool_name || 'A tool';
     const body = f.tool_content || ctxText(f) || '';
-    return name + (f.is_error ? ' failed' : ' ran') + (body ? ' — ' + clampText(body) : '');
+    return name + (f.is_error ? ' failed' : ' ran') + (body ? ' — ' + clampText(body, full) : '');
   }
   /* A run checkpoint is the runtime's own bookkeeping — its body is the
      scheduler's serialized state, which has no sentence in it. Say which run
@@ -1357,12 +1386,14 @@ function predicate(g) {
   if (g.type === 'state' && f.checkpoint && f.run_id != null)
     return 'Checkpoint of run ' + f.run_id + (f.superstep != null ? ' \u00b7 step ' + f.superstep : '');
   if (g.type === 'observation') return f.content || f.object || ctxText(f) || fallback;
-  if (g.type === 'event') return f.content || f.description || preview(f) || fallback;
-  if (g.type === 'goal') return f.description || f.content || preview(f) || fallback;
-  return preview(f) || fallback;
+  if (g.type === 'event') return f.content || f.description || preview(f, full) || fallback;
+  if (g.type === 'goal') return f.description || f.content || preview(f, full) || fallback;
+  return preview(f, full) || fallback;
 }
-function sentence(g) {
-  const f = g.fields || {}, p = predicate(g);
+/* `full`: pass through to predicate()/preview() — the detail panel wants
+   the untruncated text; every list/card/row view wants the clamp. */
+function sentence(g, full) {
+  const f = g.fields || {}, p = predicate(g, full);
   if (!f.subject) return p;
   const s = String(f.subject);
   /* Observations and events are free text that usually names the subject
@@ -1407,6 +1438,31 @@ function isInternal(g) {
   return typeof s === 'string' && /^__.*__$/.test(s);
 }
 const currentGrains = () => BROWSE.filter(g => isCurrent(g) && !isInternal(g));
+/* The Memory page's own namespace scope — same pattern as WF_ROWS/wfRows()
+   (Workflows/Tools): null means "the bound default", which is BROWSE,
+   already loaded, no extra fetch; anything else fetched and cached
+   separately, leaving BROWSE alone for the pages that still depend on it
+   meaning "the bound default" (the rail, Settings, and everything else
+   that doesn't have a picker of its own). Threaded through the List view,
+   the Graph view, and the Ask bar. */
+let MEM_NS = null, MEM_ROWS = null, MEM_BYHASH = null;
+const memRows = () => MEM_ROWS || BROWSE;
+const memByHash = () => MEM_BYHASH || BYHASH;
+const memGrains = () => memRows().filter(g => isCurrent(g) && !isInternal(g));
+async function memSetNamespace(ns) {
+  MEM_NS = (!ns || ns === boundNamespace()) ? null : ns;
+  if (MEM_NS) {
+    MEM_ROWS = await browseForNamespace(MEM_NS);
+    MEM_BYHASH = {};
+    for (const g of MEM_ROWS) MEM_BYHASH[g.hash] = g;
+  } else {
+    MEM_ROWS = null; MEM_BYHASH = null;
+  }
+  // A namespace switch invalidates whatever entity the list/graph was
+  // focused on — it may not even exist in the new scope.
+  ENTITY = null; ANSWER = null;
+  render();
+}
 
 /* The store keeps one head per (namespace, subject, relation) — a plain
    re-ADD of the same pair replaces the old value without logging a
@@ -1524,7 +1580,6 @@ async function boot() {
   wireChrome();
   applyHash();
   await Promise.all([loadStats(), loadBrowse(), loadLog(), loadConfig(), loadCaps(), loadNamespaces()]);
-  verify();
   await loadRecs('pending');
   if (WF_DEEPLINK) { wfOpen(WF_DEEPLINK); WF_DEEPLINK = null; }
   if (PAGE === 'suggestions' && !RECS[SUGTAB]) await loadRecs(SUGTAB);
@@ -1558,11 +1613,15 @@ async function loadNamespaces() {
    server (not this control) is what actually validates and gates it. */
 function nsCombo(id, current, onChange) {
   const bound = boundNamespace();
-  const isOwner = !!(CONFIG && CONFIG.session && CONFIG.session.is_owner);
   const list = NAMESPACES && NAMESPACES.length ? NAMESPACES : [{ namespace: bound, count: null }];
   const options = list.map(n => ({ value: n.namespace, label: n.namespace + (typeof n.count === 'number' ? ' (' + n.count + ')' : '') }));
-  if (isOwner) options.unshift({ value: '*', label: 'All namespaces' });
-  const known = new Set(options.map(o => o.value));
+  // "All namespaces" (server value '*') is kept out of `options` rather than
+  // unshifted/pushed onto it: it isn't a real namespace to fuzzy-match
+  // against, it's a distinct "stop narrowing and search everything" action
+  // — renderMenu() always appends it itself, last, regardless of what's
+  // typed (a separator sets it apart from whatever IS filtered above it).
+  const ALL_NS = { value: '*', label: 'All namespaces' };
+  const known = new Set(options.map(o => o.value).concat(ALL_NS.value));
 
   const wrap = el('div', 'ns-combo'); wrap.id = id;
   wrap.title = 'Scope this page to one namespace, or type a prefix like "org.*" to include its descendants too.';
@@ -1593,7 +1652,13 @@ function nsCombo(id, current, onChange) {
       row.onmousedown = e => { e.preventDefault(); commit(typed); };
       menu.appendChild(row);
     }
+    // Checked before "All namespaces" is appended below, so a typed filter
+    // that matches nothing still gets its own "nothing matches" message —
+    // "All namespaces" is a way out of that, not a match for it.
     if (!menu.childElementCount) menu.appendChild(el('div', 'ns-combo-empty', 'No matching namespace'));
+    const allRow = el('div', 'ns-combo-opt all-ns' + (ALL_NS.value === input.value ? ' on' : ''), ALL_NS.label);
+    allRow.onmousedown = e => { e.preventDefault(); commit(ALL_NS.value); };
+    menu.appendChild(allRow);
   }
   function commit(v) {
     v = (v || '').trim() || (current || bound);
@@ -1653,15 +1718,6 @@ async function loadRecs(tab) {
     $('sugPill').hidden = !n; $('sugPill').textContent = n;
   }
 }
-async function verify() {
-  const v = await api('/api/verify');
-  const ok = v && v.integrity === 'ok';
-  $('hdot').style.background = ok ? 'var(--ok)' : 'var(--danger)';
-  $('htext').textContent = ok ? 'All memories verified' : 'Integrity problem — click';
-  $('health').title = v && v.integrity
-    ? 'integrity ' + v.integrity + ' · ' + v.grains + ' grains · ' + v.hash_mismatches + ' mismatches'
-    : 'verification unavailable';
-}
 async function refresh() {
   await Promise.all([loadStats(), loadBrowse(), loadLog()]);
   await loadRecs('pending');
@@ -1677,7 +1733,6 @@ function wireChrome() {
   });
   /* Developer mode / Dark mode toggles now live in Settings → General
      (renderConnectGeneral), rebuilt fresh each visit — see settingsToggle(). */
-  $('health').onclick = verify;
 
   $('askBtn').onclick = () => runAsk($('ask').value);
   // The bar is 56px tall, the input's own line-box is much shorter — click
@@ -1697,7 +1752,6 @@ function wireChrome() {
   $('toolTabs').querySelectorAll('button').forEach(b => { b.onclick = () => { TOOLTAB = b.dataset.t; TOOL_SEL = null; render(); }; });
   $('runLoop').onclick = runAnalysis;
   /* the run button is a write too — gate it once config lands */
-  $('panelShade').onclick = closePanel;
   $('qrun').onclick = () => runQuery();
   $('qtext').addEventListener('input', () => { syncEditor(); queryNotice(); });
   $('qtext').addEventListener('scroll', () => { $('qhl').scrollTop = $('qtext').scrollTop; });
@@ -1710,7 +1764,6 @@ function wireChrome() {
   $('histBtn').onclick = () => openMenu('histMenu', buildHistoryMenu);
   $('savedBtn').onclick = () => openMenu('savedMenu', buildSavedMenu);
   addEventListener('resize', () => { if (PAGE === 'query' && Q.view === 'cards') layoutMasonry(); });
-  $('devQuery').onclick = () => go('query');
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closePanel();
     if (e.key === '/' && document.activeElement === document.body) { e.preventDefault(); $('ask').focus(); }
@@ -1731,15 +1784,19 @@ function applyHash() {
   const raw = (location.hash || '').replace(/^#/, '');
   if (!raw) return false;
   const [head, tail] = raw.split('/');
-  if (head === 'graph') { PAGE = 'memory'; MVIEW = 'graph'; return true; }
+  if (head === 'graph') { if (PAGE !== 'memory') closePanelIfOpen(); PAGE = 'memory'; MVIEW = 'graph'; return true; }
   /* #triggers was its own page until triggers moved onto the canvas. Keep
      the old link alive rather than dead-ending a bookmark: it now means "show
      me what starts things", which is the plan list. */
-  if (head === 'triggers') { PAGE = 'workflows'; WF_SEL = null; WF_DRAFT = null; WF_PICK = null; return true; }
+  if (head === 'triggers') {
+    if (PAGE !== 'workflows') closePanelIfOpen();
+    PAGE = 'workflows'; WF_SEL = null; WF_DRAFT = null; WF_PICK = null; return true;
+  }
   if (['memory', 'analytics', 'activity', 'runs', 'tools', 'workflows', 'suggestions', 'settings', 'query'].includes(head)) {
+    if (head !== PAGE) closePanelIfOpen();
     PAGE = head;
     if (head === 'memory') MVIEW = 'list';
-    if (head === 'settings' && ['agent', 'general'].includes(tail)) CONTAB = tail;
+    if (head === 'settings' && ['agent', 'general', 'developer'].includes(tail)) CONTAB = tail;
     if (head === 'suggestions' && ['pending', 'applied', 'rejected'].includes(tail)) SUGTAB = tail;
     if (head === 'tools') {
       if (['catalog', 'executions'].includes(tail)) TOOLTAB = tail;
@@ -1762,6 +1819,7 @@ function syncHash() {
   if (location.hash.replace(/^#/, '') !== h) history.replaceState(null, '', '#' + h);
 }
 function go(page) {
+  if (page !== PAGE) closePanelIfOpen();
   PAGE = page;
   if (page === 'suggestions' && !RECS[SUGTAB]) loadRecs(SUGTAB).then(render);
   // Same reset applyHash() already does for a bare "#workflows" — without
@@ -1902,13 +1960,31 @@ async function renderRuns() {
     'Every execution of a plan: journaled, checkpointed, pausable. A run waiting on a person shows its '
     + 'approval below — approving requires your own sign-in, because the approver’s identity <em>is</em> '
     + 'the audit record and a shared console token is not an identity.');
+  const nsHost = $('runNsHost'); nsHost.textContent = '';
+  // Unpicked shows as "*" (every run — this page's behavior before the
+  // picker existed), not the bound default like its sibling pages: a run's
+  // own bookkeeping lives in a fixed system namespace, not the one its
+  // plan happens to live in, so there is no single "home" namespace to
+  // default a run list to.
+  nsHost.appendChild(nsCombo('runNs', WF_NS || '*', ns => wfSetNamespace(ns)));
+
   const box = $('runList');
   if (!RUNIDX) box.innerHTML = '<div class="empty">loading…</div>';
   const idx = await loadRuns();
   if (PAGE !== 'runs') return;                 // navigated away while loading
   const open = idx.runs.filter(r => r.outcome === 'open');
   const pill = $('runPill');
+  // The nav badge always counts every open run, regardless of this page's
+  // own namespace filter — narrowing what you're LOOKING at must never
+  // narrow what you're WARNED about.
   pill.hidden = open.length === 0; pill.textContent = open.length;
+
+  // A run's namespace is its plan's — resolved against whatever wfByHash()
+  // is currently scoped to (shared with Workflows/Tools). Left on "every
+  // namespace" (WF_NS null or '*'), nothing is filtered.
+  const scoped = (WF_NS && WF_NS !== '*')
+    ? idx.runs.filter(r => r.plan_hash && wfByHash()[r.plan_hash])
+    : idx.runs;
 
   box.textContent = '';
   if (idx.error) { box.innerHTML = '<div class="empty">' + esc(idx.error) + '</div>'; return; }
@@ -1917,9 +1993,14 @@ async function renderRuns() {
       + '— start one with <code>areev run start</code>, or let a trigger start it.</div>';
     return;
   }
-  const waiting = idx.runs.filter(r => r.asks.length);
-  const active = idx.runs.filter(r => !r.asks.length && r.outcome === 'open');
-  const done = idx.runs.filter(r => !r.asks.length && r.outcome !== 'open');
+  if (!scoped.length) {
+    box.innerHTML = '<div class="empty">No runs in "' + esc(WF_NS) + '" — its plan may not be loaded yet, '
+      + 'or nothing has run there.</div>';
+    return;
+  }
+  const waiting = scoped.filter(r => r.asks.length);
+  const active = scoped.filter(r => !r.asks.length && r.outcome === 'open');
+  const done = scoped.filter(r => !r.asks.length && r.outcome !== 'open');
   const groups = [
     ['Waiting on you', waiting, 'A step bound to a human-approval tool has paused the run.'],
     ['In flight', active, 'Started, not finished, nothing asked of you yet.'],
@@ -2221,7 +2302,11 @@ function render() {
   $('toolTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.t === TOOLTAB));
   $('conTabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.c === CONTAB));
   renderRail(); renderHeader(); renderExamples(); renderBanner(); renderFilterBar();
-  if (PAGE === 'memory') { renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild(); }
+  if (PAGE === 'memory') {
+    const nsHost = $('memNsHost'); nsHost.textContent = '';
+    nsHost.appendChild(nsCombo('memNs', MEM_NS || boundNamespace(), memSetNamespace));
+    renderAnswer(); renderMemList(); if (MVIEW === 'graph') Graph.rebuild();
+  }
   if (PAGE === 'analytics') renderAnalytics();
   if (PAGE === 'activity') renderActivity();
   if (PAGE === 'runs') renderRuns();
@@ -2238,7 +2323,6 @@ function render() {
       ? 'This build has no saved-query registry (DEFINE is not a supported statement)'
       : (!canWrite() ? READONLY_WHY : 'Save this query into the memory file');
   }
-  if (document.documentElement.classList.contains('dev')) renderDevbar();
 }
 
 /* The rail no longer lists entities (moved out to declutter — the graph
@@ -2246,14 +2330,18 @@ function render() {
    ACTIVE_ENTS itself stays: renderExamples() still uses it for suggested
    questions. */
 function renderRail() {
-  ACTIVE_ENTS = buildEntities(currentGrains()).filter(e => e.count > 0).slice(0, 40);
+  ACTIVE_ENTS = buildEntities(memGrains()).filter(e => e.count > 0).slice(0, 40);
 }
 function renderHeader() {
-  const n = currentGrains().length;
+  const n = memGrains().length;
   const db = ($('dblabel').textContent || '').trim();
+  // Namespace-scoped, say so — an empty list with no explanation is exactly
+  // what looked like a bug before this picker existed.
+  const scoped = MEM_NS === '*' ? ' across every namespace' : (MEM_NS ? ' in "' + esc(MEM_NS) + '"' : '');
   const desc = n
-    ? esc(n + (n === 1 ? ' memory' : ' memories')) + ', kept in <b style="color:var(--text);font-weight:500">'
+    ? esc(n + (n === 1 ? ' memory' : ' memories')) + scoped + ', kept in <b style="color:var(--text);font-weight:500">'
       + esc(db) + '</b> — nothing here is ever overwritten, only added to.'
+    : MEM_NS ? 'Nothing stored' + scoped + '.'
     : 'Nothing stored yet. Connect an agent and what it learns will show up here.';
   const crumbs = ENTITY
     ? [{ label: 'Memory', onClick: () => { ENTITY = null; render(); } }, { label: ENTITY }]
@@ -2264,7 +2352,7 @@ function renderHeader() {
    or the time-based one that reads the op-log. */
 function renderExamples() {
   const host = $('examples'); host.textContent = '';
-  if (!currentGrains().length) return;
+  if (!memGrains().length) return;
   const typed = ($('ask').value || '').trim();
   if (typed) {
     host.appendChild(el('span', 'tiny', 'Filtering as you type — press Enter to ask “' +
@@ -2313,7 +2401,7 @@ function renderBanner() {
 /* ── memory list ── */
 function visibleGrains() {
   const needle = ($('ask').value || '').toLowerCase().trim();
-  let rows = currentGrains();
+  let rows = memGrains();
   if (ENTITY) rows = rows.filter(g => {
     const f = g.fields || {};
     return subjectOf(g) === ENTITY || (typeof f.object === 'string' && f.object === ENTITY);
@@ -2324,12 +2412,13 @@ function visibleGrains() {
 function renderMemList() {
   const host = $('memList'); host.textContent = '';
   const rows = visibleGrains();
-  const forgotten = BROWSE.filter(g => isGone(g) && !isInternal(g))
+  const forgotten = memRows().filter(g => isGone(g) && !isInternal(g))
     .filter(g => !ENTITY || ((g.fields || {}).subject === ENTITY));
   if (!rows.length && !forgotten.length) {
     const e = el('div', 'empty');
-    e.textContent = currentGrains().length
+    e.textContent = memGrains().length
       ? 'Nothing matches. Clear the box or pick a different name.'
+      : MEM_NS ? 'No memories in this namespace — try "All namespaces" or pick another.'
       : 'No memories yet — open Connect to attach an agent.';
     host.appendChild(e); return;
   }
@@ -2378,7 +2467,7 @@ function memRow(g) {
 /* ── ask → answer ── */
 function relationFromQuestion(q) {
   const low = ' ' + q.toLowerCase().replace(/[^a-z0-9_ ]/g, ' ') + ' ';
-  const rels = [...new Set(currentGrains().map(g => (g.fields || {}).relation).filter(Boolean))];
+  const rels = [...new Set(memGrains().map(g => (g.fields || {}).relation).filter(Boolean))];
   let best = null;
   for (const r of rels) {
     for (const w of r.split('_')) {
@@ -2393,7 +2482,7 @@ function relationFromQuestion(q) {
 function entityFromQuestion(q) {
   const low = q.toLowerCase();
   let best = null;
-  for (const e of buildEntities(currentGrains())) {
+  for (const e of buildEntities(memGrains())) {
     if (low.includes(e.name.toLowerCase()) && (!best || e.name.length > best.length)) best = e.name;
   }
   return best;
@@ -2411,14 +2500,24 @@ const contentWords = q => q.toLowerCase().replace(/[^a-z0-9\s_-]/g, ' ').split(/
 const TEMPORAL = /\b(today|yesterday|this week|recently|lately|just now|changed|change[sd]?|new|newest|latest|happened|since)\b/i;
 function answerFromActivity(q) {
   const since = Date.now() - 24 * 3600 * 1000;
+  // LOG spans every namespace (it's the whole file's op-log) — scoped to a
+  // specific one, an op whose grain isn't in that namespace's loaded rows
+  // isn't this namespace's business, so it's dropped rather than mislabeled
+  // "deleted" for having no match. Left on the bound default or "All
+  // namespaces", nothing is filtered — today's behavior, unchanged.
+  const scope = MEM_NS && MEM_NS !== '*' ? MEM_NS : null;
   const ops = LOG.filter(o => hlcMs(o.hlc) >= since)
-    .filter(o => { const g = BYHASH[o.hash]; return !(g && isInternal(g)); })
+    .filter(o => {
+      const g = memByHash()[o.hash];
+      if (g && isInternal(g)) return false;
+      return scope ? !!g : true;
+    })
     .sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0));
   const n = k => ops.filter(o => o.op === k).length;
   const text = ops.length
     ? 'In the last 24 hours your agent learned ' + n('add') + ', changed ' + n('supersede')
       + ' and deleted ' + n('forget') + '.'
-    : 'Nothing has changed in the last 24 hours.';
+    : 'Nothing has changed in the last 24 hours' + (scope ? ' in "' + esc(scope) + '"' : '') + '.';
   /* A supersede logs two ops for the same grain — show it once. And a
      tombstoned grain has no fields left to make a sentence from, so say
      what happened to it rather than "no readable text". */
@@ -2426,7 +2525,7 @@ function answerFromActivity(q) {
   for (const o of ops) {
     if (grains.length >= 6 || seen.has(o.hash)) continue;
     seen.add(o.hash);
-    const g = BYHASH[o.hash];
+    const g = memByHash()[o.hash];
     const say = o.op === 'forget' || !g || isGone(g) ? 'A memory was deleted'
       : (o.op === 'supersede' ? 'Updated: ' : '') + sentence(g);
     grains.push({ hash: o.hash, hlc: o.hlc, _say: say, fields: (g || {}).fields, type: (g || {}).type });
@@ -2445,17 +2544,27 @@ async function runAsk(q) {
     return;
   }
   const words = contentWords(q);
+  // The Memory page's namespace scope, as a CAL fragment. "*" has no CAL
+  // equivalent (RECALL is exact-namespace or a registered prefix, never a
+  // bare wildcard — see the Analytics page's own note on this) — left
+  // there, the query runs unscoped, same as the bound-default case.
+  const nsw = (MEM_NS && MEM_NS !== '*') ? 'namespace = "' + MEM_NS.replace(/"/g, '') + '"' : '';
   let query;
   if (subject) {
     query = 'RECALL facts WHERE subject = "' + subject.replace(/"/g, '') + '"'
-      + (relation ? ' AND relation = "' + relation + '"' : '') + ' LIMIT 50';
+      + (relation ? ' AND relation = "' + relation + '"' : '')
+      + (nsw ? ' AND ' + nsw : '') + ' LIMIT 50';
   } else {
-    query = 'RECALL facts ABOUT "' + (words.join(' ') || q).replace(/"/g, '') + '" LIMIT 20';
+    // ABOUT precedes WHERE in the grammar — the clause is inserted after
+    // the free-text query, not appended onto it.
+    query = 'RECALL facts ABOUT "' + (words.join(' ') || q).replace(/"/g, '') + '"'
+      + (nsw ? ' WHERE ' + nsw : '') + ' LIMIT 20';
   }
   let res = await cal(query);
   if ((!res.ok || !((res.result || {}).grains || []).length) && !subject) {
     const word = words[words.length - 1] || q;
-    query = 'RECALL facts LIKE "' + word.replace(/"/g, '') + '" LIMIT 20';
+    // WHERE precedes LIKE in the grammar, same reason as above.
+    query = 'RECALL facts' + (nsw ? ' WHERE ' + nsw : '') + ' LIKE "' + word.replace(/"/g, '') + '" LIMIT 20';
     res = await cal(query);
   }
   const grains = (res.ok && res.result && res.result.type === 'grains') ? (res.result.grains || []) : [];
@@ -2550,28 +2659,68 @@ function renderAnswer() {
 }
 
 /* ══ detail panel ═════════════════════════════════════════════════════ */
-function closePanel() { $('panelWrap').hidden = true; SEL = null; renderMemList(); }
+/* Closing always drops back out of full screen — each grain starts as the
+   inline card, and whether *this* one is worth expanding is a fresh call
+   the next open makes for itself. */
+function closePanel() {
+  const wrap = $('panelWrap');
+  wrap.hidden = true; wrap.classList.remove('full');
+  SEL = null; renderMemList();
+}
+/* The panel is now an inline card, not a shade blocking the rest of the
+   app — nothing stops the sidebar's page navigation while one is open. It
+   isn't scoped to the page that opened it (it lives outside every `.page`
+   section, so a re-render doesn't wipe it), so without this a "Tools" click
+   would leave last week's fact card sitting under the Tools page — or worse,
+   stuck full screen over it. Every real page change closes it. */
+function closePanelIfOpen() { if (!$('panelWrap').hidden) closePanel(); }
+function togglePanelFull(btn) {
+  const full = $('panelWrap').classList.toggle('full');
+  btn.innerHTML = full ? COLLAPSE_ICON : EXPAND_ICON;
+  btn.title = full ? 'Exit full screen' : 'View full screen';
+}
 async function openPanel(hash) {
   if (!hash) return;
   hash = hash.replace(/^sha256:/, '');
   SEL = hash; renderMemList();
-  $('panelWrap').hidden = false;
+  const wrap = $('panelWrap'); wrap.hidden = false;
   const p = $('panel'); p.textContent = '';
   p.appendChild(el('span', 'tiny', 'loading…'));
+  wrap.scrollIntoView({ block: 'nearest' });
   const known = BYHASH[hash];
   const g = await api('/api/grain?hash=' + encodeURIComponent(hash));
   p.textContent = '';
 
   const head = el('div'); head.style.cssText = 'display:flex;align-items:flex-start;gap:12px';
-  const ht = el('div'); ht.style.cssText = 'display:flex;flex-direction:column;gap:9px;flex:1';
+  const ht = el('div'); ht.style.cssText = 'display:flex;flex-direction:column;gap:9px;flex:1;min-width:0';
   ht.appendChild(el('span', 'sec-label', 'MEMORY'));
   const gone = g.ok === false;
-  const title = el('span', null, gone
-    ? (known ? sentence(known) : 'This memory was deleted')
-    : sentence({ type: g.type, fields: g.fields }));
-  title.style.cssText = 'font:600 22px/31px var(--sans);color:var(--ink);letter-spacing:-.02em';
-  ht.appendChild(title);
+  const f = (!gone && g.fields) || {};
+  /* Full text, never clamped — a list row's job is to fit a line; this
+     card's job is to be the place you can read the whole thing. A tool's
+     body goes in its own CONTENT block below instead of into this title,
+     since cramming a JSON result into a sentence is not "reading it". */
+  const fullText = gone
+    ? (known ? sentence(known, true) : 'This memory was deleted')
+    : g.type === 'tool' ? (f.tool_name || 'A tool') + (f.is_error ? ' failed' : ' ran')
+    : sentence({ type: g.type, fields: f }, true);
+  const title = el('span', null, fullText);
+  title.style.cssText = 'font:600 22px/31px var(--sans);color:var(--ink);letter-spacing:-.02em;'
+    + 'white-space:pre-wrap;overflow-wrap:anywhere';
+  const titleWrap = el('div');
+  // Long content scrolls in its own box rather than stretching the card (and
+  // the page under it) to match — "full content" does not mean "no limits".
+  if (fullText.length > 400) titleWrap.style.cssText = 'max-height:320px;overflow-y:auto';
+  titleWrap.appendChild(title);
+  ht.appendChild(titleWrap);
   head.appendChild(ht);
+  const fullBtn = el('button', 'btn ghost sm');
+  fullBtn.style.cssText = 'width:34px;padding:0;flex-shrink:0';
+  const isFull = wrap.classList.contains('full');
+  fullBtn.innerHTML = isFull ? COLLAPSE_ICON : EXPAND_ICON;
+  fullBtn.title = isFull ? 'Exit full screen' : 'View full screen';
+  fullBtn.onclick = () => togglePanelFull(fullBtn);
+  head.appendChild(fullBtn);
   const x = el('button', 'btn ghost sm', '✕');
   x.style.cssText = 'width:34px;padding:0;flex-shrink:0'; x.onclick = closePanel;
   head.appendChild(x);
@@ -2585,7 +2734,6 @@ async function openPanel(hash) {
     w.appendChild(h); p.appendChild(w); return;
   }
 
-  const f = g.fields || {};
   const when = createdMs(f) || hlcMs(known && known.hlc);
   const prov = el('div', 'pgroup');
   const kv = (k, v, title2) => { const r = el('div'); r.style.cssText = 'display:flex;align-items:baseline;gap:12px';
@@ -2600,6 +2748,32 @@ async function openPanel(hash) {
   const used = TELEMETRY && (TELEMETRY.access || []).find(a => a.hash === hash);
   if (used) prov.appendChild(kv('Used', used.recall_count + ' times · last ' + relTime(used.last_ms)));
   p.appendChild(prov);
+
+  /* A tool's body is usually code or JSON, not prose — codeBlock() picks
+     between highlighted JSON and plain monospace text rather than forcing
+     either, and each box scrolls on its own so a large result doesn't
+     dominate the card. Shown unconditionally: this is the memory's actual
+     content, not debugging detail, so it isn't dev-gated like the raw
+     grain JSON further down. */
+  if (g.type === 'tool') {
+    const raw = f.tool_content != null ? f.tool_content : f.content;
+    if (raw != null) {
+      const box = el('div', 'pgroup');
+      box.appendChild(el('span', 'sec-label', f.kind === 'definition' ? 'DESCRIPTION' : 'RESULT'));
+      const block = codeBlock(raw);
+      block.style.maxHeight = '420px'; block.style.overflowY = 'auto';
+      box.appendChild(block);
+      p.appendChild(box);
+    }
+    if (f.input != null) {
+      const box = el('div', 'pgroup');
+      box.appendChild(el('span', 'sec-label', 'ARGUMENTS'));
+      const block = codeBlock(f.input);
+      block.style.maxHeight = '300px'; block.style.overflowY = 'auto';
+      box.appendChild(block);
+      p.appendChild(box);
+    }
+  }
 
   /* version history, in plain language */
   if (g.type === 'fact' && f.subject && f.relation) {
@@ -3076,10 +3250,16 @@ function snippetFor(kind) {
   return '{\n  "mcpServers": {\n    "areev": {\n      "command": "areev",\n      "args": ["serve", "--mcp", "--db", "' + db + '"]\n    }\n  }\n}';
 }
 function renderSettingsPage() {
+  // The Developer tab only exists once Developer mode is on (its button
+  // carries `dev-only`, same as the rest of the app's dev chrome) — if it
+  // was turned off while this tab was open, fall back rather than render a
+  // tab nothing points at any more.
+  if (CONTAB === 'developer' && !document.documentElement.classList.contains('dev')) CONTAB = 'general';
   renderCrumbHeader('setCrumb', [{ label: 'Settings' }],
     'Attach agents to this memory and configure how this console itself behaves.');
   const host = $('conBody'); host.textContent = '';
   if (CONTAB === 'agent') return renderConnectAgent(host);
+  if (CONTAB === 'developer') return renderConnectDeveloper(host);
   return renderConnectGeneral(host);
 }
 let SNIPTAB = 'claude';
@@ -3324,10 +3504,16 @@ function renderConnectGeneral(host) {
   host.appendChild(abox);
 }
 
-/* ══ developer sidebar ════════════════════════════════════════════════ */
-function renderDevbar() {
-  const s = $('devStats'); s.textContent = '';
-  const kv = (k, v) => { const r = el('div'); r.style.cssText = 'display:flex;align-items:baseline;gap:10px';
+/* ══ developer tab (Settings → Developer) ════════════════════════════
+   Used to be #devbar, a fixed 330px card sticky-pinned to the right of
+   every page whenever Developer mode was on. It carried no state of its
+   own beyond that toggle, so it belongs beside the toggle that reveals it
+   — a normal tab in Settings — rather than floating over the page. */
+function renderConnectDeveloper(host) {
+  const statsCard = el('div', 'card'); statsCard.style.cssText = 'padding:14px 22px 18px;margin-bottom:16px';
+  statsCard.appendChild(el('h2', null, 'Store')).style.padding = '10px 0';
+  const s = el('div'); statsCard.appendChild(s);
+  const kv = (k, v) => { const r = el('div'); r.style.cssText = 'display:flex;align-items:baseline;gap:10px;padding:5px 0';
     const a = el('span', null, k); a.style.cssText = 'flex:1;font-size:13.5px;color:var(--text)';
     const b = el('span', null, v); b.style.cssText = 'font-family:var(--mono);font-size:13px;color:var(--ink)';
     r.appendChild(a); r.appendChild(b); s.appendChild(r); };
@@ -3336,8 +3522,11 @@ function renderDevbar() {
   const legs = CONFIG && CONFIG.recall && CONFIG.recall.legs;
   kv('recall legs', legs ? ['struct', legs.bm25 && 'bm25', legs.vector && 'vec'].filter(Boolean).join(' · ') : '?');
   kv('ops', STATS.ops != null ? String(STATS.ops) : '?');
+  host.appendChild(statsCard);
 
-  const l = $('devLog'); l.textContent = '';
+  const logCard = el('div', 'card'); logCard.style.cssText = 'padding:4px 22px 8px;margin-bottom:16px';
+  logCard.appendChild(el('h2', null, 'Op log')).style.padding = '10px 0';
+  const l = el('div'); logCard.appendChild(l);
   for (const o of LOG.slice().sort((a, b) => (b.op_seq || 0) - (a.op_seq || 0)).slice(0, 14)) {
     const r = el('div', 'oprow');
     r.appendChild(el('span', 't', shortWhen(hlcMs(o.hlc))));
@@ -3361,6 +3550,18 @@ function renderDevbar() {
     r.onclick = () => openPanel(o.hash);
     l.appendChild(r);
   }
+  if (!LOG.length) logCard.appendChild(el('div', 'empty', 'No operations logged yet.'));
+  host.appendChild(logCard);
+
+  const calCard = el('div', 'card'); calCard.style.cssText = 'padding:14px 22px 18px;display:flex;flex-direction:column;gap:9px';
+  calCard.appendChild(el('h2', null, 'CAL')).style.padding = '0 0 2px';
+  calCard.appendChild(el('span', 'tiny', 'Every view here runs CAL underneath. The full workbench — '
+    + 'history, saved queries, templates and every output format — lives on the Query page.'));
+  const openQ = el('button', 'btn ghost sm', 'Open Query →');
+  openQ.style.width = 'fit-content';
+  openQ.onclick = () => go('query');
+  calCard.appendChild(openQ);
+  host.appendChild(calCard);
 }
 /* ══ graph ════════════════════════════════════════════════════════════ */
 const Graph = (() => {
@@ -3378,7 +3579,7 @@ const Graph = (() => {
       ink: cssVar('--ink'), dim: cssVar('--dim'), faint: cssVar('--faint'), accent: cssVar('--accent'),
       surface: cssVar('--surface'), well: cssVar('--well') };
   }
-  function maxSeq() { return BROWSE.reduce((m, g) => Math.max(m, g.op_seq || 0), 0); }
+  function maxSeq() { return memRows().reduce((m, g) => Math.max(m, g.op_seq || 0), 0); }
   function cutSeq() { return Math.round(maxSeq() * cut); }
 
   /* Start positions are derived from the name, not Math.random(): the same
@@ -3396,10 +3597,10 @@ const Graph = (() => {
   }
   function build() {
     const limit = cutSeq();
-    const upTo = BROWSE.filter(g => (g.op_seq || 0) <= limit)
+    const upTo = memRows().filter(g => (g.op_seq || 0) <= limit)
       .filter(g => !isGone(g) && !isInternal(g))
       /* a supersede that happened after the cut has not happened yet */
-      .filter(g => !g.superseded_by || (BYHASH[g.superseded_by] && (BYHASH[g.superseded_by].op_seq || 0) > limit));
+      .filter(g => !g.superseded_by || (memByHash()[g.superseded_by] && (memByHash()[g.superseded_by].op_seq || 0) > limit));
     /* heads are resolved *as of the cut*, so rewinding shows the value that
        was live then, not the one that is live now */
     const heads = headHashes(upTo);
@@ -3666,7 +3867,7 @@ const Graph = (() => {
     box.appendChild(head);
 
     const list = el('div'); list.style.cssText = 'display:flex;flex-direction:column;border-top:1px solid var(--hair)';
-    const mine = currentGrains().filter(g => (g.fields || {}).subject === n.id).slice(0, 3);
+    const mine = memGrains().filter(g => (g.fields || {}).subject === n.id).slice(0, 3);
     for (const g of mine) {
       const r = el('div', null, predicate(g));
       r.style.cssText = 'font-size:13.5px;color:var(--ink);padding:9px 0;border-bottom:1px solid var(--hair);cursor:pointer';
@@ -3705,7 +3906,14 @@ const Graph = (() => {
   }
   function ticks() {
     const host = $('gticks'); host.textContent = '';
-    const ops = LOG.slice().sort((a, b) => (a.op_seq || 0) - (b.op_seq || 0));
+    // LOG is the whole file's op-log (capped to the most recent 400) —
+    // scoped to one namespace, only the ops this page can actually resolve
+    // (via memByHash()) belong on its own timeline; otherwise the tick
+    // labels could span a wider window than what the cut slider is
+    // actually slicing through memRows()'s own op_seq range.
+    const scoped = MEM_NS && MEM_NS !== '*';
+    let ops = LOG.slice().sort((a, b) => (a.op_seq || 0) - (b.op_seq || 0));
+    if (scoped) ops = ops.filter(o => !!memByHash()[o.hash]);
     if (!ops.length) return;
     const first = hlcMs(ops[0].hlc), last = hlcMs(ops[ops.length - 1].hlc);
     /* Everything from one session? Then dates all read the same — show clocks. */
@@ -5361,13 +5569,9 @@ function buildExecDetail(det, f, g) {
     const e = el('div', 'tiny'); e.style.color = 'var(--danger)'; e.textContent = f.error;
     add('Error', e);
   }
-  if (f.input != null) add('Arguments', jsonBlock(f.input));
+  if (f.input != null) add('Arguments', codeBlock(f.input));
   const out = f.tool_content != null ? f.tool_content : f.content;
-  if (out != null) {
-    let parsed = out;
-    try { parsed = typeof out === 'string' ? JSON.parse(out) : out; } catch (err) { parsed = out; }
-    add('Result', jsonBlock(parsed));
-  }
+  if (out != null) add('Result', codeBlock(out));
   const meta = [];
   if (f.author_did) meta.push('by ' + f.author_did);
   if (f.superstep != null) meta.push('superstep ' + f.superstep);
@@ -5808,6 +6012,19 @@ function jsonBlock(value) {
   const pre = el('pre', 'code jsonv');
   pre.innerHTML = highlightJson(text);
   return pre;
+}
+/* A tool's content is often not prose — a JSON result, a script's stdout, a
+   snippet an agent generated. jsonBlock()'s highlighter is JSON-shaped
+   regexes; running it over arbitrary source would mis-colour perfectly
+   ordinary code (a quoted string, a bare number). Parse first: real JSON
+   (already an object, or a string that round-trips through JSON.parse) gets
+   the highlighted, pretty-printed block; anything else is plain monospace
+   text, exactly as written, so nothing is invented or miscoloured. */
+function codeBlock(value) {
+  if (value != null && typeof value !== 'string') return jsonBlock(value);
+  const text = value == null ? '' : value;
+  try { return jsonBlock(JSON.parse(text)); } catch (e) { /* not JSON — show as-is */ }
+  return el('pre', 'code', text);
 }
 function grainsCsv(gs) {
   const keys = new Set(); for (const g of gs) for (const k of Object.keys(rgFields(g))) keys.add(k);

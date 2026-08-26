@@ -309,6 +309,7 @@ plan by hand executes it on a heartbeat:
 | Code-carrying tools (Tier C) | `--allow-executor` | `allow_executor` | `$AREEV_RUN_ALLOW_EXECUTOR` |
 | Sandbox dispatch (`runtime`) | `--sandbox-cmd` | `sandbox_cmd` | `$AREEV_RUN_SANDBOX_CMD` |
 | Prepared-code cache | `--executor-cache` | `executor_cache` | `$AREEV_RUN_EXECUTOR_CACHE` |
+| Executor ceiling (#133) | `--executor-timeout` | `executor_timeout_secs` | `$AREEV_RUN_EXECUTOR_TIMEOUT` |
 | Abstract nodes | `--model` / `--base-url` / `--key-env` | `model` / `base_url` / `key_env` | `$AREEV_RUN_MODEL` / `…_BASE_URL` / `…_KEY_ENV` |
 | Outbound credentials | `--credential` / `--allow-host` / `--tool-egress` | `credentials_json` | — |
 | Ceilings | the budget flags above | the budget arguments above | — |

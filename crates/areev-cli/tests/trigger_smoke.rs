@@ -458,3 +458,64 @@ fn the_pin_reaches_a_firing_through_the_environment_too() {
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     assert!(stdout.contains("\"runs_started\":1"), "{stdout}");
 }
+
+/// A pinned code plan whose blob loops far longer than a short override
+/// should tolerate — the fixture `--executor-timeout` (#133) needs to prove
+/// it actually shortens the ceiling a firing runs its Tier-C node under.
+///
+/// The blob busy-loops on shell builtins (`:`, `while`) rather than calling
+/// an external command like `sleep`: `--allow-executor` runs the blob by
+/// exec'ing its own file directly, and only the DIRECT child is guaranteed
+/// killed on timeout — a `sleep`-shaped script can fork a grandchild that
+/// outlives it (`areev-core::proc`'s module doc tracks process-group kill as
+/// separate, not-yet-done work), which would make this test's timing bound
+/// on a gap this crate does not close.
+fn seed_sleepy_code_plan(db: &str) -> (String, String) {
+    use areev_core::types::{Grain, Tool, ToolKind, Trigger, TriggerKind, Workflow};
+
+    let mut m = areev_store::Areev::open(db).unwrap();
+    let uri = m.put_blob(b"#!/bin/sh\nwhile :; do :; done\n").unwrap();
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+
+    let def = Tool::new("slow_validate")
+        .kind(ToolKind::Definition)
+        .tool_description("a code-carrying tool that never finishes in time")
+        .executor_uri(&uri)
+        .namespace("ops");
+    let dh = m.add(&def).unwrap();
+    let wf = Workflow::new(vec!["slow_validate".into()])
+        .bind("slow_validate", &dh.to_hex())
+        .namespace("ops");
+    let plan = m.add(&wf).unwrap();
+    let t = Trigger::new(TriggerKind::Interval, &plan.to_hex()).interval_secs(60).namespace("ops");
+    let trigger = m.add(&t).unwrap().to_hex();
+    drop(m);
+    (trigger[..12].to_string(), addr)
+}
+
+/// #133: the fixed 300s ceiling on a pinned code executor had no host
+/// override on any surface, including `trigger run`. A 1s
+/// `--executor-timeout` on a blob that sleeps for 30s must return well
+/// inside this test's own bound, not the old default.
+#[cfg(unix)]
+#[test]
+fn executor_timeout_flag_reaches_a_firings_pinned_code_node() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let (_trigger, addr) = seed_sleepy_code_plan(db);
+
+    let started = std::time::Instant::now();
+    let (ok, out, err) = areev(&[
+        "trigger", "run", "--db", db, "--ns", "ops",
+        "--allow-executor", &addr, "--executor-cache", cache.to_str().unwrap(),
+        "--executor-timeout", "1", "--format", "json",
+    ]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the override must apply — the 300s default would still be sleeping"
+    );
+    assert!(ok, "a firing that starts still exits cleanly even if its node timed out: {out}{err}");
+    assert!(out.contains("\"runs_started\":1"), "{out}");
+}

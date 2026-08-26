@@ -182,14 +182,25 @@ impl McpServer {
     /// code-executor pin follows the same posture (#87): the operator sets
     /// `$AREEV_RUN_ALLOW_EXECUTOR` (the CLI's `--allow-executor` comma list)
     /// and optionally `$AREEV_RUN_EXECUTOR_CACHE` at server start — an MCP
-    /// client can never pin code, because the pin IS the authorization. The
+    /// client can never pin code, because the pin IS the authorization.
+    /// `$AREEV_RUN_EXECUTOR_TIMEOUT` (#133) overrides the fixed 300s
+    /// ceiling either executor otherwise runs a tool under — `0` waits
+    /// forever, an unparseable value is ignored and the default stands. The
     /// principal is always [`run_identity`](Self::run_identity)'s
     /// server-bound value — callers pass it through, never a client string.
     fn runner(&self, principal: &str) -> areev_run::Runner {
+        let timeout: Option<Option<std::time::Duration>> = std::env::var("AREEV_RUN_EXECUTOR_TIMEOUT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
         let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> =
             match std::env::var("AREEV_RUN_TOOL_CMD") {
                 Ok(cmd) if !cmd.trim().is_empty() => {
-                    std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
+                    let mut ce = areev_run::CommandExecutor::new(&cmd);
+                    if let Some(t) = timeout {
+                        ce = ce.with_timeout(t);
+                    }
+                    std::sync::Arc::new(ce)
                 }
                 _ => {
                     struct NoExec;
@@ -229,6 +240,9 @@ impl McpServer {
                         if !cmd.trim().is_empty() {
                             ce = ce.sandbox_cmd(&cmd);
                         }
+                    }
+                    if let Some(t) = timeout {
+                        ce = ce.with_timeout(t);
                     }
                     std::sync::Arc::new(ce)
                 }

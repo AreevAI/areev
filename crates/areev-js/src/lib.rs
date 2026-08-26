@@ -238,6 +238,7 @@ fn js_evaluator(
                 pin.allow_executor,
                 pin.executor_cache,
                 pin.sandbox_cmd,
+                pin.executor_timeout_secs,
             ),
             opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -2499,6 +2500,7 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2516,6 +2518,7 @@ impl Areev {
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
                 facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+                executor_timeout_secs,
             );
             let opts = js_run_options_full(
                 max_tokens,
@@ -2547,6 +2550,7 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2556,6 +2560,7 @@ impl Areev {
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
                 facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
+                executor_timeout_secs,
             );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
@@ -2904,6 +2909,7 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2919,7 +2925,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
-                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd },
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -2967,6 +2973,7 @@ impl Areev {
         allow_executor: Option<String>,
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
+        executor_timeout_secs: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2984,7 +2991,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
-                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd },
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -3135,23 +3142,26 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None)
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None, None)
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
-/// value so the trigger surface takes the same three settings `runStart` does
-/// without growing three more positional parameters at every call site.
+/// value so the trigger surface takes the same four settings `runStart` does
+/// without growing four more positional parameters at every call site.
 #[derive(Default)]
 struct JsExecutorPin {
     allow_executor: Option<String>,
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
+    executor_timeout_secs: Option<i64>,
 }
 
 /// The pin-aware factory (#87): `allowExecutor` is the same comma list as
 /// the CLI's `--allow-executor` — without it, a plan naming a code-carrying
 /// Definition refuses at start (RUN-E018), because the authorization to
 /// execute code must come from the host, never the file.
+/// `executorTimeoutSecs` (#133) overrides the fixed 300s ceiling either
+/// executor otherwise runs a tool under — `0` waits forever.
 #[allow(clippy::too_many_arguments)]
 fn js_runner_pinned(
     facade: std::sync::Arc<AreevFacade>,
@@ -3162,10 +3172,18 @@ fn js_runner_pinned(
     allow_executor: Option<String>,
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
+    executor_timeout_secs: Option<i64>,
 ) -> areev_run::Runner {
+    let timeout = executor_timeout_secs.map(|secs| {
+        if secs <= 0 { None } else { Some(std::time::Duration::from_secs(secs as u64)) }
+    });
     let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
         Some(cmd) if !cmd.trim().is_empty() => {
-            std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
+            let mut ce = areev_run::CommandExecutor::new(&cmd);
+            if let Some(t) = timeout {
+                ce = ce.with_timeout(t);
+            }
+            std::sync::Arc::new(ce)
         }
         _ => {
             struct NoExec;
@@ -3198,6 +3216,9 @@ fn js_runner_pinned(
             }
             if let Some(cmd) = sandbox_cmd {
                 ce = ce.sandbox_cmd(&cmd);
+            }
+            if let Some(t) = timeout {
+                ce = ce.with_timeout(t);
             }
             std::sync::Arc::new(ce)
         }

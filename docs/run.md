@@ -158,6 +158,16 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+Every host-executed tool (`--tool-cmd` and a pinned `--allow-executor` blob
+alike) runs under a wall-clock ceiling, fixed at 300s until it could be
+raised (#133): a tool that never exits parks a pool worker and, at the next
+wave boundary, the whole driver. `--executor-timeout SECS` (CLI),
+`executor_timeout_secs` (Python/Node), `$AREEV_RUN_EXECUTOR_TIMEOUT` (MCP,
+and any surface's out-of-band form) overrides it — `0` waits forever, the
+pre-1.3 behaviour, restored on request. A document-analysis leg making a
+dozen model calls needs longer than the `pdftotext`-shaped tool the default
+was sized for.
+
 ### The model boundary (anonymization)
 
 If an `anon:<ns>` policy declares `egress` (or `both`) for the run's namespace,
@@ -835,7 +845,7 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
 | Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
