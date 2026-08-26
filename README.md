@@ -111,9 +111,11 @@ trip is only possible because every apply stores its inverse. **A memory system
 without governance cannot run this experiment at all.**
 
 <sub>Single-seed pilot on Qwen3-30B (a small, cheap open-weights model) via
-OpenRouter. The paired significance tests, the governance ledger, the honest
-caveats — including that the optional LLM stages contributed nothing here — and
-every model call transcribed:
+OpenRouter. Rows 1 and 3 are an agent with no lesson in its prompt, so this
+shows that *the lesson* caused the gain — measuring curation against passive
+retrieval is a separate arm, and it is the next run. The paired significance
+tests, the governance ledger, the honest caveats — including that the optional
+LLM stages contributed nothing here — and every model call transcribed:
 <a href="crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof"><b>the A/B/A/B causal proof →</b></a></sub>
 
 ---

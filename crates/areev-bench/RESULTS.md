@@ -484,6 +484,15 @@ because a rolled-back hash is terminal: B2 is a *fresh* governed proposal
 
 Kept precise, because these bound the claim:
 
+- **The baseline is no-lesson, not no-memory-system.** A0 and A1 run the bare
+  system prompt: the experience is captured in the memory file, but nothing is
+  rendered into the prompt. So this measures a governed lesson against an
+  unaided agent — it does **not** yet measure it against a passive-retrieval
+  memory that dumps relevant raw history into the prompt. Until the
+  `passive memory` arm runs (SELFIMPROVE.md roadmap), the defensible claim is
+  "the applied lesson caused the gain", **not** "curation beats retrieval".
+  Anyone comparing Areev to a plain memory store should ask for that arm, and
+  it is the next run.
 - **One lesson, one failure mode.** The gain comes from a single applied
   grain; this is not a claim about the loop's whole analyzer suite.
 - **The LLM stages contributed nothing.** DISCOVER→GROUND→VERIFY ran on every

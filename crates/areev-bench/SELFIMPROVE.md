@@ -209,6 +209,16 @@ agent adapter (or the reverse) fails at the loop's construction-time probe.
 
 ## Roadmap — the benches this skeleton is built to grow
 
+- **`passive memory` arm — the decisive comparison, and the next run.** A0
+  here is an agent with *nothing* in its prompt, so the pilot proves the
+  applied lesson caused the gain but not that curation beats retrieval. The
+  arm to add renders raw recalled history (the failure grains themselves)
+  into the prompt instead of the loop's lesson, on the same held-out set,
+  with a deliberately *generous* budget so the comparison steelmans
+  retrieval. `B > M` is the result that answers "a plain memory store does
+  this too"; `B ≈ M` would mean the loop's value is cost and governance
+  rather than accuracy, and that is the honest thing to report if it
+  happens. Cheap: one extra eval pass, ~60 task runs.
 - `selfimprove_curve` — the learning curve: task stream with loop checkpoints
   every K tasks, arms `vanilla | passive-memory | loop-deterministic |
   loop+LLM | placebo(shuffled lessons)`, cumulative + held-out curves, 3+
