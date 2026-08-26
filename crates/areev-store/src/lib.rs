@@ -3588,15 +3588,9 @@ impl Areev {
         let Some(seq) = rows.first().and_then(|r| r.i64(0)) else {
             return Err(AreevError::NotFound(*hash));
         };
-        // Stamp provenance on first external vector so later dimension
-        // mismatches have something to check against (mirrors
-        // `set_embedder`'s None arm).
-        if self.meta_embed.is_none() {
-            let dim = embedding.len();
-            self.meta_put("embedding_model", "external")?;
-            self.meta_put("embedding_dim", &dim.to_string())?;
-            self.meta_embed = Some(("external".to_string(), dim));
-        }
+        // As `set_embedder` does: Postgres creates its `vector(dim)` column
+        // here, and a host supplying its own vectors never takes that path.
+        self.db.ensure_embeddings(embedding.len())?;
         let dbr = self.db.as_ref();
         let qjson = vec_to_json(embedding);
         with_txn(dbr, || {
@@ -3610,6 +3604,14 @@ impl Areev {
             )?;
             Ok(())
         })?;
+        // After the write: a declaration the memory cannot serve is worse
+        // than none.
+        if self.meta_embed.is_none() {
+            let dim = embedding.len();
+            self.meta_put("embedding_model", "external")?;
+            self.meta_put("embedding_dim", &dim.to_string())?;
+            self.meta_embed = Some(("external".to_string(), dim));
+        }
         Ok(*hash)
     }
 
