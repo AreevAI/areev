@@ -207,18 +207,123 @@ agent adapter answers `op: "chat"` with tool calls, the loop adapter answers
 `probe`/`discover`/`ground`/`verify`/`enrich`. Pointing `--llm-cmd` at the
 agent adapter (or the reverse) fails at the loop's construction-time probe.
 
+## Bench 2: the passive-memory arms — does the LOOP add value over the store?
+
+The A/B/A/B pilot's baseline is an **unaided** agent, so it proves the applied
+lesson caused the gain — not that curation beats retrieval. These arms close
+that gap, and they are deliberately framed as **the same store with the loop
+OFF**, not as an imitation of any competitor: the delta isolates the loop, and
+there is no third-party retrieval implementation for anyone to dispute.
+
+Three built-in variants form a ladder, so nobody can claim the weak one was
+chosen. All run over the SAME captured experience, on the SAME held-out set,
+after the governed states; the eval prompt carries the provider's context and
+never the lesson (lessons live as Facts, providers read only Tool grains, so
+nothing leaks between arms):
+
+| arm | what enters the prompt | the objection it answers |
+|---|---|---|
+| `m-steel` | per-error structured retrieval: when a tool call fails, past grains matching that exact (tool, error code) are injected right at the decision point — a better hook than semantic similarity would get | "retrieval with the perfect hook would have caught it" |
+| `m-all` | the full failure history rendered at task start, generous budget — the information upper bound | "you under-retrieved" |
+| `m-llm` | the raw history summarized once into operator notes by an LLM after the experience phase (cost recorded), notes into every prompt | the extraction-at-write-time shape of LLM-memory products |
+
+A fourth arm is a **seam, not an implementation**: `--context-cmd 'CMD'` runs
+any external context provider over the protocol below, so any vendor can plug
+their own memory into the identical experiment. We do not benchmark named
+competitors in this repo; we publish the harness and the invitation.
+
+### Pre-registered interpretation (written before the arms ever ran)
+
+- **B > M:** curation beats retrieval on accuracy — and on cost, which the
+  per-arm token columns quantify. The maximal claim.
+- **B ≈ M:** the loop's value on this workload is cost, determinism, and
+  governance, not accuracy: a one-line lesson against a per-turn context tax,
+  zero model calls at write time against N, byte-stable re-derivation against
+  extraction drift. That is what gets published, with those numbers.
+- **B < m-all:** the lesson rendering leaves information on the table — a
+  measured argument for the LLM-authored procedural lesson on the roadmap.
+  Also published.
+
+Whatever lands, the result ships with per-arm success, per-rule recurrence,
+prompt/completion tokens, and model-call counts.
+
+### The context-provider contract (frozen — code against this)
+
+In-process trait (`src/selfimprove/context.rs`):
+
+```rust
+pub struct ExperienceGrain {          // one experience-phase tool call
+    pub task_id: String,
+    pub tool: String,
+    pub input_json: String,
+    pub output_json: String,
+    pub is_error: bool,
+    pub code: Option<String>,          // frozen error code when is_error
+    pub rendered: String,              // the product renderer's one-line form
+}
+
+pub trait ContextProvider: Sync + Send {
+    fn label(&self) -> &'static str;   // "m-steel" | "m-all" | "m-llm" | "m-cmd"
+    /// Markdown for the system prompt's "## MEMORY (from passive recall)"
+    /// section at task start; empty string = no section.
+    fn task_start(&self, task_prompt: &str) -> Result<String, String>;
+    /// Markdown appended to a failing tool result as
+    /// "\n\n[memory] Relevant past experience:\n…"; empty = nothing.
+    fn on_tool_error(&self, task_prompt: &str, tool: &str, code: &str, body: &str)
+        -> Result<String, String>;
+}
+```
+
+**Why the arms render their own line, and why that favours them.** The bench
+renders each recalled grain as ``- `refund` call failed with `rate_limited`:
+{body ≤160 chars}`` rather than calling `areev_cal`'s one-line *summary* form,
+which emits `refund [FAIL]` — terse by design, and correct for a summary, but
+it carries neither the error code nor the payload the arms exist to inject.
+(The product's `sml` and `toon` formats do carry the body; only the summary
+line does not.) The bench line mirrors the lesson renderer's shape so both
+read alike in a prompt, and at 160 chars it preserves the whole error object
+including `retry_after_s` — so an M arm sees strictly **more** raw detail than
+the governed lesson's single summarizing line. The comparison is tilted toward
+retrieval on purpose; that is what makes a win meaningful.
+
+Ingest happens at construction (providers are read-only afterwards — that is
+what makes eval workers safe). Caps, all logged when they truncate (no silent
+caps): `m-all` ≤ 24_000 chars; `m-steel` ≤ 4_000 chars per injection, most
+recent first; `m-llm` notes ≤ 4_000 chars, summarizer input = the error grains
+plus per-tool call counts.
+
+External providers (`--context-cmd`): ONE persistent process per eval pass,
+newline-delimited JSON, calls serialized:
+
+```
+→ {"selfimprove":1,"op":"ingest","grains":[{…ExperienceGrain fields…}]}
+← {"ok":true}
+→ {"op":"context","stage":"task_start","task_prompt":"…"}
+← {"context":"…markdown or empty…"}
+→ {"op":"context","stage":"tool_error","task_prompt":"…","tool":"…","code":"…","body":"…"}
+← {"context":"…"}
+```
+
+**The provider owns its framing; the caller is idempotent as a guard.**
+`task_start` returns a COMPLETE section (heading included) and `on_tool_error`
+a COMPLETE block (prefix included), mirroring `memory::lessons_markdown`,
+which owns its own `## LESSONS` heading — so all four arms emit structurally
+identical prompt bytes, which is what makes them comparable. The caller adds
+a marker only when it is absent, because double-framing is merely cosmetic
+while no-framing would read as "no memory at all" to the mock's marker scan
+instead of failing loudly.
+
+Ordering note: `GrainRecord` exposes no sequence number, so recording order is
+`created_at_ms` then `hash`. "Most recent first" therefore holds across tasks;
+calls recorded inside one millisecond fall back to hash order — deterministic
+and stable across runs, which is what the prompt bytes require.
+
+The mock agent treats codes found in "## MEMORY" sections and "[memory]"
+blocks exactly like LESSONS codes — it models "an agent that uses whatever
+context it is given", so mock M arms prove plumbing, never a comparison.
+
 ## Roadmap — the benches this skeleton is built to grow
 
-- **`passive memory` arm — the decisive comparison, and the next run.** A0
-  here is an agent with *nothing* in its prompt, so the pilot proves the
-  applied lesson caused the gain but not that curation beats retrieval. The
-  arm to add renders raw recalled history (the failure grains themselves)
-  into the prompt instead of the loop's lesson, on the same held-out set,
-  with a deliberately *generous* budget so the comparison steelmans
-  retrieval. `B > M` is the result that answers "a plain memory store does
-  this too"; `B ≈ M` would mean the loop's value is cost and governance
-  rather than accuracy, and that is the honest thing to report if it
-  happens. Cheap: one extra eval pass, ~60 task runs.
 - `selfimprove_curve` — the learning curve: task stream with loop checkpoints
   every K tasks, arms `vanilla | passive-memory | loop-deterministic |
   loop+LLM | placebo(shuffled lessons)`, cumulative + held-out curves, 3+
@@ -255,13 +360,55 @@ agent adapter (or the reverse) fails at the loop's construction-time probe.
 - CI runs `--mock --assert-shape` only (keyless-deterministic floor); no live
   keys in CI, no live numbers asserted.
 
-## Reproduce (live pilot, ~$3–5)
+## Flags
+
+| flag | what it does |
+|---|---|
+| `--workdir PATH` | run directory; refuses a pre-existing `bench.db` (a stale memory would poison A0) |
+| `--seed N` `--experience N` `--eval N` | task generation; `--seed` reproduces the task sets exactly |
+| `--mock` \| `--agent-cmd 'CMD'` | exactly one: the deterministic keyless agent, or a chat adapter |
+| `--llm-cmd` / `--ground-cmd 'CMD'` | the loop's DISCOVER/VERIFY and GROUND backends (**loop** protocol) |
+| `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
+| `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
+| `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |
+| `--workers N` | eval concurrency (default 4). Output is byte-identical at any N: workers buffer, the main thread writes in task order and is the only writer of the memory |
+| `--max-turns N` `--assert-shape` | turn cap; the CI shape gate |
+
+**Two adapters, two protocols.** `--agent-cmd`/`--mllm-cmd` speak the chat +
+tool-call protocol (`openrouter_toolcall.py`); `--llm-cmd`/`--ground-cmd`
+speak the loop's `probe`/`discover`/`ground`/`verify` protocol
+(`openrouter_loop.py`). Crossing them fails at the loop's construction-time
+probe, which is the intended loud failure.
+
+## Reproduce
+
+Keyless floor (what CI runs — plumbing only, never a learning claim):
+
+```bash
+cargo run -p areev-bench --bin selfimprove_aba -- \
+  --workdir /tmp/aba --seed 1 --mock --assert-shape \
+  --arms m-steel,m-all,m-llm --workers 4
+```
+
+Live pilot, governed states only (~$3–5):
 
 ```bash
 export OPENROUTER_API_KEY=…
+AGENT='python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507'
 cargo run --release -p areev-bench --bin selfimprove_aba -- \
-  --workdir /tmp/aba --seed 1 --experience 150 --eval 60 \
-  --agent-cmd 'python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507' \
-  --llm-cmd   'python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507' \
-  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_toolcall.py deepseek/deepseek-chat'
+  --workdir /tmp/aba --seed 1 --experience 150 --eval 60 --agent-cmd "$AGENT" \
+  --llm-cmd    'python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507' \
+  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat'
+```
+
+Full comparison — governed states **and** the passive-memory arms. Run it at
+three seeds and feed all three run dirs to `scripts/aba_stats.py`:
+
+```bash
+cargo run --release -p areev-bench --bin selfimprove_aba -- \
+  --workdir /tmp/aba-s1 --seed 1 --experience 300 --eval 100 --workers 4 \
+  --agent-cmd "$AGENT" --mllm-cmd "$AGENT" \
+  --llm-cmd    'python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507' \
+  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat' \
+  --arms m-steel,m-all,m-llm
 ```

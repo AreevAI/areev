@@ -106,9 +106,13 @@ failures, cited every one by hash, and proposed a fix. **A person approved it.**
 The next prompt carried it.
 
 There is no benchmark mode here. The prompt is assembled from live memory on
-every run, so rolling the lesson back empties it structurally — and that round
-trip is only possible because every apply stores its inverse. **A memory system
-without governance cannot run this experiment at all.**
+every run, so rolling the lesson back empties it structurally. Two properties
+of the architecture make the round trip possible: learning is **separate from
+storage**, so the lesson can be removed *while the experience stays* — a
+system whose write path *is* its learning (LLM extraction on every write) has
+nothing to ablate without also losing the memory — and re-applying re-derives
+the lesson **deterministically from the same evidence**, byte-for-byte, which
+a model-in-the-write-path cannot guarantee.
 
 <sub>Single-seed pilot on Qwen3-30B (a small, cheap open-weights model) via
 OpenRouter. Rows 1 and 3 are an agent with no lesson in its prompt, so this

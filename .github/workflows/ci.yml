@@ -353,8 +353,15 @@ jobs:
   # to baseline, re-apply recovers it, and rollback really does empty the
   # LESSONS prompt section. It is never a learning claim (no model runs); the
   # live numbers come from `--agent-cmd` and are published with transcripts.
+  # `--arms` extends the same floor to the passive-memory providers: keyless
+  # throughout (m-llm summarizes with the mock summarizer, no API key), and
+  # PLUMBING-ONLY by construction — the deterministic agent complies with any
+  # context it is handed, so these arms prove a provider reached the prompt
+  # and can never rank curation against retrieval. `--workers 4` is the
+  # parallel path; it must emit byte-identical output to `--workers 1`, which
+  # `cargo test -p areev-bench` pins separately.
   selfimprove:
-    name: selfimprove A/B/A/B (mock)
+    name: selfimprove A/B/A/B + passive arms (mock)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -363,7 +370,8 @@ jobs:
       - name: A/B/A/B shape holds under the deterministic agent
         run: |
           cargo run -p areev-bench --bin selfimprove_aba -- \
-            --workdir "$RUNNER_TEMP/aba" --seed 1 --mock --assert-shape
+            --workdir "$RUNNER_TEMP/aba" --seed 1 --mock --assert-shape \
+            --arms m-steel,m-all,m-llm --workers 4
 
   versions:
     name: versions agree

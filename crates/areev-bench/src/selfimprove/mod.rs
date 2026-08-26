@@ -45,6 +45,7 @@
 //! lesson (or an LLM finding grounded in one) surfaces them.
 
 pub mod agent;
+pub mod context;
 pub mod env;
 pub mod memory;
 pub mod report;

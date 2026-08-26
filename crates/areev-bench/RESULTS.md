@@ -482,6 +482,14 @@ the calls that could fail this way) with `rate_limited`. It applies twice
 because a rolled-back hash is terminal: B2 is a *fresh* governed proposal
 (propose → approve → apply), so the run exercises the whole gated path twice.
 
+That second pass is itself a result: **the loop re-derived the identical lesson
+content from the same evidence** — same subject, same signature, same count,
+same rate; only the proposal timestamp differs. Deterministic re-derivation is
+what makes the restore leg of an ablation meaningful (B2 tests *the same*
+learned state, not a paraphrase of it), and it is structurally unavailable to a
+write path that runs a model on every add — re-running an LLM extraction over
+the same history may store different text.
+
 Kept precise, because these bound the claim:
 
 - **The baseline is no-lesson, not no-memory-system.** A0 and A1 run the bare
