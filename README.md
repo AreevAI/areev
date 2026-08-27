@@ -148,7 +148,7 @@ dataset, rerun instructions and the full caveat list:
 
 ---
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,435 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,504 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
