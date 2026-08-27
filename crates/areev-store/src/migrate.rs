@@ -114,75 +114,14 @@ pub(crate) fn clip_et(s: &str) -> String {
     s[..end].to_string()
 }
 
-/// Days from 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-/// Parse an ISO-8601 timestamp ("2024-07-26T10:29:11.982509-07:00",
-/// "2026-01-05 09:00:00Z", "2024-07-26") to epoch milliseconds. Hand-rolled
-/// on purpose — the workspace takes no datetime dependency.
-pub fn iso8601_to_ms(s: &str) -> Option<i64> {
-    let s = s.trim();
-    let b = s.as_bytes();
-    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
-    }
-    let num = |r: std::ops::Range<usize>| -> Option<i64> { s.get(r)?.parse().ok() };
-    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
-        return None;
-    }
-    let mut ms = days_from_civil(y, mo, d) * 86_400_000;
-    let mut i = 10;
-    if b.len() > i && (b[i] == b'T' || b[i] == b' ') {
-        i += 1;
-        if b.len() < i + 8 || b[i + 2] != b':' || b[i + 5] != b':' {
-            return None;
-        }
-        let (h, mi, sec) = (num(i..i + 2)?, num(i + 3..i + 5)?, num(i + 6..i + 8)?);
-        ms += (h * 3600 + mi * 60 + sec) * 1000;
-        i += 8;
-        // fractional seconds: keep milliseconds, skip the rest
-        if b.len() > i && b[i] == b'.' {
-            i += 1;
-            let start = i;
-            while i < b.len() && b[i].is_ascii_digit() {
-                i += 1;
-            }
-            let frac = &s[start..i];
-            if !frac.is_empty() {
-                let ms_str: String = frac.chars().chain("000".chars()).take(3).collect();
-                ms += ms_str.parse::<i64>().ok()?;
-            }
-        }
-        // offset: Z | ±HH:MM | ±HHMM | ±HH
-        if b.len() > i {
-            match b[i] {
-                b'Z' | b'z' => {}
-                b'+' | b'-' => {
-                    let sign: i64 = if b[i] == b'+' { 1 } else { -1 };
-                    i += 1;
-                    let oh = num(i..i + 2)?;
-                    i += 2;
-                    if b.len() > i && b[i] == b':' {
-                        i += 1;
-                    }
-                    let om = if b.len() >= i + 2 { num(i..i + 2).unwrap_or(0) } else { 0 };
-                    ms -= sign * (oh * 3600 + om * 60) * 1000;
-                }
-                _ => return None,
-            }
-        }
-    }
-    Some(ms)
-}
+/// Parse an ISO-8601 timestamp to epoch milliseconds.
+///
+/// Re-exported from [`areev_core::time`], which is where the one
+/// implementation lives — the credential map's `expires_at` needs the same
+/// parse and `authz` sits below this crate. Kept as a `pub use` under the old
+/// path so importer call sites (and anything outside the workspace) do not
+/// move.
+pub use areev_core::time::iso8601_to_ms;
 
 /// Timestamp from a JSON value: ISO-8601 string, epoch seconds, or epoch ms
 /// (heuristic: ≥ 10^11 is already milliseconds).
@@ -967,35 +906,8 @@ pub fn migrate_jsonl(m: &mut Areev, ns: &str, jsonl: &str) -> Result<MigrateRepo
 mod tests {
     use super::*;
 
-    #[test]
-    fn iso8601_parses_common_shapes() {
-        // spot values cross-checked against `date -u -d ... +%s`
-        assert_eq!(iso8601_to_ms("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(iso8601_to_ms("2024-01-01"), Some(1_704_067_200_000));
-        assert_eq!(iso8601_to_ms("2024-01-01T00:00:00Z"), Some(1_704_067_200_000));
-        assert_eq!(iso8601_to_ms("2024-01-01 00:00:00"), Some(1_704_067_200_000));
-        assert_eq!(
-            iso8601_to_ms("2024-01-01T00:00:00.500Z"),
-            Some(1_704_067_200_500)
-        );
-        // -07:00 means the instant is 7h LATER in UTC
-        assert_eq!(
-            iso8601_to_ms("2023-12-31T17:00:00-07:00"),
-            Some(1_704_067_200_000)
-        );
-        assert_eq!(
-            iso8601_to_ms("2024-01-01T01:00:00+01:00"),
-            Some(1_704_067_200_000)
-        );
-        // fractional micros truncate to ms
-        assert_eq!(
-            iso8601_to_ms("2024-01-01T00:00:00.982509Z"),
-            Some(1_704_067_200_982)
-        );
-        assert_eq!(iso8601_to_ms("not a date"), None);
-        assert_eq!(iso8601_to_ms("2024-13-01"), None);
-    }
-
+    // The parser's own cases moved with it to `areev_core::time` — this
+    // crate re-exports one implementation rather than keeping a second.
     #[test]
     fn parse_ts_handles_seconds_and_ms() {
         assert_eq!(parse_ts(Some(&json!(1_704_067_200))), Some(1_704_067_200_000));

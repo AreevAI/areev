@@ -287,7 +287,21 @@ grain selection, dynamic planning, do/don't) is
   token on **every** request — browsers via the native HTTP Basic prompt (any
   username, password = token), scripts via `Authorization: Bearer` — and a 401
   carries `WWW-Authenticate: Basic` so browsers prompt. Without `auth_all`
-  the token guards mutating requests only; reads stay open. There is **no
+  the token guards mutating requests only; reads stay open. Per-principal
+  credentials (`--auth`) are the attributable alternative; their lifecycle is
+  `areev auth mint|list|revoke` (256-bit `areev_pat_` tokens, digest-only at
+  rest, per-credential `id` + optional `expires_at`). Human logins come from an
+  authenticating proxy (`--sso-header`, the documented default, plus
+  `--sso-groups-header` for group→principal mapping) or — behind the
+  non-default `oidc` feature — native OIDC in-process (auth-code+PKCE, RFC 8414
+  discovery, JWKS validation, `HttpOnly`/`SameSite=Strict` session cookie).
+  **The approval ladder is the load-bearing rule**: `run.respond` accepts an
+  identity in proportion to how it was proven — `credential` and `oidc` yes,
+  `sso` only under `--sso-approvals allow` (a shared proxy secret can assert
+  anyone, approval-capable principals included), `sso-group` **never** (a role
+  identifies nobody who can be asked why), shared token and anonymous never.
+  `docs/auth-proposal.md` is the design and what was deliberately rejected;
+  `docs/security-model.md` is the reference. There is **no
   networked sync surface** — `areev hub` and `/api/segment*` were removed on
   2026-08-24 (ARCHITECTURE.md §10, "Sync is file-to-file"); replication is
   `areev stream`/`follow` over a directory. `ui` can also terminate TLS
@@ -324,7 +338,9 @@ grain selection, dynamic planning, do/don't) is
   approver's identity IS the audit record; cancel keeps the low bar.
 - **areev**: ~28 verbs (incl. `migrate` from other memory systems,
   `reindex`, the graph/time reads `related`/`entity-at`/`step-actions`, the
-  join `run-trace`/`runs-touching`, and the DSAR read `subject-report`),
+  join `run-trace`/`runs-touching`, the DSAR read `subject-report`, and the
+  credential lifecycle `auth mint|list|revoke` — which takes **no `--db`**,
+  dispatching before `resolve_db` because the credential map names no memory),
   hand-rolled `parse_args` → HashMap; global `--embed-cmd` installs
   a `CommandEmbed` for vector recall on any verb. Opens honor
   the file's meta declarations; `--index-text true|false` explicitly

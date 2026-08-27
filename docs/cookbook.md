@@ -335,6 +335,45 @@ all: without it, opening a memory runs schema bootstrap and index maintenance
 on every open, so the connecting role must **own** the schema — see
 [`deployment-profile.md`](deployment-profile.md) for the `GRANT` recipe.
 
+### Give each person their own credential
+
+`--token-env` is one shared secret: everyone who holds it is the same
+anonymous admin, every audit grain says `user:console`, and **nobody can
+approve a HITL ask** with it — an approval's whole value is naming who
+approved. For anything past a single-operator console, mint per-principal
+credentials instead:
+
+```bash
+# One credential per human or agent. The token prints ONCE, on stdout.
+areev auth mint --auth areev-auth.json \
+  --id officer-laptop --principal "user:officer" --expires 90d --label "refund approvals"
+areev auth mint --auth areev-auth.json \
+  --id ci-runner --principal "agent:ci" --memories ops.db
+
+areev auth list   --auth areev-auth.json          # ids, principals, expiry — no secrets
+areev auth revoke --auth areev-auth.json --id ci-runner   # then restart the console
+
+areev ui --db ops.db --auth areev-auth.json
+```
+
+The file stores only each token's SHA-256, so a stolen or synced copy is
+inert. Rights come from the *memory file's* grants, not the map:
+
+```bash
+areev cal --db ops.db \
+  'GRANT read,run.respond ON ops TO "user:officer" WITH because("refund approvals")'
+```
+
+Revoking one `--id` leaves that principal's other credentials working, which
+is what makes "the CI token leaked" a five-second fix instead of a rotation of
+everything. Expiry is optional; when set, an expired credential is refused
+exactly as an unknown one is.
+
+For humans, put an authenticating proxy in front (`--sso-header`), or build
+with `--features oidc` and let the console run the OIDC flow itself —
+[`runbooks/oidc-setup.md`](runbooks/oidc-setup.md) covers which to choose and
+why it matters for approvals.
+
 Rate limiting belongs at the proxy, not in `areev`: the console serves one
 connection at a time, and it only ever sees the proxy's IP. `areev` logs each
 failed auth as `areev: console auth FAILED from <ip> (<n> consecutive)` so you

@@ -6,6 +6,81 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **A proxy-asserted SSO identity may no longer answer a HITL approval by
+  default.** `run.respond` already refused shared-token and anonymous callers
+  because the approver's identity *is* the audit record — but the
+  trusted-header path set that identity from a header trusted via
+  `x-areev-proxy-secret`, a static fleet-wide value the code itself documents
+  as impersonation-grade. Whoever held it could approve as anyone, including
+  the officer named in the resulting audit grain, and nothing downstream could
+  tell: it is a well-formed approval by a granted principal. The strongest
+  governance control in the product rested on the weakest identity primitive.
+  SSO identities keep every read and review and lose only this verb;
+  `areev ui --sso-approvals allow` accepts the trade-off explicitly.
+  **Behavior change**: a deployment relying on proxy-asserted approvals gets a
+  403 after upgrade, with the flag named in the message. Failing closed on an
+  approval path is the correct direction to break.
+- **Repeated failed authentications from one source are now refused.** After
+  10 consecutive failures, further credential-bearing requests from that IP
+  get `429` until the streak goes idle. It rejects rather than delays — a
+  sleep on a serial accept loop is a denial-of-service lever — and rejects
+  before routing, so no store access or constant-time scan happens.
+  Credential-less requests are neither counted nor blocked, so browsers can
+  still get their 401 challenge.
+- **Proxy-asserted identities are validated, not merely trusted.** An identity
+  header carrying control characters (CR/LF injection into audit grains),
+  internal whitespace, over 128 bytes, or a reserved principal name
+  (`anonymous`, `user:console`) is now ignored — treated as absent, so a
+  misconfigured proxy degrades to anonymous rather than taking the console
+  down.
+
+### Added
+
+- **`areev auth mint|list|revoke`** — the credential-map lifecycle. `mint`
+  emits a 256-bit CSPRNG token prefixed `areev_pat_` (recognizable to secret
+  scanners), prints it once, and stores only its SHA-256. Credentials gain an
+  optional `id` (with a stable non-positional fallback, so maps written before
+  this still load), a `label`, and an optional `expires_at` — past which the
+  credential is refused *indistinguishably* from an unknown token. Revoking
+  one id leaves the principal's other credentials working. `areev ui` warns at
+  startup about credentials expiring within 14 days, and about a
+  `--token-env` value Areev did not mint (unknown entropy).
+- **IdP groups → principals** (`areev ui --sso-groups-header NAME`, with a
+  `groups` table in the credential map), so SSO no longer needs a grant grain
+  per person. An identity with its own grants outranks its group, and a
+  group-derived principal may never approve — under any setting, since a role
+  identifies nobody who can be asked why. `--sso-principal-prefix` keeps
+  IdP-sourced principals visibly distinct from local ones.
+- **Native OIDC for the console** (non-default `oidc` build feature):
+  authorization-code + PKCE (S256), RFC 8414 discovery — which makes Google
+  and Entra ID config rather than code — `id_token` validation against the
+  issuer's published JWKS, and an `HttpOnly` `SameSite=Strict` session cookie.
+  No token ever reaches the browser; sessions are stored under their digest
+  and expire on both an idle and an absolute clock; logout invalidates
+  server-side. **An OIDC principal may approve by default** — a verified
+  signature is a stronger claim than a shared proxy secret, which is the
+  entire reason the feature exists. Symmetric algorithms are refused outright
+  (algorithm confusion), and the allowlist fails closed on unknown ones.
+  Recorded as the second dependency-policy exception (`jsonwebtoken`) in
+  ARCHITECTURE.md; setup in `docs/runbooks/oidc-setup.md`; the design and
+  what was deliberately rejected (per-vendor SSO, OAuth client-credentials,
+  Areev as an authorization server) in `docs/auth-proposal.md`.
+- `GET /api/whoami` now reports `identity_source`
+  (`oidc`/`sso`/`sso-group`/`credential`/`none`) and `may_approve`, so the
+  console can tell an approver where they stand before they try rather than at
+  the 403.
+
+### Changed
+
+- Console auth guidance now points at `--auth` (per-principal, attributable)
+  before `--token-env` (one shared secret, unattributable, cannot approve) —
+  in the startup banner, the read-only write refusal, `USAGE`, and the
+  cookbook.
+- `areev_core::time` holds the one ISO-8601 parser; `areev_store::migrate`
+  re-exports it rather than keeping a second copy.
+
 ### Fixed
 
 - **`loop.tool_failure` scores a failure mode against its own opportunities,

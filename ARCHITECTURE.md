@@ -740,6 +740,39 @@ lifecycle management** (PEM paths in, rotation is the operator's or proxy's
 job). The proxy pattern remains the documented default forever. Same
 decision shape as `docs/erasure.md`'s role for the erasure requirements.
 
+**Recorded exception — jsonwebtoken (non-default `oidc` feature).** Native
+OIDC login for `areev ui` (`docs/auth-proposal.md` §6). Same three-way scoping
+as rustls — one vetted crate, non-default cargo feature, no scope creep (Areev
+is never an authorization server: no user database, no password storage, no
+MFA, no SCIM) — and the same underlying reason: **verifying a signature
+against an issuer-published key set is the second domain where "hand-rolled,
+no deps" flips from virtue to negligence.** The authorization-code flow itself
+is *not* in that domain and stays hand-rolled like the rest of the HTTP
+surface; only the JWT/JWKS validation is delegated. The other crates the
+feature pulls (`ureq`, `serde`, `sha2`, `hex`, `getrandom`) were already in
+the tree.
+
+What justifies it is narrower than "SSO support", because trusted-header SSO
+already covers logins and needs no dependency. It is this: **`run.respond` is
+a separation-of-duties control whose entire value is that the approver's
+identity is real**, and a forwarded identity header is trusted via one shared,
+fleet-wide proxy secret — so whoever holds that secret can approve as anyone,
+producing an audit grain indistinguishable from a genuine approval. An
+`id_token` is different in kind: the IdP signed it, and the signature is
+checked here. Native OIDC is therefore the only way an approver's identity can
+be stronger than a shared secret without an out-of-band control the console
+cannot verify. Until a deployment needs *that*, the proxy is the right answer,
+which is why this is off by default. The interim control is
+`--sso-approvals deny` (the default): a proxy-asserted identity may review but
+not approve.
+
+The honest cost, recorded because it is easy to forget: **sessions are the
+first server-side state `areev-server` holds.** One-request-per-connection
+with nothing retained is a large part of why its security surface is small
+enough to reason about. Session fixation, idle vs absolute timeouts, logout
+that actually invalidates, and a bounded map are all now this crate's problem
+— a bigger price than the dependency itself.
+
 ### Single writer per file
 
 Each memory file has exactly one writer queue. There are no cross-file

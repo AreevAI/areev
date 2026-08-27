@@ -8,6 +8,7 @@ pub mod error;
 pub mod format;
 pub mod ns;
 pub mod proc;
+pub mod time;
 pub mod types;
 
 pub use error::{Hash, AreevError, Result};
