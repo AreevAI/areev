@@ -5678,6 +5678,57 @@ mod tests {
         parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     }
 
+    /// [A1] `format_epoch_ms` is a hand-rolled `civil_from_days` — the exact
+    /// inverse of the parser in `areev_core::time`. Round-tripping the pair
+    /// is what proves neither drifted, and it is checked on the dates where
+    /// calendar arithmetic actually goes wrong.
+    #[test]
+    fn expiry_formatting_round_trips_through_the_parser() {
+        for iso in [
+            "1970-01-01T00:00:00Z",
+            "2026-08-27T12:34:56Z",
+            // Leap day, and the day either side of it.
+            "2024-02-28T23:59:59Z",
+            "2024-02-29T12:00:00Z",
+            "2024-03-01T00:00:00Z",
+            // 2000 was a leap year (÷400); 2100 will not be (÷100, not ÷400).
+            "2000-02-29T00:00:00Z",
+            "2100-02-28T00:00:00Z",
+            // Year and month boundaries.
+            "2026-12-31T23:59:59Z",
+            "2027-01-01T00:00:00Z",
+        ] {
+            let ms = areev_core::time::iso8601_to_ms(iso).expect(iso);
+            assert_eq!(format_epoch_ms(ms), iso, "round-trip failed for {iso}");
+        }
+    }
+
+    /// [A1] `--expires` accepts a relative window or an absolute instant, and
+    /// refuses anything it cannot turn into a real deadline — a credential
+    /// whose lifetime was silently misread is worse than one that refuses.
+    #[test]
+    fn expiry_parsing_accepts_windows_and_instants_and_refuses_the_rest() {
+        // An absolute instant is normalized, not passed through, so the file
+        // only ever holds one spelling.
+        assert_eq!(
+            parse_expiry("2026-12-31T23:59:59Z").unwrap(),
+            "2026-12-31T23:59:59Z"
+        );
+        assert_eq!(parse_expiry("2026-12-31").unwrap(), "2026-12-31T00:00:00Z");
+
+        // Relative windows land in the future, and a longer one lands later.
+        let now = areev_core::time::now_ms();
+        let d90 = areev_core::time::iso8601_to_ms(&parse_expiry("90d").unwrap()).unwrap();
+        let h12 = areev_core::time::iso8601_to_ms(&parse_expiry("12h").unwrap()).unwrap();
+        assert!(h12 > now && d90 > h12, "90d={d90} 12h={h12} now={now}");
+        // ~90 days, allowing a second of slop for the two clock reads.
+        assert!((d90 - now - 90 * 86_400_000).abs() < 2_000);
+
+        for bad in ["90x", "d", "", "-5d", "0d", "soon", "90 d"] {
+            assert!(parse_expiry(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
     #[test]
     fn valueless_long_flag_does_not_swallow_short_flag() {
         // Regression: in `serve --mcp -d mem.db`, the valueless `--mcp` must not
