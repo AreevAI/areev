@@ -2,16 +2,16 @@
   "version": "1.6.5",
   "crates": 17,
   "rust": {
-    "files": 286,
-    "physical_lines": 178980,
-    "source_code": 85003,
-    "test_code": 51322,
-    "unit_test_code": 25022,
-    "integration_test_code": 26300,
+    "files": 288,
+    "physical_lines": 180292,
+    "source_code": 85685,
+    "test_code": 51513,
+    "unit_test_code": 25056,
+    "integration_test_code": 26457,
     "example_code": 669,
-    "test_functions": 2504,
+    "test_functions": 2513,
     "test_ratio": 0.6,
-    "test_share": 37.6
+    "test_share": 37.5
   },
   "per_crate": [
     {
@@ -25,26 +25,26 @@
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 21828,
-      "source_code": 10022,
-      "test_code": 5386,
-      "tests": 272
+      "physical": 22129,
+      "source_code": 10118,
+      "test_code": 5432,
+      "tests": 274
     },
     {
       "name": "areev-core",
       "files": 50,
-      "physical": 17504,
-      "source_code": 8773,
-      "test_code": 4414,
+      "physical": 17516,
+      "source_code": 8779,
+      "test_code": 4415,
       "tests": 290
     },
     {
       "name": "areev-cli",
-      "files": 18,
-      "physical": 14830,
-      "source_code": 6245,
-      "test_code": 5593,
-      "tests": 167
+      "files": 19,
+      "physical": 15046,
+      "source_code": 6247,
+      "test_code": 5737,
+      "tests": 174
     },
     {
       "name": "areev-run",
@@ -64,9 +64,9 @@
     },
     {
       "name": "areev-bench",
-      "files": 16,
-      "physical": 8561,
-      "source_code": 4834,
+      "files": 17,
+      "physical": 9267,
+      "source_code": 5364,
       "test_code": 1969,
       "tests": 89
     },
@@ -129,8 +129,8 @@
     {
       "name": "areev-conformance",
       "files": 15,
-      "physical": 2454,
-      "source_code": 1490,
+      "physical": 2531,
+      "source_code": 1538,
       "test_code": 353,
       "tests": 12
     },
@@ -152,10 +152,10 @@
     }
   ],
   "docs": {
-    "files": 55,
-    "lines": 24923
+    "files": 56,
+    "lines": 25166
   },
-  "error_codes": 95,
+  "error_codes": 96,
   "bindings": {
     "python_files": 16,
     "node_test_files": 4
