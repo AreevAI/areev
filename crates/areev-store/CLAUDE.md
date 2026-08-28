@@ -101,6 +101,20 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
 - `entity_latest` PK(ns,s,p) — the µs point read. `heads` PK(ns,s,p,seq) —
   fork tips. `oplog(op_seq, hlc, op, hash)` — OP_ADD/OP_SUPERSEDE/OP_FORGET.
   `thread_idx` — session transcripts. `embeddings(seq, vec)`.
+- `idx_grains_ns_s` on `grains(ns, s, p)` — **the vector legs' filter index.**
+  They all read `FROM embeddings e JOIN grains g ON g.seq = e.seq WHERE
+  g.ns = ? [AND g.s = ?] [AND g.p = ?] ORDER BY <distance> LIMIT k`, and with
+  only `idx_grains_hash` to work with the planner scanned every grain and
+  scored every vector — so a *scoped* k-NN cost exactly what an unscoped one
+  did, and namespace/subject filtering bought a constant factor instead of a
+  proportional one. Measured at 100k grains: 39.8 ms → 0.20 ms, with the
+  unfiltered and BM25 legs unmoved (RESULTS.md §8b). Column order is load
+  bearing and was measured: `(ns, s, p)` gives seekable prefixes for all three
+  scoped arms, and putting `svt` ahead of `s` to also absorb `svt IS NULL`
+  **destroys the win** — the null test is not an equality constraint, so it
+  truncates the seek. Present in both backends' schemas; `CREATE INDEX IF NOT
+  EXISTS` on every open is the migration, so an existing file pays the build
+  once at its next open.
 - BM25 leg: `fts_vocab(id, term)` + `fts_post(term, seq, ns, tf)` +
   `fts_doc(seq, len)` — our own inverted index. Written on add, dropped on
   `forget`, rebuilt by `rebuild_text_index`. **Meant to be deleted** if
@@ -181,8 +195,8 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
 ## Namespace scoping (`"org.*"`)
 
 Every **plural read** (`recall`, `recall_hybrid*`, `search_text*`,
-`search_vector*`, `recent*`) accepts a prefix scope in its namespace
-parameter: `"org.*"` = `org` + its `.`-descendants (`org.sales`, never
+`search_vector*`, `nearest_vector`/`nearest_semantic`, `recent*`) accepts a
+prefix scope in its namespace parameter: `"org.*"` = `org` + its `.`-descendants (`org.sales`, never
 `organization`; parse rules in `areev_core::ns::NsScope`). Expansion resolves
 against `ns_reg`; the legs then run over a namespace-id **set** — per-ns
 probes merged on the file-global seq (which IS recency order) for the
@@ -202,6 +216,19 @@ graph/run reads, destruction (`forget_subject`, `forget_older_than`,
 erasure it mirrors), and the policy setters (retention/floor/hold/anon).
 Conformance: `cases/ns_scope.rs`, both backends; store tests:
 `tests/ns_scope_tests.rs`.
+
+The two nearest-neighbour reads were the **last plural reads still refusing a
+pattern**, and the exception was expensive rather than merely inconsistent: a
+corpus-wide semantic search had no way to spell itself except by falling
+through to prefix-scoped `recall_hybrid`, which runs a BM25 leg and a
+structural leg and fuses them to answer a question that is purely about
+vectors — 605ms against 150ms for the scan it actually needed (RESULTS.md
+§8c). Both now route through one private `nearest_scoped`, which keeps the
+single-namespace path parameterized (`g.ns = ?1`, cached plan intact — the
+voice path pays nothing) and inlines the id set only for a real multi-namespace
+scope. Because cost is now proportional to the scope rather than the corpus,
+the hierarchy has to be IN the namespace to be queryable: `deal.<sector>.<id>`
+can express "this sector", `deal.<id>` cannot.
 
 ## Session-scoped and ordered reads
 
@@ -254,7 +281,21 @@ go back) + vector (`search_vector`, brute-force
 `vector_distance_cos`) fused with RRF (k0=60). **Deadline-bounded fail-open**:
 legs past the budget are skipped and partial results returned — never errors.
 Embeddings come from the host via the `EmbedBackend` trait (`dim`/`embed`,
-installed with `set_embedder`); there is no built-in model. `CommandEmbed`
+installed with `set_embedder`); there is no built-in model.
+
+**Vector search is exact unless someone opts out.** The scan is linear in the
+vectors a query cannot rule out, so the first lever is always to make it rule
+more out — scope by namespace or subject and `idx_grains_ns_s` turns the scan
+into a seek. Only a genuinely corpus-wide query has nothing to filter on, and
+for that `ensure_vector_index(m, ef_construction, ef_search)` builds a pgvector
+HNSW index: **Postgres only** (the embedded engine answers `STO-E007` rather
+than no-op'ing, because a silent no-op leaves a host believing its corpus was
+indexed while every query still scans it), 24 ms → 1.0 ms at 100k grains.
+`drop_vector_index` is the way back to exact; `vector_index()` answers "are my
+results exact right now?". It is deliberately NOT in `PG_SCHEMA`: an ANN index
+changes recall from exact to approximate, and nobody should acquire that by
+upgrading a binary. `ef_search` is session-scoped rather than a file truth —
+the accuracy/latency trade belongs to the caller, not to the data. `CommandEmbed`
 shells out to a host command per embed (text on stdin → JSON array on stdout;
 CLI `--embed-cmd`, py `set_embedder_command`, js `setEmbedderCommand`) — fine
 for turn-level recall, not the voice frame path.

@@ -13,6 +13,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # `cargo test --workspace` links ~113 separate test binaries, and each one
+  # emits full debug info. On Windows that is a large share of both link time
+  # and disk I/O (measured: ~6 min between the last `Compiling` line and the
+  # first test). Line tables keep the file:line that RUST_BACKTRACE=1 above
+  # exists to produce, at a fraction of the size. CI-only, set here rather
+  # than in Cargo.toml so local `cargo test` debugging is untouched.
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   test:
@@ -28,9 +36,38 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      # Defender scans every file cargo writes, and this job writes a lot of
+      # them. Best-effort: a future runner image that refuses the exclusion
+      # must slow the build down, not fail it.
+      - name: Exclude the build tree from Defender (windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+          foreach ($p in 'rustc.exe','cargo.exe','link.exe') {
+            Add-MpPreference -ExclusionProcess $p
+          }
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # `cargo test` runs test BINARIES one at a time, parallelising only
+      # within each; with ~113 binaries, most of them small, the cores sit
+      # idle. Measured on windows-latest: 11.1 min of test execution out of a
+      # 22 min step. nextest schedules across binaries instead (locally:
+      # 55s -> 30s for the same already-built suite, 2,535 tests, same result).
+      #
+      # Sharding this job was considered and rejected on the same numbers:
+      # only ~11 of the 22 min is test execution, so every shard would repeat
+      # the ~11 min of compile+link to split the other half — near-zero
+      # wall-clock gain for 3x the runner minutes. It would also have to keep
+      # reporting under the exact name `test (windows-latest)`, which the
+      # protect-main ruleset requires.
       - name: Test workspace
-        run: cargo test --workspace
+        run: cargo nextest run --workspace
+      # nextest deliberately does not run doctests, so they stay on cargo.
+      - name: Doctests
+        run: cargo test --workspace --doc
 
   postgres:
     name: postgres backend

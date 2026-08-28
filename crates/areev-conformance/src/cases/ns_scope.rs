@@ -195,3 +195,79 @@ pub fn ns_scoped_recall_spans_supersession_chains(b: &dyn Backend) {
         assert!(all.iter().any(|o| o == expect), "[{}] {expect} missing from chain: {all:?}", b.name());
     }
 }
+
+/// The vector leg has to obey a scope exactly like every other plural read.
+///
+/// `nearest_vector`/`nearest_semantic` used to `require_exact_ns`, making them
+/// the only plural reads that refused a scope — which meant a corpus-wide
+/// semantic search had to detour through `recall_hybrid`, paying a BM25 leg
+/// and a structural leg to answer a purely vector question. Now they accept
+/// one, and that acceptance is a cross-backend contract: the embedded engine
+/// scans BLOBs while Postgres scans a native `vector` column through a
+/// different SQL shape (inlined namespace ids, shifted parameter numbering),
+/// so "the scope selects the same set" is exactly the kind of thing that can
+/// silently diverge between them.
+///
+/// Asserted for what the scope EXCLUDES as much as what it includes: a scope
+/// that failed open would satisfy any containment-only check while returning
+/// grains the caller was never scoped to see.
+pub fn ns_scoped_vector_search_selects_tree_exactly(b: &dyn Backend) {
+    let mut m = b.open();
+    // The out-of-tree namespaces carry the vector CLOSEST to the probe, so a
+    // scope that leaks ranks them first rather than merely including them.
+    for (ns, o, v) in [
+        ("org", "root-value", [0.90f32, 0.10, 0.0]),
+        ("org.sales", "sales-value", [0.80, 0.20, 0.0]),
+        ("org.sales.emea", "emea-value", [0.70, 0.30, 0.0]),
+        ("org.ops", "ops-value", [0.60, 0.40, 0.0]),
+        ("organization", "lookalike-value", [1.0, 0.0, 0.0]),
+        ("orgs", "plural-value", [1.0, 0.0, 0.0]),
+        ("org:x", "colon-value", [1.0, 0.0, 0.0]),
+        ("personal", "personal-value", [1.0, 0.0, 0.0]),
+    ] {
+        m.add_with_embedding(&fact(ns, "john", "prefers", o), &v).unwrap();
+    }
+    let probe = [1.0f32, 0.0, 0.0];
+
+    let hits = m.nearest_vector("org.*", None, None, &probe, 16).unwrap();
+    assert_eq!(hits.len(), 4, "[{}] org.* = org + .-descendants only", b.name());
+    let mut got: Vec<String> = Vec::new();
+    for (h, _) in &hits {
+        got.push(m.get(h).unwrap().get_str("object").unwrap_or("").to_string());
+    }
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["emea-value", "ops-value", "root-value", "sales-value"],
+        "[{}] the lookalikes (organization/orgs/org:x/personal) must stay out",
+        b.name()
+    );
+    // Ranking within the scope is still by cosine, so the nearest in-scope
+    // grain leads — not merely "some in-scope grain".
+    let top = m.get(&hits[0].0).unwrap();
+    assert_eq!(top.get_str("object"), Some("root-value"), "[{}] cosine order", b.name());
+
+    // A deeper scope narrows rather than re-widening.
+    let hits = m.nearest_vector("org.sales.*", None, None, &probe, 16).unwrap();
+    assert_eq!(hits.len(), 2, "[{}] org.sales.* = sales + emea", b.name());
+
+    // An exact namespace is unchanged by any of this.
+    let hits = m.nearest_vector("org.sales", None, None, &probe, 16).unwrap();
+    assert_eq!(hits.len(), 1, "[{}] exact stays exact", b.name());
+
+    // An unmatched scope is empty, never the whole memory.
+    assert!(
+        m.nearest_vector("nosuch.*", None, None, &probe, 16).unwrap().is_empty(),
+        "[{}] unmatched scope must not fail open",
+        b.name()
+    );
+
+    // The subject filter takes the multi-namespace SQL path — pin it too.
+    let hits = m.nearest_vector("org.*", Some("john"), None, &probe, 16).unwrap();
+    assert_eq!(hits.len(), 4, "[{}] subject filter across a scope", b.name());
+    assert!(
+        m.nearest_vector("org.*", Some("ghost"), None, &probe, 16).unwrap().is_empty(),
+        "[{}] uninterned subject short-circuits",
+        b.name()
+    );
+}

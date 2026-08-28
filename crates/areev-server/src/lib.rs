@@ -14,6 +14,12 @@ use areev_loop_adapter::{now_ms, BorrowedSubstrate};
 use serde_json::{json, Value};
 use areev_loop::{Decision, Engine, RecStatus, RunOptions};
 
+/// Native OIDC (A3) — the second recorded dependency-policy exception, behind
+/// the non-default `oidc` feature. See the module docs for why a proxy
+/// cannot cover the case this exists for.
+#[cfg(feature = "oidc")]
+pub mod oidc;
+
 const CONSOLE_HTML: &str = include_str!("console.html");
 
 /// Per-connection read/write timeout — bounds slow-client (slowloris) attacks.
@@ -35,6 +41,32 @@ const AUTH_FAILURE_IDLE_SECS: u64 = 15 * 60;
 /// space is attacker-controlled, so this bounds the memory an attacker can
 /// force the map to hold.
 const MAX_AUTH_FAILURE_IPS: usize = 4096;
+/// Longest accepted proxy-asserted identity. Principals are names, not
+/// documents; anything longer is a malformed or hostile header, and the
+/// string ends up in audit grains that replicate.
+const MAX_SSO_IDENTITY_BYTES: usize = 128;
+/// Principal names an SSO header may never assert.
+///
+/// `anonymous` is the restricted baseline and `user:console` is the owner
+/// default the per-request binding restores on drop — an identity header
+/// naming either would make audit records ambiguous between "a person the
+/// proxy vouched for" and "the console's own unauthenticated floor/ceiling".
+/// Neither is currently an escalation (`bind_principal` always builds a
+/// *restricted* set from the file's grants), but a name that reads as a
+/// system principal in an immutable, replicating audit trail is a defect
+/// whether or not it is exploitable today.
+const RESERVED_PRINCIPALS: [&str; 2] = ["anonymous", "user:console"];
+
+/// Consecutive failed authentications from one source IP after which further
+/// credential-bearing requests are refused with `429` until the streak goes
+/// idle (`AUTH_FAILURE_IDLE_SECS`).
+///
+/// Set high enough that a human fat-fingering a pasted token a few times is
+/// never locked out, and low enough that an online guessing attack gets a few
+/// attempts per quarter-hour instead of thousands per second. It is a brake
+/// on rate, not a replacement for token entropy — which is why `areev auth
+/// mint` (256-bit tokens) is the real control and this is the backstop.
+const MAX_CONSECUTIVE_AUTH_FAILURES: u32 = 10;
 
 
 /// One accepted connection: plaintext, or TLS when the server was built
@@ -156,6 +188,44 @@ pub struct UiServer {
     /// mismatch, so timing cannot reveal which one matched or how many are
     /// configured.
     sso_secrets: Vec<String>,
+    /// Optional groups header (A2, `--sso-groups-header X-Forwarded-Groups`):
+    /// a comma-separated list of IdP groups, honored under the same proxy
+    /// secret as `sso_header`. Resolved through the credential map's `groups`
+    /// table, and only when the asserted identity has no grants of its own —
+    /// see `resolve_sso_principal` for the precedence and why.
+    sso_groups_header: Option<String>,
+    /// Prefix stamped onto every proxy-asserted principal
+    /// (`--sso-principal-prefix`). Lets an operator keep IdP-sourced
+    /// identities visibly distinct from credential-map ones in grant grains
+    /// and audit records, so `GRANT` can target one population without
+    /// depending on IdP naming conventions never colliding with local ones.
+    sso_principal_prefix: Option<String>,
+    /// Native OIDC (A3, `oidc` feature). When configured, the console serves
+    /// its own login: `/auth/login` → the IdP → `/auth/callback` → an
+    /// `HttpOnly` session cookie. Unlike the trusted-header path, the
+    /// identity is proven by a signature over an issuer-published key set,
+    /// which is why an OIDC principal MAY approve by default — that
+    /// difference is the entire reason the feature exists.
+    #[cfg(feature = "oidc")]
+    oidc: Option<std::sync::Arc<oidc::OidcProvider>>,
+    /// Whether a proxy-asserted SSO identity may answer a HITL approval
+    /// (`POST /api/run/respond`). **Default false — deny.**
+    ///
+    /// `run.respond` already refuses shared-token and anonymous callers
+    /// because the approver's identity IS the audit record. An SSO identity
+    /// arrives in a header, trusted because the request also carried
+    /// `sso_secrets` — a static, shared, impersonation-grade value. Whoever
+    /// holds it can assert *any* identity, approval-capable principals
+    /// included, and the resulting audit grain is indistinguishable from a
+    /// genuine approval: a well-formed answer by a granted principal. The
+    /// blast radius of that one secret is the integrity of the whole HITL
+    /// trail — which is the control the governance story rests on.
+    ///
+    /// A credential-map principal is materially stronger (it holds a
+    /// per-principal secret, not a fleet-wide one) and is unaffected by this.
+    /// So the default fails closed and an operator who accepts the trade-off
+    /// opts in explicitly with `areev ui --sso-approvals allow`.
+    sso_approvals: bool,
     /// Auth-failure counter (issue #126), keyed by source IP — the port is
     /// deliberately excluded, since a NAT'd or proxied attacker's source
     /// port varies per connection while the IP does not. Each entry is
@@ -172,6 +242,69 @@ pub struct UiServer {
     /// unauthenticated caller pulls to stall the console for everyone, not
     /// just themselves.
     auth_failures: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
+}
+
+/// A login-flow error, rendered as text rather than JSON: the audience is a
+/// browser mid-redirect, not a script. The message is ours, never the IdP's
+/// raw response body.
+#[cfg(feature = "oidc")]
+fn auth_error(msg: &str) -> (String, String, String) {
+    (
+        "400 Bad Request".into(),
+        "Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n".into(),
+        format!("login failed: {msg}\n\nStart again at /auth/login\n"),
+    )
+}
+
+#[cfg(feature = "oidc")]
+fn not_found_auth() -> (String, String, String) {
+    (
+        "404 Not Found".into(),
+        "Content-Type: text/plain; charset=utf-8\r\n".into(),
+        "no such auth endpoint\n".into(),
+    )
+}
+
+/// One cookie's value out of a `Cookie:` header, or `None`.
+///
+/// Deliberately exact on the name: a `Cookie` header is attacker-influenced
+/// (any script on any same-site origin can set cookies), so a prefix match
+/// would let `areev_session_decoy=...` shadow the real one.
+#[cfg(feature = "oidc")]
+fn cookie_value(header: &str, name: &str) -> Option<String> {
+    header.split(';').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k.trim() == name).then(|| v.trim().to_string())
+    })
+}
+
+/// Validate a proxy-asserted identity before it becomes a principal.
+///
+/// The proxy secret decides *who may assert*; it says nothing about whether
+/// what was asserted is well-formed. An identity flows into audit grains that
+/// are immutable and replicate, so a control character here is a log-injection
+/// that outlives the request — and a name colliding with a system principal is
+/// an ambiguity no later reader can resolve.
+///
+/// Returns `None` for anything rejected, which the caller treats exactly like
+/// an absent header: the request proceeds as whatever its other credentials
+/// make it. Refusing the *request* would let a misconfigured proxy take the
+/// console down; refusing the *identity* fails closed on rights instead.
+fn sanitize_sso_identity(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    if id.is_empty() || id.len() > MAX_SSO_IDENTITY_BYTES {
+        return None;
+    }
+    // No control characters (CR/LF above all — header smuggling into logs),
+    // and no internal whitespace: a principal is one token, and " user:a"
+    // vs "user:a" must not be two audit identities for one person.
+    if id.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    if RESERVED_PRINCIPALS.contains(&id) {
+        return None;
+    }
+    Some(id.to_string())
 }
 
 /// Per-request principal binding. The server handles one request at a
@@ -256,6 +389,11 @@ impl UiServer {
             tls_config: None,
             sso_header: None,
             sso_secrets: Vec::new(),
+            sso_groups_header: None,
+            sso_principal_prefix: None,
+            #[cfg(feature = "oidc")]
+            oidc: None,
+            sso_approvals: false,
             auth_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -309,6 +447,208 @@ impl UiServer {
             Some(n) => vec![secret, n],
             None => vec![secret],
         };
+        self
+    }
+
+    /// Serve native OIDC login for the console (A3).
+    #[cfg(feature = "oidc")]
+    pub fn with_oidc(mut self, provider: oidc::OidcProvider) -> Self {
+        self.oidc = Some(std::sync::Arc::new(provider));
+        self
+    }
+
+    /// The principal for this request's session cookie, if any.
+    #[cfg(feature = "oidc")]
+    fn oidc_principal(&self, cookie_header: Option<&str>) -> Option<String> {
+        let provider = self.oidc.as_ref()?;
+        let sid = cookie_value(cookie_header?, oidc::SESSION_COOKIE)?;
+        provider.principal_for_session(&sid)
+    }
+
+    /// The `/auth/*` endpoints (A3). Returns `(status, extra headers, body)`.
+    ///
+    /// These are the only routes that set headers of their own, which is why
+    /// they bypass `route_full`'s (status, content-type, body) contract.
+    #[cfg(feature = "oidc")]
+    fn oidc_route(
+        &self,
+        method: &str,
+        path: &str,
+        cookie_header: Option<&str>,
+    ) -> (String, String, String) {
+        let provider = match &self.oidc {
+            Some(p) => p,
+            None => return not_found_auth(),
+        };
+        let (base, query) = match path.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (path, ""),
+        };
+        let q = |key: &str| -> Option<String> {
+            query.split('&').find_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                (k == key).then(|| urldecode(v))
+            })
+        };
+        // `Secure` only when the redirect URI is https: a loopback console
+        // over plain http must still be able to log in, and a `Secure` cookie
+        // the browser refuses to send would look like a broken login rather
+        // than a policy.
+        let secure = if provider.is_secure() { "; Secure" } else { "" };
+
+        match (method, base) {
+            ("GET", "/auth/login") => match provider.authorize_url() {
+                Ok(url) => (
+                    "302 Found".into(),
+                    format!("Location: {url}\r\nCache-Control: no-store\r\n"),
+                    String::new(),
+                ),
+                Err(e) => auth_error(&e.to_string()),
+            },
+            ("GET", "/auth/callback") => {
+                let (Some(code), Some(state)) = (q("code"), q("state")) else {
+                    // An IdP-side failure comes back as ?error=...; surface
+                    // it rather than a bare "missing code".
+                    return auth_error(&match q("error") {
+                        Some(e) => format!("the identity provider refused the login: {e}"),
+                        None => "callback missing `code` or `state`".to_string(),
+                    });
+                };
+                match provider.complete_login(&code, &state) {
+                    Ok(sid) => (
+                        "302 Found".into(),
+                        format!(
+                            "Location: /\r\nCache-Control: no-store\r\n\
+                             Set-Cookie: {}={sid}; HttpOnly; SameSite=Strict; Path=/{secure}\r\n",
+                            oidc::SESSION_COOKIE
+                        ),
+                        String::new(),
+                    ),
+                    Err(e) => auth_error(&e.to_string()),
+                }
+            }
+            // Logout accepts POST (the console's button, Origin-checked like
+            // every other mutation) and GET (a bookmarkable escape hatch —
+            // and a GET logout is not a CSRF worth defending: forcing someone
+            // to log out grants an attacker nothing).
+            ("POST", "/auth/logout") | ("GET", "/auth/logout") => {
+                if let Some(sid) = cookie_header.and_then(|c| cookie_value(c, oidc::SESSION_COOKIE))
+                {
+                    // Invalidate SERVER-side too. Clearing only the browser's
+                    // copy would leave a cookie captured beforehand alive.
+                    provider.logout(&sid);
+                }
+                (
+                    "302 Found".into(),
+                    format!(
+                        "Location: /\r\nCache-Control: no-store\r\n\
+                         Set-Cookie: {}=; HttpOnly; SameSite=Strict; Path=/{secure}; Max-Age=0\r\n",
+                        oidc::SESSION_COOKIE
+                    ),
+                    String::new(),
+                )
+            }
+            _ => not_found_auth(),
+        }
+    }
+
+    /// Honor an IdP groups header (A2) under the same proxy secret as the
+    /// identity header. Groups resolve through the credential map's `groups`
+    /// table; without a map, this does nothing.
+    pub fn with_sso_groups_header(mut self, header: impl Into<String>) -> Self {
+        let header = header.into();
+        assert!(
+            !header.trim().is_empty(),
+            "with_sso_groups_header requires a non-empty header name"
+        );
+        self.sso_groups_header = Some(header.to_ascii_lowercase());
+        self
+    }
+
+    /// Stamp `prefix` onto every proxy-asserted principal, so IdP-sourced
+    /// identities are visibly distinct from credential-map ones everywhere
+    /// they land — grants, logs, audit grains.
+    pub fn with_sso_principal_prefix(mut self, prefix: impl Into<String>) -> Self {
+        let prefix = prefix.into();
+        assert!(
+            !prefix.trim().is_empty(),
+            "with_sso_principal_prefix requires a non-empty prefix"
+        );
+        self.sso_principal_prefix = Some(prefix);
+        self
+    }
+
+    /// Resolve a proxy-proven request to its principal (A2).
+    ///
+    /// Precedence, most specific first:
+    /// 1. the asserted **identity**, when the file grants it anything;
+    /// 2. the first **group** (in header order) the credential map maps to a
+    ///    principal;
+    /// 3. nothing — the request falls through to `anonymous`.
+    ///
+    /// Identity-before-group is what makes an individual grant able to
+    /// override a role, which is the direction an operator expects (and the
+    /// direction that lets someone be *removed* from an exception without
+    /// editing the group). Groups are consulted only when the identity is
+    /// ungranted, so adding a groups header can never *narrow* a person who
+    /// already had rights.
+    ///
+    /// Returns `(principal, from_group)`. `from_group` matters downstream: a
+    /// role is not a person, so a group-derived principal can never answer an
+    /// approval — "someone in engineering approved this" is not an audit
+    /// record, whatever `--sso-approvals` says.
+    fn resolve_sso_principal(
+        &self,
+        identity: &str,
+        groups_raw: Option<&str>,
+    ) -> Option<(String, bool)> {
+        let stamp = |p: &str| match &self.sso_principal_prefix {
+            Some(prefix) if !p.starts_with(prefix.as_str()) => format!("{prefix}{p}"),
+            _ => p.to_string(),
+        };
+        let identity = stamp(identity);
+
+        // "Has grants of its own" is asked of the FILE, which is the only
+        // authority on rights. A store error answers "no" — falling toward
+        // the group (and ultimately anonymous) rather than assuming rights
+        // we could not read.
+        let identity_granted = self
+            .facade
+            .with_store(|m| m.authz_grants(&identity))
+            .map(|g| !g.is_empty())
+            .unwrap_or(false);
+        if identity_granted {
+            return Some((identity, false));
+        }
+
+        if let (Some(map), Some(raw)) = (&self.credentials, groups_raw) {
+            for group in raw.split(',') {
+                if let Some(principal) = map.principal_for_group(group) {
+                    return Some((principal.to_string(), true));
+                }
+            }
+        }
+
+        // No grants either way: still bind the identity. It is who the proxy
+        // says this is, `bind_principal` resolves it to the same empty grant
+        // set anonymous would get, and an audit line naming the person beats
+        // one naming "anonymous".
+        Some((identity, false))
+    }
+
+    /// Permit proxy-asserted SSO identities to answer HITL approvals
+    /// (`POST /api/run/respond`). **Off by default**: the identity header's
+    /// only proof is the shared, fleet-wide proxy secret, so whoever holds it
+    /// could approve as anyone — including the approver the audit record then
+    /// names.
+    ///
+    /// Turning this on is a deliberate statement that the proxy shared secret
+    /// is held to the same standard as an approver's own credential. That is
+    /// achievable (a proxy on a Unix socket, or mTLS between proxy and
+    /// console, with the secret never leaving the host) — it is just not
+    /// something the console can verify, so it cannot be the default.
+    pub fn with_sso_approvals(mut self, allow: bool) -> Self {
+        self.sso_approvals = allow;
         self
     }
 
@@ -528,17 +868,29 @@ impl UiServer {
         map.remove(&ip);
     }
 
-    /// Test-only peek at a source IP's current consecutive-failure count (0
-    /// if it has none). There is no sleep/lockout to observe via timing —
-    /// see `note_auth_failure` — so tests read the counter directly instead.
-    #[cfg(test)]
-    fn auth_failure_count_for_test(&self, ip: std::net::IpAddr) -> u32 {
+    /// A source IP's current consecutive-failure count (0 if it has none, or
+    /// if its last failure is older than `AUTH_FAILURE_IDLE_SECS`).
+    ///
+    /// The idle check is applied on READ as well as on write so a lockout
+    /// expires on its own: a stale entry that `note_auth_failure` has not
+    /// been called on again must not keep refusing forever, which is what
+    /// turns a brute-force brake into a self-inflicted outage.
+    fn auth_failure_count(&self, ip: std::net::IpAddr) -> u32 {
+        let idle = Duration::from_secs(AUTH_FAILURE_IDLE_SECS);
         self.auth_failures
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&ip)
+            .filter(|(_, last)| last.elapsed() < idle)
             .map(|(n, _)| *n)
             .unwrap_or(0)
+    }
+
+    /// Test-only alias — tests read the counter directly because there is no
+    /// sleep to observe via timing (see `note_auth_failure`).
+    #[cfg(test)]
+    fn auth_failure_count_for_test(&self, ip: std::net::IpAddr) -> u32 {
+        self.auth_failure_count(ip)
     }
 
     /// Wrap an accepted socket per the TLS posture. The handshake happens
@@ -597,6 +949,9 @@ impl UiServer {
         let mut origin: Option<String> = None;
         let mut host: Option<String> = None;
         let mut sso_identity_raw: Option<String> = None;
+        let mut sso_groups_raw: Option<String> = None;
+        #[cfg(feature = "oidc")]
+        let mut cookie_header: Option<String> = None;
         let mut proxy_secret: Option<String> = None;
         let mut header_bytes = 0usize;
         let mut header_count = 0usize;
@@ -628,6 +983,14 @@ impl UiServer {
             if let Some(v) = low.strip_prefix("host:") {
                 host = Some(v.trim().to_string());
             }
+            #[cfg(feature = "oidc")]
+            if low.starts_with("cookie:") {
+                // Re-slice the ORIGINAL line: the lowercased copy would
+                // mangle a base64url session id.
+                if let Some((_, orig)) = l.split_once(':') {
+                    cookie_header = Some(orig.trim().to_string());
+                }
+            }
             if let Some(v) = low.strip_prefix("x-areev-proxy-secret:") {
                 // Secrets are compared, never logged; the lowercased copy is
                 // wrong for comparison, so re-slice the original line.
@@ -640,6 +1003,13 @@ impl UiServer {
                 if low.starts_with(&format!("{h}:")) {
                     if let Some((_, orig)) = l.split_once(':') {
                         sso_identity_raw = Some(orig.trim().to_string());
+                    }
+                }
+            }
+            if let Some(h) = &self.sso_groups_header {
+                if low.starts_with(&format!("{h}:")) {
+                    if let Some((_, orig)) = l.split_once(':') {
+                        sso_groups_raw = Some(orig.trim().to_string());
                     }
                 }
             }
@@ -720,22 +1090,110 @@ impl UiServer {
         // (constant-time secret check). A forged header without the secret
         // is silently ignored — the request proceeds as whatever its other
         // credentials make it.
-        let sso_identity: Option<String> = match (proxy_secret, sso_identity_raw) {
-            (Some(presented), Some(id)) if !id.trim().is_empty() => {
+        //
+        // [A2] The secret proves the PROXY; it says nothing about whether
+        // what the proxy forwarded is well-formed. `sanitize_sso_identity`
+        // is that second question, and a rejected identity is treated
+        // exactly like an absent one.
+        let proxy_proved = match &proxy_secret {
+            Some(presented) => {
                 // `fold`, not `any`: `any` short-circuits on the first match,
                 // so during a rotation window the response time would say
                 // WHICH secret was presented. Every configured secret is
                 // compared, every time.
-                let proved = self
-                    .sso_secrets
+                self.sso_secrets
                     .iter()
-                    .fold(false, |acc, s| ct_eq(s.as_bytes(), presented.as_bytes()) | acc);
-                proved.then_some(id)
+                    .fold(false, |acc, s| ct_eq(s.as_bytes(), presented.as_bytes()) | acc)
             }
-            _ => None,
+            None => false,
         };
-        let (status, ctype, payload) =
-            self.route(&method, &path, &body, bearer.as_deref(), sso_identity.as_deref());
+        let sso_identity: Option<String> = sso_identity_raw
+            .filter(|_| proxy_proved)
+            .as_deref()
+            .and_then(sanitize_sso_identity);
+        let sso_groups: Option<String> = sso_groups_raw.filter(|_| proxy_proved);
+        // [A3] The OIDC login endpoints own their own responses: they answer
+        // with redirects and `Set-Cookie`, which the JSON `route` contract
+        // (status, content-type, body) has no slot for. Handled here, where
+        // the socket and its headers are already in hand.
+        #[cfg(feature = "oidc")]
+        if self.oidc.is_some() && path.starts_with("/auth/") {
+            let (status, extra, payload) =
+                self.oidc_route(&method, &path, cookie_header.as_deref());
+            drop(reader);
+            let mut out = conn;
+            write!(
+                out,
+                "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )?;
+            out.write_all(payload.as_bytes())?;
+            return out.flush();
+        }
+        #[cfg(feature = "oidc")]
+        let oidc_principal = self.oidc_principal(cookie_header.as_deref());
+        #[cfg(not(feature = "oidc"))]
+        let oidc_principal: Option<String> = None;
+
+        // [A1] Fail closed after repeated failures from one source.
+        //
+        // This REJECTS; it never delays. `serve` is a strictly serial accept
+        // loop, so a per-request sleep would be a lever an unauthenticated
+        // caller pulls to stall the console for everyone (the reasoning
+        // recorded on `note_auth_failure`, which is why that counter only
+        // ever counted). Rejection has the opposite shape: it is cheaper than
+        // serving, costs the attacker their pipeline, and — placed HERE,
+        // before `route` — touches no store, runs no constant-time scan, and
+        // dispatches nothing.
+        //
+        // Only when auth is configured AND a credential was presented, the
+        // same two conditions the counter itself uses: a console with no auth
+        // has nothing to brute-force, and a browser's first credential-less
+        // probe is not an attempt.
+        //
+        // AND NOT through a trusted proxy. Behind the documented deployment
+        // (a TLS-terminating, authenticating proxy) every request shares the
+        // proxy's source address, so a per-IP lockout would let one attacker's
+        // ten bad guesses refuse *every* user behind it — a self-inflicted
+        // outage in exactly the configuration we recommend. A request carrying
+        // a verified proxy secret is proven to have come through that proxy,
+        // and per-source throttling there is the proxy's job (the same
+        // division of labour as TLS and the IdP handshake). Direct connections
+        // — which is every connection on a console with no proxy — are
+        // unaffected and still brake.
+        let auth_configured =
+            self.token.is_some() || self.credentials.is_some() || !self.sso_secrets.is_empty();
+        let credential_presented = bearer.is_some() || proxy_secret_presented;
+        if auth_configured && credential_presented && !proxy_proved {
+            if let Ok(peer) = raw.peer_addr() {
+                if self.auth_failure_count(peer.ip()) >= MAX_CONSECUTIVE_AUTH_FAILURES {
+                    let payload = format!(
+                        r#"{{"ok":false,"error":"too many failed authentications from this address - wait {} minutes, or restart the console to clear the counter"}}"#,
+                        AUTH_FAILURE_IDLE_SECS / 60
+                    );
+                    drop(reader);
+                    let mut out = conn;
+                    write!(
+                        out,
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        AUTH_FAILURE_IDLE_SECS,
+                        payload.len()
+                    )?;
+                    out.write_all(payload.as_bytes())?;
+                    return out.flush();
+                }
+            }
+        }
+
+        let (status, ctype, payload) = self.route_full(
+            &method,
+            &path,
+            &body,
+            bearer.as_deref(),
+            sso_identity.as_deref(),
+            sso_groups.as_deref(),
+            oidc_principal.as_deref(),
+        );
 
         // Auth-failure count + log (issue #126). Only when this server has
         // SOME auth mechanism configured, AND a credential was actually
@@ -745,12 +1203,10 @@ impl UiServer {
         // Authorization header at all) attempted nothing and has no failure
         // to count. The token itself is never logged, not even a prefix.
         //
-        // Deliberately no in-process delay or lockout here — see the
-        // comment on `note_auth_failure` for why an artificial delay would
-        // itself be the more dangerous bug on this server.
-        let auth_configured =
-            self.token.is_some() || self.credentials.is_some() || !self.sso_secrets.is_empty();
-        let credential_presented = bearer.is_some() || proxy_secret_presented;
+        // Deliberately no in-process DELAY here — see the comment on
+        // `note_auth_failure` for why an artificial delay would itself be the
+        // more dangerous bug on this server. The cheap rejection above is the
+        // lockout; this is the counter that feeds it.
         if auth_configured && credential_presented {
             if let Ok(peer) = raw.peer_addr() {
                 let ip = peer.ip();
@@ -816,6 +1272,12 @@ impl UiServer {
         }
     }
 
+    /// The no-groups spelling, for the tests written before A2 added the
+    /// groups header. Production always goes through
+    /// [`route_with_groups`](Self::route_with_groups); this exists only so
+    /// two dozen assertions that never had a groups header do not each grow
+    /// a trailing `None`.
+    #[cfg(test)]
     fn route(
         &self,
         method: &str,
@@ -823,6 +1285,41 @@ impl UiServer {
         body: &[u8],
         bearer: Option<&str>,
         sso_identity: Option<&str>,
+    ) -> (&'static str, &'static str, Vec<u8>) {
+        self.route_full(method, path, body, bearer, sso_identity, None, None)
+    }
+
+    /// [`route`](Self::route) with the A2 groups header but no OIDC session —
+    /// the spelling the A2 tests use.
+    #[cfg(test)]
+    fn route_with_groups(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        bearer: Option<&str>,
+        sso_identity: Option<&str>,
+        sso_groups: Option<&str>,
+    ) -> (&'static str, &'static str, Vec<u8>) {
+        self.route_full(method, path, body, bearer, sso_identity, sso_groups, None)
+    }
+
+    /// Route one request.
+    ///
+    /// `sso_groups` is the raw, proxy-proven groups header (A2) and
+    /// `oidc_principal` the identity behind a valid session cookie (A3) —
+    /// both already authenticated by the caller, which is why neither
+    /// carries its proof this far down.
+    #[allow(clippy::too_many_arguments)]
+    fn route_full(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        bearer: Option<&str>,
+        sso_identity: Option<&str>,
+        sso_groups: Option<&str>,
+        oidc_principal: Option<&str>,
     ) -> (&'static str, &'static str, Vec<u8>) {
         // Auth: console-auth mode (`auth_all`) guards every request;
         // otherwise the token guards only mutating endpoints. The credential
@@ -841,6 +1338,7 @@ impl UiServer {
             shared_secret_ok = bearer.is_some_and(|b| ct_eq(b.as_bytes(), tok.as_bytes()));
             let known = shared_secret_ok
                 || sso_identity.is_some()
+                || oidc_principal.is_some()
                 || match (&self.credentials, bearer) {
                     (Some(map), Some(b)) => map.resolve_for_memory(b, &self.db_label).is_ok(),
                     _ => false,
@@ -849,7 +1347,11 @@ impl UiServer {
                 return ("401 Unauthorized", "application/json",
                         br#"{"ok":false,"error":"authentication required"}"#.to_vec());
             }
-        } else if self.credentials.is_none() && sso_identity.is_none() && method == "POST" {
+        } else if self.credentials.is_none()
+            && sso_identity.is_none()
+            && oidc_principal.is_none()
+            && method == "POST"
+        {
             // §5.7: token-less `areev ui` is read-only. The ONLY POST allowed is
             // a read-only CAL statement; every write (any loop mutation, an
             // ADD/SUPERSEDE/FORGET CAL batch, etc.) requires --token-env. This
@@ -859,7 +1361,7 @@ impl UiServer {
             let allowed = base == "/api/cal" && cal_body_is_read_only(body);
             if !allowed {
                 return ("401 Unauthorized", "application/json",
-                        br#"{"ok":false,"error":"read-only console: restart areev ui with --token-env VAR to enable writes"}"#.to_vec());
+                        br#"{"ok":false,"error":"read-only console: restart areev ui with --auth <map> (per-principal credentials, attributable writes and approvals) or --token-env VAR (one shared secret, writes only) to enable writes"}"#.to_vec());
             }
         }
 
@@ -885,10 +1387,44 @@ impl UiServer {
         // SSO v0: a proxy-proven identity becomes the request principal when
         // no bearer credential resolved one (machines keep tokens; SSO is
         // for humans behind the proxy). Rights come from the file's grants.
+        //
+        // `principal_from_sso` records the PROVENANCE of the identity, not
+        // just its value: everything downstream treats a principal as a
+        // principal, but one control (HITL approval) must distinguish an
+        // identity proven by a per-principal credential from one asserted by
+        // a proxy holding a shared secret. See `sso_approvals`.
+        let mut principal_from_sso = false;
+        // [A2] `principal_from_group` is a strictly stronger refusal than
+        // `principal_from_sso`: a role name cannot be an approver's identity
+        // under ANY setting, because there is no person behind it.
+        let mut principal_from_group = false;
+        // [A3] An OIDC session outranks a proxy-asserted header: its identity
+        // was proven by a signature this process verified against the
+        // issuer's key set, not by a shared secret whose holder can assert
+        // anyone. That is the whole reason native OIDC exists here, so it is
+        // resolved FIRST and the header path never overwrites it.
+        let mut principal_from_oidc = false;
+        let _oidc_session = match (&request_principal, oidc_principal, shared_secret_ok) {
+            (None, Some(principal), false) => {
+                principal_from_oidc = true;
+                let binding = RequestBinding::bind_identity(&self.facade, principal);
+                request_principal = Some(principal.to_string());
+                Some(binding)
+            }
+            _ => None,
+        };
         let _sso_session = match (&request_principal, sso_identity, shared_secret_ok) {
             (None, Some(identity), false) => {
-                request_principal = Some(identity.to_string());
-                Some(RequestBinding::bind_identity(&self.facade, identity))
+                match self.resolve_sso_principal(identity, sso_groups) {
+                    Some((principal, from_group)) => {
+                        principal_from_sso = true;
+                        principal_from_group = from_group;
+                        let binding = RequestBinding::bind_identity(&self.facade, &principal);
+                        request_principal = Some(principal);
+                        Some(binding)
+                    }
+                    None => None,
+                }
             }
             _ => None,
         };
@@ -987,6 +1523,17 @@ impl UiServer {
                     "mode": if self.credentials.is_some() { "credentials" }
                             else if self.token.is_some() { "token" }
                             else { "open" },
+                    // Provenance, not just value: the console shows an
+                    // approver whether their identity is one this instance
+                    // will accept on `run.respond` BEFORE they try it.
+                    "identity_source": if principal_from_oidc { "oidc" }
+                                       else if principal_from_group { "sso-group" }
+                                       else if principal_from_sso { "sso" }
+                                       else if request_principal.is_some() { "credential" }
+                                       else { "none" },
+                    "may_approve": request_principal.is_some()
+                        && !principal_from_group
+                        && (!principal_from_sso || self.sso_approvals),
                 }))
             }
             ("GET", "/api/config") => {
@@ -1327,6 +1874,25 @@ impl UiServer {
                     return ("403 Forbidden", "application/json",
                         br#"{"ok":false,"error":"run.respond requires a per-principal credential (areev ui --auth <map>); shared-token or anonymous approvals are refused - the approver's identity IS the audit record"}"#.to_vec());
                 };
+                // [A0] PROXY-ASSERTED APPROVALS ARE REFUSED BY DEFAULT: an
+                // SSO identity's only proof is a shared, static, fleet-wide
+                // proxy secret — whoever holds it can assert any identity,
+                // including this approver's. That is a weaker claim than the
+                // per-principal credential [R3] demands, and the resulting
+                // audit grain would be indistinguishable from a real
+                // approval. Opt in with `areev ui --sso-approvals allow`.
+                if principal_from_sso && !self.sso_approvals {
+                    return ("403 Forbidden", "application/json",
+                        br#"{"ok":false,"error":"run.respond refuses proxy-asserted SSO identities: the identity header is trusted only via a shared proxy secret, which whoever holds it can use to assert any approver. Approve with a per-principal credential (areev ui --auth <map>), or accept the trade-off explicitly with --sso-approvals allow"}"#.to_vec());
+                }
+                // [A2] A group-derived principal is a ROLE. It is refused
+                // even under `--sso-approvals allow`, and deliberately has no
+                // flag of its own: the audit record would read "role:eng
+                // approved", which names no one who can be asked why.
+                if principal_from_group {
+                    return ("403 Forbidden", "application/json",
+                        br#"{"ok":false,"error":"run.respond refuses group-derived principals: a role is not an approver, and an audit record naming one identifies nobody. Grant this person a principal of their own, or give them a per-principal credential"}"#.to_vec());
+                }
                 let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
                 let (Some(run_id), Some(ask)) = (
                     req.get("run_id").and_then(Value::as_str),
@@ -2590,6 +3156,182 @@ mod run_api_tests {
         );
         assert!(r.0.starts_with("200"), "{}", String::from_utf8_lossy(&r.2));
     }
+
+    /// [A0] The approval trust floor. `user:officer` holds `run.respond ON
+    /// ops` in the FILE, so the grants are identical whichever way the
+    /// identity arrives — which is exactly the point. What differs is the
+    /// PROOF: a credential-map token is a per-principal secret; an SSO header
+    /// is trusted via one shared, fleet-wide proxy secret that lets its
+    /// holder assert any approver. The default refuses the weaker proof.
+    #[test]
+    fn proxy_asserted_identities_cannot_approve_by_default() {
+        let (s, ask) = parked_server();
+        let s = s.with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>);
+
+        // The SSO identity is a GRANTED principal and still cannot approve.
+        let r = s.route("POST", "/api/run/respond", &body("hitl-1", &ask), None, Some("user:officer"));
+        assert!(
+            r.0.starts_with("403"),
+            "proxy-asserted approval must refuse by default: {} {}",
+            r.0,
+            String::from_utf8_lossy(&r.2)
+        );
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(
+            text.contains("--sso-approvals"),
+            "the refusal must name the flag that lifts it: {text}"
+        );
+
+        // Reviewing is unaffected — SSO identities keep every read.
+        let r = s.route("GET", "/api/run/list", b"", None, Some("user:officer"));
+        assert!(r.0.starts_with("200"), "SSO identities may still review: {}", r.0);
+
+        // And the SAME principal, proven by its own credential, approves.
+        let r = s.route("POST", "/api/run/respond", &body("hitl-1", &ask), Some("officer-secret"), None);
+        assert!(r.0.starts_with("200"), "{}", String::from_utf8_lossy(&r.2));
+    }
+
+    /// [A0] `--sso-approvals allow` is the operator accepting that trade-off
+    /// explicitly. Nothing else changes: the same identity, the same file
+    /// grants, the same runtime separation-of-duties check behind it.
+    #[test]
+    fn sso_approvals_allow_opts_in_to_proxy_asserted_approvals() {
+        let (s, ask) = parked_server();
+        let s = s
+            .with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>)
+            .with_sso_approvals(true);
+
+        let r = s.route("POST", "/api/run/respond", &body("hitl-1", &ask), None, Some("user:officer"));
+        assert!(r.0.starts_with("200"), "{}", String::from_utf8_lossy(&r.2));
+        assert!(String::from_utf8_lossy(&r.2).contains("user:officer"));
+    }
+
+    /// [A2] Groups → principals, so SSO scales without a grant grain per
+    /// person — and the precedence that makes it safe: an identity with its
+    /// own grants outranks its group, so adding a groups header can never
+    /// narrow someone who already had rights.
+    #[test]
+    fn groups_resolve_to_principals_but_never_outrank_an_identity() {
+        let (s, _ask) = parked_server();
+        // `user:officer` is granted in the file; `role:reviewer` is not a
+        // credential, only a group target.
+        let map = CredentialMap::from_json(
+            r#"{"version":1,
+                "tokens":[{"env":"AREEV_RUN_OFFICER_TOK","principal":"user:officer","id":"off"}],
+                "groups":{"Engineering":"user:officer"}}"#,
+        )
+        .unwrap();
+        let s = s
+            .with_credentials(map)
+            .with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>)
+            .with_sso_groups_header("x-forwarded-groups");
+
+        // An UNGRANTED identity in a mapped group inherits the group's
+        // principal — the whole point of the feature.
+        let r = s.route_with_groups(
+            "GET",
+            "/api/whoami",
+            b"",
+            None,
+            Some("user:newhire@example.com"),
+            Some("platform,Engineering"),
+        );
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains("user:officer"), "group should resolve: {text}");
+        assert!(text.contains(r#""identity_source":"sso-group""#), "{text}");
+
+        // Case-insensitive: directories are inconsistent, and a mapping that
+        // misses on case would fail OPEN into the identity's own (empty)
+        // grants.
+        let r = s.route_with_groups(
+            "GET", "/api/whoami", b"", None, Some("user:newhire@example.com"), Some("ENGINEERING"),
+        );
+        assert!(String::from_utf8_lossy(&r.2).contains("user:officer"));
+
+        // An identity that IS granted keeps its own principal, group or not.
+        let r = s.route_with_groups(
+            "GET", "/api/whoami", b"", None, Some("user:officer"), Some("Engineering"),
+        );
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains(r#""identity_source":"sso""#), "identity outranks group: {text}");
+
+        // An unmapped group resolves to nothing and the identity stands.
+        let r = s.route_with_groups(
+            "GET", "/api/whoami", b"", None, Some("user:newhire@example.com"), Some("sales"),
+        );
+        assert!(String::from_utf8_lossy(&r.2).contains("user:newhire@example.com"));
+    }
+
+    /// [A2] A role is not an approver. This refusal has no flag of its own —
+    /// `--sso-approvals allow` does not lift it — because an audit record
+    /// reading "role:eng approved" names nobody who can be asked why.
+    #[test]
+    fn group_derived_principals_can_never_approve() {
+        let (s, ask) = parked_server();
+        let map = CredentialMap::from_json(
+            r#"{"version":1,
+                "tokens":[{"env":"AREEV_RUN_OFFICER_TOK","principal":"user:officer","id":"off"}],
+                "groups":{"approvers":"user:officer"}}"#,
+        )
+        .unwrap();
+        let s = s
+            .with_credentials(map)
+            .with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>)
+            .with_sso_groups_header("x-forwarded-groups")
+            // Even with the A0 opt-in explicitly granted.
+            .with_sso_approvals(true);
+
+        let r = s.route_with_groups(
+            "POST",
+            "/api/run/respond",
+            &body("hitl-1", &ask),
+            None,
+            Some("user:newhire@example.com"),
+            Some("approvers"),
+        );
+        assert!(r.0.starts_with("403"), "{} {}", r.0, String::from_utf8_lossy(&r.2));
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains("role"), "the refusal must say why: {text}");
+    }
+
+    /// [A2] The prefix keeps IdP-sourced principals visibly distinct from
+    /// local ones everywhere they land.
+    #[test]
+    fn the_principal_prefix_is_stamped_on_proxy_asserted_identities() {
+        let (s, _ask) = parked_server();
+        let s = s
+            .with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>)
+            .with_sso_principal_prefix("sso:");
+
+        let r = s.route("GET", "/api/whoami", b"", None, Some("pat@example.com"));
+        assert!(String::from_utf8_lossy(&r.2).contains("sso:pat@example.com"), "{}", String::from_utf8_lossy(&r.2));
+
+        // Idempotent: an identity the proxy already prefixed is not
+        // double-stamped into a different principal than the grant names.
+        let r = s.route("GET", "/api/whoami", b"", None, Some("sso:pat@example.com"));
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains("sso:pat@example.com"), "{text}");
+        assert!(!text.contains("sso:sso:"), "must not double-stamp: {text}");
+    }
+
+    /// [A0] `whoami` tells an approver where they stand BEFORE they try to
+    /// approve — a console that only discovers this at the 403 is a console
+    /// that discovers it mid-incident.
+    #[test]
+    fn whoami_reports_identity_provenance_and_approval_capability() {
+        let (s, _ask) = parked_server();
+        let s = s.with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>);
+
+        let r = s.route("GET", "/api/whoami", b"", None, Some("user:officer"));
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains(r#""identity_source":"sso""#), "{text}");
+        assert!(text.contains(r#""may_approve":false"#), "{text}");
+
+        let r = s.route("GET", "/api/whoami", b"", Some("officer-secret"), None);
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains(r#""identity_source":"credential""#), "{text}");
+        assert!(text.contains(r#""may_approve":true"#), "{text}");
+    }
 }
 
 #[cfg(test)]
@@ -2900,6 +3642,48 @@ mod sso_tests {
         );
     }
 
+    /// [A2] The proxy secret proves the PROXY. It does not make whatever the
+    /// proxy forwarded well-formed — and an identity lands in immutable,
+    /// replicating audit grains, so a malformed one outlives its request.
+    #[test]
+    fn malformed_identities_are_rejected_even_with_a_valid_proxy_secret() {
+        assert_eq!(
+            super::sanitize_sso_identity("  user:pat@example.com  ").as_deref(),
+            Some("user:pat@example.com"),
+            "surrounding whitespace is trimmed, not rejected"
+        );
+
+        // CR/LF would smuggle a second line into every log and audit record.
+        assert!(super::sanitize_sso_identity("user:a\r\nX-Admin: true").is_none());
+        assert!(super::sanitize_sso_identity("user:a\tb").is_none());
+        // Internal whitespace would make "user: a" and "user:a" two audit
+        // identities for one person.
+        assert!(super::sanitize_sso_identity("user a").is_none());
+        assert!(super::sanitize_sso_identity("").is_none());
+        assert!(super::sanitize_sso_identity(&"x".repeat(129)).is_none());
+        // Reserved: an audit line must never be ambiguous between a vouched
+        // person and the console's own floor/ceiling principals.
+        assert!(super::sanitize_sso_identity("anonymous").is_none());
+        assert!(super::sanitize_sso_identity("user:console").is_none());
+    }
+
+    /// [A2] A rejected identity is treated as an ABSENT one — the request
+    /// degrades to anonymous rather than the console refusing to serve, so a
+    /// misconfigured proxy cannot take the console down.
+    #[test]
+    fn a_rejected_identity_degrades_to_anonymous_rather_than_erroring() {
+        let server = sso_server();
+        let out = post(
+            &server,
+            "X-Forwarded-User: anonymous\r\nX-Areev-Proxy-Secret: proxy-secret\r\n",
+        );
+        assert!(
+            out.contains("anonymous") || out.contains("401"),
+            "a reserved name must not authenticate: {out}"
+        );
+        assert!(!out.contains("HTTP/1.1 500"), "and must not error: {out}");
+    }
+
     /// The rotation window (#79): while two secrets are configured, either
     /// proves the proxy — so the fleet moves over one node at a time instead
     /// of atomically, which is the only way an impersonation-grade credential
@@ -3178,6 +3962,146 @@ mod origin_tests {
 /// `note_auth_failure`'s doc comment for why a sleep here would itself be a
 /// denial-of-service lever). A request that never presented a credential at
 /// all has nothing to fail and is never counted.
+/// [A3] Native OIDC at the request level: cookies, the `/auth/*` endpoints,
+/// and the approval rules an IdP-proven identity is subject to.
+#[cfg(all(test, feature = "oidc"))]
+mod oidc_route_tests {
+    use super::{cookie_value, oidc, UiServer};
+    use areev_cal::AreevFacade;
+    use areev_core::authz::{AUTHZ_NS, REL_PERMITS};
+    use areev_core::types::{Fact, Grain};
+    use areev_store::Areev;
+
+    fn cfg() -> oidc::OidcConfig {
+        oidc::OidcConfig {
+            issuer: "https://idp.example.com".into(),
+            client_id: "console".into(),
+            client_secret: "s3cr3t".into(),
+            redirect_uri: "https://console.example.com/auth/callback".into(),
+            scopes: "openid email".into(),
+            principal_claim: "email".into(),
+            principal_prefix: None,
+        }
+    }
+
+    /// A cookie header is attacker-influenced: any script on any same-site
+    /// origin can set cookies. A prefix or substring match would let a decoy
+    /// shadow the real session.
+    #[test]
+    fn cookie_lookup_is_exact_on_the_name() {
+        let h = "theme=dark; areev_session=real; other=x";
+        assert_eq!(cookie_value(h, "areev_session").as_deref(), Some("real"));
+        // A decoy whose name merely CONTAINS the real one must not match.
+        let decoy = "areev_session_decoy=evil; areev_session=real";
+        assert_eq!(cookie_value(decoy, "areev_session").as_deref(), Some("real"));
+        let only_decoy = "xareev_session=evil; areev_sessionx=evil2";
+        assert!(cookie_value(only_decoy, "areev_session").is_none());
+        assert!(cookie_value("", "areev_session").is_none());
+    }
+
+    /// `/auth/login` redirects to the IdP and stores nothing in the browser;
+    /// `/auth/logout` clears the cookie AND drops the server-side session.
+    #[test]
+    fn the_auth_endpoints_redirect_and_manage_the_cookie() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("ops".into()), None);
+        let provider = oidc::OidcProvider::with_test_session(cfg(), "sid-1", "user:pat");
+        let s = UiServer::new(facade, "oidc-test".into()).with_oidc(provider);
+
+        // login → 302 to the IdP, and no Set-Cookie (nothing to remember yet).
+        let (status, extra, _) = s.oidc_route("GET", "/auth/login", None);
+        assert!(status.starts_with("302"), "{status}");
+        assert!(extra.contains("Location: https://idp.example.com/authorize"), "{extra}");
+        assert!(!extra.contains("Set-Cookie"), "{extra}");
+        assert!(extra.contains("Cache-Control: no-store"), "a redirect carrying state must not cache: {extra}");
+
+        // The session works before logout...
+        assert!(s.oidc_principal(Some("areev_session=sid-1")).is_some());
+
+        // ...and logout clears the browser copy AND invalidates server-side.
+        let (status, extra, _) =
+            s.oidc_route("POST", "/auth/logout", Some("areev_session=sid-1"));
+        assert!(status.starts_with("302"), "{status}");
+        assert!(extra.contains("Max-Age=0"), "{extra}");
+        assert!(extra.contains("HttpOnly"), "{extra}");
+        assert!(extra.contains("SameSite=Strict"), "{extra}");
+        assert!(
+            s.oidc_principal(Some("areev_session=sid-1")).is_none(),
+            "logout must invalidate the session, not just the browser's copy"
+        );
+
+        // A callback with no code surfaces the IdP's own error.
+        let (status, _, body) =
+            s.oidc_route("GET", "/auth/callback?error=access_denied", None);
+        assert!(status.starts_with("400"), "{status}");
+        assert!(body.contains("access_denied"), "{body}");
+    }
+
+    /// The cookie is `HttpOnly` + `SameSite=Strict`, and `Secure` exactly
+    /// when the redirect URI is https — a loopback console over plain http
+    /// must still be able to log in.
+    #[test]
+    fn the_session_cookie_is_httponly_strict_and_secure_only_over_https() {
+        let mk = |redirect: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+            std::mem::forget(dir);
+            let facade = AreevFacade::with_session(store, Some("ops".into()), None);
+            let mut c = cfg();
+            c.redirect_uri = redirect.into();
+            let p = oidc::OidcProvider::with_test_session(c, "sid", "user:pat");
+            UiServer::new(facade, "t".into()).with_oidc(p)
+        };
+
+        let https = mk("https://console.example.com/auth/callback");
+        let (_, extra, _) = https.oidc_route("GET", "/auth/logout", None);
+        assert!(extra.contains("; Secure"), "https deployment must set Secure: {extra}");
+
+        let http = mk("http://127.0.0.1:7437/auth/callback");
+        let (_, extra, _) = http.oidc_route("GET", "/auth/logout", None);
+        assert!(!extra.contains("; Secure"), "loopback http must not set Secure: {extra}");
+        // The other two are unconditional.
+        assert!(extra.contains("HttpOnly") && extra.contains("SameSite=Strict"), "{extra}");
+    }
+
+    /// The point of the whole feature: an OIDC-proven identity MAY approve,
+    /// and `--sso-approvals` (which governs the header path) does not touch
+    /// it. A signature verified against the issuer's key set is a stronger
+    /// claim than a shared proxy secret, so it gets the stronger right.
+    #[test]
+    fn an_oidc_principal_may_approve_regardless_of_sso_approvals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut store = Areev::open(path.to_str().unwrap()).unwrap();
+        store
+            .add(
+                &Fact::new("user:pat", REL_PERMITS, "read,run.respond ON ops")
+                    .namespace(AUTHZ_NS)
+                    .created_at(900),
+            )
+            .unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("ops".into()), None);
+        let provider = oidc::OidcProvider::with_test_session(cfg(), "sid-1", "user:pat");
+        let s = UiServer::new(facade, "oidc-test".into())
+            .with_oidc(provider)
+            // The A0 default, explicitly: SSO headers may NOT approve.
+            .with_sso_approvals(false);
+
+        let r = s.route_full("GET", "/api/whoami", b"", None, None, None, Some("user:pat"));
+        let text = String::from_utf8_lossy(&r.2).to_string();
+        assert!(text.contains(r#""identity_source":"oidc""#), "{text}");
+        assert!(
+            text.contains(r#""may_approve":true"#),
+            "an IdP-proven identity is exactly what --sso-approvals exists to \
+             substitute for; it must not be caught by that refusal: {text}"
+        );
+        assert!(text.contains("user:pat"), "{text}");
+    }
+}
+
 #[cfg(test)]
 mod auth_failure_tracking_tests {
     use super::UiServer;
@@ -3199,6 +4123,15 @@ mod auth_failure_tracking_tests {
     /// GET `/` with an optional `Authorization: Bearer` header, over a real
     /// socket (the counter hooks `handle_request`, not `route`).
     fn get_root(server: &UiServer, bearer: Option<&str>) -> String {
+        let auth_header = bearer
+            .map(|t| format!("Authorization: Bearer {t}\r\n"))
+            .unwrap_or_default();
+        get_root_with(server, &auth_header)
+    }
+
+    /// `GET /` with arbitrary extra headers, over a real socket (the counter
+    /// hooks `handle_request`, not `route`).
+    fn get_root_with(server: &UiServer, extra_headers: &str) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::scope(|scope| {
@@ -3208,10 +4141,7 @@ mod auth_failure_tracking_tests {
                 }
             });
             let mut c = std::net::TcpStream::connect(addr).unwrap();
-            let auth_header = bearer
-                .map(|t| format!("Authorization: Bearer {t}\r\n"))
-                .unwrap_or_default();
-            let req = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth_header}Connection: close\r\n\r\n");
+            let req = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra_headers}Connection: close\r\n\r\n");
             c.write_all(req.as_bytes()).unwrap();
             let mut out = String::new();
             let _ = c.read_to_string(&mut out);
@@ -3251,8 +4181,10 @@ mod auth_failure_tracking_tests {
         }
         assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 5);
 
-        // The right token succeeds on the very next request — no in-process
-        // delay or lockout, even mid-streak (that decision is the proxy's).
+        // The right token succeeds on the very next request — there is no
+        // in-process DELAY at any streak length, and below
+        // MAX_CONSECUTIVE_AUTH_FAILURES no rejection either, so an operator
+        // who fat-fingers a pasted token is never locked out.
         let ok = get_root(&s, Some("right-token"));
         assert!(ok.contains("HTTP/1.1 200"), "{ok}");
         assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 0, "success resets the streak");
@@ -3261,5 +4193,66 @@ mod auth_failure_tracking_tests {
         let r = get_root(&s, Some("guess"));
         assert!(r.contains("HTTP/1.1 401"), "{r}");
         assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 1);
+    }
+
+    /// [A1] Behind a trusted proxy every request shares ONE source address,
+    /// so a per-IP lockout would let one attacker's bad guesses refuse every
+    /// user behind it — a self-inflicted outage in the deployment we
+    /// recommend. A proxy-proven request is exempt; throttling there belongs
+    /// to the proxy, like TLS and the IdP handshake.
+    #[test]
+    fn a_proxy_proven_request_is_never_locked_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Areev::open(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        std::mem::forget(dir);
+        let facade = AreevFacade::with_session(store, Some("caller".into()), None);
+        let s = UiServer::new(facade, "proxy-test".into())
+            .with_auth("right-token".into())
+            .with_sso_rotating("x-forwarded-user", "proxy-secret", None::<String>);
+
+        // Burn well past the threshold with wrong bearer tokens, but all
+        // arriving through the proxy (valid proxy secret on every request).
+        for _ in 0..(super::MAX_CONSECUTIVE_AUTH_FAILURES + 5) {
+            let _ = get_root_with(
+                &s,
+                "Authorization: Bearer guess\r\nX-Areev-Proxy-Secret: proxy-secret\r\n",
+            );
+        }
+        // A legitimate user behind the same proxy is still served.
+        let ok = get_root_with(
+            &s,
+            "Authorization: Bearer right-token\r\nX-Areev-Proxy-Secret: proxy-secret\r\n",
+        );
+        assert!(ok.contains("HTTP/1.1 200"), "proxy-borne traffic must not be locked out: {ok}");
+    }
+
+    /// [A1] Past the threshold the console stops answering credential-bearing
+    /// requests from that source — refusing, never sleeping, because a serial
+    /// accept loop makes a sleep a denial-of-service lever for everyone else.
+    #[test]
+    fn a_long_streak_is_refused_with_429_until_it_goes_idle() {
+        let s = server();
+        for i in 0..super::MAX_CONSECUTIVE_AUTH_FAILURES {
+            let r = get_root(&s, Some("guess"));
+            assert!(r.contains("HTTP/1.1 401"), "attempt {i} should still be a 401: {r}");
+        }
+
+        // The next credential-bearing request is refused before routing.
+        let blocked = get_root(&s, Some("guess"));
+        assert!(blocked.contains("HTTP/1.1 429"), "{blocked}");
+        assert!(blocked.contains("Retry-After:"), "a 429 must say when: {blocked}");
+
+        // The brake is on the SOURCE, not on the credential: even the right
+        // token is refused while the streak stands. That is the intended
+        // trade — an attacker who has burned an IP cannot then race a guess
+        // through — and it is why the streak expires on its own.
+        let right = get_root(&s, Some("right-token"));
+        assert!(right.contains("HTTP/1.1 429"), "{right}");
+
+        // A credential-LESS request is untouched: it was never counted, so it
+        // must not be blocked either. The console page still serves its 401
+        // challenge, which is what lets a browser prompt for a fresh login.
+        let bare = get_root(&s, None);
+        assert!(bare.contains("HTTP/1.1 401"), "{bare}");
     }
 }

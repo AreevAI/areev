@@ -90,6 +90,12 @@ pub(crate) const PG_SCHEMA: &[&str] = &[
         text text,
         blob bytea NOT NULL)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_grains_hash ON grains(hash)",
+    // Mirrors the embedded SCHEMA's idx_grains_ns_s, for the same reason and
+    // in the same column order: the vector legs join embeddings to grains and
+    // filter on (ns, s, p), and without this the planner scans grains and
+    // computes a distance per row. This tier has the steeper slope of the two
+    // (a round trip per statement on top of the scan), so it needs it more.
+    "CREATE INDEX IF NOT EXISTS idx_grains_ns_s ON grains(ns, s, p)",
     // Dimension-less at creation: the `vec vector(dim)` column arrives via
     // `ensure_embeddings` at the first set_embedder (the dim is host-
     // supplied), but the TABLE must exist up front — forget() deletes from
@@ -719,6 +725,112 @@ impl Db for PgDb {
                 )));
             }
             Ok(())
+        })
+    }
+
+    /// pgvector HNSW over `embeddings.vec`, cosine ops to match the `<=>`
+    /// that `vector_distance_cos` translates into.
+    ///
+    /// Three things a caller must know, all of them consequences rather than
+    /// opinions:
+    ///
+    /// 1. **Recall becomes approximate.** `ef_search` is the knob: raise it
+    ///    for accuracy, lower it for latency. This is why the index is opt-in
+    ///    and not in `PG_SCHEMA` — no one should acquire approximate results
+    ///    by upgrading a binary.
+    /// 2. **The build takes an exclusive lock** on `embeddings` and is O(rows)
+    ///    — minutes at a million vectors. Not `CONCURRENTLY`: a failed
+    ///    concurrent build leaves an INVALID index behind that still has to be
+    ///    dropped by hand, and a store method that can leave the schema in a
+    ///    state only a DBA can exit is worse than one that asks for a
+    ///    maintenance window.
+    /// 3. **It does not help a filtered query.** With `WHERE g.ns = ?` the
+    ///    planner drives from `idx_grains_ns_s` and computes exact distances
+    ///    over the survivors, which is both faster and exact. HNSW is for the
+    ///    whole-corpus query that has no filter to narrow it.
+    fn ensure_ann_index(&self, m: usize, ef_construction: usize, ef_search: usize) -> Result<()> {
+        // pgvector's own bounds; rejected here so the failure names the knob
+        // rather than surfacing a raw SQLSTATE from deep in the build.
+        if !(2..=100).contains(&m) {
+            return Err(AreevError::Validation(format!(
+                "hnsw m must be 2..=100, got {m}"
+            )));
+        }
+        if !(4..=1000).contains(&ef_construction) {
+            return Err(AreevError::Validation(format!(
+                "hnsw ef_construction must be 4..=1000, got {ef_construction}"
+            )));
+        }
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            // The column arrives with the first embedder (`ensure_embeddings`).
+            // Without it there is nothing to index, and `CREATE INDEX` would
+            // fail with an undefined-column error that reads like a bug.
+            let has_vec = client
+                .query_one(
+                    "SELECT count(*) FROM pg_attribute a
+                       JOIN pg_class c ON a.attrelid = c.oid
+                       JOIN pg_namespace n ON c.relnamespace = n.oid
+                      WHERE n.nspname = current_schema() AND c.relname = 'embeddings'
+                        AND a.attname = 'vec' AND NOT a.attisdropped",
+                    &[],
+                )
+                .await
+                .map_err(pg_err)?
+                .get::<_, i64>(0);
+            if has_vec == 0 {
+                return Err(AreevError::AnnIndexUnsupported(
+                    "this memory has no embeddings yet — install an embedder and store at least \
+                     one vector before building an index over them"
+                        .into(),
+                ));
+            }
+            client
+                .batch_execute(&format!(
+                    "CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON embeddings \
+                     USING hnsw (vec vector_cosine_ops) WITH (m = {m}, ef_construction = {ef_construction})"
+                ))
+                .await
+                .map_err(|e| {
+                    AreevError::Storage(format!("cannot build the HNSW index over embeddings: {e}"))
+                })?;
+            // Session-scoped, and this backend holds one connection per store
+            // handle, so it lasts as long as the handle does. It is NOT a file
+            // truth: a different host opening the same schema picks its own
+            // accuracy/latency point, which is right — that trade belongs to
+            // the caller, not to the data.
+            client
+                .batch_execute(&format!("SET hnsw.ef_search = {ef_search}"))
+                .await
+                .map_err(pg_err)?;
+            Ok(())
+        })
+    }
+
+    fn drop_ann_index(&self) -> Result<()> {
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            client
+                .batch_execute("DROP INDEX IF EXISTS idx_embeddings_hnsw")
+                .await
+                .map_err(pg_err)?;
+            Ok(())
+        })
+    }
+
+    fn ann_index_name(&self) -> Result<Option<String>> {
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            let rows = client
+                .query(
+                    "SELECT indexname FROM pg_indexes
+                      WHERE schemaname = current_schema() AND tablename = 'embeddings'
+                        AND indexdef LIKE '%hnsw%'",
+                    &[],
+                )
+                .await
+                .map_err(pg_err)?;
+            Ok(rows.first().map(|r| r.get::<_, String>(0)))
         })
     }
 }

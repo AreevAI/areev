@@ -148,7 +148,7 @@ dataset, rerun instructions and the full caveat list:
 
 ---
 
-| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,435 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
+| **~30 µs** recall, in-process | runs on a **$35 Raspberry Pi** | **2,504 tests · 81.0% coverage** | **`FORGET SUBJECT`** is one operation |
 |:---:|:---:|:---:|:---:|
 | [benchmarks →](crates/areev-bench/RESULTS.md) | [edge results →](crates/areev-bench/RESULTS.md) | [quality, measured →](docs/quality.md) | [GDPR map →](docs/gdpr.md) |
 
@@ -424,6 +424,7 @@ How each number is produced, and the benchmark receipts:
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |
 | [`docs/deployment-profile.md`](docs/deployment-profile.md) | Deploying the runtime + adapters: modes, auth, SSO |
 | [`docs/docker.md`](docs/docker.md) | The container image: compose, the trigger heartbeat, cloud deploys, multi-agent fleets |
+| [`docs/scale-and-tenancy.md`](docs/scale-and-tenancy.md) | Laying out a large shared corpus: why the partition boundary IS the permission boundary, and what each boundary costs |
 | [`FAQ.md`](FAQ.md) | Questions & answers (also LLM-friendly) |
 | [`SECURITY.md`](SECURITY.md) · [`docs/security-model.md`](docs/security-model.md) | Security policy & threat model |
 | [`docs/gdpr.md`](docs/gdpr.md) · [`docs/erasure.md`](docs/erasure.md) | GDPR obligations → capabilities (for a DPIA); the erasure requirement record |

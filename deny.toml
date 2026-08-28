@@ -12,7 +12,34 @@ version = 2
 # any yanked crate. Add specific advisory IDs to `ignore` only with a documented
 # justification and a tracking issue.
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack" timing sidechannel in the pure-Rust
+    # `rsa` crate, reaching the tree via jsonwebtoken's `rust_crypto` backend
+    # under the NON-DEFAULT `oidc` feature. No patched release exists.
+    #
+    # Not reachable here: the advisory is a PRIVATE-KEY recovery attack, and
+    # Areev holds no RSA private key. The console is an OIDC *client* — it
+    # verifies an id_token against the issuer's published PUBLIC key, and
+    # timing over public values leaks nothing secret. The entire jsonwebtoken
+    # surface in this tree is verification-only (`decode_header`,
+    # `Validation`, `decode`, `DecodingKey::from_jwk`, `JwkSet`); there is no
+    # `EncodingKey`, no `encode`, no key material. That is structural rather
+    # than incidental: "Areev is never an authorization server, and never
+    # issues or signs tokens" is an explicit non-goal (auth-proposal §8).
+    # `rsa` is also absent from a default build entirely.
+    #
+    # Not fixed by switching backends: jsonwebtoken's `aws_lc_rs` avoids
+    # `rsa` but pulls a C library + CMake, which costs the edge/ARM story the
+    # `oidc` feature was built to preserve, and adds a third crypto backend
+    # beside rustls's `ring`. Dropping RS256 is not an option — Google and
+    # Entra ID sign id_tokens with RS256 exclusively.
+    #
+    # This ignore is workspace-wide, so it WOULD mask a real finding if
+    # anything here ever performs RSA private-key operations. Tracking issue
+    # (with the conditions that invalidate it): #140. Re-check on every
+    # jsonwebtoken bump.
+    { id = "RUSTSEC-2023-0071", reason = "rsa private-key timing attack; Areev only verifies with public keys, and only under the non-default `oidc` feature — see #140" },
+]
 
 [licenses]
 version = 2

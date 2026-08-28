@@ -711,6 +711,15 @@ only a per-principal credential may approve, because the approver's identity
 *is* the audit record, and the Approve/Refuse buttons say so when they are
 unavailable. Cancel deliberately keeps the low bar.
 
+The same rule extends to **trusted-header SSO**: an identity asserted by an
+authenticating proxy is refused unless the console was started with
+`areev ui --sso-approvals allow`. Its proof is one shared, fleet-wide proxy
+secret, so whoever holds that secret can approve as anyone — including the
+officer named in the audit record. A proxy-asserted identity keeps every read
+and review; it loses only this verb. Approvers should hold a per-principal
+credential (`areev ui --auth <map>`), whose grants are the same either way —
+what differs is the strength of the proof, not the rights.
+
 ## Budgets
 
 `--max-tokens`, `--max-usd`, `--max-wall-ms`, `--max-supersteps`. Spend is

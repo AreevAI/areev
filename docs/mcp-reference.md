@@ -186,7 +186,7 @@ fails with a named remedy rather than returning an empty list.
 | `text` | string | **yes** | Candidate fact text to check for near-duplicates |
 | `subject` | string | no | Narrows the search |
 | `relation` | string | no | Narrows the search |
-| `namespace` | string | no | Defaults to the session namespace |
+| `namespace` | string | no | Defaults to the session namespace. Accepts an `"org.*"` prefix scope, like every plural read — cost is proportional to the scope, not the file |
 | `k` | integer | no | Max results (default 5) |
 
 Returns a JSON array of `{ hash, similarity }`, most similar first.

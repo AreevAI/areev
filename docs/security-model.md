@@ -217,6 +217,49 @@ top of that.
   that principal) or the shared secret (the implied admin). A credential whose
   `env` variable is unset or **empty** authenticates nobody; an empty
   `Authorization: Bearer ` never resolves.
+- **Credential lifecycle** (`areev auth mint|list|revoke --auth FILE`). The
+  map is host config and holds no reversible secret — only a token's SHA-256,
+  or the name of an env var holding it — so a stolen or synced copy is inert.
+  Four properties make it operable rather than merely correct:
+  - **Minted, not chosen.** `areev auth mint` emits a 256-bit CSPRNG token
+    prefixed `areev_pat_`, prints it once on stdout, and records only its
+    digest. This is the actual control: an *operator-chosen* token is what
+    makes an unsalted SHA-256 worth grinding at all. A token Areev did not
+    mint still works, and `areev ui --token-env` warns at startup that its
+    entropy is unknown.
+  - **The prefix is for everyone else.** Secret scanners get one regex, and a
+    human who finds a token in a paste knows what it opens.
+  - **Every credential has an `id`** — optional in the file, with a stable
+    non-positional fallback (a digest prefix, or `env:VAR`), so a map written
+    before ids existed still loads. The id is what lets one credential be
+    revoked without disturbing the principal's others, and what a successful
+    auth can name in a log. It is **never** echoed on a failure: a refused
+    secret must not confirm which credential it nearly matched.
+  - **Optional `expires_at`** (ISO-8601). Past it the credential authenticates
+    nobody, refused *indistinguishably* from an unknown token — same error,
+    same constant-shape scan, no mention of the id — so a stale credential
+    cannot be used to enumerate the map. An unparseable `expires_at` refuses
+    the whole map at load rather than reading as "never expires". The console
+    names credentials expiring within 14 days on every start.
+- **Online-guessing brake.** After 10 consecutive failed authentications from
+  one source IP, further *credential-bearing* requests from it are refused
+  with `429` until the streak goes idle (15 min). It **rejects, never
+  delays**: `serve` is a strictly serial accept loop, so a per-request sleep
+  would be a lever an unauthenticated caller pulls to stall the console for
+  everyone. The rejection happens before routing — no store access, no
+  constant-time scan. Credential-*less* requests are never counted and never
+  blocked, so a browser can still get its 401 challenge and log in. This is a
+  brake on rate, not a substitute for token entropy.
+
+  **Requests arriving through a trusted proxy are exempt.** Behind the
+  documented deployment every request shares the proxy's source address, so a
+  per-IP lockout would let one attacker's ten bad guesses refuse every user
+  behind it — a self-inflicted outage in exactly the configuration we
+  recommend. A request carrying a *verified* `x-areev-proxy-secret` is proven
+  to have come through that proxy, and per-source throttling there is the
+  proxy's job, the same division of labour as TLS termination and the IdP
+  handshake. Direct connections — every connection on a console with no proxy
+  — still brake.
 - **Trusted-header SSO** (`areev ui --sso-header NAME --sso-secret-env VAR`):
   an authenticating proxy does the OIDC/SAML handshake and forwards the
   identity in `NAME`; Areev honours that header **only** when the same request
@@ -235,6 +278,90 @@ top of that.
   through response timing), the console warns on every start while the window
   is open, and rotating to the same value is refused. Procedure:
   [runbooks/sso-secret-rotation.md](runbooks/sso-secret-rotation.md).
+- **Proxy-asserted identities may not approve, by default.** Because that
+  secret is impersonation-grade, a principal whose identity arrived in the SSO
+  header is refused at `POST /api/run/respond` unless the operator passes
+  `areev ui --sso-approvals allow`. The reasoning is the same one that already
+  refuses shared-token approvals: an approval's whole value is that the
+  approver's identity is real, and "some process presented the fleet-wide
+  proxy secret" is a materially weaker claim than a per-principal credential.
+  Without this the strongest governance control in the product would rest on
+  the weakest identity primitive, and the resulting audit grain would be
+  indistinguishable from a genuine approval — a well-formed answer by a
+  granted principal. Reads and reviews are unaffected; SSO identities lose
+  nothing but the approval verb. `GET /api/whoami` reports
+  `identity_source` (`sso` / `credential` / `none`) and `may_approve`, so the
+  console can say this before an approver tries rather than at the 403.
+  Turning it on is legitimate when the proxy↔console hop is itself
+  trustworthy (a Unix socket, or mTLS, with the secret never leaving the
+  host) — the console just cannot verify that, so it cannot be the default.
+- **The asserted identity is validated, not just trusted.** The proxy secret
+  proves the *proxy*; it says nothing about whether what the proxy forwarded
+  is well-formed. An identity is rejected if it is empty, longer than 128
+  bytes, contains any control character or whitespace (CR/LF would smuggle a
+  second line into every log and audit grain; `user: a` vs `user:a` would be
+  two audit identities for one person), or names a reserved principal
+  (`anonymous`, `user:console`). A rejected identity is treated exactly like
+  an **absent** one — the request degrades to anonymous — because refusing
+  the whole request would let a misconfigured proxy take the console down.
+  `--sso-principal-prefix` optionally stamps every proxy-asserted principal
+  so IdP-sourced names stay visibly distinct from local ones wherever they
+  land.
+- **Groups → principals** (`--sso-groups-header NAME`, needs `--auth`). The
+  credential map gains an optional `groups` table mapping IdP group names
+  (compared case-insensitively — directories are inconsistent, and a mapping
+  that missed on case would fail *open* into whatever the identity alone was
+  granted) to principals. Precedence is **identity, then group**: an identity
+  the file grants anything keeps its own principal, so adding a groups header
+  can never narrow someone who already had rights, and an individual grant can
+  override a role. A **group-derived principal may never answer a HITL
+  approval** — not even under `--sso-approvals allow`, and it has no flag of
+  its own. A role is not a person: "someone in engineering approved this"
+  identifies nobody who can be asked why.
+- **Native OIDC** (`areev ui --oidc-issuer … --oidc-client-id … 
+  --oidc-client-secret-env VAR --oidc-redirect-uri …`, non-default `oidc`
+  build feature). The console runs the authorization-code flow itself and
+  issues its own session, for deployments that cannot put an authenticating
+  proxy in front — or that need an approver identity stronger than a shared
+  proxy secret can carry. **An OIDC principal may approve by default**, and
+  `--sso-approvals` does not apply to it: the identity is proven by a
+  signature this process verified against the issuer's published key set, not
+  by a secret whose holder can assert anyone. That difference is the entire
+  reason the feature exists. Specifics:
+  - **PKCE (S256) always**, per RFC 9700 — on a confidential client too.
+    Exact redirect-URI matching. No implicit grant, no password grant.
+  - **Discovery** (RFC 8414) makes Google and Entra ID *config*, not code.
+    The discovery document's own `issuer` must equal the configured one, and
+    every endpoint must be `https` — otherwise a hostile document could
+    redirect the whole flow while still passing the `iss` check. Discovery
+    runs at **startup**, so a console that cannot reach its IdP fails to start
+    rather than failing every login later.
+  - **Algorithm confusion is closed.** The token header's `alg` may select a
+    key but never widens what is acceptable: symmetric algorithms are refused
+    outright before a key is chosen, and the allowlist fails closed on any
+    algorithm a future library version adds.
+  - **`exp`, `iss` and `aud` are required claims**; clock skew tolerance is 60
+    seconds. The `nonce` is compared in constant time against the one held
+    server-side for that login, so a token captured from another flow for the
+    same client is refused.
+  - **One login, one redemption.** The `state` is consumed when used —
+    including when the exchange *fails* — so a captured callback URL is not
+    replayable.
+  - **No token ever reaches the browser.** This process is the confidential
+    client; the browser gets only an `HttpOnly`, `SameSite=Strict` session
+    cookie (`Secure` whenever the redirect URI is https). Sessions are stored
+    under the **digest** of the session id, so a process memory dump yields
+    nothing presentable, and they expire on **both** an idle clock (8h) and an
+    absolute one (24h) — idle alone would let a stolen cookie live forever as
+    long as the thief kept using it. `/auth/logout` invalidates server-side,
+    not just in the browser.
+  - Both the pending-login and session maps are **bounded**, like every other
+    attacker-influenced map on this server.
+  - **Machines keep bearer tokens.** OIDC is for humans in the console; there
+    is no OIDC path for the CLI, MCP, or the bindings.
+  - **Areev is never an authorization server**: no user database, no password
+    storage, no MFA, no token issuance to third parties. Identity lives in the
+    IdP; Areev maps it to a principal the file's grants then govern.
 - Import is **DoS-hardened**: an untrusted `.mg` blob is size-capped and its
   msgpack framing is validated iteratively before decoding, so a hostile grain
   cannot cause a stack overflow (deep nesting) or a giant pre-allocation (a

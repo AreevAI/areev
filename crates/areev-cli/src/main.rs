@@ -176,8 +176,10 @@ COMMANDS:
                                       evidence as JSONL: every destructive
                                       op (who/what/why/how many) + the loop
                                       lifecycle chain, hash-chain verified
-  novelty  --text T [--subject S] [--relation R] [-k N]   nearest existing grains
+  novelty  --text T [--subject S] [--relation R] [-k N] [--ns NS]
+                                      nearest existing grains
                                       (paraphrase check; needs --embed-cmd)
+           --ns accepts a prefix scope 'org.*' like recall does
   log      [--since OP] [--limit N]   op-log (change feed)
   bundle   --out FILE [--since OP]    incremental backup (git-shaped)
   import   --bundle FILE              apply a bundle (fast-forward)
@@ -315,9 +317,24 @@ COMMANDS:
                                       install a Tier-1 NER detector (JSON
                                       probe/detect over stdin/stdout).
   memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
+  auth     mint|list|revoke --auth FILE
+                                      manage the credential map (no --db: it
+                                      names no memory). mint --id NAME
+                                      --principal NAME [--label TEXT]
+                                      [--expires 90d|<ISO-8601>]
+                                      [--memories A,B] prints a 256-bit
+                                      areev_pat_ token ONCE on stdout and
+                                      stores only its SHA-256; revoke --id
+                                      NAME drops one credential without
+                                      touching the principal's others
+                                      (restart `areev ui` to apply)
   ui       [--addr HOST:PORT] [--allow-remote] [--allow-origin ORIGIN[,ORIGIN...]]
            [--token-env VAR] [--no-destructive-ops] [--tls-cert PATH --tls-key PATH]
            [--sso-header NAME --sso-secret-env VAR [--sso-secret-env-next VAR]]
+           [--sso-approvals deny|allow] [--sso-groups-header NAME]
+           [--sso-principal-prefix PREFIX]
+           [--oidc-issuer URL --oidc-client-id ID --oidc-client-secret-env VAR
+            --oidc-redirect-uri URL [--oidc-scopes S] [--oidc-principal-claim C]]
                                       web console (default 127.0.0.1:7437).
                                       --allow-origin accepts a cross-origin
                                       POST from an EXACT origin (comma-
@@ -330,6 +347,33 @@ COMMANDS:
                                       window: both secrets prove the proxy, so
                                       the fleet moves over one node at a time
                                       (docs/runbooks/sso-secret-rotation.md)
+                                      --sso-approvals (default deny) decides
+                                      whether a proxy-asserted identity may
+                                      answer a HITL approval: its only proof
+                                      is the shared proxy secret, so 'allow'
+                                      makes every approval only as strong as
+                                      that one value. Approvers should hold a
+                                      per-principal credential (--auth).
+                                      --sso-groups-header maps IdP groups to
+                                      principals via --auth's \"groups\" table
+                                      (needs --auth); an identity with its own
+                                      grants outranks its groups, and a
+                                      group-derived principal is a ROLE — it
+                                      may never approve, under any setting.
+                                      --sso-principal-prefix stamps every
+                                      proxy-asserted principal so IdP names
+                                      stay distinct from local ones.
+                                      --oidc-* (build with --features oidc)
+                                      runs the auth-code+PKCE flow in-process
+                                      instead: the console verifies the IdP's
+                                      signature against its published key set
+                                      and issues an HttpOnly SameSite=Strict
+                                      session cookie. Login at /auth/login,
+                                      logout at /auth/logout. An OIDC identity
+                                      MAY approve (no --sso-approvals needed):
+                                      a verified signature is a stronger claim
+                                      than a shared proxy secret. The redirect
+                                      URI must match the provider's exactly.
 
 Namespace defaults to \"shared\". Exit code 0 on success.
 --db is optional for one-shot commands: it falls back to $AREEV_DB, then
@@ -347,9 +391,16 @@ validates the principal against a credential map, and `areev ui --auth FILE`
 serves the console in multi-principal mode (tokens → principals,
 unauthenticated = read-only \"anonymous\").
 
-Console auth (--token-env VAR): the token's entropy is the ONLY control on
-this path — use at least 32 hex characters; comparison against the presented
-credential is constant-time. Browsers authenticate via HTTP Basic, which the
+Console auth: prefer --auth <map> — per-principal credentials, so a write or
+an approval names WHO did it, one credential can be revoked without disturbing
+the principal's others, and `expires_at` bounds a leak. `areev auth mint`
+creates them. --token-env <VAR> remains the single-user shortcut: one shared
+secret, implied admin, unattributable (it can never answer a HITL approval).
+On that path the token's entropy is the ONLY control — use at least 32 hex
+characters, or let `areev auth mint` choose; comparison against the presented
+credential is constant-time. After 10 consecutive failed authentications from
+one source address, further credential-bearing requests from it are refused
+with 429 until the streak goes idle (15 min). Browsers authenticate via HTTP Basic, which the
 browser caches per origin and RE-ATTACHES AUTOMATICALLY, including on
 cross-site requests — so the Origin check (--allow-origin, above) is
 load-bearing, not defence in depth. There is no logout: closing the tab does
@@ -1156,7 +1207,17 @@ fn run() -> Result<(), String> {
     // have leaked it.
     // Both registries: areev-loop owns the `--llm-cmd` and `--analyzer-cmd`
     // seams and cannot depend on an areev-* sibling, so it keeps its own.
-    for var_flag in ["passphrase-env", "token-env", "anon-key-env"] {
+    for var_flag in [
+        "passphrase-env",
+        "token-env",
+        "anon-key-env",
+        // [A0/A3] Both are impersonation-grade: the proxy secret can assert
+        // any identity, and the OIDC client secret can redeem codes as the
+        // console itself. Neither may reach a --tool-cmd subprocess.
+        "sso-secret-env",
+        "sso-secret-env-next",
+        "oidc-client-secret-env",
+    ] {
         if let Some(var) = flag(&flags, var_flag) {
             areev_core::proc::deny_env_var(&var);
             areev_loop::proc::deny_env_var(&var);
@@ -1215,6 +1276,15 @@ fn run() -> Result<(), String> {
             areev_core::proc::deny_env_var(var);
             areev_loop::proc::deny_env_var(var);
         }
+    }
+
+    // `auth` manages the host-side credential map (`areev-auth.json`) and
+    // never opens a memory. Dispatched BEFORE `resolve_db` on purpose: the
+    // map holds no policy and names no file, so resolving a default memory
+    // here would both be wasted work and print a line implying an
+    // association between a credential and a database that does not exist.
+    if cmd == "auth" {
+        return run_auth(&flags, &positional);
     }
 
     // Long-lived / exposed surfaces must name their memory explicitly rather
@@ -2464,6 +2534,20 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     if t.trim().is_empty() {
                         return Err(format!("--token-env {var}: token is empty"));
                     }
+                    // [A1] The shared secret's entropy is the ONLY control on
+                    // this path, and nothing here can measure it — but a
+                    // token Areev did not mint is one an operator chose, and
+                    // operator-chosen secrets are the reason the stored
+                    // digest is worth grinding at all. Warn, never refuse:
+                    // an existing deployment must not break on upgrade.
+                    if !areev_core::authz::token_is_minted(&t) {
+                        eprintln!(
+                            "areev: ⚠ --token-env {var} holds a token Areev did not mint, so \
+                             its entropy is unknown. Prefer `areev auth mint` (256-bit) and a \
+                             per-principal credential map (--auth), which is also the only \
+                             way approvals get an attributable identity."
+                        );
+                    }
                     Some(t)
                 }
                 None => None,
@@ -2499,6 +2583,21 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                      file's grant grains; unauthenticated requests run as 'anonymous'",
                     map.tokens.len()
                 );
+                // [A1] Name what is about to expire, every start. A console
+                // that first mentions an expiry at the moment it starts
+                // refusing is a console that mentions it during an incident.
+                let now = areev_core::time::now_ms();
+                for (id, when) in map.expiring_within(now, 14 * 86_400_000) {
+                    let entry = map.tokens.iter().find(|t| t.id() == id);
+                    if entry.is_some_and(|t| t.is_expired_at(now)) {
+                        eprintln!(
+                            "areev: ⚠ credential {id} EXPIRED {when} — it authenticates nobody; \
+                             mint a replacement (areev auth mint) and revoke it"
+                        );
+                    } else {
+                        eprintln!("areev: credential {id} expires {when} (within 14 days)");
+                    }
+                }
                 server = server.with_credentials(map);
             }
             if allow_remote {
@@ -2588,7 +2687,11 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                      (any username, password = the token)"
                 );
             } else {
-                eprintln!("areev: console is UNAUTHENTICATED (enable with --token-env <VAR>)");
+                eprintln!(
+                    "areev: console is UNAUTHENTICATED — enable with --auth <map> \
+                     (per-principal, attributable; `areev auth mint` creates one) or \
+                     --token-env <VAR> (one shared secret, cannot approve)"
+                );
             }
             // Host loop policy (--policy FILE or $AREEV_LOOP_POLICY): a
             // console-triggered loop run honors the same grants as the CLI
@@ -2596,6 +2699,27 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             if let Some(p) = load_policy(&flags)? {
                 server = server.with_loop_policy(p);
                 eprintln!("areev: loop host policy attached to the console's loop routes");
+            }
+            // [A0] Whether a proxy-asserted identity may answer a HITL
+            // approval. Parsed BEFORE the SSO arm below so an invalid value —
+            // or one given without SSO configured at all — is an error rather
+            // than a silently-ignored security flag.
+            let sso_approvals = match flag(&flags, "sso-approvals").as_deref() {
+                None | Some("deny") => false,
+                Some("allow") => true,
+                Some(other) => {
+                    return Err(format!(
+                        "--sso-approvals {other}: expected 'deny' (default) or 'allow'"
+                    ))
+                }
+            };
+            if flag(&flags, "sso-approvals").is_some() && flag(&flags, "sso-header").is_none() {
+                return Err(
+                    "--sso-approvals applies to trusted-header SSO only — it has no effect \
+                     without --sso-header/--sso-secret-env. Credential-map principals (--auth) \
+                     may always approve; shared-token and anonymous callers never may."
+                        .into(),
+                );
             }
             // SSO v0 — trusted-header auth: an authenticating proxy does
             // OIDC/SAML and forwards identity in --sso-header; honored only
@@ -2639,6 +2763,47 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     eprintln!(
                         "areev: trusted-header SSO enabled ({header} + x-areev-proxy-secret)"
                     );
+                    server = server.with_sso_approvals(sso_approvals);
+                    // [A2] Groups → principals, so SSO scales without a grant
+                    // grain per person. Resolved through --auth's `groups`
+                    // table; without a map there is nothing to resolve
+                    // against, so say so rather than failing silently.
+                    if let Some(gh) = flag(&flags, "sso-groups-header") {
+                        if flag(&flags, "auth").is_none() {
+                            return Err(
+                                "--sso-groups-header needs --auth <map>: the group → principal \
+                                 table lives in the credential map, and without one every group \
+                                 would resolve to nothing"
+                                    .into(),
+                            );
+                        }
+                        server = server.with_sso_groups_header(&gh);
+                        eprintln!(
+                            "areev: SSO groups honored via {gh} (group-derived principals are \
+                             roles: they may never answer a HITL approval)"
+                        );
+                    }
+                    if let Some(prefix) = flag(&flags, "sso-principal-prefix") {
+                        if prefix.trim().is_empty() {
+                            return Err("--sso-principal-prefix: empty prefix".into());
+                        }
+                        server = server.with_sso_principal_prefix(&prefix);
+                        eprintln!("areev: proxy-asserted principals are prefixed {prefix:?}");
+                    }
+                    if sso_approvals {
+                        eprintln!(
+                            "areev: ⚠ --sso-approvals allow — a proxy-asserted identity may \
+                             answer HITL approvals. Every approval's audit record is then only \
+                             as strong as the proxy secret: anyone holding it can approve as \
+                             anyone. Prefer per-principal credentials (--auth) for approvers."
+                        );
+                    } else {
+                        eprintln!(
+                            "areev: SSO identities may review but NOT approve (run.respond); \
+                             approvers need a per-principal credential (--auth). Override with \
+                             --sso-approvals allow."
+                        );
+                    }
                     if rotating {
                         // Loud, every start: a rotation window left open is
                         // an extra impersonation-grade credential live in
@@ -2654,6 +2819,78 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 }
                 (None, None) => {}
                 _ => return Err("--sso-header and --sso-secret-env must be given together".into()),
+            }
+            // [A3] Native OIDC (`oidc` build feature): the console runs the
+            // authorization-code+PKCE flow itself and issues a session
+            // cookie. Unlike --sso-header, the identity is proven by a
+            // signature over the issuer's published key set — which is why an
+            // OIDC principal may approve without --sso-approvals.
+            if let Some(issuer) = flag(&flags, "oidc-issuer") {
+                    #[cfg(feature = "oidc")]
+                    {
+                        let client_id = flag(&flags, "oidc-client-id").ok_or(
+                            "--oidc-issuer needs --oidc-client-id".to_string(),
+                        )?;
+                        let secret_var = flag(&flags, "oidc-client-secret-env").ok_or(
+                            "--oidc-issuer needs --oidc-client-secret-env VAR (the secret is \
+                             named, never passed on the command line)"
+                                .to_string(),
+                        )?;
+                        let client_secret = std::env::var(&secret_var).map_err(|_| {
+                            format!(
+                                "--oidc-client-secret-env {secret_var}: environment variable is \
+                                 not set"
+                            )
+                        })?;
+                        if client_secret.trim().is_empty() {
+                            return Err(format!(
+                                "--oidc-client-secret-env {secret_var}: secret is empty"
+                            ));
+                        }
+                        let redirect_uri = flag(&flags, "oidc-redirect-uri").ok_or(
+                            "--oidc-issuer needs --oidc-redirect-uri (registered VERBATIM with \
+                             the provider — RFC 9700 requires exact matching)"
+                                .to_string(),
+                        )?;
+                        if !issuer.starts_with("https://") {
+                            return Err(format!("--oidc-issuer {issuer}: must be https"));
+                        }
+                        let cfg = areev_server::oidc::OidcConfig {
+                            issuer,
+                            client_id,
+                            client_secret,
+                            redirect_uri: redirect_uri.clone(),
+                            scopes: flag(&flags, "oidc-scopes")
+                                .unwrap_or_else(|| "openid email profile".to_string()),
+                            principal_claim: flag(&flags, "oidc-principal-claim")
+                                .unwrap_or_else(|| "email".to_string()),
+                            principal_prefix: flag(&flags, "oidc-principal-prefix"),
+                        };
+                        // Discovery happens NOW: a console that cannot reach
+                        // its IdP should fail to start loudly, not fail every
+                        // login later with the operator none the wiser.
+                        let provider = areev_server::oidc::OidcProvider::discover(cfg)
+                            .map_err(|e| e.to_string())?;
+                        eprintln!("areev: native OIDC enabled — login at /auth/login");
+                        if !redirect_uri.starts_with("https://") {
+                            eprintln!(
+                                "areev: ⚠ --oidc-redirect-uri is not https, so the session \
+                                 cookie cannot be marked Secure. Acceptable on loopback; on any \
+                                 real deployment terminate TLS first."
+                            );
+                        }
+                        server = server.with_oidc(provider);
+                    }
+                    #[cfg(not(feature = "oidc"))]
+                    {
+                        let _ = issuer;
+                        return Err(
+                            "this build has no native OIDC — rebuild with `--features oidc`, or \
+                             use trusted-header SSO behind an authenticating proxy \
+                             (--sso-header), which is the documented default"
+                                .into(),
+                        );
+                    }
             }
             // Native TLS (`tls` build feature): --tls-cert/--tls-key PEM
             // paths. The documented default remains a TLS-terminating
@@ -4592,6 +4829,224 @@ fn draft_json(d: &areev_store::FactDraft) -> serde_json::Value {
     })
 }
 
+/// `areev auth mint|list|revoke` — the credential-map lifecycle (A1).
+///
+/// The map is host config: it holds no policy, no raw secrets, and names no
+/// memory, so none of these verbs open a store. They exist because the
+/// alternative — hand-editing JSON and hand-computing SHA-256 — is how
+/// operator-chosen, low-entropy tokens end up with their digests in a file
+/// that gets shared across server instances.
+fn run_auth(flags: &HashMap<String, String>, positional: &[String]) -> Result<(), String> {
+    use areev_core::authz::{CredentialMap, TOKEN_PREFIX};
+
+    let sub = positional.first().map(String::as_str).unwrap_or("");
+    let path = flag(flags, "auth")
+        .ok_or_else(|| "areev auth: --auth <FILE> names the credential map".to_string())?;
+
+    // Parse `--expires 90d|12h|2026-12-31T23:59:59Z` to an ISO-8601 instant.
+    let expires_at = match flag(flags, "expires") {
+        None => None,
+        Some(spec) => Some(parse_expiry(&spec)?),
+    };
+
+    match sub {
+        "mint" => {
+            let principal = flag(flags, "principal").ok_or_else(|| {
+                "areev auth mint: --principal <NAME> says who the token authenticates as".to_string()
+            })?;
+            let id = flag(flags, "id").ok_or_else(|| {
+                "areev auth mint: --id <NAME> names this credential so it can be revoked \
+                 independently of the principal's other tokens"
+                    .to_string()
+            })?;
+
+            // 256 bits from the OS CSPRNG. This is the whole point of the
+            // verb: the operator never chooses the secret, so its entropy is
+            // never a question and the stored SHA-256 is never grindable.
+            let mut raw = [0u8; 32];
+            getrandom::getrandom(&mut raw)
+                .map_err(|e| format!("areev auth mint: no system randomness available: {e}"))?;
+            let token = format!("{TOKEN_PREFIX}{}", areev_core::authz::encode_token_body(&raw));
+            let digest = {
+                use sha2::Digest;
+                hex::encode(sha2::Sha256::digest(token.as_bytes()))
+            };
+
+            // Read-modify-write the map, refusing a duplicate id BEFORE the
+            // token is printed — otherwise the operator has a live secret
+            // that was never recorded anywhere.
+            let mut map = read_map_or_empty(&path)?;
+            if map.tokens.iter().any(|t| t.id() == id) {
+                return Err(format!(
+                    "areev auth mint: {path} already has a credential with id {id:?} — \
+                     revoke it first, or choose another id"
+                ));
+            }
+            map.tokens.push(areev_core::authz::CredentialEntry {
+                id: Some(id.clone()),
+                label: flag(flags, "label"),
+                sha256: Some(digest),
+                env: None,
+                principal: principal.clone(),
+                memories: flag(flags, "memories")
+                    .map(|m| m.split(',').map(|s| s.trim().to_string()).collect()),
+                expires_at: expires_at.clone(),
+            });
+            // Validate through the same loader the server uses, so a map this
+            // verb wrote can never be one the server refuses to load.
+            let json = serde_json::to_string_pretty(&map)
+                .map_err(|e| format!("areev auth mint: {e}"))?;
+            CredentialMap::from_json(&json).map_err(|e| format!("areev auth mint: {e}"))?;
+            write_map(&path, &json)?;
+
+            // The token goes to STDOUT (pipeable into a secret store); the
+            // commentary to STDERR, so `... | pbcopy` copies only the secret.
+            println!("{token}");
+            eprintln!("areev: minted {id} for {principal} — recorded in {path}");
+            if let Some(exp) = &expires_at {
+                eprintln!("areev: expires {exp}");
+            }
+            eprintln!(
+                "areev: this is the ONLY time the token is shown; {path} stores its SHA-256, \
+                 which cannot be reversed. Store it now."
+            );
+        }
+        "list" => {
+            let map = read_map_or_empty(&path)?;
+            let now = areev_core::time::now_ms();
+            if map.tokens.is_empty() {
+                eprintln!("areev: {path} holds no credentials");
+                return Ok(());
+            }
+            for t in &map.tokens {
+                // Never the digest and never the env var's VALUE — listing
+                // must be safe to paste into a ticket.
+                let state = match t.expires_at.as_deref() {
+                    None => "no expiry".to_string(),
+                    Some(raw) if t.is_expired_at(now) => format!("EXPIRED {raw}"),
+                    Some(raw) => format!("expires {raw}"),
+                };
+                let scope = match &t.memories {
+                    Some(m) => format!(" memories={}", m.join(",")),
+                    None => String::new(),
+                };
+                let label = t.label.as_deref().map(|l| format!(" — {l}")).unwrap_or_default();
+                println!("{}\t{}\t{state}{scope}{label}", t.id(), t.principal);
+            }
+        }
+        "revoke" => {
+            let id = flag(flags, "id")
+                .ok_or_else(|| "areev auth revoke: --id <NAME> (see `areev auth list`)".to_string())?;
+            let mut map = read_map_or_empty(&path)?;
+            let before = map.tokens.len();
+            map.tokens.retain(|t| t.id() != id);
+            if map.tokens.len() == before {
+                return Err(format!("areev auth revoke: {path} has no credential with id {id:?}"));
+            }
+            let json = serde_json::to_string_pretty(&map)
+                .map_err(|e| format!("areev auth revoke: {e}"))?;
+            write_map(&path, &json)?;
+            eprintln!(
+                "areev: revoked {id} from {path} — RESTART `areev ui` for it to take effect \
+                 (the map is read once at startup)"
+            );
+        }
+        other => {
+            return Err(format!(
+                "unknown auth subcommand {other:?} — one of: mint, list, revoke\n\n\
+                 areev auth mint   --auth FILE --id NAME --principal NAME [--label TEXT]\n\
+                 \x20                     [--expires 90d|2026-12-31T23:59:59Z] [--memories A,B]\n\
+                 areev auth list   --auth FILE\n\
+                 areev auth revoke --auth FILE --id NAME"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `90d` / `12h` / an explicit ISO-8601 instant → an ISO-8601 instant.
+fn parse_expiry(spec: &str) -> Result<String, String> {
+    let spec = spec.trim();
+    if let Some(ms) = areev_core::time::iso8601_to_ms(spec) {
+        // Already a timestamp — normalize through the same formatter so the
+        // file only ever holds one spelling.
+        return Ok(format_epoch_ms(ms));
+    }
+    let (num, unit) = spec.split_at(spec.len().saturating_sub(1));
+    let n: i64 = num
+        .parse()
+        .map_err(|_| format!("--expires {spec:?}: expected <n>d, <n>h, or an ISO-8601 instant"))?;
+    let ms = match unit {
+        "d" => n * 86_400_000,
+        "h" => n * 3_600_000,
+        _ => {
+            return Err(format!(
+                "--expires {spec:?}: unit must be 'd' (days) or 'h' (hours), or give a full \
+                 ISO-8601 instant"
+            ))
+        }
+    };
+    if n <= 0 {
+        return Err(format!("--expires {spec:?}: must be in the future"));
+    }
+    Ok(format_epoch_ms(areev_core::time::now_ms() + ms))
+}
+
+/// Epoch ms → `YYYY-MM-DDTHH:MM:SSZ`, the one spelling the map stores.
+fn format_epoch_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    // Inverse of `days_from_civil` (Howard Hinnant's `civil_from_days`).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+/// Read the credential map, or an empty one when the file does not exist yet
+/// (so `areev auth mint` bootstraps a new deployment in one command).
+fn read_map_or_empty(path: &str) -> Result<areev_core::authz::CredentialMap, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => areev_core::authz::CredentialMap::from_json(&s).map_err(|e| format!("{path}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(areev_core::authz::CredentialMap {
+                version: 1,
+                tokens: Vec::new(),
+                groups: None,
+            })
+        }
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
+
+/// Write the map with owner-only permissions.
+///
+/// The file holds no reversible secret, but it does enumerate every principal
+/// and credential id a deployment has — a map that is world-readable is a map
+/// an attacker uses to pick a target before guessing.
+fn write_map(path: &str, json: &str) -> Result<(), String> {
+    std::fs::write(path, format!("{json}\n")).map_err(|e| format!("{path}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 /// Load the host policy from `--policy FILE` or `$AREEV_LOOP_POLICY` (§6.2).
 fn load_policy(flags: &HashMap<String, String>) -> Result<Option<Policy>, String> {
     let path = flag(flags, "policy").or_else(|| std::env::var("AREEV_LOOP_POLICY").ok());
@@ -5223,6 +5678,57 @@ mod tests {
 
     fn args(a: &[&str]) -> (HashMap<String, String>, Vec<String>) {
         parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// [A1] `format_epoch_ms` is a hand-rolled `civil_from_days` — the exact
+    /// inverse of the parser in `areev_core::time`. Round-tripping the pair
+    /// is what proves neither drifted, and it is checked on the dates where
+    /// calendar arithmetic actually goes wrong.
+    #[test]
+    fn expiry_formatting_round_trips_through_the_parser() {
+        for iso in [
+            "1970-01-01T00:00:00Z",
+            "2026-08-27T12:34:56Z",
+            // Leap day, and the day either side of it.
+            "2024-02-28T23:59:59Z",
+            "2024-02-29T12:00:00Z",
+            "2024-03-01T00:00:00Z",
+            // 2000 was a leap year (÷400); 2100 will not be (÷100, not ÷400).
+            "2000-02-29T00:00:00Z",
+            "2100-02-28T00:00:00Z",
+            // Year and month boundaries.
+            "2026-12-31T23:59:59Z",
+            "2027-01-01T00:00:00Z",
+        ] {
+            let ms = areev_core::time::iso8601_to_ms(iso).expect(iso);
+            assert_eq!(format_epoch_ms(ms), iso, "round-trip failed for {iso}");
+        }
+    }
+
+    /// [A1] `--expires` accepts a relative window or an absolute instant, and
+    /// refuses anything it cannot turn into a real deadline — a credential
+    /// whose lifetime was silently misread is worse than one that refuses.
+    #[test]
+    fn expiry_parsing_accepts_windows_and_instants_and_refuses_the_rest() {
+        // An absolute instant is normalized, not passed through, so the file
+        // only ever holds one spelling.
+        assert_eq!(
+            parse_expiry("2026-12-31T23:59:59Z").unwrap(),
+            "2026-12-31T23:59:59Z"
+        );
+        assert_eq!(parse_expiry("2026-12-31").unwrap(), "2026-12-31T00:00:00Z");
+
+        // Relative windows land in the future, and a longer one lands later.
+        let now = areev_core::time::now_ms();
+        let d90 = areev_core::time::iso8601_to_ms(&parse_expiry("90d").unwrap()).unwrap();
+        let h12 = areev_core::time::iso8601_to_ms(&parse_expiry("12h").unwrap()).unwrap();
+        assert!(h12 > now && d90 > h12, "90d={d90} 12h={h12} now={now}");
+        // ~90 days, allowing a second of slop for the two clock reads.
+        assert!((d90 - now - 90 * 86_400_000).abs() < 2_000);
+
+        for bad in ["90x", "d", "", "-5d", "0d", "soon", "90 d"] {
+            assert!(parse_expiry(bad).is_err(), "{bad:?} must be refused");
+        }
     }
 
     #[test]

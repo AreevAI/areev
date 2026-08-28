@@ -201,6 +201,25 @@ production. The procedure, for both a planned rotation and a suspected leak
 (where the answer is a hard cutover, **not** a window), is
 [runbooks/sso-secret-rotation.md](runbooks/sso-secret-rotation.md).
 
+**Because that secret is impersonation-grade, a proxy-asserted identity may
+not approve.** `areev ui --sso-approvals` defaults to `deny`: an SSO identity
+keeps every read and review but is refused at `POST /api/run/respond`, because
+an approval whose trust root is a fleet-wide shared secret produces an audit
+record indistinguishable from a genuine one. Approvers should hold a
+per-principal credential (`--auth`). `--sso-approvals allow` accepts the
+trade-off explicitly, and is defensible when the proxy↔console hop is itself
+trustworthy — a Unix socket, or mTLS, with the secret never leaving the host.
+The console cannot verify that, which is why it cannot be the default. A
+**group-derived** principal (`--sso-groups-header`) may never approve at all,
+under any setting: a role identifies nobody who can be asked why.
+
+**Prefer a channel-bound proof to a static header secret.** The strongest
+form of this deployment puts the proxy and the console on the same host and
+connects them over a Unix domain socket or mTLS, so filesystem permissions or
+a client certificate — not a copyable string — are what prove the proxy. The
+shared secret remains supported and is what the flags configure; it is simply
+the weakest of the three.
+
 ## What to hand the reviewer
 
 - This document.
@@ -213,9 +232,23 @@ production. The procedure, for both a planned rotation and a suspected leak
   everything" and "delete it" are two calls over one selection. The CAL-level
   mirror is `crates/areev-cal/tests/erasure_cal_tests.rs`.
 
+## Native OIDC (non-default `oidc` build)
+
+For deployments with nowhere to run an authenticating proxy, or where people
+approve HITL asks through the console and the approver's identity must be
+stronger than a shared secret can carry, `areev ui --oidc-*` runs the
+authorization-code+PKCE flow in-process and issues an `HttpOnly`
+`SameSite=Strict` session cookie. **An OIDC principal may approve by default**
+— its identity was proven by a signature verified against the issuer's
+published key set, which is exactly what `--sso-approvals` exists to
+substitute for. Setup: [runbooks/oidc-setup.md](runbooks/oidc-setup.md).
+
+Sessions are in-process: restarting the console logs everyone out, and nothing
+auth-related is ever persisted in a memory file (invariant 5). Areev is an
+OIDC **client**, never an authorization server.
+
 ## Explicitly not in this profile
 
-Native OIDC (SSO v0 trusted-header mode, above, is in this profile — full
-OIDC/SAML integration is not), RBAC beyond the grant vocabulary, org-level
-audit aggregation — all Wave 6. A partner who requires them signs first; the
-profile above is what design-partner pilots run on.
+SAML, SCIM / directory sync, user provisioning, MFA, RBAC beyond the grant
+vocabulary, org-level audit aggregation. A partner who requires them signs
+first; the profile above is what design-partner pilots run on.

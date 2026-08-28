@@ -38,6 +38,13 @@ and breaks OMS §21 conformance. Treat as frozen unless the spec moves:
 ## Module map
 
 - `error.rs` — `AreevError`, `Result<T>`, `Hash` newtype (hex display/serde).
+- `time.rs` — `iso8601_to_ms` + `now_ms`. The ONE datetime parser (invariant 6:
+  no datetime dependency). It lives here rather than in the crate that first
+  needed it (`areev-store`'s importers, which now re-export it) because the
+  credential map's `expires_at` needs the same parse and `authz` sits below the
+  store. The grain path deliberately does not call `now_ms` — serializers and
+  `audit_observation` take `now_ms` as a parameter so content addresses stay
+  reproducible in tests.
 - `format/header.rs` — `MgHeader`, flag bits, `content_address()`.
 - `format/field_map.rs` — long↔short key tables.
 - `format/serialize.rs` — `serialize_grain()` → `(blob, Hash)`.

@@ -117,6 +117,12 @@ pub enum AreevError {
     /// are corrupt (e.g. cyclic) rather than merely long, so the walk fails
     /// loudly instead of looping the process forever.
     SupersessionChainTooDeep(Hash),
+    /// An approximate-nearest-neighbour index was asked for on a backend that
+    /// has none. Vector recall is an exact scan on the embedded engine — there
+    /// is no ANN structure to build there, and silently doing nothing would
+    /// leave a caller believing its corpus was indexed when its latency is
+    /// still linear. Only the Postgres tier (pgvector HNSW) answers this.
+    AnnIndexUnsupported(String),
     CryptoError(String),
     AccumulateRetryExhausted,
     AccumulateInternal(String),
@@ -144,6 +150,7 @@ impl AreevError {
             Self::NotFound(_) => "MEM-E001",
             Self::SupersessionConflict(_) => "MEM-E002",
             Self::SupersessionChainTooDeep(_) => "STO-E006",
+            Self::AnnIndexUnsupported(_) => "STO-E007",
             Self::ToolRenderUnsupported(_) => "MEM-E110",
             Self::Format(_) => "FMT-E001",
             Self::Serialization(_) => "FMT-E002",
@@ -178,6 +185,10 @@ impl std::fmt::Display for AreevError {
             Self::SupersessionChainTooDeep(h) => write!(
                 f,
                 "STO-E006: supersession chain from {h} did not terminate within the bounded walk — the supersedes links may be cyclic or corrupt"
+            ),
+            Self::AnnIndexUnsupported(m) => write!(
+                f,
+                "STO-E007: no approximate vector index on this backend: {m}"
             ),
             Self::ToolRenderUnsupported(m) => write!(f, "MEM-E110: tool render unsupported: {m}"),
             Self::Format(m) => write!(f, "FMT-E001: format error: {m}"),
@@ -216,6 +227,7 @@ mod error_code_tests {
             AreevError::NotFound(h),
             AreevError::SupersessionConflict(h),
             AreevError::SupersessionChainTooDeep(h),
+            AreevError::AnnIndexUnsupported("x".into()),
             AreevError::ToolRenderUnsupported("x".into()),
             AreevError::Format("x".into()),
             AreevError::Serialization("x".into()),

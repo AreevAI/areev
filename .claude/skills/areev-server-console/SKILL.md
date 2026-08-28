@@ -24,7 +24,38 @@ embedded file:
 
 A shared token is all-or-nothing over the whole memory. `with_credentials`
 (CLI `areev ui --auth FILE`) is the per-principal alternative — and the only
-one `run.respond` accepts, since the approver's identity is the audit record.
+one `run.respond` accepts unconditionally, since the approver's identity is
+the audit record. Credentials carry an `id` (revoke one without disturbing the
+principal's others), an optional `expires_at` (refused indistinguishably from
+unknown when past), and are minted by `areev auth mint` — 256-bit, prefixed
+`areev_pat_`, digest-only at rest.
+
+- **Trusted-header SSO** (`--sso-header` + `--sso-secret-env`) — a proxy does
+  OIDC/SAML and forwards identity, honored only with the proxy secret. The
+  identity is **validated** (`sanitize_sso_identity`: no control chars, no
+  whitespace, ≤128 bytes, no reserved names) and a rejected one is treated as
+  *absent*, never as an error. `--sso-groups-header` maps IdP groups to
+  principals via the credential map's `groups` table; identity outranks group.
+- **Native OIDC** (`oidc` feature, `src/oidc.rs`) — the console runs
+  auth-code+PKCE itself and issues an `HttpOnly`/`SameSite=Strict` session
+  cookie. `/auth/login`, `/auth/callback`, `/auth/logout` bypass `route_full`
+  because they set headers of their own.
+
+**The approval ladder — the load-bearing rule.** `POST /api/run/respond`
+accepts an identity only in proportion to how it was proven:
+
+| Identity source | May approve? |
+|---|---|
+| `credential` (per-principal token) | yes |
+| `oidc` (signature verified against the issuer's JWKS) | yes |
+| `sso` (proxy header + shared secret) | only with `--sso-approvals allow` |
+| `sso-group` (a role, not a person) | **never**, no flag exists |
+| shared `--token-env`, anonymous | never |
+
+`GET /api/whoami` reports `identity_source` and `may_approve` so the console
+can say this before an approver tries. If you add an identity source, place it
+on this ladder deliberately — the question is not "is it authenticated" but
+"is the proof strong enough to be an audit record".
 
 **Removed, do not re-add:** `into_hub` / `areev hub` / `/api/segment*` were
 deleted on 2026-08-24. A networked write surface that takes one shared secret

@@ -22,6 +22,21 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pki-types = { version = "1.15", features = ["std"], optional = true }
 areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.6.0" }
 serde_json = "1"
+# Native OIDC (`oidc` feature) — the SECOND recorded dependency-policy
+# exception, after rustls. Signature verification against an issuer-published
+# key set is the one domain where "hand-rolled, no deps" flips from virtue to
+# negligence. `rust_crypto` (not aws_lc_rs) keeps the build C-free, which is
+# what the ubuntu/macos/windows CI matrix and the MSRV job depend on.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"], optional = true }
+# The HTTP client for discovery / token exchange / JWKS. Already in the tree
+# via areev-llm, chosen there for the same reason: blocking, no tokio.
+ureq = { version = "3", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+# All three are already in the lockfile (areev-core / areev-store); optional
+# here only so a default build links none of the OIDC path.
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+getrandom = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -31,3 +46,8 @@ tempfile = "3"
 # decision log): rustls only, non-default, for deployments with nowhere to
 # put the documented TLS-terminating proxy.
 tls = ["dep:rustls", "dep:rustls-pki-types"]
+# Native OIDC for the console. Non-default, same posture as `tls`: the
+# documented default remains an authenticating proxy (SSO v0), and this is for
+# deployments that cannot run one — or that need an approver identity stronger
+# than a shared proxy secret can carry (docs/auth-proposal.md §6).
+oidc = ["dep:jsonwebtoken", "dep:ureq", "dep:serde", "dep:sha2", "dep:hex", "dep:getrandom"]

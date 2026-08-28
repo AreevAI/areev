@@ -435,6 +435,171 @@ Readings:
    a phase the firmware is running at 600. Sample `vcgencmd measure_clock arm`
    *during* the phase, never after.
 
+## 8. Corpus scale — where retrieval goes past 10k grains
+
+*Run: 2026-08-28 · Apple M4 Max, macOS 26.5 · `--release` · harness
+`cargo run --release -p areev-bench --bin pe_scale` · dim 384, k=10,
+seeded xorshift, deterministic synthetic embedder (no model, no network).
+Postgres rows: Postgres 16 + pgvector 0.8.5 in loopback Docker — label the
+topology with the numbers, as §7 does.*
+
+Every other harness here tops out near 10k grains (§1 10k, §5 13k, §7 10k).
+That is the size at which the memory stack was designed and gated, and it left
+one question unanswered: what happens at the sizes a document-heavy corpus
+actually reaches — a few thousand cases, each with hundreds of extracted
+grains. This section is that measurement. It is also the first harness in the
+tree to exercise the **vector** leg at all: §7's `pg_bench` installs no
+embedder, so the exact-scan slope quoted in `ARCHITECTURE.md` was never
+reproducible from the repo.
+
+### 8a. The slope is linear, and it is the corpus, not the backend
+
+Embedded (Turso), one namespace, no filter:
+
+| corpus | vector k-NN | k-NN, subject-filtered | BM25 (one namespace) | structural recall |
+|---|---|---|---|---|
+| 10k | 10.6 ms | 1.5 ms | 14 ms | 0.34 ms |
+| 100k | 121.5 ms | 20.6 ms | 220 ms | 0.43 ms |
+| 1M | **1,187 ms** | **201 ms** | 2,649 ms | **0.87 ms** |
+
+Ten times the corpus, ten times the latency, no inflection — the exact scan
+behaves exactly as documented. The structural column is the contrast that
+matters: `recall` about a subject is **sub-millisecond at a million grains**,
+because it is an index seek. Nothing about Areev is slow at scale; one
+*unindexed* leg is linear, and it was linear in two places.
+
+Ingest is not the bottleneck: 5,600–7,000 grains/s embedded (1M grains in
+~3 min), 370/s on loopback Postgres (1M in ~45 min, round-trip-bound — bulk
+loads there want batching or `COPY`, not this path).
+
+### 8b. `idx_grains_ns_s` — the filtered scan was never actually filtered
+
+The second linear row above is the interesting one. A k-NN narrowed to one
+subject stayed linear in the **whole** corpus and returned a flat ~6× win no
+matter how selective the filter was. `EXPLAIN` said why: the only index on
+`grains` was `idx_grains_hash`, so `WHERE g.ns = ? AND g.s = ?` could not
+seek. The planner scanned every grain and computed a distance for each, then
+threw almost all of them away.
+
+Controlled A/B, same 100k file, index built and dropped between runs:
+
+| leg | no index | with `idx_grains_ns_s` | |
+|---|---|---|---|
+| vector k-NN, subject-filtered | 39.81 ms | **0.20 ms** | **199×** |
+| vector k-NN, unfiltered | 248.76 ms | 229.41 ms | unchanged ✓ |
+| BM25 | 435.15 ms | 432.21 ms | unchanged ✓ |
+| structural recall | 1.70 ms | 0.86 ms | 2× |
+
+The two unchanged rows are the control: a filter-only fix must not move the
+legs that have no filter to use, and it does not. Column order was measured,
+not assumed — `(ns, s, p)` gives seekable prefixes for all three scoped arms,
+while inserting `svt` ahead of `s` to also absorb the `svt IS NULL` liveness
+test **destroys the win** (40.17 ms, no better than no index), because the
+null test does not act as an equality constraint and truncates the seek.
+
+### 8c. Namespace partitioning helps BM25, not vectors
+
+100k grains, one namespace per case (`case.<id>`) instead of one flat
+namespace:
+
+| leg | flat | partitioned |
+|---|---|---|
+| BM25 text search | 220 ms | **1.2 ms** |
+| vector k-NN, one namespace | — | 13.9 ms |
+| hybrid across ALL namespaces (`case.*`) | — | **605 ms** |
+
+BM25 gains 180× because its posting index is keyed `(term, ns)`.
+
+The vector rows above were measured when `nearest_vector`/`nearest_semantic`
+still called `require_exact_ns` — the last two plural reads that refused a
+scope, while `search_text` and `search_vector` had always accepted one. The
+exception was not a missing convenience: a corpus-wide semantic search could
+only be spelled by falling through to prefix-scoped `recall_hybrid`, paying a
+BM25 leg and a structural leg to answer a purely vector question. Giving both
+reads the scope every other plural read already accepted (and pinning it with
+a conformance case on both backends, for what the scope EXCLUDES as well as
+what it includes) changes the picture — re-measured at 100k grains over 200
+namespaces laid out as `deal.<sector>.<id>`:
+
+| query | before | after |
+|---|---|---|
+| one deal (exact namespace) | 13.9 ms | **0.75 ms** |
+| one sector (`deal.<sector>.*`, 25 of 200) | not expressible | **18.9 ms** |
+| all deals (`deal.*`) | 605 ms via `recall_hybrid` | **150 ms** direct |
+
+Two readings. First, cost is now proportional to the **scope**, not the
+corpus — an eighth of the tree costs an eighth. Second, a scope can only
+select what the namespace encodes: flat `deal.<id>` supports "this deal" and
+"all deals" and nothing in between, which is why the sector level is in the
+layout. Put the hierarchy you will query by into the namespace at ingest.
+
+### 8d. The Postgres tier is the *fast* one here
+
+| leg (100k grains) | embedded | Postgres, exact | Postgres + HNSW |
+|---|---|---|---|
+| vector k-NN, unfiltered | 121.5 ms | **24.2 ms** | **1.01 ms** |
+| vector k-NN, subject-filtered | 0.20 ms | 0.50 ms | 0.49 ms |
+
+pgvector's `<=>` is SIMD over a native `vector` type; the embedded engine
+scans BLOBs. So the tier `ARCHITECTURE.md` singled out for the exact-scan
+caveat is **5× faster** at that exact scan than the embedded default, and the
+documented "~100 ms at 10k" does not reproduce — measured here it is 24 ms at
+**100k**. Treat the old figure as retired, not merely hardware-dependent.
+
+`ensure_vector_index` (opt-in pgvector HNSW, `Areev::ensure_vector_index`)
+takes the unfiltered query from 24.2 ms to **1.01 ms**, a 24× win, building in
+16.7 s over 100k vectors at `m=16, ef_construction=64`.
+
+### 8e. Recall@k — and why the embedder, not the index, decides it
+
+*Run: 2026-08-28 · `mxbai-embed-large` (dim 1024) served by local Ollama,
+reached through the store's own `EmbedBackend` seam · 30k grains · Postgres 16
++ pgvector 0.8.5 · `pe_scale --ollama mxbai-embed-large`.*
+
+`--dump-topk` / `--compare-topk` capture and diff neighbour sets, so an ANN
+index can be held to a recall number and not just a latency one. Run against
+the exact scan first, then again with `--ann`, and the second run reports
+recall@k against the first.
+
+Measured against a real embedding model, **HNSW is very nearly free, and at
+adequate build parameters it is exactly free**:
+
+| index | p50 | recall@10 |
+|---|---|---|
+| none (exact scan) | 73.08 ms | 1.000 — the baseline |
+| HNSW `m=16, ef_construction=64`, `ef_search=10` | 5.21 ms | 0.963 |
+| HNSW `m=16, ef_construction=64`, `ef_search=40 … 200` | 5.46 ms | 0.967 |
+| HNSW `m=32, ef_construction=200`, `ef_search=100` | 5.99 ms | **1.000** (300/300) |
+
+A 12× latency win at no measurable accuracy cost, for a 91-second index build
+over 30k vectors (25 s at the lighter build parameters). `ef_search=10` — the
+floor, since pgvector requires `ef_search >= k` — is included as the control
+that proves the knob is live rather than silently ignored.
+
+**Now the warning this section exists for.** The same harness, same index, same
+code, with the *synthetic* hash embedder reports recall@10 of **0.33**; widen
+its vocabulary with `--distinct` so distances separate and it reports **0.75**.
+Neither number moves against a ten-fold sweep of build cost. Both are artifacts
+of the embedder, not measurements of the index:
+
+| embedder | recall@10 | responds to `ef_search`? |
+|---|---|---|
+| hashed buckets, templated corpus | 0.33 | no |
+| hashed buckets, `--distinct` corpus | 0.75 | no |
+| `mxbai-embed-large` (real, dim 1024) | 0.97 – 1.00 | yes |
+
+A hashed-bucket embedder puts ~15 non-zero components in 384 dimensions —
+sparse, spiky vectors whose neighbourhood graph is nothing like the dense
+manifold HNSW's construction assumes. **Recall@k is a property of the embedding
+model's geometry, not of the index**, so it cannot be inherited from anyone
+else's benchmark, including this one.
+
+The signature to recognise, in any ANN benchmark: **recall that does not rise
+with `ef_search`**. If turning the accuracy knob changes nothing, the number is
+measuring the corpus or the embedder, not the index — and it should not be
+quoted either as a reason to adopt ANN or as a reason to avoid it. Re-run the
+two commands above against the model you will actually deploy.
+
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
 `cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,

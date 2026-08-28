@@ -27,6 +27,12 @@ postgres-tls = ["postgres", "areev-store/postgres-tls"]
 # Native TLS for `areev ui` (rustls; the recorded dependency
 # exception). Non-default: the proxy pattern stays the documented default.
 tls = ["areev-server/tls"]
+# Native OIDC login for `areev ui` (the second recorded dependency
+# exception). Non-default, same posture as `tls`: an authenticating proxy
+# (--sso-header) stays the documented default, and this is for deployments
+# that cannot run one — or that need an approver identity stronger than a
+# shared proxy secret can carry. See docs/auth-proposal.md §6.
+oidc = ["areev-server/oidc"]
 
 [dependencies]
 areev-core = { path = "../areev-core", version = "1.6.0" }
@@ -36,6 +42,9 @@ serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
 zeroize = "1"
+# Already in the lockfile via areev-store/areev-run; adds no new package.
+# `areev auth mint` needs OS randomness so an operator never chooses a token.
+getrandom = "0.2"
 # Already in the lockfile via areev-core; adds no new package. Used to parse
 # ISO-8601 transcript timestamps so capture-stop can pin created_at.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
