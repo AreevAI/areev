@@ -1,0 +1,16 @@
+{
+  "_comment": "SYNTHETIC AND INVENTED. These denial codes are made up for this example. They are NOT CARC/RARC codes and no meaning is taken from any real code set. Both payers are fictional. `proposed_root_cause` is the DESK'S OWN crosswalk guess -- it only ever suggests; nothing acts on it until a billing lead has approved it into memory.",
+  "crosswalk_version": "2026-07-01",
+  "payers": {
+    "PAYER-MRD": {"name": "Meridian Health Plan", "slug": "meridian"},
+    "PAYER-CAS": {"name": "Cascade Mutual Assurance", "slug": "cascade"}
+  },
+  "codes": {
+    "DN-101": {"text": "coverage inactive on service date", "family": "eligibility", "proposed_root_cause": "eligibility_lapsed"},
+    "DN-204": {"text": "modifier inconsistent with procedure", "family": "coding", "proposed_root_cause": "modifier_mismatch"},
+    "DN-311": {"text": "prior authorization absent", "family": "authorization", "proposed_root_cause": "prior_auth_missing"},
+    "DN-402": {"text": "duplicate of an adjudicated claim", "family": "submission", "proposed_root_cause": "duplicate_submission"},
+    "DN-517": {"text": "diagnosis lacks required specificity", "family": "coding", "proposed_root_cause": "dx_specificity"},
+    "DN-622": {"text": "rendering provider not credentialed", "family": "enrollment", "proposed_root_cause": "credentialing_gap"}
+  }
+}

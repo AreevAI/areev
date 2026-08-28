@@ -1,0 +1,6 @@
+{
+  "marker": "11057654e26e",
+  "lead": "user:dana",
+  "decision": "approve",
+  "because": "all three are joint procedures at the surgical sites, and Meridian moved them onto the auth list on 2026-07-01. Map the code to prior_auth_missing, resubmit with the retro-auth reference, and add the auth check to the pre-submission edit for those CPTs."
+}

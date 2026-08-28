@@ -1,0 +1,14 @@
+{
+  "remit_id": "RA-MRD-20260807",
+  "payer_id": "PAYER-MRD",
+  "payer_name": "Meridian Health Plan",
+  "received_on": "2026-08-07",
+  "check_ref": "EFT-4483112",
+  "denials": [
+    {"claim_id": "CLM-89502", "patient_ref": "PT-M27", "denial_code": "DN-311", "billed_cents": 50500, "cpt": "29827", "modifiers": ["RT"], "place_of_service": "24", "submitted_on": "2026-07-20"},
+    {"claim_id": "CLM-89508", "patient_ref": "PT-N44", "denial_code": "DN-311", "billed_cents": 9600, "cpt": "20605", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-21"},
+    {"claim_id": "CLM-89515", "patient_ref": "PT-P81", "denial_code": "DN-311", "billed_cents": 104000, "cpt": "27130", "modifiers": ["LT"], "place_of_service": "22", "submitted_on": "2026-07-22"},
+    {"claim_id": "CLM-89520", "patient_ref": "PT-Q05", "denial_code": "DN-517", "billed_cents": 6100, "cpt": "99212", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-23"},
+    {"claim_id": "CLM-89527", "patient_ref": "PT-R66", "denial_code": "DN-517", "billed_cents": 15400, "cpt": "99205", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-24"}
+  ]
+}

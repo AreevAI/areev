@@ -1,0 +1,37 @@
+{
+  "target_id": "TGT-4402",
+  "target": "Halcyon Freightworks",
+  "note": "Synthetic records. Same yield shape as TGT-4401 on purpose: the two acts compare like with like.",
+  "legs": {
+    "adverse_media": {
+      "source": "Open-web media sweep (synthetic corpus)",
+      "records": [
+        {"ref": "MED-8110", "date": "2026-01-30", "summary": "Trade weekly: fleet renewal order for 12 tractor units.", "material": false, "severity": "none"},
+        {"ref": "MED-8155", "date": "2026-04-11", "summary": "Regional business pages profile the founder; no allegation.", "material": false, "severity": "none"},
+        {"ref": "MED-8190", "date": "2026-06-18", "summary": "Sector newsletter mention in a capacity round-up.", "material": false, "severity": "none"}
+      ]
+    },
+    "corporate_filings": {
+      "source": "Ravensmoor Companies Registry (synthetic)",
+      "records": [
+        {"ref": "RCR-91004", "date": "2026-02-14", "summary": "Annual return filed on time.", "material": false, "severity": "none"},
+        {"ref": "RCR-91288", "date": "2026-05-06", "summary": "Charge registered over trade receivables in favour of an unnamed factoring vehicle; the vendor questionnaire declares no security granted.", "material": true, "severity": "medium"}
+      ]
+    },
+    "financials": {
+      "source": "Filed accounts extract (synthetic)",
+      "records": [
+        {"ref": "FIN-4102", "date": "2025-12-31", "summary": "FY25 turnover up 9%; fleet capex funded by lease.", "material": false, "severity": "none"},
+        {"ref": "FIN-4119", "date": "2025-12-31", "summary": "Trade creditor days stretched from 41 to 96 across the year, unexplained in the notes.", "material": true, "severity": "high"},
+        {"ref": "FIN-4133", "date": "2025-12-31", "summary": "Two directors' loans totalling 640k advanced and repaid within the same period, straddling the year end.", "material": true, "severity": "high"}
+      ]
+    },
+    "litigation": {
+      "source": "Ravensmoor civil docket (synthetic)",
+      "records": [
+        {"ref": "LIT-6011", "date": "2025-11-02", "summary": "Employment matter, withdrawn before hearing.", "material": false, "severity": "low"},
+        {"ref": "LIT-6077", "date": "2026-05-21", "summary": "Statutory demand served by a fuel-card provider for 212k; not yet set aside.", "material": true, "severity": "high"}
+      ]
+    }
+  }
+}

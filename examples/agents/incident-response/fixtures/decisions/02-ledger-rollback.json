@@ -1,0 +1,7 @@
+{
+  "alert_id": "ALRT-4103",
+  "channel": "webhook",
+  "engineer": "user:tobin",
+  "decision": "apply",
+  "because": "lag is still climbing and the runbook step for replication_lag is a rollback of the sync worker"
+}

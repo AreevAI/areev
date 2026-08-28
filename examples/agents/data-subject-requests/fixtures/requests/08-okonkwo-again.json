@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0121",
+  "received_at": "2031-03-11T09:00:00Z",
+  "channel": "email",
+  "from": "n.okonkwo@example.test",
+  "subject_line": "Confirming my deletion request went through",
+  "body": "Following up on my erasure request (did:example:nadia-okonkwo). Please confirm nothing is left.",
+  "request_type": "erasure",
+  "claimed_identity": "did:example:nadia-okonkwo",
+  "verification": {
+    "verified": true,
+    "method": "signed-in account session",
+    "verified_at": "2031-03-11T08:58:00Z"
+  }
+}

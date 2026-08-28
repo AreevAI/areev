@@ -1,0 +1,7 @@
+{
+  "alert_id": "ALRT-4101",
+  "channel": "replay",
+  "engineer": "user:imara",
+  "decision": "record_only",
+  "because": "replayed for the postmortem write-up -- checkout was already restored by rhea's rollback, so nothing may touch production a second time"
+}

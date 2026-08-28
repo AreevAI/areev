@@ -1,0 +1,13 @@
+{
+  "remit_id": "RA-CAS-20260807",
+  "payer_id": "PAYER-CAS",
+  "payer_name": "Cascade Mutual Assurance",
+  "received_on": "2026-08-07",
+  "check_ref": "EFT-2291630",
+  "denials": [
+    {"claim_id": "CLM-52310", "patient_ref": "PT-S13", "denial_code": "DN-517", "billed_cents": 19900, "cpt": "99214", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-25"},
+    {"claim_id": "CLM-52317", "patient_ref": "PT-T49", "denial_code": "DN-517", "billed_cents": 7400, "cpt": "99213", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-26"},
+    {"claim_id": "CLM-52322", "patient_ref": "PT-U71", "denial_code": "DN-517", "billed_cents": 33500, "cpt": "99215", "modifiers": [], "place_of_service": "11", "submitted_on": "2026-07-27"},
+    {"claim_id": "CLM-52329", "patient_ref": "PT-V02", "denial_code": "DN-622", "billed_cents": 61000, "cpt": "43239", "modifiers": [], "place_of_service": "22", "submitted_on": "2026-07-28"}
+  ]
+}

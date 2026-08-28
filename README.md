@@ -319,6 +319,18 @@ proposes its own fix from its run journals, and you decide). The same agent
 ships in **Python, TypeScript, and Rust** — one file each, and all three mint
 the *identical* content-addressed plan.
 
+**Or browse the whole gallery** — [`examples/agents/`](examples/agents/) is
+ten vertical agents, each one exercising a different part of Areev that no
+other example touches: a screening desk whose **rule is content-addressed code
+the host must pin** before it runs, an on-call desk **woken by webhooks with no
+connector at all**, a remittance desk that **fans out work the plan never
+enumerated**, a privacy desk where **the disclosure and the erasure share one
+selector**, a referral desk where **what leaves the memory is not what is in
+it**, a claims desk that reads **two clocks** — what was true, and what we
+knew — and a diligence desk where **running out of budget is a resumable
+state, not an error**. All keyless, all fixture-driven, all run by CI on every
+release.
+
 Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
 backend, encryption at rest, migration from other stores, and fleet sync:
 **[docs/quickstart.md](docs/quickstart.md)**. Task recipes:

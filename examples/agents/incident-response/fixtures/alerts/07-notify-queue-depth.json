@@ -1,0 +1,15 @@
+{
+  "alert_id": "ALRT-4207",
+  "source": "beacon",
+  "fired_at": "2026-09-04T18:20:00Z",
+  "service": "notify-worker",
+  "signal": "queue_depth",
+  "severity": "warning",
+  "value": 41200,
+  "threshold": 10000,
+  "window": "15m",
+  "region": "eu-west-1",
+  "runbook": "rb-notify",
+  "dashboard": "https://beacon.example.invalid/d/notify-worker",
+  "note": "outbound queue backing up behind a slow downstream"
+}

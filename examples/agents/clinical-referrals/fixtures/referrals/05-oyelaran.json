@@ -1,0 +1,13 @@
+{
+  "referral_id": "REF-2205",
+  "received_at": "2026-08-11",
+  "source": "Bramblewood Health Centre",
+  "referring_clinician": "Ingrid Sollberger",
+  "patient": {
+    "name": "Folasade Oyelaran",
+    "mrn": "MRN 7742016",
+    "phone": "202-555-0188",
+    "email": "f.oyelaran@example.com"
+  },
+  "letter": "Dear Colleague, referring Folasade Oyelaran (MRN 7742016) with chest tightness on exertion for around five weeks. Contact 202-555-0188 or f.oyelaran@example.com. Regards, Dr Ingrid Sollberger, Bramblewood Health Centre."
+}

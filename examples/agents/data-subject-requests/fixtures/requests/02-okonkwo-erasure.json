@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0115",
+  "received_at": "2031-03-02T14:40:00Z",
+  "channel": "email",
+  "from": "n.okonkwo@example.test",
+  "subject_line": "Delete my account and everything attached to it",
+  "body": "I am closing my account (did:example:nadia-okonkwo) and I withdraw consent for marketing. Please erase my data.",
+  "request_type": "erasure",
+  "claimed_identity": "did:example:nadia-okonkwo",
+  "verification": {
+    "verified": true,
+    "method": "signed-in account session",
+    "verified_at": "2031-03-02T14:39:00Z"
+  }
+}

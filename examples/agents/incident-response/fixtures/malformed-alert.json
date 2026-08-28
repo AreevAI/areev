@@ -1,0 +1,8 @@
+{
+  "source": "beacon",
+  "fired_at": "2026-09-05T11:11:00Z",
+  "service": "checkout-api",
+  "signal": "http_5xx_rate",
+  "severity": "critical",
+  "note": "a sender upgrade renamed alert_id to incidentId -- nothing here names the occurrence"
+}

@@ -1,0 +1,15 @@
+{
+  "alert_id": "ALRT-4101",
+  "source": "beacon",
+  "fired_at": "2026-08-24T14:09:00Z",
+  "service": "checkout-api",
+  "signal": "http_5xx_rate",
+  "severity": "critical",
+  "value": 0.42,
+  "threshold": 0.05,
+  "window": "5m",
+  "region": "eu-west-1",
+  "runbook": "rb-checkout",
+  "dashboard": "https://beacon.example.invalid/d/checkout-api",
+  "note": "5xx rate crossed the page threshold 94s after deploy 2026.08.24-3"
+}

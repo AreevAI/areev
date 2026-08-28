@@ -1,0 +1,6 @@
+{
+  "request_id": "DSR-2031-0118",
+  "decision": "erase",
+  "officer": "user:dpo-halden",
+  "because": "identity now matched through the contact address on file and the challenge reply; nothing here is under a retention obligation, so erase in full"
+}

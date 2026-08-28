@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0120",
+  "received_at": "2031-03-10T07:44:00Z",
+  "channel": "web-form",
+  "from": "m.oyelaran@example.test",
+  "subject_line": "Copy of my data please",
+  "body": "Access request, filed through the web form. Contact address only.",
+  "request_type": "access",
+  "claimed_identity": "m.oyelaran@example.test",
+  "verification": {
+    "verified": true,
+    "method": "reply-to-challenge from the address on file",
+    "verified_at": "2031-03-10T08:01:00Z"
+  }
+}

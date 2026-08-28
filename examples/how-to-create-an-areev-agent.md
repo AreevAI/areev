@@ -15,9 +15,15 @@ Working example to keep open beside this:
 [`agents/invoice-to-accounting/`](agents/invoice-to-accounting/) — the full
 pattern in one file per language (Python, TypeScript, Rust — same plan,
 same content address), with corrections taken by email reply and the loop
-scheduled. Shared how-to material for every agent example — email
-providers, deployment, testing — lives in
-[`agents/docs/`](agents/docs/). Canonical references:
+scheduled. Then [`agents/`](agents/) has nine more, and each one exists to
+work a different part of this guide end to end: §4 (code as a grain) is
+[`sanctions-screening/`](agents/sanctions-screening/), §6's fan-out is
+[`rcm-optimization/`](agents/rcm-optimization/), §12's oversight report is
+[`hiring-screening/`](agents/hiring-screening/), and erasure is
+[`data-subject-requests/`](agents/data-subject-requests/). When a passage
+here says something works, one of those asserts it on every release.
+Shared how-to material for every agent example — email providers,
+deployment, testing — lives in [`agents/docs/`](agents/docs/). Canonical references:
 [`docs/run.md`](../docs/run.md) (the runtime),
 [`docs/triggers.md`](../docs/triggers.md) (activation),
 [`docs/loop.md`](../docs/loop.md) (self-improvement),
@@ -88,6 +94,39 @@ Observation; if it's intended, Goal; if it's procedure, Workflow; if it's
 capability, Tool.** When two fit, pick the one an analyzer or a recall query
 will consume later — grains are written to be read.
 
+**Two field traps worth knowing before you design around a grain.** First,
+**unknown fields are accepted silently** — a misspelled key is copied into
+`extra_fields` and does nothing, so a typo never errors, it just quietly
+fails to work. Worse, a few *recognized* names have no builder behind them
+and vanish entirely: on `goal` that includes `criteria`, `priority`,
+`goal_state` and `progress` (only `description`, `subject` and `object`
+survive), and there are similar gaps on `observation`, `reasoning` and
+`consent`. Check what actually round-trips before you build a query on a
+field. Second, `tool` takes **`input_schema` / `output_schema`** — there is
+no bare `schema` — and workflow edges are **`src` / `dst`**, never
+`from` / `to`.
+
+**`add` and `supersede` mean different things in time, and the as-of reads
+can tell.** A grain carries two clocks: `valid_from`/`valid_to` (when it was
+true in the world) and the system clock (when you came to know it), and
+`entity_at(..., axis="world"|"knowledge")` reads them separately. The rule
+that falls out is sharp:
+
+- a **variation** — a new state that coexists with the old one in its own
+  time window — is an **`add`**. The world axis picks among *live* grains by
+  their validity window, so both windows must stay live.
+- a **restatement** — you were wrong, or you learned late — is a
+  **`supersede`**. The knowledge axis walks the supersession chain, so a
+  correction has to be linked to what it corrects.
+
+Get it backwards and the reads go quiet rather than wrong: superseding a
+still-valid window hides it from the world axis forever, and adding a
+correction as a fresh grain leaves the knowledge axis unable to find it.
+`system_valid_from` is not settable — the store copies `created_at` into it.
+[`agents/insurance-documents/`](agents/insurance-documents/) turns this into
+the difference between telling an insured they are covered and telling them
+they are 112,000 short.
+
 ---
 
 ## 4. Where tool code lives — this decides what the loop can improve
@@ -130,6 +169,60 @@ by construction, and code enters the substrate only through an authored add
 or an applied recommendation. Your build step compiles/copies the source and
 seeds it as a blob; the grain is the deployed artifact, the repo is the
 workshop.
+
+**Running code-carrying tools — what the driver owes them.** Three practical
+rules, learned by taking a production agent from `--tool-cmd` to grains:
+
+- **Derive the pin from the files you ship.** `put_blob` returns
+  `cas://sha256:` of exactly the bytes, so `--allow-executor` is computable
+  from the workshop without opening the memory: hash the same files the
+  seeder seeds, and the host authorizes precisely the code in its own
+  checkout. The corollary is a feature, not friction: a `code_revision` the
+  loop applies lands at an address the checkout does *not* contain, so runs
+  refuse it (`RUN-E018`) until the operator syncs the revised source or pins
+  the new address explicitly — the moment the agent's code moves ahead of
+  the human's copy is loud, never silent.
+- **A native blob's environment is the host's job.** A
+  `#!/usr/bin/env python3` (or node, or sh) blob resolves its interpreter
+  and imports from whatever environment the driver gave it — that is the
+  documented native trade ("its deps must exist on the host"), so the
+  driver must arrange it deliberately: put the right interpreter first on
+  `PATH`, the shared library on the import path, before every
+  `run_start`/`run_resume`/`trigger_run`. Split the code accordingly:
+  the **improvable logic lives in the blob** (it is the unit the loop can
+  revise, and what provenance chains), stable plumbing lives in a
+  host-installed library the blob imports. A blob that is only a shim
+  around a host library has put the logic back where the loop cannot
+  reach it.
+- **A stale pin stalls; it must not be left stalled.** Since 1.6.4 a
+  refused run start **holds the cursor**: the firing records the RUN-E018,
+  increments `consecutive_failures`, backs off and retries, and the item
+  survives until pin and memory agree ([#129](https://github.com/AreevAI/areev/issues/129);
+  before that fix the item was silently *consumed*, so pre-1.6.4 drivers
+  must pre-check their pins cover every non-client `executor_uri` and
+  refuse the whole tick). The remaining operational duty is noticing:
+  watch `consecutive_failures`/`last_error` on `trigger status` — a desk
+  refusing every start is safe but doing nothing. The one-step cure is a
+  converging re-seed (§14), which updates definitions and pins together.
+
+**A revision is a chain, not a supersession.** When the loop's advice is
+"change the code", moving it takes four steps, because every layer names its
+input by content address:
+
+```
+new bytes  -> a new blob address                       (put_blob)
+           -> supersede the Tool definition to name it
+           -> supersede the Workflow: bindings name tools BY HASH, so the
+              plan must move too -- which mints a NEW PLAN HASH
+           -> re-point the Trigger: triggers do NOT follow supersession heads
+```
+
+Stop after step two — the intuitive place to stop — and nothing happens: the
+old plan still binds the old definition, which still names the old blob, and
+the agent goes on running the rule you believe you replaced, silently. The
+one visible symptom is that the pin you expected to break did not.
+[`agents/sanctions-screening/`](agents/sanctions-screening/) walks the whole
+chain and asserts each link.
 
 **Inbound: do you need a connector at all?** The trigger path cannot yet
 execute a connector from a grain (resolving connectors as capability tools
@@ -177,17 +270,32 @@ is always an intersection: *declared ∩ granted ∩ host-configured*.
   service's secret to the other.
 - **`locked_params`** — arguments frozen in the definition; the model or
   caller cannot override them.
-- **`runtime` + `runtime_limits`** — sandbox selection and its ceilings
-  (fuel, memory pages, call count, response bytes), frozen into the run
-  manifest at start.
+- **`runtime` + `runtime_limits`** — sandbox selection (`native`,
+  `wasm32-areev`, `wasm32-areev-io`) and its ceilings (fuel, memory pages,
+  call count, response bytes), frozen into the run manifest at start. The
+  ceilings are validated for shape but **not clamped**, so a plan may declare
+  more than you meant to allow — review them like any other declaration.
+- **An anonymization policy per namespace** — `set_anon_policy(ns, …)`. The
+  modes are exactly `off`, `audit` (detect and record, rewrite nothing),
+  `egress` (reads leave pseudonymized), `ingress` (writes land
+  pseudonymized), and `both`. There is **no "rewrite" mode**, though the
+  behaviour of `egress` is often described that way. Start at `audit` and
+  measure before you turn on rewriting — and never policy the operational
+  namespace, because a rewriter that turns 64-char hashes and dates into
+  `[PERSON_1]` will happily mangle your plans and bindings. Note `ingress`
+  rewrites fields *before* hashing, so it is incompatible with the pinned
+  `created_at` trick that keeps plan hashes reproducible.
 
 **Host-side only (deliberately never persisted in the file):**
 
 - `--allow-executor <hex,…>` — the pin that authorizes code-carrying blobs;
   per platform for native blobs.
-- `--credential NAME=…` + `--allow-host` — the broker: tokens never enter
-  tool processes; the outbound allowlist is the host's, and a tool's
-  declaration can only *narrow* it.
+- `--credential NAME=…` + `--allow-host` + `--tool-egress` — the broker:
+  tokens never enter tool processes; the outbound allowlist is the host's,
+  and a tool's declaration can only *narrow* it. **Reachable from the CLI,
+  MCP (via `$AREEV_RUN_*`), and `trigger run` only** — the Python and Node
+  `run_start` take no credential arguments, so an agent that brokers
+  outbound calls is driven by the CLI or a heartbeat, not by a binding.
 - `--tool-cmd` / `--sandbox-cmd` / `$AREEV_RUN_TOOL_CMD` — which local
   programs may execute at all (server-bound for MCP: a client cannot grant
   it to itself).
@@ -215,14 +323,46 @@ How much the LLM decides is expressed in the plan, node by node:
 2. **Client gates** — bind a node to a definition with
    `executor_kind: "client"`: the run parks until a named person `respond`s.
    The approver's identity is the audit record. Put one before every
-   irreversible effect (payments, sends, deletes).
+   irreversible effect (payments, sends, deletes). Gates are not only for
+   *external* effects: a decision that **changes the agent itself** — "may I
+   remember this?", a knowledge update, a policy override — deserves the
+   same treatment. A two-node plan (send the proposal → client gate) turns
+   it into a parked run, and `run_respond`'s separation of duties (the
+   responder must differ from the principal that started the run) then
+   guards it structurally, instead of by an allowlist check in your harness
+   that someone can forget to write. Two shapes worth knowing: a client
+   node may be **terminal** (park → respond → the run completes — no
+   downstream node needed), and on the embedded backend the *driver* writes
+   the resulting grains after `run_resume` returns, because a tool process
+   must never open the memory the runtime is holding.
 3. **Abstract nodes** — leave a node unbound: its label becomes the LLM
    instruction, executed as a journaled tool-calling loop over the run's
    pinned tools. Agentic behavior inside a governed slot — budgeted,
-   replayable, verifiable.
+   replayable, verifiable. Two practical limits: the tool-calling backend is
+   an **HTTP provider** (`--model provider:name`), so `--llm-cmd` does *not*
+   reach this path and the only local option is `ollama:<model>` against a
+   real server — which is why no example here puts an abstract node on the
+   keyless floor; and an attempt is capped at **16 effects**, so a node that
+   needs more must be split.
 4. **`$send` fan-out** — a node's result spawns tasks at runtime: dynamic
-   width the plan didn't enumerate, joined by declared reducers.
-5. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
+   width the plan didn't enumerate, joined by declared reducers. A reducer's
+   value is a **bare string** — `lww` (the default), `append`, `sum`, `max`,
+   `min` — and it is read at *run start*, never validated on the write path,
+   so a mistyped reducer name stores cleanly and then refuses every run.
+5. **Subgraph bindings** — bind a node to another **Workflow** hash and it
+   runs inline as a child with its own journal. Compose vetted sub-plans
+   rather than raw tools. **But a child that parks on a client gate fails
+   the parent node** — v1 does not bubble asks through subgraphs, so
+   subgraphs and human gates do not compose. Keep every gate in the parent
+   and every child fully automated. There is also no depth limit and no
+   self-reference guard: a self-binding plan recurses until the stack ends.
+6. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
+
+**One structural rule underneath all of them: a plan needs a dead end.**
+Terminal nodes are the ones with **no outgoing edges**, and a run ends by
+reaching one. A graph where every node has an out-edge — the natural shape
+when you write a polling or retry loop — never completes; it terminates as
+`Stalled` (`RUN-E001`). Give every cycle an explicit exit node.
 
 Escalate along this spectrum only when the previous level can't express the
 job. Every step up trades static checkability for flexibility — and the
@@ -269,10 +409,20 @@ Five properties make this safe rather than scary:
    runs it as an inline child), not raw tools. Dynamic topology,
    pre-governed building blocks.
 
-Authoring surface note: generate plans via **JSON `add`** (bindings/MCP),
-not CAL `ADD workflow`, whenever they need bounded cycles (`max_cycles`) or
-reducers — CAL's graph syntax cannot express those yet, and its `* N` means
-per-node *retries*, not a cycle bound.
+Authoring surface note, and it is stronger than it looks. CAL authors plans
+fine — `ADD workflow "name" … BIND …` has its own graph syntax — but **`ADD`
+cannot create a Tool grain at all**: the types its `SET` form accepts are
+exactly `fact`, `goal`, `observation` and `skill`. Every Tool definition
+(host tools, `client` gates, `executor_uri` carriers) therefore needs the
+generic `add` from a binding, MCP's `areev_add`, or the console. Since
+bindings point at Tool *hashes*, a plan authored in CAL has nothing to bind
+to until something else has created those grains — so **CAL and the CLI alone
+cannot author a working agent**; a binding or MCP is required somewhere in
+the pipeline.
+
+On top of that, CAL's graph syntax cannot express bounded cycles
+(`max_cycles`) or reducers, and its `* N` means per-node *retries*, not a
+cycle bound. Generate plans that need either via JSON `add`.
 
 ---
 
@@ -401,6 +551,17 @@ and the loop's definition-rewrite class can even propose governed revisions
 to a saved query. Tune the retrieval recipe with `DROP QUERY` + `DEFINE` —
 no agent redeploy.
 
+The same travels-with-the-file rule extends to a tool's **instructions**.
+A prompt hard-coded in tool source is invisible to the memory: nobody can
+read what the agent was told to do without reading code, and changing it is
+a redeploy. Put the working instructions in a **Skill grain** instead,
+include `RECALL skills` in the context query the trigger declares, and have
+the tool read its contract from the assembled context (keep the constant in
+code only as the fallback for a run that carried no context). Now the prompt
+is versioned where the agent lives — superseding the grain retunes every
+future run, `HISTORY` records why the wording changed, and the change needs
+no deploy at all.
+
 ---
 
 ## 11. Self-improvement — the loop closes at three levels
@@ -414,6 +575,42 @@ a `SUPERSEDE workflow` → **new hash** → re-point the triggers (they do *not*
 follow supersession heads); `outcome_review` re-measures after the review
 window and **proposes a revert on regression**. Plan changes are never
 auto-applied — deliberately.
+
+> **The re-point keeps its state since 1.6.4** — cursor and dedup fence are
+> keyed on the **root of the trigger's supersession chain**, so superseding
+> a trigger to follow an improved plan neither re-seeds the source nor
+> resets item dedup, and `areev trigger show` prints the cursor
+> ([#128](https://github.com/AreevAI/areev/issues/128)). On older runtimes
+> the superseded head started blank — a live source silently skipped
+> everything since the last poll, and re-delivered items minted fresh run
+> ids. Two defensive habits stay worth keeping regardless of version: a
+> **connector that remembers the last cursor it returned** resumes instead
+> of seeding when handed a genuinely fresh chain (a re-declared trigger,
+> a restored host), and every costly effect carries its **own idempotency
+> key** checked at the effect — the fence you control survives anything,
+> and it is the one you want anyway.
+
+**Driving the lifecycle from a binding, without tripping over it.** Three
+things surprised every agent example built against this surface:
+
+- **`apply` subsumes `approve`.** Calling `approve_recommendation` and then
+  `apply_recommendation` fails with `LOP-E020 illegal lifecycle transition:
+  approved -> approved`. Use `approve` when a human is signing off and
+  nothing executes, or `apply` alone when the change should land — not both.
+- **Whether `apply` is refused depends on the analyzer, not on your code.**
+  Some recommendation families are advisory and refuse `apply` outright
+  (`LOP-E011`); others accept it and are held back instead by the auto-apply
+  ceiling in their manifest, so the engine reports `auto_applied: 0` even
+  under a policy that grants the family auto-apply. Assert the behaviour of
+  the analyzer you actually have rather than assuming a universal rule.
+- **Analyzer thresholds are tuned to volume, and tuning is itself recorded.**
+  The stock ratios assume a busy system; a desk doing a handful of runs a
+  week will never trip them. `set_analyzer_config("loop.run_outcome/1", True,
+  '{"min_failure_ratio": 0.3}')` is a legitimate act of configuration, not a
+  fork. Note the ids carry a version suffix (`/1`) — read them from
+  `loop_analyzers()` rather than guessing. And note what the denominator is:
+  `tool_failure` divides by *that tool's* opportunities, so telemetry you
+  record under a busy tool's name gets diluted below the firing threshold.
 
 **Level 2 — the tool code improves (grain code only, §4).** A
 `code_revision` recommendation targets a tool's content address, pins the
@@ -435,7 +632,129 @@ is the memory itself.
 
 ---
 
-## 12. Do and don't
+## 12. Proving oversight — the record an auditor actually asks for
+
+Agents that touch regulated work eventually have to answer a question that
+is not "is the model good?" but **"who decided this, and could they have
+said no?"** That distinction is worth internalising, because it is the one
+the law actually draws.
+
+Machines doing the work is not the regulated part. UETA §14 says a contract
+may be formed by the interaction of electronic agents "even if no individual
+was aware of or reviewed the electronic agents' actions", and E-SIGN
+(15 U.S.C. §7001(h)) upholds it so long as the agent's action is "legally
+attributable to the person to be bound". **What is gated is attribution.**
+
+And the regimes that gate it hardest converge on the same four demands — a
+named individual, their capacity, what they saw, and evidence they could
+have refused:
+
+- **EDPB/WP29 WP251rev.01**: a controller "cannot avoid the Article 22
+  provisions by fabricating human involvement"; oversight must be
+  "meaningful, rather than just a token gesture", carried out by someone
+  "who has the authority and competence to change the decision".
+- **Colorado C.R.S. §6-1-1701(15)** (as enacted by SB 26-189, 2026 — the
+  earlier SB 24-205 was repealed and reenacted before it ever took effect):
+  the reviewer must be trained, consider primary evidence, have authority to
+  override, and "not default to the system output".
+- **ITAR 22 C.F.R. §120.67(a)(4)(iii)**: the approver must be able to refuse
+  to sign "without prejudice or other adverse recourse".
+- **21 C.F.R. §11.50(a)**: the record must carry the name, the timestamp,
+  *and* "the meaning (such as review, approval, responsibility, or
+  authorship)" of the signature.
+- **ERISA 29 C.F.R. §2560.503-1(h)(3)** and **42 C.F.R. §422.590(h)(1)**:
+  the reviewer must be someone "who was not involved" in the original
+  determination — and, in ERISA's case, not their subordinate either.
+
+Read that list as a specification and the mapping is direct:
+
+| What the rule demands | What the agent does |
+|---|---|
+| a named individual | `run_respond(..., responder="user:mo")` — the responder is required, never inferred |
+| who was not the decider | separation of duties: the runtime refuses the principal that started the run |
+| a recorded reason | the `--because` on every governed decision; a blank one is refused |
+| what they saw | the ask's `input` is journaled, and `run_verify` re-derives the chain byte-for-byte |
+| ability to refuse | reject and cancel are first-class outcomes, not error paths |
+| retention | the memory is append-only and content-addressed; erasure is explicit and audited (§ below) |
+
+**Ask the runtime for the report rather than writing one.** For a run or a
+plan, `run_oversight_report(run_id=…)` / `areev run oversight-report`
+produces the EU AI Act Article 14 picture **measured from the journal**:
+
+```json
+{"human_gates": {"client_gated_nodes": [{"node": "recruiter_review", ...}],
+                 "every_client_ask_is_an_approval": true,
+                 "separation_of_duties": "responder != triggering principal, refused structurally"},
+ "authorized_responders": {"principals_granted_run_respond": ["user:ines", "user:mo"]},
+ "budgets": {"max_tokens": 200000, "max_usd_micros": 1500000, ...},
+ "kill_switch": {"verb": "run.cancel", "measured_cancel_to_drain_ms": [2]}}
+```
+
+Every field is derived, not asserted — the gated nodes come from the plan,
+the responders from the file's grants, the ceilings from the manifest, and
+the kill-switch latency is **timed** from the journaled cancel to the
+terminal checkpoint. A policy document claims oversight; this measures it.
+
+Two honest caveats. Human involvement does **not** change whether a system
+is high-risk — the Commission's Article 6(5) guidelines (19 May 2026) say so
+explicitly — so a gate is a control, never an exemption. And most US regimes
+in this space are *disclosure* regimes rather than *decide* regimes: NYC
+LL144, for instance, states outright that nothing in it "requires an
+employer... to provide an alternative selection process" (6 RCNY §5-304(a)).
+Build the gate because it is the right control and because your EU exposure
+(GDPR Art. 22) or your sector rule demands it — not because a US audit
+statute implies it.
+
+**Derive state from the journal, never from your own side file.** It is
+tempting to answer "what has this run done so far?" by reading the ledger
+your tools appended to — it is right there and it is easy. It is also a
+*different* record: it can miss effects that were journaled but not yet
+written, double-count across a fork (a fork inherits the base's context
+verbatim, so ledger rows attributed by run id disagree with reality), and
+drift silently whenever a tool fails between doing the work and recording
+it. The runtime's own answer is `run_inspect` for the summary,
+`run_grains`/`run_trace` for the entries, and the last checkpoint's context
+for the merged state. Keep your ledger as the record of **effects**, which
+is exactly what makes a `run_shadow` assertion meaningful: replay the run
+and the ledger must not grow.
+
+**Erasure has a blast radius your namespace scope does not cover.** Two
+things reintroduce an identity you just removed, and both were found the
+hard way building the example below:
+
+- **The run journal sits outside every erasure scope.** Journal grains live
+  in `agent:harness`, so a namespace-scoped `forget_subject` never touches
+  them — and if you passed the subject's name into `run_start`'s input, it
+  is still there afterwards. Pass a **fingerprint** instead
+  (`sha256(id)[:16]`, matching `authz::subject_fingerprint`), which is the
+  same reason the audit records erasure by fingerprint rather than by name.
+- **Recall telemetry writes identities back.** With the default
+  `telemetry="aggregate"`, the desk's own post-erasure verification searches
+  leave the erased name in the sidecar — and the loop then proposes
+  *"recurring question with no matching memory: <name>"*, minting a fresh
+  recommendation grain containing the identity you were asked to erase. Open
+  a privacy-facing memory with `telemetry="off"`.
+
+The general rule: **erasure is scoped to what you named, and the agent's own
+machinery is not in that scope unless you put it there.** Sweep the journal,
+the telemetry sidecar, any stream/bundle archives (`--retain` bounds them),
+and your own logs.
+
+These citations are load-bearing for the *design*, not legal advice, and
+this area moves fast — several widely-repeated sources went stale in
+2025-26 (the CFPB's Circular 2023-03 was withdrawn; the EEOC's AI guidance
+was taken down; SR 11-7 was superseded and its replacement puts generative
+and agentic AI out of scope). Check the primary source before you rely on
+one, and prefer the regulation itself over guidance about it.
+
+Worked examples: [`agents/hiring-screening/`](agents/hiring-screening/) (the
+Article 14 report), [`agents/data-subject-requests/`](agents/data-subject-requests/)
+(erasure and DSAR), [`agents/sanctions-screening/`](agents/sanctions-screening/)
+(which code version decided).
+
+---
+
+## 13. Do and don't
 
 **Do**
 
@@ -443,6 +762,16 @@ is the memory itself.
 - Seed tool code as grains (`executor_uri`, preferably `wasm32-areev-io`)
   so the loop can govern its revisions — the pin (`--allow-executor`) stays
   host-side, per platform for native blobs.
+- Make the seeder converge: recall first on a stable identity, keep what is
+  unchanged, supersede what is edited, in dependency order (blobs →
+  definitions → workflow → trigger), and report what changed (§14).
+- Derive the executor pin from the same files the seeder ships (sha256 of
+  the bytes IS the blob address), and treat a run of RUN-E018 refusals as
+  "re-seed now", not as noise (§4).
+- Keep a tool's working instructions in a Skill grain recalled via the
+  declared context query, with the code constant only as fallback (§10) —
+  a prompt in the memory is versioned, auditable, and retunable without a
+  redeploy.
 - Put a client gate before every irreversible effect, and keep
   `run.respond` with named people — never the agent's own principal.
 - Design the namespace tree for prefix reads (§8); grant writes on exact
@@ -470,6 +799,13 @@ is the memory itself.
   are for mocks, local glue, and SDK legs that truly can't ship as blobs.
 - Don't store run state or schedules on the Workflow grain — it's
   content-addressed; runs and triggers point at it, never the reverse.
+- Don't rely on the runtime's cursor as your only fence. A re-point keeps
+  its state since 1.6.4 ([#128](https://github.com/AreevAI/areev/issues/128)),
+  but a genuinely new chain still seeds, and effects are where duplication
+  costs money — keep idempotency keys at the effects (§11).
+- Don't gate only external effects — a decision that changes the agent
+  itself (remembering a lesson, overriding policy) goes through a client
+  gate too, so the engine's separation of duties covers it (§6).
 - Don't use raw `ADD tool` for execution records (dedup eats your
   evidence), and don't hand-write Recommendation grains (the loop owns
   them).
@@ -489,7 +825,7 @@ is the memory itself.
 
 ---
 
-## 13. The development workspace vs. the agent
+## 14. The development workspace vs. the agent
 
 The **agent** is the memory file (or its bundle): tool definitions, code
 blobs, plans, saved queries, templates, triggers — everything
@@ -512,6 +848,51 @@ my-agent/
   improve.sh         # areev loop run → review one rec with judgment
 ```
 
+**The seeder must converge, not fork.** Grains are immutable and
+content-addressed, so a seeder that re-`add`s on every deploy grows sibling
+heads: two workflows with the same name, tool definitions nobody binds, a
+`RECALL` that returns last month's plan next to this month's. Identity is a
+**stable field** (`tool_name`, the workflow's `name`), never the hash — so
+seed by *recall first, then add / keep / supersede*:
+
+```python
+def ensure(db, grain_type, fields, identity_key, ns):
+    heads = json.loads(db.cal(f"RECALL {grain_type}s LIMIT 50 FORMAT json"))["grains"]
+    head = next((g for g in heads
+                 if g["fields"].get(identity_key) == fields[identity_key]), None)
+    payload = json.dumps(fields, sort_keys=True)
+    if head is None:
+        return db.add(grain_type, payload, ns=ns)            # first seed
+    if all(head["fields"].get(k) == v for k, v in fields.items()):
+        return head["hash"]                                  # unchanged: converge
+    return db.supersede(head["hash"], grain_type, payload, ns=ns)  # edited: evolve
+```
+
+Seed in dependency order — **code blobs → tool definitions → workflow →
+trigger** — because each layer's fields embed the previous layer's
+addresses: an edited blob changes its definition, a changed definition
+changes the plan's bindings, a changed plan re-points the trigger (mind the
+re-point cliff, §11). Emit what changed (`added` / `unchanged` /
+`superseded` per grain): a deploy whose seed reports *nothing* changed is
+verifiably a no-op, and one that reports supersessions names exactly what
+evolved. This is also your **upgrade path**: pointing the same seeder at a
+memory authored under an older shape migrates it in place — old definitions
+supersede to gain what they lacked, new grains add, and nothing forks.
+
+**One memory, one driver — and the guard is thinner than it looks.** The
+embedded backend is single-writer, enforced two ways: an in-process
+open-path registry (`STO-E002`) and an OS file lock while a handle is open
+(`STO-E001`). Neither protects you from the case that actually happens,
+because a well-behaved driver **opens per invocation and releases**: two
+drivers on one memory rarely collide on a lock, they simply *interleave
+between invocations*. One answers an ask the other was about to read, and
+the second fails somewhere unrelated with an assertion about business logic.
+This is a real failure mode for parallel CI, for a heartbeat that overlaps a
+manual command, and for two operators on one box. Serialise deliberately —
+an atomic `mkdir` lock beside the memory is enough for a harness, and a
+scheduler lease is the production answer. Do not rely on the single-writer
+guard to notice.
+
 Deploy = ship the bundle, pin the executor addresses on the host, arm the
 trigger. The repo never executes in production and the mirror back to it is
 export-only — which is exactly what lets the loop, not the repo, be where
@@ -521,7 +902,7 @@ needs it.
 
 ---
 
-## 14. Deploying it — alone or as a fleet
+## 15. Deploying it — alone or as a fleet
 
 The repo's Docker image packages the deployment roles — console, trigger
 heartbeat — as one container ([`docs/docker.md`](../docs/docker.md)),

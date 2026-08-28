@@ -1,0 +1,15 @@
+{
+  "alert_id": "ALRT-4206",
+  "source": "beacon",
+  "fired_at": "2026-09-04T03:48:00Z",
+  "service": "ledger-sync",
+  "signal": "replication_lag",
+  "severity": "critical",
+  "value": 903,
+  "threshold": 120,
+  "window": "5m",
+  "region": "eu-west-1",
+  "runbook": "rb-ledger",
+  "dashboard": "https://beacon.example.invalid/d/ledger-sync",
+  "note": "replica is 903s behind the primary"
+}

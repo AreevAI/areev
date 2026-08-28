@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "The synthetic memory this desk operates on. Entirely fictional people,",
+    "addresses and reference numbers. `age_days` is how old the grain is at",
+    "seed time -- the retention sweep in improve.sh reads it back through",
+    "created_at, so the fixture, not the wall clock, decides what is old."
+  ],
+
+  "processing_register": [
+    { "namespace": "org.crm",     "purpose": "customer relationship management", "lawful_basis": "contract" },
+    { "namespace": "org.support", "purpose": "support ticket history",           "lawful_basis": "legitimate interest" },
+    { "namespace": "org.billing", "purpose": "invoicing and tax records",        "lawful_basis": "legal obligation" }
+  ],
+
+  "retention": [
+    {
+      "namespace": "org.support",
+      "grain_type": "event",
+      "max_age_days": 365,
+      "because": "support conversations are kept for one year, then swept"
+    },
+    {
+      "namespace": "org.*",
+      "grain_type": "event",
+      "max_age_days": 30,
+      "because": "MIS-DECLARED ON PURPOSE: a blanket rule someone wrote as a prefix. Destruction takes an exact namespace, so the sweep refuses it instead of widening."
+    }
+  ],
+
+  "subjects": [
+    {
+      "subject": "did:example:ines-bakker",
+      "email": "i.bakker@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "i.bakker@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Ines Bakker" },
+        { "ns": "org.crm", "kind": "fact", "relation": "account_plan", "object": "team" },
+        { "ns": "org.crm", "kind": "consent", "scope": "product-updates", "basis": "consent", "age_days": 620 },
+        { "ns": "org.support", "kind": "event", "age_days": 411, "content": "Ines Bakker asked how to move a workspace between plans." },
+        { "ns": "org.support", "kind": "event", "age_days": 12, "content": "Ines Bakker reported a failed export and we resent it." }
+      ]
+    },
+    {
+      "subject": "did:example:nadia-okonkwo",
+      "email": "n.okonkwo@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "n.okonkwo@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Nadia Okonkwo" },
+        { "ns": "org.crm", "kind": "consent", "scope": "marketing", "basis": "consent", "age_days": 240 },
+        { "ns": "org.support", "kind": "event", "age_days": 26, "content": "Nadia Okonkwo asked to close her account." },
+        { "ns": "org.billing", "kind": "fact", "relation": "last_invoice_ref", "object": "INV-4471" },
+        { "ns": "org.billing", "kind": "fact", "relation": "billing_country", "object": "NL" }
+      ]
+    },
+    {
+      "subject": "did:example:tomas-vetter",
+      "email": "t.vetter@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "t.vetter@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Tomas Vetter" },
+        { "ns": "org.billing", "kind": "fact", "relation": "last_invoice_ref", "object": "INV-4390" },
+        { "ns": "org.support", "kind": "event", "age_days": 703, "content": "Tomas Vetter asked for a VAT number correction." }
+      ]
+    },
+    {
+      "subject": "did:example:priya-raman",
+      "email": "p.raman@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "p.raman@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Priya Raman" }
+      ]
+    },
+    {
+      "subject": "did:example:rafa-almeida",
+      "email": "r.almeida@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "r.almeida@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Rafa Almeida" },
+        { "ns": "org.support", "kind": "event", "age_days": 31, "content": "Rafa Almeida asked whether the newsletter can be turned off." }
+      ]
+    },
+    {
+      "subject": "did:example:hanne-sorensen",
+      "email": "h.sorensen@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "h.sorensen@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Hanne Sorensen" },
+        { "ns": "org.billing", "kind": "fact", "relation": "billing_country", "object": "DK" }
+      ]
+    },
+    {
+      "subject": "did:example:mo-oyelaran",
+      "email": "m.oyelaran@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "m.oyelaran@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Mo Oyelaran" },
+        { "ns": "org.support", "kind": "event", "age_days": 8, "content": "Mo Oyelaran asked for a seat count change." }
+      ]
+    },
+    {
+      "subject": "did:example:sofia-marchetti",
+      "email": "s.marchetti@example.test",
+      "grains": [
+        { "ns": "org.crm", "kind": "fact", "relation": "mg:contact_email", "object": "s.marchetti@example.test" },
+        { "ns": "org.crm", "kind": "fact", "relation": "display_name", "object": "Sofia Marchetti" },
+        { "ns": "org.support", "kind": "event", "age_days": 902, "content": "Sofia Marchetti asked about SSO. Nobody has filed a request for her -- she is here so the retention sweep is visibly not about any one request." }
+      ]
+    }
+  ]
+}

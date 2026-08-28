@@ -1,0 +1,15 @@
+{
+  "alert_id": "ALRT-4102",
+  "source": "beacon",
+  "fired_at": "2026-08-24T15:40:00Z",
+  "service": "notify-worker",
+  "signal": "cert_expiry",
+  "severity": "info",
+  "value": 27,
+  "threshold": 30,
+  "window": "1d",
+  "region": "eu-west-1",
+  "runbook": "rb-notify",
+  "dashboard": "https://beacon.example.invalid/d/notify-worker",
+  "note": "outbound webhook certificate expires in 27 days"
+}

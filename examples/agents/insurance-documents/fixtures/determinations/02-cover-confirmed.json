@@ -1,0 +1,11 @@
+{
+  "underwriter": "user:nadia",
+  "claim_id": "CLM-8801",
+  "decision": "cover_confirmed",
+  "because": "Cover attaches. The loss happened on 18 March, so the limit that responds is the 500,000 in force on that date, not the 750,000 the June endorsement backdated to 1 May -- the endorsement cannot reach a loss that predates its own effective date. Goods on the quayside awaiting loading are in transit for the purposes of Clause 7B, so the peril is within cover; settle at the 500,000 limit less the 10,000 deductible.",
+  "limit_applied": "500000",
+  "settles_wording": {
+    "clause": "clause:7B",
+    "reading": "goods on the quayside awaiting loading are in transit for the purposes of Clause 7B"
+  }
+}

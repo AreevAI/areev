@@ -1,0 +1,10 @@
+{
+  "document_id": "END-9002",
+  "doc_kind": "endorsement",
+  "source": "broker-portal",
+  "policy_id": "POL-5520",
+  "received_at": "2026-06-28",
+  "change": {"relation": "mg:coverage_limit", "object": "400000"},
+  "wording": "Limit increased to 400,000. Please action.",
+  "note": "No effective date. The portal's export template omits it."
+}

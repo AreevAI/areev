@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2201",
+  "received_at": "2026-08-03",
+  "source": "Willowbrook Surgery",
+  "referring_clinician": "Priya Ramanathan",
+  "patient": {
+    "name": "Marion Delacroix-Bell",
+    "dob": "1971-04-02",
+    "mrn": "MRN 4471902",
+    "phone": "202-555-0142",
+    "email": "marion.delacroix@example.com"
+  },
+  "letter": "Dear Colleague, I am referring Marion Delacroix-Bell (DOB 1971-04-02, MRN 4471902) to the chest pain service. Six weeks of central chest tightness on exertion, settling within minutes of rest, now limiting her to one flight of stairs. Resting ECG normal. She can be reached on 202-555-0142 or marion.delacroix@example.com. Kind regards, Dr Priya Ramanathan, Willowbrook Surgery."
+}

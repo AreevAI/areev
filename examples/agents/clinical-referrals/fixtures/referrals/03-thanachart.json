@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2203",
+  "received_at": "2026-08-04",
+  "source": "Willowbrook Surgery",
+  "referring_clinician": "Priya Ramanathan",
+  "patient": {
+    "name": "Suwannakorn Thanachart",
+    "dob": "1959-06-30",
+    "mrn": "MRN 3308472",
+    "phone": "202-555-0163",
+    "email": "s.thanachart@example.com"
+  },
+  "letter": "Dear Colleague, I would be grateful for your opinion on Suwannakorn Thanachart (DOB 1959-06-30, MRN 3308472). An incidental ejection systolic murmur was noted at a routine review; he is entirely asymptomatic and denies any chest tightness on exertion. Please contact him on 202-555-0163 or s.thanachart@example.com. Kind regards, Dr Priya Ramanathan, Willowbrook Surgery."
+}

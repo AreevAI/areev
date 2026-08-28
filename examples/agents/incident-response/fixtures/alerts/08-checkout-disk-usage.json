@@ -1,0 +1,15 @@
+{
+  "alert_id": "ALRT-4208",
+  "source": "beacon",
+  "fired_at": "2026-09-05T06:05:00Z",
+  "service": "checkout-api",
+  "signal": "disk_usage",
+  "severity": "info",
+  "value": 0.71,
+  "threshold": 0.70,
+  "window": "1h",
+  "region": "eu-west-1",
+  "runbook": "rb-checkout",
+  "dashboard": "https://beacon.example.invalid/d/checkout-api",
+  "note": "log volume drifting up on two nodes"
+}

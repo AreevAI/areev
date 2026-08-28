@@ -263,15 +263,20 @@ jobs:
           python examples/hermes/test_provider.py
 
   agent-example:
-    # The keyless floor, enforced — in every language. `examples/agents/`
-    # promises each agent example runs end to end with no credential, no
-    # network and no model key, in Python, TypeScript AND Rust, and that
-    # every stack mints the identical content-addressed plan (created_at is
-    # pinned; run-smokes.sh compares the hashes). An untested example in the
-    # flagship repo is wrong at exactly the moment somebody is evaluating,
-    # so the promise is a job, not a README claim — the SAME entry point a
-    # developer runs locally before pushing (docs: examples/agents/docs/testing.md).
-    name: agent examples (keyless, 3 languages)
+    # The keyless floor, enforced. `examples/agents/` promises every agent
+    # example runs end to end with no credential, no network and no model
+    # key — both acts, smoke then improve — and that where an agent ships
+    # more than one language stack, all of them mint the identical
+    # content-addressed plan (created_at is pinned; run-smokes.sh compares
+    # the hashes). `invoice-to-accounting` ships Python + TypeScript + Rust;
+    # the other agents are Python, and run-smokes.sh skips a stack an agent
+    # does not have before it ever consults REQUIRE, so adding a language is
+    # a wrapper plus an agent file and needs no edit here.
+    # An untested example in the flagship repo is wrong at exactly the
+    # moment somebody is evaluating, so the promise is a job, not a README
+    # claim — the SAME entry point a developer runs locally before pushing
+    # (docs: examples/agents/docs/testing.md).
+    name: agent examples (keyless, every stack)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

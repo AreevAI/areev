@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0116",
+  "received_at": "2031-03-03T08:05:00Z",
+  "channel": "web-form",
+  "from": "t.vetter@example.test",
+  "subject_line": "Export my data to another provider",
+  "body": "I would like a machine-readable export of my records (did:example:tomas-vetter) so I can take them elsewhere.",
+  "request_type": "portability",
+  "claimed_identity": "did:example:tomas-vetter",
+  "verification": {
+    "verified": true,
+    "method": "signed-in account session",
+    "verified_at": "2031-03-03T08:04:00Z"
+  }
+}

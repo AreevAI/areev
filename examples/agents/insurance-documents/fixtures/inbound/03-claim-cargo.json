@@ -1,0 +1,12 @@
+{
+  "document_id": "CLM-8801",
+  "doc_kind": "claim_notice",
+  "source": "claims-inbox",
+  "policy_id": "POL-4471",
+  "received_at": "2026-06-25",
+  "date_of_loss": "2026-03-18",
+  "peril": "flood",
+  "clause": "clause:7B",
+  "amount": "612000",
+  "wording": "Consignment was on the quayside awaiting loading when the transit shed flooded. Insured relies on Clause 7B (goods in transit)."
+}

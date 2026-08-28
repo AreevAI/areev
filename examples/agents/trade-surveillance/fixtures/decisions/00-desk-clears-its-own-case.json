@@ -1,0 +1,6 @@
+{
+  "case_ref": "MRDN:VNTG",
+  "analyst": "agent:surveillance-desk",
+  "disposition": "benign",
+  "because": "the desk that opened the case would like to close it"
+}

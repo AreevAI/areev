@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2208",
+  "received_at": "2026-08-13",
+  "source": "Willowbrook Surgery",
+  "referring_clinician": "Priya Ramanathan",
+  "patient": {
+    "name": "Yumiko Nakamura-Oyelowo",
+    "dob": "1948-02-27",
+    "mrn": "MRN 8801774",
+    "phone": "202-555-0150",
+    "email": "y.nakamuraoyelowo@example.com"
+  },
+  "letter": "Dear Colleague, I am referring Yumiko Nakamura-Oyelowo (DOB 1948-02-27, MRN 8801774) with three weeks of chest tightness on exertion. She is frail and attends appointments with her daughter Anneke Vos, who should be copied into any correspondence. Contact 202-555-0150 or y.nakamuraoyelowo@example.com. Kind regards, Dr Priya Ramanathan, Willowbrook Surgery."
+}

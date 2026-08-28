@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2204",
+  "received_at": "2026-08-10",
+  "source": "Willowbrook Surgery",
+  "referring_clinician": "Priya Ramanathan",
+  "patient": {
+    "name": "Almudena Vasquez-Rey",
+    "dob": "1966-09-14",
+    "mrn": "MRN 6614903",
+    "phone": "202-555-0119",
+    "email": "a.vasquezrey@example.com"
+  },
+  "letter": "Dear Colleague, I am referring Almudena Vasquez-Rey (DOB 1966-09-14, MRN 6614903) with two months of chest tightness on exertion, reproducible on the same hill each morning and relieved by rest. No pain at rest. Contact 202-555-0119 or a.vasquezrey@example.com. Kind regards, Dr Priya Ramanathan, Willowbrook Surgery."
+}
