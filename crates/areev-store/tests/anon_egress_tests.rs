@@ -5,7 +5,36 @@
 
 use areev_core::types::{Event, Fact, Grain};
 use areev_store::{Axis, Direction, Areev};
+use std::collections::HashMap;
 use tempfile::TempDir;
+
+/// A grain's fields rendered for leak-scanning, with every **number** dropped.
+///
+/// The canaries these tests scan for include a bare four-digit PIN, and a
+/// grain carries machine-generated integers — `created_at` above all — that
+/// can contain any short digit run by coincidence. That is not hypothetical:
+/// CI failed on `created_at` 1787890614620, which contains "1462", reporting
+/// a leak in a grain whose text was correctly redacted to
+/// `[PERSON_1] said his email is [EMAIL_1]`. The bug is time-dependent, fires
+/// on any platform, and says nothing about pseudonymization.
+///
+/// Pseudonymization redacts *text*, so scan the text. Nesting is preserved
+/// (a leak inside `content_blocks` still counts) — only numeric leaves go.
+fn scannable(fields: &HashMap<String, serde_json::Value>) -> String {
+    fn strip(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Number(_) => serde_json::Value::Null,
+            serde_json::Value::Array(a) => a.iter().map(strip).collect(),
+            serde_json::Value::Object(o) => {
+                o.iter().map(|(k, v)| (k.clone(), strip(v))).collect()
+            }
+            other => other.clone(),
+        }
+    }
+    let scrubbed: serde_json::Map<String, serde_json::Value> =
+        fields.iter().map(|(k, v)| (k.clone(), strip(v))).collect();
+    serde_json::to_string(&scrubbed).unwrap()
+}
 
 fn open_mem(dir: &TempDir, name: &str) -> Areev {
     Areev::open(dir.path().join(name).to_str().unwrap()).unwrap()
@@ -78,31 +107,31 @@ fn egress_covers_the_grain_returning_reads() {
 
     // recall / get / latest / recent / thread_tail / run_trace / entity_at
     for g in m.recall("caller", "caller:john", None, 16).unwrap() {
-        assert_clean("recall", &serde_json::to_string(&g.fields).unwrap());
+        assert_clean("recall", &scannable(&g.fields));
     }
     let g = m.get(&h1).unwrap();
-    assert_clean("get", &serde_json::to_string(&g.fields).unwrap());
+    assert_clean("get", &scannable(&g.fields));
     assert_eq!(g.fields["subject"].as_str().unwrap(), "[PERSON_1]");
     let g = m.latest("caller", "caller:john", "prefers").unwrap().unwrap();
-    assert_clean("latest", &serde_json::to_string(&g.fields).unwrap());
+    assert_clean("latest", &scannable(&g.fields));
     for g in m.recent("caller", None, 16).unwrap() {
-        assert_clean("recent", &serde_json::to_string(&g.fields).unwrap());
+        assert_clean("recent", &scannable(&g.fields));
     }
     for g in m.thread_tail("caller", "sess-1", 8).unwrap() {
-        assert_clean("thread_tail", &serde_json::to_string(&g.fields).unwrap());
+        assert_clean("thread_tail", &scannable(&g.fields));
     }
     for g in m.run_trace("caller", "run-1", 8).unwrap() {
-        assert_clean("run_trace", &serde_json::to_string(&g.fields).unwrap());
+        assert_clean("run_trace", &scannable(&g.fields));
     }
     let g = m
         .entity_at("caller", "caller:john", "prefers", i64::MAX, Axis::Knowledge)
         .unwrap()
         .unwrap();
-    assert_clean("entity_at", &serde_json::to_string(&g.fields).unwrap());
+    assert_clean("entity_at", &scannable(&g.fields));
 
     // grains_by_object / grains_derived_from
     for g in m.grains_by_object("caller", "window seat", 8).unwrap() {
-        assert_clean("grains_by_object", &serde_json::to_string(&g.fields).unwrap());
+        assert_clean("grains_by_object", &scannable(&g.fields));
     }
     let _ = m.grains_derived_from(&hev).unwrap(); // covered path, may be empty
 
@@ -271,4 +300,31 @@ fn authz_and_dsar_and_replay_exemptions_hold() {
     let trace = m.run_trace("caller", "run-9", 16).unwrap();
     let covered = serde_json::to_string(&trace[0].fields).unwrap();
     assert!(!covered.contains("caller:john"), "run_trace must be covered: {covered}");
+}
+
+/// The regression `scannable` exists for, pinned in both directions: a number
+/// whose digits coincidentally spell a canary must not read as a leak, and a
+/// real leak in a nested text field must still be caught.
+#[test]
+fn a_timestamp_cannot_read_as_a_leak_but_nested_text_still_can() {
+    let mut fields = HashMap::new();
+    // The exact `created_at` that failed CI on 2026-08-28: 1787890614620
+    // contains "1462", the PIN canary, at offset 8.
+    fields.insert("created_at".to_string(), serde_json::json!(1_787_890_614_620i64));
+    fields.insert(
+        "content".to_string(),
+        serde_json::json!("[PERSON_1] said his email is [EMAIL_1]"),
+    );
+    let text = scannable(&fields);
+    assert!(!text.contains("1462"), "a wall-clock number must not read as the PIN: {text}");
+    assert!(text.contains("[PERSON_1]"), "redacted text must survive scanning: {text}");
+
+    // The scrub must not buy its determinism by blinding the scan: a genuine
+    // leak nested inside a structure is still a leak.
+    let mut leaky = HashMap::new();
+    leaky.insert("blocks".to_string(), serde_json::json!([{"text": "pin number is 1462"}]));
+    assert!(
+        scannable(&leaky).contains("1462"),
+        "a real leak in nested text must still be caught"
+    );
 }
