@@ -260,6 +260,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(ns_registry_replicates_via_bundles);
         $per_case!(ns_scope_guards_hold);
         $per_case!(ns_scoped_recall_spans_supersession_chains);
+        $per_case!(ns_scoped_vector_search_selects_tree_exactly);
         // read-only opens (least-privilege postgres roles, issue #127)
         $per_case!(read_only_open_succeeds_and_refuses_every_write);
         $per_case!(read_only_open_of_missing_memory_refuses_and_creates_nothing);

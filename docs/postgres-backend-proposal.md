@@ -276,7 +276,9 @@ resolution). This preserves the invariant's *semantics*:
 - **Blobs:** `bytea` column (grains are small; the `.blobs` CAS sidecar
   maps to a `blobs(hash bytea PK, body bytea)` table; S3 offload is a
   later option). All `fs`-path–derived sidecar logic is backend-internal.
-- **Vectors:** pgvector `vector(N)` + `<=>` cosine; optional HNSW. The
+- **Vectors:** pgvector `vector(N)` + `<=>` cosine; optional HNSW — **shipped
+  2026-08-28** as the opt-in `Areev::ensure_vector_index` (measured 24 ms →
+  1.0 ms at 100k grains, RESULTS.md §8d). The
   runtime-supplied embedder dim becomes DDL-fixed at first
   `set_embedder` — dim mismatch becomes a hard, early `VAL` error instead
   of today's warning (an improvement for this tier).

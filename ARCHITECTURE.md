@@ -485,12 +485,58 @@ its `meta` table, a mismatched embedder warns rather than silently mixing
 vector spaces. Provenance is stamped only once a vector is actually stored: a
 declaration the memory cannot serve is worse than none.
 
-**Vector recall on the PostgreSQL tier is an exact scan.** `pgvector`'s `<=>`
-runs over `embeddings.vec` with no ANN index, so latency is linear in corpus
-size — measured on loopback, `RECALL … ABOUT` is ~25 ms p50 at 2k grains and
-~100 ms at 10k. An optional HNSW index is contemplated
-(`docs/postgres-backend-proposal.md`) and not yet shipped; until it is, size a
-Postgres corpus against that slope rather than against the embedded tier's.
+**Vector recall is an exact scan by default, on BOTH tiers.** Nothing indexes
+`embeddings.vec` for approximate search unless someone asks, so k-NN latency is
+linear in the number of vectors the query cannot rule out. Measured at dim 384
+(`areev-bench`'s `pe_scale`, RESULTS.md §8), the embedded tier is 10.6 ms at
+10k grains, 121 ms at 100k and 1,187 ms at 1M — clean linearity, no inflection.
+The PostgreSQL tier is *faster* at the same scan, not slower: 24 ms at 100k,
+because `pgvector`'s `<=>` is SIMD over a native `vector` type while the
+embedded engine scans BLOBs. An earlier revision of this paragraph quoted
+~25 ms at 2k / ~100 ms at 10k for Postgres and singled that tier out as the
+scale risk; those figures predate a reproducible harness (`pg_bench` installs
+no embedder and never touched the vector leg) and are **retired**.
+
+Two things bound that scan, and the order matters:
+
+1. **Filter first — `idx_grains_ns_s` (`grains(ns, s, p)`).** The vector legs
+   read `FROM embeddings e JOIN grains g … WHERE g.ns = ? [AND g.s = ?]`, and
+   until this index existed the planner had only `idx_grains_hash`: it scanned
+   every grain and computed a distance for each, so a *scoped* k-NN cost the
+   same as an unscoped one and a namespace or subject filter bought a constant
+   factor rather than a proportional one. With it the plan flips from `SCAN` to
+   `SEARCH` and only survivors are scored — 39.8 ms → 0.20 ms at 100k, with the
+   unfiltered and BM25 legs unmoved. A scoped k-NN is now both faster than ANN
+   and exact, which is why this is the first lever, not the last.
+2. **Then, if the query genuinely has nothing to filter on, an ANN index.**
+   `Areev::ensure_vector_index` builds a pgvector HNSW index (Postgres only;
+   the embedded backend answers `STO-E007`), taking the whole-corpus query from
+   24 ms to 1.0 ms at 100k. It is **opt-in and stays opt-in**: it makes recall
+   approximate, and exactness is not something a caller should lose by
+   upgrading a binary or reopening a file. Measured against a real embedding
+   model (`mxbai-embed-large`, dim 1024, 30k grains) the approximation costs
+   little to nothing — recall@10 of 0.97 at pgvector's default build
+   parameters and 1.00 at `m=32, ef_construction=200`, for a 12× latency win.
+   That number belongs to the *embedder*, not to Areev: the same index measured
+   with a synthetic hash embedder reports 0.33, and the tell is that it does not
+   respond to `ef_search` (RESULTS.md §8e). Re-measure with the deployment's own
+   model before trusting an ANN index. It is also not persisted as a file
+   truth — `ef_search` is session-scoped, so each host picks its own point on
+   the accuracy/latency curve.
+
+What partitioning does and does not buy is measured in the same place:
+namespace-per-tenant makes BM25 180× faster (its posting index is keyed
+`(term, ns)`), and — now that `nearest_vector`/`nearest_semantic` accept a
+scope like every other plural read — it makes the vector leg proportional too:
+at 100k grains over 200 namespaces, one namespace answers in 0.75 ms, a
+sector-sized eighth of the tree in 18.9 ms, and the whole tree in 150 ms.
+Those two reads were the last plural reads that still refused a pattern, and
+the exception cost more than a convenience: a corpus-wide semantic search had
+no way to spell itself except by falling through to prefix-scoped
+`recall_hybrid`, paying a BM25 leg and a structural leg to answer a purely
+vector question — 605 ms for the same result. Partitioning is now a lever on
+both legs, but only if the hierarchy is IN the namespace: `deal.<sector>.<id>`
+can express "my healthcare deals", `deal.<id>` cannot.
 
 Bounded graph reads sit on the same indexes: 1-hop neighborhoods, relation-filtered
 k-hop traversal, bounded shortest paths (for "why does the agent believe X"

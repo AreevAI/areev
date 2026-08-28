@@ -176,8 +176,10 @@ COMMANDS:
                                       evidence as JSONL: every destructive
                                       op (who/what/why/how many) + the loop
                                       lifecycle chain, hash-chain verified
-  novelty  --text T [--subject S] [--relation R] [-k N]   nearest existing grains
+  novelty  --text T [--subject S] [--relation R] [-k N] [--ns NS]
+                                      nearest existing grains
                                       (paraphrase check; needs --embed-cmd)
+           --ns accepts a prefix scope 'org.*' like recall does
   log      [--since OP] [--limit N]   op-log (change feed)
   bundle   --out FILE [--since OP]    incremental backup (git-shaped)
   import   --bundle FILE              apply a bundle (fast-forward)

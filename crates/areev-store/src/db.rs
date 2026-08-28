@@ -86,6 +86,42 @@ pub(crate) trait Db: Send {
         Ok(())
     }
 
+    /// Build the backend's approximate-nearest-neighbour index over
+    /// `embeddings.vec`, replacing the exact scan for *unfiltered* k-NN.
+    ///
+    /// Opt-in, and deliberately not part of the schema every open applies:
+    /// an ANN index changes vector recall from exact to **approximate**, which
+    /// is a semantics change no caller should get by upgrading. The default
+    /// refuses rather than no-ops — a silent no-op would let a host believe a
+    /// million-grain corpus was indexed while every query still scanned it.
+    ///
+    /// Note what this does NOT fix: a k-NN already narrowed by namespace or
+    /// subject is served from `idx_grains_ns_s` as an exact search over a
+    /// small candidate set, and is both faster and exact. ANN earns its
+    /// approximation only on the whole-corpus query that has nothing to
+    /// filter on.
+    fn ensure_ann_index(&self, _m: usize, _ef_construction: usize, _ef_search: usize) -> Result<()> {
+        Err(AreevError::AnnIndexUnsupported(
+            "the embedded engine stores vectors as BLOBs and scans them exactly; \
+             scope the query by namespace or subject instead, or use the postgres backend"
+                .into(),
+        ))
+    }
+
+    /// Remove the ANN index, returning vector recall to an exact scan.
+    fn drop_ann_index(&self) -> Result<()> {
+        Err(AreevError::AnnIndexUnsupported(
+            "no ANN index exists on this backend".into(),
+        ))
+    }
+
+    /// The ANN index's name if one is built, `None` if not. Never errors on a
+    /// backend without ANN support — "is one present?" is answerable there
+    /// (no), unlike "build one".
+    fn ann_index_name(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     // ---- multi-writer arbitration hooks -------------------------------
     //
     // The embedded engine keeps its single-writer-per-file model: every

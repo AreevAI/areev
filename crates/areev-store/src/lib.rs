@@ -1179,6 +1179,24 @@ const SCHEMA: &[&str] = &[
         text TEXT,
         blob BLOB NOT NULL)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_grains_hash ON grains(hash)",
+    // The vector legs (`nearest_vector`, `nearest_semantic`, the hybrid
+    // vector leg) all read `FROM embeddings e JOIN grains g ON g.seq = e.seq
+    // WHERE g.ns = ? [AND g.s = ?] [AND g.p = ?] ORDER BY <distance> LIMIT k`.
+    // Without a grains-side index the planner has only `idx_grains_hash`, so
+    // it full-scans grains and computes a distance for EVERY row — the scoped
+    // search costs the same as the unscoped one, and a namespace or subject
+    // filter buys a constant factor instead of a proportional one. With this
+    // index the plan flips from SCAN to SEARCH and distance is computed on the
+    // survivors only: measured 39.8ms -> 0.20ms p50 for a one-deal k-NN over
+    // 100k grains (`areev-bench`'s `pe_scale`, RESULTS.md §6).
+    //
+    // Column order is load-bearing and was measured, not assumed: `(ns, s, p)`
+    // gives seekable prefixes for the ns-only, ns+subject and ns+subject+
+    // relation arms. Putting `svt` between them to also absorb the
+    // `svt IS NULL` liveness filter DESTROYS the win (40.2ms — no better than
+    // no index at all): the null test does not act as an equality constraint,
+    // so it truncates the seek before `s` is reached.
+    "CREATE INDEX IF NOT EXISTS idx_grains_ns_s ON grains(ns, s, p)",
     "CREATE TABLE IF NOT EXISTS embeddings(seq INTEGER PRIMARY KEY, vec BLOB)",
     // BM25 leg — our own inverted index. See `search_text` for why this is not
     // Turso's `USING fts`.
@@ -3613,6 +3631,54 @@ impl Areev {
             self.meta_embed = Some(("external".to_string(), dim));
         }
         Ok(*hash)
+    }
+
+    /// Build an approximate-nearest-neighbour index over the stored vectors,
+    /// trading exact recall for sublinear whole-corpus k-NN. **Postgres only**
+    /// — the embedded engine has no ANN structure and answers `STO-E007`.
+    ///
+    /// Opt-in on purpose. Vector recall is exact everywhere by default, and
+    /// exactness is not something a caller should lose by upgrading a binary
+    /// or reopening a file; it is lost only where someone asked for it, on a
+    /// corpus large enough that the exact scan stopped fitting the budget.
+    ///
+    /// **Reach for this last.** A k-NN narrowed by namespace or subject is
+    /// served exactly from `idx_grains_ns_s` over a small candidate set, which
+    /// beats ANN on both latency and correctness — measured at 100k grains, a
+    /// one-deal scoped k-NN is 0.20ms against 249ms unscoped. Partition or
+    /// filter first; build this only for the genuinely corpus-wide query.
+    ///
+    /// `m` (2..=100) and `ef_construction` (4..=1000) are graph build
+    /// parameters; `ef_search` is the query-time accuracy/latency knob and is
+    /// session-scoped, so each host picks its own point on that curve.
+    /// pgvector's defaults are `m = 16`, `ef_construction = 64`,
+    /// `ef_search = 40`. The build takes an exclusive lock on the embeddings
+    /// table and runs O(rows) — schedule it, don't call it on a hot path.
+    pub fn ensure_vector_index(
+        &mut self,
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+    ) -> Result<()> {
+        self.check_writable("build a vector index")?;
+        self.db.ensure_ann_index(m, ef_construction, ef_search)
+    }
+
+    /// Drop the ANN index, returning vector recall to an exact scan. The
+    /// inverse of [`ensure_vector_index`](Self::ensure_vector_index), and the
+    /// way back to exactness if approximate results turn out to cost more
+    /// than the latency they bought.
+    pub fn drop_vector_index(&mut self) -> Result<()> {
+        self.check_writable("drop a vector index")?;
+        self.db.drop_ann_index()
+    }
+
+    /// Name of the ANN index if one is built, `None` otherwise — the honest
+    /// answer to "are my vector results exact right now?". Answers `None`
+    /// rather than erroring on backends without ANN support, because there the
+    /// answer is simply no.
+    pub fn vector_index(&mut self) -> Result<Option<String>> {
+        self.db.ann_index_name()
     }
 
     /// Value-level idempotent add. When the grain carries a full
@@ -6953,6 +7019,8 @@ impl Areev {
     /// against the file's declared embedding provenance
     /// ([`Self::declared_embedding`]); same `(subject, relation)` scoping and
     /// `(hash, cosine_similarity)` contract as [`Self::nearest_semantic`].
+    ///
+    /// The namespace accepts a `"org.*"` prefix scope like every plural read.
     pub fn nearest_vector(
         &mut self,
         ns: &str,
@@ -6961,62 +7029,15 @@ impl Areev {
         vector: &[f32],
         k: usize,
     ) -> Result<Vec<(Hash, f32)>> {
-        require_exact_ns("nearest_vector", ns)?;
         self.check_embedding_dim(vector.len())?;
-        let Some(ns_id) = self.term_lookup(ns)? else {
-            return Ok(Vec::new());
-        };
         let qjson = vec_to_json(vector);
-        let s_id = match subject {
-            Some(s) => match self.term_lookup(s)? {
-                Some(x) => Some(x),
-                None => return Ok(Vec::new()),
-            },
-            None => None,
-        };
-        let p_id = match relation {
-            Some(r) => match self.term_lookup(r)? {
-                Some(x) => Some(x),
-                None => return Ok(Vec::new()),
-            },
-            None => None,
-        };
-        let base = "SELECT g.hash, vector_distance_cos(e.vec, vector32(?2)) AS dist \
-                    FROM embeddings e JOIN grains g ON g.seq = e.seq \
-                    WHERE g.ns = ?1 AND g.svt IS NULL";
-        let rows = match (s_id, p_id) {
-            (Some(s), Some(p)) => self.db.query(
-                &format!("{base} AND g.s = ?3 AND g.p = ?4 ORDER BY dist LIMIT ?5"),
-                vec![pi(ns_id), pt(&qjson), pi(s), pi(p), pi(k as i64)],
-            )?,
-            (Some(s), None) => self.db.query(
-                &format!("{base} AND g.s = ?3 ORDER BY dist LIMIT ?4"),
-                vec![pi(ns_id), pt(&qjson), pi(s), pi(k as i64)],
-            )?,
-            // Relation-only scoping used to fall through to the unscoped arm
-            // — the filter was silently ignored and the search failed OPEN,
-            // returning neighbours from every relation. Caught by asserting
-            // what the scope EXCLUDES (vector_in_tests).
-            (None, Some(p)) => self.db.query(
-                &format!("{base} AND g.p = ?3 ORDER BY dist LIMIT ?4"),
-                vec![pi(ns_id), pt(&qjson), pi(p), pi(k as i64)],
-            )?,
-            (None, None) => self.db.query(
-                &format!("{base} ORDER BY dist LIMIT ?3"),
-                vec![pi(ns_id), pt(&qjson), pi(k as i64)],
-            )?,
-        };
-        let mut out = Vec::new();
-        for row in rows {
-            let h = row.blob(0).and_then(|b| Hash::try_from_bytes(&b).ok());
-            let dist = row.f64(1).unwrap_or(1.0);
-            if let Some(h) = h {
-                out.push((h, (1.0 - dist) as f32));
-            }
-        }
-        Ok(out)
+        self.nearest_scoped(ns, subject, relation, &qjson, k)
     }
 
+    /// Semantic nearest-neighbours to `text` — the same search as
+    /// [`nearest_vector`](Self::nearest_vector) with the query embedded by the
+    /// installed [`EmbedBackend`]. The namespace accepts a `"org.*"` prefix
+    /// scope like every plural read.
     pub fn nearest_semantic(
         &mut self,
         ns: &str,
@@ -7025,7 +7046,6 @@ impl Areev {
         text: &str,
         k: usize,
     ) -> Result<Vec<(Hash, f32)>> {
-        require_exact_ns("nearest_semantic", ns)?;
         if self.embedder.is_none() {
             // Surface-neutral on purpose. This used to name `--embed-cmd`, a
             // `areev` CLI flag that does not exist in Python or Node — and
@@ -7040,11 +7060,41 @@ impl Areev {
                     .into(),
             ));
         }
-        let Some(ns_id) = self.term_lookup(ns)? else {
-            return Ok(Vec::new());
-        };
         let embedder = self.embedder.as_ref().expect("checked above");
         let qjson = vec_to_json(&embedder.embed(text)?);
+        self.nearest_scoped(ns, subject, relation, &qjson, k)
+    }
+
+    /// The shared body behind both nearest-neighbour entry points, over an
+    /// already-rendered query vector.
+    ///
+    /// Both used to `require_exact_ns`, which made them the only plural reads
+    /// in the store that refused a `"org.*"` scope — `search_text` and
+    /// `search_vector` accept one, and `search_text`'s own doc calls that "like
+    /// every plural read". The cost of the exception was not a missing
+    /// convenience: a corpus-wide semantic search had no way to express itself
+    /// except by falling through to prefix-scoped `recall_hybrid`, which runs
+    /// a BM25 leg and a structural leg and fuses them, to answer a question
+    /// that is purely about vectors. Measured over 200 namespaces at 100k
+    /// grains, that detour cost 605ms against 118ms for the scan it actually
+    /// needed.
+    ///
+    /// The single-namespace path stays parameterized (`g.ns = ?1`) so its
+    /// prepared plan is still cached; only a genuine multi-namespace scope
+    /// inlines the ids, which are engine-internal dictionary ids — the same
+    /// rationale `live_seqs` and the hybrid vector leg already use.
+    fn nearest_scoped(
+        &mut self,
+        ns: &str,
+        subject: Option<&str>,
+        relation: Option<&str>,
+        qjson: &str,
+        k: usize,
+    ) -> Result<Vec<(Hash, f32)>> {
+        let ns_ids = self.ns_param_ids(ns)?;
+        if ns_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         // A named subject/relation that was never interned can have no
         // neighbours — short-circuit rather than scan.
         let s_id = match subject {
@@ -7061,30 +7111,57 @@ impl Areev {
             },
             None => None,
         };
-        let base = "SELECT g.hash, vector_distance_cos(e.vec, vector32(?2)) AS dist \
-                    FROM embeddings e JOIN grains g ON g.seq = e.seq \
-                    WHERE g.ns = ?1 AND g.svt IS NULL";
-        let rows = match (s_id, p_id) {
-            (Some(s), Some(p)) => self.db.query(
-                &format!("{base} AND g.s = ?3 AND g.p = ?4 ORDER BY dist LIMIT ?5"),
-                vec![pi(ns_id), pt(&qjson), pi(s), pi(p), pi(k as i64)],
-            )?,
-            (Some(s), None) => self.db.query(
-                &format!("{base} AND g.s = ?3 ORDER BY dist LIMIT ?4"),
-                vec![pi(ns_id), pt(&qjson), pi(s), pi(k as i64)],
-            )?,
-            // Relation-only scoping used to fall through to the unscoped arm
-            // — the filter was silently ignored and the search failed OPEN,
-            // returning neighbours from every relation. Caught by asserting
-            // what the scope EXCLUDES (vector_in_tests).
-            (None, Some(p)) => self.db.query(
-                &format!("{base} AND g.p = ?3 ORDER BY dist LIMIT ?4"),
-                vec![pi(ns_id), pt(&qjson), pi(p), pi(k as i64)],
-            )?,
-            (None, None) => self.db.query(
-                &format!("{base} ORDER BY dist LIMIT ?3"),
-                vec![pi(ns_id), pt(&qjson), pi(k as i64)],
-            )?,
+        let rows = if let [ns_id] = ns_ids[..] {
+            let base = "SELECT g.hash, vector_distance_cos(e.vec, vector32(?2)) AS dist \
+                        FROM embeddings e JOIN grains g ON g.seq = e.seq \
+                        WHERE g.ns = ?1 AND g.svt IS NULL";
+            match (s_id, p_id) {
+                (Some(s), Some(p)) => self.db.query(
+                    &format!("{base} AND g.s = ?3 AND g.p = ?4 ORDER BY dist LIMIT ?5"),
+                    vec![pi(ns_id), pt(qjson), pi(s), pi(p), pi(k as i64)],
+                )?,
+                (Some(s), None) => self.db.query(
+                    &format!("{base} AND g.s = ?3 ORDER BY dist LIMIT ?4"),
+                    vec![pi(ns_id), pt(qjson), pi(s), pi(k as i64)],
+                )?,
+                // Relation-only scoping used to fall through to the unscoped
+                // arm — the filter was silently ignored and the search failed
+                // OPEN, returning neighbours from every relation. Caught by
+                // asserting what the scope EXCLUDES (vector_in_tests).
+                (None, Some(p)) => self.db.query(
+                    &format!("{base} AND g.p = ?3 ORDER BY dist LIMIT ?4"),
+                    vec![pi(ns_id), pt(qjson), pi(p), pi(k as i64)],
+                )?,
+                (None, None) => self.db.query(
+                    &format!("{base} ORDER BY dist LIMIT ?3"),
+                    vec![pi(ns_id), pt(qjson), pi(k as i64)],
+                )?,
+            }
+        } else {
+            let base = format!(
+                "SELECT g.hash, vector_distance_cos(e.vec, vector32(?1)) AS dist \
+                 FROM embeddings e JOIN grains g ON g.seq = e.seq \
+                 WHERE g.ns IN ({}) AND g.svt IS NULL",
+                seq_csv(&ns_ids)
+            );
+            match (s_id, p_id) {
+                (Some(s), Some(p)) => self.db.query(
+                    &format!("{base} AND g.s = ?2 AND g.p = ?3 ORDER BY dist LIMIT ?4"),
+                    vec![pt(qjson), pi(s), pi(p), pi(k as i64)],
+                )?,
+                (Some(s), None) => self.db.query(
+                    &format!("{base} AND g.s = ?2 ORDER BY dist LIMIT ?3"),
+                    vec![pt(qjson), pi(s), pi(k as i64)],
+                )?,
+                (None, Some(p)) => self.db.query(
+                    &format!("{base} AND g.p = ?2 ORDER BY dist LIMIT ?3"),
+                    vec![pt(qjson), pi(p), pi(k as i64)],
+                )?,
+                (None, None) => self.db.query(
+                    &format!("{base} ORDER BY dist LIMIT ?2"),
+                    vec![pt(qjson), pi(k as i64)],
+                )?,
+            }
         };
         let mut out = Vec::new();
         for row in rows {
