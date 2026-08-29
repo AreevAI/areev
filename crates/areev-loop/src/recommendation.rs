@@ -89,6 +89,9 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         // origin=llm drafts carry free text (clearly marked llm) rather than a
         // deterministic template — the model's proposed summary rides in {text}.
         "llm.discover" => "{text}",
+        // An LLM-authored lesson shows the reviewer BOTH the finding and the
+        // exact line an apply would record — never one without the other.
+        "llm.lesson" => "{text} — record lesson: \"{lesson}\"",
         // External command analyzers (trust class Command): free text from the
         // subprocess, rendered as-is (the trust badge, not the prose, marks it).
         "command.finding" => "{text}",

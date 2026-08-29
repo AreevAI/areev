@@ -251,13 +251,25 @@ are the identity when no backend is set:
   objective**: "nothing to report" is a first-class, zero-penalty answer, so it
   isn't pushed to over-generate. Every draft must **cite evidence** (uncited →
   dropped) and target a memory entity; `origin = llm` so it can **never
-  auto-apply**.
+  auto-apply**. A draft may also **author a lesson** — one imperative line
+  (≤240 chars, control characters stripped) the model proposes to record.
+  A lesson-bearing draft that survives the gates below stamps as an
+  *applicable* recommendation instead of an advisory flag: an `ADD` of a
+  Fact (`relation = "lesson"`, subject from the entity target, namespace
+  taken from the cited evidence — never named by the model), rollbackable
+  and non-destructive, with the exact line an apply would record shown in
+  the review summary. Applying it still takes a human review with a BECAUSE
+  plus an explicit apply — `origin = llm` remains structurally ineligible
+  for auto-apply, and the auto-apply shape check independently rejects any
+  `ADD`.
 - **GROUND → VERIFY** — before a draft is ever queued it must pass an
   independent **grounding** check (are the finding's factual *premises* present
   in the cited evidence? — this guards against fabrication while still allowing a
   genuine *inference*, e.g. "HQ=San Francisco and country=Germany conflict") and
   an adversarial **verification** pass (is the finding sound and specific, not
-  vague or spurious — abstention is legitimate). **Each is a separate call, so
+  vague or spurious — abstention is legitimate). An authored lesson is folded
+  into the claim both gates judge, so what survives is exactly what an apply
+  would write — never a summary standing in for it. **Each is a separate call, so
   the proposer never grades itself**; grounding can even run on a different model
   (`--ground-model` / `--ground-cmd`) to take the generator out of the loop. Only
   findings that survive, above a confidence floor, reach review. This is what
