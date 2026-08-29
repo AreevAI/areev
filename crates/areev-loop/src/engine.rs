@@ -1960,6 +1960,15 @@ fn grain_brief(g: &GrainRecord) -> String {
     if let (Some(s), Some(r), Some(o)) = (g.fact_subject(), g.fact_relation(), g.fact_object()) {
         return format!("{s} {r} {o}");
     }
+    // Tool grains — the evidence most lesson drafts cite. Rendering them
+    // empty starved GROUND of the very facts it exists to check: a correct
+    // lesson would be refused as unverifiable (found live — the gate
+    // rightly rejected a claim over evidence it could not see).
+    if let Some(t) = g.tool_name() {
+        let status = if g.is_error() { "error" } else { "ok" };
+        let out = g.tool_content().unwrap_or("");
+        return format!("tool {t} {status}: {out}");
+    }
     for key in ["content", "body", "text", "summary"] {
         if let Some(v) = g.fields.get(key).and_then(|v| v.as_str()) {
             if !v.is_empty() {

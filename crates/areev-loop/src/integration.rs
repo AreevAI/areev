@@ -623,6 +623,61 @@ fn ground_and_verify_judge_the_lesson_text_not_just_the_summary() {
     }
 }
 
+#[test]
+fn tool_grain_evidence_reaches_the_llm_with_text() {
+    use std::sync::{Arc, Mutex};
+    struct RecordingLlm {
+        inner: MockLlm,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::llm::LlmBackend for RecordingLlm {
+        fn model(&self) -> &str {
+            "recording-mock"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.seen.lock().unwrap().push(request.to_string());
+            self.inner.complete(request)
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    // A dominant failure cluster: the tool_failure candidate cites these tool
+    // grains, which seeds them into the DISCOVER evidence bundle.
+    for _ in 0..5 {
+        sub.add_tool_call("stripe_refund", true, "rate_limited 429");
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(RecordingLlm {
+        inner: MockLlm {
+            discover: r#"{"recommendations":[]}"#.to_string(),
+            ground: r#"{"results":[]}"#.to_string(),
+            verify: r#"{"results":[]}"#.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        },
+        seen: Arc::clone(&seen),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let seen = seen.lock().unwrap();
+    let discover = seen
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("a discover request");
+    let v: serde_json::Value = serde_json::from_str(discover).unwrap();
+    let items = v["evidence"].as_array().expect("evidence array");
+    let tools: Vec<_> =
+        items.iter().filter(|i| i["grain_type"] == "tool").collect();
+    assert!(!tools.is_empty(), "tool grains reach the bundle");
+    for item in tools {
+        let text = item["text"].as_str().unwrap_or("");
+        // Found live: tool grains rendered as EMPTY text, so GROUND rightly
+        // refused to ground a correct lesson against evidence it couldn't
+        // see. The brief must carry the tool name and the failure body.
+        assert!(
+            text.contains("stripe_refund") && text.contains("rate_limited"),
+            "tool evidence must carry name + outcome, got: {text:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn external_command_analyzer_surfaces_advisory_findings() {
