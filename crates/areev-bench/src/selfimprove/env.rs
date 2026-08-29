@@ -120,6 +120,35 @@ pub struct Task {
     limiter_armed: bool,
 }
 
+impl Task {
+    /// Everything about this task that a re-run must reproduce, on one line.
+    ///
+    /// Deliberately covers the HIDDEN spec (pool, target, amount, expected
+    /// timestamp, armed limiter) as well as the prompt: two tasks can read
+    /// identically to the model and still score differently, so pinning only
+    /// the visible half would let ground truth drift under a published run
+    /// without any gate noticing. Used by `tests/reproducibility.rs`.
+    pub fn fingerprint(&self) -> String {
+        let pool: Vec<String> = self
+            .pool
+            .iter()
+            .map(|c| format!("{}:{}:{}:{}:{}", c.id, c.email, c.sub_id, c.plan, c.balance))
+            .collect();
+        format!(
+            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|pool={}|prompt={}",
+            self.id,
+            self.template,
+            self.rules_exercised.join(","),
+            self.target,
+            self.amount_cents,
+            self.expected_timestamp,
+            self.limiter_armed,
+            pool.join(";"),
+            self.prompt,
+        )
+    }
+}
+
 /// Deterministic task generation: same (seed, split, n) → identical tasks.
 pub fn gen_tasks(seed: u64, split: Split, n: usize) -> Vec<Task> {
     let (salt, prefix, firsts, lasts, domain): (u64, &str, &[&str], &[&str], &str) = match split {

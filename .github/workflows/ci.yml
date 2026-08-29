@@ -409,6 +409,22 @@ jobs:
           cargo run -p areev-bench --bin selfimprove_aba -- \
             --workdir "$RUNNER_TEMP/aba" --seed 1 --mock --assert-shape \
             --arms m-steel,m-all,m-llm --workers 4
+      # The governed-only invocation is what SELFIMPROVE.md's "Live pilot"
+      # block tells a reader to run, and it is a different code path from the
+      # one above (no providers, no arm bookkeeping). Exercised keylessly here
+      # so the documented command cannot rot.
+      - name: The governed-only path still runs standalone
+        run: |
+          cargo run -p areev-bench --bin selfimprove_aba -- \
+            --workdir "$RUNNER_TEMP/aba-governed" --seed 1 --mock --assert-shape
+      # The committed runs are evidence, not decoration: every number in
+      # RESULTS.md is recomputed from the transcripts that shipped with it,
+      # and MANIFEST.md's checksums are re-derived, so a published file that
+      # is renamed or overwritten fails the build instead of review.
+      - name: Published runs match their own transcripts
+        run: |
+          python3 crates/areev-bench/scripts/verify_run.py \
+            crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
 
   versions:
     name: versions agree

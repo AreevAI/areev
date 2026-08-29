@@ -168,8 +168,11 @@ stdout: {"message":{"role":"assistant","content":"…","tool_calls":[
 
 - `scripts/openrouter_toolcall.py MODEL [--provider P]` — stdlib-only
   OpenAI-compatible adapter (key: `$OPENROUTER_API_KEY`, base
-  `https://openrouter.ai/api/v1`, provider pinned + fallbacks off, model +
-  provider ids echoed into every transcript row).
+  `https://openrouter.ai/api/v1`). `--provider P` pins
+  `{"order":[P],"allow_fallbacks":false}`; **without the flag nothing is
+  pinned** and OpenRouter routes freely. The adapter returns the serving
+  model and provider in a `meta` key on every response — which the harness
+  currently discards (see "What the transcripts actually contain").
 - `--mock` — a **built-in deterministic agent** (no subprocess, no key): it
   behaves naively unless the system prompt's LESSONS section names a rule it
   recognizes, in which case it complies. Mock mode exists to prove the
@@ -355,10 +358,81 @@ context it is given", so mock M arms prove plumbing, never a comparison.
   `scripts/aba_stats.py`, which reports discordant counts and an exact
   two-sided p for A0→B, B→A1 and A1→B2: the causal claim needs all three,
   not just the first.
-- Transcripts (`transcripts.jsonl`) carry every request/response, model id,
-  provider id, and per-call usage; `report.json` carries config + git rev.
-- CI runs `--mock --assert-shape` only (keyless-deterministic floor); no live
-  keys in CI, no live numbers asserted.
+- `report.json` carries config + git rev; the transcripts carry the run's
+  behaviour, with the limits stated below.
+- CI is keyless throughout — no live keys, no live numbers asserted. It runs
+  `--mock --assert-shape` twice (with the arms and governed-only) and
+  `verify_run.py` over the committed results; the reproducibility pins run
+  with the ordinary test suite.
+
+### What the transcripts actually contain
+
+Precisely, because "we publish the receipts" is the claim this benchmark
+trades on and the receipts are narrower than they sound. Every committed
+transcript holds exactly two row shapes:
+
+| row | fields |
+|---|---|
+| one per executed tool call | `task_id`, `turn`, `tool`, `args`, `is_error`, `code` |
+| one per task (`kind: task_outcome`) | `state`, `task_id`, `template`, `success`, `failure_reason`, `steps`, `tool_errors`, `rules_exercised`, `mishandled`, `prompt_tokens`, `completion_tokens` |
+
+Plus `error` / `provider_error` rows when a backend or a context provider
+fails. That is enough to recompute every published number
+(`scripts/verify_run.py` does exactly that) and to run the paired tests.
+
+It is **not** a record of the model calls. Prompts, completions, the serving
+model id and the serving provider id are not written — the adapter returns
+model and provider in `meta`, and `run_task` drops it. So a committed run
+cannot answer "which provider served this task", and with no `--provider`
+pin (the published runs pass none) a single run may have been served by
+several. Treat that as an uncontrolled variable in any cross-run comparison,
+and pass `--provider` when a comparison depends on it.
+
+Recording the meta per turn is a small change and the obvious next
+improvement; it is called out here rather than implied away.
+
+## Keeping the published runs reproducible
+
+A published number is only meaningful if a later run is measuring the same
+experiment. The model is not deterministic, so nothing pins a score — what is
+pinned is everything upstream of the model, plus the evidence downstream of
+it. Three keyless gates, all in CI:
+
+| gate | what it protects | fails when |
+|---|---|---|
+| `tests/reproducibility.rs` → `tests/golden/reproducibility.txt` | the task sets (prompt **and** hidden ground truth) per seed, the tool schemas, the governed pipeline's learned lesson, the LESSONS prompt bytes across apply→rollback→re-apply, and each arm's rendered context | any of it drifts — i.e. the runs under `results/` stop being comparable to a fresh run |
+| `--assert-shape` ledger checks | *what* was learned, not just that the rates moved: ≥1 lesson applied, every applied lesson analyzer-origin (LLM findings stay advisory), and every lesson B applied restored in B2 | an analyzer or store change silently changes which lesson fires, or a partial restore makes B2 a third memory state |
+| `scripts/verify_run.py` | the committed evidence: every published per-state and per-rule number recomputed from the `task_outcome` rows, identical task ids across states (the paired-test precondition), and `MANIFEST.md` checksums over every file | a published number stops matching its own transcripts, or a published file is renamed/overwritten |
+
+The third exists because it has already happened: the single-seed pilot's
+transcripts were renamed and overwritten in place by the three-seed run, and
+nothing in review caught it.
+
+**Blessing the golden is a publication decision, not a cleanup.**
+`GOLDEN_BLESS=1 cargo test -p areev-bench --test reproducibility` regenerates
+it; the commit message must name which runs under `results/` the change
+invalidates.
+
+### Known defect: even/odd seed pairs collide
+
+`gen_tasks` derives its RNG state as `(seed ^ salt·K) | 1`. The `| 1` keeps
+xorshift off its zero fixed point — and also forces bit 0, so seeds differing
+only in bit 0 generate byte-identical task streams. Every pair collides: 0≡1,
+2≡3, 4≡5, …
+
+The consequence for the three-seed publication: **seeds 2 and 3 ran the same
+100 held-out tasks** (verifiable in the committed transcripts — their
+`task_outcome` streams match template-for-template). Those two columns are a
+repeat measurement of one task set under a non-deterministic model, not two
+independent replications, so the run spans two distinct task sets rather than
+three. The pooled statistics and the causal reading survive (A0→B, B→A1 and
+A1→B2 are each significant within seed 1 alone); "independently significant in
+every seed" is the phrase that overstates what is there.
+
+Fixing the derivation changes seed 1's stream too, which invalidates every
+committed run — so the fix is a re-publication, not a patch, and it is pinned
+by `known_defect_even_odd_seed_pairs_collide` until then. That test failing IS
+the prompt to re-run.
 
 ## Flags
 
@@ -390,7 +464,7 @@ cargo run -p areev-bench --bin selfimprove_aba -- \
   --arms m-steel,m-all,m-llm --workers 4
 ```
 
-Live pilot, governed states only (~$3–5):
+Live pilot, governed states only (~$0.35, measured — see "What a re-run costs"):
 
 ```bash
 export OPENROUTER_API_KEY=…
@@ -412,3 +486,29 @@ cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat' \
   --arms m-steel,m-all,m-llm
 ```
+
+Then verify what you produced against what shipped:
+
+```bash
+python3 crates/areev-bench/scripts/verify_run.py <run-dir>                    # audit
+python3 crates/areev-bench/scripts/verify_run.py <run-dir> --write-manifest   # publish
+```
+
+### What a re-run costs
+
+Measured, not estimated — the committed three-seed run spent **$2.30** over
+2,800 task-runs. Its eval phases alone account for 31.1M prompt and 0.51M
+completion tokens (recomputable: `verify_run.py` sums them from the
+transcripts), so re-price it against whatever the provider charges today
+rather than trusting a figure in a doc.
+
+| what | scale | cost |
+|---|---|---|
+| full three-seed replication | 2,800 task-runs, 4 states + 3 arms | **$2.30** |
+| one seed, governed states only (150/60) | ~390 task-runs | **~$0.35** |
+| keyless floor (`--mock`) | any | **$0** |
+
+The prompt-token total dwarfs completion by 60×, which is the shape of this
+benchmark: long tool schemas and a growing message history re-sent every turn.
+Arms that inject more context (m-all at 6.2× the prompt tokens) cost
+proportionally more, which is exactly the axis the arm comparison prices.

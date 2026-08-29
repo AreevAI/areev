@@ -1,7 +1,12 @@
 # areev-bench — committed results
 
-Machine-readable, auditable results from the `accuracy` benchmark. Each run is
-two files:
+Machine-readable, auditable results from two benchmark families: the `accuracy`
+(LoCoMo) run, and the `selfimprove_aba` A/B/A/B self-improvement runs. Both
+publish their raw evidence, not just their tables.
+
+## `accuracy` — LoCoMo
+
+Each run is two files:
 
 - `*.summary.json` — config (reader/judge/embedder), overall answer accuracy,
   retrieval hit-rate, per-category breakdown.
@@ -10,7 +15,7 @@ two files:
   answer and every judge verdict — so the number can be independently audited
   (the category has a history of unreproducible claims; we publish the receipts).
 
-## Runs — best configuration
+### Runs — best configuration
 
 | file stem | benchmark | reader / judge | embedder | k | answer acc | hit@10 / hit@20 |
 |---|---|---|---|---|---|---|
@@ -21,7 +26,35 @@ because they didn't help this benchmark: distilled-observation ingest, MMR /
 rerank / query-expansion refinements, and a stronger gpt-4o reader — see
 `../RESULTS.md` §4 for why the bottleneck is reader synthesis, not retrieval.)
 
-## Methodology
+## `selfimprove_aba` — the A/B/A/B causal proof + passive-memory arms
+
+| directory | seeds | scale | states | spend |
+|---|---|---|---|---|
+| `selfimprove-3seed-qwen3-30b-2026-08-26` | 1, 2, 3 | 300 experience · 100 held-out | A0/B/A1/B2 + m-steel/m-all/m-llm | $2.30 |
+
+Per seed: `seedN.report.json` (config + governance ledger + per-state
+summaries), `seedN.report.md`, and one `seedN.transcripts-eval-<STATE>.jsonl`
+per state plus `seedN.transcripts-experience.jsonl` — every model call, model
+and provider id, and per-call usage. `paired-stats.txt` is `aba_stats.py`'s
+output over all three; `MANIFEST.md` records each run's exact command, git rev,
+and a SHA-256 of every file.
+
+Audit the published table against its own raw rows — keyless, offline:
+
+```bash
+python3 crates/areev-bench/scripts/verify_run.py \
+  crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
+```
+
+That recomputes every per-state and per-rule number from the `task_outcome`
+rows, checks all states ran the same task ids (the paired test depends on it),
+and re-derives the manifest checksums. CI runs it on every push.
+
+Read `../SELFIMPROVE.md` for the design, the honesty rules, what a re-run
+costs, and the known even/odd seed collision that makes this three runs over
+**two** distinct task sets.
+
+## Methodology — LoCoMo
 
 Plain retrieve-then-read, no LoCoMo-specific tuning. Each conversation turn is
 ingested as a grain; each question drives `recall_hybrid` for the top-20 turns;
@@ -36,7 +69,7 @@ transcripts. The LoCoMo answer key itself is ~6% wrong
 ([audit](https://dev.to/penfieldlabs)), so treat single-point comparisons across
 vendors with suspicion.
 
-## Reproduce
+## Reproduce — LoCoMo
 
 ```bash
 # 1. dataset
