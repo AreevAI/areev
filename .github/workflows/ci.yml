@@ -417,6 +417,16 @@ jobs:
         run: |
           cargo run -p areev-bench --bin selfimprove_aba -- \
             --workdir "$RUNNER_TEMP/aba-governed" --seed 1 --mock --assert-shape
+      # The loop+LLM arm: the canned loop-LLM authors a lesson, the scripted
+      # review applies it, rollback removes it, re-apply restores it — the
+      # authored-lesson lifecycle asserted keylessly (the shape floor, never
+      # a learning claim; the canned lesson deliberately cannot move the
+      # mock agent's rates).
+      - name: The loop+LLM arm applies and restores an authored lesson
+        run: |
+          cargo run -p areev-bench --bin selfimprove_aba -- \
+            --workdir "$RUNNER_TEMP/aba-llm" --seed 1 --mock --mock-llm \
+            --llm-lessons --assert-shape
       # The committed runs are evidence, not decoration: every number in
       # RESULTS.md is recomputed from the transcripts that shipped with it,
       # and MANIFEST.md's checksums are re-derived, so a published file that

@@ -339,19 +339,20 @@ context it is given", so mock M arms prove plumbing, never a comparison.
 - deterministic-analyzer showcase — same A/B/A shape with `--llm-cmd` absent:
   what do contradiction/duplicate/staleness lessons alone buy? (The engine
   closes with zero model calls; this bench prices that floor.)
-- **LLM-authored executable lessons** (engine feature, not a bench):
-  **landed.** A DISCOVER draft may author a `lesson` (one capped imperative
-  line); a lesson-bearing draft that survives GROUND/VERIFY stamps as an
-  applicable, rollbackable `ADD fact` proposal (`relation = "lesson"`,
-  namespace from the cited evidence) — human-applied only, auto-apply stays
-  structurally closed to `origin=llm` (`docs/loop.md`, DISCOVER). What the
-  bench still needs before a `loop+LLM` arm can run: (a) `review_action`
-  (memory.rs) routes ALL llm-origin recommendations to advisory — the arm
-  needs a deliberate switch to approve applicable llm lessons through the
-  same scripted review, and (b) `lessons_markdown` renders only
-  `fails_with` facts — the arm must render `relation = "lesson"` lines into
-  the LESSONS section too. Both are arm-gated bench changes, not engine
-  work.
+- **LLM-authored executable lessons**: **landed end-to-end.** Engine: a
+  DISCOVER draft may author a `lesson` (one capped imperative line); a
+  lesson-bearing draft that survives GROUND/VERIFY stamps as an applicable,
+  rollbackable `ADD fact` proposal (`relation = "lesson"`, namespace from
+  the cited evidence) — human-applied only, auto-apply stays structurally
+  closed to `origin=llm` (`docs/loop.md`, DISCOVER). Bench: `--llm-lessons`
+  is the arm switch (scripted review approves + applies authored lessons;
+  `lessons_markdown` renders them as a "Rules learned" block), `--mock-llm`
+  is its keyless canned backend, and CI asserts the full authored-lesson
+  lifecycle (`apply → render → rollback-empties → re-apply restores`) on
+  every push. The default path — no `--llm-lessons` — reproduces the
+  published runs' review policy and prompt bytes exactly. Live numbers for
+  this arm are not yet published; the roadmap entry for them is the
+  `selfimprove_curve` `loop+LLM` arm above.
 
 ## Determinism & stats rules (areev-testing applies)
 
@@ -368,7 +369,8 @@ context it is given", so mock M arms prove plumbing, never a comparison.
 - `report.json` carries config + git rev; the transcripts carry the run's
   behaviour, with the limits stated below.
 - CI is keyless throughout — no live keys, no live numbers asserted. It runs
-  `--mock --assert-shape` twice (with the arms and governed-only) and
+  `--mock --assert-shape` three times (with the arms, governed-only, and
+  `--mock-llm --llm-lessons` for the authored-lesson lifecycle) and
   `verify_run.py` over the committed results; the reproducibility pins run
   with the ordinary test suite.
 
@@ -449,6 +451,8 @@ the prompt to re-run.
 | `--seed N` `--experience N` `--eval N` | task generation; `--seed` reproduces the task sets exactly |
 | `--mock` \| `--agent-cmd 'CMD'` | exactly one: the deterministic keyless agent, or a chat adapter |
 | `--llm-cmd` / `--ground-cmd 'CMD'` | the loop's DISCOVER/VERIFY and GROUND backends (**loop** protocol) |
+| `--mock-llm` | keyless canned loop-LLM (authors one fixed lesson) in place of `--llm-cmd`; the two are mutually exclusive |
+| `--llm-lessons` | the **loop+LLM arm**: the scripted review also approves + applies LLM-authored lessons, and they render into LESSONS. Requires `--llm-cmd` or `--mock-llm`. Off = the published-run review policy, byte-for-byte |
 | `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
 | `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
 | `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |

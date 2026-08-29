@@ -10,8 +10,8 @@
 use super::{Ledger, LedgerEntry, TaskRunRecord};
 use areev_cal::AreevFacade;
 use areev_loop::{
-    CommandLlm, Decision, Engine, ObserverType, Origin, Proposal, ReadOpts, RecStatus,
-    Recommendation, RunOptions, ScopeSet, SubstrateRead,
+    CommandLlm, Decision, Engine, LlmBackend, ObserverType, Origin, Proposal, ReadOpts,
+    RecStatus, Recommendation, RunOptions, ScopeSet, SubstrateRead,
 };
 use areev_loop_adapter::BorrowedSubstrate;
 use areev_store::Areev;
@@ -29,8 +29,8 @@ const BECAUSE_ROLLBACK: &str = "bench: A/B/A rollback";
 /// out of [`Memory::learn`] so the policy is unit-testable without an engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReviewAction {
-    /// Not executable by design (LLM DISCOVER findings are `Proposal::Data`;
-    /// flag-kind analyzer findings likewise) — ledgered, left pending.
+    /// Not executable, or executable-but-out-of-arm (LLM-authored lessons
+    /// with `llm_lessons` off) — ledgered, left pending.
     Advisory,
     /// Destructive (FORGET has no inverse) — rejected, never applied.
     Reject,
@@ -38,16 +38,91 @@ enum ReviewAction {
     ApproveApply,
 }
 
-/// The scripted review policy. Order matters: an LLM finding is advisory even
-/// when its proposal LOOKS executable (apply refuses `origin = llm` data), and
-/// a `Proposal::Data` is advisory whatever authored it.
-fn review_action(origin: &Origin, proposal: &Proposal, destructive: bool) -> ReviewAction {
-    if matches!(origin, Origin::Llm { .. }) || matches!(proposal, Proposal::Data { .. }) {
+/// The scripted review policy. Order matters: a `Proposal::Data` is advisory
+/// whatever authored it, and an LLM finding — even an executable authored
+/// lesson (`Proposal::Cal`) — stays advisory unless the run deliberately
+/// opted into the `loop+LLM` arm (`llm_lessons`). The published governed runs
+/// predate that arm, so the default keeps their review policy byte-for-byte.
+fn review_action(
+    origin: &Origin,
+    proposal: &Proposal,
+    destructive: bool,
+    llm_lessons: bool,
+) -> ReviewAction {
+    if matches!(proposal, Proposal::Data { .. })
+        || (matches!(origin, Origin::Llm { .. }) && !llm_lessons)
+    {
         ReviewAction::Advisory
     } else if destructive {
         ReviewAction::Reject
     } else {
         ReviewAction::ApproveApply
+    }
+}
+
+/// The lesson the keyless mock loop-LLM authors. Deliberately free of every
+/// env error-code string (`customer_not_found`, `rate_limited`, …): the mock
+/// agent keys its behavior off those substrings, so this lesson exercises
+/// the authored-lesson PLUMBING (stamp → approve → apply → render → rollback)
+/// without moving the mock's success rates.
+pub const MOCK_LLM_LESSON: &str = "Before retrying a failing tool, change the \
+input that caused the recorded failure instead of repeating it unchanged.";
+
+/// The canned loop-LLM for keyless CI (`--mock-llm`): DISCOVER authors one
+/// evidence-cited lesson draft, GROUND supports every claim, VERIFY keeps
+/// everything at 0.9, ENRICH abstains. Deterministic — a pure function of the
+/// request — so the A/B/A/B shape floor can assert the authored-lesson
+/// lifecycle without a key. It answers whatever op it is asked, so it also
+/// serves as its own ground backend.
+pub struct MockLoopLlm;
+
+impl LlmBackend for MockLoopLlm {
+    fn model(&self) -> &str {
+        "mock-loop-llm"
+    }
+
+    fn complete(&self, request: &str) -> areev_loop::Result<String> {
+        let v: Value = serde_json::from_str(request).unwrap_or_default();
+        let n_of = |ptr: &str| v.pointer(ptr).and_then(Value::as_array).map_or(0, Vec::len);
+        let ok = |val: Value| Ok(val.to_string());
+        match v.get("op").and_then(Value::as_str) {
+            Some("discover") => {
+                // Cite the first bundled evidence grain; target the first
+                // deterministic finding's entity (the failure cluster the
+                // lesson is about). No evidence → abstain, the honest answer.
+                let target = v
+                    .pointer("/findings/0/target")
+                    .and_then(Value::as_str)
+                    .filter(|t| t.starts_with("entity:"))
+                    .unwrap_or("entity:lessons/support_desk");
+                match v.pointer("/evidence/0/hash").and_then(Value::as_str) {
+                    Some(h) => ok(serde_json::json!({
+                        "recommendations": [{
+                            "summary": "the same tool failure keeps recurring across tasks",
+                            "target": target,
+                            "guidance": "",
+                            "evidence": [h],
+                            "confidence": 0.9,
+                            "lesson": MOCK_LLM_LESSON,
+                        }]
+                    })),
+                    None => ok(serde_json::json!({ "recommendations": [] })),
+                }
+            }
+            Some("ground") => ok(serde_json::json!({
+                "results": (0..n_of("/claims"))
+                    .map(|id| serde_json::json!({"id": id, "supported": true, "reason": "mock"}))
+                    .collect::<Vec<_>>()
+            })),
+            Some("verify") => ok(serde_json::json!({
+                "results": (0..n_of("/findings"))
+                    .map(|id| {
+                        serde_json::json!({"id": id, "keep": true, "confidence": 0.9, "reason": "mock"})
+                    })
+                    .collect::<Vec<_>>()
+            })),
+            _ => ok(serde_json::json!({ "notes": [] })),
+        }
     }
 }
 
@@ -146,6 +221,9 @@ impl Memory {
     /// the scripted review over every PENDING recommendation. Returns the
     /// ledger rows this pass added and the hashes it applied.
     ///
+    /// The review policy of the PUBLISHED runs: LLM findings stay advisory
+    /// (`llm_lessons = false`). The `loop+LLM` arm opts in via [`learn_with`].
+    ///
     /// `triggering_actor` stays `None` deliberately: with it set, LLM-origin
     /// recommendations would carry a co-creator, and this bench's review is
     /// scripted, not a human session.
@@ -155,16 +233,39 @@ impl Memory {
         ground_cmd: Option<&str>,
         now_ms: i64,
     ) -> Result<(Ledger, Vec<String>), String> {
+        let llm: Option<Box<dyn LlmBackend>> = match llm_cmd {
+            Some(cmd) => Some(Box::new(
+                CommandLlm::new(cmd, None).map_err(|e| format!("--llm-cmd: {e}"))?,
+            )),
+            None => None,
+        };
+        let ground: Option<Box<dyn LlmBackend>> = match ground_cmd {
+            Some(cmd) => Some(Box::new(
+                CommandLlm::new(cmd, None).map_err(|e| format!("--ground-cmd: {e}"))?,
+            )),
+            None => None,
+        };
+        self.learn_with(llm, ground, false, now_ms)
+    }
+
+    /// [`learn`] with pre-built loop backends and the `loop+LLM` arm switch.
+    /// With `llm_lessons` on, the scripted review also approves + applies
+    /// LLM-authored lessons — the applicable, non-destructive `Proposal::Cal`
+    /// recommendations the engine stamps for gate-surviving lesson drafts.
+    /// Advisory LLM `Proposal::Data` findings stay advisory either way.
+    pub fn learn_with(
+        &self,
+        llm: Option<Box<dyn LlmBackend>>,
+        ground: Option<Box<dyn LlmBackend>>,
+        llm_lessons: bool,
+        now_ms: i64,
+    ) -> Result<(Ledger, Vec<String>), String> {
         let mut engine = Engine::with_builtins();
-        if let Some(cmd) = llm_cmd {
-            let backend =
-                CommandLlm::new(cmd, None).map_err(|e| format!("--llm-cmd: {e}"))?;
-            engine = engine.with_llm(Box::new(backend));
+        if let Some(backend) = llm {
+            engine = engine.with_llm(backend);
         }
-        if let Some(cmd) = ground_cmd {
-            let backend =
-                CommandLlm::new(cmd, None).map_err(|e| format!("--ground-cmd: {e}"))?;
-            engine = engine.with_ground_llm(Box::new(backend));
+        if let Some(backend) = ground {
+            engine = engine.with_ground_llm(backend);
         }
 
         let mut sub = BorrowedSubstrate::new(&self.facade);
@@ -185,7 +286,7 @@ impl Memory {
                 r.analyzer.clone()
             };
             let summary = r.summary.render();
-            match review_action(&r.origin, &r.proposal, r.destructive) {
+            match review_action(&r.origin, &r.proposal, r.destructive, llm_lessons) {
                 ReviewAction::Advisory => ledger.entries.push(LedgerEntry {
                     hash: r.hash.clone(),
                     source,
@@ -348,33 +449,44 @@ impl Memory {
             .collect())
     }
 
-    /// The LESSONS prompt section, rendered from LIVE `fails_with` facts in
-    /// the bench namespace. EMPTY STRING when none live — the honesty lever:
-    /// rollback tombstones the lesson grains, which must empty this.
+    /// The LESSONS prompt section, rendered from LIVE lesson facts in the
+    /// bench namespace: `fails_with` (deterministic failure signatures) and
+    /// `lesson` (LLM-authored rules — exist only when a `loop+LLM` arm
+    /// applied them). EMPTY STRING when none live — the honesty lever:
+    /// rollback tombstones the lesson grains, which must empty this. A run
+    /// with no authored lessons renders byte-identically to the published
+    /// governed runs.
     pub fn lessons_markdown(&self) -> Result<String, String> {
         let sub = BorrowedSubstrate::new(&self.facade);
         // ReadOpts::default() is live_only — a tombstoned lesson never renders.
         let grains = sub
             .grains_of_type("fact", Some(&self.ns), ReadOpts::default())
             .map_err(|e| format!("read lessons: {e}"))?;
-        let mut lessons: Vec<(String, String)> = grains
-            .iter()
-            .filter(|g| g.fact_relation() == Some("fails_with"))
-            .filter_map(|g| {
-                Some((g.fact_subject()?.to_string(), g.fact_object()?.to_string()))
-            })
-            .collect();
-        if lessons.is_empty() {
+        let pairs = |relation: &str| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = grains
+                .iter()
+                .filter(|g| g.fact_relation() == Some(relation))
+                .filter_map(|g| {
+                    Some((g.fact_subject()?.to_string(), g.fact_object()?.to_string()))
+                })
+                .collect();
+            // Deterministic prompt bytes: sorted by subject then object.
+            v.sort();
+            v.dedup();
+            v
+        };
+        let lessons = pairs("fails_with");
+        let rules = pairs("lesson");
+        if lessons.is_empty() && rules.is_empty() {
             return Ok(String::new());
         }
-        // Deterministic prompt bytes: sorted by subject then object.
-        lessons.sort();
-        lessons.dedup();
-        let mut out = String::from(
-            "## LESSONS (from prior experience)\n\
-             Recurring tool failures observed in earlier runs. Account for them\n\
-             before and after calling the tool.\n",
-        );
+        let mut out = String::from("## LESSONS (from prior experience)\n");
+        if !lessons.is_empty() {
+            out.push_str(
+                "Recurring tool failures observed in earlier runs. Account for them\n\
+                 before and after calling the tool.\n",
+            );
+        }
         for (subject, object) in &lessons {
             // Render the stored signature legibly: the error code is the part
             // an operator acts on, the rest is its payload. NEVER add the
@@ -397,6 +509,14 @@ impl Memory {
                     ));
                 }
                 None => out.push_str(&format!("- `{subject}` repeatedly failed with: {object}\n")),
+            }
+        }
+        if !rules.is_empty() {
+            // Authored rules ARE the remedy by design — that is the delta the
+            // loop+LLM arm measures against signature-only lessons.
+            out.push_str("Rules learned from earlier runs. Follow them:\n");
+            for (subject, object) in &rules {
+                out.push_str(&format!("- `{subject}`: {object}\n"));
             }
         }
         Ok(out)
@@ -568,20 +688,81 @@ mod tests {
         );
     }
 
-    /// The scripted review policy, pinned per rec shape: LLM origin trumps an
-    /// executable-looking proposal; Data is advisory whoever authored it;
-    /// destructive CAL rejects; non-destructive CAL applies.
+    /// The scripted review policy, pinned per rec shape: Data is advisory
+    /// whoever authored it; LLM origin stays advisory by default and its
+    /// executable authored lessons apply ONLY under the `loop+LLM` arm
+    /// (`llm_lessons`); destructive CAL rejects — llm origin included;
+    /// non-destructive CAL applies.
     #[test]
     fn review_policy_maps_rec_kinds_to_dispositions() {
         let cal = Proposal::Cal { cal: "ADD fact ...".to_string() };
         let data = Proposal::Data { data: Map::new() };
         let llm = Origin::Llm { model: "test-model".to_string() };
 
-        assert_eq!(review_action(&llm, &cal, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&llm, &data, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&Origin::Builtin, &data, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&Origin::Builtin, &cal, true), ReviewAction::Reject);
-        assert_eq!(review_action(&Origin::Builtin, &cal, false), ReviewAction::ApproveApply);
+        // The published-run policy (llm_lessons = false), byte-for-byte.
+        assert_eq!(review_action(&llm, &cal, false, false), ReviewAction::Advisory);
+        assert_eq!(review_action(&llm, &data, false, false), ReviewAction::Advisory);
+        assert_eq!(review_action(&Origin::Builtin, &data, false, false), ReviewAction::Advisory);
+        assert_eq!(review_action(&Origin::Builtin, &cal, true, false), ReviewAction::Reject);
+        assert_eq!(review_action(&Origin::Builtin, &cal, false, false), ReviewAction::ApproveApply);
+
+        // The loop+LLM arm: authored lessons apply; Data stays advisory; a
+        // destructive llm payload (cannot be stamped today) would reject,
+        // never apply.
+        assert_eq!(review_action(&llm, &cal, false, true), ReviewAction::ApproveApply);
+        assert_eq!(review_action(&llm, &data, false, true), ReviewAction::Advisory);
+        assert_eq!(review_action(&llm, &cal, true, true), ReviewAction::Reject);
+        assert_eq!(review_action(&Origin::Builtin, &cal, false, true), ReviewAction::ApproveApply);
+    }
+
+    /// The loop+LLM arm end-to-end at bench level: the mock loop-LLM authors
+    /// a lesson, the scripted review applies it, it renders into LESSONS,
+    /// rollback empties it, and a fresh governed pass restores it. With
+    /// `llm_lessons` off the same backend's lesson stays advisory and the
+    /// rendered prompt is byte-identical to the deterministic-only path.
+    #[test]
+    fn mock_llm_lesson_lifecycle_under_the_arm_switch() {
+        let dir = TempDir::new().unwrap();
+        let mem = Memory::create(dir.path()).unwrap();
+        mem.record_task(&failing_task("stripe_refund", "approval_required", 4)).unwrap();
+
+        // Arm OFF: the authored lesson survives the gates but is ledgered
+        // advisory — nothing llm-origin applies, no rule line renders.
+        let (ledger, applied) = mem
+            .learn_with(Some(Box::new(MockLoopLlm)), None, false, T1)
+            .unwrap();
+        assert!(
+            ledger.entries.iter().any(|e| e.source == "llm" && e.disposition == "advisory"),
+            "authored lesson ledgered advisory with the arm off"
+        );
+        let md = mem.lessons_markdown().unwrap();
+        assert!(!md.contains(MOCK_LLM_LESSON), "arm off ⇒ no authored rule in the prompt");
+        mem.rollback(&applied, T2).unwrap();
+
+        // Arm ON: approved + applied through the same scripted review, and
+        // the rule renders under the LESSONS heading the agent scans.
+        let (ledger, applied) = mem
+            .learn_with(Some(Box::new(MockLoopLlm)), None, true, T3)
+            .unwrap();
+        assert!(
+            ledger.entries.iter().any(|e| e.source == "llm" && e.disposition == "applied"),
+            "authored lesson applied under the arm: {:?}",
+            ledger.entries
+        );
+        let md = mem.lessons_markdown().unwrap();
+        assert!(md.starts_with("## LESSONS (from prior experience)\n"));
+        assert!(md.contains(MOCK_LLM_LESSON), "authored rule renders: {md}");
+
+        // Rollback empties the WHOLE section — authored rules included.
+        mem.rollback(&applied, T3 + HOUR_MS).unwrap();
+        assert_eq!(mem.lessons_markdown().unwrap(), "", "rollback empties authored rules too");
+
+        // Restoration is a fresh governed pass (rolled_back is terminal).
+        let (_, applied2) = mem
+            .learn_with(Some(Box::new(MockLoopLlm)), None, true, T3 + 2 * HOUR_MS)
+            .unwrap();
+        assert!(!applied2.is_empty());
+        assert!(mem.lessons_markdown().unwrap().contains(MOCK_LLM_LESSON));
     }
 
     /// The passive-memory arms' input round-trips through the store: order,
