@@ -153,6 +153,39 @@ full governance ledger ("14 proposed, 9 applied, 3 rejected in review, 2
 advisory-only") — the failures stay in the report; a clean sweep is
 marketing, a ledger is evidence.
 
+### Pre-registered interpretation — the loop+LLM arm (written before its three-seed run)
+
+Committed before the runs (2026-08-29): seeds **1, 3, 5** — three *distinct*
+task streams (odd seeds; the even/odd collision below makes n and n+1
+collide, so 1/2/3 would be two streams again) — 300 experience / 100
+held-out per seed, agent + DISCOVER/VERIFY on `qwen3-30b`, GROUND on
+`deepseek-chat`, four states per config per seed, **two configs at one git
+rev**: governed-only and `--llm-lessons`. Paired exact McNemar, pooled and
+per-seed. Context: the seed-1 pilot that motivated this showed the authored
+lesson **eliminating its target rule** (R5 6/25 → 0/25 at state B) while R4
+went 3/25 → 15/25 — net B_llm − B_det = −11 pts, p = 0.08, single seed.
+
+- **B_llm > B_det (pooled, significant):** authored remedies add accuracy
+  over signature lessons. Published as the arm's headline.
+- **B_llm ≈ B_det, with the pilot's per-rule split** (target rule
+  eliminated, unstated rules regress): the publishable claim is the
+  *mechanism* — an authored remedy is locally perfect and globally
+  hazardous, because stating the fix suppresses the inference that
+  signature lessons force; the loop's post-apply re-measurement
+  (`outcome_review`) is what makes such a change safe to try at all.
+  Published with the full per-rule tables.
+- **B_llm < B_det (significant):** the same claim, stronger — and
+  deterministic signature lessons stay the default lesson kind.
+- Whatever lands, it publishes **only if the arm's own causal structure
+  holds** (A0→B, B→A1, A1→B2 each significant pooled) — otherwise the
+  result is "no causal signal", published as that.
+- Stated up front: on re-apply the LLM **re-authors** its lesson — unlike
+  analyzer lessons, re-derivation is not byte-deterministic, so the arm's
+  B2 tests the governed re-proposal path, not byte-identical restoration.
+
+Every outcome ships with per-seed numbers, per-rule recurrence, token
+costs, the governance ledgers, and the full transcripts.
+
 ## Runner protocol — one JSON per line on stdio
 
 The Rust bin owns the agent loop (task prompt, tool execution, turn cap,
