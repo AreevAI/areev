@@ -17,10 +17,13 @@ The brackets between bars carry the transition: the change in points and its
 paired McNemar p. That is the part a reader should take away, so it is drawn
 rather than left in a table.
 
-**Every number in the picture is also plain `<text>` in the file**, under a
-`<title>` and `<desc>` that state the finding in full. An SVG's text is real
-text: a search crawler, a screen reader, `grep`, or a model reading the file
-gets the result without rendering the bars.
+**The visible SVG is the chart and nothing else** — no headline, no prose, no
+stats table. The narrative lives once, as real text in the README and
+RESULTS.md, where search engines index it; drawing it here too made the two
+drift and the page noisy. The full finding (rates, deltas, McNemar rows) is
+still stated in the SVG's `<title>` and `<desc>`, which never render: a
+screen reader, a crawler, or `grep` on the file gets the result without the
+bars, at zero visual cost.
 
 Numbers come from `report.json` (rates) and `aba_stats.py` (paired McNemar),
 imported rather than reimplemented so this chart cannot disagree with the tool
@@ -131,10 +134,10 @@ def bar(x, y, w, h, fill):
 def render(theme, rates, stats, n_seeds, headline):
     c = THEMES[theme]
     W = 860
-    plot_x, plot_y, plot_w, plot_h = 74, 148, 640, 196
+    plot_x, plot_y, plot_w, plot_h = 74, 64, 756, 196
     y_max = 0.85
     group_w = plot_w / len(STATES)
-    bar_w = 74.0
+    bar_w = 84.0
 
     n_total = rates["B"][2]
     seeds = f"{n_seeds} seeded runs" if n_seeds > 1 else "1 run"
@@ -161,8 +164,8 @@ def render(theme, rates, stats, n_seeds, headline):
                 f"{fmt_p(p).replace('&lt;', '<')}, b={b} c={cc} n={n}"
             )
 
-    stats_top = plot_y + plot_h + 74
-    height = int(stats_top + 18 + len(stat_rows) * 15 + 18)
+    # Chart only: legend, bars, brackets. Height ends at the bar sublabels.
+    height = int(plot_y + plot_h + 50 + 22)
 
     o = []
     a = o.append
@@ -183,19 +186,11 @@ def render(theme, rates, stats, n_seeds, headline):
       f'c = the reverse.</desc>')
     a(f'<rect width="{W}" height="{height}" fill="{c["bg"]}"/>')
 
-    a(f'<text x="28" y="36" font-size="17" font-weight="600" fill="{c["fg"]}">'
-      f"{esc(headline)}</text>")
-    a(f'<text x="28" y="60" font-size="12.5" fill="{c["muted"]}">'
-      f"Same model, same prompts, same {n_total} held-out tasks it has never seen. "
-      f"The only variable: whether the lessons</text>")
-    a(f'<text x="28" y="78" font-size="12.5" fill="{c["muted"]}">'
-      f"the agent learned from its own failures are in its prompt.</text>")
-
     # Legend — identity is a condition, not a run.
     for i, (key, label) in enumerate((("off", "lessons OFF"), ("on", "lessons ON"))):
-        lx = 28 + i * 150
-        a(f'<rect x="{lx}" y="{100}" width="11" height="11" rx="2" fill="{c[key]}"/>')
-        a(f'<text x="{lx + 17}" y="{110}" font-size="12" fill="{c["fg"]}">'
+        lx = plot_x + i * 150
+        a(f'<rect x="{lx}" y="{18}" width="11" height="11" rx="2" fill="{c[key]}"/>')
+        a(f'<text x="{lx + 17}" y="{28}" font-size="12" fill="{c["fg"]}">'
           f"{esc(label)}</text>")
 
     for frac in (0.0, 0.2, 0.4, 0.6, 0.8):
@@ -247,15 +242,6 @@ def render(theme, rates, stats, n_seeds, headline):
         a(f'<text x="{(x1 + x2) / 2:.1f}" y="{by - 3:.1f}" font-size="10" '
           f'text-anchor="middle" fill="{c["muted"]}">{esc(verb)} · {fmt_p(p)}</text>')
 
-    # The plain-text legend: the same finding, readable without the picture.
-    ty = stats_top
-    a(f'<text x="28" y="{ty}" font-size="11.5" font-weight="600" fill="{c["fg"]}">'
-      f"Paired exact McNemar over the same held-out tasks "
-      f"(b = failed then passed, c = the reverse)</text>")
-    for i, line in enumerate(stat_rows):
-        a(f'<text x="28" y="{ty + 19 + i * 15}" font-size="11" '
-          f'font-family="ui-monospace,SFMono-Regular,Menlo,monospace" '
-          f'fill="{c["muted"]}">{esc(line)}</text>')
     a("</svg>")
     return "\n".join(o)
 
