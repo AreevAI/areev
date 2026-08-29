@@ -118,10 +118,11 @@ chart:
 - **It improved without regressing.** Every hidden rule the loop touched got
   better, none got worse.
   [The per-rule numbers →](crates/areev-bench/RESULTS.md#it-improves-without-regressing)
-- **Retrieval alone couldn't beat it.** The same store with the loop *off* —
-  raw failure history retrieved into the prompt three different ways — never
-  significantly won, and one variant burned **6.2× the prompt tokens to
-  score lower**.
+- **It matches heavyweight retrieval at a fraction of the cost.** The same
+  store with the loop *off* — raw failure history retrieved into the prompt
+  three different ways — never significantly outscored the lessons, paid
+  **1.3–6.2× the prompt tokens** every turn doing it, and its best-scoring
+  variant doubled a class of mistakes the loop had eliminated.
   [The baselines →](crates/areev-bench/RESULTS.md#does-the-loop-beat-the-store--the-passive-memory-arms)
 
 One synthetic workload, built to make learning *measurable* rather than to
