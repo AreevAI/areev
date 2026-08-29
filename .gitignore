@@ -36,3 +36,9 @@ docs/tmp/
 
 # macOS Finder cruft
 .DS_Store
+
+# Local Python virtualenvs. `examples/agents/docs/testing.md` and the CI job
+# both create one at the repo root to build the binding with maturin; it is a
+# build artifact, never a repo artifact.
+.venv/
+venv/
