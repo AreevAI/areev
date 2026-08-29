@@ -1,11 +1,23 @@
 # RCM denial optimization
 
-A healthcare **revenue-cycle** desk. A payer remittance lands carrying a
-wall of denied claims. The agent screens every denial, clusters the causes
-per payer, and proposes a coding/submission fix **with the denials as
-evidence**. A billing lead approves one and rejects another, each with a
-written reason — and the approved one becomes a fact that changes how the
-next remittance is handled.
+**The problem.** A payer remittance lands carrying a wall of denied claims
+— and how many is not knowable when the plan is written. Hand-roll the
+fan-out and you get a fold nobody can replay or audit; meanwhile the same
+denial causes recur for months, because the fix lives in one biller's head
+instead of anywhere the next remittance can read.
+
+**What you get.** One node returns a list and the runtime does the rest: a
+screening task per denial, joined and folded deterministically, every run
+replayable byte-for-byte. And the desk learns where it counts: one signed
+approval in week one, and next week **three of five denials classify
+themselves** — fewer denials spending a person's attention, and a written
+reason on every one that still does.
+
+The desk itself: healthcare **revenue cycle**. The agent screens every
+denial, clusters the causes per payer, and proposes a coding/submission fix
+**with the denials as evidence**. A billing lead approves one and rejects
+another, each with a written reason — and the approved one becomes a fact
+that changes how the next remittance is handled.
 
 The plan has **six nodes**. The first tick spawns **eleven** classification
 tasks.

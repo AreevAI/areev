@@ -1,6 +1,21 @@
 # clinical referrals
 
-The referral desk of a specialist chest-pain clinic. GP practices send
+**The problem.** A referral desk cannot do its job without an outside
+service — coding, triage, increasingly a model — and it cannot use one
+without disclosing patient records to it. Hand-redacting every letter does
+not scale, and privacy logic written into each integration is the version
+that drifts: one missed MRN in one tool is a reportable breach.
+
+**What you get.** One policy declared on one namespace, and every
+model-facing read of it leaves as typed placeholders — with no privacy code
+in any tool. The acts prove it the hard way: three referrals triaged, and
+the verbatim wire log checked byte-by-byte against every identifier in
+every fixture — **zero on the wire** — while the clinician's letter comes
+back fully rehydrated. And the desk gets better at the job: a correction a
+clinician signs in week one becomes the clinic's own triage rule, which
+fires in week two without waking anyone.
+
+The scene: the referral desk of a specialist chest-pain clinic. GP practices send
 referral letters; the desk files them, asks an outside clinical-coding
 service for a code and a triage suggestion, and parks every referral for a
 clinician to accept or redirect — and **what it sends to that outside

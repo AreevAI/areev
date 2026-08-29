@@ -1,14 +1,24 @@
 # insurance documents → a coverage picture that knows *when*
 
-A policy servicing desk. Endorsements, corrections, claim notices and
-cancellations arrive; the agent extracts the coverage facts and keeps the
-policy's picture current. But the question that decides money is never "what
-does the file say now" — it is:
+**The problem.** A claims file can always answer "what does the policy say
+now". But the question that decides money is never that — it is:
 
 > **What cover was in force on the date of loss, and when did we come to
 > know it?**
 
-Those are two questions on two different clocks, and this example is built
+Endorsements backdate, corrections restate, notices arrive late — so the
+current picture and the truth-at-a-date routinely disagree, and a desk that
+reads only the current picture pays the wrong amount, confidently.
+
+**What you get.** A coverage picture on two clocks, proven where it costs
+money: a 612,000 claim assessed against the **500,000 in force on the date
+of loss** while the file's current limit says 750,000 — and "what was true
+in March" and "what we told the insured in March" both staying answerable
+long after the file has moved on.
+
+The desk itself: policy servicing. Endorsements, corrections, claim notices
+and cancellations arrive; the agent extracts the coverage facts and keeps
+the policy's picture current — on two clocks, and this example is built
 around the fact that Areev answers both:
 
 | clock | what it answers | on the grain | read with |

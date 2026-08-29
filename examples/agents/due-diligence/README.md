@@ -1,14 +1,23 @@
 # due diligence under a budget
 
-A vendor/M&A diligence desk. An analyst files a request naming a target; the
-agent works a checklist of research legs — registry filings, litigation,
-adverse media, filed accounts — accumulating findings. Research is
-open-ended and expensive, so **every request runs under a ceiling**. When the
-ceiling is reached the run stops cleanly with its work journaled, the analyst
-reads what the money bought and what is still unread, and decides: **raise
-the ceiling, or ship the partial report.** No report leaves the building
-without a partner's signature, and the partner may not be the person who
-raised the ceiling.
+**The problem.** Research is open-ended and expensive, and most agent
+frameworks treat a spend cap as an exception: you catch it, you log it, you
+lose the work. So teams either run uncapped and eat the bill, or cap the
+run and throw away everything the cap interrupted — and either way, nobody
+can show afterwards what the money bought.
+
+**What you get.** A ceiling that is part of the run itself: reaching it
+stops the run cleanly with every finding journaled, the analyst reads what
+the ceiling bought and what is still unread, and decides — fork under a
+raised ceiling, or ship the partial report. And the desk gets better at
+spending: after one signed desk rule, **the same 2,900 ms ceiling buys
+three times the material findings**.
+
+The desk itself: vendor/M&A diligence. An analyst files a request naming a
+target; the agent works a checklist of research legs — registry filings,
+litigation, adverse media, filed accounts — accumulating findings under the
+ceiling. No report leaves the building without a partner's signature, and
+the partner may not be the person who raised the ceiling.
 
 ```
  analyst                    the areev diligence agent                     partner

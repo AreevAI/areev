@@ -1,7 +1,22 @@
 # sanctions screening — the rule is a grain
 
-A payment screening desk whose **screening rule lives inside the memory as
-content-addressed code**, not as a script on a box. The desk matches
+**The problem.** A screening desk lives and dies by one question an
+examiner will eventually ask: *which exact version of the rule screened
+this payment?* When the rule is a script on a box, the answer is a
+changelog and a shrug — and nothing stops the desk quietly running last
+quarter's rule after the list, or the rule, changed.
+
+**What you get.** Every ledger row names the exact rule bytes that decided
+it, answerable from the content address rather than from anyone's memory of
+a deploy. A rule change is a signed, governed chain instead of an edit —
+and a desk whose rule has moved ahead of its operator's pin **refuses to
+run at all** rather than running stale. The acts prove the payoff both
+ways: the revision is walked end to end under a human signature, and the
+revised rule promptly catches an exact watchlist match the old rule was
+blind to.
+
+The desk itself: its **screening rule lives inside the memory as
+content-addressed code**, not as a script on a box. It matches
 outbound payments against a watchlist, parks possible hits for a compliance
 officer, learns from the dispositions officers sign — and when the rule
 itself needs to change, the change is governed end to end: new bytes, new
@@ -45,6 +60,8 @@ runs from committed fixtures, so CI proves it on every release.
 | Stack | Needs | Run |
 |---|---|---|
 | [`python/`](python/) | `pip install areev` | `python/smoke.sh` then `python/improve.sh` |
+
+A few seconds later, the two acts end with what was promised:
 
 ```
 OK -- 2 released, 2 blocked, 1 unpinned refusal, 3 decisions signed by name.

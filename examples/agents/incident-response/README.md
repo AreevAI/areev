@@ -1,6 +1,22 @@
 # incident response
 
-An on-call desk that is **woken, not polled**. A monitoring system posts an
+**The problem.** Every page starts from zero. The cause of last month's
+identical incident is in a postmortem nobody reopens at 3am; the alerting
+vendor retries every webhook, and a duplicate page that restarts a
+remediation is how a bad night becomes a bad week; and the plumbing an
+inbound alert integration usually demands — a poller, a cursor, a dedup
+table, a daemon — is all undifferentiated work standing between you and the
+first useful run.
+
+**What you get.** A desk where the next identical page arrives with its
+history attached — *"seen 1 time on this service and signal; last cause:
+connection pool exhausted by deploy 2026.08.24-3"* — where redelivered
+alerts start nothing, and where every production action carries the name
+and written reason of the engineer who approved it. It still pages: the
+payoff is a better proposal at the same gate, not a removed human. And the
+inbound plumbing collapses to one call from your existing listener.
+
+The desk is **woken, not polled**. A monitoring system posts an
 alert; the agent correlates it to the service, recalls what past incidents on
 that service turned out to be, proposes a remediation — and parks for a human
 before anything touches production. After the incident is resolved it writes

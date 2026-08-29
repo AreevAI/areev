@@ -1,6 +1,20 @@
 # data-subject requests
 
-A privacy desk. Access, portability and erasure requests arrive; the agent
+**The problem.** Answering a GDPR request is easy to claim and hard to
+prove. In most stacks the export and the deletion are separate code paths,
+so nothing stops a desk disclosing one set of data and erasing another —
+which is a compliance failure, not a rounding error. And the proof
+machinery itself is a hazard: an audit log that names the person it erased
+has just undone the erasure it records.
+
+**What you get.** A desk where the disclosure and the erasure are one
+selection — the acts assert report count == erasure count, namespace by
+namespace, and refuse to erase at all if they ever diverge — an intake that
+refuses to act for anyone who has not proven who they are, and a register
+that proves every act with an approver, a written reason and a fingerprint,
+never the person.
+
+The desk itself: access, portability and erasure requests arrive; the agent
 works out **who** is asking, prices the request against what is actually
 stored, and parks for a Data Protection Officer — because an erasure is
 irreversible and the approver's identity *is* the audit record. On approval

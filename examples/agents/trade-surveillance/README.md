@@ -7,14 +7,21 @@
 > venue-qualified (`MRDN:VNTG` on the fictional Meridian Exchange) precisely
 > so they cannot be mistaken for, or collide with, a listed instrument.
 
-A market-abuse surveillance desk watching two feeds that know nothing about
-each other. Neither feed is interesting on its own — a block order is
-Tuesday, a rebalance notice is Tuesday. What an analyst must look at is a
-**block order and a material event on the same instrument, close together in
-time**.
+**The problem.** A market-abuse desk watches two feeds that know nothing
+about each other, and neither is interesting alone — a block order is
+Tuesday, a rebalance notice is Tuesday. Alert on each and the desk drowns
+in false positives. What an analyst must look at is a **block order and a
+material event on the same instrument, close together in time** — and
+correlating that yourself means building and operating a correlation
+service before the first case ever opens.
 
-That is the whole example: a standing rule that fires on a **co-occurrence**
-rather than on an event. In Areev it is a `composite` Trigger — two member
+**What you get.** A standing rule that fires on the co-occurrence itself,
+declared as data rather than built as infrastructure. Across two sessions,
+**eight signals become three correlated cases — zero auto-closed** — each
+parked for an analyst, and each arriving with how this *pattern* was
+dispositioned before, on a different instrument.
+
+The mechanism is a `composite` Trigger — two member
 triggers under aliases, a boolean gate over those aliases, a `correlate`
 pointer naming the field the two signals must agree on, and a `window_ms`
 past which a half-match expires.

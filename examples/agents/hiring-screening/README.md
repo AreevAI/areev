@@ -6,12 +6,18 @@ published, and then **parks it for a named recruiter**. Every single one.
 There is no auto-advance path in this plan — not a disabled one, an absent
 one.
 
-Screening candidates for employment is an **Annex III high-risk** use under
-the EU AI Act — Regulation (EU) 2026/1744, published in the Official Journal
-on 24 July 2026 and in force from 27 July — and its Article 14 asks a
-question a policy document cannot answer: *can a natural person actually
-oversee this thing, and can you show it?* This example exists to answer it
-from the record:
+**The problem.** Screening candidates for employment is an **Annex III
+high-risk** use under the EU AI Act — Regulation (EU) 2026/1744, published
+in the Official Journal on 24 July 2026 and in force from 27 July — and its
+Article 14 asks a question a policy document cannot answer: *can a natural
+person actually oversee this thing, and can you show it?* Most teams answer
+with prose. An auditor wants a record.
+
+**What you get.** The record, as a command — and a desk where the record
+cannot come apart from the practice: every outcome pairs with the named
+recruiter who decided it, the counts must balance, and the oversight report
+is measured from the run journal rather than asserted. This example exists
+to answer Article 14 from the record:
 
 ```bash
 python/smoke.sh          # the week, under governance -- ends by printing the report
