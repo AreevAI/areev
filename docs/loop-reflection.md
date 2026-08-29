@@ -243,6 +243,16 @@ transition is a hash-chained audit grain; apply is undoable or marked
 non-rollbackable up front. The verifier makes Stage 4 see a short, high-precision
 list — it does not replace the human gate.
 
+What the verifier's existence later *unlocked* (the "missing last mile" from
+SELFIMPROVE.md's roadmap, landed after this design): a DISCOVER draft may now
+**author a lesson** — one capped imperative line — and a lesson-bearing draft
+that survives GROUND + VERIFY stamps as an *applicable, rollbackable* `ADD
+fact` proposal rather than an advisory flag, with the lesson folded into the
+claim both gates judge. Stage 4 is exactly why this is safe to allow: the
+only path from an authored lesson into memory is still a human review with a
+BECAUSE plus an explicit apply, and auto-apply remains structurally closed to
+`origin=llm` (see `docs/loop.md`, DISCOVER).
+
 ---
 
 ## 6. Measurement — what makes it claimable

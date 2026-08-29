@@ -339,12 +339,19 @@ context it is given", so mock M arms prove plumbing, never a comparison.
 - deterministic-analyzer showcase — same A/B/A shape with `--llm-cmd` absent:
   what do contradiction/duplicate/staleness lessons alone buy? (The engine
   closes with zero model calls; this bench prices that floor.)
-- **LLM-authored executable lessons** (engine feature, not a bench): today
-  `stamp_llm` hardcodes advisory `Flag`/`Data`, so a verified DISCOVER
-  finding can never be applied — the governed path for an LLM to *author* a
-  lesson grain (evidence-cited, GROUND/VERIFY-survived, human-applied,
-  rollbackable) is the missing last mile. When it lands, this bench's
-  causal arm extends to LLM-authored lessons with zero harness changes.
+- **LLM-authored executable lessons** (engine feature, not a bench):
+  **landed.** A DISCOVER draft may author a `lesson` (one capped imperative
+  line); a lesson-bearing draft that survives GROUND/VERIFY stamps as an
+  applicable, rollbackable `ADD fact` proposal (`relation = "lesson"`,
+  namespace from the cited evidence) — human-applied only, auto-apply stays
+  structurally closed to `origin=llm` (`docs/loop.md`, DISCOVER). What the
+  bench still needs before a `loop+LLM` arm can run: (a) `review_action`
+  (memory.rs) routes ALL llm-origin recommendations to advisory — the arm
+  needs a deliberate switch to approve applicable llm lessons through the
+  same scripted review, and (b) `lessons_markdown` renders only
+  `fails_with` facts — the arm must render `relation = "lesson"` lines into
+  the LESSONS section too. Both are arm-gated bench changes, not engine
+  work.
 
 ## Determinism & stats rules (areev-testing applies)
 

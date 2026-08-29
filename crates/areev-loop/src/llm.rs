@@ -12,7 +12,12 @@
 //! path is byte-for-byte the deterministic path. The LLM can only:
 //!   - **DISCOVER**: propose *new* draft recommendations, which enter through
 //!     the ordinary candidate/dedup/store path stamped `origin = llm` — so they
-//!     can **never auto-apply** and never target prompt/host surfaces; and
+//!     can **never auto-apply** and never target prompt/host surfaces. A draft
+//!     MAY author a `lesson` (one capped imperative line); a lesson-bearing
+//!     draft that survives GROUND + VERIFY stamps as an *applicable*,
+//!     rollbackable `ADD fact` proposal instead of an advisory flag — still
+//!     `origin = llm`, so applying it always takes a human review with a
+//!     BECAUSE plus an explicit apply; and
 //!   - **ENRICH**: add a whitelisted `guidance` note to a deterministic
 //!     recommendation. The engine-templated summary is always kept; the model
 //!     never rewrites it.
@@ -35,6 +40,10 @@ use serde::{Deserialize, Serialize};
 pub const MAX_LLM_DRAFTS: usize = 8;
 pub const MAX_GUIDANCE_LEN: usize = 600;
 pub const MAX_SUMMARY_LEN: usize = 200;
+/// An authored lesson is one imperative line — anything longer is a document,
+/// not a lesson, and a bound on what a single approved apply can put into
+/// every future prompt.
+pub const MAX_LESSON_LEN: usize = 240;
 
 /// A backend that answers one JSON request with one JSON response. Object-safe
 /// so the engine can hold a `Box<dyn LlmBackend>`.
@@ -113,6 +122,13 @@ pub struct LlmDraft {
     /// correct and materially useful (§5.1). Missing/garbled → 0.0 (rejected by
     /// the confidence floor), a safe default.
     pub confidence: f64,
+    /// Optional authored lesson: one imperative rule the model proposes to
+    /// record as a Fact grain. Empty (the default) keeps the draft advisory.
+    /// A non-empty lesson makes the surviving recommendation *applicable* —
+    /// through human review + apply only, never auto-apply — and the lesson
+    /// text is folded into the GROUND claim and VERIFY summary so both gates
+    /// judge exactly what an apply would write.
+    pub lesson: String,
 }
 
 /// The DISCOVER response.

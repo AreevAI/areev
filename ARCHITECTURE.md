@@ -1603,6 +1603,32 @@ Azure Flexible Server. Least-privilege `GRANT` recipe:
 [crates/areev-store/CLAUDE.md](crates/areev-store/CLAUDE.md) §"Read-only
 opens".
 
+### An LLM may author a lesson; only the gates make it applicable
+
+**Decision (2026-08-29):** a DISCOVER draft in the loop's LLM pipeline may
+carry a `lesson` — one imperative line, capped at 240 chars, control
+characters stripped. A lesson-bearing draft that survives GROUND (premise
+entailment) and VERIFY (adversarial soundness) stamps as an **applicable,
+rollbackable** recommendation — an `ADD` of a Fact with
+`relation = "lesson"`, its subject from the entity target and its namespace
+taken from the cited evidence, never named by the model — instead of the
+advisory flag LLM drafts otherwise remain.
+
+Previously every verified DISCOVER finding was hardcoded advisory
+(`Flag`/`Data`), so nothing an LLM proposed could ever be applied — the loop
+could *learn* only what deterministic clustering could derive. The
+constraint that makes lifting this safe is threefold and structural, not
+procedural: `origin = llm` is categorically ineligible for auto-apply, the
+`loop.llm/1` analyzer id has no manifest (auto-apply requires a
+`StructuralCuration` manifest), and the auto-apply shape check rejects any
+`ADD` outright. The only path from an authored lesson into memory is a human
+review with a BECAUSE plus an explicit apply, and rollback retracts the
+created grain like any other applied recommendation. The lesson text is
+folded into the claim GROUND and VERIFY judge, so the gates evaluate exactly
+what an apply would write — a summary never stands in for the payload.
+Reference: [docs/loop.md](docs/loop.md) (DISCOVER),
+[docs/loop-reflection.md](docs/loop-reflection.md) §5.5.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

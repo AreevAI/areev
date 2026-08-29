@@ -550,11 +550,12 @@ impl Engine {
         // the LLM could only elaborate near what determinism already caught.
         let mut evidence: Vec<crate::llm::EvidenceItem> = Vec::new();
         let mut bundle: BTreeSet<String> = BTreeSet::new();
+        let mut ns_by_hash: std::collections::BTreeMap<String, String> = Default::default();
         for c in candidates {
             for h in &c.evidence {
                 if !bundle.contains(h) {
                     if let Ok(Some(g)) = sub.grain(h) {
-                        push_evidence(&mut evidence, &mut bundle, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
                     }
                 }
             }
@@ -575,7 +576,7 @@ impl Engine {
                         if evidence.len() >= 64 {
                             break 'seed;
                         }
-                        push_evidence(&mut evidence, &mut bundle, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
                     }
                 }
             }
@@ -637,7 +638,7 @@ impl Engine {
         // GROUND may run on a separate backend (§11); VERIFY always uses the
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
-        self.verify_drafts(&**llm, ground, &validated, &evidence, now_ms)
+        self.verify_drafts(&**llm, ground, &validated, &evidence, &ns_by_hash, now_ms)
     }
 
     /// GROUND → VERIFY → ROUTE (§5.2–5.4). Two independent model calls, batched
@@ -652,6 +653,7 @@ impl Engine {
         ground: &dyn crate::llm::LlmBackend,
         validated: &[(crate::llm::LlmDraft, String, Vec<String>)],
         evidence: &[crate::llm::EvidenceItem],
+        ns_by_hash: &std::collections::BTreeMap<String, String>,
         now_ms: i64,
     ) -> Vec<Recommendation> {
         use crate::llm::*;
@@ -665,12 +667,14 @@ impl Engine {
         };
 
         // GROUND (§5.2): decompose-then-entail per draft, batched into one call.
+        // The claim includes any authored lesson — the gate must judge exactly
+        // what an apply would record, not only the finding's summary.
         let claims: Vec<GroundItem> = validated
             .iter()
             .enumerate()
             .map(|(i, (d, _t, cited))| GroundItem {
                 id: i,
-                claim: cap(&d.summary, MAX_SUMMARY_LEN),
+                claim: claim_text(d),
                 evidence: ev_for(cited),
             })
             .collect();
@@ -707,7 +711,8 @@ impl Engine {
             .filter(|(i, _)| grounded.contains(i))
             .map(|(i, (d, t, cited))| VerifyItem {
                 id: i,
-                summary: cap(&d.summary, MAX_SUMMARY_LEN),
+                // Same rule as GROUND: the adversarial pass sees the lesson.
+                summary: claim_text(d),
                 target: t.clone(),
                 evidence: ev_for(cited),
             })
@@ -741,6 +746,7 @@ impl Engine {
                         d,
                         target_str.clone(),
                         cited.clone(),
+                        ns_by_hash,
                         conf,
                         now_ms,
                     ));
@@ -1872,7 +1878,8 @@ const MIN_LLM_CONFIDENCE: f64 = 0.75;
 const DISCOVER_INSTRUCTIONS: &str = "You review an agent's memory for quality. \
 Given deterministic findings and the evidence they cite, propose ADDITIONAL \
 findings the deterministic checks would miss (e.g. a semantic contradiction, a \
-stale assumption, a duplicated meaning). SCORING: propose a finding ONLY if you \
+stale assumption, a duplicated meaning, a recurring preventable mistake). \
+SCORING: propose a finding ONLY if you \
 are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
 useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
 earns 0. When in doubt, propose nothing — an empty list is the correct answer \
@@ -1882,7 +1889,14 @@ kind they accept and avoid the kind they reject. Every proposal MUST cite one \
 or more evidence hashes from the bundle, target a memory entity, and include \
 your confidence 0.0-1.0. Return JSON: {\"recommendations\":[{\"summary\":\"...\",\
 \"target\":\"entity:<ns>/<subject>\",\"guidance\":\"...\",\"evidence\":[\"<hash>\"],\
-\"confidence\":0.0}]}. Propose nothing you cannot ground in the evidence.";
+\"confidence\":0.0,\"lesson\":\"...\"}]}. The optional 'lesson' field: when — and \
+ONLY when — the evidence shows a recurring, preventable mistake, author ONE short \
+imperative rule (max 240 chars) that would prevent it, phrased to apply BEFORE \
+the mistake happens (e.g. 'Refund a subscription before cancelling it; refunds \
+on cancelled subscriptions are refused'). A lesson becomes a proposal a human \
+reviewer may apply to the agent's memory, so it must be fully supported by the \
+cited evidence; omit the field for findings that need no durable rule. Propose \
+nothing you cannot ground in the evidence.";
 
 /// The fixed GROUND instruction (§5.2): verify the finding's factual PREMISES
 /// are real (anti-fabrication), while allowing an inference. A self-improvement
@@ -1922,12 +1936,17 @@ JSON: {\"notes\":[{\"target\":\"<target_ref>\",\"guidance\":\"...\"}]}.";
 
 /// Add a grain to the evidence bundle — deduplicated, bounded at 64, text
 /// capped. Shared by the deterministic-citation and recent-grain seeding.
+/// `ns_by_hash` records each bundled grain's namespace so an authored lesson
+/// can later land in the namespace its evidence lives in (never one the
+/// model names).
 fn push_evidence(
     evidence: &mut Vec<crate::llm::EvidenceItem>,
     bundle: &mut BTreeSet<String>,
+    ns_by_hash: &mut std::collections::BTreeMap<String, String>,
     g: &GrainRecord,
 ) {
     if evidence.len() < 64 && bundle.insert(g.hash.clone()) {
+        ns_by_hash.insert(g.hash.clone(), g.namespace.clone());
         evidence.push(crate::llm::EvidenceItem {
             hash: g.hash.clone(),
             grain_type: g.grain_type.clone(),
@@ -1951,15 +1970,43 @@ fn grain_brief(g: &GrainRecord) -> String {
     String::new()
 }
 
-/// Stamp a validated DISCOVER draft as an `origin = llm` recommendation. LLM
-/// drafts are always advisory `Flag`s carrying `Proposal::Data` (never an
-/// executable CAL mutation), lower-confidence, and — via `Origin::Llm` and a
-/// no-manifest analyzer id — structurally ineligible for auto-apply.
+/// One imperative line, no control characters, capped: the only shape an
+/// authored lesson may take. A literal newline could otherwise smuggle a
+/// second CAL statement past review (belt: serde_json escapes it anyway) or
+/// break the one-line prompt rendering hosts assume.
+fn sanitize_lesson(s: &str) -> String {
+    let cleaned: String =
+        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    crate::llm::cap(cleaned.trim(), crate::llm::MAX_LESSON_LEN)
+}
+
+/// The claim GROUND entails and VERIFY stress-tests. A lesson-bearing draft's
+/// claim carries the lesson text — the gates judge what an apply would write.
+fn claim_text(d: &crate::llm::LlmDraft) -> String {
+    let summary = crate::llm::cap(&d.summary, crate::llm::MAX_SUMMARY_LEN);
+    let lesson = sanitize_lesson(&d.lesson);
+    if lesson.is_empty() {
+        summary
+    } else {
+        format!("{summary} Proposed lesson to record: \"{lesson}\"")
+    }
+}
+
+/// Stamp a validated DISCOVER draft as an `origin = llm` recommendation.
+/// Default shape: an advisory `Flag` carrying `Proposal::Data` (no executable
+/// mutation). A draft that authored a `lesson` against an `entity:` target
+/// instead stamps as an *applicable* `ADD fact` proposal — rollbackable,
+/// non-destructive, and reviewable with the exact line an apply would record
+/// in its summary. Either way `Origin::Llm` plus the no-manifest analyzer id
+/// leave it structurally ineligible for auto-apply (and the auto-apply shape
+/// check independently rejects any ADD): the only path into memory is a human
+/// review with a BECAUSE followed by an explicit apply.
 fn stamp_llm(
     model: &str,
     d: &crate::llm::LlmDraft,
     target_ref: String,
     cited: Vec<String>,
+    ns_by_hash: &std::collections::BTreeMap<String, String>,
     confidence: f64,
     now_ms: i64,
 ) -> Recommendation {
@@ -1971,9 +2018,41 @@ fn stamp_llm(
     } else {
         Some(crate::llm::cap(&d.guidance, crate::llm::MAX_GUIDANCE_LEN))
     };
-    let action = ActionKind::Flag;
-    let mut data = serde_json::Map::new();
-    data.insert("source".into(), Value::from("llm"));
+    // The authored-lesson path: entity targets only (a lesson Fact needs a
+    // subject; grain/query targets keep the advisory shape).
+    let lesson = sanitize_lesson(&d.lesson);
+    let authored = if lesson.is_empty() {
+        None
+    } else {
+        lesson_fields(&target_ref, &lesson, &cited, ns_by_hash, confidence)
+    };
+    let (action, proposal, summary, rollbackable, importance) = match authored {
+        Some(fields) => {
+            args.insert("lesson".into(), Value::from(lesson));
+            (
+                // Same action as the deterministic lesson path — "record a
+                // failure-derived lesson" — so dedup groups authored lessons
+                // per target and review UIs need no new vocabulary. Origin
+                // and analyzer id carry the provenance.
+                ActionKind::ClusterFailure,
+                Proposal::Cal { cal: cal::add("fact", &fields) },
+                Summary::new("llm.lesson", args),
+                true,
+                0.5,
+            )
+        }
+        None => {
+            let mut data = serde_json::Map::new();
+            data.insert("source".into(), Value::from("llm"));
+            (
+                ActionKind::Flag,
+                Proposal::Data { data },
+                Summary::new("llm.discover", args),
+                false,
+                0.3,
+            )
+        }
+    };
     Recommendation {
         hash: String::new(),
         analyzer: "loop.llm/1".to_string(),
@@ -1982,22 +2061,70 @@ fn stamp_llm(
         target_ref: target_ref.clone(),
         action_kind: action,
         dedup_key: dedup_key("llm", &target_ref, action),
-        summary: Summary::new("llm.discover", args),
+        summary,
         severity: Severity::Low,
-        proposal: Proposal::Data { data },
+        proposal,
         destructive: false,
-        rollbackable: false,
+        rollbackable,
         evidence: cited,
         evidence_query: None,
         metric: None,
         // The verifier's calibrated confidence — not a hardcoded default.
         confidence: confidence.clamp(0.0, 1.0),
-        importance: 0.3,
+        importance,
         created_at_ms: now_ms,
         guidance,
         evalset_hash: None,
         status: RecStatus::Pending,
     }
+}
+
+/// The Fact an approved authored lesson writes: subject from the entity
+/// target, `relation = "lesson"` (prescriptive prose — distinct from the
+/// deterministic `fails_with` signature facts), the sanitized lesson as
+/// object, and the DOMINANT namespace of the cited evidence (max count, ties
+/// to the lexicographically smallest — the tool_failure rule), never a
+/// namespace the model names. `None` when the target gives no subject.
+fn lesson_fields(
+    target_ref: &str,
+    lesson: &str,
+    cited: &[String],
+    ns_by_hash: &std::collections::BTreeMap<String, String>,
+    confidence: f64,
+) -> Option<serde_json::Map<String, Value>> {
+    let target = TargetRef::parse(target_ref).ok()?;
+    if target.scheme() != "entity" {
+        return None;
+    }
+    let subject = target
+        .opaque()
+        .rsplit_once('/')
+        .map(|(_, s)| s)
+        .unwrap_or(target.opaque());
+    if subject.is_empty() {
+        return None;
+    }
+    let mut ns_counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    for h in cited {
+        if let Some(ns) = ns_by_hash.get(h) {
+            if !ns.is_empty() {
+                *ns_counts.entry(ns.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let lesson_ns = ns_counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(ns, _)| ns.to_string());
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), Value::from(subject));
+    fields.insert("relation".into(), Value::from("lesson"));
+    fields.insert("object".into(), Value::from(lesson));
+    fields.insert("confidence".into(), Value::from(confidence.clamp(0.0, 1.0)));
+    if let Some(ns) = lesson_ns {
+        fields.insert("namespace".into(), Value::from(ns));
+    }
+    Some(fields)
 }
 
 /// The action kinds that apply ONLY through the evalset-run gating edge

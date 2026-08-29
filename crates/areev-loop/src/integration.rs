@@ -408,6 +408,221 @@ fn separate_ground_backend_is_consulted_for_grounding() {
     );
 }
 
+#[test]
+fn llm_authored_lesson_is_applicable_and_rolls_back() {
+    use crate::model::{ActionKind, Origin};
+    use crate::recommendation::Proposal;
+    use crate::substrate::SubstrateRead;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+
+    // Three lesson-bearing drafts: (0) an entity target — becomes applicable
+    // (the embedded control chars must be collapsed, never stored); (1) a
+    // query target — a lesson Fact has no subject there, stays advisory;
+    // (2) an over-long lesson — capped at MAX_LESSON_LEN.
+    let long_lesson = "y".repeat(400);
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"the region conflict keeps recurring","target":"entity:test/acme","guidance":"","evidence":["{h1}"],"confidence":0.9,"lesson":"Confirm the deploy region\nbefore writing it"}},
+          {{"summary":"query needs a tighter filter","target":"query:cleanup","evidence":["{h1}"],"confidence":0.9,"lesson":"Scope the cleanup query"}},
+          {{"summary":"long-winded advice","target":"entity:test/acme2","evidence":["{h1}"],"confidence":0.9,"lesson":"{long_lesson}"}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true},{"id":2,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9},{"id":2,"keep":true,"confidence":0.9}]}"#.to_string();
+    let enrich = r#"{"notes":[]}"#.to_string();
+
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm { discover, ground, verify, enrich }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+
+    // Draft 0: applicable — an ADD fact of the sanitized lesson, in the
+    // evidence's namespace, reviewable with the lesson in the summary.
+    let lesson_rec = recs
+        .iter()
+        .find(|r| {
+            matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "entity:test/acme"
+        })
+        .expect("the entity-target lesson rec");
+    assert_eq!(lesson_rec.action_kind, ActionKind::ClusterFailure);
+    assert!(lesson_rec.rollbackable && !lesson_rec.destructive);
+    assert_eq!(lesson_rec.status, RecStatus::Pending);
+    let Proposal::Cal { cal } = &lesson_rec.proposal else {
+        panic!("authored lesson must be a CAL proposal, got {:?}", lesson_rec.proposal);
+    };
+    assert!(cal.starts_with("ADD fact "), "{cal}");
+    assert!(cal.contains(r#""relation":"lesson""#), "{cal}");
+    assert!(
+        cal.contains("Confirm the deploy region before writing it"),
+        "control chars collapse to spaces: {cal}"
+    );
+    assert!(cal.contains(r#""subject":"acme""#), "{cal}");
+    assert!(
+        cal.contains(r#""namespace":"test""#),
+        "lesson lands in the evidence's namespace: {cal}"
+    );
+    assert!(
+        lesson_rec.summary.render().contains("Confirm the deploy region"),
+        "the reviewer sees the exact line an apply would record"
+    );
+
+    // Draft 1: lesson on a query target stays an advisory flag.
+    let advisory = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "query:cleanup")
+        .expect("the query-target rec");
+    assert_eq!(advisory.action_kind, ActionKind::Flag);
+    assert!(!advisory.rollbackable);
+    assert!(matches!(advisory.proposal, Proposal::Data { .. }));
+
+    // Draft 2: the lesson text is capped.
+    let capped = recs
+        .iter()
+        .find(|r| {
+            matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "entity:test/acme2"
+        })
+        .expect("the over-long lesson rec");
+    let Proposal::Cal { cal } = &capped.proposal else { panic!("expected CAL") };
+    assert!(
+        !cal.contains(&"y".repeat(crate::llm::MAX_LESSON_LEN + 1)),
+        "lesson capped at MAX_LESSON_LEN"
+    );
+
+    // The governed round trip: approve with a BECAUSE, apply, roll back —
+    // the exact machinery deterministic lessons use.
+    e.review(
+        &mut sub.inner,
+        &lesson_rec.hash,
+        Decision::Approve,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "grounded and useful",
+        11_000,
+    )
+    .unwrap();
+    let applied = e
+        .apply(
+            &mut sub.inner,
+            &lesson_rec.hash,
+            "user:reviewer",
+            ObserverType::Human,
+            &ScopeSet::all(),
+            "recording the lesson",
+            false, // an authored lesson never needs the destructive override
+            12_000,
+        )
+        .unwrap();
+    assert_eq!(applied.created_hashes.len(), 1, "one lesson Fact created");
+    let g = sub.inner.grain(&applied.created_hashes[0]).unwrap().expect("lesson grain");
+    assert_eq!(g.fact_relation(), Some("lesson"));
+    assert_eq!(g.fact_subject(), Some("acme"));
+    assert!(g.is_live());
+
+    e.rollback(
+        &mut sub.inner,
+        &lesson_rec.hash,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "measured regression",
+        13_000,
+    )
+    .unwrap();
+    let g = sub.inner.grain(&applied.created_hashes[0]).unwrap();
+    assert!(
+        g.is_none_or(|g| !g.is_live()),
+        "rollback retracts the authored lesson"
+    );
+}
+
+#[test]
+fn llm_authored_lesson_never_auto_applies() {
+    use crate::model::Origin;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"recurring conflict","target":"entity:test/acme","evidence":["{h1}"],"confidence":0.95,"lesson":"Confirm the region first"}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.95}]}"#.to_string();
+    let enrich = r#"{"notes":[]}"#.to_string();
+    // A policy that names the llm family outright — the widest grant a host
+    // could misconfigure. Origin::Llm, the missing manifest, and the ADD
+    // shape check must each independently keep the lesson Pending.
+    let policy = Policy::from_json(
+        r#"{"auto_apply_enabled": true,
+            "auto_apply": [{"analyzer": "loop.llm", "targets": ["memory"], "max_severity": "high"}]}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins()
+        .with_policy(policy)
+        .with_llm(Box::new(MockLlm { discover, ground, verify, enrich }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+    let rec = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson rec");
+    assert_eq!(
+        rec.status,
+        RecStatus::Pending,
+        "an authored lesson never auto-applies, whatever the policy grants"
+    );
+}
+
+#[test]
+fn ground_and_verify_judge_the_lesson_text_not_just_the_summary() {
+    use std::sync::{Arc, Mutex};
+    struct RecordingLlm {
+        inner: MockLlm,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::llm::LlmBackend for RecordingLlm {
+        fn model(&self) -> &str {
+            "recording-mock"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.seen.lock().unwrap().push(request.to_string());
+            self.inner.complete(request)
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"recurring conflict","target":"entity:test/acme","evidence":["{h1}"],"confidence":0.9,"lesson":"Confirm the region first"}}
+        ]}}"#
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(RecordingLlm {
+        inner: MockLlm {
+            discover,
+            ground: r#"{"results":[{"id":0,"supported":true}]}"#.to_string(),
+            verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9}]}"#.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        },
+        seen: Arc::clone(&seen),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let seen = seen.lock().unwrap();
+    for op in ["\"op\":\"ground\"", "\"op\":\"verify\""] {
+        let req = seen
+            .iter()
+            .find(|r| r.contains(op))
+            .unwrap_or_else(|| panic!("no {op} request recorded"));
+        assert!(
+            req.contains("Proposed lesson to record") && req.contains("Confirm the region first"),
+            "{op} must see the authored lesson, got: {req}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn external_command_analyzer_surfaces_advisory_findings() {
