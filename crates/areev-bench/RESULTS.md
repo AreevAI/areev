@@ -630,10 +630,11 @@ LESSONS section structurally. There is no harness flag that changes behaviour.
 Regenerate with `python3 crates/areev-bench/scripts/aba_chart.py
 docs/assets/aba-selfimprove <run-dir>` — rates come from `report.json` and the
 p-values from `aba_stats.py`, imported rather than recomputed, so the picture
-cannot drift from the tables below. Every value is also plain `<text>` inside
-the SVG, under a `<title>` and `<desc>` carrying the full result: a crawler,
-a screen reader, or a model reading the file gets the finding without
-rendering the bars.
+cannot drift from the tables below. The visible SVG is deliberately the chart
+alone — the narrative lives as real text here and in the README — but its
+`<title>` and `<desc>` still carry the full result (rates, deltas, McNemar
+rows), so a crawler, a screen reader, or a model reading the file gets the
+finding without rendering the bars.
 
 | state | seed 1 | seed 2 | seed 3 | mean | avg prompt tokens |
 |---|---|---|---|---|---|

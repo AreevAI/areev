@@ -87,16 +87,16 @@ this repo — click through:
 ### Does the learning actually work? — take it away and see
 
 Anyone can show a number going up. The honest test is whether the *learning*
-caused it, so we remove what was learned and watch what happens.
-
-One frozen model, 100 held-out tasks it has never seen, three seeds,
-temperature 0. The only thing that changes between rows is whether the lessons
-Areev learned are switched on:
+caused it — so we remove what was learned and watch the gain leave, then put
+it back and watch it return. One frozen model at temperature 0, three seeded
+runs over 100 held-out tasks each (n=300) the agent has never seen; the only
+thing that changes between bars is whether the lessons Areev learned from
+the agent's own failures are in its prompt:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/aba-selfimprove-dark.svg">
   <img src="docs/assets/aba-selfimprove-light.svg" width="860"
-       alt="Bar chart of an AI agent improving itself from its own experience, measured on 300 held-out tasks with a frozen model at temperature 0. A0 before learning: 39.0%, 117 of 300 tasks passed. B lessons applied: 59.7%, 179 of 300 — up 20.7 points, paired McNemar p below 0.0001. A1 lessons rolled back: 37.7%, 113 of 300 — down 22.0 points, p below 0.0001. B2 lessons re-applied: 56.3%, 169 of 300 — up 18.7 points, p below 0.0001. The two lessons-off states are statistically indistinguishable from each other, so the swing tracks the applied lessons and nothing else.">
+       alt="A/B/A/B self-improvement bar chart: 39.0% of held-out tasks passed before learning, 59.7% with lessons applied, 37.7% with lessons rolled back, 56.3% re-applied — the gain follows the lessons in both directions, every transition paired McNemar p < 0.0001">
 </picture>
 
 | what the memory holds | tasks passed | |
@@ -106,53 +106,30 @@ Areev learned are switched on:
 | the lessons, rolled back | 37.7% ▼ | **the proof** — take them away and the gain leaves with them |
 | the lessons, re-applied | **56.3%** ▲ | put them back and it returns |
 
-Every one of those transitions is significant at **p < 0.0001** (paired
-McNemar, n=300, and independently significant in each of the three runs —
-which span two distinct task sets, not three; see
-[RESULTS.md](crates/areev-bench/RESULTS.md)), while the two "nothing learned"
-rows are statistically indistinguishable from each other. The swing tracks the
-lessons and nothing else.
+Every transition is significant at **p < 0.0001** (paired McNemar, n=300);
+the two lessons-off states are statistically indistinguishable. There is no
+benchmark mode: the prompt is assembled from live memory on every run, so
+rolling the lessons back empties it structurally. Three results behind the
+chart:
 
-**It learned for free.** The lessons came from deterministic clustering over
-the agent's own tool calls — **zero model calls**, no tokens, no extraction
-step. Each one cites the failures it was computed from, by hash.
+- **It learned for free.** The lessons come from deterministic clustering
+  over the agent's own tool calls — **zero model calls** — and each one
+  cites the failures it was computed from, by hash.
+- **It improved without regressing.** Every hidden rule the loop touched got
+  better, none got worse.
+  [The per-rule numbers →](crates/areev-bench/RESULTS.md#it-improves-without-regressing)
+- **Retrieval alone couldn't beat it.** The same store with the loop *off* —
+  raw failure history retrieved into the prompt three different ways — never
+  significantly won, and one variant burned **6.2× the prompt tokens to
+  score lower**.
+  [The baselines →](crates/areev-bench/RESULTS.md#does-the-loop-beat-the-store--the-passive-memory-arms)
 
-**It improved without regressing.** Every hidden rule the loop touched got
-better, and none got worse:
-
-| the mistake the agent kept making | before | after |
-|---|:---:|:---:|
-| cancelling a subscription before refunding it | 45% of chances | **5%** |
-| sending timestamps in local time, not UTC | 39% | **20%** |
-| giving up after a rate limit instead of retrying | 91% | **76%** |
-
-**We tried hard to beat it.** The same store with the loop switched *off* —
-raw failure history retrieved into the prompt three different ways, including
-one deliberately given a better hook than semantic search would get — matched
-it but never significantly beat it, while one variant burned **6.2× the
-prompt tokens to score lower**. The retrieval that scored best also *doubled*
-the ordering mistakes above, because it can only fire after a failure it
-needed to prevent.
-
-There is no benchmark mode here. The prompt is assembled from live memory on
-every run, so rolling the lessons back empties it structurally. Two properties
-of the architecture make the round trip possible: learning is **separate from
-storage**, so a lesson can be removed *while the experience stays* — a system
-whose write path *is* its learning has nothing to ablate without also losing
-the memory — and re-applying re-derives the lesson **deterministically from
-the same evidence**, which a model in the write path cannot guarantee.
-
-<sub><b>What bounds this:</b> one synthetic workload — six rules the agent is
-never told, scored by a programmatic predicate with no LLM judge — built to
-make learning <i>measurable</i>, not to be representative of production
-traffic. We wrote the test and passed it, so re-run it yourself: the whole
-three-seed comparison costs about <b>$2.30</b> and one seed of the four states
-above about <b>$0.53</b>, on a small open-weights model, with every task and
-model call committed. <b>More benchmarks are coming</b> — a learning curve
-over accumulating experience, an adversarial-experience arm, and a public
-agent-trajectory benchmark. Numbers, per-seed results, significance tests,
-dataset, rerun instructions and the full caveat list:
-<a href="crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof"><b>the A/B/A/B causal proof →</b></a></sub>
+One synthetic workload, built to make learning *measurable* rather than to
+mimic production traffic — and we wrote the test, so re-run it yourself: the
+whole three-seed comparison costs about **$2.30**.
+[Full results & caveats →](crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof) ·
+[Reproduce it →](crates/areev-bench/SELFIMPROVE.md#reproduce) ·
+[How the loop works →](docs/loop.md)
 
 ---
 
