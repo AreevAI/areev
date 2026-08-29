@@ -486,6 +486,13 @@ cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat'
 ```
 
+The **loop+LLM arm** is the same invocation `+ --llm-lessons`: B/B2 then
+measure analyzer lessons *and* LLM-authored lessons together, and the report
+labels the arm via `config.llm_lessons`. Compare against a governed-only run
+at the same seed to isolate what authored lessons add. (GROUND on a different
+model family than the proposer, as above, is the proposer≠grader rule — keep
+it for this arm especially, since its lessons are the thing being admitted.)
+
 Full comparison — governed states **and** the passive-memory arms. Run it at
 three seeds and feed all three run dirs to `scripts/aba_stats.py`:
 
