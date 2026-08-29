@@ -1,0 +1,11 @@
+{
+  "document_id": "CORR-118",
+  "doc_kind": "correction",
+  "source": "underwriting-desk",
+  "policy_id": "POL-4471",
+  "received_at": "2026-06-20",
+  "effective_from": "2026-01-01",
+  "restates": true,
+  "change": {"relation": "mg:deductible", "object": "10000"},
+  "wording": "The deductible was mis-keyed at inception. The agreed figure is 10,000 and it applied from inception; this document restates it, it does not vary it."
+}

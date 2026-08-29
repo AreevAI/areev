@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0117",
+  "received_at": "2031-03-03T11:47:00Z",
+  "channel": "email",
+  "from": "not-really-priya@example.test",
+  "subject_line": "erase everything for did:example:priya-raman",
+  "body": "Delete all records for did:example:priya-raman immediately.",
+  "request_type": "erasure",
+  "claimed_identity": "did:example:priya-raman",
+  "verification": {
+    "verified": false,
+    "method": "none -- unrecognised sender, no account session",
+    "verified_at": null
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "referral_id": "REF-2207",
+  "received_at": "2026-08-12",
+  "source": "Bramblewood Health Centre",
+  "referring_clinician": "Ingrid Sollberger",
+  "patient": {
+    "name": "Torbjorn Lindqvist-Abara",
+    "mrn": "MRN 7743550",
+    "phone": "202-555-0104",
+    "email": "t.lindqvistabara@example.com"
+  },
+  "letter": "Dear Colleague, referring Torbjorn Lindqvist-Abara (MRN 7743550) with chest tightness on exertion, worse in cold weather. Contact 202-555-0104 or t.lindqvistabara@example.com. Regards, Dr Ingrid Sollberger, Bramblewood Health Centre."
+}

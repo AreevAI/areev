@@ -1,0 +1,10 @@
+{
+  "list_version": "2026-08-01",
+  "note": "Synthetic screening list. Every entity here is fictional.",
+  "entries": [
+    {"id": "SL-0001", "name": "Sable Freight Holdings", "program": "SYNTH-A"},
+    {"id": "SL-0002", "name": "Volkov Trading OOO",     "program": "SYNTH-A"},
+    {"id": "SL-0003", "name": "Aurora Metals LLC",      "program": "SYNTH-B"},
+    {"id": "SL-0004", "name": "Kestrel Marine Ltd",     "program": "SYNTH-B"}
+  ]
+}

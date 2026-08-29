@@ -1,0 +1,8 @@
+{
+  "clinician": "user:tobias",
+  "marker": "fe7e7493505a",
+  "decision": "redirect",
+  "urgency": "routine",
+  "redirect_to": "general cardiology outpatients",
+  "because": "an asymptomatic incidental murmur is not a chest pain service referral; general cardiology will echo and review"
+}

@@ -1,0 +1,69 @@
+{
+  "_comment": "The Thornbeck Mutual schedule as issued. Entirely fictional carrier, insureds, policy numbers and wordings. valid_from is world time (when cover attached); booked_on is knowledge time (when the desk keyed it).",
+  "as_issued": [
+    {
+      "policy": "POL-4471",
+      "insured": "Harbourline Freight Ltd",
+      "product": "marine cargo",
+      "inception": "2026-01-01",
+      "booked_on": "2026-01-05",
+      "coverage_limit": "500000",
+      "deductible": "5000",
+      "perils": [
+        "fire",
+        "flood",
+        "theft"
+      ]
+    },
+    {
+      "policy": "POL-5520",
+      "insured": "Harbourline Freight Ltd",
+      "product": "warehouse property",
+      "inception": "2026-01-01",
+      "booked_on": "2026-01-05",
+      "coverage_limit": "250000",
+      "deductible": "2500",
+      "perils": [
+        "fire",
+        "flood"
+      ]
+    },
+    {
+      "policy": "POL-6103",
+      "insured": "Harbourline Freight Ltd",
+      "product": "goods in transit",
+      "inception": "2026-02-01",
+      "booked_on": "2026-02-03",
+      "coverage_limit": "400000",
+      "deductible": "1000",
+      "perils": [
+        "theft",
+        "collision"
+      ]
+    },
+    {
+      "policy": "POL-7714",
+      "insured": "Marlowe Cold Chain Ltd",
+      "product": "refrigerated cargo",
+      "inception": "2026-03-01",
+      "booked_on": "2026-03-02",
+      "coverage_limit": "300000",
+      "deductible": "5000",
+      "perils": [
+        "breakdown",
+        "spoilage"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "insured": "Harbourline Freight Ltd",
+      "group": "Harbourline Group"
+    },
+    {
+      "insured": "Marlowe Cold Chain Ltd",
+      "group": "Harbourline Group"
+    }
+  ],
+  "accumulation_limit": "1100000"
+}

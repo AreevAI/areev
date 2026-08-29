@@ -1,0 +1,12 @@
+{
+  "document_id": "CLM-8815",
+  "doc_kind": "claim_notice",
+  "source": "claims-inbox",
+  "policy_id": "POL-5520",
+  "received_at": "2026-07-08",
+  "date_of_loss": "2026-07-05",
+  "peril": "flood",
+  "clause": "clause:7B",
+  "amount": "180000",
+  "wording": "Stock held on the quayside pending collection was submerged. Insured relies on Clause 7B."
+}

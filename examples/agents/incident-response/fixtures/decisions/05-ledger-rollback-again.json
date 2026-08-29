@@ -1,0 +1,7 @@
+{
+  "alert_id": "ALRT-4205",
+  "channel": "webhook",
+  "engineer": "user:tobin",
+  "decision": "apply",
+  "because": "same lag pattern as 24 Aug; running the runbook step again"
+}

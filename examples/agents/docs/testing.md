@@ -54,6 +54,31 @@ REQUIRE="python typescript rust" examples/agents/run-smokes.sh
 Local and CI share one script on purpose: a green local run predicts a
 green job, and there is no second harness to drift.
 
+## Determinism — the two ways an act script goes flaky
+
+Both of these have actually bitten agents in this directory, and both pass
+locally before they fail in CI.
+
+**Clocked triggers versus guessed sleeps.** A `polling` trigger declaring
+`interval_secs: 1` is only eligible once its `next_due_at` has passed, so an
+act script that paces with `sleep 1.2` is betting that the *previous* step
+took under 200 ms. That bet holds on an idle laptop and loses in a job that
+has already run ten other agents — the tick reports
+`skipped_not_due`, and the assertion fails with a confusing "expected 1 run,
+got 0". Prefer **waiting for the condition** over sleeping a guessed amount:
+poll `trigger_status()` until the trigger reports `due: true`, under a
+bounded overall timeout that fails loudly. Where a sleep is unavoidable,
+assert `due` *before* the tick, so a timing failure says "not due yet"
+rather than pointing at your business logic. The mirror image is worse: an
+assertion that something did **not** happen (a correlation window expiring,
+a backoff elapsing) will start passing *spuriously* under load, quietly
+testing nothing.
+
+**Exit codes through a pipe.** `run-smokes.sh | tail -60` reports **`tail`'s**
+exit status, not the harness's — a red run reads as green. Redirect to a file
+and check the status, or run the harness bare. This is how a genuinely
+failing agent was first mistaken for a passing one.
+
 ## Adding an agent (or a language stack)
 
 1. Follow the layout in the `areev-examples` skill

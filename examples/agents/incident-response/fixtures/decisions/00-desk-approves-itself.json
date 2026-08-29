@@ -1,0 +1,7 @@
+{
+  "alert_id": "ALRT-4101",
+  "channel": "webhook",
+  "engineer": "agent:incident-desk",
+  "decision": "apply",
+  "because": "the desk is confident and nobody is awake"
+}

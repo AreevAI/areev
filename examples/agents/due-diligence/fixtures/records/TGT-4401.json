@@ -1,0 +1,37 @@
+{
+  "target_id": "TGT-4401",
+  "target": "Vantridge Logistics Group",
+  "note": "Synthetic records. Every company, person, court, publication and reference number below is invented for this example.",
+  "legs": {
+    "adverse_media": {
+      "source": "Open-web media sweep (synthetic corpus)",
+      "records": [
+        {"ref": "MED-7710", "date": "2026-02-03", "summary": "Trade weekly notes a depot opening in Ravensmoor East.", "material": false, "severity": "none"},
+        {"ref": "MED-7744", "date": "2026-03-19", "summary": "Local paper covers a driver-recruitment fair; no allegation.", "material": false, "severity": "none"},
+        {"ref": "MED-7802", "date": "2026-05-27", "summary": "Sector newsletter lists the group among regional carriers; routine mention.", "material": false, "severity": "none"}
+      ]
+    },
+    "corporate_filings": {
+      "source": "Ravensmoor Companies Registry (synthetic)",
+      "records": [
+        {"ref": "RCR-88120", "date": "2026-01-08", "summary": "Annual return filed on time; registered office unchanged since 2021.", "material": false, "severity": "none"},
+        {"ref": "RCR-88406", "date": "2026-04-22", "summary": "Director appointment: I. Tarrow, also a director of the counterparty named in the framework contract. Not disclosed on the vendor questionnaire.", "material": true, "severity": "medium"}
+      ]
+    },
+    "financials": {
+      "source": "Filed accounts extract (synthetic)",
+      "records": [
+        {"ref": "FIN-3301", "date": "2025-12-31", "summary": "FY25 turnover down 4% year on year; margin flat.", "material": false, "severity": "none"},
+        {"ref": "FIN-3318", "date": "2025-12-31", "summary": "Auditor includes a material-uncertainty-over-going-concern paragraph tied to a covenant test in Q3 2026.", "material": true, "severity": "high"},
+        {"ref": "FIN-3327", "date": "2025-12-31", "summary": "Related-party balance of 1.8m owed by an entity under common control of I. Tarrow; unsecured, no stated repayment date.", "material": true, "severity": "high"}
+      ]
+    },
+    "litigation": {
+      "source": "Ravensmoor civil docket (synthetic)",
+      "records": [
+        {"ref": "LIT-5502", "date": "2025-09-14", "summary": "Small-claims cargo damage matter, settled, 4.2k.", "material": false, "severity": "low"},
+        {"ref": "LIT-5561", "date": "2026-06-02", "summary": "Open contract claim by a former haulage subcontractor alleging withheld payments across 11 invoices.", "material": true, "severity": "medium"}
+      ]
+    }
+  }
+}

@@ -14,17 +14,17 @@ end — and everything else teaches **one seam** (a protocol, a policy file, a
 contract). Agent examples must run keyless against committed fixtures, with
 live credentials opt-in, so CI can prove them on every release.
 
-| Dir | What |
+| Dir | What it solves |
 |---|---|
-| [`agents/`](agents/) | Vertical agents on triggers + `areev run`: mail in, workflow, human approval with corrections **by email reply**, system of record out — then the loop reads those runs back and proposes a fix a person approves. Each agent ships in **Python, TypeScript, and Rust** (one file per language, one shared content-addressed plan); zero repo dependencies — every vendor leg is a JSON-on-stdio connector |
-| [`colab/`](colab/) | Runnable Colab/Jupyter notebooks: the full self-improving-agent loop plus five business-scenario walkthroughs (wrong-lesson rollback, detect/review/govern, Hermes comparison, enterprise architecture) — keyless deterministic floor, optional LLM discovery |
-| [`policy/`](policy/) | Three `loop-policy.json` variants (solo / team / locked-down prod) |
-| [`import/`](import/) | A tool-call JSONL sample + walkthrough → Tool grains → tool-failure clustering |
-| [`ci/`](ci/) | A GitHub Actions job that fails the build on pending high-severity recommendations |
-| [`mcp/`](mcp/) | The multi-agent supervisor pattern (separation of duties over MCP) |
-| [`llm/`](llm/) | Ready-to-run `--llm-cmd` backends (`claude -p`, OpenAI, Ollama, a dependency-free mock) + the stdin/stdout protocol |
-| [`analyzers/`](analyzers/) | A bring-your-own command analyzer (`--analyzer-cmd`, advisory-only) with the probe/analyze protocol |
-| [`hermes/`](hermes/) | Areev as a [Hermes Agent](https://github.com/NousResearch/hermes-agent) memory provider — budgeted per-turn assembly (p50 0.83 ms), `MEMORY.md`/`USER.md` edits mirrored as immutable grains, Areev Loop at session end |
+| [`agents/`](agents/) | **A whole job your team recognizes, run under governance** — ten vertical desks (accounts payable, sanctions screening, incident response, hiring, insurance claims, denial management, surveillance, diligence, clinical referrals, GDPR requests), each one starting from a real problem and proving its payoff in a keyless smoke: work in (polled from a mailbox, or **pushed as a webhook your own listener delivers**), workflow, a named human approval, system of record out — then the loop turns the desk's own record into signed improvements. Zero repo dependencies: every vendor leg is a JSON-on-stdio connector or host tool |
+| [`colab/`](colab/) | **See the self-improvement loop pay off before wiring anything** — runnable Colab/Jupyter notebooks: the full loop plus five business-scenario walkthroughs (wrong-lesson rollback, detect/review/govern, Hermes comparison, enterprise architecture); keyless deterministic floor, optional LLM discovery |
+| [`policy/`](policy/) | **How much must a person sign?** Three `loop-policy.json` variants — solo prototype, team, locked-down prod — to start from instead of authoring policy from scratch |
+| [`import/`](import/) | **Improvement without changing your agent** — your existing tool-call logs (JSONL) become Tool grains, and the loop clusters the failures you already had |
+| [`ci/`](ci/) | **An unreviewed lesson blocks the merge, not the postmortem** — a GitHub Actions job that fails the build on pending high-severity recommendations |
+| [`mcp/`](mcp/) | **One agent proposes, another approves** — the multi-agent supervisor pattern (separation of duties over MCP) |
+| [`llm/`](llm/) | **Plug in any model without an SDK** — ready-to-run `--llm-cmd` backends (`claude -p`, OpenAI, Ollama, a dependency-free mock) + the stdin/stdout protocol |
+| [`analyzers/`](analyzers/) | **Your own detection logic, advisory-only** — a bring-your-own command analyzer (`--analyzer-cmd`) with the probe/analyze protocol |
+| [`hermes/`](hermes/) | **Memory for an agent you did not build** — Areev as a [Hermes Agent](https://github.com/NousResearch/hermes-agent) memory provider: budgeted per-turn assembly (p50 0.83 ms), `MEMORY.md`/`USER.md` edits mirrored as immutable grains, Areev Loop at session end |
 
 Every example models **judgment** — approve one recommendation, dismiss one
 with a reason. Never a rubber-stamp loop.

@@ -1,0 +1,11 @@
+{
+  "document_id": "END-2201",
+  "doc_kind": "endorsement",
+  "source": "underwriting-desk",
+  "policy_id": "POL-4471",
+  "received_at": "2026-06-15",
+  "effective_from": "2026-05-01",
+  "change": {"relation": "mg:coverage_limit", "object": "750000"},
+  "wording": "Limit of liability increased to 750,000 any one conveyance with effect from the effective date shown. All other terms unchanged.",
+  "note": "BACKDATED. Effective 1 May; reached the servicing desk on 15 June."
+}

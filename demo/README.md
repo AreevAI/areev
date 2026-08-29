@@ -30,40 +30,34 @@ node scripts/shoot_console.mjs http://127.0.0.1:7461 demo/screens
 Do this whenever the console changes — the README quotes the UI, and a stale
 screenshot is a stale claim.
 
-## `remotion/` — the launch teaser
+## The walkthrough film — not in this repo
 
-A ~50s, 1080p/30fps video built from [Remotion](https://remotion.dev) source in
-`remotion/` and rendered on demand (`out/areev-demo.mp4`); the rendered mp4 is
-**not committed**.
+The README's Getting Started links a ~2m35s narrated film: what Areev is (the
+four questions a self-improving agent has to answer, and the mechanism that
+answers them), then one agent running for real — the invoice desk, from an
+invoice landing in an unwatched mailbox, through the plan on the console
+canvas and *"may I remember this?"*, to a person signing the lesson and the
+next invoice being categorised from what was signed — then where to find that
+agent in
+[`examples/agents/invoice-to-accounting`](../examples/agents/invoice-to-accounting/).
 
-Flow (mostly animated — one terminal): cold open → **memory rots** (one grain
-duplicates into a messy pile as a `×247` counter races up) → **can't rot** (the
-pile collapses to one grain, then supersedes — old card slides to history, new
-slides in) → **see it run** (the single terminal: idempotent + supersede +
-history) → **inspect it** (the web console's *graph view*) → **safe to learn**
-(the provenance chain) → **gated by design** (no bulk delete) → **model-native**
-(the one-line MCP command) → close card (stats count up). Every command is real
-and the outputs are the actual ones the `areev` binary produces.
+**It is hosted on YouTube and its sources live outside this repo**, deliberately:
+video files are tens of megabytes and would bloat every clone forever, and the
+render toolchain (Remotion + an ElevenLabs narration track) is a content
+pipeline, not part of the engine. The old `remotion/` launch-teaser project
+that used to sit here was removed on 2026-08-26 for the same reason — and its
+console views had drifted from Console v2 besides.
 
-> **Known drift**: the console views inside the video are recreated in Remotion
-> from an older `console.html`, so they do not match Console v2 (the redesign the
-> `screens/` shots are taken from). Re-render before using it anywhere.
+What lives where:
 
-### Re-render
+| | |
+|---|---|
+| The film, as published | YouTube (linked from the README) |
+| Sources — beats, narration manifest, render config | the content repo's `content/video/remotion/` |
+| Rendered cuts (landscape / Short / Reel) + poster | `~/Movies/areev-agent-film/`, untracked |
+| The screenshots inside it | a real run on a live tenant — the same agent as the example above |
 
-```bash
-cd remotion
-npm install
-npm run render      # → out/areev-demo.mp4
-npm run studio      # interactive editor at http://localhost:3000
-npm run still -- --frame=45   # a single frame
-```
-
-Requires Node 18+ and ffmpeg. First render downloads a headless Chrome shell.
-
-### Edit
-
-Scenes live in `remotion/src/scenes/`; the fake terminal is
-`remotion/src/components/Terminal.tsx`; scene order, durations, and the
-cross-fades are in `remotion/src/AreevDemo.tsx`. Change a caption or command and
-re-render.
+A console change means the film's captures go stale the same way `screens/`
+does. Re-shoot, re-render, re-upload, and keep the YouTube URL — the README
+points at the video id, so replacing the upload in place is what keeps the
+link alive.

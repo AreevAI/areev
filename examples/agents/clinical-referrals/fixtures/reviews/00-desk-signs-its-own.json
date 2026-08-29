@@ -1,0 +1,7 @@
+{
+  "clinician": "agent:referral-desk",
+  "marker": "a80a579ebcb0",
+  "decision": "accept",
+  "urgency": "urgent",
+  "because": "the desk is confident and would like to sign this itself"
+}

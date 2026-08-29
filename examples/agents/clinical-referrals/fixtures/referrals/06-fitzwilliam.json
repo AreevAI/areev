@@ -1,0 +1,13 @@
+{
+  "referral_id": "REF-2206",
+  "received_at": "2026-08-11",
+  "source": "Bramblewood Health Centre",
+  "referring_clinician": "Ingrid Sollberger",
+  "patient": {
+    "name": "Cordelia Fitzwilliam-Noor",
+    "mrn": "MRN 7742981",
+    "phone": "202-555-0132",
+    "email": "c.fitzwilliamnoor@example.com"
+  },
+  "letter": "Dear Colleague, referring Cordelia Fitzwilliam-Noor (MRN 7742981), palpitations on and off for three months, no syncope. Contact 202-555-0132 or c.fitzwilliamnoor@example.com. Regards, Dr Ingrid Sollberger, Bramblewood Health Centre."
+}

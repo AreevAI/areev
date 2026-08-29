@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2209",
+  "received_at": "2026-08-14",
+  "source": "Brambleford Medical Practice",
+  "referring_clinician": "Halvard Nystrom",
+  "patient": {
+    "name": "Estelle Perreault-Nzeogwu",
+    "dob": "1994-07-08",
+    "mrn": "MRN 9917238",
+    "phone": "202-555-0195",
+    "email": "e.perreault@example.com"
+  },
+  "letter": "Dear Colleague, please see Estelle Perreault-Nzeogwu (DOB 1994-07-08, MRN 9917238) with occasional palpitations after caffeine, no chest pain and no syncope. Contact 202-555-0195 or e.perreault@example.com. Regards, Dr Halvard Nystrom, Brambleford Medical Practice."
+}

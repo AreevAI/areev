@@ -1,0 +1,10 @@
+{
+  "document_id": "END-9008",
+  "doc_kind": "endorsement",
+  "source": "broker-portal",
+  "policy_id": "POL-5520",
+  "received_at": "2026-07-22",
+  "effective_from": "2026-07-15",
+  "change": {"relation": "mg:coverage_limit", "object": "460000"},
+  "wording": "Limit amended to 460,000 with effect from the effective date shown."
+}

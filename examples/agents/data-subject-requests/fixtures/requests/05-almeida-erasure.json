@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0118",
+  "received_at": "2031-03-09T10:20:00Z",
+  "channel": "email",
+  "from": "r.almeida@example.test",
+  "subject_line": "Right to erasure",
+  "body": "I want my personal data deleted. I do not have an account number; this is the address you write to me at.",
+  "request_type": "erasure",
+  "claimed_identity": "r.almeida@example.test",
+  "verification": {
+    "verified": true,
+    "method": "reply-to-challenge from the address on file",
+    "verified_at": "2031-03-09T10:31:00Z"
+  }
+}

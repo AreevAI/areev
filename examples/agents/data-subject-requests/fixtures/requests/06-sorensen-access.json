@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0119",
+  "received_at": "2031-03-09T15:02:00Z",
+  "channel": "email",
+  "from": "h.sorensen@example.test",
+  "subject_line": "What do you have on me?",
+  "body": "Access request. My email is the only identifier I have ever given you.",
+  "request_type": "access",
+  "claimed_identity": "h.sorensen@example.test",
+  "verification": {
+    "verified": true,
+    "method": "reply-to-challenge from the address on file",
+    "verified_at": "2031-03-09T15:20:00Z"
+  }
+}

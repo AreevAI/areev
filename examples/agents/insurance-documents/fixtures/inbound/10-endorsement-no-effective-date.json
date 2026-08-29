@@ -1,0 +1,9 @@
+{
+  "document_id": "END-9007",
+  "doc_kind": "endorsement",
+  "source": "broker-portal",
+  "policy_id": "POL-5520",
+  "received_at": "2026-07-20",
+  "change": {"relation": "mg:coverage_limit", "object": "460000"},
+  "wording": "Limit amended to 460,000."
+}

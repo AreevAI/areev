@@ -380,6 +380,12 @@ outputs), `name-reservation/` (registry placeholder stubs), `target/`.
 
 ## Naming
 
+Pronounced **uh-REEV** (/əˈriːv/, rhymes with *achieve*) — second syllable
+stressed. Worth stating because it is not self-evident from the spelling:
+text-to-speech fed "Areev" reads it as the English word *arrive*, so any
+narration or voice surface needs it respelled (`Uh-Reeve`) and the output
+checked, not assumed.
+
 Brand "Areev", CLI binary `areev` (package/crate `areev`), Python module
 `areev`, npm packages `@areev/areev` +
 `@areev/areev-<platform>` (unscoped `areev`/`areev-<platform>` is the intent

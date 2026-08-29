@@ -8,6 +8,8 @@ authority, in steps you can inspect, undo, and re-measure.
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rustc-1.90%2B-blue.svg)](#getting-started)
 
+> ⭐ **If agents that learn under human authority are where you think this is heading, [star the repo](https://github.com/AreevAI/areev/stargazers)** — it helps other teams find Areev.
+
 <p align="center">
   <img src="docs/assets/areev-hero.png" width="900"
        alt="How Areev works: typed grains — facts, goals, skills, workflows, tools, events, recommendations — in one store, assembled by the context graph (hybrid recall, rerank, knowledge graph) into a budget-shaped pseudonymized context for the LLM provider; the host executes the actions under human-in-the-loop governance, and the Areev learning loop (propose, review, apply, verify, plus the governed model-tuning seam) feeds what happened back into the store">
@@ -305,6 +307,32 @@ proposes its own fix from its run journals, and you decide). The same agent
 ships in **Python, TypeScript, and Rust** — one file each, and all three mint
 the *identical* content-addressed plan.
 
+**Watch that agent run for real** — two and a half minutes, from an invoice
+landing in an unwatched mailbox, to the desk asking *"may I remember this?"*,
+to a person signing the lesson and the next invoice being categorised from
+what was signed:
+
+<p align="center">
+  <a href="https://youtu.be/YOUTUBE_ID">
+    <img src="https://img.youtube.com/vi/YOUTUBE_ID/maxresdefault.jpg" width="640"
+         alt="Areev — self-improving agents, governed: a walkthrough of the invoice-desk example running against a live tenant">
+  </a>
+</p>
+
+**Or browse the whole gallery** — [`examples/agents/`](examples/agents/) is
+ten vertical agents, each built around an outcome a team has to prove, not a
+feature to admire: a screening desk that can show an examiner **the exact
+rule bytes that decided every payment** — and refuses to run a stale rule; an
+on-call desk where **the next identical page arrives with its cause
+attached**; a remittance desk that turns **a wall of denials into one signed
+fix** the next remittance applies by itself; a privacy desk that can prove
+**what it disclosed is exactly what it erased**; a referral desk that
+consults an outside service with **zero patient identifiers on the wire**; a
+claims desk that pays **the cover in force on the date of loss**, not
+whatever the file says today; and a diligence desk where, after one signed
+rule, **the same budget buys three times the findings**. All keyless, all
+fixture-driven, all run by CI on every release.
+
 Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
 backend, encryption at rest, migration from other stores, and fleet sync:
 **[docs/quickstart.md](docs/quickstart.md)**. Task recipes:
@@ -431,7 +459,8 @@ and [OMS](https://github.com/openmemoryspec/oms)-conformant;
 
 Contributions are welcome under the [DCO](https://developercertificate.org/) — see
 [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md).
-Questions and ideas: [GitHub Discussions](https://github.com/AreevAI/areev/discussions).
+Questions and ideas: [GitHub Discussions](https://github.com/AreevAI/areev/discussions) ·
+community: [r/Areev](https://www.reddit.com/r/Areev/).
 
 ## License
 

@@ -1,0 +1,15 @@
+{
+  "request_id": "DSR-2031-0114",
+  "received_at": "2031-03-02T09:12:00Z",
+  "channel": "email",
+  "from": "i.bakker@example.test",
+  "subject_line": "Subject access request",
+  "body": "Please send me a copy of everything you hold about me. I am signed in to my account as did:example:ines-bakker.",
+  "request_type": "access",
+  "claimed_identity": "did:example:ines-bakker",
+  "verification": {
+    "verified": true,
+    "method": "signed-in account session",
+    "verified_at": "2031-03-02T09:12:00Z"
+  }
+}

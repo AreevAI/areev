@@ -1,0 +1,31 @@
+{
+  "target_id": "TGT-4403",
+  "target": "Merrowgate Cold Chain",
+  "note": "Synthetic records. Ravensmoor publishes filed accounts on a Q3 calendar, so the financials leg has nothing to read in Q2 - that is the pattern the loop finds.",
+  "legs": {
+    "adverse_media": {
+      "source": "Open-web media sweep (synthetic corpus)",
+      "records": [
+        {"ref": "MED-8420", "date": "2026-03-08", "summary": "Trade weekly: new chilled hub commissioned.", "material": false, "severity": "none"}
+      ]
+    },
+    "corporate_filings": {
+      "source": "Ravensmoor Companies Registry (synthetic)",
+      "records": [
+        {"ref": "RCR-93110", "date": "2026-02-27", "summary": "Annual return filed; two shareholder changes in the period.", "material": false, "severity": "none"},
+        {"ref": "RCR-93261", "date": "2026-04-30", "summary": "Registered office moved to a serviced address shared with 40+ entities.", "material": true, "severity": "medium"}
+      ]
+    },
+    "financials": {
+      "source": "Filed accounts extract (synthetic)",
+      "unavailable": "the Ravensmoor filing window for FY25 accounts does not open until Q3 2026 - nothing is published to read",
+      "records": []
+    },
+    "litigation": {
+      "source": "Ravensmoor civil docket (synthetic)",
+      "records": [
+        {"ref": "LIT-6402", "date": "2026-01-19", "summary": "Refrigeration equipment warranty dispute, ongoing, 88k.", "material": true, "severity": "medium"}
+      ]
+    }
+  }
+}

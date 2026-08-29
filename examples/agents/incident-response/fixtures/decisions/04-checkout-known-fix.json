@@ -1,0 +1,9 @@
+{
+  "alert_id": "ALRT-4204",
+  "channel": "webhook",
+  "engineer": "user:rhea",
+  "decision": "apply",
+  "because": "same shape as 24 Aug and the desk already names the cause -- taking the proposal as it stands",
+  "cause": "connection pool exhausted by deploy 2026.09.02-1",
+  "fix": "rollback"
+}

@@ -1,0 +1,17 @@
+{
+  "required_identifiers": [
+    "date",
+    "mrn"
+  ],
+  "in_scope": [
+    "chest tightness on exertion",
+    "palpitations"
+  ],
+  "out_of_scope_route": "general cardiology outpatients",
+  "complaint_terms": [
+    "chest tightness on exertion",
+    "palpitations",
+    "murmur"
+  ],
+  "protocol_version": "2026-07-01"
+}

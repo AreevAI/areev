@@ -1,0 +1,6 @@
+{
+  "case_ref": "MRDN:PDRA",
+  "analyst": "user:nadia",
+  "disposition": "benign",
+  "because": "same shape as the MRDN:VNTG case: redkite-asset is tracking the same published Meridian 40 change. The precedent framed it in seconds, but I checked redkite's mandate and its participation history before agreeing with it."
+}

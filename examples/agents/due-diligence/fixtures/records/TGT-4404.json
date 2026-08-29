@@ -1,0 +1,30 @@
+{
+  "target_id": "TGT-4404",
+  "target": "Pallister Drayage Co-operative",
+  "note": "Synthetic records. Second Ravensmoor target with the same unread financials leg - two of a kind is what makes it a pattern rather than an incident.",
+  "legs": {
+    "adverse_media": {
+      "source": "Open-web media sweep (synthetic corpus)",
+      "records": [
+        {"ref": "MED-8601", "date": "2026-02-11", "summary": "Port authority bulletin lists the co-operative among licensed hauliers.", "material": false, "severity": "none"}
+      ]
+    },
+    "corporate_filings": {
+      "source": "Ravensmoor Companies Registry (synthetic)",
+      "records": [
+        {"ref": "RCR-94420", "date": "2026-03-03", "summary": "Co-operative rules amended; membership cap raised.", "material": false, "severity": "none"}
+      ]
+    },
+    "financials": {
+      "source": "Filed accounts extract (synthetic)",
+      "unavailable": "the Ravensmoor filing window for FY25 accounts does not open until Q3 2026 - nothing is published to read",
+      "records": []
+    },
+    "litigation": {
+      "source": "Ravensmoor civil docket (synthetic)",
+      "records": [
+        {"ref": "LIT-6640", "date": "2025-10-30", "summary": "Membership subscription arrears claim, settled.", "material": false, "severity": "low"}
+      ]
+    }
+  }
+}

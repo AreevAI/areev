@@ -1,0 +1,18 @@
+{
+  "requisition": "REQ-4417",
+  "title": "Senior Platform Engineer",
+  "location": "Dublin, IE",
+  "posted_by": "user:mo",
+  "reviewers": ["user:mo", "user:ines"],
+  "criteria": [
+    {"id": "min_years_backend",
+     "stated": "4+ years professional backend engineering",
+     "value": "4"},
+    {"id": "required_certification",
+     "stated": "Certified Platform Operator, level 2 (CPO-2)",
+     "value": "CPO-2"},
+    {"id": "work_authorisation",
+     "stated": "Already authorised to work in IE",
+     "value": "IE"}
+  ]
+}

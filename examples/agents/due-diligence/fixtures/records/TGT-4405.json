@@ -1,0 +1,31 @@
+{
+  "target_id": "TGT-4405",
+  "target": "Brantwick Terminals",
+  "note": "Synthetic records. Colgrave-registered, so its accounts ARE published - the control that proves the pattern is the filing calendar, not the plan.",
+  "legs": {
+    "adverse_media": {
+      "source": "Open-web media sweep (synthetic corpus)",
+      "records": [
+        {"ref": "MED-8811", "date": "2026-04-02", "summary": "Terminal throughput figures quoted in a capacity report.", "material": false, "severity": "none"}
+      ]
+    },
+    "corporate_filings": {
+      "source": "Colgrave Register of Undertakings (synthetic)",
+      "records": [
+        {"ref": "CRU-2201", "date": "2026-01-21", "summary": "Annual return filed; no officer changes.", "material": false, "severity": "none"}
+      ]
+    },
+    "financials": {
+      "source": "Filed accounts extract (synthetic)",
+      "records": [
+        {"ref": "FIN-5501", "date": "2025-12-31", "summary": "FY25 accounts filed; unqualified opinion, net cash positive.", "material": false, "severity": "none"}
+      ]
+    },
+    "litigation": {
+      "source": "Colgrave civil docket (synthetic)",
+      "records": [
+        {"ref": "LIT-7001", "date": "2026-03-16", "summary": "Boundary dispute with an adjoining freeholder, ongoing, non-monetary.", "material": false, "severity": "low"}
+      ]
+    }
+  }
+}

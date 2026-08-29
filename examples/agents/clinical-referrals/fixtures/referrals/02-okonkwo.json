@@ -1,0 +1,14 @@
+{
+  "referral_id": "REF-2202",
+  "received_at": "2026-08-03",
+  "source": "Brambleford Medical Practice",
+  "referring_clinician": "Halvard Nystrom",
+  "patient": {
+    "name": "Ekundayo Okonkwo",
+    "dob": "1988-11-19",
+    "mrn": "MRN 5520118",
+    "phone": "202-555-0177",
+    "email": "e.okonkwo@example.com"
+  },
+  "letter": "Dear Colleague, please see Ekundayo Okonkwo (DOB 1988-11-19, MRN 5520118) regarding intermittent palpitations, described as a brief fluttering at rest, no syncope and no family history of sudden death. Thyroid function normal. Contact number 202-555-0177, email e.okonkwo@example.com. Regards, Dr Halvard Nystrom, Brambleford Medical Practice."
+}

@@ -1,0 +1,9 @@
+{
+  "document_id": "END-9003",
+  "doc_kind": "endorsement",
+  "source": "broker-portal",
+  "policy_id": "POL-4471",
+  "received_at": "2026-07-09",
+  "change": {"relation": "mg:deductible", "object": "7500"},
+  "wording": "Deductible amended to 7,500."
+}

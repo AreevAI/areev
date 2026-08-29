@@ -1,0 +1,7 @@
+{
+  "alert_id": "ALRT-4207",
+  "channel": "webhook",
+  "engineer": "user:imara",
+  "decision": "record_only",
+  "because": "the downstream vendor is throttling us on purpose; scaling our side just queues the same calls faster, so this waits for their window"
+}

@@ -1,0 +1,6 @@
+{
+  "marker": "6dc01f1d0baf",
+  "lead": "user:omar",
+  "decision": "approve",
+  "because": "the pattern I asked to see held: six of these across two remittances, same payer, all E/M visits coded to an unspecified laterality. Map it to dx_specificity and route the six to the coding queue for re-coding before resubmission."
+}

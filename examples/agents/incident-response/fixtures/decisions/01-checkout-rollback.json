@@ -1,0 +1,10 @@
+{
+  "alert_id": "ALRT-4101",
+  "channel": "webhook",
+  "engineer": "user:rhea",
+  "decision": "apply",
+  "action": "rollback",
+  "because": "the spike starts 94s after deploy 2026.08.24-3 and tracks pool checkout waits, not traffic -- adding replicas would multiply the leak, not absorb it",
+  "cause": "connection pool exhausted by deploy 2026.08.24-3",
+  "fix": "rollback"
+}

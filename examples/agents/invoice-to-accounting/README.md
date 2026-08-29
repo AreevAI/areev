@@ -1,10 +1,21 @@
 # invoice → accounting
 
-An accounts-payable desk that runs on email. Vendors send PDF invoices to a
-mailbox; the agent parses them, extracts expense rows, emails the approver,
-takes corrections **by reply** until the approver says yes, posts the
-approved row to a spreadsheet — and, on a schedule, reads its own history
-back and proposes its own fixes, which a person signs off.
+**The problem.** Accounts payable runs on email. Invoices land in a
+mailbox, approvals crawl through reply chains, and every correction an
+approver makes dies in someone's sent folder — the same category mistake
+gets made, caught and re-corrected month after month, and nobody can say
+afterwards who approved what, or why.
+
+**What you get.** Invoices posted to the books with a named approver and a
+written reason on every row, corrections taken **by reply** around a
+bounded cycle until the approver says yes — and a desk that reads its own
+history on a schedule and proposes its own fixes, which a person signs, so
+next month's invoices are categorised from what was signed rather than
+re-corrected by hand.
+
+The desk itself: vendors send PDF invoices to a mailbox; the agent parses
+them, extracts expense rows, emails the approver, takes corrections by
+reply, posts the approved row to a spreadsheet.
 
 ```
  vendor                        the areev invoice agent                     approver

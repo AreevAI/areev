@@ -1,0 +1,28 @@
+{
+  "platform": "Halcyon Retail (fictional)",
+  "monitor": "beacon",
+  "services": [
+    {
+      "name": "checkout-api",
+      "tier": "1",
+      "owner": "team:storefront",
+      "deploy_channel": "open",
+      "runbook": "rb-checkout"
+    },
+    {
+      "name": "ledger-sync",
+      "tier": "1",
+      "owner": "team:payments",
+      "deploy_channel": "pinned",
+      "deploy_note": "release freeze RF-118 pins the deploy channel until quarter close",
+      "runbook": "rb-ledger"
+    },
+    {
+      "name": "notify-worker",
+      "tier": "2",
+      "owner": "team:platform",
+      "deploy_channel": "open",
+      "runbook": "rb-notify"
+    }
+  ]
+}
