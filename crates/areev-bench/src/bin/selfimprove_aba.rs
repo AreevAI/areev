@@ -350,6 +350,33 @@ fn run_pool(
         drop(tx);
         let mut out: Vec<PooledTask> = rx.iter().collect();
         out.sort_by_key(|(i, _, _)| *i);
+        // The index is dropped here, so every caller downstream pairs results
+        // with tasks BY POSITION. That is only sound if this vector is exactly
+        // one result per task, in order — verify it rather than assume it.
+        //
+        // A gap would not lose one task, it would silently misattribute every
+        // task after the gap: `run_eval` builds each `task_outcome` row from
+        // both sides (`task_id` and `success` off the record, `template` and
+        // `rules_exercised` off the task), so a one-off shift would publish
+        // per-rule denominators and paired-test rows against the wrong tasks —
+        // wrong numbers that still look completely well-formed.
+        if out.len() != tasks.len() {
+            die(&format!(
+                "worker pool returned {} results for {} tasks — results are paired \
+                 with tasks by position, so a gap silently misattributes every \
+                 task after it",
+                out.len(),
+                tasks.len()
+            ));
+        }
+        for (slot, (i, _, _)) in out.iter().enumerate() {
+            if slot != *i {
+                die(&format!(
+                    "worker pool result {slot} carries task index {i} — the \
+                     position pairing downstream would be wrong"
+                ));
+            }
+        }
         out.into_iter().map(|(_, rec, rows)| (rec, rows)).collect()
     })
 }
@@ -373,6 +400,15 @@ fn run_eval(
     let finished = run_pool(tasks, args, lessons, context);
     let mut records = Vec::with_capacity(tasks.len());
     for (task, (rec, rows)) in tasks.iter().zip(finished) {
+        // Belt to `run_pool`'s braces: the row below draws half its fields
+        // from `task` and half from `rec`, so they must be the same task.
+        if rec.task_id != task.id {
+            die(&format!(
+                "eval-{state}: result for {} paired with task {} — the \
+                 task_outcome row would mix two tasks",
+                rec.task_id, task.id
+            ));
+        }
         for row in &rows {
             tx.row(row);
         }
@@ -555,6 +591,22 @@ fn print_results(args: &Args, evals: &[EvalSummary], ledger: &Ledger, applied1: 
     );
 }
 
+/// The applied lessons of one learn pass, identified by what they SAY rather
+/// than by hash. Hashes cannot be compared across passes by design — a
+/// rolled-back recommendation is terminal, so the restoring pass always mints
+/// new ones — but the lesson content must match, and that is the thing worth
+/// asserting.
+fn applied_signatures(ledger: &Ledger) -> Vec<String> {
+    let mut sigs: Vec<String> = ledger
+        .entries
+        .iter()
+        .filter(|e| e.disposition == "applied")
+        .map(|e| format!("{} :: {}", e.source, e.summary))
+        .collect();
+    sigs.sort();
+    sigs
+}
+
 /// The CI gate for `--mock`: the shape of causality, not a magnitude claim.
 /// (The A1 lessons-empty check is hard-asserted in the pipeline itself.)
 ///
@@ -562,9 +614,44 @@ fn print_results(args: &Args, evals: &[EvalSummary], ledger: &Ledger, applied1: 
 /// arm checks are PLUMBING assertions and nothing more: the mock complies
 /// with whatever context it is given, so "M-all beats A0" says the provider
 /// reached the prompt, never that retrieval works.
-fn check_shape(evals: &[EvalSummary], eval_n: u32) {
+///
+/// The ledger checks are seed-independent and hold for a live run too: they
+/// assert WHAT was learned, which the success-rate checks cannot see. A store
+/// or analyzer change that quietly stopped one of two lessons from firing
+/// would still clear every rate threshold above while making the run
+/// incomparable to the published ones — `tests/reproducibility.rs` pins the
+/// exact lesson text at a fixed seed; these pin the invariants at any seed.
+fn check_shape(evals: &[EvalSummary], eval_n: u32, applied1: &[String], applied2: &[String]) {
     let (a0, b, a1, b2) = (&evals[0], &evals[1], &evals[2], &evals[3]);
     let mut fails = Vec::new();
+
+    if applied1.is_empty() {
+        fails.push(
+            "the learn pass applied no lesson — B measures the same memory state as A0"
+                .to_string(),
+        );
+    }
+    // Restoration must be COMPLETE: B2 is only a re-apply of B if every lesson
+    // B carried came back. A partial restore would silently make B2 a third
+    // memory state that the report still labels as B's.
+    for sig in applied1 {
+        if !applied2.contains(sig) {
+            fails.push(format!(
+                "re-apply did not restore {sig} — B2 is not the same memory state as B"
+            ));
+        }
+    }
+    // LLM findings are advisory by design (`stamp_llm` emits `Proposal::Data`,
+    // apply refuses). If one ever applies, the causal arm silently starts
+    // measuring an LLM-authored lesson and SELFIMPROVE.md's honesty note goes
+    // stale in the same moment.
+    for sig in applied1.iter().chain(applied2) {
+        if !sig.starts_with("loop.") {
+            fails.push(format!(
+                "applied a non-analyzer lesson ({sig}) — LLM findings are advisory by design"
+            ));
+        }
+    }
     if b.success_rate() <= a0.success_rate() + 0.1 {
         fails.push(format!(
             "B ({:.3}) must exceed A0 ({:.3}) by more than 0.10 — applied lessons had no effect",
@@ -607,6 +694,10 @@ fn check_shape(evals: &[EvalSummary], eval_n: u32) {
     }
     if fails.is_empty() {
         println!("\nassert-shape: PASS (B > A0 + 0.10, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
+        println!(
+            "assert-shape: PASS ledger ({} lesson(s) applied, all analyzer-origin, all restored in B2)",
+            applied1.len()
+        );
         if !arms.is_empty() {
             let labels: Vec<&str> = arms.iter().map(|s| s.state.as_str()).collect();
             println!(
@@ -674,6 +765,7 @@ fn main() {
         ledger1.entries.len(),
         applied1.len()
     );
+    let applied_sig1 = applied_signatures(&ledger1);
     let lessons = mem.lessons_markdown().unwrap_or_else(|e| die(&e));
     let b = run_eval("B", &eval_tasks, &lessons, None, &args, &reporter);
 
@@ -699,6 +791,7 @@ fn main() {
     if applied2.is_empty() {
         die("re-apply pass applied nothing — B2 would silently equal A1");
     }
+    let applied_sig2 = applied_signatures(&ledger2);
     let lessons = mem.lessons_markdown().unwrap_or_else(|e| die(&e));
     let b2 = run_eval("B2", &eval_tasks, &lessons, None, &args, &reporter);
     let mut evals = vec![a0, b, a1, b2];
@@ -772,13 +865,14 @@ fn main() {
     print_results(&args, &evals, &ledger, applied1.len(), applied2.len());
 
     if args.assert_shape {
-        check_shape(&evals, args.eval as u32);
+        check_shape(&evals, args.eval as u32, &applied_sig1, &applied_sig2);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use areev_bench::selfimprove::LedgerEntry;
 
     fn mock_args(workers: usize) -> Args {
         Args {
@@ -922,7 +1016,8 @@ mod tests {
 
     /// `check_shape` exits the process on failure, so the tests here pin the
     /// PASSING shape: the four governed states plus arms that ran the whole
-    /// held-out set, with M-all clear of A0.
+    /// held-out set, with M-all clear of A0, and a ledger whose lessons are
+    /// analyzer-origin and fully restored in the re-apply pass.
     #[test]
     fn check_shape_accepts_the_governed_states_with_arms() {
         let evals = vec![
@@ -933,6 +1028,43 @@ mod tests {
             summary("M-steel", 10, 6),
             summary("M-all", 10, 8),
         ];
-        check_shape(&evals, 10);
+        let applied = vec!["loop.tool_failure/1 :: Tool \"refund\" failed".to_string()];
+        check_shape(&evals, 10, &applied, &applied);
+    }
+
+    /// The signature list is what makes the restoration check possible across
+    /// passes: hashes differ by design (rolled-back is terminal), so identity
+    /// has to come from the lesson's content, and order must not matter.
+    #[test]
+    fn applied_signatures_are_content_keyed_sorted_and_applied_only() {
+        fn row(disposition: &str, source: &str, summary: &str) -> LedgerEntry {
+            LedgerEntry {
+                hash: "deadbeef".to_string(),
+                source: source.to_string(),
+                summary: summary.to_string(),
+                disposition: disposition.to_string(),
+                because: String::new(),
+            }
+        }
+        let ledger = Ledger {
+            entries: vec![
+                row("applied", "loop.tool_failure/1", "refund rate_limited"),
+                row("rejected", "loop.staleness/1", "FORGET something"),
+                row("applied", "loop.tool_failure/1", "log_case invalid_timestamp"),
+                row("advisory", "llm", "a finding"),
+            ],
+        };
+        assert_eq!(
+            applied_signatures(&ledger),
+            vec![
+                "loop.tool_failure/1 :: log_case invalid_timestamp".to_string(),
+                "loop.tool_failure/1 :: refund rate_limited".to_string(),
+            ],
+            "applied rows only, content-keyed, sorted so pass order cannot matter"
+        );
+        // Two passes that learned the same thing in a different order must
+        // compare equal — otherwise the restoration check would fire on noise.
+        let reordered = Ledger { entries: ledger.entries.into_iter().rev().collect() };
+        assert_eq!(applied_signatures(&reordered).len(), 2);
     }
 }

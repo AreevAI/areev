@@ -93,6 +93,12 @@ One frozen model, 100 held-out tasks it has never seen, three seeds,
 temperature 0. The only thing that changes between rows is whether the lessons
 Areev learned are switched on:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/aba-selfimprove-dark.svg">
+  <img src="docs/assets/aba-selfimprove-light.svg" width="860"
+       alt="Bar chart of an AI agent improving itself from its own experience, measured on 300 held-out tasks with a frozen model at temperature 0. A0 before learning: 39.0%, 117 of 300 tasks passed. B lessons applied: 59.7%, 179 of 300 — up 20.7 points, paired McNemar p below 0.0001. A1 lessons rolled back: 37.7%, 113 of 300 — down 22.0 points, p below 0.0001. B2 lessons re-applied: 56.3%, 169 of 300 — up 18.7 points, p below 0.0001. The two lessons-off states are statistically indistinguishable from each other, so the swing tracks the applied lessons and nothing else.">
+</picture>
+
 | what the memory holds | tasks passed | |
 |---|:---:|---|
 | nothing learned yet | 39.0% | the agent keeps repeating its mistakes |
@@ -101,9 +107,11 @@ Areev learned are switched on:
 | the lessons, re-applied | **56.3%** ▲ | put them back and it returns |
 
 Every one of those transitions is significant at **p < 0.0001** (paired
-McNemar, n=300, and independently significant in each seed), while the two
-"nothing learned" rows are statistically indistinguishable from each other.
-The swing tracks the lessons and nothing else.
+McNemar, n=300, and independently significant in each of the three runs —
+which span two distinct task sets, not three; see
+[RESULTS.md](crates/areev-bench/RESULTS.md)), while the two "nothing learned"
+rows are statistically indistinguishable from each other. The swing tracks the
+lessons and nothing else.
 
 **It learned for free.** The lessons came from deterministic clustering over
 the agent's own tool calls — **zero model calls**, no tokens, no extraction

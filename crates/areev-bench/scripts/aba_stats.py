@@ -54,13 +54,48 @@ def pairs_for(states):
     return out
 
 
-def load_run(d):
-    """{state: {task_id: success}} for one run directory."""
-    out = {}
-    for path in sorted(glob.glob(os.path.join(d, EVAL_PREFIX + "*" + EVAL_SUFFIX))):
-        state = os.path.basename(path)[len(EVAL_PREFIX):-len(EVAL_SUFFIX)]
+def load_runs(d):
+    """[(name, {state: {task_id: success}})] for one directory.
+
+    Two directory layouts exist and both must work:
+
+      a FRESH run     transcripts-eval-B.jsonl          → one run
+      a PUBLISHED set seed1.transcripts-eval-B.jsonl    → one run per prefix
+                      seed2.transcripts-eval-B.jsonl
+
+    The published layout is what `results/` actually contains: several seeds
+    collected into one directory and prefixed. Globbing only the unprefixed
+    form silently found nothing there, so the paired statistics RESULTS.md
+    quotes could not be regenerated from the committed evidence — and the
+    "no task_outcome rows" message blamed the run's age rather than the glob.
+
+    Each prefix stays its OWN run: seeds are pooled by `compare` across runs,
+    which is only valid if each seed's task ids are paired within that seed.
+    Merging them into one dict would collide identical task ids across seeds.
+    """
+    by_prefix = {}
+    for path in sorted(glob.glob(os.path.join(d, "*" + EVAL_PREFIX + "*" + EVAL_SUFFIX))):
+        name = os.path.basename(path)
+        marker = name.index(EVAL_PREFIX)
+        prefix = name[:marker]
+        state = name[marker + len(EVAL_PREFIX):-len(EVAL_SUFFIX)]
         if not state:
             continue
+        by_prefix.setdefault(prefix, {})[state] = path
+
+    label = os.path.basename(os.path.normpath(d)) or d
+    runs = []
+    for prefix in sorted(by_prefix):
+        out = _load_states(by_prefix[prefix])
+        if out:
+            runs.append((f"{label}/{prefix.rstrip('.')}" if prefix else label, out))
+    return runs
+
+
+def _load_states(paths_by_state):
+    """{state: {task_id: success}} for one run's transcript set."""
+    out = {}
+    for state, path in sorted(paths_by_state.items()):
         rows = {}
         with open(path) as fh:
             for line in fh:
@@ -113,15 +148,21 @@ def main():
     if not dirs:
         print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
         sys.exit(2)
-    runs = [(os.path.basename(os.path.normpath(d)) or d, load_run(d)) for d in dirs]
-    missing = [n for n, r in runs if not r]
+    runs = []
+    missing = []
+    for d in dirs:
+        found = load_runs(d)
+        if found:
+            runs.extend(found)
+        else:
+            missing.append(os.path.basename(os.path.normpath(d)) or d)
     if missing:
         print(
             f"aba_stats: no task_outcome rows in: {', '.join(missing)}\n"
-            "(runs made before per-task rows were recorded only have aggregates)",
+            f"(looked for [prefix.]{EVAL_PREFIX}STATE{EVAL_SUFFIX}; runs made before "
+            "per-task rows were recorded only have aggregates)",
             file=sys.stderr,
         )
-    runs = [(n, r) for n, r in runs if r]
     if not runs:
         sys.exit(1)
 
