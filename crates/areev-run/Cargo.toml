@@ -27,10 +27,10 @@ areev-llm = { path = "../areev-llm", version = "1.6.0" }
 # depends on this crate and so could not share it).
 ureq = "3"
 # Capability tokens for the broker. Already in the tree via areev-store.
-getrandom = "0.2"
+getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 tempfile = "3"

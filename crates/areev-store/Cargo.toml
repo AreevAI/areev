@@ -52,16 +52,16 @@ webpki-roots = { version = "1", optional = true }
 # Passphrase key derivation (Argon2id) + zeroization of key material.
 argon2 = "0.5"
 zeroize = "1"
-getrandom = "0.2"
-sha2 = "0.10"
+getrandom = "0.4"
+sha2 = "0.11"
 # CAS sidecar encryption (dependency-light policy, justified):
 # `aes-gcm` is ALREADY in this crate's graph — turso_core pulls the same
 # 0.10.x for the page cipher — so naming it directly adds no crate and keeps
 # the sidecar on the exact primitive the database pages use. `hkdf` adds
 # itself over `hmac`, which argon2 already brings. Hand-rolling an AEAD or a
 # KDF is never the right call.
-hkdf = "0.12"
-aes-gcm = "0.10"
+hkdf = "0.13"
+aes-gcm = "0.11"
 hex = "0.4"
 serde_json = "1"
 # Derive only — serde is already in the graph beneath serde_json, so this
