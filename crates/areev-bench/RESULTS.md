@@ -867,6 +867,93 @@ ships the authored kind as a governed, reviewable, revertible option — with
 the loop's post-apply re-measurement (`outcome_review`) as the mechanism that
 would catch this regression in a live deployment rather than a benchmark.
 
+### Can an LLM-authored lesson self-improve ALONE? — the 2x2 that could not be run
+
+*Pre-registered at rev `81965f6` before these runs
+([SELFIMPROVE.md](SELFIMPROVE.md)). Seeds 1/3/5, 300/100, same model pair.
+Four cells over one axis: which lesson ORIGINS the review gate admits. The
+analyzers run in every cell, so discovery is held constant and only
+application varies. Evidence, including the failed run's log:
+[`results/selfimprove-2x2-qwen3-30b-2026-08-30/`](results/selfimprove-2x2-qwen3-30b-2026-08-30/).*
+
+The earlier arm compared *(deterministic)* against *(deterministic + LLM)*,
+which never isolated the LLM. This was the design that would: an **llm-only**
+cell, applying LLM-authored lessons and nothing else. It also carried an
+engine fix — the DISCOVER evidence bundle now seeds recent **tool error**
+grains, where before the LLM saw a failure only if an analyzer had already
+cited it.
+
+**The pre-registered design could not be executed, and that is the result.**
+The model authors an applicable lesson on roughly half of passes, drawn
+independently each time, so being assigned to a cell does not mean the
+treatment happened in it:
+
+| run | B state | B2 state | |
+|---|---|---|---|
+| combined s1 | 2 analyzer + **1 authored** | 2 + 1 | the only genuinely combined run |
+| combined s3 | 2 analyzer + **0 authored** | 2 + 0 | effectively a control run |
+| combined s5 | 2 analyzer + **0 authored** | 2 + 0 | effectively a control run |
+| llm-only s1 | **0 lessons at all** | 0 + 1 | B degenerates to A0 |
+| llm-only s3 | 0 + 1 | — | **run died**: nothing to re-apply, so B2 would have been A1 |
+| llm-only s5 | **0 lessons at all** | 0 + 1 | B degenerates to A0 |
+
+**Not one completed llm-only run had a lesson applied at B**, so the
+pre-registered primary test (that cell's A0→B) measures nothing. One run
+failed outright: rollback is terminal per recommendation hash, so restoring a
+lesson requires the learner to **re-propose** it — a deterministic analyzer
+always does, being a pure function of the same history; an LLM may simply not.
+That is a governance property, not a tuning detail: **an LLM-only
+configuration cannot reliably complete a governed apply → rollback → re-apply
+cycle.** The combined cell never hits it, because the analyzer lessons act as
+a floor that guarantees the restore leg has something to apply.
+
+**The one contrast that survives is null.** In the llm-only runs A1 holds zero
+lessons and B2 holds exactly one authored lesson, which is a clean paired
+no-lessons-vs-one-LLM-lesson comparison on the same tasks:
+
+| | A1 | B2 | paired |
+|---|---|---|---|
+| seed 1 | 49% | 49% | b=10 c=10, p=1.0000 |
+| seed 5 | 50% | 57% | b=9 c=2, p=0.0654 |
+| **pooled** | 49.5% | 53.0% | **b=19 c=12, p=0.2810** |
+
+One LLM-authored lesson applied alone produced no detectable improvement at
+n=200. The deterministic loop, for comparison, delivers +22.3 points at
+p<0.0001 with two lessons.
+
+**Two methodological findings ship with this, because they bound what any
+cross-run number here can mean.**
+
+- **Authoring rate fell after the evidence fix**, the opposite of the
+  intent: 1.17 lessons per pass before, **0.42 after**, with 7 of 12
+  post-fix passes authoring nothing. Confounded with run-to-run variance and
+  not separately tested — but it is the reason the cells came out empty, and
+  the abstention-biased DISCOVER objective ("when in doubt, propose nothing";
+  a wrong finding penalised 2x) is the first suspect.
+- **Cross-run pairing has a real noise floor.** At seed 3 two runs with
+  *identical* applied lessons (2 analyzer, 0 authored, both) differed at B
+  with p=0.064; at seed 1 the A0 baselines of two ignorant states differed
+  significantly (p=0.031) despite identical prompts and tasks. Within-run
+  chains are drift-immune and remain the reliable instrument; a cross-run
+  comparison at n=100 should not be read below about p=0.05 without a
+  matching A0 check.
+
+**What this does and does not say.** It does not say LLM-authored lessons
+fail to improve an agent — the isolated test was underpowered by the
+authoring rate, not by the effect size, and the one seed that moved
+(+7 points, p=0.065) moved in the right direction. It does say that at this
+authoring rate the approach **cannot be measured, and cannot complete the
+governed cycle**, which is a deployability finding regardless of effect. And
+the workload bound from the previous section still applies: all six hidden
+rules are tool-failure-shaped, exactly what signature clustering detects, so
+this environment gives an LLM no headroom by construction.
+
+The next test is therefore not another arm but the authoring rate itself: a
+DISCOVER objective tuned for a learner that must produce a lesson every pass,
+rather than for a review queue that must stay clean. Until that lands,
+deterministic signature lessons remain the default, and the LLM path remains
+governed, reviewable, and off by default.
+
 ### The dataset
 
 A deterministic, in-process "support desk" API with **six hidden rules** the

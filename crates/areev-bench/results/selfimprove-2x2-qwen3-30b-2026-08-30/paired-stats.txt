@@ -1,0 +1,74 @@
+# The 2x2 — paired statistics (pre-registered at rev 81965f6)
+#
+# Cells: control = ../selfimprove-llmarm-.../governed-s{1,3,5} (reused)
+#        combined / llmonly = this directory
+# llmonly-s3 FAILED at re-apply (LLM authored nothing on pass 2);
+# its run.log is committed, it has no report.json, and it is counted
+# in every rate below as an attempt.
+
+=============== combined (post-fix) — within-run causal chain
+
+  A0 → B: n=300 b=84 c=12 p=0.0000  (improved)
+    combined-s1: n=100 A0=55 B=71 b=24 c=8 p=0.0070
+    combined-s3: n=100 A0=42 B=77 b=35 c=0 p=0.0000
+    combined-s5: n=100 A0=55 B=76 b=25 c=4 p=0.0001
+  B → A1: n=300 b=12 c=86 p=0.0000  (regressed)
+    combined-s1: n=100 B=71 A1=52 b=8 c=27 p=0.0019
+    combined-s3: n=100 B=77 A1=42 b=1 c=36 p=0.0000
+    combined-s5: n=100 B=76 A1=56 b=3 c=23 p=0.0001
+  A1 → B2: n=300 b=69 c=15 p=0.0000  (improved)
+    combined-s1: n=100 A1=52 B2=64 b=19 c=7 p=0.0290
+    combined-s3: n=100 A1=42 B2=64 b=25 c=3 p=0.0000
+    combined-s5: n=100 A1=56 B2=76 b=25 c=5 p=0.0003
+  A0 → A1: n=300 b=19 c=21 p=0.8746  (regressed)
+    combined-s1: n=100 A0=55 A1=52 b=8 c=11 p=0.6476
+    combined-s3: n=100 A0=42 A1=42 b=5 c=5 p=1.0000
+    combined-s5: n=100 A0=55 A1=56 b=6 c=5 p=1.0000
+  B → B2: n=300 b=28 c=48 p=0.0286  (regressed)
+    combined-s1: n=100 B=71 B2=64 b=12 c=19 p=0.2810
+    combined-s3: n=100 B=77 B2=64 b=6 c=19 p=0.0146
+    combined-s5: n=100 B=76 B2=76 b=10 c=10 p=1.0000
+
+  b = tasks that failed in the first state and passed in the second.
+  c = the reverse. Only discordant pairs carry information.
+
+=============== llm-only — within-run causal chain
+# NOTE: no completed llmonly run had a lesson applied at B (dose 0),
+# so A0->B measures nothing. A1->B2 is the treated contrast:
+# A1 = zero lessons, B2 = exactly one LLM-authored lesson.
+
+  A0 → B: n=200 b=9 c=14 p=0.4049  (regressed)
+    llmonly-s1: n=100 A0=49 B=46 b=6 c=9 p=0.6072
+    llmonly-s5: n=100 A0=52 B=50 b=3 c=5 p=0.7266
+  B → A1: n=200 b=14 c=11 p=0.6900  (improved)
+    llmonly-s1: n=100 B=46 A1=49 b=10 c=7 p=0.6291
+    llmonly-s5: n=100 B=50 A1=50 b=4 c=4 p=1.0000
+  A1 → B2: n=200 b=19 c=12 p=0.2810  (improved)
+    llmonly-s1: n=100 A1=49 B2=49 b=10 c=10 p=1.0000
+    llmonly-s5: n=100 A1=50 B2=57 b=9 c=2 p=0.0654
+  A0 → A1: n=200 b=9 c=11 p=0.8238  (regressed)
+    llmonly-s1: n=100 A0=49 A1=49 b=6 c=6 p=1.0000
+    llmonly-s5: n=100 A0=52 A1=50 b=3 c=5 p=0.7266
+  B → B2: n=200 b=23 c=13 p=0.1325  (improved)
+    llmonly-s1: n=100 B=46 B2=49 b=14 c=11 p=0.6900
+    llmonly-s5: n=100 B=50 B2=57 b=9 c=2 p=0.0654
+
+  b = tasks that failed in the first state and passed in the second.
+  c = the reverse. Only discordant pairs carry information.
+
+=============== control vs combined, per seed (drift-checked)
+--- seed 1
+  A0: n=100 b=14 c=4 p=0.0309  (arm ahead)  ← baseline sanity: a significant result here is drift
+  B: n=100 b=18 c=10 p=0.1849  (arm ahead)
+  A1: n=100 b=14 c=5 p=0.0636  (arm ahead)
+  B2: n=100 b=20 c=16 p=0.6177  (arm ahead)
+--- seed 3
+  A0: n=100 b=4 c=4 p=1.0000  (tied)  ← baseline sanity: a significant result here is drift
+  B: n=100 b=17 c=7 p=0.0639  (arm ahead)
+  A1: n=100 b=4 c=6 p=0.7539  (control ahead)
+  B2: n=100 b=10 c=12 p=0.8318  (control ahead)
+--- seed 5
+  A0: n=100 b=6 c=3 p=0.5078  (arm ahead)  ← baseline sanity: a significant result here is drift
+  B: n=100 b=11 c=11 p=1.0000  (tied)
+  A1: n=100 b=7 c=5 p=0.7744  (arm ahead)
+  B2: n=100 b=8 c=7 p=1.0000  (arm ahead)

@@ -1,0 +1,28 @@
+experience: 300 tasks
+eval A0: 100 tasks
+learn 1: 2 ledger rows, 2 applied
+learn 2: 2 ledger rows, 2 applied
+# selfimprove_aba — A/B/A/B causal proof
+
+held-out task success — same tasks, same order, seed 5 (100 tasks):
+
+| state | success | rate | tool errors | mean steps |
+|---|---|---|---|---|
+| A0 before lessons | 55/100 | 55.0% | 101 | 6.5 |
+| B  lessons applied | 76/100 | 76.0% | 94 | 7.0 |
+| A1 lessons rolled back | 56/100 | 56.0% | 105 | 6.6 |
+| B2 lessons re-applied | 76/100 | 76.0% | 90 | 6.8 |
+
+per-rule mishandling recurrence (tasks mishandling / tasks exercising):
+
+| rule | A0 | B | A1 | B2 |
+|---|---|---|---|---|
+| R1 | 0/44 | 0/44 | 0/44 | 0/44 |
+| R2 | 0/100 | 0/100 | 0/100 | 0/100 |
+| R3 | 0/50 | 0/50 | 0/50 | 0/50 |
+| R4 | 14/25 | 9/25 | 16/25 | 7/25 |
+| R5 | 9/25 | 4/25 | 8/25 | 3/25 |
+| R6 | 25/40 | 15/40 | 24/40 | 17/40 |
+
+governance ledger: 4 rows — 4 applied, 0 rejected, 0 advisory, 0 apply_failed
+  (first pass applied 2, re-apply pass applied 2 — a rolled-back hash is terminal, so restoration is a fresh governed proposal)

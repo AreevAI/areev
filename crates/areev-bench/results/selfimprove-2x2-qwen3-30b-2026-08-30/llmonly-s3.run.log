@@ -1,0 +1,5 @@
+experience: 300 tasks
+eval A0: 100 tasks
+learn 1: 3 ledger rows, 1 applied
+learn 2: 2 ledger rows, 0 applied
+selfimprove_aba: re-apply pass applied nothing — B2 would silently equal A1
