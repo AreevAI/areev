@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Render the A/B/A/B self-improvement result as a bar chart (light + dark SVG).
 
-    aba_chart.py OUT_STEM RUN_DIR
+    aba_chart.py OUT_STEM RUN_DIR [--prefix P]
 
     aba_chart.py docs/assets/aba-selfimprove \
-      crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
+      crates/areev-bench/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30 \
+      --prefix governed
 
-Writes OUT_STEM-light.svg and OUT_STEM-dark.svg.
+Writes OUT_STEM-light.svg and OUT_STEM-dark.svg. `--prefix` selects one
+CONFIGURATION out of a results set that holds more than one — without it a
+set carrying both a control and an arm would pool them into bars describing
+a population that was never run.
 
 ONE run, four bars, read left to right: the lessons are off, applied, rolled
 back, applied again. Colour encodes the only thing that changes — whether the
@@ -73,19 +77,26 @@ def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def load_run(run_dir):
+def load_run(run_dir, prefix=""):
     """({state: (rate, successes, n)}, {(x, y): (b, c, n, p)}, n_seeds).
 
     A directory may hold several seeds. Rates are POOLED — successes and tasks
     summed across seeds, which is the mean RESULTS.md quotes — so each bar and
     the p-value beside it describe the same population.
+
+    `prefix` selects a subset of a set that holds more than one
+    CONFIGURATION (e.g. `governed` in a directory that also carries a
+    `llm` arm). Pooling two configurations into one set of bars would
+    describe a population that was never run — so this is a filter, not a
+    convenience.
     """
     reports = sorted(
         f for f in os.listdir(run_dir)
-        if f == "report.json" or f.endswith(".report.json")
+        if (f == "report.json" or f.endswith(".report.json")) and f.startswith(prefix)
     )
     if not reports:
-        raise SystemExit(f"aba_chart: no report.json in {run_dir}")
+        where = f"{run_dir} matching {prefix!r}" if prefix else run_dir
+        raise SystemExit(f"aba_chart: no report.json in {where}")
 
     totals = {}
     for name in reports:
@@ -99,7 +110,11 @@ def load_run(run_dir):
         raise SystemExit(f"aba_chart: {run_dir} has no {', '.join(missing)} state(s)")
     rates = {st: (s / n if n else 0.0, s, n) for st, (s, n) in totals.items()}
 
+    # The same filter must reach the statistics, or the bars would describe
+    # one configuration and the p-values beside them another.
     runs = aba_stats.load_runs(run_dir)
+    if prefix:
+        runs = [(n, r) for n, r in runs if n.rsplit("/", 1)[-1].startswith(prefix)]
     stats = {}
     present = set()
     for _, r in runs:
@@ -247,11 +262,12 @@ def render(theme, rates, stats, n_seeds, headline):
 
 
 def main(argv):
-    if len(argv) != 3:
-        print("usage: aba_chart.py OUT_STEM RUN_DIR", file=sys.stderr)
+    if len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--prefix"):
+        print("usage: aba_chart.py OUT_STEM RUN_DIR [--prefix P]", file=sys.stderr)
         return 2
     out_stem, run_dir = argv[1], argv[2]
-    rates, stats, n_seeds = load_run(run_dir)
+    prefix = argv[4] if len(argv) == 5 else ""
+    rates, stats, n_seeds = load_run(run_dir, prefix)
     gain = (rates["B"][0] - rates["A0"][0]) * 100
     headline = (
         f"An AI agent that learns from its own mistakes: "

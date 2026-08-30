@@ -594,8 +594,16 @@ rather than trusting a figure in a doc.
 | what | scale | cost |
 |---|---|---|
 | full three-seed replication | 2,800 task-runs, 4 states + 3 arms | **$2.30** |
+| three-seed headline run (governed only, 300/100) | 2,100 task-runs, 4 states · 9.3M prompt + 0.29M completion tokens | **~$0.70** |
+| the loop+LLM arm beside it (same scale) | 2,100 task-runs · 9.4M + 0.29M | **~$0.70** |
 | one seed, governed states only (150/60) | ~390 task-runs | **~$0.35** |
 | keyless floor (`--mock`) | any | **$0** |
+
+The two 2026-08-30 rows are the only **scaled** figures here: their token
+counts are measured (and recomputable from the transcripts), but the dollar
+amount is the $2.30 run's billed rate applied to those counts, not an invoice.
+A seed of the pilot config (150/60) is the row above it and was billed
+directly.
 
 The prompt-token total dwarfs completion by 60×, which is the shape of this
 benchmark: long tool schemas and a growing message history re-sent every turn.
