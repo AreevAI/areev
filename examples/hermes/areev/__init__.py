@@ -373,7 +373,12 @@ class AreevMemoryProvider(MemoryProvider):
         return ""
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Deterministic analyzers only — no LLM, no network. Findings are
+        """Run the loop's deterministic analyzers over the session.
+
+        Deterministic because that is what measured stronger on the
+        self-improvement benchmark, not because avoiding a model is a goal
+        in itself; it also keeps this hook free of keys and network. Wire
+        `--llm-cmd` on the CLI to add verified LLM reflection. Findings are
         advisory recommendation grains that never auto-apply."""
         if not self._db or not self._writable:
             return

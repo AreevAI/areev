@@ -185,8 +185,11 @@ Two more applicants, and four more broken ATS exports.
   the criteria and the grants under a token budget.
 - **`areev loop run` finds the cluster**: `Tool "parse_application" failed
   10 times (45% of the calls that could fail this way): unreadable: the
-  uploaded file has no text layer`. Deterministic analyzers; no model key
-  was involved.
+  uploaded file has no text layer`. Found by deterministic analyzers —
+  the lesson kind that measured stronger than LLM-authored ones on our
+  benchmark ([RESULTS.md](../../../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+  and keyless besides. `LOOP_LLM_CMD` adds verified LLM reflection on top
+  where a finding needs language.
 - **The gates hold.** The pass proposed one finding and applied none; a
   blank `BECAUSE` is refused by the engine (`LOP-E011`); a recruiter
   approves with a reason; approving the same finding twice is refused
