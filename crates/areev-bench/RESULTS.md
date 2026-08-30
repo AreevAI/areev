@@ -606,35 +606,77 @@ two commands above against the model you will actually deploy.
 pre-registered interpretation and full flag reference:
 [`SELFIMPROVE.md`](SELFIMPROVE.md).
 
-*Run: 2026-08-26 · **3 seeds** · agent Qwen3-30B-A3B-Instruct-2507 via
-OpenRouter, temperature 0, 6-way eval concurrency. Per seed: 300 experience
-tasks, 100 held-out tasks scored in every state. Loop LLM stages on
-(DISCOVER/VERIFY on the agent model, GROUND on `deepseek-chat` so the proposer
-never grades itself). Every tool call and every per-task outcome transcribed in
-[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](results/) — enough to
-recompute every number below from the raw rows, though **not** a record of the
-model calls themselves (SELFIMPROVE.md, "What the transcripts actually
-contain"). No provider pin was passed, so routing was OpenRouter's choice and
-is not recorded.*
+*Two published runs, both 3 seeds · agent Qwen3-30B-A3B-Instruct-2507 via
+OpenRouter, temperature 0. Per seed: 300 experience tasks, 100 held-out tasks
+scored in every state. Loop LLM stages on (DISCOVER/VERIFY on the agent model,
+GROUND on `deepseek-chat` so the proposer never grades itself). Every tool call
+and every per-task outcome is transcribed — enough to recompute every number
+below from the raw rows, though **not** a record of the model calls themselves
+(SELFIMPROVE.md, "What the transcripts actually contain"). No provider pin was
+passed in either, so routing was OpenRouter's choice and is not recorded. The
+2026-08-30 run leads because its seeds are three independent task streams; the
+2026-08-26 run keeps the passive-memory arms, which the later run did not
+repeat.*
 
 The only lever between states is Areev's own governed apply/rollback: the eval
 prompt is assembled from live memory on every run, so rollback empties the
 LESSONS section structurally. There is no harness flag that changes behaviour.
 
+### The headline run — 2026-08-30, three independent task streams
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/aba-selfimprove-dark.svg">
   <img src="../../docs/assets/aba-selfimprove-light.svg" width="860"
-       alt="Bar chart of governed self-improvement on 300 held-out tasks: A0 before learning 39.0% (117/300), B lessons applied 59.7% (179/300) up 20.7 points, A1 lessons rolled back 37.7% (113/300) down 22.0 points, B2 lessons re-applied 56.3% (169/300) up 18.7 points. Every transition paired McNemar p below 0.0001; both same-condition controls null.">
+       alt="Bar chart of governed self-improvement on 300 held-out tasks: A0 before learning 46.3% (139/300), B lessons applied 68.7% (206/300) up 22.3 points, A1 lessons rolled back 47.0% (141/300) down 21.7 points, B2 lessons re-applied 67.0% (201/300) up 20.0 points. Every transition paired McNemar p below 0.0001; both same-condition controls null.">
 </picture>
 
-Regenerate with `python3 crates/areev-bench/scripts/aba_chart.py
-docs/assets/aba-selfimprove <run-dir>` — rates come from `report.json` and the
-p-values from `aba_stats.py`, imported rather than recomputed, so the picture
-cannot drift from the tables below. The visible SVG is deliberately the chart
-alone — the narrative lives as real text here and in the README — but its
-`<title>` and `<desc>` still carry the full result (rates, deltas, McNemar
-rows), so a crawler, a screen reader, or a model reading the file gets the
-finding without rendering the bars.
+*Seeds **1, 3, 5** — odd, so the seed-derivation defect below cannot collapse
+two of them into one stream; this run is three genuinely independent task
+sets, which the 2026-08-26 run was not. Same model pair, same 300/100 sizes,
+governed states only (no passive arms — those remain the earlier run's).
+Evidence:
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+the `governed-*` runs; it is the control half of the loop+LLM comparison
+below, which is why both live in one directory.*
+
+| state | seed 1 | seed 3 | seed 5 | pooled |
+|---|---|---|---|---|
+| A0 before lessons | 45% | 42% | 52% | **46.3%** (139/300) |
+| B lessons applied | 63% | 67% | 76% | **68.7%** (206/300) |
+| A1 lessons rolled back | 43% | 44% | 54% | **47.0%** (141/300) |
+| B2 lessons re-applied | 60% | 66% | 75% | **67.0%** (201/300) |
+
+Paired exact McNemar, pooled: A0→B **+22.3 pts** (b=84 c=17, p<0.0001),
+B→A1 **−21.7** (b=19 c=84, p<0.0001), A1→B2 **+20.0** (b=74 c=14, p<0.0001);
+every transition independently significant in **each** of the three seeds.
+The same-condition controls are null — A0↔A1 p=0.8388, B↔B2 p=0.6089 — so the
+swing tracks the applied lessons and nothing else. Per-rule, every rule the
+loop touched improved and each returns to baseline when the lessons are
+rolled back:
+
+| hidden rule | A0 | B | A1 | B2 |
+|---|---|---|---|---|
+| R4 refund/cancel ordering | 42/75 (56%) | **15/75 (20%)** | 44/75 (59%) | 23/75 (31%) |
+| R5 UTC timestamps | 28/75 (37%) | **15/75 (20%)** | 28/75 (37%) | 17/75 (23%) |
+| R6 rate-limit recovery | 100/132 (76%) | **66/132 (50%)** | 96/132 (73%) | 65/132 (49%) |
+
+Regenerate the chart with `python3 crates/areev-bench/scripts/aba_chart.py
+docs/assets/aba-selfimprove <run-dir> [--prefix P]` — rates come from
+`report.json` and the p-values from `aba_stats.py`, imported rather than
+recomputed, so the picture cannot drift from the tables. `--prefix` selects
+one configuration out of a set holding more than one; pooling a control and
+an arm would draw a population that was never run. The visible SVG is
+deliberately the chart alone — the narrative lives as real text here and in
+the README — but its `<title>` and `<desc>` still carry the full result, so a
+crawler, a screen reader, or a model reading the file gets the finding
+without rendering the bars.
+
+### The 2026-08-26 run — the same claim, plus the passive-memory arms
+
+*The original publication. Its numbers stand and its arms are not superseded
+(the run above did not repeat them), but its replication breadth is **two**
+task streams, not three — see the defect note below. Evidence:
+[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](results/selfimprove-3seed-qwen3-30b-2026-08-26/).*
 
 | state | seed 1 | seed 2 | seed 3 | mean | avg prompt tokens |
 |---|---|---|---|---|---|
@@ -680,10 +722,12 @@ python3 crates/areev-bench/scripts/verify_run.py \
   crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
 ```
 
-### It improves without regressing
+### It improves without regressing (2026-08-26 run)
 
 Per-rule mishandling (tasks that failed to handle a hidden rule / tasks that
-exercised it), summed over three seeds. A rule is "mishandled" when the agent
+exercised it), summed over that run's three seeds — the 2026-08-30 run's
+equivalent table, which also shows each rule returning to baseline on
+rollback, is in its section above. A rule is "mishandled" when the agent
 repeats the same error or gives up on it — an unavoidable first failure that
 the agent then handles does not count:
 
