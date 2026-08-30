@@ -1,0 +1,273 @@
+{
+  "config": {
+    "agent_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "arms": [],
+    "assert_shape": false,
+    "bench": "selfimprove_aba",
+    "context_cmd": null,
+    "db": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/llm-s1/bench.db",
+    "eval": 100,
+    "experience": 300,
+    "git_rev": "39fc35f6ee8e617a42dfdbe234282d614a3a6075",
+    "ground_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat",
+    "llm_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507",
+    "llm_lessons": true,
+    "max_turns": 24,
+    "mllm_cmd": null,
+    "mock": false,
+    "mock_llm": false,
+    "phase_base_ms": 1700000000000,
+    "reviewer_actor": "user:bench-reviewer",
+    "runner_actor": "agent:bench-runner",
+    "seed": 1,
+    "workdir": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/llm-s1",
+    "workers": 4
+  },
+  "evals": [
+    {
+      "mean_steps": 6.68,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 11,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 7,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 39,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "A0",
+      "success_rate": 0.44,
+      "successes": 44,
+      "tool_errors": 107,
+      "total_steps": 668,
+      "usage": {
+        "completion_tokens": 23469,
+        "prompt_tokens": 733691
+      }
+    },
+    {
+      "mean_steps": 6.8,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 0,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 40,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "B",
+      "success_rate": 0.52,
+      "successes": 52,
+      "tool_errors": 76,
+      "total_steps": 680,
+      "usage": {
+        "completion_tokens": 23965,
+        "prompt_tokens": 850850
+      }
+    },
+    {
+      "mean_steps": 6.67,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 13,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 9,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 42,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "A1",
+      "success_rate": 0.41,
+      "successes": 41,
+      "tool_errors": 107,
+      "total_steps": 667,
+      "usage": {
+        "completion_tokens": 23369,
+        "prompt_tokens": 731755
+      }
+    },
+    {
+      "mean_steps": 6.67,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 8,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 0,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 37,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "B2",
+      "success_rate": 0.55,
+      "successes": 55,
+      "tool_errors": 73,
+      "total_steps": 667,
+      "usage": {
+        "completion_tokens": 23442,
+        "prompt_tokens": 832791
+      }
+    }
+  ],
+  "ledger": [
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "5e0cc8f47861750a65c7db1cc2cd893799abec6de056350a2d8b37057d02befd",
+      "source": "llm",
+      "summary": "Multiple log_case failures due to non-UTC ISO-8601 timestamps suggest a systemic issue with timestamp formatting in the agent's workflow. — record lesson: \"Format timestamps as UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) before calling log_case; validate with a standard library or regex.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "a5551ec0dba653c68463b6f7d2188e41d638975267b3bf313a99cf4d4ea1debe",
+      "source": "llm",
+      "summary": "Repeated refund failures due to missing approval_token indicate a missing pre-approval step for high-value refunds. — record lesson: \"Obtain an approval_token via request_approval before initiating any refund over $100.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "ddc4a3205116d382dee72a21b21914baca19dde6e9c84c4070a03473bcbf3da6",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 60 times (35% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "90af56fecfce57a7ea9c71da848a6170f5078ff165a6b6d05b10ba419ed4a57a",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 77 times (35% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "001b33e080fa6a152241cbd6d440b53c16336d5f6cf4500bc74e0281fad5db0f",
+      "source": "llm",
+      "summary": "The agent repeatedly attempts to log cases with invalid timestamps, but no evidence shows that the agent validates or converts local timestamps to UTC ISO-8601 format before calling log_case. — record lesson: \"Convert all timestamps to UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) before calling log_case; validate with a standard library or regex.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "6dbd7783bcbaa4943a79ff56a5808830bf30d8b7d20331cac7d080ef27f9c79d",
+      "source": "llm",
+      "summary": "The agent attempts refunds over $100 without first obtaining an approval_token, and no evidence shows a retry mechanism or fallback when approval is missing. — record lesson: \"Obtain an approval_token via request_approval before initiating any refund over $100.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "cf631650f08577f5469212c20e70dde1cb8851523e065d2edb3cdb5f4a1046c6",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 60 times (35% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "4473d94cadd143171c2f8c53a13e475ada1308bb8cf9e0a91c02878d2def623b",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 77 times (35% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    }
+  ],
+  "ledger_counts": {
+    "advisory": 0,
+    "applied": 8,
+    "apply_failed": 0,
+    "proposed": 8,
+    "rejected": 0
+  }
+}

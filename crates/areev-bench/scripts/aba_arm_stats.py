@@ -44,9 +44,27 @@ import aba_stats  # noqa: E402
 STATES = ["A0", "B", "A1", "B2"]
 
 
-def seed_of(d):
+def resolve(arg):
+    """(directory, filename prefix) for either committed or fresh layout.
+
+    A committed results set is ONE flat directory of prefixed files
+    (`governed-s1.transcripts-eval-B.jsonl`); a fresh run is a directory of
+    unprefixed ones. Both are addressed the same way here — pass the path up
+    to and including the prefix (`results/SET/governed-s1`) or the run
+    directory itself. Reading only the fresh layout is a real regression, not
+    a hypothetical: `aba_stats.py` shipped that way and silently found
+    nothing in `results/`, so the published statistics could not be
+    regenerated from the evidence they were computed from.
+    """
+    if os.path.isdir(arg):
+        return arg, ""
+    return os.path.dirname(arg) or ".", os.path.basename(arg) + "."
+
+
+def seed_of(arg):
     """The run's seed: report.json first, then a `-s<N>` suffix. None if neither."""
-    report = os.path.join(d, "report.json")
+    d, prefix = resolve(arg)
+    report = os.path.join(d, f"{prefix}report.json")
     if os.path.exists(report):
         try:
             with open(report, encoding="utf-8") as fh:
@@ -55,15 +73,16 @@ def seed_of(d):
                 return int(seed)
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
-    m = re.search(r"-s(\d+)$", os.path.basename(os.path.normpath(d)))
+    m = re.search(r"-s(\d+)$", os.path.basename(os.path.normpath(arg)))
     return int(m.group(1)) if m else None
 
 
-def load_outcomes(d):
+def load_outcomes(arg):
     """{state: {task_id: (success, frozenset(mishandled), frozenset(exercised))}}."""
+    d, prefix = resolve(arg)
     out = {}
     for state in STATES:
-        path = os.path.join(d, f"transcripts-eval-{state}.jsonl")
+        path = os.path.join(d, f"{prefix}transcripts-eval-{state}.jsonl")
         if not os.path.exists(path):
             continue
         rows = {}
@@ -188,6 +207,27 @@ def selftest():
             pass
         else:  # pragma: no cover
             raise AssertionError("an unidentifiable seed must exit, not pair")
+
+        # The COMMITTED layout: one flat directory of prefixed files, which
+        # is what `results/` actually holds. Reading only the fresh layout
+        # would mean published numbers cannot be recomputed from the evidence
+        # they came from — the regression aba_stats.py already shipped once.
+        flat = os.path.join(tmp, "committed")
+        os.makedirs(flat, exist_ok=True)
+        for name, rows in (("ctl-s9", {"t1": (True, [])}),
+                           ("arm-s9", {"t1": (False, ["R4"])})):
+            with open(os.path.join(flat, f"{name}.transcripts-eval-B.jsonl"), "w",
+                      encoding="utf-8") as fh:
+                for task, (ok, mis) in rows.items():
+                    fh.write(json.dumps({
+                        "kind": "task_outcome", "task_id": task, "success": ok,
+                        "mishandled": mis, "rules_exercised": ["R4"],
+                    }) + "\n")
+        pc = collect([os.path.join(flat, "ctl-s9")], "control")
+        pa = collect([os.path.join(flat, "arm-s9")], "arm")
+        assert list(pc) == [9] and list(pa) == [9], "seed from a prefixed path"
+        b, cc, n, _ = compare_state(pc, pa, "B")
+        assert (b, cc, n) == (0, 1, 1), f"prefixed layout pairing: {(b, cc, n)}"
     print("aba_arm_stats: selftest OK")
 
 

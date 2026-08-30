@@ -1,0 +1,122 @@
+# Paired statistics — governed vs loop+LLM arm, seeds 1/3/5
+# Pre-registered in SELFIMPROVE.md before these runs (rev 1bb56c7).
+#
+# Regenerate (paths relative to the repo root):
+#   D=crates/areev-bench/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30
+#   python3 crates/areev-bench/scripts/aba_stats.py $D/governed-s1 $D/governed-s3 $D/governed-s5
+#   python3 crates/areev-bench/scripts/aba_stats.py $D/llm-s1 $D/llm-s3 $D/llm-s5
+#   python3 crates/areev-bench/scripts/aba_arm_stats.py \
+#     --control $D/governed-s1 $D/governed-s3 $D/governed-s5 \
+#     --arm     $D/llm-s1 $D/llm-s3 $D/llm-s5
+
+=============== governed control — within-run causal chain
+
+  A0 → B: n=300 b=84 c=17 p=0.0000  (improved)
+    governed-s1: n=100 A0=45 B=63 b=27 c=9 p=0.0039
+    governed-s3: n=100 A0=42 B=67 b=28 c=3 p=0.0000
+    governed-s5: n=100 A0=52 B=76 b=29 c=5 p=0.0000
+  B → A1: n=300 b=19 c=84 p=0.0000  (regressed)
+    governed-s1: n=100 B=63 A1=43 b=8 c=28 p=0.0012
+    governed-s3: n=100 B=67 A1=44 b=5 c=28 p=0.0001
+    governed-s5: n=100 B=76 A1=54 b=6 c=28 p=0.0002
+  A1 → B2: n=300 b=74 c=14 p=0.0000  (improved)
+    governed-s1: n=100 A1=43 B2=60 b=22 c=5 p=0.0015
+    governed-s3: n=100 A1=44 B2=66 b=25 c=3 p=0.0000
+    governed-s5: n=100 A1=54 B2=75 b=27 c=6 p=0.0003
+  A0 → A1: n=300 b=13 c=11 p=0.8388  (improved)
+    governed-s1: n=100 A0=45 A1=43 b=4 c=6 p=0.7539
+    governed-s3: n=100 A0=42 A1=44 b=3 c=1 p=0.6250
+    governed-s5: n=100 A0=52 A1=54 b=6 c=4 p=0.7539
+  B → B2: n=300 b=28 c=33 p=0.6089  (regressed)
+    governed-s1: n=100 B=63 B2=60 b=9 c=12 p=0.6636
+    governed-s3: n=100 B=67 B2=66 b=8 c=9 p=1.0000
+    governed-s5: n=100 B=76 B2=75 b=11 c=12 p=1.0000
+
+  b = tasks that failed in the first state and passed in the second.
+  c = the reverse. Only discordant pairs carry information.
+
+=============== loop+LLM arm — within-run causal chain
+
+  A0 → B: n=300 b=61 c=29 p=0.0010  (improved)
+    llm-s1: n=100 A0=44 B=52 b=17 c=9 p=0.1686
+    llm-s3: n=100 A0=51 B=70 b=27 c=8 p=0.0019
+    llm-s5: n=100 A0=53 B=58 b=17 c=12 p=0.4583
+  B → A1: n=300 b=30 c=65 p=0.0004  (regressed)
+    llm-s1: n=100 B=52 A1=41 b=7 c=18 p=0.0433
+    llm-s3: n=100 B=70 A1=51 b=9 c=28 p=0.0026
+    llm-s5: n=100 B=58 A1=53 b=14 c=19 p=0.4869
+  A1 → B2: n=300 b=61 c=18 p=0.0000  (improved)
+    llm-s1: n=100 A1=41 B2=55 b=21 c=7 p=0.0125
+    llm-s3: n=100 A1=51 B2=65 b=19 c=5 p=0.0066
+    llm-s5: n=100 A1=53 B2=68 b=21 c=6 p=0.0059
+  A0 → A1: n=300 b=17 c=20 p=0.7428  (regressed)
+    llm-s1: n=100 A0=44 A1=41 b=4 c=7 p=0.5488
+    llm-s3: n=100 A0=51 A1=51 b=7 c=7 p=1.0000
+    llm-s5: n=100 A0=53 A1=53 b=6 c=6 p=1.0000
+  B → B2: n=300 b=42 c=34 p=0.4222  (improved)
+    llm-s1: n=100 B=52 B2=55 b=8 c=5 p=0.5811
+    llm-s3: n=100 B=70 B2=65 b=12 c=17 p=0.4583
+    llm-s5: n=100 B=58 B2=68 b=22 c=12 p=0.1214
+
+  b = tasks that failed in the first state and passed in the second.
+  c = the reverse. Only discordant pairs carry information.
+
+=============== cross-configuration — THE PRE-REGISTERED COMPARISON
+paired across configurations on seed(s): 1, 3, 5
+  b = the arm passed a task the control failed; c = the reverse.
+
+  A0: n=300 b=24 c=15 p=0.1996  (arm ahead)  ← baseline sanity: a significant result here is drift
+    seed 1: n=100 control=45 arm=44 b=7 c=8 p=1.0000
+    seed 3: n=100 control=42 arm=51 b=12 c=3 p=0.0352
+    seed 5: n=100 control=52 arm=53 b=5 c=4 p=1.0000
+  B: n=300 b=26 c=52 p=0.0043  (control ahead)
+    seed 1: n=100 control=63 arm=52 b=10 c=21 p=0.0708
+    seed 3: n=100 control=67 arm=70 b=10 c=7 p=0.6291
+    seed 5: n=100 control=76 arm=58 b=6 c=24 p=0.0014
+  A1: n=300 b=20 c=16 p=0.6177  (arm ahead)
+    seed 1: n=100 control=43 arm=41 b=6 c=8 p=0.7905
+    seed 3: n=100 control=44 arm=51 b=10 c=3 p=0.0923
+    seed 5: n=100 control=54 arm=53 b=4 c=5 p=1.0000
+  B2: n=300 b=37 c=50 p=0.1980  (control ahead)
+    seed 1: n=100 control=60 arm=55 b=15 c=20 p=0.4996
+    seed 3: n=100 control=66 arm=65 b=14 c=15 p=1.0000
+    seed 5: n=100 control=75 arm=68 b=8 c=15 p=0.2100
+
+per-rule mishandling at state B (mishandled / exercised):
+  rule        control          arm   delta
+  R1            0/131        0/131   +0.0 pts
+  R2            0/300        0/300   +0.0 pts
+  R3            0/150        0/150   +0.0 pts
+  R4            15/75        22/75   +9.3 pts
+  R5            15/75        12/75   -4.0 pts
+  R6           66/132       77/132   +8.3 pts
+  (negative = the arm mishandles that rule LESS often)
+
+=============== POST-HOC (not pre-registered): dosed seeds only (1,5)
+# Seed 3's arm applied ZERO authored lessons at B, making it an
+# accidental internal control. This subset is the dose>0 comparison.
+paired across configurations on seed(s): 1, 5
+  b = the arm passed a task the control failed; c = the reverse.
+
+  A0: n=200 b=12 c=12 p=1.0000  (tied)  ← baseline sanity: a significant result here is drift
+    seed 1: n=100 control=45 arm=44 b=7 c=8 p=1.0000
+    seed 5: n=100 control=52 arm=53 b=5 c=4 p=1.0000
+  B: n=200 b=16 c=45 p=0.0003  (control ahead)
+    seed 1: n=100 control=63 arm=52 b=10 c=21 p=0.0708
+    seed 5: n=100 control=76 arm=58 b=6 c=24 p=0.0014
+  A1: n=200 b=10 c=13 p=0.6776  (control ahead)
+    seed 1: n=100 control=43 arm=41 b=6 c=8 p=0.7905
+    seed 5: n=100 control=54 arm=53 b=4 c=5 p=1.0000
+  B2: n=200 b=23 c=35 p=0.1480  (control ahead)
+    seed 1: n=100 control=60 arm=55 b=15 c=20 p=0.4996
+    seed 5: n=100 control=75 arm=68 b=8 c=15 p=0.2100
+
+per-rule mishandling at state B (mishandled / exercised):
+  rule        control          arm   delta
+  R1             0/89         0/89   +0.0 pts
+  R2            0/200        0/200   +0.0 pts
+  R3            0/100        0/100   +0.0 pts
+  R4             9/50        18/50   +18.0 pts
+  R5             9/50         5/50   -8.0 pts
+  R6            44/91        59/91   +16.5 pts
+  (negative = the arm mishandles that rule LESS often)

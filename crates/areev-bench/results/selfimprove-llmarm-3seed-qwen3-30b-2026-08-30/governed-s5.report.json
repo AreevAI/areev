@@ -1,0 +1,259 @@
+{
+  "config": {
+    "agent_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "arms": [],
+    "assert_shape": false,
+    "bench": "selfimprove_aba",
+    "context_cmd": null,
+    "db": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/governed-s5/bench.db",
+    "eval": 100,
+    "experience": 300,
+    "git_rev": "39fc35f6ee8e617a42dfdbe234282d614a3a6075",
+    "ground_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat",
+    "llm_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507",
+    "llm_lessons": false,
+    "max_turns": 24,
+    "mllm_cmd": null,
+    "mock": false,
+    "mock_llm": false,
+    "phase_base_ms": 1700000000000,
+    "reviewer_actor": "user:bench-reviewer",
+    "runner_actor": "agent:bench-runner",
+    "seed": 5,
+    "workdir": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/governed-s5",
+    "workers": 4
+  },
+  "evals": [
+    {
+      "mean_steps": 6.58,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 16,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 7,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 29,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "A0",
+      "success_rate": 0.52,
+      "successes": 52,
+      "tool_errors": 101,
+      "total_steps": 658,
+      "usage": {
+        "completion_tokens": 23352,
+        "prompt_tokens": 716777
+      }
+    },
+    {
+      "mean_steps": 6.93,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 5,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 4,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 16,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "B",
+      "success_rate": 0.76,
+      "successes": 76,
+      "tool_errors": 90,
+      "total_steps": 693,
+      "usage": {
+        "completion_tokens": 24381,
+        "prompt_tokens": 824294
+      }
+    },
+    {
+      "mean_steps": 6.55,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 17,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 8,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 26,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "A1",
+      "success_rate": 0.54,
+      "successes": 54,
+      "tool_errors": 104,
+      "total_steps": 655,
+      "usage": {
+        "completion_tokens": 23357,
+        "prompt_tokens": 711049
+      }
+    },
+    {
+      "mean_steps": 6.94,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 5,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 14,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "B2",
+      "success_rate": 0.75,
+      "successes": 75,
+      "tool_errors": 98,
+      "total_steps": 694,
+      "usage": {
+        "completion_tokens": 24230,
+        "prompt_tokens": 820175
+      }
+    }
+  ],
+  "ledger": [
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "a270953bff78a601802ca70c1ae1595e60d61fccaacb713d2c2411f0e7ad781a",
+      "source": "llm",
+      "summary": "The agent repeatedly fails to format timestamps in UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) when calling log_case, indicating a systemic issue with timestamp generation or validation. — record lesson: \"Format all timestamps as UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) before invoking log_case.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "342e31f4258ef1027eb2572595e56fb72c72457d15e6ca033c1fb79d0f54761a",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 71 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "829e40e38bb706269e42dd3bda369ad533dceafe730840d1dbe8bc2f2ded06ba",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 87 times (37% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "a270953bff78a601802ca70c1ae1595e60d61fccaacb713d2c2411f0e7ad781a",
+      "source": "llm",
+      "summary": "The agent repeatedly fails to format timestamps in UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) when calling log_case, indicating a systemic issue with timestamp generation or validation. — record lesson: \"Format all timestamps as UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) before invoking log_case.\""
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "dd2206f59d3babdf0169cff59dc5355a2b1a56dcbdf00633154190abef513d52",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 71 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "399394468208c9a7bc5365cfeaba6139b4577beb27fa294fac85b0fa1e03151c",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 87 times (37% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    }
+  ],
+  "ledger_counts": {
+    "advisory": 2,
+    "applied": 4,
+    "apply_failed": 0,
+    "proposed": 6,
+    "rejected": 0
+  }
+}

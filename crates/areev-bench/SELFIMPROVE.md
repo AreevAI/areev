@@ -186,6 +186,16 @@ went 3/25 → 15/25 — net B_llm − B_det = −11 pts, p = 0.08, single seed.
 Every outcome ships with per-seed numbers, per-rule recurrence, token
 costs, the governance ledgers, and the full transcripts.
 
+**Outcome (2026-08-30): the third branch.** B_llm < B_det, pooled b=26 c=52,
+p=0.0043, with the arm's own causal chain intact (the publication condition)
+and the A0 baseline null (p=0.1996, so the gap is not drift). Deterministic
+signature lessons stay the default. Two things the pre-registration did not
+anticipate, both reported: the LLM does not author on every pass, which made
+seed 3 a dose-0 internal control and turned the result into a dose-response;
+and the B2 caveat proved stronger than written — an authored lesson is not
+merely re-authored rather than re-derived, it may not be re-authored at all.
+Full write-up: RESULTS.md, "Does an LLM write better lessons?".
+
 ## Runner protocol — one JSON per line on stdio
 
 The Rust bin owns the agent loop (task prompt, tool execution, turn cap,
@@ -388,9 +398,12 @@ context it is given", so mock M arms prove plumbing, never a comparison.
   is its keyless canned backend, and CI asserts the full authored-lesson
   lifecycle (`apply → render → rollback-empties → re-apply restores`) on
   every push. The default path — no `--llm-lessons` — reproduces the
-  published runs' review policy and prompt bytes exactly. Live numbers for
-  this arm are not yet published; the roadmap entry for them is the
-  `selfimprove_curve` `loop+LLM` arm above.
+  published runs' review policy and prompt bytes exactly. **Live numbers are
+  published**: three seeds, both configurations, in RESULTS.md "Does an LLM
+  write better lessons? — the loop+LLM arm". The pre-registration below
+  resolved to its third branch — the control is significantly ahead at B
+  (p=0.0043) — so deterministic signature lessons stay the default lesson
+  kind, with a dose-response and a per-rule mechanism behind that number.
 
 ## Determinism & stats rules (areev-testing applies)
 
