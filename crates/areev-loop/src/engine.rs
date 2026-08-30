@@ -566,6 +566,36 @@ impl Engine {
             namespaces.iter().map(|n| Some(n.as_str())).collect()
         };
         let opts = ReadOpts { live_only: true, since_ms: watermark };
+        // Tool grains carry the raw experience of a tool-using agent, and an
+        // ERROR is the part a reflection pass can act on. Seeded FIRST and
+        // capped at half the bundle so a busy desk cannot crowd out the facts
+        // and observations below.
+        //
+        // Without this the LLM saw tool failures only through the
+        // deterministic findings that happened to cite them: it could
+        // elaborate on what clustering already caught, but could never find
+        // a failure clustering missed — the one thing it is here for. The
+        // top-up below called itself "non-parasitic" while omitting the very
+        // grain type the flagship analyzer reads.
+        const TOOL_SEED_CAP: usize = 32;
+        let mut tool_seeded = 0usize;
+        'tools: for ns in &scan_ns {
+            if let Ok(recent) = sub.grains_of_type(crate::model::grain_type::TOOL, *ns, opts) {
+                for g in recent {
+                    if tool_seeded >= TOOL_SEED_CAP || evidence.len() >= 64 {
+                        break 'tools;
+                    }
+                    if !g.is_error() {
+                        continue;
+                    }
+                    let before = evidence.len();
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                    if evidence.len() > before {
+                        tool_seeded += 1;
+                    }
+                }
+            }
+        }
         'seed: for gt in [
             crate::model::grain_type::FACT,
             crate::model::grain_type::OBSERVATION,

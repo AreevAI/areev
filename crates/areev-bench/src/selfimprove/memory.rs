@@ -38,20 +38,39 @@ enum ReviewAction {
     ApproveApply,
 }
 
+/// Which lesson origins this run is allowed to APPLY. The analyzers always
+/// run either way — holding discovery constant is what makes the 2x2 read as
+/// one variable per axis — so this governs the review gate only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LessonArms {
+    /// Apply deterministic analyzer lessons (the published default).
+    pub analyzer: bool,
+    /// Apply LLM-authored lessons that survived GROUND + VERIFY.
+    pub llm: bool,
+}
+
+impl Default for LessonArms {
+    fn default() -> Self {
+        LessonArms { analyzer: true, llm: false }
+    }
+}
+
 /// The scripted review policy. Order matters: a `Proposal::Data` is advisory
-/// whatever authored it, and an LLM finding — even an executable authored
-/// lesson (`Proposal::Cal`) — stays advisory unless the run deliberately
-/// opted into the `loop+LLM` arm (`llm_lessons`). The published governed runs
-/// predate that arm, so the default keeps their review policy byte-for-byte.
+/// whatever authored it, and an executable lesson is applied only if this run
+/// opted into its ORIGIN. The default (`analyzer` on, `llm` off) is the
+/// published governed runs' policy, byte-for-byte.
 fn review_action(
     origin: &Origin,
     proposal: &Proposal,
     destructive: bool,
-    llm_lessons: bool,
+    arms: LessonArms,
 ) -> ReviewAction {
-    if matches!(proposal, Proposal::Data { .. })
-        || (matches!(origin, Origin::Llm { .. }) && !llm_lessons)
-    {
+    let origin_admitted = if matches!(origin, Origin::Llm { .. }) {
+        arms.llm
+    } else {
+        arms.analyzer
+    };
+    if matches!(proposal, Proposal::Data { .. }) || !origin_admitted {
         ReviewAction::Advisory
     } else if destructive {
         ReviewAction::Reject
@@ -245,19 +264,19 @@ impl Memory {
             )),
             None => None,
         };
-        self.learn_with(llm, ground, false, now_ms)
+        self.learn_with(llm, ground, LessonArms::default(), now_ms)
     }
 
-    /// [`learn`] with pre-built loop backends and the `loop+LLM` arm switch.
-    /// With `llm_lessons` on, the scripted review also approves + applies
-    /// LLM-authored lessons — the applicable, non-destructive `Proposal::Cal`
-    /// recommendations the engine stamps for gate-surviving lesson drafts.
-    /// Advisory LLM `Proposal::Data` findings stay advisory either way.
+    /// [`learn`] with pre-built loop backends and an explicit [`LessonArms`]
+    /// — which lesson ORIGINS this run may apply. The analyzers always run;
+    /// only the review gate changes, so the 2x2 (analyzer on/off x llm
+    /// on/off) varies one thing per axis. Advisory `Proposal::Data` findings
+    /// stay advisory in every arm.
     pub fn learn_with(
         &self,
         llm: Option<Box<dyn LlmBackend>>,
         ground: Option<Box<dyn LlmBackend>>,
-        llm_lessons: bool,
+        arms: LessonArms,
         now_ms: i64,
     ) -> Result<(Ledger, Vec<String>), String> {
         let mut engine = Engine::with_builtins();
@@ -286,7 +305,7 @@ impl Memory {
                 r.analyzer.clone()
             };
             let summary = r.summary.render();
-            match review_action(&r.origin, &r.proposal, r.destructive, llm_lessons) {
+            match review_action(&r.origin, &r.proposal, r.destructive, arms) {
                 ReviewAction::Advisory => ledger.entries.push(LedgerEntry {
                     hash: r.hash.clone(),
                     source,
@@ -699,20 +718,30 @@ mod tests {
         let data = Proposal::Data { data: Map::new() };
         let llm = Origin::Llm { model: "test-model".to_string() };
 
-        // The published-run policy (llm_lessons = false), byte-for-byte.
-        assert_eq!(review_action(&llm, &cal, false, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&llm, &data, false, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&Origin::Builtin, &data, false, false), ReviewAction::Advisory);
-        assert_eq!(review_action(&Origin::Builtin, &cal, true, false), ReviewAction::Reject);
-        assert_eq!(review_action(&Origin::Builtin, &cal, false, false), ReviewAction::ApproveApply);
+        let det_only = LessonArms::default();
+        let both = LessonArms { analyzer: true, llm: true };
+        let llm_only = LessonArms { analyzer: false, llm: true };
 
-        // The loop+LLM arm: authored lessons apply; Data stays advisory; a
+        // The published-run policy (analyzer only), byte-for-byte.
+        assert_eq!(review_action(&llm, &cal, false, det_only), ReviewAction::Advisory);
+        assert_eq!(review_action(&llm, &data, false, det_only), ReviewAction::Advisory);
+        assert_eq!(review_action(&Origin::Builtin, &data, false, det_only), ReviewAction::Advisory);
+        assert_eq!(review_action(&Origin::Builtin, &cal, true, det_only), ReviewAction::Reject);
+        assert_eq!(review_action(&Origin::Builtin, &cal, false, det_only), ReviewAction::ApproveApply);
+
+        // Both arms: authored lessons apply; Data stays advisory; a
         // destructive llm payload (cannot be stamped today) would reject,
         // never apply.
-        assert_eq!(review_action(&llm, &cal, false, true), ReviewAction::ApproveApply);
-        assert_eq!(review_action(&llm, &data, false, true), ReviewAction::Advisory);
-        assert_eq!(review_action(&llm, &cal, true, true), ReviewAction::Reject);
-        assert_eq!(review_action(&Origin::Builtin, &cal, false, true), ReviewAction::ApproveApply);
+        assert_eq!(review_action(&llm, &cal, false, both), ReviewAction::ApproveApply);
+        assert_eq!(review_action(&llm, &data, false, both), ReviewAction::Advisory);
+        assert_eq!(review_action(&llm, &cal, true, both), ReviewAction::Reject);
+        assert_eq!(review_action(&Origin::Builtin, &cal, false, both), ReviewAction::ApproveApply);
+
+        // LLM-only: the analyzers still RUN (their findings are ledgered and
+        // still seed the LLM's evidence), but only authored lessons reach
+        // memory — which is what isolates the LLM's contribution.
+        assert_eq!(review_action(&llm, &cal, false, llm_only), ReviewAction::ApproveApply);
+        assert_eq!(review_action(&Origin::Builtin, &cal, false, llm_only), ReviewAction::Advisory);
     }
 
     /// The loop+LLM arm end-to-end at bench level: the mock loop-LLM authors
@@ -729,7 +758,7 @@ mod tests {
         // Arm OFF: the authored lesson survives the gates but is ledgered
         // advisory — nothing llm-origin applies, no rule line renders.
         let (ledger, applied) = mem
-            .learn_with(Some(Box::new(MockLoopLlm)), None, false, T1)
+            .learn_with(Some(Box::new(MockLoopLlm)), None, LessonArms::default(), T1)
             .unwrap();
         assert!(
             ledger.entries.iter().any(|e| e.source == "llm" && e.disposition == "advisory"),
@@ -741,8 +770,9 @@ mod tests {
 
         // Arm ON: approved + applied through the same scripted review, and
         // the rule renders under the LESSONS heading the agent scans.
+        let arms = LessonArms { analyzer: true, llm: true };
         let (ledger, applied) = mem
-            .learn_with(Some(Box::new(MockLoopLlm)), None, true, T3)
+            .learn_with(Some(Box::new(MockLoopLlm)), None, arms, T3)
             .unwrap();
         assert!(
             ledger.entries.iter().any(|e| e.source == "llm" && e.disposition == "applied"),
@@ -759,7 +789,7 @@ mod tests {
 
         // Restoration is a fresh governed pass (rolled_back is terminal).
         let (_, applied2) = mem
-            .learn_with(Some(Box::new(MockLoopLlm)), None, true, T3 + 2 * HOUR_MS)
+            .learn_with(Some(Box::new(MockLoopLlm)), None, arms, T3 + 2 * HOUR_MS)
             .unwrap();
         assert!(!applied2.is_empty());
         assert!(mem.lessons_markdown().unwrap().contains(MOCK_LLM_LESSON));

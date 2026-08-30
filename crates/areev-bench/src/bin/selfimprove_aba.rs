@@ -42,7 +42,7 @@
 //! one thread.
 
 use areev_bench::selfimprove::context::{ContextProvider, ExperienceGrain};
-use areev_bench::selfimprove::memory::{Memory, MockLoopLlm};
+use areev_bench::selfimprove::memory::{LessonArms, Memory, MockLoopLlm};
 use areev_loop::{CommandLlm, LlmBackend};
 use areev_bench::selfimprove::{agent, context, env, report::Reporter};
 use areev_bench::selfimprove::{EvalSummary, Ledger, RuleId, RuleStat, TaskRunRecord, Usage};
@@ -73,6 +73,10 @@ struct Args {
     /// The `loop+LLM` arm: the scripted review also approves + applies
     /// LLM-authored lessons. Off = the published-run review policy.
     llm_lessons: bool,
+    /// Suppress APPLYING analyzer lessons (the analyzers still run, so the
+    /// LLM's evidence is unchanged). With `--llm-lessons` this is the
+    /// LLM-only cell of the 2x2.
+    no_analyzer_lessons: bool,
     /// Keyless canned loop-LLM (shape runs) in place of `--llm-cmd`.
     mock_llm: bool,
     /// Requested passive arms, deduped, in the order given (empty = the
@@ -88,6 +92,11 @@ struct Args {
 impl Args {
     fn wants(&self, arm: &str) -> bool {
         self.arms.iter().any(|a| a == arm)
+    }
+
+    /// Which lesson origins this run may apply — the 2x2 cell it measures.
+    fn lesson_arms(&self) -> LessonArms {
+        LessonArms { analyzer: !self.no_analyzer_lessons, llm: self.llm_lessons }
     }
 
     /// The chat adapter the m-llm summarizer runs on: its own flag, else the
@@ -119,7 +128,7 @@ fn usage() -> ! {
         "usage: selfimprove_aba --workdir PATH (--mock | --agent-cmd 'CMD')\n\
          \x20                       [--seed N] [--experience N] [--eval N]\n\
          \x20                       [--llm-cmd 'CMD' | --mock-llm] [--ground-cmd 'CMD']\n\
-         \x20                       [--llm-lessons]\n\
+         \x20                       [--llm-lessons] [--no-analyzer-lessons]\n\
          \x20                       [--arms m-steel,m-all,m-llm,m-cmd]\n\
          \x20                       [--context-cmd 'CMD'] [--mllm-cmd 'CMD']\n\
          \x20                       [--workers N] [--max-turns N] [--assert-shape]"
@@ -169,6 +178,7 @@ fn parse_args() -> Args {
     let mut assert_shape = false;
     let mut llm_lessons = false;
     let mut mock_llm = false;
+    let mut no_analyzer_lessons = false;
 
     let mut i = 0;
     while i < argv.len() {
@@ -187,6 +197,10 @@ fn parse_args() -> Args {
             }
             "--mock-llm" => {
                 mock_llm = true;
+                i += 1;
+            }
+            "--no-analyzer-lessons" => {
+                no_analyzer_lessons = true;
                 i += 1;
             }
             flag => {
@@ -245,6 +259,13 @@ fn parse_args() -> Args {
         eprintln!("selfimprove_aba: --llm-lessons requires --llm-cmd or --mock-llm");
         usage()
     }
+    // Without --llm-lessons this would apply NOTHING, making B a second
+    // measurement of A0 under a label that claims otherwise.
+    if no_analyzer_lessons && !llm_lessons {
+        eprintln!("selfimprove_aba: --no-analyzer-lessons requires --llm-lessons \
+                   (otherwise no lesson is applied at all and B is just another A0)");
+        usage()
+    }
     Args {
         workdir,
         seed,
@@ -255,6 +276,7 @@ fn parse_args() -> Args {
         llm_cmd,
         ground_cmd,
         llm_lessons,
+        no_analyzer_lessons,
         mock_llm,
         arms,
         context_cmd,
@@ -679,7 +701,7 @@ fn check_shape(
     eval_n: u32,
     applied1: &[String],
     applied2: &[String],
-    llm_lessons: bool,
+    lesson_arms: LessonArms,
 ) {
     let (a0, b, a1, b2) = (&evals[0], &evals[1], &evals[2], &evals[3]);
     let mut fails = Vec::new();
@@ -706,21 +728,28 @@ fn check_shape(
     // (--llm-lessons): authored lessons are the point, so at least one must
     // apply — an arm that admitted nothing new measured the governed states
     // twice under a different name.
-    if llm_lessons {
-        if !applied1.iter().any(|sig| sig.starts_with("llm :: ")) {
+    let is_llm = |sig: &String| sig.starts_with("llm :: ");
+    if lesson_arms.llm {
+        if !applied1.iter().any(is_llm) {
             fails.push(
                 "--llm-lessons applied no LLM-authored lesson — the arm measured nothing new"
                     .to_string(),
             );
         }
     } else {
-        for sig in applied1.iter().chain(applied2) {
-            if !sig.starts_with("loop.") {
-                fails.push(format!(
-                    "applied a non-analyzer lesson ({sig}) — LLM findings stay advisory \
-                     outside --llm-lessons"
-                ));
-            }
+        for sig in applied1.iter().chain(applied2).filter(|s| is_llm(s)) {
+            fails.push(format!(
+                "applied an LLM lesson ({sig}) — LLM findings stay advisory outside \
+                 --llm-lessons"
+            ));
+        }
+    }
+    if !lesson_arms.analyzer {
+        for sig in applied1.iter().chain(applied2).filter(|s| !is_llm(s)) {
+            fails.push(format!(
+                "applied an analyzer lesson ({sig}) under --no-analyzer-lessons — the \
+                 LLM-only cell would be measuring both"
+            ));
         }
     }
     if b.success_rate() <= a0.success_rate() + 0.1 {
@@ -766,7 +795,7 @@ fn check_shape(
     if fails.is_empty() {
         println!("\nassert-shape: PASS (B > A0 + 0.10, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
         let llm_applied = applied1.iter().filter(|s| s.starts_with("llm :: ")).count();
-        let origins = if llm_lessons {
+        let origins = if lesson_arms.llm {
             format!("{} analyzer + {llm_applied} llm-authored", applied1.len() - llm_applied)
         } else {
             "all analyzer-origin".to_string()
@@ -836,7 +865,7 @@ fn main() {
     // + applied, destructive rejected, advisory ledgered) → eval B.
     let (llm, ground) = loop_llm_backends(&args);
     let (ledger1, applied1) = mem
-        .learn_with(llm, ground, args.llm_lessons, t_learn1)
+        .learn_with(llm, ground, args.lesson_arms(), t_learn1)
         .unwrap_or_else(|e| die(&e));
     eprintln!(
         "learn 1: {} ledger rows, {} applied",
@@ -860,7 +889,7 @@ fn main() {
     // whole governed path a second time: re-propose → approve → apply.
     let (llm, ground) = loop_llm_backends(&args);
     let (ledger2, applied2) = mem
-        .learn_with(llm, ground, args.llm_lessons, t_learn2)
+        .learn_with(llm, ground, args.lesson_arms(), t_learn2)
         .unwrap_or_else(|e| die(&e));
     eprintln!(
         "learn 2: {} ledger rows, {} applied",
@@ -927,6 +956,7 @@ fn main() {
         "llm_cmd": args.llm_cmd,
         "ground_cmd": args.ground_cmd,
         "llm_lessons": args.llm_lessons,
+        "no_analyzer_lessons": args.no_analyzer_lessons,
         "mock_llm": args.mock_llm,
         "arms": args.arms,
         "context_cmd": args.context_cmd,
@@ -946,7 +976,7 @@ fn main() {
     print_results(&args, &evals, &ledger, applied1.len(), applied2.len());
 
     if args.assert_shape {
-        check_shape(&evals, args.eval as u32, &applied_sig1, &applied_sig2, args.llm_lessons);
+        check_shape(&evals, args.eval as u32, &applied_sig1, &applied_sig2, args.lesson_arms());
     }
 }
 
@@ -966,6 +996,7 @@ mod tests {
             llm_cmd: None,
             ground_cmd: None,
             llm_lessons: false,
+            no_analyzer_lessons: false,
             mock_llm: false,
             arms: vec![],
             context_cmd: None,
@@ -1112,7 +1143,7 @@ mod tests {
             summary("M-all", 10, 8),
         ];
         let applied = vec!["loop.tool_failure/1 :: Tool \"refund\" failed".to_string()];
-        check_shape(&evals, 10, &applied, &applied, false);
+        check_shape(&evals, 10, &applied, &applied, LessonArms::default());
     }
 
     /// The loop+LLM arm's passing shape: an llm-authored signature applied
@@ -1131,7 +1162,7 @@ mod tests {
             "llm :: the same tool failure keeps recurring — record lesson: \"...\"".to_string(),
             "loop.tool_failure/1 :: Tool \"refund\" failed".to_string(),
         ];
-        check_shape(&evals, 10, &applied, &applied, true);
+        check_shape(&evals, 10, &applied, &applied, LessonArms { analyzer: true, llm: true });
     }
 
     /// The signature list is what makes the restoration check possible across
