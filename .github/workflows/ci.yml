@@ -435,6 +435,11 @@ jobs:
         run: |
           python3 crates/areev-bench/scripts/verify_run.py \
             crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
+      # The cross-configuration comparison computes published numbers too, so
+      # its pairing and discordant-count logic is checked on synthetic runs —
+      # a silent break there would corrupt a claim, not fail a build.
+      - name: The cross-configuration statistics tool agrees with itself
+        run: python3 crates/areev-bench/scripts/aba_arm_stats.py --selftest
 
   versions:
     name: versions agree
