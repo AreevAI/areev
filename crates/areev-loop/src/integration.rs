@@ -678,6 +678,79 @@ fn tool_grain_evidence_reaches_the_llm_with_text() {
     }
 }
 
+#[test]
+fn llm_sees_tool_failures_no_analyzer_flagged() {
+    use std::sync::{Arc, Mutex};
+    struct RecordingLlm {
+        inner: MockLlm,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::llm::LlmBackend for RecordingLlm {
+        fn model(&self) -> &str {
+            "recording-mock"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.seen.lock().unwrap().push(request.to_string());
+            self.inner.complete(request)
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    // TWO failures against many successes: far under tool_failure's
+    // threshold, so NO analyzer flags anything and `candidates` is empty.
+    // The LLM must still see the failures — that is the whole point of a
+    // reflection pass, and before the tool-grain seeding it saw nothing
+    // here and abstained on an empty bundle.
+    for _ in 0..2 {
+        sub.add_tool_call("stripe_refund", true, "cancelled_before_refund");
+    }
+    for _ in 0..20 {
+        sub.add_tool_call("stripe_refund", false, "{\"ok\":true}");
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(RecordingLlm {
+        inner: MockLlm {
+            discover: r#"{"recommendations":[]}"#.to_string(),
+            ground: r#"{"results":[]}"#.to_string(),
+            verify: r#"{"results":[]}"#.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        },
+        seen: Arc::clone(&seen),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let seen = seen.lock().unwrap();
+    let discover = seen
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("DISCOVER runs even with no deterministic finding to elaborate");
+    let v: serde_json::Value = serde_json::from_str(discover).unwrap();
+    assert!(
+        v["findings"].as_array().is_none_or(|f| f.is_empty()),
+        "precondition: no analyzer flagged anything"
+    );
+    let tools: Vec<_> = v["evidence"]
+        .as_array()
+        .expect("evidence")
+        .iter()
+        .filter(|i| i["grain_type"] == "tool")
+        .collect();
+    assert_eq!(tools.len(), 2, "both unflagged failures reach the bundle");
+    for t in tools {
+        let text = t["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("cancelled_before_refund"),
+            "the failure body is what makes it actionable, got {text:?}"
+        );
+    }
+    // Successes are not seeded: at a 64-item budget they are noise, and the
+    // 20 here would otherwise crowd out everything else.
+    assert!(
+        v["evidence"].as_array().unwrap().iter().all(|i| {
+            i["grain_type"] != "tool" || i["text"].as_str().unwrap_or("").contains("error")
+        }),
+        "only error tool grains are seeded"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn external_command_analyzer_surfaces_advisory_findings() {

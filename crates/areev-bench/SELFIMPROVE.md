@@ -96,13 +96,13 @@ task) and stays correctly silent on the 66 failures the agent self-corrected.
                 deterministic analyzers; scripted review applies the pending
                 lessons under a distinct reviewer actor, recording the full
                 ledger (applied / rejected / advisory).
-                Honesty note: LLM DISCOVER findings are ADVISORY by design
-                today (`Proposal::Data`, apply refuses) — they are counted
-                in the ledger and scored for reliability, but the executable
-                lessons that drive the causal arm are the analyzer proposals
-                (`tool_failure` → `ADD fact`, rollbackable). The engine
-                feature that makes verified LLM findings executable is on
-                the roadmap below; this bench absorbs it without redesign.
+                Which ORIGINS the review admits is the arm (`--llm-lessons`,
+                `--no-analyzer-lessons`): by default only analyzer proposals
+                (`tool_failure` → `ADD fact`, rollbackable) are applied and
+                LLM findings stay advisory — the published runs' policy. A
+                gate-surviving LLM draft that authored a lesson is applicable
+                too; every finding of either origin is ledgered regardless of
+                whether its arm admits it.
 3  EVAL A0      held-out set, prompt assembled from LIVE memory → no lessons
                 exist yet at A0-time is *not* how we do it: A0 is measured
                 with recommendations still pending (proposed, not applied),
@@ -195,6 +195,60 @@ seed 3 a dose-0 internal control and turned the result into a dose-response;
 and the B2 caveat proved stronger than written — an authored lesson is not
 merely re-authored rather than re-derived, it may not be re-authored at all.
 Full write-up: RESULTS.md, "Does an LLM write better lessons?".
+
+### Pre-registered interpretation — the 2x2, does LLM-authored learning self-improve ALONE (written before its runs)
+
+Committed 2026-08-30, after the first arm result and before any run of this
+design. The earlier comparison was `(deterministic)` vs
+`(deterministic + LLM)`; it never isolated the LLM, so it could not answer
+whether LLM-authored lessons self-improve **on their own**. This does.
+
+**Design.** Seeds 1/3/5, 300/100, same model pair, four cells over one axis
+each — *which lesson ORIGINS the review gate admits*. The analyzers always
+run, in every cell, so discovery is held constant and only application
+varies:
+
+| cell | analyzer lessons | LLM lessons | status |
+|---|---|---|---|
+| control | applied | advisory | **reused** — 2026-08-30 `governed-*` |
+| combined | applied | applied | **re-run** at this rev |
+| llm-only | advisory | applied | **new** (`--no-analyzer-lessons`) |
+| neither | advisory | advisory | **is state A0 by construction** — already measured in every run |
+
+Two runs are new because an engine fix at this rev changes what the LLM can
+see: the DISCOVER evidence bundle now seeds recent **Tool error grains**, not
+only Facts and Observations. Before it, the LLM saw a tool failure only if a
+deterministic finding happened to cite it — it could elaborate on what
+clustering caught but never find what clustering missed, which is the one
+thing it is there for. Every earlier LLM number was measured under that
+handicap and is superseded for comparison. The control is reused rather than
+re-run because the fix cannot change which lessons it applies (LLM findings
+stay advisory there); the A0 drift check below is what would catch that
+assumption being wrong.
+
+**The primary question is the llm-only cell's own causal chain** — A0→B,
+B→A1, A1→B2, each pooled-significant, which is the same bar the deterministic
+loop had to clear.
+
+- **Chain holds:** LLM-authored lessons self-improve on their own. Published
+  as that, with the effect size and the comparison against the deterministic
+  cell stated side by side — parity or a loss there does not retract it.
+- **Chain does not hold:** they do not, on this workload at this dose.
+  Published as that, and NOT as "LLM learning does not work": this workload's
+  six hidden rules are all tool-failure-shaped, which is precisely what
+  signature clustering detects, so it gives an LLM no headroom by
+  construction. That bound ships with the result.
+- **Interaction:** if `combined < control` while `llm-only > A0`, the earlier
+  finding sharpens from "authored lessons underperform" to **interference** —
+  they work alone and degrade the deterministic set they are added to.
+
+**Reported for every cell, whatever lands:** the authored-lesson DOSE per seed
+per pass (the LLM does not author on every pass; a cell whose B carried zero
+authored lessons is a dose-0 observation and evidence about nothing else), the
+A0 cross-cell drift check (all four cells are ignorant at A0, so a significant
+difference there is provider drift and invalidates that pairing rather than
+supporting it), per-rule recurrence, token cost, the governance ledgers, and
+the full transcripts.
 
 ## Runner protocol — one JSON per line on stdio
 
@@ -505,6 +559,7 @@ the prompt to re-run.
 | `--llm-cmd` / `--ground-cmd 'CMD'` | the loop's DISCOVER/VERIFY and GROUND backends (**loop** protocol) |
 | `--mock-llm` | keyless canned loop-LLM (authors one fixed lesson) in place of `--llm-cmd`; the two are mutually exclusive |
 | `--llm-lessons` | the **loop+LLM arm**: the scripted review also approves + applies LLM-authored lessons, and they render into LESSONS. Requires `--llm-cmd` or `--mock-llm`. Off = the published-run review policy, byte-for-byte |
+| `--no-analyzer-lessons` | suppress APPLYING analyzer lessons; the analyzers still run, so the LLM's evidence is unchanged. With `--llm-lessons` this is the **llm-only** cell of the 2x2. Refused on its own — nothing would apply and B would be a second A0 |
 | `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
 | `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
 | `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |
