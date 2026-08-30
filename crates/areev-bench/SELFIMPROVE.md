@@ -242,6 +242,19 @@ loop had to clear.
   finding sharpens from "authored lessons underperform" to **interference** —
   they work alone and degrade the deterministic set they are added to.
 
+**Outcome (2026-08-30): the design could not be executed.** The model
+authored an applicable lesson in only 1 of 6 post-fix B states, so cells did
+not contain their treatments; `llmonly-s3` died at re-apply because nothing
+was re-authored to restore. No completed llm-only run had a lesson at B, so
+the primary test measures nothing. The surviving contrast — A1 (zero lessons)
+to B2 (one authored lesson) — is null at n=200, p=0.2810. Authoring fell to
+0.42 lessons/pass after the evidence fix (from 1.17), which is the blocker
+and the next thing to test. Two bounds on method also came out of it: an
+LLM-only configuration cannot reliably complete a governed
+apply/rollback/re-apply cycle, and cross-run pairing at n=100 has a noise
+floor that reached p=0.064 between two runs with identical applied lessons.
+Full write-up: RESULTS.md, "Can an LLM-authored lesson self-improve ALONE?".
+
 **Reported for every cell, whatever lands:** the authored-lesson DOSE per seed
 per pass (the LLM does not author on every pass; a cell whose B carried zero
 authored lessons is a dose-0 observation and evidence about nothing else), the

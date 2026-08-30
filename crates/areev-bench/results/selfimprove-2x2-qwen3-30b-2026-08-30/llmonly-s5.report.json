@@ -1,0 +1,253 @@
+{
+  "config": {
+    "agent_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "arms": [],
+    "assert_shape": false,
+    "bench": "selfimprove_aba",
+    "context_cmd": null,
+    "db": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub4/llmonly-s5/bench.db",
+    "eval": 100,
+    "experience": 300,
+    "git_rev": "81965f6913bfc0a2fc5442c48792d8286448f7b4",
+    "ground_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat",
+    "llm_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507",
+    "llm_lessons": true,
+    "max_turns": 24,
+    "mllm_cmd": null,
+    "mock": false,
+    "mock_llm": false,
+    "no_analyzer_lessons": true,
+    "phase_base_ms": 1700000000000,
+    "reviewer_actor": "user:bench-reviewer",
+    "runner_actor": "agent:bench-runner",
+    "seed": 5,
+    "workdir": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub4/llmonly-s5",
+    "workers": 4
+  },
+  "evals": [
+    {
+      "mean_steps": 6.45,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 15,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 9,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 28,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "A0",
+      "success_rate": 0.52,
+      "successes": 52,
+      "tool_errors": 101,
+      "total_steps": 645,
+      "usage": {
+        "completion_tokens": 22560,
+        "prompt_tokens": 699528
+      }
+    },
+    {
+      "mean_steps": 6.61,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 16,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 29,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "B",
+      "success_rate": 0.5,
+      "successes": 50,
+      "tool_errors": 103,
+      "total_steps": 661,
+      "usage": {
+        "completion_tokens": 23638,
+        "prompt_tokens": 721702
+      }
+    },
+    {
+      "mean_steps": 6.52,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 14,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 9,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 29,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "A1",
+      "success_rate": 0.5,
+      "successes": 50,
+      "tool_errors": 100,
+      "total_steps": 652,
+      "usage": {
+        "completion_tokens": 23296,
+        "prompt_tokens": 711319
+      }
+    },
+    {
+      "mean_steps": 6.8,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 44,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 19,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 0,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 26,
+          "opportunities": 40,
+          "rule": "R6"
+        }
+      ],
+      "state": "B2",
+      "success_rate": 0.57,
+      "successes": 57,
+      "tool_errors": 87,
+      "total_steps": 680,
+      "usage": {
+        "completion_tokens": 24510,
+        "prompt_tokens": 782086
+      }
+    }
+  ],
+  "ledger": [
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "9283bc11f65db36b0f8e0ccaf6a1b7097e9cf4462caa2e6803c07641983c2ba4",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 66 times (38% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "b3c4ec3ba8c2eaa2c79ab5bcc57645e477b592f0606e4eb4e139743f44e469f2",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 89 times (38% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "9283bc11f65db36b0f8e0ccaf6a1b7097e9cf4462caa2e6803c07641983c2ba4",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 66 times (38% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: advisory finding, not executable",
+      "disposition": "advisory",
+      "hash": "b3c4ec3ba8c2eaa2c79ab5bcc57645e477b592f0606e4eb4e139743f44e469f2",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 89 times (38% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "14c9e3e5c4172494623e3c6abeaec02979a8abe73b43cd6d3b24378580a07496",
+      "source": "llm",
+      "summary": "Timestamps passed to log_case are not consistently formatted as UTC ISO-8601, causing repeated validation failures. — record lesson: \"Format all timestamps as UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ) before calling log_case.\""
+    }
+  ],
+  "ledger_counts": {
+    "advisory": 4,
+    "applied": 1,
+    "apply_failed": 0,
+    "proposed": 5,
+    "rejected": 0
+  }
+}
