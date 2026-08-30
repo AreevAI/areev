@@ -140,7 +140,11 @@ Then the desk reads its own record:
 - **`areev loop run` finds the pattern**: `HIGH — Workflow fe5f922214b7
   failed 3/9 recent runs (33%): apply_remediation: … rollback refused —
   ledger-sync deploy channel is pinned (release freeze); the runbook step
-  cannot execute`. Deterministic analyzers; no model key involved. (The smoke
+  cannot execute`. Found by deterministic analyzers — the lesson kind that
+  measured stronger than LLM-authored ones on our benchmark
+  ([RESULTS.md](../../../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+  and keyless besides; `LOOP_LLM_CMD` adds verified LLM reflection on top.
+  (The smoke
   also tunes them to a low-volume desk with `set_analyzer_config` — at nine
   runs a fortnight the stock thresholds would stay silent for a quarter.)
 - **The gate holds**: the engine refuses to apply its own advisory finding,

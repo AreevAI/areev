@@ -109,7 +109,10 @@ the journal.
 Then the part no other example in this repo can show:
 
 1. **`areev loop run` finds the cluster** — `failed 3/8 recent runs (38%):
-   screen: … is not readable ASCII`. Deterministic analyzers; no model key.
+   screen: … is not readable ASCII`. Found by deterministic analyzers — the
+   lesson kind that measured stronger than LLM-authored ones on our benchmark
+   ([RESULTS.md](../../../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+   and keyless besides; `LOOP_LLM_CMD` adds verified LLM reflection on top.
 2. **The gate holds.** The engine refuses to apply its own advisory finding,
    and refuses any decision with no written reason.
 3. **A person approves, signing name and reasoning.**

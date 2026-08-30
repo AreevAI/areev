@@ -144,7 +144,10 @@ Then the desk reads its own record:
   namespace.
 - **`areev loop run` finds the cluster**: `HIGH — Workflow e9cb3f56c7b8
   failed 3/9 recent runs (33%): extract: … REF-2205 is missing required
-  identifier(s): date`. Deterministic analyzers; no model key involved.
+  identifier(s): date`. Found by deterministic analyzers — the lesson kind
+  that measured stronger than LLM-authored ones on our benchmark
+  ([RESULTS.md](../../../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+  and keyless besides; `LOOP_LLM_CMD` adds verified LLM reflection on top.
 - **The gate holds**: the engine refuses to apply its own advisory finding,
   and refuses any decision with no written reason. A clinician approves it,
   signing name and reasoning — and the reasoning is *don't relax the check*.

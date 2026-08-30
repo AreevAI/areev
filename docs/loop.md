@@ -68,9 +68,14 @@ capture  (tool calls, facts, events)        — record_tool_call / add / import
   → measure   (outcome review)               — re-run the metric, revert on regression
 ```
 
-The loop closes with **no LLM**. Every recommendation cites the grains it was
-computed from; every apply stores its inverse (or is marked non-rollbackable
-up front); every decision carries a written reason.
+The loop closes **without requiring an LLM** — a floor that always runs, not
+a ceiling, and not a boast: deterministic signature lessons are also what
+measured strongest on the self-improvement benchmark
+([RESULTS.md](../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+and `--llm-cmd` adds verified reflection on top where judgement needs
+language. Whichever runs, the guarantees are the same: every recommendation
+cites the grains it was computed from; every apply stores its inverse (or is
+marked non-rollbackable up front); every decision carries a written reason.
 
 ## The four gates
 

@@ -112,8 +112,12 @@ Then the desk reads its own record:
   describing its current setup — its queries, grains, and workflows — from
   the same file it runs on.
 - **`areev loop run` finds the pattern**: `HIGH — Workflow 3da2300c1296
-  failed 4/9 recent runs (44%): parse_attachments: … scanned image`. The
-  analyzers are deterministic; no model key was involved. (The smoke also
+  failed 4/9 recent runs (44%): parse_attachments: … scanned image`. Found
+  by deterministic analyzers — the lesson kind that measured stronger than
+  LLM-authored ones on our benchmark
+  ([RESULTS.md](../../../crates/areev-bench/RESULTS.md#areev-loop-self-improvement--the-abab-causal-proof)),
+  and keyless besides; `LOOP_LLM_CMD` adds verified LLM reflection on top.
+  (The smoke also
   shows tuning them to a low-volume desk via `set_analyzer_config` — at
   four invoices a week, the stock thresholds would stay silent a quarter.)
 - **The gate holds**: the engine refuses to apply its own advisory finding,
