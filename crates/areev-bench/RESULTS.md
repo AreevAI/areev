@@ -733,10 +733,95 @@ At parity, the differences that remain are cost and behaviour:
   image: near-perfect on R4/R5, barely better than baseline on R6.
 
 That split is the most useful finding here: curated lessons prevent, retrieval
-repairs, and they fix different failure classes. It argues for a lesson that
-can fire at the decision point — the LLM-authored procedural lesson on
-SELFIMPROVE.md's roadmap — rather than for choosing one approach over the
-other.
+repairs, and they fix different failure classes. It argued for a lesson that
+can fire at the decision point — an LLM-authored procedural lesson — rather
+than for choosing one approach over the other. **That argument was then built
+and tested, and the data did not support it; see the next section.**
+
+### Does an LLM write better lessons? — the loop+LLM arm
+
+*Pre-registered in [SELFIMPROVE.md](SELFIMPROVE.md) at rev `1bb56c7` before
+these runs existed. Seeds 1, 3, 5 (odd — the even/odd defect below makes n and
+n+1 one stream), 300 experience / 100 held-out per seed, `qwen3-30b` as agent
+and DISCOVER/VERIFY, `deepseek-chat` as GROUND, temperature 0. Two
+configurations at one git rev, differing in exactly one flag: the control
+applies only deterministic signature lessons; the arm additionally applies
+LLM-authored lessons that survived GROUND + VERIFY. Everything in
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+with `paired-stats.txt` regenerable from the transcripts.*
+
+The loop's deterministic lessons state a **symptom** (`log_case` fails with
+`invalid_timestamp`). An LLM can state the **remedy** ("Format timestamps as
+UTC ISO-8601 … before calling `log_case`"). The remedy is better writing, and
+the intuition — argued in the section above — is that it should therefore
+work better. It does not.
+
+| pooled, 3 seeds (n=300) | A0 | B | A1 | B2 |
+|---|---|---|---|---|
+| **control** — signature lessons | 46.3% | **68.7%** | 47.0% | **67.0%** |
+| **arm** — + LLM-authored lessons | 49.3% | **60.0%** | 48.3% | **62.7%** |
+
+Both configurations reproduce the causal structure — the arm's own
+apply/rollback/re-apply chain is significant (A0→B p=0.0010, B→A1 p=0.0004,
+A1→B2 p<0.0001), which is the pre-registered condition for publishing this at
+all. But **the control is significantly ahead at B**: paired over the same 300
+tasks, b=26 c=52, **p=0.0043**. The A0 row is the sanity check that makes that
+readable — both configurations are ignorant there, and they do not
+significantly differ (p=0.1996), so the B gap is the lessons, not drift.
+
+**The dose-response is the argument.** The LLM does not author on every pass,
+which turned seed 3 into an accidental internal control:
+
+| seed | authored lessons in B | control B | arm B | paired p |
+|---|:---:|---|---|---|
+| 3 | **0** | 67% | 70% | 0.6291 |
+| 5 | **1** | 76% | **58%** | 0.0014 |
+| 1 | **2** | 63% | **52%** | 0.0708 |
+
+With no authored lesson the arm *is* the control, and it matches it. Each
+authored lesson added costs accuracy. Restricted to the seeds that actually
+carried one (post-hoc, not pre-registered), the baseline is exactly tied
+(p=1.0000) and B splits 69.5% vs 55.0%, b=16 c=45, **p=0.0003**.
+
+**Why a better-written lesson loses.** It is not that the remedy fails at what
+it names — it succeeds completely, and the tool-error counts show it: at B the
+arm makes fewer tool errors than the control on every dosed seed (76 vs 104,
+78 vs 90), and on the dose-0 seed the counts converge (94 vs 95). Per-rule
+mishandling at B, dosed seeds:
+
+| hidden rule | control | arm | |
+|---|:---:|:---:|---|
+| R5 UTC timestamps — **what the lesson is about** | 9/50 | **5/50** | the remedy works |
+| R4 refund/cancel ordering | 9/50 | **18/50** | ...and the agent stops inferring |
+| R6 rate-limit recovery | 44/91 | **59/91** | ...here too |
+
+A signature lesson says *this keeps going wrong* and leaves the agent to work
+out why; a remedy says *do exactly this*. The second is locally perfect and
+globally hazardous: stating the fix suppresses the reasoning that was handling
+the rules nobody wrote a lesson for. This is the same shape as `m-steel`'s
+result above — the arm that scored best on one rule doubled the damage on
+another — reached by the opposite mechanism, and it is why the accuracy
+column alone would have been the wrong thing to read.
+
+**A governance finding, separately.** A deterministic lesson re-derives
+byte-identically after a rollback (test-pinned). An LLM-authored one does
+not: at seed 3 the model authored nothing on the first pass and one lesson on
+the second; at seed 5 it authored a differently-worded lesson each time. So
+an authored lesson is not reliably *restorable*, which is precisely why apply
+records a stored inverse instead of trusting re-derivation — and another
+reason the default lesson kind stays deterministic.
+
+**What this does not say.** Not that LLM-authored lessons are useless: they
+eliminate the failure they name, at zero measured cost in tool errors, and a
+workload whose rules are all explicitly covered might well profit. Not that
+better prompting could not fix the interference — "add this rule without
+narrowing your judgement elsewhere" is untested. And this is one synthetic
+workload with six hidden rules, three seeds, one model pair. What it does say
+is that on the evidence we have, **remedy-shaped lessons trade breadth for
+precision**, so Areev keeps deterministic signature lessons as the default and
+ships the authored kind as a governed, reviewable, revertible option — with
+the loop's post-apply re-measurement (`outcome_review`) as the mechanism that
+would catch this regression in a live deployment rather than a benchmark.
 
 ### The dataset
 

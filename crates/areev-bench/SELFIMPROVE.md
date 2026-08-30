@@ -186,6 +186,16 @@ went 3/25 → 15/25 — net B_llm − B_det = −11 pts, p = 0.08, single seed.
 Every outcome ships with per-seed numbers, per-rule recurrence, token
 costs, the governance ledgers, and the full transcripts.
 
+**Outcome (2026-08-30): the third branch.** B_llm < B_det, pooled b=26 c=52,
+p=0.0043, with the arm's own causal chain intact (the publication condition)
+and the A0 baseline null (p=0.1996, so the gap is not drift). Deterministic
+signature lessons stay the default. Two things the pre-registration did not
+anticipate, both reported: the LLM does not author on every pass, which made
+seed 3 a dose-0 internal control and turned the result into a dose-response;
+and the B2 caveat proved stronger than written — an authored lesson is not
+merely re-authored rather than re-derived, it may not be re-authored at all.
+Full write-up: RESULTS.md, "Does an LLM write better lessons?".
+
 ## Runner protocol — one JSON per line on stdio
 
 The Rust bin owns the agent loop (task prompt, tool execution, turn cap,
@@ -233,7 +243,12 @@ crates/areev-bench/
   scripts/openrouter_loop.py        the live LOOP adapter (DISCOVER/GROUND/
                                     VERIFY/ENRICH) — stdlib, forwards every
                                     payload key but `instructions`
-  scripts/aba_stats.py              paired McNemar over the per-task rows
+  scripts/aba_stats.py              paired McNemar over the per-task rows —
+                                    states WITHIN one run (A0/B/A1/B2 + arms)
+  scripts/aba_arm_stats.py          the same state ACROSS two runs, paired by
+                                    seed then task: the governed-vs-loop+LLM
+                                    comparison, plus per-rule deltas at B
+                                    (`--selftest` is the keyless CI check)
   results/                          committed transcripts + reports of runs
                                     quoted anywhere public
 ```
@@ -383,9 +398,12 @@ context it is given", so mock M arms prove plumbing, never a comparison.
   is its keyless canned backend, and CI asserts the full authored-lesson
   lifecycle (`apply → render → rollback-empties → re-apply restores`) on
   every push. The default path — no `--llm-lessons` — reproduces the
-  published runs' review policy and prompt bytes exactly. Live numbers for
-  this arm are not yet published; the roadmap entry for them is the
-  `selfimprove_curve` `loop+LLM` arm above.
+  published runs' review policy and prompt bytes exactly. **Live numbers are
+  published**: three seeds, both configurations, in RESULTS.md "Does an LLM
+  write better lessons? — the loop+LLM arm". The pre-registration below
+  resolved to its third branch — the control is significantly ahead at B
+  (p=0.0043) — so deterministic signature lessons stay the default lesson
+  kind, with a dose-response and a per-rule mechanism behind that number.
 
 ## Determinism & stats rules (areev-testing applies)
 
@@ -438,12 +456,13 @@ improvement; it is called out here rather than implied away.
 A published number is only meaningful if a later run is measuring the same
 experiment. The model is not deterministic, so nothing pins a score — what is
 pinned is everything upstream of the model, plus the evidence downstream of
-it. Three keyless gates, all in CI:
+it. Four keyless gates, all in CI:
 
 | gate | what it protects | fails when |
 |---|---|---|
 | `tests/reproducibility.rs` → `tests/golden/reproducibility.txt` | the task sets (prompt **and** hidden ground truth) per seed, the tool schemas, the governed pipeline's learned lesson, the LESSONS prompt bytes across apply→rollback→re-apply, and each arm's rendered context | any of it drifts — i.e. the runs under `results/` stop being comparable to a fresh run |
-| `--assert-shape` ledger checks | *what* was learned, not just that the rates moved: ≥1 lesson applied, every applied lesson analyzer-origin (LLM findings stay advisory), and every lesson B applied restored in B2 | an analyzer or store change silently changes which lesson fires, or a partial restore makes B2 a third memory state |
+| `--assert-shape` ledger checks | *what* was learned, not just that the rates moved: ≥1 lesson applied, every lesson B applied restored in B2, and the origin rule that DEFINES the arm — governed-only fails if an LLM lesson applies, `--llm-lessons` fails if none does | an analyzer or store change silently changes which lesson fires, a partial restore makes B2 a third memory state, or a run measures one arm under the other's label |
+| `aba_arm_stats.py --selftest` | the cross-configuration comparison itself: seed pairing (an unidentifiable seed exits rather than pairing by argument order), task pairing, discordant-count orientation, and per-rule deltas | the tool that computes a published arm number breaks silently |
 | `scripts/verify_run.py` | the committed evidence: every published per-state and per-rule number recomputed from the `task_outcome` rows, identical task ids across states (the paired-test precondition), and `MANIFEST.md` checksums over every file | a published number stops matching its own transcripts, or a published file is renamed/overwritten |
 
 The third exists because it has already happened: the single-seed pilot's
@@ -537,6 +556,25 @@ cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat' \
   --arms m-steel,m-all,m-llm
 ```
+
+**The loop+LLM comparison is two run sets, not one.** The arm changes what
+the governed states themselves contain, so it cannot be a fifth column beside
+the passive arms — it needs its own A/B/A/B. Run each seed twice, identical
+but for `--llm-lessons`, then pair them:
+
+```bash
+# per seed N: /tmp/governed-sN (no flag) and /tmp/llm-sN (--llm-lessons)
+python3 crates/areev-bench/scripts/aba_arm_stats.py \
+  --control /tmp/governed-s1 /tmp/governed-s3 /tmp/governed-s5 \
+  --arm     /tmp/llm-s1      /tmp/llm-s3      /tmp/llm-s5
+```
+
+Runs pair by SEED (from `report.json`, else a `-s<N>` suffix), never by
+argument order, and each config's own causal chain still goes through
+`aba_stats.py`. Read the **A0 row first**: both configs are ignorant there,
+so a significant A0 difference is provider drift and invalidates the B
+comparison rather than supporting it. Use odd seeds — the even/odd collision
+above makes 1/2/3 two task streams, not three.
 
 Then verify what you produced against what shipped:
 

@@ -73,8 +73,16 @@ def load_runs(d):
     which is only valid if each seed's task ids are paired within that seed.
     Merging them into one dict would collide identical task ids across seeds.
     """
+    # A directory takes every run inside it. A path that NAMES the prefix
+    # (`results/SET/governed-s1`) selects one run out of a committed set —
+    # needed when a set holds two configurations that must not be pooled
+    # into each other, which passing the directory would silently do.
+    if os.path.isdir(d):
+        base, sel = d, "*"
+    else:
+        base, sel = os.path.dirname(d) or ".", os.path.basename(d) + "."
     by_prefix = {}
-    for path in sorted(glob.glob(os.path.join(d, "*" + EVAL_PREFIX + "*" + EVAL_SUFFIX))):
+    for path in sorted(glob.glob(os.path.join(base, sel + EVAL_PREFIX + "*" + EVAL_SUFFIX))):
         name = os.path.basename(path)
         marker = name.index(EVAL_PREFIX)
         prefix = name[:marker]
@@ -87,8 +95,12 @@ def load_runs(d):
     runs = []
     for prefix in sorted(by_prefix):
         out = _load_states(by_prefix[prefix])
-        if out:
-            runs.append((f"{label}/{prefix.rstrip('.')}" if prefix else label, out))
+        if not out:
+            continue
+        # `label` already IS the prefix when one was named, so only a
+        # directory's runs get qualified by their prefix.
+        name = label if sel != "*" or not prefix else f"{label}/{prefix.rstrip('.')}"
+        runs.append((name, out))
     return runs
 
 

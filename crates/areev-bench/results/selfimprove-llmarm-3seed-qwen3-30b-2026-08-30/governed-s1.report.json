@@ -1,0 +1,245 @@
+{
+  "config": {
+    "agent_cmd": "python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507",
+    "arms": [],
+    "assert_shape": false,
+    "bench": "selfimprove_aba",
+    "context_cmd": null,
+    "db": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/governed-s1/bench.db",
+    "eval": 100,
+    "experience": 300,
+    "git_rev": "39fc35f6ee8e617a42dfdbe234282d614a3a6075",
+    "ground_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat",
+    "llm_cmd": "python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507",
+    "llm_lessons": false,
+    "max_turns": 24,
+    "mllm_cmd": null,
+    "mock": false,
+    "mock_llm": false,
+    "phase_base_ms": 1700000000000,
+    "reviewer_actor": "user:bench-reviewer",
+    "runner_actor": "agent:bench-runner",
+    "seed": 1,
+    "workdir": "/private/tmp/claude-501/-Users-sathish-mg-products-areev/ba8b88d8-5a30-46d9-8e5d-969b3b311aa2/scratchpad/pub3/governed-s1",
+    "workers": 4
+  },
+  "evals": [
+    {
+      "mean_steps": 6.67,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 10,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 38,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "A0",
+      "success_rate": 0.45,
+      "successes": 45,
+      "tool_errors": 104,
+      "total_steps": 667,
+      "usage": {
+        "completion_tokens": 23218,
+        "prompt_tokens": 732760
+      }
+    },
+    {
+      "mean_steps": 6.99,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 4,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 5,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 28,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "B",
+      "success_rate": 0.63,
+      "successes": 63,
+      "tool_errors": 104,
+      "total_steps": 699,
+      "usage": {
+        "completion_tokens": 24001,
+        "prompt_tokens": 836012
+      }
+    },
+    {
+      "mean_steps": 6.68,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 11,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 9,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 39,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "A1",
+      "success_rate": 0.43,
+      "successes": 43,
+      "tool_errors": 111,
+      "total_steps": 668,
+      "usage": {
+        "completion_tokens": 23529,
+        "prompt_tokens": 734075
+      }
+    },
+    {
+      "mean_steps": 7.07,
+      "n": 100,
+      "per_rule": [
+        {
+          "failures": 0,
+          "opportunities": 45,
+          "rule": "R1"
+        },
+        {
+          "failures": 0,
+          "opportunities": 100,
+          "rule": "R2"
+        },
+        {
+          "failures": 0,
+          "opportunities": 50,
+          "rule": "R3"
+        },
+        {
+          "failures": 7,
+          "opportunities": 25,
+          "rule": "R4"
+        },
+        {
+          "failures": 6,
+          "opportunities": 25,
+          "rule": "R5"
+        },
+        {
+          "failures": 29,
+          "opportunities": 51,
+          "rule": "R6"
+        }
+      ],
+      "state": "B2",
+      "success_rate": 0.6,
+      "successes": 60,
+      "tool_errors": 109,
+      "total_steps": 707,
+      "usage": {
+        "completion_tokens": 24706,
+        "prompt_tokens": 847345
+      }
+    }
+  ],
+  "ledger": [
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "5eb1b2e8d7a8025363df09b89acb8fc6696e041e1586e54bd63f8b1260251c07",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 68 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "90cf24d40315c7733676ec6ebb51ebf9afc309d2c65b07f9e7540687a0a155fd",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 70 times (34% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "d94dd110317c90a44a28ec54da1b7fe26b1e34276b7b23825b000483edc414b3",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"log_case\" failed 68 times (39% of the calls that could fail this way): {\"error\":{\"code\":\"invalid_timestamp\",\"message\":\"timestamp must be utc iso-#:"
+    },
+    {
+      "because": "bench: recurring failure evidence",
+      "disposition": "applied",
+      "hash": "761c1c0a212fdb151f08b00eeda97e2f90ee0224b03a70f089c0b0cc6cbd12cf",
+      "source": "loop.tool_failure/1",
+      "summary": "Tool \"refund\" failed 70 times (34% of the calls that could fail this way): {\"error\":{\"code\":\"approval_required\",\"message\":\"refunds over $# require a vali"
+    }
+  ],
+  "ledger_counts": {
+    "advisory": 0,
+    "applied": 4,
+    "apply_failed": 0,
+    "proposed": 4,
+    "rejected": 0
+  }
+}
