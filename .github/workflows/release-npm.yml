@@ -47,7 +47,7 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check every version site agrees
         run: |
           python3 scripts/check_versions.py \
@@ -90,7 +90,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             build: npx napi build --platform --release --target x86_64-pc-windows-msvc -- --locked
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         if: ${{ !matrix.settings.container }}
         with:
@@ -159,7 +159,7 @@ jobs:
       attestations: write
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 20
