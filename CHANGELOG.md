@@ -38,6 +38,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **An LLM finding can now propose five kinds of change, not one.** A DISCOVER
+  draft carries a closed `proposal` vocabulary — `lesson`, `fact`,
+  `query_revision`, `plan_revision`, `code_revision` — each resolving to a
+  statement an apply already knows how to run and roll back. Scope is never
+  model-named: the subject of a fact, the name of a query, the plan hash, the
+  tool, and (for code) the evalset that grades it all come from the target or
+  the substrate. Resolution happens *before* GROUND and VERIFY, so the gates
+  judge the exact change an apply would make. Auto-apply is unchanged twice
+  over: `origin = llm` is categorically ineligible, and only the `memory`
+  target class is auto-appliable at all.
+- **`plan_revision` carries field-level edits with a `from` staleness check**,
+  over an allowlist of `edges.<i>.cond`, `edges.<i>.max_cycles` and
+  `retries.<node>`. Node topology is not expressible by any proposal a model
+  can write, so a plan revision stays reviewable as a short list of scalar
+  deltas.
+- **Substrate capabilities `plans` and `code`** (`validate_plan`,
+  `tool_evalset`). The Areev adapter hands a candidate plan to the runtime's
+  own `PlanGraph::build`, so the loop carries no second opinion about what a
+  runnable plan is; a substrate declaring neither degrades those proposal
+  kinds to advisory rather than pretending to have checked them.
+- **`RunResult.llm_funnel`** — the DISCOVER pipeline's attrition, stage by
+  stage: evidence → proposed → cited (split into `dropped_uncited` and
+  `dropped_target`) → grounded → kept → stored. "The model contributed
+  nothing" has five causes that need opposite fixes and all previously
+  rendered as an empty queue. Surfaced on `loop_run()` in both bindings.
+
 - **`areev auth mint|list|revoke`** — the credential-map lifecycle. `mint`
   emits a 256-bit CSPRNG token prefixed `areev_pat_` (recognizable to secret
   scanners), prints it once, and stores only its SHA-256. Credentials gain an
@@ -73,6 +99,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the 403.
 
 ### Changed
+
+- **The DISCOVER evidence bundle reserves a share per source** rather than
+  filling first-come: cited findings ≤24, recent tool errors ≤16,
+  human-authored Observations ≤8, recent facts taking the remainder of 64. A
+  single `tool_failure` finding may cite 64 grains on its own, which let
+  determinism fill the whole bundle so the model never saw a grain no analyzer
+  had already flagged. The Observation reserve encodes a second principle:
+  volume is the wrong sort order for evidence, because a person's instruction
+  is a complete rule stated *once* and is outnumbered from the moment it is
+  written.
+- **DISCOVER is told that outcome records are actionable evidence** — that
+  restating a deterministic finding earns nothing, and that comparing rejected
+  against accepted outcomes is how a problem with no error attached gets
+  found, with a two-observation floor. Without it a model handed both kinds of
+  evidence reliably writes about the error text and ignores the rest.
 
 - Console auth guidance now points at `--auth` (per-principal, attributable)
   before `--token-env` (one shared secret, unattributable, cannot approve) —

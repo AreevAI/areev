@@ -11,7 +11,7 @@ v1.6.5 · 17 crates · 289 Rust files
 | Test functions | **2,552** |
 | Line coverage | **81.0%** of 54,914 instrumented source lines |
 | Stable error codes | **96** |
-| Reference docs | 56 files, 25,369 lines |
+| Reference docs | 56 files, 25,431 lines |
 
 ## By crate
 

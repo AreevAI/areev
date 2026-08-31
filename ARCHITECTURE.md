@@ -1676,12 +1676,21 @@ Four properties keep the widened surface safe, all structural:
 
 One consequence showed up only under measurement and is part of the decision:
 the DISCOVER evidence bundle now **reserves a share per source** (cited
-findings ≤24, recent tool errors ≤16, recent facts/observations ≥24 of 64).
+findings ≤24, recent tool errors ≤16, human Observations ≤8, recent facts
+taking the remainder of 64).
 A single `tool_failure` finding may cite up to 64 grains, so first-come
 seeding let determinism fill the whole bundle and the model never saw one
 grain no analyzer had already flagged — a widened vocabulary is worth nothing
 if the evidence for using it cannot reach the model, and the failure looks
 exactly like abstention.
+
+The Observation reserve encodes a second principle, and a less obvious one:
+**volume is the wrong sort order for evidence.** A person's instruction —
+"from now on, escalate these" — is a complete rule stated once, and it is
+outnumbered from the moment it is written by the routine records the desk
+generates. Seeding by recency or frequency therefore buries precisely the
+rarest and most valuable signal. Whatever else competes for the bundle, a
+human's own words get a floor.
 
 Structural validation of a proposed plan and resolution of a tool's evalset
 pin are **substrate capabilities** (`plans`, `code`), not engine logic: the

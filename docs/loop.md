@@ -324,11 +324,18 @@ are the identity when no backend is set:
   clusters the analyzers had already produced).
 
   **The evidence bundle budgets its sources.** DISCOVER sees at most 64
-  grains, drawn from three places that answer different questions: what the
+  grains, drawn from four places that answer different questions: what the
   deterministic findings CITED (≤24 — what clustering already caught), recent
-  tool ERRORS (≤16 — what clustering could have caught and did not), and
-  recent facts/observations (≥24 reserved — the model's own lens, and the only
-  source that can carry a problem with no error shape at all). Each share is
+  tool ERRORS (≤16 — what clustering could have caught and did not),
+  human-authored **Observations** (≤8, taken before the rest), and recent
+  facts (the remainder — the model's own lens).
+
+  The Observation reserve exists for a different reason from the others.
+  Learning does not only come from what went wrong: a person saying "from now
+  on, do X" is a complete rule stated **once**, and recency or frequency
+  seeding buries it under the thousands of routine grains a working desk
+  produces. The rarest evidence is usually the most valuable, and ordering by
+  volume is exactly the wrong instinct for it. Each share is
   reserved rather than served first-come, because one `tool_failure` finding
   may cite up to 64 grains on its own: without the reservation the lens is
   starved by the very determinism it exists to look past, and the symptom is
@@ -414,6 +421,11 @@ db.record_tool_call("stripe_refund", result_json, is_error=True, thread="sess-42
 db.loop_run(min_new=20, min_new_errors=3, if_stale="6h")   # gated; bare call never gates
 db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole memory
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
+db.loop_run()   # the returned JSON carries `llm_funnel` when a backend is
+#   attached: evidence → proposed → cited (with `dropped_uncited` and
+#   `dropped_target` split out) → grounded → kept → stored. "The model
+#   contributed nothing" has five causes that need opposite fixes and all
+#   render as an empty queue; this is how you tell them apart.
 db.recommendations('{"status":"pending"}')
 #   rows carry hash/status/severity/analyzer/summary/target_ref/destructive,
 #   plus `rollbackable` and `evalset_hash` — Rule E1's pin, so a reviewer can
