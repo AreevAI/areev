@@ -38,6 +38,15 @@ the operating rules, which are hidden in the tool implementations:
 | R5 | timestamps must be UTC ISO-8601 (`…Z`) | validation errors |
 | R6 | a tool that returns 429 carries `retry_after_s`; only `wait(seconds ≥ retry_after_s)` then retry succeeds — immediate retries keep failing | retry storms |
 
+And three **silent** rules (added 2026-08-31), which break every call
+returning 200 — there is no error code, no error body, nothing to normalize:
+
+| # | hidden rule | how it fails |
+|---|---|---|
+| R7 | closing an account must leave a case behind (the closure is auditable) | refund + cancel both succeed; the task is scored `no_closure_case` |
+| R8 | an **enterprise**-plan account needs a manager approval token behind ANY refund, not only one over $100 | the refund succeeds; scored `unapproved_enterprise_refund` |
+| R9 | a case about the regulated topic (a data export request) must be filed `priority: high` | `log_case` accepts it happily; scored `case_missing_priority` |
+
 Tasks are template-generated from a seeded entity pool with a **programmatic
 success predicate** over final environment state (ledger entries, subscription
 state, no orphaned approvals) — no LLM judge anywhere. Splits are disjoint:
@@ -46,6 +55,82 @@ EXPERIENCE tasks (the agent may fail and learn) and a HELD-OUT eval set
 
 The rule list is a parameter of `env.rs`, not a constant — the learning-curve
 and adversarial bins extend it without touching the harness.
+
+## The silent archetypes — why R7-R9 exist
+
+The 2x2 below could not be executed, and its stated bound was that this
+workload's rules "are all tool-failure-shaped, which is precisely what
+signature clustering detects, so it gives an LLM no headroom by
+construction." R7-R9 are that bound, removed.
+
+Each is a shape a signature clusterer **structurally cannot reach**, because
+clustering normalizes error bodies and these produce none:
+
+- **R7 is a missing branch** — a whole class of task (closures) needs a step
+  the desk never learned to take. The distributional archetype: the work
+  arrives, the plan has no branch for it, nothing errors.
+- **R8 is a mis-set threshold** — the approval rule is right in shape and
+  wrong in its cutoff for one segment. Over $100 the existing R3 already
+  forces a token, so R8 only ever bites *below* the threshold: the learnable
+  signal is "small refunds for enterprise customers get rejected", which is a
+  correlation, not a signature.
+- **R9 is a recurring topic with a special handling rule** — the desk's own
+  traffic contains the pattern; no tool objects.
+
+Finding any of them means correlating **outcomes** across episodes. That is
+why `memory::record_task` now writes one EPISODE fact per finished task next
+to the tool calls: a memory holding only tool calls cannot express a silent
+rule at all, so "the LLM found nothing" would have been a fact about the
+harness rather than about the model. The episode carries the observable shape
+of the run (plan, which tools ran, whether approval was requested, whether a
+case was filed and at what priority) and whether the outcome was accepted —
+and deliberately **not** the scored `failure_reason` or the attributed rule,
+which name the answer. Every field but the accept/reject bit is derived from
+the agent's own calls.
+
+**What this invalidates.** Adding R7-R9 changes ground truth, so every
+`selfimprove` run under `results/` is a measurement of the six-rule
+environment and is not comparable to a re-run at this rev. The task PROMPTS
+and pools are byte-identical across the change (the RNG stream did not move),
+so the committed transcripts are still exactly what those models saw — what
+changed is the scorer. Each run's MANIFEST.md now says so, and the runs stay
+published. `tests/golden/reproducibility.txt` was re-blessed in the same
+commit; its diff is the task rule-surfaces, the `regulated` flag, and
+`log_case`'s new optional `priority` — the governed-pipeline and passive-arm
+sections are unchanged, which is the check that the deterministic loop itself
+did not move.
+
+**What the keyless path covers, exactly.** The `MockLoopLlm` correlates
+bundled episode facts and authors the matching lesson through the engine's
+`proposal` vocabulary, so the whole silent-rule path runs with no key:
+episodes recorded → DISCOVER bundle carries them → correlation → GROUND +
+VERIFY → scripted review → applied lesson → rendered into the prompt. R7 is
+walked end to end through the real engine by
+`silent_rule_lesson_travels_from_episodes_to_the_prompt`.
+
+R8 and R9 are **not** reachable by the deterministic mock agent, and the
+reason is worth stating rather than papering over: R8's correlation needs the
+plan, which is only observable if the agent looked the customer up, and the
+mock's refund path never calls `get_customer`; R9's needs a case that was
+filed successfully, and the naive mock's `log_case` fails R5 first. A live
+agent does both routinely. Their correlations are therefore pinned directly
+by `each_silent_rule_correlates_from_its_own_episode_shape` rather than left
+for a paid run to discover on our behalf.
+
+The correlations are canned, exactly like every other branch of that backend.
+It proves the path exists; it is never a claim that a model would find these.
+
+**A silent rule can be masked by an error-shaped one, and that shows up in
+the tables.** At A0 the mock fails most refund tasks on R6/R4 and never
+reaches the point where R8 or R9 would bite, so both read 0 mishandled; at B,
+with the tool-failure lessons applied, the agent gets past those walls and
+the silent rules start scoring (R8 0/4 → 2/4, R9 0/3 → 2/3). Read naively
+that looks like the loop made things worse. It is the same effect the
+`tool_failure` denominator fix was about: **a rule only becomes visible once
+the agent is competent enough to reach it**, so a per-rule row moving up
+after an apply can mean the agent got further, not that it got worse. Any
+published reading of R7-R9 has to say which walls the agent was clearing at
+that state.
 
 ## What the first live run found (and changed)
 

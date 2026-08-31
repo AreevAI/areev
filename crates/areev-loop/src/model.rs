@@ -182,6 +182,16 @@ pub enum ActionKind {
     /// Surface an advisory finding for human attention (no automatic fix) —
     /// e.g. a stalled skill or goal.
     Flag,
+    /// Record a new durable fact derived from evidence — the LLM `fact`
+    /// proposal, where a lesson's fixed `relation = "lesson"` is too narrow
+    /// (a vendor alias, a settled default a person keeps re-supplying).
+    /// Applies as an `ADD`, so it is never auto-applied.
+    Record,
+    /// Revise something that governs FUTURE behaviour rather than recording a
+    /// past one: a saved CAL query/template (`DEFINE`), or field-level edits
+    /// to a Workflow plan (`SUPERSEDE`). Never auto-applied — a grain edit
+    /// changes one remembered value, a revision changes every future run.
+    Revise,
     /// Propose a new revision of an executable tool's code (§7.4). NEVER
     /// auto-applied — categorically, by name — and the recommendation must
     /// pin the evalset hash it was gated against (Rule E1): apply is refused
@@ -205,6 +215,8 @@ impl ActionKind {
             ActionKind::MergeHeads => "merge_heads",
             ActionKind::Revert => "revert",
             ActionKind::Flag => "flag",
+            ActionKind::Record => "record",
+            ActionKind::Revise => "revise",
             ActionKind::CodeRevision => "code_revision",
             ActionKind::AdapterRevision => "adapter_revision",
         }

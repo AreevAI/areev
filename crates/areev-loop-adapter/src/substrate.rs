@@ -28,7 +28,7 @@ use areev_cal::{parse, CalExecutor, CalExecutorConfig, CalStoreFacade, AreevFaca
 use areev_core::error::{AreevError, Hash};
 use areev_core::format::deserialize::DeserializedGrain;
 use areev_core::authz::Verb;
-use areev_core::types::{Fact, Grain, GrainType};
+use areev_core::types::{Fact, Grain, GrainType, Workflow, WorkflowEdge};
 use areev_store::{Areev, TelemetryMode, OP_FORGET};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -48,6 +48,12 @@ const MAX_SCAN: usize = 1_000_000;
 
 fn we(e: AreevError) -> WErr {
     WErr::Substrate(e.to_string())
+}
+
+/// A substrate error from this adapter's own checks (no underlying
+/// `AreevError` to wrap) — plan validation and pin resolution.
+fn werr(msg: &str) -> WErr {
+    WErr::Substrate(msg.to_string())
 }
 
 fn require_read(f: &AreevFacade, ns: &str) -> WResult<()> {
@@ -127,6 +133,12 @@ macro_rules! impl_substrate {
             }
             fn grain(&self, hash: &str) -> WResult<Option<GrainRecord>> {
                 grain(self.facade_ref(), hash)
+            }
+            fn validate_plan(&self, workflow: &Value) -> WResult<()> {
+                validate_plan(workflow)
+            }
+            fn tool_evalset(&self, tool: &str) -> WResult<Option<String>> {
+                tool_evalset(self.facade_ref(), tool)
             }
             fn heads(&self, namespace: Option<&str>) -> WResult<Vec<HeadGroup>> {
                 heads(self.facade_ref(), namespace)
@@ -289,7 +301,127 @@ fn caps(f: &AreevFacade) -> Capabilities {
         // On iff the host attached a telemetry sidecar (`aggregate`/`full`).
         telemetry: f.with_store(|m| m.telemetry_mode()) != TelemetryMode::Off,
         embeddings: f.with_store(|m| m.declared_embedding().is_some()),
+        // Areev models both: workflow plans are grains this adapter can hand
+        // to the runtime's own validator, and tool code rides the CAS blob
+        // seam implemented above.
+        plans: true,
+        code: true,
     }
+}
+
+/// Structurally validate a proposed Workflow body with the RUNTIME's own
+/// validator (`PlanGraph::build`: V1–V6 — unique and reachable nodes,
+/// conditions parse, Tarjan SCC with every cycle bounded). The loop therefore
+/// never carries a second, drifting opinion about what a runnable plan is.
+fn validate_plan(workflow: &Value) -> WResult<()> {
+    let fields = workflow
+        .as_object()
+        .ok_or_else(|| werr("a workflow body must be a JSON object"))?;
+    let wf = strict_workflow(fields)?;
+    areev_run_core::plan::PlanGraph::build(&wf)
+        .map(|_| ())
+        .map_err(|e| werr(&format!("proposed plan is not runnable: {e}")))
+}
+
+/// Read a `Workflow` out of a grain field map, STRICTLY.
+///
+/// Deliberately not [`areev_core::format::DeserializedGrain::to_workflow`],
+/// which is forward-compatible by contract — it skips a malformed edge rather
+/// than failing, which is right when reading a grain someone already wrote and
+/// wrong when checking one nobody has written yet. Here a malformed edge is
+/// the whole point of asking: silently dropping it would validate a plan that
+/// is not the plan under review.
+fn strict_workflow(fields: &Map<String, Value>) -> WResult<Workflow> {
+    let nodes: Vec<String> = match fields.get("nodes") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| werr("every workflow node must be a string"))
+            })
+            .collect::<WResult<Vec<String>>>()?,
+        _ => return Err(werr("a workflow needs a 'nodes' array")),
+    };
+    let mut wf = Workflow::new(nodes);
+    if let Some(v) = fields.get("edges") {
+        let arr = v
+            .as_array()
+            .ok_or_else(|| werr("workflow 'edges' must be an array"))?;
+        for e in arr {
+            let (Some(src), Some(dst)) = (
+                e.get("src").and_then(Value::as_str),
+                e.get("dst").and_then(Value::as_str),
+            ) else {
+                return Err(werr("every workflow edge needs a 'src' and a 'dst'"));
+            };
+            let cond = match e.get("cond") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(c)) => Some(c.clone()),
+                Some(_) => return Err(werr("an edge 'cond' must be a string")),
+            };
+            let max_cycles = match e.get("max_cycles") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    v.as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| werr("an edge 'max_cycles' must be a small integer"))?,
+                ),
+            };
+            wf.edges.push(WorkflowEdge {
+                src: src.to_string(),
+                dst: dst.to_string(),
+                cond,
+                max_cycles,
+            });
+        }
+    }
+    if let Some(v) = fields.get("bindings") {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| werr("workflow 'bindings' must be an object"))?;
+        for (node, hash) in obj {
+            let h = hash
+                .as_str()
+                .ok_or_else(|| werr("a workflow binding must be a tool hash string"))?;
+            wf.bindings.insert(node.clone(), h.to_string());
+        }
+    }
+    if let Some(v) = fields.get("retries") {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| werr("workflow 'retries' must be an object"))?;
+        for (node, max) in obj {
+            let m = max
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| werr("a workflow retry count must be a small integer"))?;
+            wf.retries.insert(node.clone(), m);
+        }
+    }
+    Ok(wf)
+}
+
+/// Rule E1's pin for a tool, read from the tool's own live DEFINITION grain
+/// (`evalset_hash`) — the same shape `areev tune` embeds in an adapter grain,
+/// so code and adapters resolve their gate the same way.
+///
+/// The tool DECLARES which evalset grades its revisions, ahead of any
+/// particular revision existing. That ordering is what the pin is for: a
+/// proposer that could choose its own grader is not gated.
+fn tool_evalset(f: &AreevFacade, tool: &str) -> WResult<Option<String>> {
+    let defs = grains_of_type(f, "tool", None, ReadOpts::default())?;
+    Ok(defs
+        .into_iter()
+        .filter(|g| {
+            g.str_field("kind") == Some("definition") && g.tool_name() == Some(tool)
+        })
+        .filter_map(|g| {
+            g.str_field("evalset_hash")
+                .filter(|h| !h.trim().is_empty())
+                .map(str::to_string)
+        })
+        .next())
 }
 
 /// Read the recall-telemetry sidecar rollups into the loop's substrate-agnostic

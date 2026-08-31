@@ -27,12 +27,24 @@ pub struct ReferenceSubstrate {
     heads_index: HashMap<String, Vec<String>>,
     /// Injected recall-telemetry snapshot (turns on the `telemetry` capability).
     telemetry: Option<TelemetryView>,
+    /// Saved definitions by key (`query:<name>` / `template:<name>`) → the
+    /// statement that would restore them. The reference implementation of the
+    /// host-metadata registry a real substrate keeps in the file.
+    definitions: HashMap<String, String>,
 }
 
 impl ReferenceSubstrate {
     pub fn new() -> Self {
         ReferenceSubstrate {
             state: Value::Null,
+            // Declared because they are implemented below — the reference
+            // substrate is the conformance kit, so the seam it advertises is
+            // the seam an implementer must fill.
+            caps: Capabilities {
+                plans: true,
+                code: true,
+                ..Capabilities::default()
+            },
             ..Default::default()
         }
     }
@@ -105,6 +117,65 @@ impl ReferenceSubstrate {
 impl SubstrateRead for ReferenceSubstrate {
     fn capabilities(&self) -> Capabilities {
         self.caps
+    }
+
+    /// A MINIMAL plan check: every node named once, every edge between known
+    /// nodes, at least one node. Deliberately weaker than the Areev adapter's,
+    /// which hands the body to the runtime's own `PlanGraph::build` — this
+    /// crate carries no Areev dependency, and the seam's contract is "refuse a
+    /// plan you cannot vouch for", not "reimplement the scheduler".
+    fn validate_plan(&self, workflow: &Value) -> Result<()> {
+        let bad = |m: &str| Err(Error::Substrate(m.to_string()));
+        let Some(fields) = workflow.as_object() else {
+            return bad("a workflow body must be a JSON object");
+        };
+        let Some(Value::Array(nodes)) = fields.get("nodes") else {
+            return bad("a workflow needs a 'nodes' array");
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for n in nodes {
+            match n.as_str() {
+                Some(id) if seen.insert(id) => {}
+                Some(id) => return bad(&format!("duplicate node {id:?}")),
+                None => return bad("every workflow node must be a string"),
+            }
+        }
+        if seen.is_empty() {
+            return bad("a workflow needs at least one node");
+        }
+        if let Some(v) = fields.get("edges") {
+            let Some(edges) = v.as_array() else {
+                return bad("workflow 'edges' must be an array");
+            };
+            for e in edges {
+                for end in ["src", "dst"] {
+                    match e.get(end).and_then(Value::as_str) {
+                        Some(id) if seen.contains(id) => {}
+                        Some(id) => return bad(&format!("edge {end} {id:?} is not a node")),
+                        None => return bad(&format!("every edge needs a '{end}'")),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rule E1's pin, from the tool's own live definition grain.
+    fn tool_evalset(&self, tool: &str) -> Result<Option<String>> {
+        Ok(self
+            .grains
+            .iter()
+            .filter(|g| {
+                g.grain_type == crate::model::grain_type::TOOL
+                    && g.is_live()
+                    && g.str_field("kind") == Some("definition")
+                    && g.tool_name() == Some(tool)
+            })
+            .find_map(|g| {
+                g.str_field("evalset_hash")
+                    .filter(|h| !h.trim().is_empty())
+                    .map(str::to_string)
+            }))
     }
 
     fn grains_of_type(
@@ -229,6 +300,17 @@ impl OmsSubstrate for ReferenceSubstrate {
                     let h = self.supersede(target.trim(), &spec, "cal supersede")?;
                     rows.push(json!({ "hash": h }));
                 }
+                "DEFINE" => {
+                    let (key, _) = definition_key(line).ok_or_else(|| {
+                        Error::CalUnsupported(format!("malformed DEFINE: {line}"))
+                    })?;
+                    self.definitions.insert(key, line.to_string());
+                }
+                "DROP" => {
+                    if let Some((key, _)) = definition_key(line) {
+                        self.definitions.remove(&key);
+                    }
+                }
                 // Read verbs: no-ops in the reference substrate (no metric value).
                 "RECALL" | "ASSEMBLE" | "EXPLAIN" | "HISTORY" => {}
                 other => {
@@ -251,6 +333,13 @@ impl OmsSubstrate for ReferenceSubstrate {
             match keyword.to_ascii_uppercase().as_str() {
                 "ADD" | "SUPERSEDE" | "FORGET" | "RETRACT" | "RECALL" | "ASSEMBLE" | "EXPLAIN"
                 | "HISTORY" => {}
+                "DEFINE" | "DROP" => {
+                    if definition_key(line).is_none() {
+                        return Err(Error::CalUnsupported(format!(
+                            "malformed definition statement: {line}"
+                        )));
+                    }
+                }
                 other => {
                     return Err(Error::CalUnsupported(format!(
                         "unknown statement {other:?}"
@@ -261,6 +350,18 @@ impl OmsSubstrate for ReferenceSubstrate {
         Ok(())
     }
 
+    /// The statement restoring the CURRENT definition, or a `DROP` when there
+    /// is none — so an apply can always record an inverse and a ROLLBACK
+    /// always undoes something.
+    fn definition_inverse(&self, statement: &str) -> Result<Option<String>> {
+        let Some((key, drop_stmt)) = definition_key(statement) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.definitions.get(&key).cloned().unwrap_or(drop_stmt),
+        ))
+    }
+
     fn load_state(&self) -> Result<Value> {
         Ok(self.state.clone())
     }
@@ -269,6 +370,39 @@ impl OmsSubstrate for ReferenceSubstrate {
         self.state = state.clone();
         Ok(())
     }
+}
+
+/// Parse a `DEFINE`/`DROP` statement into its registry key and the `DROP`
+/// that would remove it. `None` for anything else — this is a reader of two
+/// statement shapes, not a CAL parser.
+fn definition_key(line: &str) -> Option<(String, String)> {
+    let rest = {
+        let (kw, rest) = split_keyword(line.trim());
+        match kw.to_ascii_uppercase().as_str() {
+            "DEFINE" | "DROP" => rest,
+            _ => return None,
+        }
+    };
+    let (kind, rest) = split_keyword(rest);
+    let kind = kind.to_ascii_uppercase();
+    let (name, quoted) = match kind.as_str() {
+        "QUERY" => {
+            let rest = rest.trim().strip_prefix('"')?;
+            (rest.split('"').next()?, true)
+        }
+        "TEMPLATE" => (split_keyword(rest.trim()).0, false),
+        _ => return None,
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let lower = kind.to_ascii_lowercase();
+    let drop_stmt = if quoted {
+        format!("DROP {kind} \"{name}\"")
+    } else {
+        format!("DROP {kind} {name}")
+    };
+    Some((format!("{lower}:{name}"), drop_stmt))
 }
 
 fn split_keyword(line: &str) -> (&str, &str) {

@@ -538,6 +538,344 @@ fn llm_authored_lesson_is_applicable_and_rolls_back() {
 }
 
 #[test]
+fn llm_authored_fact_records_a_model_chosen_relation() {
+    use crate::model::{ActionKind, Origin};
+    use crate::recommendation::Proposal;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "invoice_vendor", "Cobolt Cloud");
+    let _h2 = sub.add_fact("acme", "invoice_vendor", "Cobalt Cloud");
+
+    // (0) a well-formed fact; (1) a relation that is prose, not an identifier
+    // — it would become an unfindable predicate, so the draft goes advisory;
+    // (2) an empty object — nothing to record.
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"the same misspelling keeps arriving","target":"entity:test/acme","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"fact","relation":"alias_of","object":"Cobalt Cloud"}}}},
+          {{"summary":"prose relation","target":"entity:test/acme2","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"fact","relation":"is usually spelled","object":"Cobalt Cloud"}}}},
+          {{"summary":"empty object","target":"entity:test/acme3","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"fact","relation":"alias_of","object":"   "}}}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true},{"id":2,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9},{"id":2,"keep":true,"confidence":0.9}]}"#.to_string();
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground,
+        verify,
+        enrich: r#"{"notes":[]}"#.to_string(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+
+    let fact = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "entity:test/acme")
+        .expect("the fact rec");
+    assert_eq!(fact.action_kind, ActionKind::Record);
+    assert!(fact.rollbackable && !fact.destructive);
+    let Proposal::Cal { cal } = &fact.proposal else {
+        panic!("a fact proposal is CAL, got {:?}", fact.proposal)
+    };
+    assert!(cal.starts_with("ADD fact "), "{cal}");
+    assert!(cal.contains(r#""relation":"alias_of""#), "{cal}");
+    assert!(cal.contains(r#""object":"Cobalt Cloud""#), "{cal}");
+    // Subject from the TARGET and namespace from the EVIDENCE — the model
+    // named neither.
+    assert!(cal.contains(r#""subject":"acme""#), "{cal}");
+    assert!(cal.contains(r#""namespace":"test""#), "{cal}");
+    // The grain carries the VERIFIER's confidence, not the proposer's 0.9.
+    assert!(cal.contains(r#""confidence":0.9"#), "{cal}");
+    assert!(
+        fact.summary.render().contains("alias_of"),
+        "the reviewer sees the relation an apply would write: {}",
+        fact.summary.render()
+    );
+
+    for (target, why) in [
+        ("entity:test/acme2", "a prose relation is not a predicate"),
+        ("entity:test/acme3", "an empty object records nothing"),
+    ] {
+        let r = recs
+            .iter()
+            .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == target)
+            .unwrap_or_else(|| panic!("expected an advisory rec for {target}"));
+        assert_eq!(r.action_kind, ActionKind::Flag, "{why}");
+        assert!(matches!(r.proposal, Proposal::Data { .. }), "{why}");
+    }
+}
+
+#[test]
+fn llm_query_revision_is_applicable_only_with_a_recorded_inverse() {
+    use crate::model::{ActionKind, Origin};
+    use crate::recommendation::Proposal;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"the briefing query misses the lessons","target":"query:desk_pulse","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"query_revision","body":"RECALL facts WHERE relation = \"lesson\" LIMIT 20"}}}},
+          {{"summary":"empty body","target":"query:empty","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"query_revision","body":"  "}}}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9}]}"#.to_string();
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground,
+        verify,
+        enrich: r#"{"notes":[]}"#.to_string(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+
+    let rev = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "query:desk_pulse")
+        .expect("the query revision rec");
+    assert_eq!(rev.action_kind, ActionKind::Revise);
+    assert!(rev.rollbackable && !rev.destructive);
+    let Proposal::Cal { cal } = &rev.proposal else {
+        panic!("a query revision is CAL, got {:?}", rev.proposal)
+    };
+    // The NAME comes from the target; only the body came from the model.
+    assert!(cal.starts_with(r#"DEFINE QUERY "desk_pulse" AS { "#), "{cal}");
+    assert!(cal.contains("relation = \"lesson\""), "{cal}");
+    assert!(!cal.contains('\n'), "a definition is one statement: {cal}");
+
+    // An empty body is nothing to define.
+    let empty = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "query:empty")
+        .expect("the empty-body rec");
+    assert_eq!(empty.action_kind, ActionKind::Flag);
+
+    // Governed apply: the DEFINE runs, and the recorded inverse is what makes
+    // it applicable at all.
+    e.review(
+        &mut sub.inner,
+        &rev.hash,
+        Decision::Approve,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "the briefing should carry the lessons",
+        11_000,
+    )
+    .unwrap();
+    e.apply(
+        &mut sub.inner,
+        &rev.hash,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "applying the tighter briefing",
+        false,
+        12_000,
+    )
+    .unwrap();
+    e.rollback(
+        &mut sub.inner,
+        &rev.hash,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "reverting",
+        13_000,
+    )
+    .unwrap();
+}
+
+#[test]
+fn llm_plan_revision_edits_fields_and_refuses_topology_and_staleness() {
+    use crate::model::{ActionKind, Origin};
+    use crate::recommendation::Proposal;
+    let mut sub = TestSubstrate::new();
+    let plan = sub.add_workflow();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+
+    // (0) two legal edits; (1) a topology rewrite; (2) a stale `from`;
+    // (3) a no-op. Only (0) may become applicable.
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"the review cycle is too tight","target":"grain:{plan}","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"plan_revision","edits":[
+              {{"path":"edges.1.max_cycles","from":2,"to":4}},
+              {{"path":"retries.fetch","from":1,"to":3}}]}}}},
+          {{"summary":"rewire it","target":"grain:{plan}","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"plan_revision","edits":[{{"path":"edges.0.dst","from":"review","to":"post"}}]}}}},
+          {{"summary":"authored against an older plan","target":"grain:{plan}","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"plan_revision","edits":[{{"path":"edges.1.max_cycles","from":9,"to":4}}]}}}},
+          {{"summary":"changes nothing","target":"grain:{plan}","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"plan_revision","edits":[{{"path":"retries.fetch","from":1,"to":1}}]}}}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true},{"id":2,"supported":true},{"id":3,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9},{"id":2,"keep":true,"confidence":0.9},{"id":3,"keep":true,"confidence":0.9}]}"#.to_string();
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground,
+        verify,
+        enrich: r#"{"notes":[]}"#.to_string(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+
+    // All four share one target, so dedup keeps ONE rec per (family, target,
+    // action) — the applicable Revise is the one that resolved.
+    let plan_recs: Vec<_> = recs
+        .iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == format!("grain:{plan}"))
+        .collect();
+    let revise = plan_recs
+        .iter()
+        .find(|r| r.action_kind == ActionKind::Revise)
+        .expect("the legal plan revision");
+    let Proposal::Cal { cal } = &revise.proposal else {
+        panic!("a plan revision is CAL, got {:?}", revise.proposal)
+    };
+    assert!(cal.starts_with(&format!("SUPERSEDE {plan} WITH workflow ")), "{cal}");
+    assert!(cal.contains(r#""max_cycles":4"#), "the edit landed: {cal}");
+    assert!(cal.contains(r#""fetch":3"#), "the retry edit landed: {cal}");
+    // Untouched topology travels through verbatim.
+    assert!(cal.contains(r#""dst":"review""#), "topology preserved: {cal}");
+    assert!(
+        revise.summary.render().contains("edges.1.max_cycles: 2 -> 4"),
+        "the reviewer sees the deltas, not a re-drawn graph: {}",
+        revise.summary.render()
+    );
+
+    // The topology, stale and no-op drafts all failed to resolve — they are
+    // advisory, and none of them minted a second executable plan proposal.
+    assert_eq!(
+        plan_recs.iter().filter(|r| r.action_kind == ActionKind::Revise).count(),
+        1,
+        "only the legal edit set is executable"
+    );
+}
+
+#[test]
+fn llm_code_revision_pins_the_tools_declared_evalset() {
+    use crate::model::{ActionKind, Origin};
+    use crate::recommendation::Proposal;
+    let mut sub = TestSubstrate::new();
+    let evalset = sub.add_fact("evalset:screen", "mg:evalset", r#"{"cases":[]}"#);
+    sub.add_tool_def("screen_payment", Some(&evalset));
+    sub.add_tool_def("unpinned_tool", None);
+    let h1 = sub.add_tool_call("screen_payment", true, "missed an exact match");
+    let _h2 = sub.add_tool_call("screen_payment", true, "missed an exact match");
+
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"the matcher misses exact hits","target":"tool:screen_payment","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"code_revision","source":"def screen(p):\n    return exact_match(p)"}}}},
+          {{"summary":"same for the unpinned one","target":"tool:unpinned_tool","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"code_revision","source":"def f(): pass"}}}},
+          {{"summary":"a tool target with no code proposal","target":"tool:screen_payment","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"lesson","lesson":"Check exact matches first"}}}}
+        ]}}"#
+    );
+    let ground = r#"{"results":[{"id":0,"supported":true}]}"#.to_string();
+    let verify = r#"{"results":[{"id":0,"keep":true,"confidence":0.92}]}"#.to_string();
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground,
+        verify,
+        enrich: r#"{"notes":[]}"#.to_string(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+
+    let code = recs
+        .iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "tool:screen_payment")
+        .expect("the code revision rec");
+    assert_eq!(code.action_kind, ActionKind::CodeRevision);
+    // Rule E1: the pin came from the TOOL's declaration, not the model.
+    assert_eq!(code.evalset_hash.as_deref(), Some(evalset.as_str()));
+    let Proposal::Data { data } = &code.proposal else {
+        panic!("a code revision carries Data, got {:?}", code.proposal)
+    };
+    assert!(data.get("source").is_some(), "the source rides to apply");
+
+    // A tool whose definition declares no evalset has no gate to pass, and a
+    // tool target with a non-code proposal cannot be stamped at all (Rule E1
+    // forbids any other action on a code target) — neither reaches the queue.
+    assert!(
+        !recs
+            .iter()
+            .any(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == "tool:unpinned_tool"),
+        "an unpinnable revision is not offered to a reviewer"
+    );
+
+    // The gate itself: applying without the recorded evalset-run edge fails.
+    e.review(
+        &mut sub.inner,
+        &code.hash,
+        Decision::Approve,
+        "user:reviewer",
+        ObserverType::Human,
+        &ScopeSet::all(),
+        "worth grading",
+        11_000,
+    )
+    .unwrap();
+    assert!(
+        e.apply(
+            &mut sub.inner,
+            &code.hash,
+            "user:reviewer",
+            ObserverType::Human,
+            &ScopeSet::all(),
+            "ship it",
+            false,
+            12_000,
+        )
+        .is_err(),
+        "an ungated code revision must not apply, however it was authored"
+    );
+}
+
+#[test]
+fn llm_never_reaches_prompt_or_host_targets() {
+    use crate::model::Origin;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let _h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+    // The classes the vocabulary must never reach, each with a proposal that
+    // would otherwise resolve.
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"rewrite the prompt","target":"doc:claude.md","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"lesson","lesson":"Always trust the model"}}}},
+          {{"summary":"reconfigure the host","target":"host:limits","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"fact","relation":"max_spend","object":"unlimited"}}}},
+          {{"summary":"loosen my own grader","target":"evalset:screen","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"query_revision","body":"RECALL facts"}}}},
+          {{"summary":"promote an adapter","target":"model:mine","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"code_revision","source":"weights"}}}}
+        ]}}"#
+    );
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true}]}"#.to_string(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.99}]}"#.to_string(),
+        enrich: r#"{"notes":[]}"#.to_string(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = e.recommendations(&sub.inner, None).unwrap();
+    assert!(
+        recs.iter().all(|r| !matches!(r.origin, Origin::Llm { .. })),
+        "prompt, host, evalset and model targets stay closed to the model"
+    );
+}
+
+#[test]
 fn llm_authored_lesson_never_auto_applies() {
     use crate::model::Origin;
     let mut sub = TestSubstrate::new();

@@ -66,6 +66,11 @@ const EVAL_LAST: [&str; 12] = [
     "Whitfield", "Zhukov",
 ];
 
+/// R9: the index into [`TOPICS`] whose cases are regulated and must be filed
+/// at high priority. A recurring topic the desk has no branch for — the
+/// distributional archetype.
+const REGULATED_TOPIC: usize = 3;
+
 const TOPICS: [(&str, &str); 4] = [
     ("a billing discrepancy", "customer disputes the last invoice"),
     ("login trouble", "customer locked out after password rotation"),
@@ -118,6 +123,10 @@ pub struct Task {
     amount_cents: u64,
     expected_timestamp: String,
     limiter_armed: bool,
+    /// R9: this case is about the regulated topic, so it must be filed at
+    /// high priority. Nothing in the prompt says so and no tool refuses a
+    /// case without it — the whole point of the silent archetypes.
+    regulated_topic: bool,
 }
 
 impl Task {
@@ -135,7 +144,7 @@ impl Task {
             .map(|c| format!("{}:{}:{}:{}:{}", c.id, c.email, c.sub_id, c.plan, c.balance))
             .collect();
         format!(
-            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|pool={}|prompt={}",
+            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|regulated={}|pool={}|prompt={}",
             self.id,
             self.template,
             self.rules_exercised.join(","),
@@ -143,6 +152,7 @@ impl Task {
             self.amount_cents,
             self.expected_timestamp,
             self.limiter_armed,
+            self.regulated_topic,
             pool.join(";"),
             self.prompt,
         )
@@ -217,7 +227,9 @@ fn gen_task(
 
     let name = pool[target].name.clone();
     let email = pool[target].email.clone();
+    let target_plan = pool[target].plan;
     let mut expected_timestamp = String::new();
+    let mut regulated_topic = false;
     let prompt = if template == "log_case" {
         let (off_disp, off_min) = OFFSETS[(rng.next() % OFFSETS.len() as u64) as usize];
         let month = 1 + (rng.next() % 12) as u32;
@@ -228,7 +240,9 @@ fn gen_task(
         let minute = [0u32, 15, 30, 45][(rng.next() % 4) as usize];
         expected_timestamp = utc_from_local(month, day, hour, minute, off_min);
         let local = format!("2026-{month:02}-{day:02} {hour:02}:{minute:02}");
-        let (topic, note) = TOPICS[(rng.next() % TOPICS.len() as u64) as usize];
+        let topic_idx = (rng.next() % TOPICS.len() as u64) as usize;
+        let (topic, note) = TOPICS[topic_idx];
+        regulated_topic = topic_idx == REGULATED_TOPIC;
         match split {
             Split::Experience => format!(
                 "Customer {name} ({email}) called about {topic}. Log a case with the note \
@@ -281,6 +295,19 @@ fn gen_task(
     if limiter_armed {
         rules.push("R6");
     }
+    // ---- the SILENT archetypes (R7-R9): no tool ever errors for these ----
+    // R7 rides every closure; R8 only BITES under $100 (over it, R3 already
+    // forces the token, so the rule is satisfied for free and this task is
+    // no opportunity to learn it); R9 rides the regulated topic only.
+    if template == "refund_and_cancel" {
+        rules.push("R7");
+    }
+    if template != "log_case" && target_plan == "enterprise" && amount_cents <= APPROVAL_CENTS {
+        rules.push("R8");
+    }
+    if regulated_topic {
+        rules.push("R9");
+    }
 
     Task {
         id: format!("{prefix}-{i:04}"),
@@ -292,6 +319,7 @@ fn gen_task(
         amount_cents,
         expected_timestamp,
         limiter_armed,
+        regulated_topic,
     }
 }
 
@@ -376,7 +404,8 @@ pub fn tool_schemas() -> Value {
             json!({ "type": "object", "properties": {
                 "customer_id": { "type": "string" },
                 "note": { "type": "string" },
-                "timestamp": { "type": "string", "description": "when the case happened" }
+                "timestamp": { "type": "string", "description": "when the case happened" },
+                "priority": { "type": "string", "description": "case priority, e.g. low, normal, high" }
             }, "required": ["customer_id", "note", "timestamp"] }),
         ),
         f(
@@ -400,6 +429,12 @@ pub struct Env {
     expected_timestamp: String,
     limiter_armed: bool,
     limiter_open: bool,
+    /// R8: the target's plan, and whether the refund that landed carried an
+    /// approval token. Both are ordinary desk facts; neither raises an error.
+    target_plan: &'static str,
+    refund_authorized: bool,
+    /// R9: this case must be filed high-priority.
+    regulated_topic: bool,
     /// The endpoint R6 fronts: `refund` on refund templates, `log_case` on
     /// log tasks.
     limited_tool: &'static str,
@@ -408,7 +443,9 @@ pub struct Env {
     token_seq: u32,
     refunds: Vec<(String, u64)>,
     cancelled: BTreeSet<String>,
-    cases: Vec<(String, String, String)>,
+    /// (customer, note, timestamp, priority) — priority is empty unless the
+    /// agent set one.
+    cases: Vec<(String, String, String, String)>,
     failures: BTreeMap<RuleId, u32>,
 }
 
@@ -458,6 +495,9 @@ impl Env {
             expected_timestamp: task.expected_timestamp.clone(),
             limiter_armed: task.limiter_armed,
             limiter_open: false,
+            target_plan: task.pool[task.target].plan,
+            refund_authorized: false,
+            regulated_topic: task.regulated_topic,
             limited_tool: if task.template == "log_case" { "log_case" } else { "refund" },
             tokens: BTreeSet::new(),
             token_seq: 0,
@@ -508,7 +548,7 @@ impl Env {
         if self.cancelled.iter().any(|id| id != target) {
             return (false, "cancelled_wrong_customer".to_string());
         }
-        if self.cases.iter().any(|(id, _, _)| id != target) {
+        if self.cases.iter().any(|(id, _, _, _)| id != target) {
             return (false, "case_on_wrong_customer".to_string());
         }
         match self.template {
@@ -526,8 +566,20 @@ impl Env {
                     if !self.cancelled.contains(target) {
                         return (false, "not_cancelled".to_string());
                     }
+                    // R7 (silent): closing an account is an auditable act —
+                    // desk policy is that it leaves a case behind. Every tool
+                    // call here succeeded; only the final state is wrong.
+                    if self.cases.is_empty() {
+                        return (false, "no_closure_case".to_string());
+                    }
                 } else if !self.cancelled.is_empty() {
                     return (false, "unrequested_cancellation".to_string());
+                }
+                // R8 (silent): an enterprise account needs a manager behind
+                // ANY refund, not only one over $100. Over the threshold R3
+                // already forced a token, so this only ever bites below it.
+                if self.target_plan == "enterprise" && !self.refund_authorized {
+                    return (false, "unapproved_enterprise_refund".to_string());
                 }
                 (true, String::new())
             }
@@ -547,6 +599,11 @@ impl Env {
                 if self.cases[0].2 != self.expected_timestamp {
                     return (false, "wrong_timestamp".to_string());
                 }
+                // R9 (silent): this topic is regulated and its cases are
+                // filed high-priority. `log_case` took the case happily.
+                if self.regulated_topic && self.cases[0].3 != "high" {
+                    return (false, "case_missing_priority".to_string());
+                }
                 (true, String::new())
             }
             _ => (false, "unknown_template".to_string()),
@@ -564,9 +621,31 @@ impl Env {
         if self.target >= PAGE_SIZE
             && (self.refunds.iter().any(|(id, _)| id != target)
                 || self.cancelled.iter().any(|id| id != target)
-                || self.cases.iter().any(|(id, _, _)| id != target))
+                || self.cases.iter().any(|(id, _, _, _)| id != target))
         {
             *out.entry("R1").or_insert(0) += 1;
+        }
+        // R7-R9 have NO error shape at all — every call that trips them
+        // returned 200. Without env-side attribution they would be invisible
+        // to the recurrence table as well as to the analyzers, and the
+        // difference between "the loop cannot see this" and "nothing
+        // happened" is the whole experiment.
+        if self.template == "refund_and_cancel"
+            && self.cancelled.contains(target)
+            && self.cases.is_empty()
+        {
+            *out.entry("R7").or_insert(0) += 1;
+        }
+        if self.target_plan == "enterprise"
+            && !self.refunds.is_empty()
+            && !self.refund_authorized
+        {
+            *out.entry("R8").or_insert(0) += 1;
+        }
+        if self.regulated_topic
+            && self.cases.first().is_some_and(|c| c.3 != "high")
+        {
+            *out.entry("R9").or_insert(0) += 1;
         }
         out.into_iter().collect()
     }
@@ -693,18 +772,18 @@ impl Env {
             );
         }
         // R3: tokens are single-use — consumed on the refund they authorize.
-        if cents > APPROVAL_CENTS {
-            match str_arg(args, "approval_token") {
-                Some(t) if self.tokens.remove(t) => {}
-                _ => {
-                    return self.rule_err(
-                        "R3",
-                        "approval_required",
-                        "refunds over $100 require a valid approval_token from request_approval",
-                    )
-                }
-            }
+        // A token presented under the threshold is still consumed and still
+        // authorizes: that is what makes R8 satisfiable at all.
+        let presented = str_arg(args, "approval_token")
+            .is_some_and(|t| self.tokens.remove(t));
+        if cents > APPROVAL_CENTS && !presented {
+            return self.rule_err(
+                "R3",
+                "approval_required",
+                "refunds over $100 require a valid approval_token from request_approval",
+            );
         }
+        self.refund_authorized = presented;
         self.refunds.push((cid, cents));
         ok_body(json!({ "refund_id": format!("re_{:08x}", 0x0e00_0000u32 + self.refunds.len() as u32) }))
     }
@@ -748,8 +827,9 @@ impl Env {
                 "timestamp must be UTC ISO-8601: YYYY-MM-DDTHH:MM:SSZ",
             );
         }
+        let priority = str_arg(args, "priority").unwrap_or("").trim().to_lowercase();
         let cid = self.pool[i].id.clone();
-        self.cases.push((cid, note, ts));
+        self.cases.push((cid, note, ts, priority));
         ok_body(json!({ "case_id": format!("case_{:08x}", 0x0c00_0000u32 + self.cases.len() as u32) }))
     }
 
@@ -801,7 +881,25 @@ mod tests {
                 String::new()
             },
             limiter_armed: limited,
+            regulated_topic: false,
         }
+    }
+
+    /// The same scripted task with a silent rule armed: an enterprise target
+    /// (R8) and/or the regulated topic (R9). R7 rides `refund_and_cancel`
+    /// unconditionally, so it needs no flag.
+    fn silent_task(
+        template: &'static str,
+        enterprise: bool,
+        regulated: bool,
+        amount_cents: u64,
+    ) -> Task {
+        let mut t = task(template, false, false, amount_cents);
+        if enterprise {
+            t.pool[0].plan = "enterprise";
+        }
+        t.regulated_topic = regulated;
+        t
     }
 
     fn call(env: &mut Env, tool: &str, args: Value) -> ToolOutcome {
@@ -988,9 +1086,14 @@ mod tests {
         let (ok, reason) = env.score("done");
         assert!(!ok);
         assert_eq!(reason, "no_refund");
-        assert_eq!(env.rule_failures(), vec![("R4", 1)]);
+        // R7 rides along honestly: the account WAS closed and no case was
+        // filed. The recurrence table is unaffected — `mishandled_rules`
+        // attributes "no_refund" to R3/R4/R6 — this is the raw per-rule count.
+        assert_eq!(env.rule_failures(), vec![("R4", 1), ("R7", 1)]);
 
-        // Correct order: approve → refund → cancel → success.
+        // Right order, still incomplete: approve → refund → cancel scores
+        // FALSE now, and every call returned 200. This is R7's whole shape —
+        // there is no error anywhere for a clusterer to find.
         let mut env = Env::new(&t);
         let a = body(&call(&mut env, "request_approval", json!({"reason": "r"})));
         let o = call(&mut env, "refund", json!({
@@ -999,8 +1102,99 @@ mod tests {
         assert!(!o.is_error);
         assert!(!call(&mut env, "cancel_subscription", json!({"customer_id": target})).is_error);
         let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "no_closure_case");
+        assert_eq!(env.rule_failures(), vec![("R7", 1)]);
+
+        // Complete: the closure leaves a case behind.
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": target, "note": "account closed", "timestamp": "2026-01-01T00:00:00Z"
+        }))
+        .is_error);
+        let (ok, reason) = env.score("done");
         assert!(ok, "{reason}");
         assert!(env.rule_failures().is_empty());
+    }
+
+    #[test]
+    fn r8_enterprise_refund_needs_a_token_below_the_threshold_and_errors_never_fire() {
+        // $40 is under R3's $100 line, so nothing in the refund path objects.
+        let t = silent_task("refund_small", true, false, 40 * 100);
+        let target = t.pool[0].id.clone();
+
+        let mut env = Env::new(&t);
+        let o = call(&mut env, "refund", json!({"customer_id": target, "amount": 40}));
+        assert!(!o.is_error, "R8 raises no error — that is the whole shape");
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "unapproved_enterprise_refund");
+        assert_eq!(env.rule_failures(), vec![("R8", 1)]);
+
+        // With a manager behind it the same refund passes. A token under the
+        // threshold has to be consumed and count, or the rule is unlearnable.
+        let mut env = Env::new(&t);
+        let a = body(&call(&mut env, "request_approval", json!({"reason": "enterprise"})));
+        let o = call(&mut env, "refund", json!({
+            "customer_id": target, "amount": 40, "approval_token": a["approval_token"]
+        }));
+        assert!(!o.is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+
+        // A non-enterprise account is unaffected: the rule is a segment rule.
+        let t = silent_task("refund_small", false, false, 40 * 100);
+        let target = t.pool[0].id.clone();
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "refund", json!({"customer_id": target, "amount": 40})).is_error);
+        assert!(env.score("done").0);
+    }
+
+    #[test]
+    fn r9_regulated_cases_need_high_priority_and_log_case_never_objects() {
+        let t = silent_task("log_case", false, true, 0);
+        let target = t.pool[0].id.clone();
+        let stamped = |priority: Option<&str>| {
+            let mut a = json!({
+                "customer_id": target,
+                "note": "export requested",
+                "timestamp": "2026-03-14T04:00:00Z",
+            });
+            if let Some(p) = priority {
+                a["priority"] = json!(p);
+            }
+            a
+        };
+
+        // No priority: accepted by the tool, rejected by the desk.
+        let mut env = Env::new(&t);
+        let o = call(&mut env, "log_case", stamped(None));
+        assert!(!o.is_error);
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "case_missing_priority");
+        assert_eq!(env.rule_failures(), vec![("R9", 1)]);
+
+        // The wrong priority is just as silent, and just as wrong.
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", stamped(Some("normal"))).is_error);
+        assert_eq!(env.score("done").1, "case_missing_priority");
+
+        // High priority (case-insensitively) passes.
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", stamped(Some("High"))).is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+
+        // An unregulated case needs nothing — high priority on it is fine too.
+        let t = silent_task("log_case", false, false, 0);
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": t.pool[0].id, "note": "n", "timestamp": "2026-03-14T04:00:00Z"
+        }))
+        .is_error);
+        assert!(env.score("done").0);
     }
 
     #[test]

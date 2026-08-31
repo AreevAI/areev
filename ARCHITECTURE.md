@@ -1629,6 +1629,68 @@ what an apply would write — a summary never stands in for the payload.
 Reference: [docs/loop.md](docs/loop.md) (DISCOVER),
 [docs/loop-reflection.md](docs/loop-reflection.md) §5.5.
 
+### What an LLM may propose is a closed vocabulary, and every kind names a change the gates already judge
+
+**Decision (2026-08-31):** the authored `lesson` above generalizes into five
+proposal kinds a DISCOVER draft may carry — `lesson`, `fact`,
+`query_revision`, `plan_revision`, `code_revision` — each mapping onto an
+apply path that already records an inverse. Anything outside the vocabulary,
+or malformed inside it, leaves the draft advisory.
+
+The problem this solves is that the previous shape gave a model exactly one
+sentence to say: record this line as a Fact. Four governed apply paths
+already existed and no LLM could address any of them — a definition rewrite
+(`DEFINE QUERY`/`DEFINE TEMPLATE`, with its `definition_inverse` rollback), a
+workflow supersession, and §7.4's `code_revision` with its Rule E1 evalset
+pin, which had no producer in the tree at all. So the loop could evolve what
+an agent *remembers* but never how it *queries*, *runs*, or *executes* —
+which is most of what a self-improving agent would need to change about
+itself.
+
+Four properties keep the widened surface safe, all structural:
+
+- **Scope is never model-named.** The subject of a `fact`, the name of a
+  `query_revision`, the hash of a `plan_revision` and the tool of a
+  `code_revision` all come from the draft's `target`; the namespace comes
+  from the cited evidence; and a `code_revision`'s evalset pin is resolved
+  from the tool's own declaration. A proposer that could name its own scope
+  or its own grader is not gated.
+- **Resolution happens before the gates.** A draft is turned into the exact
+  statement an apply would run *before* GROUND and VERIFY see it, and that
+  statement is folded into the claim they judge. A malformed proposal
+  therefore dies without costing a model call, and no gate ever judges a
+  summary standing in for a payload it never saw.
+- **`plan_revision` carries field-level edits with a `from`, not a
+  replacement body.** Only `edges.<i>.cond`, `edges.<i>.max_cycles` and
+  `retries.<node>` are matchable, so node topology is not expressible by any
+  proposal a model can write — a reviewer checks a short list of scalar
+  deltas rather than re-deriving a graph. `from` must equal what the live
+  plan holds, which is what stops a proposal authored against a superseded
+  plan from applying to a newer one.
+- **The auto-apply floor is unchanged, twice over.** `origin = llm` is
+  categorically ineligible, and independently `Policy::grants_auto_apply`
+  admits only the `memory` target class — so the query, code and (via
+  `origin`) plan proposals cannot auto-apply even under a policy that names
+  them. Widening what a model may *propose* does not widen what can apply
+  without a human.
+
+One consequence showed up only under measurement and is part of the decision:
+the DISCOVER evidence bundle now **reserves a share per source** (cited
+findings ≤24, recent tool errors ≤16, recent facts/observations ≥24 of 64).
+A single `tool_failure` finding may cite up to 64 grains, so first-come
+seeding let determinism fill the whole bundle and the model never saw one
+grain no analyzer had already flagged — a widened vocabulary is worth nothing
+if the evidence for using it cannot reach the model, and the failure looks
+exactly like abstention.
+
+Structural validation of a proposed plan and resolution of a tool's evalset
+pin are **substrate capabilities** (`plans`, `code`), not engine logic: the
+Areev adapter hands a candidate plan to the runtime's own `PlanGraph::build`,
+so the loop carries no second, drifting opinion of what a runnable plan is,
+and `areev-loop` keeps its no-Areev-dependency rule. A substrate that
+declares neither degrades those kinds to advisory rather than pretending to
+have checked them. Reference: [docs/loop.md](docs/loop.md) (DISCOVER).
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

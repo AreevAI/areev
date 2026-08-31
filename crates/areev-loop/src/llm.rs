@@ -34,6 +34,7 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Caps that bound what a single LLM contribution can inject (defense in depth;
 /// the engine enforces them after parsing).
@@ -44,6 +45,14 @@ pub const MAX_SUMMARY_LEN: usize = 200;
 /// not a lesson, and a bound on what a single approved apply can put into
 /// every future prompt.
 pub const MAX_LESSON_LEN: usize = 240;
+/// Caps on the rest of the proposal vocabulary. Each one bounds what a single
+/// approved apply can put into every future run of the agent, so they are part
+/// of the trust floor rather than tuning knobs.
+pub const MAX_RELATION_LEN: usize = 64;
+pub const MAX_OBJECT_LEN: usize = 480;
+pub const MAX_QUERY_BODY_LEN: usize = 2_000;
+pub const MAX_PLAN_EDITS: usize = 8;
+pub const MAX_CODE_LEN: usize = 20_000;
 
 /// A backend that answers one JSON request with one JSON response. Object-safe
 /// so the engine can hold a `Box<dyn LlmBackend>`.
@@ -129,6 +138,95 @@ pub struct LlmDraft {
     /// text is folded into the GROUND claim and VERIFY summary so both gates
     /// judge exactly what an apply would write.
     pub lesson: String,
+    /// The generalized proposal vocabulary (§9.1): what change this draft asks
+    /// a reviewer to make. Held as raw JSON so one draft naming an unknown or
+    /// malformed `kind` degrades to advisory instead of dropping the whole
+    /// response — read it through [`LlmDraft::parsed_proposal`].
+    pub proposal: Option<Value>,
+}
+
+/// One field-level edit to a Workflow plan grain. `from` is a staleness check
+/// (it must equal what the live plan holds at `path`), which is what stops a
+/// proposal authored against a superseded plan from applying to a newer one —
+/// the role `base_digest` plays on [`super::recommendation::Proposal::Edit`].
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PlanEdit {
+    /// A dotted path into the plan body, e.g. `edges.2.max_cycles`. The
+    /// engine's allowlist decides which paths are editable at all.
+    pub path: String,
+    pub from: Value,
+    pub to: Value,
+}
+
+/// What a DISCOVER draft proposes to change. Closed vocabulary: every variant
+/// maps onto an apply path that already records an inverse, and anything the
+/// model returns outside it leaves the draft advisory.
+///
+/// Note what each variant does NOT carry. The subject of a `Fact`, the name of
+/// a `QueryRevision`, the hash of a `PlanRevision` and the tool of a
+/// `CodeRevision` all come from the draft's `target`, and the evalset a
+/// `CodeRevision` is gated against comes from the substrate — so the model
+/// names the change but never names its own scope or its own grader.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DraftProposal {
+    /// One imperative line recorded as a Fact with `relation = "lesson"`.
+    /// The pre-vocabulary shape, and still the default one.
+    Lesson {
+        #[serde(default)]
+        lesson: String,
+    },
+    /// A durable fact under a model-chosen relation — the "stop making a
+    /// person re-supply this every time" proposal.
+    Fact {
+        #[serde(default)]
+        relation: String,
+        #[serde(default)]
+        object: String,
+    },
+    /// A rewrite of the saved CAL query or template named by the target: the
+    /// agent changing how it assembles its own context.
+    QueryRevision {
+        #[serde(default)]
+        body: String,
+    },
+    /// Field-level edits to the Workflow plan named by the target. Node
+    /// topology is not expressible here by construction — only the paths the
+    /// engine's allowlist admits.
+    PlanRevision {
+        #[serde(default)]
+        edits: Vec<PlanEdit>,
+    },
+    /// New source for the executable tool named by the target. Applies only
+    /// through §7.4's recorded evalset-run edge (Rule E1).
+    CodeRevision {
+        #[serde(default)]
+        source: String,
+    },
+}
+
+impl LlmDraft {
+    /// The proposal this draft makes, or `None` when it is advisory.
+    ///
+    /// An explicit `proposal` decides on its own: if it names an unknown kind
+    /// or fails to parse, the draft is advisory rather than being quietly
+    /// re-read as something the model did not ask for. `lesson` is the
+    /// fallback only when no `proposal` was sent at all, which is what keeps
+    /// every transcript recorded before the vocabulary existed parsing — and
+    /// therefore keeps the published runs comparable.
+    pub fn parsed_proposal(&self) -> Option<DraftProposal> {
+        if let Some(v) = &self.proposal {
+            return serde_json::from_value::<DraftProposal>(v.clone()).ok();
+        }
+        if self.lesson.trim().is_empty() {
+            None
+        } else {
+            Some(DraftProposal::Lesson {
+                lesson: self.lesson.clone(),
+            })
+        }
+    }
 }
 
 /// The DISCOVER response.
@@ -336,6 +434,89 @@ mod tests {
         let r = parse_enrich(r#"{"notes":[{"target":"entity:a/b","guidance":"g"}]}"#);
         assert_eq!(r.notes.len(), 1);
         assert_eq!(r.notes[0].guidance, "g");
+    }
+
+    #[test]
+    fn lesson_desugars_when_no_proposal_is_sent() {
+        // Every transcript recorded before the vocabulary existed must still
+        // resolve to the same change, or the published runs stop being
+        // comparable with anything measured after it.
+        let r = parse_discover(
+            r#"{"recommendations":[{"summary":"s","target":"entity:a/b","evidence":["h"],"lesson":"Do the thing"}]}"#,
+        );
+        assert_eq!(
+            r.recommendations[0].parsed_proposal(),
+            Some(DraftProposal::Lesson { lesson: "Do the thing".into() })
+        );
+    }
+
+    #[test]
+    fn an_explicit_proposal_wins_over_lesson() {
+        let r = parse_discover(
+            r#"{"recommendations":[{"summary":"s","target":"entity:a/b","evidence":["h"],
+                "lesson":"ignored","proposal":{"kind":"fact","relation":"alias_of","object":"Cobalt Cloud"}}]}"#,
+        );
+        assert_eq!(
+            r.recommendations[0].parsed_proposal(),
+            Some(DraftProposal::Fact {
+                relation: "alias_of".into(),
+                object: "Cobalt Cloud".into()
+            })
+        );
+    }
+
+    #[test]
+    fn an_unparseable_proposal_is_advisory_not_reinterpreted() {
+        // A garbled proposal must NOT fall back to the lesson: applying an
+        // `ADD fact` when the model asked for something we could not read is
+        // doing something it never proposed.
+        for body in [
+            r#""proposal":{"kind":"teleport","x":1}"#,
+            r#""proposal":{"kind":"plan_revision","edits":"not-a-list"}"#,
+            r#""proposal":42"#,
+        ] {
+            let raw = format!(
+                r#"{{"recommendations":[{{"summary":"s","target":"entity:a/b","evidence":["h"],"lesson":"L",{body}}}]}}"#
+            );
+            let r = parse_discover(&raw);
+            assert_eq!(r.recommendations.len(), 1, "{body}");
+            assert_eq!(r.recommendations[0].parsed_proposal(), None, "{body}");
+        }
+    }
+
+    #[test]
+    fn one_bad_proposal_does_not_drop_its_siblings() {
+        // Per-draft tolerance: the whole response surviving is what keeps a
+        // single malformed kind from silently costing a run its findings.
+        let r = parse_discover(
+            r#"{"recommendations":[
+                {"summary":"a","target":"entity:a/b","evidence":["h"],"proposal":{"kind":"nope"}},
+                {"summary":"b","target":"entity:a/c","evidence":["h"],"proposal":{"kind":"lesson","lesson":"Keep me"}}
+            ]}"#,
+        );
+        assert_eq!(r.recommendations.len(), 2);
+        assert_eq!(r.recommendations[0].parsed_proposal(), None);
+        assert_eq!(
+            r.recommendations[1].parsed_proposal(),
+            Some(DraftProposal::Lesson { lesson: "Keep me".into() })
+        );
+    }
+
+    #[test]
+    fn plan_edits_carry_their_staleness_check() {
+        let r = parse_discover(
+            r#"{"recommendations":[{"summary":"s","target":"grain:abc","evidence":["h"],
+                "proposal":{"kind":"plan_revision","edits":[{"path":"retries.fetch","from":null,"to":3}]}}]}"#,
+        );
+        let Some(DraftProposal::PlanRevision { edits }) =
+            r.recommendations[0].parsed_proposal()
+        else {
+            panic!("expected a plan revision");
+        };
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].path, "retries.fetch");
+        assert_eq!(edits[0].from, Value::Null);
+        assert_eq!(edits[0].to, Value::from(3));
     }
 
     #[test]

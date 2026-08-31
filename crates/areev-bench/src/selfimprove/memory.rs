@@ -9,6 +9,7 @@
 
 use super::{Ledger, LedgerEntry, TaskRunRecord};
 use areev_cal::AreevFacade;
+use areev_core::types::Fact;
 use areev_loop::{
     CommandLlm, Decision, Engine, LlmBackend, ObserverType, Origin, Proposal, ReadOpts,
     RecStatus, Recommendation, RunOptions, ScopeSet, SubstrateRead,
@@ -114,19 +115,40 @@ impl LlmBackend for MockLoopLlm {
                     .and_then(Value::as_str)
                     .filter(|t| t.starts_with("entity:"))
                     .unwrap_or("entity:lessons/support_desk");
-                match v.pointer("/evidence/0/hash").and_then(Value::as_str) {
-                    Some(h) => ok(serde_json::json!({
-                        "recommendations": [{
-                            "summary": "the same tool failure keeps recurring across tasks",
-                            "target": target,
-                            "guidance": "",
-                            "evidence": [h],
-                            "confidence": 0.9,
-                            "lesson": MOCK_LLM_LESSON,
-                        }]
-                    })),
-                    None => ok(serde_json::json!({ "recommendations": [] })),
+                let Some(h) = v.pointer("/evidence/0/hash").and_then(Value::as_str) else {
+                    return ok(serde_json::json!({ "recommendations": [] }));
+                };
+                let mut recs = vec![serde_json::json!({
+                    "summary": "the same tool failure keeps recurring across tasks",
+                    "target": target,
+                    "guidance": "",
+                    "evidence": [h],
+                    "confidence": 0.9,
+                    "lesson": MOCK_LLM_LESSON,
+                })];
+                // The SILENT archetypes: correlate rejected EPISODES rather
+                // than normalize error bodies, which is the one thing the
+                // deterministic clustering structurally cannot do. Canned,
+                // like everything else in this backend — it proves the path
+                // from an episode correlation to a governed applied lesson,
+                // and is never a claim that a model would find these.
+                for (subject, probe, lesson) in silent_rule_drafts(&v) {
+                    recs.push(serde_json::json!({
+                        "summary": format!("rejected episodes share a pattern: {probe}"),
+                        // A DISTINCT subject per rule, deliberately. Dedup
+                        // identity is (family, target, action), so two llm
+                        // lessons on one entity collapse into one — which is
+                        // correct for the engine and silently lossy here.
+                        "target": format!("entity:lessons/{subject}"),
+                        "guidance": "",
+                        "evidence": [h],
+                        "confidence": 0.9,
+                        // The generalized proposal vocabulary, exercised
+                        // keylessly end to end.
+                        "proposal": { "kind": "lesson", "lesson": lesson },
+                    }));
                 }
+                ok(serde_json::json!({ "recommendations": recs }))
             }
             Some("ground") => ok(serde_json::json!({
                 "results": (0..n_of("/claims"))
@@ -143,6 +165,74 @@ impl LlmBackend for MockLoopLlm {
             _ => ok(serde_json::json!({ "notes": [] })),
         }
     }
+}
+
+/// The episode objects visible in a DISCOVER evidence bundle. Episode facts
+/// render as `"<task> episode {json}"` (the engine's fact-triple projection),
+/// so the payload is recoverable from the bundle text without the mock
+/// needing any privileged read.
+fn bundled_episodes(req: &Value) -> Vec<Value> {
+    req.get("evidence")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|e| e.get("text").and_then(Value::as_str))
+                .filter_map(|t| t.split_once(" episode ").map(|(_, j)| j))
+                .filter_map(|j| serde_json::from_str::<Value>(j).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Which silent-rule lessons the bundled episodes support, as
+/// `(lesson subject, what correlated, lesson text)`.
+///
+/// Each needs at least two rejected episodes sharing the shape — one is an
+/// anecdote, and an analyzer that fires on one data point is the failure mode
+/// the loop's own rate gates exist to prevent. The lesson wording carries the
+/// word the mock agent keys on (`closure` / `enterprise` / `priority`), the
+/// same way a rendered tool-failure lesson carries its error code.
+fn silent_rule_drafts(req: &Value) -> Vec<(&'static str, &'static str, &'static str)> {
+    let eps = bundled_episodes(req);
+    let flag = |v: &Value, k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let rejected: Vec<&Value> = eps
+        .iter()
+        .filter(|e| e.get("outcome").and_then(Value::as_str) == Some("rejected"))
+        .collect();
+    let count = |f: &dyn Fn(&Value) -> bool| rejected.iter().filter(|e| f(e)).count();
+    let mut out = Vec::new();
+    if count(&|e| flag(e, "cancelled") && !flag(e, "case_logged")) >= 2 {
+        out.push((
+            "closure_policy",
+            "cancelled with no case logged",
+            "When you cancel a subscription, also log a case recording the closure.",
+        ));
+    }
+    if count(&|e| {
+        e.get("plan").and_then(Value::as_str) == Some("enterprise")
+            && !flag(e, "approval_requested")
+    }) >= 2
+    {
+        out.push((
+            "enterprise_refund_policy",
+            "enterprise refunds with no approval requested",
+            "Refunds for an enterprise plan customer always need a manager approval \
+             token, whatever the amount.",
+        ));
+    }
+    if count(&|e| {
+        flag(e, "case_logged")
+            && e.get("case_priority").and_then(Value::as_str).unwrap_or("").is_empty()
+    }) >= 2
+    {
+        out.push((
+            "case_priority_policy",
+            "cases logged with no priority set",
+            "Log a case about a data export request with priority set to high.",
+        ));
+    }
+    out
 }
 
 /// The frozen error code out of a tool-result body (mod.rs: tool errors are
@@ -232,7 +322,71 @@ impl Memory {
                 )
                 .map_err(|e| format!("record_tool_call {} ({}): {e}", c.tool, c.call_id))?;
         }
-        Ok(())
+        self.record_episode(rec)
+    }
+
+    /// One EPISODE fact per finished task: the observable shape of what the
+    /// desk did, plus whether the outcome was accepted.
+    ///
+    /// This exists because the silent rules (R7-R9) raise no error, so a
+    /// memory holding only tool calls cannot express them at all — a
+    /// reflection pass would have nothing to reflect on, and "the LLM found
+    /// nothing" would be a fact about the harness rather than about the
+    /// model. A real desk knows both halves of this: what it did, and whether
+    /// the customer accepted it.
+    ///
+    /// What it deliberately does NOT carry is the scored `failure_reason` or
+    /// the attributed `rule_failures`. Those name the rule, and the rule is
+    /// the thing under discovery — writing them here would turn the
+    /// experiment into a reading-comprehension test. Every field below is
+    /// derived from the agent's OWN calls, so nothing here is knowledge the
+    /// agent did not itself generate; the one genuinely new bit is the
+    /// accepted/rejected outcome.
+    fn record_episode(&self, rec: &TaskRunRecord) -> Result<(), String> {
+        let used = |tool: &str| rec.calls.iter().any(|c| c.tool == tool && !c.is_error);
+        // The plan is whatever the desk saw when it looked the customer up;
+        // "unknown" when it never did (which is itself a real signal).
+        let plan = rec
+            .calls
+            .iter()
+            .filter(|c| c.tool == "get_customer" && !c.is_error)
+            .find_map(|c| {
+                serde_json::from_str::<Value>(&c.output_json)
+                    .ok()?
+                    .get("subscription")?
+                    .get("plan")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let case_priority = rec
+            .calls
+            .iter()
+            .filter(|c| c.tool == "log_case" && !c.is_error)
+            .find_map(|c| {
+                serde_json::from_str::<Value>(&c.input_json)
+                    .ok()?
+                    .get("priority")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let episode = serde_json::json!({
+            "outcome": if rec.success { "accepted" } else { "rejected" },
+            "plan": plan,
+            "approval_requested": used("request_approval"),
+            "refunded": used("refund"),
+            "cancelled": used("cancel_subscription"),
+            "case_logged": used("log_case"),
+            "case_priority": case_priority,
+            "steps": rec.steps,
+        });
+        let mut fact = Fact::new(&rec.task_id, "episode", &episode.to_string());
+        fact.common.namespace = Some(self.ns.clone());
+        self.facade
+            .with_store(|m| m.add(&fact))
+            .map(|_| ())
+            .map_err(|e| format!("record episode {}: {e}", rec.task_id))
     }
 
     /// One governed learn pass at `now_ms`: engine run (deterministic
@@ -557,6 +711,153 @@ mod tests {
     const T1: i64 = 1_700_000_000_000;
     const T2: i64 = T1 + HOUR_MS;
     const T3: i64 = T1 + 2 * HOUR_MS;
+
+    /// An EPISODE fact must land for every recorded task — it is the only
+    /// trace a SILENT rule (R7-R9) leaves in memory, so if this write is
+    /// missing the whole silent-archetype experiment measures nothing and
+    /// says so with a clean "the LLM found nothing".
+    #[test]
+    fn record_task_writes_an_episode_fact_carrying_no_diagnosis() {
+        let dir = TempDir::new().unwrap();
+        let mem = Memory::create(dir.path()).unwrap();
+        let mut rec = failing_task("refund", "rate_limited", 1);
+        rec.task_id = "exp-0007".to_string();
+        rec.success = false;
+        mem.record_task(&rec).unwrap();
+
+        let sub = BorrowedSubstrate::new(&mem.facade);
+        let facts = sub
+            .grains_of_type("fact", Some(&mem.ns), ReadOpts::default())
+            .unwrap();
+        let ep = facts
+            .iter()
+            .find(|g| g.fact_relation() == Some("episode"))
+            .expect("an episode fact per recorded task");
+        assert_eq!(ep.fact_subject(), Some("exp-0007"));
+        let body: Value = serde_json::from_str(ep.fact_object().unwrap()).unwrap();
+        assert_eq!(body["outcome"], "rejected");
+        // The diagnosis is the thing under discovery — it must never be here.
+        let raw = ep.fact_object().unwrap();
+        for leak in ["failure_reason", "no_closure_case", "R7", "R8", "R9"] {
+            assert!(!raw.contains(leak), "episode leaked {leak}: {raw}");
+        }
+    }
+
+    /// The SILENT-rule path end to end, keyless: episodes recorded → the
+    /// DISCOVER bundle actually carries them → the mock correlates → the
+    /// authored lesson survives the gates → the scripted review applies it →
+    /// it renders into the prompt.
+    ///
+    /// Every one of those steps failed silently at least once while this was
+    /// being built (the bundle starvation being the sharp one), and each
+    /// failure looked exactly like "the model found nothing".
+    #[test]
+    fn silent_rule_lesson_travels_from_episodes_to_the_prompt() {
+        let dir = TempDir::new().unwrap();
+        let mem = Memory::create(dir.path()).unwrap();
+        // Four closures that cancelled and filed no case — R7's shape, and
+        // NOT one error between them.
+        for i in 0..4 {
+            let mut rec = failing_task("refund", "rate_limited", 0);
+            rec.task_id = format!("exp-{i:04}");
+            rec.success = false;
+            rec.calls = vec![
+                RecordedCall {
+                    call_id: format!("c{i}a"),
+                    tool: "refund".to_string(),
+                    input_json: "{}".to_string(),
+                    output_json: r#"{"refund_id":"re_1"}"#.to_string(),
+                    is_error: false,
+                    rule: None,
+                },
+                RecordedCall {
+                    call_id: format!("c{i}b"),
+                    tool: "cancel_subscription".to_string(),
+                    input_json: "{}".to_string(),
+                    output_json: r#"{"status":"cancelled"}"#.to_string(),
+                    is_error: false,
+                    rule: None,
+                },
+            ];
+            mem.record_task(&rec).unwrap();
+        }
+        let arms = LessonArms { analyzer: true, llm: true };
+        mem.learn_with(Some(Box::new(MockLoopLlm)), None, arms, T1).unwrap();
+        let md = mem.lessons_markdown().unwrap();
+        assert!(
+            md.contains("closure"),
+            "the silent-rule lesson never reached the prompt: {md}"
+        );
+    }
+
+    #[test]
+    fn bundled_episodes_are_recovered_from_the_rendered_fact() {
+        // The engine renders a Fact into the bundle as "<s> <r> <o>"; if that
+        // projection ever changes, the mock's correlation goes quietly blind.
+        let req = serde_json::json!({
+            "evidence": [
+                {"hash": "h1", "grain_type": "fact",
+                 "text": r#"exp-0001 episode {"outcome":"rejected","cancelled":true,"case_logged":false}"#},
+                {"hash": "h2", "grain_type": "tool", "text": "tool refund error: boom"},
+            ]
+        });
+        let eps = bundled_episodes(&req);
+        assert_eq!(eps.len(), 1, "only the episode fact parses");
+        assert_eq!(eps[0]["outcome"], "rejected");
+        // One episode is an anecdote — the correlation needs two.
+        assert!(silent_rule_drafts(&req).is_empty());
+    }
+
+    /// Each silent rule's correlation, driven from synthetic episode
+    /// bundles. The end-to-end test above walks R7 through the real engine;
+    /// R8 and R9 need an agent that looks a customer up (so the plan is
+    /// known) and files a case successfully (so a priority is observable),
+    /// which the deterministic mock does neither of — so their correlations
+    /// are pinned here rather than left to a live run to discover for us.
+    #[test]
+    fn each_silent_rule_correlates_from_its_own_episode_shape() {
+        let bundle = |eps: Vec<Value>| {
+            serde_json::json!({
+                "evidence": eps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| serde_json::json!({
+                        "hash": format!("h{i}"),
+                        "grain_type": "fact",
+                        "text": format!("exp-{i:04} episode {e}"),
+                    }))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let subjects = |req: &Value| -> Vec<&'static str> {
+            silent_rule_drafts(req).into_iter().map(|(s, _, _)| s).collect()
+        };
+
+        let r7 = serde_json::json!({
+            "outcome": "rejected", "cancelled": true, "case_logged": false
+        });
+        assert_eq!(subjects(&bundle(vec![r7.clone(), r7])), vec!["closure_policy"]);
+
+        let r8 = serde_json::json!({
+            "outcome": "rejected", "plan": "enterprise", "approval_requested": false
+        });
+        assert_eq!(
+            subjects(&bundle(vec![r8.clone(), r8])),
+            vec!["enterprise_refund_policy"]
+        );
+
+        let r9 = serde_json::json!({
+            "outcome": "rejected", "case_logged": true, "case_priority": ""
+        });
+        assert_eq!(subjects(&bundle(vec![r9.clone(), r9])), vec!["case_priority_policy"]);
+
+        // ACCEPTED episodes of the same shape correlate nothing: the signal
+        // is the outcome, not the shape.
+        let accepted = serde_json::json!({
+            "outcome": "accepted", "cancelled": true, "case_logged": false
+        });
+        assert!(subjects(&bundle(vec![accepted.clone(), accepted])).is_empty());
+    }
 
     fn failing_task(tool: &str, code: &str, failures: usize) -> TaskRunRecord {
         let mut calls: Vec<RecordedCall> = (0..failures)

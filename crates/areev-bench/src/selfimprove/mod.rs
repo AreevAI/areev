@@ -16,7 +16,7 @@
 //!   request_approval {reason}              → {approval_token}
 //!   refund           {customer_id, amount, approval_token?} → {refund_id}
 //!   cancel_subscription {customer_id}      → {status:"cancelled"}
-//!   log_case         {customer_id, note, timestamp} → {case_id}
+//!   log_case         {customer_id, note, timestamp, priority?} → {case_id}
 //!   wait             {seconds}             → {ok:true}
 //!
 //! A task ends when the assistant replies with content and no tool calls —
@@ -33,6 +33,24 @@
 //!   R4 cancel before refund      → "cancel_before_refund"
 //!   R5 non-UTC timestamp         → "invalid_timestamp"
 //!   R6 rate limit                → "rate_limited" (+ retry_after_s)
+//!
+//! R7-R9 are the SILENT rules, and they deliberately have NO code, because
+//! they raise no error: every tool call that trips one returns 200 and only
+//! the final state is wrong. That is the point of them — signature
+//! clustering detects an error shape, so a workload whose every rule has one
+//! gives an LLM no headroom by construction (SELFIMPROVE.md, "the 2x2 that
+//! could not be run"). These are found by correlating outcomes, not by
+//! normalizing error bodies:
+//!
+//!   R7 a closure leaves no case         → scored `no_closure_case`
+//!   R8 enterprise refund unapproved     → scored `unapproved_enterprise_refund`
+//!   R9 regulated topic not high-priority→ scored `case_missing_priority`
+//!
+//! They reach the memory through the per-task EPISODE observation
+//! (`memory::record_task`), which carries the observable features of the run
+//! and whether it was accepted — never the scored reason, which is the thing
+//! under discovery. An agent that could read `no_closure_case` out of its own
+//! memory would not be learning anything.
 //!
 //! Lessons enter the prompt as a system-prompt section assembled from LIVE
 //! memory by `memory::lessons_markdown` — never from a harness flag:
@@ -52,7 +70,7 @@ pub mod report;
 
 use serde_json::{json, Value};
 
-/// Stable id of a hidden rule ("R1".."R6" today; the list is data, not code).
+/// Stable id of a hidden rule ("R1".."R9" today; the list is data, not code).
 pub type RuleId = &'static str;
 
 /// One message in the chat protocol (OpenAI-compatible shape, hand-rolled —
@@ -205,9 +223,17 @@ pub fn mishandled_rules(rec: &TaskRunRecord) -> Vec<RuleId> {
             "no_refund" => &["R3", "R4", "R6"],
             "not_cancelled" => &["R4", "R6"],
             "no_case_logged" => &["R5", "R6"],
+            // The silent rules: they error zero times, so the "errored ≥2"
+            // branch can never fire for them and this attribution is the
+            // ONLY way they are ever counted as mishandled.
+            "no_closure_case" => &["R7"],
+            "unapproved_enterprise_refund" => &["R8"],
+            "case_missing_priority" => &["R9"],
             // Turn-cap and empty-answer exits: whatever it tripped, it never
             // got past.
-            "no_final_answer" | "turn_limit" => &["R1", "R2", "R3", "R4", "R5", "R6"],
+            "no_final_answer" | "turn_limit" => {
+                &["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"]
+            }
             _ => &[],
         }
     };
