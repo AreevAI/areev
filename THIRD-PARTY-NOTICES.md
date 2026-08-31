@@ -64,6 +64,7 @@ Turso transitively includes [tantivy](https://github.com/quickwit-oss/tantivy)
 | rustls, rustls-pki-types (areev-server `tls` feature; areev-store `postgres-tls` feature) | Apache-2.0 OR ISC OR MIT |
 | tokio-postgres-rustls (areev-store, `postgres-tls` feature) | MIT |
 | webpki-roots (areev-llm; areev-store `postgres-tls` feature) | CDLA-Permissive-2.0 |
+| jsonwebtoken (areev-server, `oidc` feature) | MIT |
 
 "MIT OR Apache-2.0" dependencies are used under Apache-2.0. Full license
 texts ship in each crate's source distribution via crates.io.

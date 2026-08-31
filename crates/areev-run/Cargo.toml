@@ -17,12 +17,12 @@ keywords = ["ai-agents", "workflow", "runtime", "deterministic", "areev"]
 categories = ["development-tools"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.6.0" }
-areev-store = { path = "../areev-store", version = "1.6.0" }
-areev-cal = { path = "../areev-cal", version = "1.6.0" }
-areev-run-core = { path = "../areev-run-core", version = "1.6.0" }
+areev-core = { path = "../areev-core", version = "1.7.0" }
+areev-store = { path = "../areev-store", version = "1.7.0" }
+areev-cal = { path = "../areev-cal", version = "1.7.0" }
+areev-run-core = { path = "../areev-run-core", version = "1.7.0" }
 # The ToolCallLlm seam for abstract nodes (§6.2/§6.11).
-areev-llm = { path = "../areev-llm", version = "1.6.0" }
+areev-llm = { path = "../areev-llm", version = "1.7.0" }
 # The egress broker's outbound leg (moved here from areev-trigger, which
 # depends on this crate and so could not share it).
 ureq = "3"
