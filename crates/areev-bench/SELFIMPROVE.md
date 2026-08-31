@@ -818,11 +818,26 @@ Live pilot, governed states only (~$0.35, measured — see "What a re-run costs"
 ```bash
 export OPENROUTER_API_KEY=…
 Q=qwen/qwen3-30b-a3b-instruct-2507
-AGENT="python3 crates/areev-bench/scripts/openrouter_toolcall.py $Q --provider CoreWeave --seed 20260831"
+AGENT="python3 crates/areev-bench/scripts/openrouter_toolcall.py $Q --provider coreweave/bf16 --seed 20260831"
 cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --workdir /tmp/aba --seed 1 --experience 150 --eval 60 --agent-cmd "$AGENT" \
-  --llm-cmd    "python3 crates/areev-bench/scripts/openrouter_loop.py $Q --provider CoreWeave --seed 20260831" \
-  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat --provider Novita --seed 20260831'
+  --llm-cmd    "python3 crates/areev-bench/scripts/openrouter_loop.py $Q --provider coreweave/bf16 --seed 20260831" \
+  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat --provider deepinfra/fp4 --seed 20260831'
+```
+
+**Use the endpoint TAG, not the provider's display name**, and confirm the
+endpoint accepts the request shape. `--provider Novita` and `--provider
+novita/fp8` both 404 on `deepseek/deepseek-chat` — the first is a display
+name, the second an endpoint that does not accept `response_format:
+json_object` — and the engine FAIL-SOFTS a failing loop call by design, so a
+six-cell run completed with **zero LLM findings** and an empty ledger before
+anyone noticed. Fail-soft is right for a flaky model and wrong for a
+misconfigured pin, so `openrouter_loop.py` now verifies the pin with one live
+token at probe time and fails loudly there. List the tags with:
+
+```bash
+curl -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  https://openrouter.ai/api/v1/models/<model>/endpoints | jq '.data.endpoints[].tag'
 ```
 
 **Pin the provider on all three legs, not just the agent.** Five providers

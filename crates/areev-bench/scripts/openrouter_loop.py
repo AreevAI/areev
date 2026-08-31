@@ -89,9 +89,43 @@ def main():
     except json.JSONDecodeError as e:
         fail(f"request is not JSON: {e}")
 
-    # Probe is answered locally: a misconfigured command must fail at
-    # construction, and that check should cost no tokens.
+    # Probe is answered locally when nothing needs verifying — a
+    # misconfigured command must fail at construction, and that check should
+    # cost no tokens.
+    #
+    # A `--provider` pin is the exception, and it is worth a few tokens. The
+    # engine FAIL-SOFTS a failing loop call by design: a flaky model must not
+    # kill a run. But a pin that resolves to no endpoint is not a flaky model,
+    # it is a configuration error, and fail-soft turns it into silence —
+    # every draft dropped, an empty ledger, and an arm that measured nothing
+    # while looking like a clean null. That happened: `--provider Novita`
+    # (a display name, not a tag) and `novita/fp8` (a tag whose endpoint does
+    # not accept `response_format`) both 404, and a six-cell run completed
+    # with zero LLM findings before anyone noticed. So the pin is verified
+    # live, once, and a bad one fails HERE where it is loud.
     if req.get("op") == "probe":
+        if provider:
+            key = os.environ.get("OPENROUTER_API_KEY")
+            if not key:
+                fail("OPENROUTER_API_KEY is not set")
+            try:
+                post({
+                    "model": model,
+                    "temperature": 0,
+                    "max_tokens": 1,
+                    "response_format": {"type": "json_object"},
+                    "provider": {"order": [provider], "allow_fallbacks": False},
+                    "messages": [{"role": "user", "content": "{}"}],
+                }, key)
+            except SystemExit:
+                fail(
+                    f"--provider {provider!r} does not serve {model!r} with the "
+                    f"request shape this adapter sends. Use the endpoint TAG "
+                    f"(e.g. 'coreweave/bf16'), not the display name, and check "
+                    f"the endpoint supports response_format=json_object:\n"
+                    f"  curl -H \"Authorization: Bearer $OPENROUTER_API_KEY\" \\\n"
+                    f"    https://openrouter.ai/api/v1/models/{model}/endpoints"
+                )
         print(json.dumps({"model": model}))
         return
 
