@@ -90,6 +90,16 @@ jobs:
           - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "postgres-tls,oidc", suffix: "-postgres-oidc" }
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A backfill labels its assets with attach_to_tag's version and
+          # uploads them to THAT release with --clobber, so they must be built
+          # from that tag. Left to its default this checks out whatever ref the
+          # run was dispatched against (main), and the backfill would overwrite
+          # a published release's binaries with different code under the old
+          # version's name — the one outcome a signed, attested asset is
+          # supposed to make impossible. Empty string keeps the default ref for
+          # a real release and for the plain dry-run dispatch.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.attach_to_tag || '' }}
 
       - name: Install Rust
         run: rustup update stable && rustup target add ${{ matrix.target }}
@@ -139,6 +149,26 @@ jobs:
               *"STO-E003"*)                   echo "::error::built with plain postgres, not postgres-tls"; exit 1 ;;
             esac
           fi
+
+          # Same argument for oidc, which is the ENTIRE reason the
+          # -postgres-oidc asset exists: a feature-flag typo still builds and
+          # still passes every check above, and the miss only surfaces when a
+          # deployed console rejects its own --oidc-issuer. The two builds
+          # disagree in a way that is cheap to read: without the feature the
+          # flag is refused outright ("no native OIDC"), with it the flag is
+          # accepted and then asks for its companions.
+          case "${{ matrix.features }}" in
+            *oidc*)
+              out="$("$BIN" ui --db "$RUNNER_TEMP/smoke.db" \
+                       --oidc-issuer https://login.microsoftonline.com/smoke/v2.0 2>&1 || true)"
+              printf '%s\n' "$out"
+              case "$out" in
+                *"no native OIDC"*)      echo "::error::oidc feature missing from the -postgres-oidc asset"; exit 1 ;;
+                *"needs --oidc-client-id"*) echo "oidc present" ;;
+                *) echo "::error::unrecognised --oidc-issuer response; the smoke test can no longer tell the two builds apart"; exit 1 ;;
+              esac
+              ;;
+          esac
 
       - name: Package
         shell: bash
