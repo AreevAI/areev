@@ -372,6 +372,58 @@ difference there is provider drift and invalidates that pairing rather than
 supporting it), per-rule recurrence, token cost, the governance ledgers, and
 the full transcripts.
 
+### Pre-registered interpretation — the silent-rule run (written before any run of this design)
+
+Committed 2026-08-31, after the environment gained R7-R9 and before any live
+run against them. Every earlier `selfimprove` result measured the six-rule
+environment and is not comparable (see "What this invalidates").
+
+**Design.** Seeds 1/3/5, 300 experience / 100 held-out, agent +
+DISCOVER/VERIFY on `qwen3-30b-a3b-instruct-2507`, GROUND on `deepseek-chat`,
+temperature 0, four states per config per seed. Two configs at one git rev:
+**governed-only** (analyzer lessons applied, LLM findings advisory) and
+**combined** (`--llm-lessons`). No `llm-only` cell: the previous attempt
+established that an LLM-only configuration cannot reliably complete a
+governed apply → rollback → re-apply cycle, because rollback is terminal per
+hash and restoring a lesson needs the learner to RE-PROPOSE it, which an LLM
+may not. That finding stands; re-running it would measure nothing new.
+
+**The primary question is the causal chain on a workload with rules
+clustering cannot reach** — A0→B, B→A1, A1→B2, each pooled-significant by
+paired exact McNemar, within-run only. Cross-run pairing at n=100 has a
+measured noise floor that reached p=0.064 between two runs with IDENTICAL
+applied lessons, so no claim rests on a cross-run comparison.
+
+**The secondary question is the one the environment change exists for: do the
+SILENT rules move?** Reported per rule and **dose-conditioned** — a state
+whose applied lessons contain nothing addressing a given rule is a dose-0
+observation for that rule and is evidence about nothing else. Dose is the
+unit of analysis, not the cell; assignment is not treatment, which is exactly
+what made the 2x2 unexecutable.
+
+- **Chain holds AND silent-rule recurrence falls at B, returns at A1:** the
+  headline — the loop learns things signature clustering structurally cannot
+  see. Published with the per-rule tables and the dose per pass.
+- **Chain holds, silent rules do not move:** published as that. The loop
+  works; the added headroom was not used by this model at this dose. This is
+  explicitly NOT "LLM learning does not work" — with R8 at 13 and R9 at 15
+  opportunities per 100 held-out tasks, ~39 and ~45 pooled, a null there is
+  as consistent with low power as with no effect, and the write-up must say
+  so rather than pick the flattering reading.
+- **Chain does not hold:** no causal signal, published as that, and the
+  silent-rule table is not interpreted at all.
+- **Combined < governed-only:** the earlier arm result (authored remedies
+  trade breadth for precision) replicates on a workload with headroom, which
+  would strengthen rather than retract it.
+
+**Reported whatever lands:** per-seed and pooled success, the authored-lesson
+dose per pass, per-rule recurrence for all nine rules, the governance ledgers,
+token cost, and the full transcripts. Two bounds ship with it: the silent
+rules are thin by construction (the opportunity counts above), and a per-rule
+row that rises after an apply may mean the agent got FURTHER rather than
+worse, because a silent rule only becomes reachable once the error-shaped
+walls in front of it are cleared.
+
 ## Runner protocol — one JSON per line on stdio
 
 The Rust bin owns the agent loop (task prompt, tool execution, turn cap,
