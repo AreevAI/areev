@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="820" height="268" viewBox="0 0 820 268" role="img" aria-label="Areev repository quality: 52,264 lines of test code against 87,590 lines of source, 2,548 tests, 81.0% line coverage">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="268" viewBox="0 0 820 268" role="img" aria-label="Areev repository quality: 52,264 lines of test code against 87,603 lines of source, 2,548 tests, 81.0% line coverage">
 <style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.l{font-size:11px;letter-spacing:.06em;text-transform:uppercase}</style>
 <rect width="820" height="268" rx="10" fill="#0d1117" stroke="#30363d"/>
 <text x="32" y="42" class="n" font-size="16" fill="#e6edf3">Areev — repository quality</text>
 <text x="32" y="62" font-size="12" fill="#8b949e">v1.6.5 · 17 crates · 289 Rust files</text>
 <rect x="32.0" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
-<text x="44.0" y="106" class="n" font-size="19" fill="#bc8cff">87,590</text>
+<text x="44.0" y="106" class="n" font-size="19" fill="#bc8cff">87,603</text>
 <text x="44.0" y="122" class="l" fill="#8b949e">source code</text>
 <rect x="185.6" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
 <text x="197.6" y="106" class="n" font-size="19" fill="#58a6ff">52,264</text>
@@ -19,7 +19,7 @@
 <text x="658.4" y="106" class="n" font-size="19" fill="#e6edf3">96</text>
 <text x="658.4" y="122" class="l" fill="#8b949e">error codes</text>
 <rect x="32" y="150" width="756" height="34" rx="6" fill="#bc8cff"/>
-<path d="M32 156a6 6 0 0 1 6-6h277v34h-277a6 6 0 0 1-6-6z" fill="#58a6ff"/>
+<path d="M32 156a6 6 0 0 1 6-6h276v34h-276a6 6 0 0 1-6-6z" fill="#58a6ff"/>
 <text x="44" y="172" class="n" font-size="12" fill="#0d1117">tests 37.4%</text>
 <text x="776" y="172" class="n" font-size="12" fill="#0d1117" text-anchor="end">source 62.6%</text>
 <text x="32" y="212" font-size="12" fill="#8b949e">26,740 integration · 25,524 unit test lines · 56 reference docs · 17 crates</text>

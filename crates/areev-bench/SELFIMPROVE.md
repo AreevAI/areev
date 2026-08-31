@@ -817,12 +817,24 @@ Live pilot, governed states only (~$0.35, measured — see "What a re-run costs"
 
 ```bash
 export OPENROUTER_API_KEY=…
-AGENT='python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507'
+Q=qwen/qwen3-30b-a3b-instruct-2507
+AGENT="python3 crates/areev-bench/scripts/openrouter_toolcall.py $Q --provider CoreWeave --seed 20260831"
 cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --workdir /tmp/aba --seed 1 --experience 150 --eval 60 --agent-cmd "$AGENT" \
-  --llm-cmd    'python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507' \
-  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat'
+  --llm-cmd    "python3 crates/areev-bench/scripts/openrouter_loop.py $Q --provider CoreWeave --seed 20260831" \
+  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat --provider Novita --seed 20260831'
 ```
+
+**Pin the provider on all three legs, not just the agent.** Five providers
+serve the Qwen model and three serve DeepSeek, at quantizations spanning fp4,
+fp8 and bf16, and OpenRouter routes freely between them without `--provider`.
+Unpinned, 5 of 60 held-out tasks flip between two byte-identical eval states;
+pinned, 0 of 60. The LOOP legs matter as much as the agent and are easier to
+forget: they decide which lessons get authored, so an unpinned loop makes the
+CONTENT of state B vary run to run — a harder confound to spot than a noisy
+agent, because the success rate moves while the ledger still looks plausible.
+Whatever you pin, the run's own A0R state reports what irreproducibility is
+left.
 
 The **loop+LLM arm** is the same invocation `+ --llm-lessons`: B/B2 then
 measure analyzer lessons *and* LLM-authored lessons together, and the report

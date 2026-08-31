@@ -112,8 +112,26 @@ fn report_json(config: &Value, ledger: &Ledger, evals: &[EvalSummary]) -> Value 
             })
         })
         .collect();
+    // The run's own precision, next to its results and computed from the same
+    // rows a reader would check. A0 and A0R carry byte-identical prompts, so
+    // every task that flips between them bounds what this run can resolve —
+    // and an aggregate rate hides it (5 flips, 3 up and 2 down, read as a
+    // one-task difference). Null when the run had no A0R state.
+    let noise_floor = match (
+        evals.iter().find(|e| e.state == "A0"),
+        evals.iter().find(|e| e.state == "A0R"),
+    ) {
+        (Some(a0), Some(a0r)) => json!({
+            "flips": a0.flips(a0r),
+            "n": a0.n,
+            "a0_successes": a0.successes,
+            "a0r_successes": a0r.successes,
+        }),
+        _ => Value::Null,
+    };
     json!({
         "config": config,
+        "noise_floor": noise_floor,
         "ledger": ledger_rows,
         "ledger_counts": {
             "proposed": ledger.entries.len(),

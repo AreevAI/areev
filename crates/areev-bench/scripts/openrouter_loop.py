@@ -5,9 +5,15 @@ One JSON request on stdin, one JSON response on stdout (the DISCOVER / GROUND /
 VERIFY / ENRICH protocol in examples/llm/README.md). Stdlib only — no SDK, no
 new dependency, per the repo's dependency-light policy.
 
-    openrouter_loop.py MODEL [--provider PROVIDER] [--selfcheck]
+    openrouter_loop.py MODEL [--provider PROVIDER] [--seed N] [--selfcheck]
 
 Key: $OPENROUTER_API_KEY. Base: $OPENROUTER_BASE_URL or the public endpoint.
+
+Pin the provider on any published run. This adapter decides which LESSONS
+get authored, so an unpinned loop leg makes the CONTENT of state B vary from
+run to run independently of the agent — a harder confound to spot than a
+noisy agent, because the success rate moves while the ledger still looks
+plausible. `--seed` narrows what is left where the provider honors it.
 
 Unlike examples/llm/openai.py this forwards EVERY payload key except
 `instructions`: GROUND sends `claims`, not `findings`, so a fixed key list
@@ -58,14 +64,21 @@ def post(body, key):
 def main():
     argv = sys.argv[1:]
     if not argv:
-        fail("usage: openrouter_loop.py MODEL [--provider P] [--selfcheck]")
+        fail("usage: openrouter_loop.py MODEL [--provider P] [--seed N] [--selfcheck]")
     model = argv[0]
     provider = None
+    seed = None
     selfcheck = False
     i = 1
     while i < len(argv):
         if argv[i] == "--provider" and i + 1 < len(argv):
             provider, i = argv[i + 1], i + 2
+        elif argv[i] == "--seed" and i + 1 < len(argv):
+            try:
+                seed = int(argv[i + 1])
+            except ValueError:
+                fail(f"--seed must be an integer, got {argv[i + 1]!r}")
+            i += 2
         elif argv[i] == "--selfcheck":
             selfcheck, i = True, i + 1
         else:
@@ -104,6 +117,8 @@ def main():
     }
     if provider:
         body["provider"] = {"order": [provider], "allow_fallbacks": False}
+    if seed is not None:
+        body["seed"] = seed
 
     resp = post(body, key)
     try:

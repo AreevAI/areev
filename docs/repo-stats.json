@@ -3,8 +3,8 @@
   "crates": 17,
   "rust": {
     "files": 289,
-    "physical_lines": 183961,
-    "source_code": 87590,
+    "physical_lines": 183979,
+    "source_code": 87603,
     "test_code": 52264,
     "unit_test_code": 25524,
     "integration_test_code": 26740,
@@ -65,8 +65,8 @@
     {
       "name": "areev-bench",
       "files": 18,
-      "physical": 10862,
-      "source_code": 5872,
+      "physical": 10880,
+      "source_code": 5885,
       "test_code": 2532,
       "tests": 102
     },
