@@ -120,6 +120,30 @@ for a paid run to discover on our behalf.
 The correlations are canned, exactly like every other branch of that backend.
 It proves the path exists; it is never a claim that a model would find these.
 
+**What two live smokes changed (2026-08-31, qwen3-30b, n=20/30 — plumbing,
+not measurement).** Both completed the full A/B/A/B cycle, and R7/R8/R9 all
+fired against a live agent, which the mock could not reach. Two things came
+out of them and are fixed here:
+
+- **The model saw the episodes and wrote about the error text anyway.** All
+  four authored lessons in the first run restated clusters `tool_failure`
+  had already produced. The DISCOVER instruction never said that outcome
+  records exist, that restating a deterministic finding is worthless, or
+  that rejected-versus-accepted is a way to find something. With that added
+  (generically — it names no rule and no field), the next run authored a
+  lesson reasoning explicitly over "rejected episodes".
+- **R8 and R9 were unmeasurable.** At the published config they were
+  exercised by 9 and 7 of 100 held-out tasks — dose too thin for any
+  per-rule claim, which is precisely what killed the 2x2. The account mix
+  now carries more enterprise and two of four topics are regulated, giving
+  13 and 15; `every_rule_gets_enough_opportunities_to_be_measurable` is the
+  permanent guard, and it fails the build rather than letting an
+  underpowered table get published. Prompts are byte-identical across that
+  change — only the `plan` column and the regulated-topic flag moved.
+
+Neither smoke is evidence about learning: n=10 held-out is noise, and the
+success columns are reported here as what they are.
+
 **A silent rule can be masked by an error-shaped one, and that shows up in
 the tables.** At A0 the mock fails most refund tasks on R6/R4 and never
 reaches the point where R8 or R9 would bite, so both read 0 mishandled; at B,
@@ -373,6 +397,12 @@ stdout: {"message":{"role":"assistant","content":"…","tool_calls":[
   recognizes, in which case it complies. Mock mode exists to prove the
   *plumbing* end-to-end in CI (`--assert-shape` requires B > A0, A1 ≈ A0,
   B2 ≈ B) and is labelled as such everywhere — it is never a learning claim.
+  The B-over-A0 margin is a **visibility** threshold, not a noise one: the
+  mock is deterministic, so a real effect has zero variance. It dropped from
+  0.10 to 0.05 when the silent rules landed, because this arm applies
+  analyzer lessons only and a signature clusterer never produces one for a
+  rule that raises no error — R7-R9 are failures it structurally cannot fix,
+  so its absolute headroom is smaller by construction.
 
 Loop LLM stages take the same kind of adapter via `--llm-cmd` / `--ground-cmd`
 (the engine's `CommandLlm` protocol), so DISCOVER and GROUND can run on

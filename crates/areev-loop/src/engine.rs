@@ -1968,6 +1968,14 @@ Given deterministic findings and the evidence they cite, propose ADDITIONAL \
 findings the deterministic checks would miss (e.g. a semantic contradiction, a \
 stale assumption, a duplicated meaning, a recurring preventable mistake, a \
 recurring cost or hand-off the agent's own setup could remove). \
+The deterministic findings already cover what the ERROR TEXT says; restating \
+one of them earns nothing. The evidence may also contain OUTCOME records — a \
+run's observable shape together with whether it was accepted or rejected. A \
+problem that raised no error at all is exactly the kind the deterministic \
+checks cannot see, so compare the rejected outcomes against the accepted \
+ones: a feature they share and the accepted ones lack is a candidate rule. \
+Require at least two rejected outcomes before proposing one — a single \
+rejection is an anecdote, not a pattern. \
 SCORING: propose a finding ONLY if you \
 are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
 useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \

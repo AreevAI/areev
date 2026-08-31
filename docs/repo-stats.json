@@ -3,13 +3,13 @@
   "crates": 17,
   "rust": {
     "files": 289,
-    "physical_lines": 183805,
-    "source_code": 87535,
-    "test_code": 52241,
-    "unit_test_code": 25501,
+    "physical_lines": 183857,
+    "source_code": 87543,
+    "test_code": 52259,
+    "unit_test_code": 25519,
     "integration_test_code": 26740,
     "example_code": 669,
-    "test_functions": 2547,
+    "test_functions": 2548,
     "test_ratio": 0.6,
     "test_share": 37.4
   },
@@ -57,18 +57,18 @@
     {
       "name": "areev-loop",
       "files": 34,
-      "physical": 13433,
-      "source_code": 9145,
+      "physical": 13441,
+      "source_code": 9153,
       "test_code": 1371,
       "tests": 160
     },
     {
       "name": "areev-bench",
       "files": 18,
-      "physical": 10714,
+      "physical": 10758,
       "source_code": 5825,
-      "test_code": 2509,
-      "tests": 101
+      "test_code": 2527,
+      "tests": 102
     },
     {
       "name": "areev-trigger",
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 56,
-    "lines": 25356
+    "lines": 25369
   },
   "error_codes": 96,
   "bindings": {

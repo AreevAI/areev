@@ -314,6 +314,15 @@ are the identity when no backend is set:
     under a policy that names it. Every kind takes a human review with a
     BECAUSE plus an explicit apply.
 
+  **Outcome records are first-class evidence.** DISCOVER is told that the
+  bundle may contain records of whether a run was *accepted*, that restating
+  a deterministic finding earns nothing, and that comparing rejected against
+  accepted outcomes is how a problem with no error attached gets found — with
+  a two-observation floor, because one rejection is an anecdote. Without that,
+  a model handed both kinds of evidence reliably writes about the error text
+  and ignores the rest (observed live: four authored lessons, all restating
+  clusters the analyzers had already produced).
+
   **The evidence bundle budgets its sources.** DISCOVER sees at most 64
   grains, drawn from three places that answer different questions: what the
   deterministic findings CITED (≤24 — what clustering already caught), recent

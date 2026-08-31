@@ -45,7 +45,14 @@ const APPROVAL_CENTS: u64 = 100 * 100;
 const RETRY_AFTER_S: u64 = 2;
 
 const TEMPLATES: [&str; 4] = ["refund_small", "refund_large", "refund_and_cancel", "log_case"];
-const PLANS: [&str; 3] = ["basic", "pro", "enterprise"];
+/// The desk's account mix. `enterprise` appears twice deliberately: R8 is a
+/// SEGMENT rule, so the segment's prevalence is what decides whether it can
+/// be measured at all, and a uniform third of a quarter of the tasks left it
+/// exercised by 9 of 100 held-out tasks — a per-rule table nobody should
+/// believe (`every_rule_gets_enough_opportunities_to_be_measurable` is the
+/// guard). One draw either way, so the RNG stream and every prompt are
+/// unchanged; only the `plan` column moves.
+const PLANS: [&str; 4] = ["basic", "pro", "enterprise", "enterprise"];
 
 // Disjoint per-split name pools — the split-holdout guarantee is structural,
 // not statistical. Emails also diverge on the per-split domain.
@@ -66,10 +73,12 @@ const EVAL_LAST: [&str; 12] = [
     "Whitfield", "Zhukov",
 ];
 
-/// R9: the index into [`TOPICS`] whose cases are regulated and must be filed
-/// at high priority. A recurring topic the desk has no branch for — the
-/// distributional archetype.
-const REGULATED_TOPIC: usize = 3;
+/// R9: which [`TOPICS`] are regulated and must be filed at high priority. A
+/// recurring class of work the desk has no branch for — the distributional
+/// archetype. Two of the four, for the same measurability reason as [`PLANS`]:
+/// one topic left the rule exercised by 7 of 100 held-out tasks. Real
+/// regulated categories are rarely singular either.
+const REGULATED_TOPICS: [usize; 2] = [0, 3];
 
 const TOPICS: [(&str, &str); 4] = [
     ("a billing discrepancy", "customer disputes the last invoice"),
@@ -242,7 +251,7 @@ fn gen_task(
         let local = format!("2026-{month:02}-{day:02} {hour:02}:{minute:02}");
         let topic_idx = (rng.next() % TOPICS.len() as u64) as usize;
         let (topic, note) = TOPICS[topic_idx];
-        regulated_topic = topic_idx == REGULATED_TOPIC;
+        regulated_topic = REGULATED_TOPICS.contains(&topic_idx);
         match split {
             Split::Experience => format!(
                 "Customer {name} ({email}) called about {topic}. Log a case with the note \
@@ -1114,6 +1123,32 @@ mod tests {
         let (ok, reason) = env.score("done");
         assert!(ok, "{reason}");
         assert!(env.rule_failures().is_empty());
+    }
+
+    /// How many tasks each rule is even ABLE to trip, at the published
+    /// config. This is a POWER guard, not a behaviour test: a rule exercised
+    /// by a handful of held-out tasks can never produce a per-rule result
+    /// anyone should believe, and the 2x2 died of exactly that (SELFIMPROVE.md,
+    /// "the 2x2 that could not be run"). Better to find it here than after
+    /// paying for a run.
+    #[test]
+    fn every_rule_gets_enough_opportunities_to_be_measurable() {
+        use std::collections::BTreeMap;
+        let mut counts: BTreeMap<RuleId, usize> = BTreeMap::new();
+        let tasks = gen_tasks(1, Split::Eval, 100);
+        for t in &tasks {
+            for r in &t.rules_exercised {
+                *counts.entry(r).or_default() += 1;
+            }
+        }
+        eprintln!("eval n=100 opportunities: {counts:?}");
+        for rule in ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"] {
+            let n = counts.get(rule).copied().unwrap_or(0);
+            assert!(
+                n >= 10,
+                "rule {rule} is exercised by only {n} of 100 held-out tasks —                  too thin for any per-rule claim; raise its arming rate in                  gen_task rather than publishing an underpowered table"
+            );
+        }
     }
 
     #[test]

@@ -752,9 +752,18 @@ fn check_shape(
             ));
         }
     }
-    if b.success_rate() <= a0.success_rate() + 0.1 {
+    // The margin is a VISIBILITY threshold, not a noise threshold: the mock
+    // agent is deterministic, so a real effect has zero variance and any
+    // margin above zero distinguishes "the lessons moved the prompt" from
+    // "they did nothing". It was 0.10 against the six-rule environment. The
+    // silent rules (R7-R9) added failures this arm structurally CANNOT fix —
+    // it applies analyzer lessons only, and a signature clusterer never
+    // produces one for a rule that raises no error — so the deterministic
+    // arm's absolute headroom is smaller by construction. Lowering it to 0.05
+    // tracks that; the gate still fails outright if an apply stops mattering.
+    if b.success_rate() <= a0.success_rate() + 0.05 {
         fails.push(format!(
-            "B ({:.3}) must exceed A0 ({:.3}) by more than 0.10 — applied lessons had no effect",
+            "B ({:.3}) must exceed A0 ({:.3}) by more than 0.05 — applied lessons had no effect",
             b.success_rate(),
             a0.success_rate()
         ));
@@ -793,7 +802,7 @@ fn check_shape(
         }
     }
     if fails.is_empty() {
-        println!("\nassert-shape: PASS (B > A0 + 0.10, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
+        println!("\nassert-shape: PASS (B > A0 + 0.05, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
         let llm_applied = applied1.iter().filter(|s| s.starts_with("llm :: ")).count();
         let origins = if lesson_arms.llm {
             format!("{} analyzer + {llm_applied} llm-authored", applied1.len() - llm_applied)
