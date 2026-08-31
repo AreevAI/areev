@@ -79,6 +79,15 @@ jobs:
           # Linux only — the server tier does not deploy on macOS/Windows.
           - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "", features: "postgres-tls", suffix: "-postgres" }
           - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "postgres-tls", suffix: "-postgres" }
+          # A console that fronts a postgres memory on the public internet
+          # needs an identity stronger than a shared proxy secret, because an
+          # OIDC principal may answer a HITL ask and a proxy-asserted one may
+          # not. That combination — postgres storage AND native OIDC — was
+          # buildable and not published, so the only way to run it was to
+          # compile on the box. Linux only, for the same reason as the row
+          # above: the server tier does not deploy on macOS/Windows.
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "", features: "postgres-tls,oidc", suffix: "-postgres-oidc" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "postgres-tls,oidc", suffix: "-postgres-oidc" }
     steps:
       - uses: actions/checkout@v4
 
