@@ -227,6 +227,42 @@ task) and stays correctly silent on the 66 failures the agent self-corrected.
                 second time, which is exactly the claim under test.
 ```
 
+State **A0R** re-runs A0 against the same empty memory — byte-identical
+prompts by construction, so any task that changes verdict between them did so
+for reasons the experiment does not control. It is reported as the run's
+**noise floor**, in TASKS THAT FLIP, and an effect that moves fewer tasks
+than the floor is not evidence. Under `--mock` the flip count must be zero,
+which is what proves an eval pass is reproducible at all; live,
+`--assert-shape` additionally requires the A0→B gain to move more tasks than
+the floor does.
+
+**Measured in flips, because a rate hides the problem.** The first version of
+this state compared success RATES and reported a floor of 0.017 for a run in
+which 5 of 60 tasks flipped — three up, two down, cancelling to one task in
+aggregate. A pair of states can agree exactly on the headline number while
+disagreeing about a tenth of the individual tasks. Discordant pairs are the
+unit McNemar already uses; the floor uses the same one.
+
+It exists because a seed-1 run measured B at 40/100 and B2 at 31/100 while
+the ledger showed **byte-identical applied lessons** — a gap at p=0.049 that
+reads exactly like a governance failure. It was the executor: five providers
+serve this model at differing numeric precision (fp8, bf16, unknown), and an
+unpinned run lets OpenRouter move between them mid-experiment. Measured
+directly, same config, n=60:
+
+| | A0→A0R (identical prompts) | A0→A1 (also identical) |
+|---|---|---|
+| unpinned | **5 of 60 flip** | 5 of 60 |
+| `--provider CoreWeave --seed N` | **0 of 60** | 0 of 60 |
+
+Pinning takes per-task irreproducibility from ~8% to zero. The seed-1 run
+that started this flipped 17 of 100 tasks between B and B2 — well above even
+the unpinned baseline, which is why its numbers are superseded rather than
+merely caveated. **Pin the provider on every published run**; the earlier
+published runs did, and the run that found this did not. An instrument that
+cannot state its own precision cannot support the claim this bench exists to
+make.
+
 The load-bearing honesty rule: **the eval prompt is assembled from live
 memory on every run** (a CAL read over the file rendering active lessons into
 a LESSONS section). Rollback changes the *file*; the file changes the
@@ -416,9 +452,24 @@ what made the 2x2 unexecutable.
   trade breadth for precision) replicates on a workload with headroom, which
   would strengthen rather than retract it.
 
-**Reported whatever lands:** per-seed and pooled success, the authored-lesson
-dose per pass, per-rule recurrence for all nine rules, the governance ledgers,
-token cost, and the full transcripts. Two bounds ship with it: the silent
+**Amendment (2026-08-31, after the seed-1 pilot and before any further run).**
+The pilot made the A1→B2 leg of the primary test **unmeasurable at n=100**,
+and the amendment is recorded here rather than the criterion quietly dropped.
+Two identical states — B and B2, byte-identical applied lessons, temperature
+0 — came out 9 points apart at p=0.049 on an unpinned run. The restore leg
+asks whether B2 returns to B, and no instrument can answer that while its own
+repeatability is worse than the difference under test. So: every run now
+measures its own floor (state **A0R**), the adapters pin a provider and take
+a `--seed`, and the primary test's third leg is read against the measured
+floor rather than against a fixed p-value. If the floor does not fall below
+the effect size after pinning, the honest report is that the restore leg
+needs a larger n than this design funds — published as that, not as a null.
+The seed-1 pilot's own numbers are superseded for comparison: it ran unpinned
+and is a measurement of the routing as much as of the loop.
+
+**Reported whatever lands:** per-seed and pooled success, the run's measured
+noise floor, the authored-lesson dose per pass, per-rule recurrence for all
+nine rules, the governance ledgers, token cost, and the full transcripts. Two bounds ship with it: the silent
 rules are thin by construction (the opportunity counts above), and a per-rule
 row that rises after an apply may mean the agent got FURTHER rather than
 worse, because a silent rule only becomes reachable once the error-shaped

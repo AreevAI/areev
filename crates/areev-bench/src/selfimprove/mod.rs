@@ -265,9 +265,29 @@ pub struct EvalSummary {
     pub total_steps: u32,
     pub per_rule: Vec<RuleStat>,
     pub usage: Usage,
+    /// Per-task pass/fail in task order — the PAIRED unit.
+    ///
+    /// Carried because an aggregate rate cannot measure reproducibility: two
+    /// runs of an identical prompt that flip three tasks up and two down
+    /// report a one-task difference and look stable. Only the discordant
+    /// count sees it (measured: 5 flips read as a 0.017 rate delta).
+    pub outcomes: Vec<bool>,
 }
 
 impl EvalSummary {
+    /// Tasks that changed verdict between two states — b + c in McNemar's
+    /// table. Against a state with an IDENTICAL prompt this is the
+    /// executor's irreproducibility, and it is the only honest floor: a
+    /// delta smaller than it is not evidence, and a rate that matches can
+    /// still hide a pile of cancelling flips.
+    pub fn flips(&self, other: &EvalSummary) -> u32 {
+        self.outcomes
+            .iter()
+            .zip(&other.outcomes)
+            .filter(|(a, b)| a != b)
+            .count() as u32
+    }
+
     pub fn success_rate(&self) -> f64 {
         if self.n == 0 { 0.0 } else { self.successes as f64 / self.n as f64 }
     }

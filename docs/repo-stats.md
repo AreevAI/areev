@@ -6,8 +6,8 @@ v1.6.5 · 17 crates · 289 Rust files
 
 | | |
 |---|---|
-| Source code | **87,543** lines |
-| Test code | **52,259** lines (37.4% of all code) |
+| Source code | **87,590** lines |
+| Test code | **52,264** lines (37.4% of all code) |
 | Test functions | **2,548** |
 | Line coverage | **81.0%** of 54,914 instrumented source lines |
 | Stable error codes | **96** |
@@ -23,7 +23,7 @@ v1.6.5 · 17 crates · 289 Rust files
 | `areev-cli` | 19 | 6,247 | 5,737 | 174 |
 | `areev-run` | 20 | 5,557 | 5,271 | 162 |
 | `areev-loop` | 34 | 9,153 | 1,371 | 160 |
-| `areev-bench` | 18 | 5,825 | 2,527 | 102 |
+| `areev-bench` | 18 | 5,872 | 2,532 | 102 |
 | `areev-trigger` | 12 | 1,785 | 2,310 | 122 |
 | `areev-server` | 3 | 2,219 | 1,553 | 78 |
 | `areev-context` | 8 | 1,899 | 2,421 | 90 |
@@ -39,9 +39,9 @@ v1.6.5 · 17 crates · 289 Rust files
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 183,857 |
-| Source code (no blanks or comments) | 87,543 |
-| Unit test code (`#[cfg(test)]` blocks) | 25,519 |
+| Physical lines (all Rust) | 183,961 |
+| Source code (no blanks or comments) | 87,590 |
+| Unit test code (`#[cfg(test)]` blocks) | 25,524 |
 | Integration test code (`tests/`, `benches/`) | 26,740 |
 | Example code (`examples/`) | 669 |
 | Test functions | 2,548 |

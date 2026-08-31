@@ -256,6 +256,7 @@ mod tests {
                     RuleStat { rule: "R3", opportunities: 4, failures: 4 },
                 ],
                 usage: Usage { prompt_tokens: 1000, completion_tokens: 200 },
+                outcomes: vec![true; 4].into_iter().chain(vec![false; 6]).collect(),
             },
             EvalSummary {
                 state: "B".to_string(),
@@ -265,6 +266,7 @@ mod tests {
                 total_steps: 61,
                 per_rule: vec![RuleStat { rule: "R1", opportunities: 5, failures: 1 }],
                 usage: Usage { prompt_tokens: 900, completion_tokens: 150 },
+                outcomes: vec![true; 8].into_iter().chain(vec![false; 2]).collect(),
             },
         ]
     }
