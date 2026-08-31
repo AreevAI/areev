@@ -734,18 +734,7 @@ fn check_shape(
     }
     // Live: the effect has to clear the run's OWN measured precision. A gain
     // smaller than the gap between two identical states is not a result.
-    // Live: the effect must move more tasks than the executor moves on its
-    // own. Compared in TASKS, because that is the unit the floor is measured
-    // in — a rate gain that is smaller than the flip count is inside the
-    // noise however impressive the percentage looks.
-    let floor_flips = a0.flips(a0r);
-    let gained = b.successes as i64 - a0.successes as i64;
-    if !mock && gained <= floor_flips as i64 {
-        fails.push(format!(
-            "A0→B gained {gained} task(s), but {floor_flips} flip between two \
-             IDENTICAL runs — indistinguishable from executor variance"
-        ));
-    }
+
 
     if applied1.is_empty() {
         fails.push(
@@ -793,20 +782,25 @@ fn check_shape(
             ));
         }
     }
-    // The margin is a VISIBILITY threshold, not a noise threshold: the mock
-    // agent is deterministic, so a real effect has zero variance and any
-    // margin above zero distinguishes "the lessons moved the prompt" from
-    // "they did nothing". It was 0.10 against the six-rule environment. The
-    // silent rules (R7-R9) added failures this arm structurally CANNOT fix —
-    // it applies analyzer lessons only, and a signature clusterer never
-    // produces one for a rule that raises no error — so the deterministic
-    // arm's absolute headroom is smaller by construction. Lowering it to 0.05
-    // tracks that; the gate still fails outright if an apply stops mattering.
-    if b.success_rate() <= a0.success_rate() + 0.05 {
+    // No fixed rate margin. There used to be one — 0.10, then 0.05 — and it
+    // had to be lowered every time the workload gained a rule this arm
+    // structurally cannot fix (it applies analyzer lessons only, and a
+    // signature clusterer never produces one for a rule that raises no
+    // error). A threshold that moves whenever the workload changes is
+    // measuring the workload's composition, not the plumbing, and adjusting
+    // it to keep the gate green is indistinguishable from moving the
+    // goalposts.
+    //
+    // The floor is the honest bar and it needs no tuning: B must move more
+    // tasks than two IDENTICAL states move. Under --mock the floor is zero,
+    // so any real gain passes and a dead apply still fails — which is
+    // exactly what this gate is for.
+    let floor_flips = a0.flips(a0r);
+    let gained = b.successes as i64 - a0.successes as i64;
+    if gained <= floor_flips as i64 {
         fails.push(format!(
-            "B ({:.3}) must exceed A0 ({:.3}) by more than 0.05 — applied lessons had no effect",
-            b.success_rate(),
-            a0.success_rate()
+            "A0→B gained {gained} task(s) against a noise floor of {floor_flips} \
+             flip(s) — the applied lessons did not move more than nothing does"
         ));
     }
     if (a1.success_rate() - a0.success_rate()).abs() > 0.05 {
@@ -843,7 +837,7 @@ fn check_shape(
         }
     }
     if fails.is_empty() {
-        println!("\nassert-shape: PASS (B > A0 + 0.05, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
+        println!("\nassert-shape: PASS (A0→B beats the measured floor, |A1−A0| ≤ 0.05, |B2−B| ≤ 0.05, A1 lessons empty)");
         let llm_applied = applied1.iter().filter(|s| s.starts_with("llm :: ")).count();
         let origins = if lesson_arms.llm {
             format!("{} analyzer + {llm_applied} llm-authored", applied1.len() - llm_applied)
@@ -891,11 +885,19 @@ fn main() {
         // transcript and the memory, in task-index order. The store is
         // single-writer per file, and the grain order must not depend on how
         // many threads happened to be free.
-        for (rec, rows) in run_pool(&exp_tasks, &args, "", None) {
+        for (task, (rec, rows)) in exp_tasks.iter().zip(run_pool(&exp_tasks, &args, "", None)) {
             for row in &rows {
                 tx.row(row);
             }
             mem.record_task(&rec).unwrap_or_else(|e| die(&e));
+            // R10: a person's note lands in the memory alongside the work it
+            // followed. It is never put in the agent's prompt — the loop has
+            // to notice it and a human has to approve it, exactly like any
+            // other lesson.
+            if let Some(note) = task.supervisor_note() {
+                mem.record_supervisor_note(&rec.task_id, note)
+                    .unwrap_or_else(|e| die(&e));
+            }
         }
     }
 

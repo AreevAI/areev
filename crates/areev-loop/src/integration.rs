@@ -537,6 +537,115 @@ fn llm_authored_lesson_is_applicable_and_rolls_back() {
     );
 }
 
+/// A human's note must reach the model even when routine records outnumber
+/// it hundreds to one.
+///
+/// This is the shape that matters: a supervisor states a rule ONCE, and the
+/// desk then generates thousands of ordinary grains. Seeding the evidence
+/// bundle by recency or frequency buries exactly the rarest and most
+/// valuable signal, and the symptom is indistinguishable from a model that
+/// had nothing to say.
+#[test]
+fn a_lone_human_observation_survives_a_flood_of_routine_facts() {
+    use std::sync::{Arc, Mutex};
+    let mut sub = TestSubstrate::new();
+    // The note, written early — then buried.
+    sub.add_observation("test", "Note from the billing lead: from now on any refund over $500 must ALSO be logged as a case with priority high.");
+    for i in 0..300 {
+        sub.add_fact(&format!("task-{i:04}"), "episode", "{\"outcome\":\"accepted\"}");
+    }
+    // Enough of one failure shape to give the analyzers something to cite.
+    for _ in 0..8 {
+        sub.add_tool_call("refund", true, "{\"error\":{\"code\":\"rate_limited\"}}");
+    }
+    sub.add_tool_call("refund", false, "{\"refund_id\":\"re_1\"}");
+
+    let seen: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    struct Capture(Arc<Mutex<String>>);
+    impl crate::llm::LlmBackend for Capture {
+        fn model(&self) -> &str { "capture" }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            if request.contains("\"op\":\"discover\"") {
+                *self.0.lock().unwrap() = request.to_string();
+            }
+            Ok(r#"{"recommendations":[]}"#.to_string())
+        }
+    }
+    let e = Engine::with_builtins().with_llm(Box::new(Capture(seen.clone())));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+
+    let req = seen.lock().unwrap().clone();
+    assert!(!req.is_empty(), "DISCOVER was never called");
+    assert!(
+        req.contains("billing lead"),
+        "the human note never reached the evidence bundle — 300 routine facts          crowded out the one grain a person wrote"
+    );
+}
+
+/// The funnel has to tell apart the ways "the model contributed nothing"
+/// can happen, because they call for opposite responses and every one of
+/// them renders as an empty ledger.
+#[test]
+fn the_llm_funnel_separates_abstention_from_each_gate() {
+    let draft = |h: &str| format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/acme","evidence":["{h}"],"confidence":0.9}}]}}"#
+    );
+    // The cite-check drops any draft naming a hash the bundle does not hold,
+    // so a test of the LATER gates has to cite a real one.
+    let real_hash = {
+        let mut sub = TestSubstrate::new();
+        let h = sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        h
+    };
+    let run = |discover: String, ground: &str, verify: &str| {
+        let mut sub = TestSubstrate::new();
+        sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+            discover,
+            ground: ground.to_string(),
+            verify: verify.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        }));
+        let r = e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+        r.llm_funnel.expect("a funnel whenever a backend is attached")
+    };
+
+    // The model abstained: evidence was offered, nothing came back.
+    let f = run(r#"{"recommendations":[]}"#.to_string(), "", "");
+    assert!(f.evidence > 0, "evidence was offered");
+    assert_eq!((f.proposed, f.stored), (0, 0), "abstention: nothing proposed");
+
+    // Proposed, but uncited — dropped before any model call.
+    let f = run(draft("deadbeef"), "", "");
+    assert_eq!((f.proposed, f.cited), (1, 0), "uncited drafts die at the cite-check");
+
+    // Cited, then refused by GROUND.
+    let f = run(
+        draft(&real_hash),
+        r#"{"results":[{"id":0,"supported":false}]}"#,
+        r#"{"results":[{"id":0,"keep":true,"confidence":0.9}]}"#,
+    );
+    assert_eq!(f.grounded, 0, "GROUND rejection is visible as its own stage");
+
+    // Grounded, then killed by VERIFY.
+    let f = run(
+        draft(&real_hash),
+        r#"{"results":[{"id":0,"supported":true}]}"#,
+        r#"{"results":[{"id":0,"keep":false,"confidence":0.9}]}"#,
+    );
+    assert_eq!((f.grounded, f.kept, f.stored), (1, 0, 0), "VERIFY kill is distinct");
+
+    // Kept, but under the confidence floor.
+    let f = run(
+        draft(&real_hash),
+        r#"{"results":[{"id":0,"supported":true}]}"#,
+        r#"{"results":[{"id":0,"keep":true,"confidence":0.10}]}"#,
+    );
+    assert_eq!((f.kept, f.stored), (1, 0), "the floor is its own stage");
+}
+
 #[test]
 fn llm_authored_fact_records_a_model_chosen_relation() {
     use crate::model::{ActionKind, Origin};

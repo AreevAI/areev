@@ -37,7 +37,16 @@ def fail(msg, code=2):
     sys.exit(code)
 
 
-def post(body, key):
+class HttpFail(Exception):
+    """An HTTP error a caller may want to classify rather than die on."""
+
+    def __init__(self, code, detail):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+def post(body, key, raise_http=False):
     req = urllib.request.Request(
         f"{BASE}/chat/completions",
         data=json.dumps(body).encode(),
@@ -50,7 +59,10 @@ def post(body, key):
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             if e.code not in (429, 500, 502, 503, 504) or attempt == RETRIES - 1:
-                fail(f"HTTP {e.code}: {e.read()[:200]!r}", 1)
+                detail = f"HTTP {e.code}: {e.read()[:200]!r}"
+                if raise_http:
+                    raise HttpFail(e.code, detail) from e
+                fail(detail, 1)
             wait = e.headers.get("Retry-After")
             time.sleep(float(wait) if wait and wait.isdigit() else delay)
         except urllib.error.URLError as e:
@@ -116,13 +128,29 @@ def main():
                     "response_format": {"type": "json_object"},
                     "provider": {"order": [provider], "allow_fallbacks": False},
                     "messages": [{"role": "user", "content": "{}"}],
-                }, key)
-            except SystemExit:
+                }, key, raise_http=True)
+            except HttpFail as e:
+                # Classify, because the two failures need opposite responses
+                # and reporting one as the other wastes an operator's time.
+                # A pin that names no eligible endpoint is permanent: fix the
+                # tag. A 429 or 5xx is the upstream having a bad minute:
+                # retry, or pin a different endpoint of the same model.
+                if e.code in (429, 500, 502, 503, 504):
+                    fail(
+                        f"{model!r} via --provider {provider!r} is failing "
+                        f"upstream right now ({e.detail}). This is transient, "
+                        f"not a bad pin — retry, or pin another endpoint of "
+                        f"the same model. Failing here rather than mid-run, "
+                        f"because a loop backend that dies later is dropped "
+                        f"silently and the run completes having learned "
+                        f"nothing."
+                    )
                 fail(
                     f"--provider {provider!r} does not serve {model!r} with the "
-                    f"request shape this adapter sends. Use the endpoint TAG "
-                    f"(e.g. 'coreweave/bf16'), not the display name, and check "
-                    f"the endpoint supports response_format=json_object:\n"
+                    f"request shape this adapter sends ({e.detail}). Use the "
+                    f"endpoint TAG (e.g. 'coreweave/bf16'), not the display "
+                    f"name, and check the endpoint supports "
+                    f"response_format=json_object:\n"
                     f"  curl -H \"Authorization: Bearer $OPENROUTER_API_KEY\" \\\n"
                     f"    https://openrouter.ai/api/v1/models/{model}/endpoints"
                 )

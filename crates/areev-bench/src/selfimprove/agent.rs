@@ -246,6 +246,9 @@ struct Lessons {
     closure_case: bool,
     enterprise_approval: bool,
     export_priority: bool,
+    /// R10 — the INSTRUCTED rule. Keyed on "escalat", the word any faithful
+    /// rendering of the supervisor's note has to carry.
+    escalate_large: bool,
 }
 
 impl Lessons {
@@ -259,6 +262,7 @@ impl Lessons {
             closure_case: context.contains("closure"),
             enterprise_approval: context.contains("enterprise"),
             export_priority: context.contains("priority"),
+            escalate_large: context.contains("escalat"),
         }
     }
 }
@@ -536,7 +540,13 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
         }
         Kind::Refund => match refund_step(lessons, intent, &cus_id, pairs) {
             Some(a) => a,
-            None => Action::finish(format!("refund of ${:.2} issued for {cus_name}", intent.amount)),
+            None => match escalation_step(lessons, intent, &cus_id, pairs) {
+                Some(a) => a,
+                None => Action::finish(format!(
+                    "refund of ${:.2} issued for {cus_name}",
+                    intent.amount
+                )),
+            },
         },
         Kind::RefundAndCancel => {
             let cancelled = pairs.iter().any(|p| p.name == "cancel_subscription" && !p.is_error);
@@ -604,6 +614,35 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
             Action::call("log_case", args)
         }
     }
+}
+
+/// R10's learned step: a refund over $500 is also filed as a high-priority
+/// case, because a person said so. `None` when the lesson is absent (the
+/// naive path, which has no way to know) or the case is already filed.
+fn escalation_step(
+    lessons: &Lessons,
+    intent: &Intent,
+    customer_id: &str,
+    pairs: &[Pair],
+) -> Option<Action> {
+    if !lessons.escalate_large || intent.amount <= 500.0 {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && !p.is_error) {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && p.is_error) {
+        return Some(Action::finish("could not complete: escalation case rejected"));
+    }
+    Some(Action::call(
+        "log_case",
+        json!({
+            "customer_id": customer_id,
+            "note": "large refund escalated for finance review",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "priority": "high",
+        }),
+    ))
 }
 
 /// R7's learned step: a closure leaves a case behind. `None` when the lesson

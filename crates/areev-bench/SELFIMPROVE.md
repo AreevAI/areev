@@ -47,11 +47,65 @@ returning 200 — there is no error code, no error body, nothing to normalize:
 | R8 | an **enterprise**-plan account needs a manager approval token behind ANY refund, not only one over $100 | the refund succeeds; scored `unapproved_enterprise_refund` |
 | R9 | a case about the regulated topic (a data export request) must be filed `priority: high` | `log_case` accepts it happily; scored `case_missing_priority` |
 
+And one **instructed** rule (added 2026-08-31), which the desk never has to
+infer at all — a person simply tells it:
+
+| # | hidden rule | how it arrives |
+|---|---|---|
+| R10 | a refund over $500 must ALSO be filed as a high-priority case | a supervisor's note, delivered once, in the experience phase; scored `refund_not_escalated` |
+
+**Learning does not only come from what went wrong.** R1-R6 announce
+themselves with an error code and R7-R9 with a correlation across many
+outcomes, but both are things the desk infers from its own failures. A great
+deal of real learning is neither: somebody says "from now on, do X", and a
+desk worth the name applies it to every future ticket of that shape, from one
+sentence, before it has ever failed for that reason. That is the
+[`invoice-to-accounting`](../../examples/agents/invoice-to-accounting/)
+example's headline — a correction a person makes in week one posts itself in
+week two — and this harness could not measure it at all until R10 existed.
+
+The design that makes it a clean test: **the note is delivered on the
+EXPERIENCE split, and the requirement binds only on the HELD-OUT split.** The
+supervisor is announcing a policy for future work, so the experience data
+contains no instance of the rule mattering. Nothing statistical can recover
+it — there is nothing to correlate. Only reading what the person wrote does.
+`the_supervisor_note_is_experience_only_and_the_requirement_is_eval_only`
+pins that asymmetry, because losing it would quietly turn R10 back into
+another correlation rule.
+
+The note is never placed in the agent's prompt. It lands in memory as an
+Observation with a human observer; the loop has to notice it, and a human has
+to approve it, exactly like any other lesson.
+
+**Observed live (2026-08-31, qwen3-30b):** the model read the note and wrote
+*"the agent consistently fails to log high-priority cases for refunds over
+$500, despite a new policy requiring it"* → lesson: *"Log a case with
+priority 'high' for any refund over $500."* An identical-config run minutes
+earlier authored nothing at all, so one success is a demonstration that the
+path works, never an authoring rate.
+
 Tasks are template-generated from a seeded entity pool with a **programmatic
 success predicate** over final environment state (ledger entries, subscription
 state, no orphaned approvals) — no LLM judge anywhere. Splits are disjoint:
 EXPERIENCE tasks (the agent may fail and learn) and a HELD-OUT eval set
 (different entities, paraphrased templates), fixed per `--seed`.
+
+### Why "the model contributed nothing" is now five different answers
+
+`RunResult.llm_funnel` counts the DISCOVER pipeline's attrition stage by
+stage: **evidence → proposed → cited (uncited / bad-target) → grounded →
+kept → stored**. Every one of those ends in an empty ledger and reads like a
+clean null, and they call for opposite fixes — an empty bundle is a capture
+problem, no proposals is abstention, drafts lost at the cite-check mean the
+model is copying evidence hashes badly, losses at GROUND suggest
+fabrication, at VERIFY vagueness, at the floor mere diffidence.
+
+Not having this cost a six-cell run: a misconfigured provider pin 404'd
+every GROUND call, the engine fail-softed as designed, and the whole LLM arm
+completed measuring nothing while looking like a legitimate result. The
+first live R10 run then showed the funnel earning its keep immediately —
+`proposed 2 → cited 1` and `proposed 3 → cited 1`, locating the attrition at
+the cite-check rather than at any gate.
 
 The rule list is a parameter of `env.rs`, not a constant — the learning-curve
 and adversarial bins extend it without touching the harness.
@@ -500,12 +554,15 @@ stdout: {"message":{"role":"assistant","content":"…","tool_calls":[
   recognizes, in which case it complies. Mock mode exists to prove the
   *plumbing* end-to-end in CI (`--assert-shape` requires B > A0, A1 ≈ A0,
   B2 ≈ B) and is labelled as such everywhere — it is never a learning claim.
-  The B-over-A0 margin is a **visibility** threshold, not a noise one: the
-  mock is deterministic, so a real effect has zero variance. It dropped from
-  0.10 to 0.05 when the silent rules landed, because this arm applies
-  analyzer lessons only and a signature clusterer never produces one for a
-  rule that raises no error — R7-R9 are failures it structurally cannot fix,
-  so its absolute headroom is smaller by construction.
+  There is no fixed margin any more. There used to be one — 0.10, then 0.05 —
+  and it had to be lowered every time the workload gained a rule this arm
+  structurally cannot fix. A threshold that moves whenever the workload
+  changes is measuring the workload's composition rather than the plumbing,
+  and adjusting it to keep the gate green is indistinguishable from moving
+  the goalposts. The gate is now **floor-relative**: A0→B must move more
+  tasks than two IDENTICAL states do. Under `--mock` the floor is zero, so
+  any real gain passes and a dead apply still fails — and it needs no
+  retuning when the next rule lands.
 
 Loop LLM stages take the same kind of adapter via `--llm-cmd` / `--ground-cmd`
 (the engine's `CommandLlm` protocol), so DISCOVER and GROUND can run on

@@ -127,6 +127,43 @@ pub struct RunResult {
     pub analyzers_run: Vec<String>,
     #[serde(default)]
     pub analyzers_skipped: Vec<AnalyzerSkip>,
+    /// Where the LLM's contribution went, stage by stage. `None` when no
+    /// backend is attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_funnel: Option<LlmFunnel>,
+}
+
+/// The DISCOVER pipeline's attrition, counted.
+///
+/// "The model contributed nothing" has at least five distinct causes, and
+/// they call for opposite responses: an empty bundle is a capture problem, a
+/// model that abstained may need better evidence or a better prompt, drafts
+/// dying at GROUND suggest fabrication, drafts dying at VERIFY suggest they
+/// were vague, and drafts dying at the floor were merely unconfident. Without
+/// this they are indistinguishable from the outside — every one of them
+/// renders as an empty ledger and reads like a clean null. That ambiguity
+/// cost a six-cell measurement run before it was noticed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmFunnel {
+    /// Grains offered to the model as evidence. Zero means nothing to reflect on.
+    pub evidence: u64,
+    /// Drafts the model returned.
+    pub proposed: u64,
+    /// Survived the cite-check and target-class filter.
+    pub cited: u64,
+    /// Dropped for citing a hash the bundle does not hold. Its own counter
+    /// because the fix is specific: models copy long hex badly, and that is
+    /// a different problem from one aiming at a surface it may not touch.
+    pub dropped_uncited: u64,
+    /// Dropped for targeting a class the vocabulary may not reach — a prompt,
+    /// host config, or its own grader.
+    pub dropped_target: u64,
+    /// Survived GROUND — their premises were found in the cited evidence.
+    pub grounded: u64,
+    /// Survived VERIFY's adversarial pass.
+    pub kept: u64,
+    /// Cleared the confidence floor and reached the queue.
+    pub stored: u64,
 }
 
 impl RunResult {
@@ -140,6 +177,7 @@ impl RunResult {
             deduped: 0,
             stored: 0,
             auto_applied: 0,
+            llm_funnel: None,
             analyzers_run: vec![],
             analyzers_skipped: vec![],
         }
@@ -171,6 +209,7 @@ struct AnalysisPass {
     deduped: u64,
     analyzers_run: Vec<String>,
     analyzers_skipped: Vec<AnalyzerSkip>,
+    llm_funnel: Option<LlmFunnel>,
 }
 
 impl Engine {
@@ -296,6 +335,7 @@ impl Engine {
             deduped,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel,
         } = self.analysis_pass(
             &*sub,
             &persisted,
@@ -364,6 +404,7 @@ impl Engine {
             auto_applied,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel,
         })
     }
 
@@ -463,6 +504,7 @@ impl Engine {
             }
         }
 
+        let mut funnel = LlmFunnel::default();
         if self.llm.is_some() {
             candidates.extend(self.discover(
                 sub,
@@ -470,6 +512,7 @@ impl Engine {
                 analysis_watermark,
                 &opts.namespaces,
                 now_ms,
+                &mut funnel,
             ));
         }
 
@@ -513,6 +556,7 @@ impl Engine {
             deduped,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel: self.llm.is_some().then_some(funnel),
         })
     }
 
@@ -529,6 +573,7 @@ impl Engine {
         watermark: Option<i64>,
         namespaces: &[String],
         now_ms: i64,
+        funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
         let Some(llm) = &self.llm else {
             return Vec::new();
@@ -608,6 +653,27 @@ impl Engine {
                 }
             }
         }
+        // Observations BEFORE facts, with their own small reserve.
+        //
+        // An Observation is where a human's own words land — a supervisor's
+        // note, a reviewer's correction, an instruction for next time. That
+        // signal is stated ONCE by nature, so recency and frequency seeding
+        // structurally bury it: one note loses to three hundred routine
+        // records every time, and the rarest evidence is usually the most
+        // valuable. Exhausting facts first (as this did) meant a desk with
+        // any volume showed the model no human input at all.
+        'notes: for ns in &scan_ns {
+            if let Ok(recent) =
+                sub.grains_of_type(crate::model::grain_type::OBSERVATION, *ns, opts)
+            {
+                for g in recent {
+                    if evidence.len() >= CITED_SEED_CAP + TOOL_SEED_CAP + NOTE_SEED_CAP {
+                        break 'notes;
+                    }
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                }
+            }
+        }
         'seed: for gt in [
             crate::model::grain_type::FACT,
             crate::model::grain_type::OBSERVATION,
@@ -623,6 +689,7 @@ impl Engine {
                 }
             }
         }
+        funnel.evidence = evidence.len() as u64;
         if evidence.is_empty() {
             return Vec::new(); // nothing to reflect on
         }
@@ -652,17 +719,21 @@ impl Engine {
         // avoids a TargetRef clone through the pipeline.
         let caps = sub.capabilities();
         let mut validated: Vec<ValidatedDraft> = Vec::new();
-        for d in crate::llm::parse_discover(&raw)
+        let drafts: Vec<_> = crate::llm::parse_discover(&raw)
             .recommendations
             .into_iter()
             .take(crate::llm::MAX_LLM_DRAFTS)
-        {
+            .collect();
+        funnel.proposed = drafts.len() as u64;
+        for d in drafts {
             let cited: Vec<String> =
                 d.evidence.iter().filter(|h| bundle.contains(*h)).cloned().collect();
             if cited.is_empty() {
+                funnel.dropped_uncited += 1;
                 continue; // uncited → drop (no fabrication)
             }
             let Ok(target) = TargetRef::parse(&d.target) else {
+                funnel.dropped_target += 1;
                 continue;
             };
             let tc = target.target_class();
@@ -672,6 +743,7 @@ impl Engine {
             // closed to the model — it may not rewrite the agent's prompt, its
             // host config, or the gate that grades its own code.
             if !matches!(tc, "memory" | "query" | "code") {
+                funnel.dropped_target += 1;
                 continue;
             }
             // Resolve BEFORE the gates: what GROUND entails and VERIFY
@@ -682,6 +754,7 @@ impl Engine {
             // could not even be stamped advisory — drop it here rather than
             // spend two model calls on something that fails validation after.
             if tc == "code" && resolved.is_none() {
+                funnel.dropped_target += 1;
                 continue;
             }
             validated.push(ValidatedDraft {
@@ -691,6 +764,7 @@ impl Engine {
                 resolved,
             });
         }
+        funnel.cited = validated.len() as u64;
         if validated.is_empty() {
             return Vec::new();
         }
@@ -701,7 +775,7 @@ impl Engine {
         // GROUND may run on a separate backend (§11); VERIFY always uses the
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
-        self.verify_drafts(&**llm, ground, validated, &evidence, now_ms)
+        self.verify_drafts(&**llm, ground, validated, &evidence, now_ms, funnel)
     }
 
     /// GROUND → VERIFY → ROUTE (§5.2–5.4). Two independent model calls, batched
@@ -717,6 +791,7 @@ impl Engine {
         validated: Vec<ValidatedDraft>,
         evidence: &[crate::llm::EvidenceItem],
         now_ms: i64,
+        funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
         use crate::llm::*;
         let ev_by_hash: std::collections::BTreeMap<&str, &EvidenceItem> =
@@ -758,6 +833,7 @@ impl Engine {
                 .collect(),
             None => return Vec::new(),
         };
+        funnel.grounded = grounded.len() as u64;
         if grounded.is_empty() {
             return Vec::new();
         }
@@ -796,6 +872,7 @@ impl Engine {
                 None => return Vec::new(),
             };
 
+        funnel.kept = verdicts.len() as u64;
         // ROUTE (§5.4): grounded ∧ kept ∧ verifier-confidence ≥ floor. The
         // verifier's confidence (the independent signal) is what we trust and
         // stamp — not the proposer's self-report.
@@ -815,6 +892,7 @@ impl Engine {
                 }
             }
         }
+        funnel.stored = out.len() as u64;
         out
     }
 
@@ -1953,6 +2031,11 @@ fn supersede_is_value_identical<S: SubstrateRead>(sub: &S, line: &str) -> bool {
 const EVIDENCE_CAP: usize = 64;
 const CITED_SEED_CAP: usize = 24;
 const TOOL_SEED_CAP: usize = 16;
+/// Human-authored Observations get a small guaranteed share, taken before the
+/// general top-up. Learning does not only come from what went wrong: a person
+/// saying "from now on, do X" is a complete rule stated once, and no amount of
+/// counting recovers it from a corpus that never surfaced it.
+const NOTE_SEED_CAP: usize = 8;
 const LENS_RESERVE: usize = 24;
 
 /// The confidence floor (§5.4): a verified draft below this is dropped. The

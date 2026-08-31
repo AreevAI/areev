@@ -46,6 +46,17 @@
 //!   R8 enterprise refund unapproved     → scored `unapproved_enterprise_refund`
 //!   R9 regulated topic not high-priority→ scored `case_missing_priority`
 //!
+//! R10 is a third kind again, and the one closest to how desks actually
+//! learn: it is neither an error nor a pattern the agent could infer, but a
+//! rule a PERSON stated once. A supervisor's note lands in the memory during
+//! the experience phase; the requirement binds only on the held-out split,
+//! because the note announces a policy for future work. No amount of
+//! outcome correlation over the experience data recovers it — the data
+//! contains no instance of it mattering. Only reading what the person wrote
+//! does.
+//!
+//!   R10 large refund not escalated    → scored `refund_not_escalated`
+//!
 //! They reach the memory through the per-task EPISODE observation
 //! (`memory::record_task`), which carries the observable features of the run
 //! and whether it was accepted — never the scored reason, which is the thing
@@ -70,7 +81,7 @@ pub mod report;
 
 use serde_json::{json, Value};
 
-/// Stable id of a hidden rule ("R1".."R9" today; the list is data, not code).
+/// Stable id of a hidden rule ("R1".."R10" today; the list is data, not code).
 pub type RuleId = &'static str;
 
 /// One message in the chat protocol (OpenAI-compatible shape, hand-rolled —
@@ -229,10 +240,11 @@ pub fn mishandled_rules(rec: &TaskRunRecord) -> Vec<RuleId> {
             "no_closure_case" => &["R7"],
             "unapproved_enterprise_refund" => &["R8"],
             "case_missing_priority" => &["R9"],
+            "refund_not_escalated" => &["R10"],
             // Turn-cap and empty-answer exits: whatever it tripped, it never
             // got past.
             "no_final_answer" | "turn_limit" => {
-                &["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"]
+                &["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"]
             }
             _ => &[],
         }

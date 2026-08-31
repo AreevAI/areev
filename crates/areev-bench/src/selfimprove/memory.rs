@@ -9,7 +9,7 @@
 
 use super::{Ledger, LedgerEntry, TaskRunRecord};
 use areev_cal::AreevFacade;
-use areev_core::types::Fact;
+use areev_core::types::{Fact, Observation};
 use areev_loop::{
     CommandLlm, Decision, Engine, LlmBackend, ObserverType, Origin, Proposal, ReadOpts,
     RecStatus, Recommendation, RunOptions, ScopeSet, SubstrateRead,
@@ -325,6 +325,38 @@ impl Memory {
         self.record_episode(rec)
     }
 
+    /// Record a note a PERSON wrote, as an Observation.
+    ///
+    /// This is the third kind of learning signal and the one the bench had
+    /// none of. R1-R6 announce themselves with an error code; R7-R9 show up
+    /// as a correlation across many outcomes. Both are inferred by the desk
+    /// from its own failures. A supervisor's note is neither: it is a
+    /// complete rule, stated once, before anything has gone wrong for that
+    /// reason — and it is exactly the signal the product's flagship example
+    /// leads with ("the correction a person made in week one"), which this
+    /// harness could not measure at all.
+    ///
+    /// Stored as an Observation with a human observer, so it is what it says
+    /// it is: a person's statement, not a derived fact.
+    pub fn record_supervisor_note(&self, task_id: &str, note: &str) -> Result<(), String> {
+        let mut obs = Observation::new("user:billing-lead", "human");
+        obs.subject = Some("support_desk".to_string());
+        obs.object = Some(note.to_string());
+        obs.common.namespace = Some(self.ns.clone());
+        // grain_brief renders an Observation from `body`, so the note has to
+        // be reachable there or the model is handed an empty line.
+        obs.common
+            .extra_fields
+            .insert("body".into(), Value::String(note.to_string()));
+        obs.common
+            .extra_fields
+            .insert("task_id".into(), Value::String(task_id.to_string()));
+        self.facade
+            .with_store(|m| m.add(&obs))
+            .map(|_| ())
+            .map_err(|e| format!("record supervisor note ({task_id}): {e}"))
+    }
+
     /// One EPISODE fact per finished task: the observable shape of what the
     /// desk did, plus whether the outcome was accepted.
     ///
@@ -442,9 +474,20 @@ impl Memory {
         }
 
         let mut sub = BorrowedSubstrate::new(&self.facade);
-        engine
+        let run = engine
             .run(&mut sub, &RunOptions::default(), now_ms)
             .map_err(|e| format!("loop run: {e}"))?;
+        // Print the attrition, because "the model contributed nothing" has
+        // several causes that need opposite fixes and are otherwise
+        // indistinguishable from an empty ledger.
+        if let Some(f) = &run.llm_funnel {
+            eprintln!(
+                "  llm funnel: evidence {} -> proposed {} -> cited {} \
+                 (uncited {}, bad target {}) -> grounded {} -> kept {} -> stored {}",
+                f.evidence, f.proposed, f.cited, f.dropped_uncited, f.dropped_target,
+                f.grounded, f.kept, f.stored
+            );
+        }
         let pending: Vec<Recommendation> = engine
             .recommendations(&sub, Some(RecStatus::Pending))
             .map_err(|e| format!("list recommendations: {e}"))?;

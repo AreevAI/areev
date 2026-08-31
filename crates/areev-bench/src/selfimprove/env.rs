@@ -73,6 +73,26 @@ const EVAL_LAST: [&str; 12] = [
     "Whitfield", "Zhukov",
 ];
 
+/// R10's threshold: a refund above this must also be escalated as a
+/// high-priority case, once a supervisor has said so.
+const ESCALATE_CENTS: u64 = 500 * 100;
+
+/// R10, in the words a person would actually use. Delivered ONCE, during the
+/// experience phase, as a note from a human — not as an error, not as a
+/// pattern across outcomes.
+///
+/// This is the archetype the other nine miss. R1-R6 announce themselves with
+/// an error code and R7-R9 with a correlation across many outcomes, but both
+/// are things the desk INFERS from its own failures. A great deal of real
+/// learning is not inferred at all: somebody tells you. A supervisor says
+/// "from now on, escalate these", and a desk worth the name applies it to
+/// every future ticket of that shape — from one sentence, before it has ever
+/// failed for that reason.
+pub const SUPERVISOR_NOTE: &str = "Note from the billing lead, after reviewing \
+this week's refunds: from now on any refund over $500 must ALSO be logged as a \
+case with priority high, so finance sees it in the escalation queue. Apply this \
+to every future refund of that size, not just this one.";
+
 /// R9: which [`TOPICS`] are regulated and must be filed at high priority. A
 /// recurring class of work the desk has no branch for — the distributional
 /// archetype. Two of the four, for the same measurability reason as [`PLANS`]:
@@ -132,6 +152,16 @@ pub struct Task {
     amount_cents: u64,
     expected_timestamp: String,
     limiter_armed: bool,
+    /// R10: this task carries the supervisor's note. Exactly one experience
+    /// task does; it is recorded into memory, never shown in the prompt.
+    supervisor_note: Option<&'static str>,
+    /// R10: this task must escalate. Only ever true on the HELD-OUT split —
+    /// the note announces a policy that takes effect going forward, so the
+    /// experience phase contains no instance of it mattering. That is what
+    /// makes it a clean test: no amount of outcome correlation over the
+    /// experience data can recover it, because the data does not contain it.
+    /// Only reading what the person wrote works.
+    escalate_required: bool,
     /// R9: this case is about the regulated topic, so it must be filed at
     /// high priority. Nothing in the prompt says so and no tool refuses a
     /// case without it — the whole point of the silent archetypes.
@@ -139,6 +169,11 @@ pub struct Task {
 }
 
 impl Task {
+    /// The supervisor's note, when this task carries one.
+    pub fn supervisor_note(&self) -> Option<&'static str> {
+        self.supervisor_note
+    }
+
     /// Everything about this task that a re-run must reproduce, on one line.
     ///
     /// Deliberately covers the HIDDEN spec (pool, target, amount, expected
@@ -153,7 +188,7 @@ impl Task {
             .map(|c| format!("{}:{}:{}:{}:{}", c.id, c.email, c.sub_id, c.plan, c.balance))
             .collect();
         format!(
-            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|regulated={}|pool={}|prompt={}",
+            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|regulated={}|escalate={}|note={}|pool={}|prompt={}",
             self.id,
             self.template,
             self.rules_exercised.join(","),
@@ -162,6 +197,8 @@ impl Task {
             self.expected_timestamp,
             self.limiter_armed,
             self.regulated_topic,
+            self.escalate_required,
+            self.supervisor_note.is_some(),
             pool.join(";"),
             self.prompt,
         )
@@ -317,6 +354,21 @@ fn gen_task(
     if regulated_topic {
         rules.push("R9");
     }
+    // R10 — the INSTRUCTED rule. The note lands once, in the experience
+    // phase; the requirement only ever binds on the held-out split, because
+    // the supervisor is announcing a policy for future work. An agent that
+    // never read the note has no way to know, and no failure to learn from.
+    let is_refund = template != "log_case";
+    let escalate_required =
+        split == Split::Eval && is_refund && amount_cents > ESCALATE_CENTS;
+    if escalate_required {
+        rules.push("R10");
+    }
+    let supervisor_note = if split == Split::Experience && i == NOTE_TASK_INDEX {
+        Some(SUPERVISOR_NOTE)
+    } else {
+        None
+    };
 
     Task {
         id: format!("{prefix}-{i:04}"),
@@ -329,8 +381,16 @@ fn gen_task(
         expected_timestamp,
         limiter_armed,
         regulated_topic,
+        supervisor_note,
+        escalate_required,
     }
 }
+
+/// Which experience task carries the supervisor's note. Early enough that
+/// every later task could have benefited, which is the point: a desk that
+/// only learns from its own failures had 290-odd chances to notice and could
+/// not, because nothing failed.
+const NOTE_TASK_INDEX: usize = 7;
 
 /// Convert a 2026 local wall time to `YYYY-MM-DDTHH:MM:SSZ`. Callers keep
 /// `day` in 2..=27 so the shift never leaves the month.
@@ -444,6 +504,9 @@ pub struct Env {
     refund_authorized: bool,
     /// R9: this case must be filed high-priority.
     regulated_topic: bool,
+    /// R10: a refund on this task must also be escalated as a high-priority
+    /// case, because a person said so during the experience phase.
+    escalate_required: bool,
     /// The endpoint R6 fronts: `refund` on refund templates, `log_case` on
     /// log tasks.
     limited_tool: &'static str,
@@ -507,6 +570,7 @@ impl Env {
             target_plan: task.pool[task.target].plan,
             refund_authorized: false,
             regulated_topic: task.regulated_topic,
+            escalate_required: task.escalate_required,
             limited_tool: if task.template == "log_case" { "log_case" } else { "refund" },
             tokens: BTreeSet::new(),
             token_seq: 0,
@@ -590,6 +654,13 @@ impl Env {
                 if self.target_plan == "enterprise" && !self.refund_authorized {
                     return (false, "unapproved_enterprise_refund".to_string());
                 }
+                // R10 (instructed): a person said large refunds get escalated.
+                // No tool objects; the desk simply did not do what it was told.
+                if self.escalate_required
+                    && !self.cases.iter().any(|c| c.3 == "high")
+                {
+                    return (false, "refund_not_escalated".to_string());
+                }
                 (true, String::new())
             }
             "log_case" => {
@@ -655,6 +726,12 @@ impl Env {
             && self.cases.first().is_some_and(|c| c.3 != "high")
         {
             *out.entry("R9").or_insert(0) += 1;
+        }
+        if self.escalate_required
+            && !self.refunds.is_empty()
+            && !self.cases.iter().any(|c| c.3 == "high")
+        {
+            *out.entry("R10").or_insert(0) += 1;
         }
         out.into_iter().collect()
     }
@@ -891,7 +968,16 @@ mod tests {
             },
             limiter_armed: limited,
             regulated_topic: false,
+            supervisor_note: None,
+            escalate_required: false,
         }
+    }
+
+    /// A held-out refund large enough that the supervisor's note binds.
+    fn escalating_task(template: &'static str, amount_cents: u64) -> Task {
+        let mut t = task(template, false, false, amount_cents);
+        t.escalate_required = true;
+        t
     }
 
     /// The same scripted task with a silent rule armed: an enterprise target
@@ -1142,13 +1228,72 @@ mod tests {
             }
         }
         eprintln!("eval n=100 opportunities: {counts:?}");
-        for rule in ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"] {
+        for rule in ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"] {
             let n = counts.get(rule).copied().unwrap_or(0);
             assert!(
                 n >= 10,
                 "rule {rule} is exercised by only {n} of 100 held-out tasks —                  too thin for any per-rule claim; raise its arming rate in                  gen_task rather than publishing an underpowered table"
             );
         }
+    }
+
+    #[test]
+    fn r10_a_large_refund_must_be_escalated_once_a_person_has_said_so() {
+        // $700, above the $500 the note names. Nothing errors: the desk
+        // simply did not do what it was told.
+        let t = escalating_task("refund_large", 700 * 100);
+        let target = t.pool[0].id.clone();
+
+        let mut env = Env::new(&t);
+        let a = body(&call(&mut env, "request_approval", json!({"reason": "r"})));
+        let o = call(&mut env, "refund", json!({
+            "customer_id": target, "amount": 700, "approval_token": a["approval_token"]
+        }));
+        assert!(!o.is_error, "R10 raises no error — a person's instruction never does");
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "refund_not_escalated");
+        assert_eq!(env.rule_failures(), vec![("R10", 1)]);
+
+        // With the escalation filed, it passes.
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": target, "note": "escalated",
+            "timestamp": "2026-01-01T00:00:00Z", "priority": "high"
+        }))
+        .is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+    }
+
+    /// The note is delivered ONCE, on the experience split, and the
+    /// requirement binds ONLY on the held-out split. That asymmetry is the
+    /// whole design: the experience data contains no instance of the rule
+    /// mattering, so nothing statistical can recover it.
+    #[test]
+    fn the_supervisor_note_is_experience_only_and_the_requirement_is_eval_only() {
+        let exp = gen_tasks(1, Split::Experience, 300);
+        let eval = gen_tasks(1, Split::Eval, 100);
+
+        let noted: Vec<_> = exp.iter().filter(|t| t.supervisor_note.is_some()).collect();
+        assert_eq!(noted.len(), 1, "exactly one experience task carries the note");
+        assert!(noted[0].supervisor_note.unwrap().contains("over $500"));
+
+        assert!(
+            exp.iter().all(|t| !t.escalate_required),
+            "the requirement must never bind during experience — otherwise the \
+             rule is learnable by counting failures and stops testing instruction"
+        );
+        assert!(
+            eval.iter().all(|t| t.supervisor_note.is_none()),
+            "the note is never delivered on the held-out split"
+        );
+        let bound = eval.iter().filter(|t| t.escalate_required).count();
+        assert!(bound >= 10, "R10 exercised by only {bound} of 100 held-out tasks");
+        assert!(
+            eval.iter().filter(|t| t.escalate_required).all(|t| t.amount_cents > ESCALATE_CENTS),
+            "only refunds above the stated threshold bind"
+        );
     }
 
     #[test]
