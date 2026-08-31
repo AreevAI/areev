@@ -29,7 +29,13 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-RETRIES = 3
+# Five, not three. The engine FAIL-SOFTS a failing loop call by design, and
+# for the GROUND leg that means a single flaky minute silently voids an entire
+# learn pass: every draft is treated as ungrounded, the ledger comes back
+# empty, and the run reads as a model that had nothing to say. Losing a pass
+# is far more expensive to a measurement than waiting a few more seconds, and
+# retrying is strictly cheaper than the re-run it otherwise costs.
+RETRIES = 5
 
 
 def fail(msg, code=2):
@@ -52,7 +58,7 @@ def post(body, key, raise_http=False):
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
-    delay = 2
+    delay = 3
     for attempt in range(RETRIES):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:

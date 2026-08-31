@@ -483,9 +483,17 @@ impl Memory {
         if let Some(f) = &run.llm_funnel {
             eprintln!(
                 "  llm funnel: evidence {} -> proposed {} -> cited {} \
-                 (uncited {}, bad target {}) -> grounded {} -> kept {} -> stored {}",
+                 (uncited {}, bad target {}) -> grounded {}{} -> kept {} -> stored {}",
                 f.evidence, f.proposed, f.cited, f.dropped_uncited, f.dropped_target,
-                f.grounded, f.kept, f.stored
+                f.grounded,
+                if f.ground_call_failed {
+                    " [GROUND CALL FAILED]".to_string()
+                } else if f.grounded == 0 && f.ground_verdicts == 0 && f.cited > 0 {
+                    " [GROUND returned nothing usable]".to_string()
+                } else {
+                    format!(" of {} verdicts", f.ground_verdicts)
+                },
+                f.kept, f.stored
             );
         }
         let pending: Vec<Recommendation> = engine

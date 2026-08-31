@@ -160,6 +160,15 @@ pub struct LlmFunnel {
     pub dropped_target: u64,
     /// Survived GROUND — their premises were found in the cited evidence.
     pub grounded: u64,
+    /// Verdicts GROUND actually returned. `grounded = 0` with verdicts > 0 is
+    /// the gate refusing every draft; `grounded = 0` with verdicts = 0 is a
+    /// grader that answered with nothing usable, which is a backend problem
+    /// wearing a gate's clothes.
+    pub ground_verdicts: u64,
+    /// The GROUND call itself failed — no response at all. The engine
+    /// fail-softs here by design, so without this the run looks like a model
+    /// that had nothing to say.
+    pub ground_call_failed: bool,
     /// Survived VERIFY's adversarial pass.
     pub kept: u64,
     /// Cleared the confidence floor and reached the queue.
@@ -821,17 +830,29 @@ impl Engine {
             instructions: GROUND_INSTRUCTIONS,
             claims,
         };
+        // A grounding pass that REFUSED every draft and one that never
+        // answered are the same number of survivors and opposite problems:
+        // the first is the gate doing its job, the second is a backend having
+        // a bad minute while the engine fail-softs. Count the verdicts
+        // actually returned so the two are distinguishable afterwards.
         let grounded: std::collections::BTreeSet<usize> = match serde_json::to_string(&ground_req)
             .ok()
             .and_then(|b| ground.complete(&b).ok())
         {
-            Some(raw) => parse_ground(&raw)
-                .results
-                .into_iter()
-                .filter(|r| r.supported)
-                .map(|r| r.id)
-                .collect(),
-            None => return Vec::new(),
+            Some(raw) => {
+                let parsed = parse_ground(&raw);
+                funnel.ground_verdicts = parsed.results.len() as u64;
+                parsed
+                    .results
+                    .into_iter()
+                    .filter(|r| r.supported)
+                    .map(|r| r.id)
+                    .collect()
+            }
+            None => {
+                funnel.ground_call_failed = true;
+                return Vec::new();
+            }
         };
         funnel.grounded = grounded.len() as u64;
         if grounded.is_empty() {
