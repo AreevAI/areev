@@ -1,27 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="820" height="268" viewBox="0 0 820 268" role="img" aria-label="Areev repository quality: 52,317 lines of test code against 87,821 lines of source, 2,552 tests, 81.0% line coverage">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="268" viewBox="0 0 820 268" role="img" aria-label="Areev repository quality: 52,523 lines of test code against 87,821 lines of source, 2,564 tests, 81.1% line coverage">
 <style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.l{font-size:11px;letter-spacing:.06em;text-transform:uppercase}</style>
 <rect width="820" height="268" rx="10" fill="#0d1117" stroke="#30363d"/>
 <text x="32" y="42" class="n" font-size="16" fill="#e6edf3">Areev — repository quality</text>
-<text x="32" y="62" font-size="12" fill="#8b949e">v1.6.5 · 17 crates · 289 Rust files</text>
+<text x="32" y="62" font-size="12" fill="#8b949e">v1.6.5 · 17 crates · 290 Rust files</text>
 <rect x="32.0" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
 <text x="44.0" y="106" class="n" font-size="19" fill="#bc8cff">87,821</text>
 <text x="44.0" y="122" class="l" fill="#8b949e">source code</text>
 <rect x="185.6" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
-<text x="197.6" y="106" class="n" font-size="19" fill="#58a6ff">52,317</text>
+<text x="197.6" y="106" class="n" font-size="19" fill="#58a6ff">52,523</text>
 <text x="197.6" y="122" class="l" fill="#8b949e">test code</text>
 <rect x="339.2" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
-<text x="351.2" y="106" class="n" font-size="19" fill="#3fb950">2,552</text>
+<text x="351.2" y="106" class="n" font-size="19" fill="#3fb950">2,564</text>
 <text x="351.2" y="122" class="l" fill="#8b949e">tests</text>
 <rect x="492.8" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
-<text x="504.8" y="106" class="n" font-size="19" fill="#3fb950">81.0%</text>
+<text x="504.8" y="106" class="n" font-size="19" fill="#3fb950">81.1%</text>
 <text x="504.8" y="122" class="l" fill="#8b949e">line coverage</text>
 <rect x="646.4" y="80" width="141.6" height="52" rx="7" fill="#161b22" stroke="#30363d"/>
 <text x="658.4" y="106" class="n" font-size="19" fill="#e6edf3">96</text>
 <text x="658.4" y="122" class="l" fill="#8b949e">error codes</text>
 <rect x="32" y="150" width="756" height="34" rx="6" fill="#bc8cff"/>
-<path d="M32 156a6 6 0 0 1 6-6h276v34h-276a6 6 0 0 1-6-6z" fill="#58a6ff"/>
-<text x="44" y="172" class="n" font-size="12" fill="#0d1117">tests 37.3%</text>
-<text x="776" y="172" class="n" font-size="12" fill="#0d1117" text-anchor="end">source 62.7%</text>
-<text x="32" y="212" font-size="12" fill="#8b949e">26,740 integration · 25,577 unit test lines · 56 reference docs · 17 crates</text>
+<path d="M32 156a6 6 0 0 1 6-6h277v34h-277a6 6 0 0 1-6-6z" fill="#58a6ff"/>
+<text x="44" y="172" class="n" font-size="12" fill="#0d1117">tests 37.4%</text>
+<text x="776" y="172" class="n" font-size="12" fill="#0d1117" text-anchor="end">source 62.6%</text>
+<text x="32" y="212" font-size="12" fill="#8b949e">26,946 integration · 25,577 unit test lines · 56 reference docs · 17 crates</text>
 <text x="32" y="238" font-size="11" fill="#8b949e">Lines exclude blanks and comments; test code counted per block, not per file. Coverage scores source lines only, floored per crate.</text>
 </svg>

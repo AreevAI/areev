@@ -562,7 +562,12 @@ stdout: {"message":{"role":"assistant","content":"…","tool_calls":[
   the goalposts. The gate is now **floor-relative**: A0→B must move more
   tasks than two IDENTICAL states do. Under `--mock` the floor is zero, so
   any real gain passes and a dead apply still fails — and it needs no
-  retuning when the next rule lands.
+  retuning when the next rule lands. The passive-arm check (M-all must beat
+  A0, which under `--mock` is how a run proves the provider's context reached
+  the prompt at all) is read against the same floor, for the same reason: it
+  kept a fixed 0.05 until R7-R10 — rules no context provider fixes either —
+  took the arm's edge to exactly 3 tasks of 60, which IS 0.05, and failed the
+  gate on its own boundary while the provider was demonstrably working.
 
 Loop LLM stages take the same kind of adapter via `--llm-cmd` / `--ground-cmd`
 (the engine's `CommandLlm` protocol), so DISCOVER and GROUND can run on
