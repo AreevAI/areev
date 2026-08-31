@@ -52,7 +52,7 @@ webpki-roots = { version = "1", optional = true }
 # Passphrase key derivation (Argon2id) + zeroization of key material.
 argon2 = "0.5"
 zeroize = "1"
-getrandom = "0.2"
+getrandom = "0.4"
 sha2 = "0.10"
 # CAS sidecar encryption (dependency-light policy, justified):
 # `aes-gcm` is ALREADY in this crate's graph — turso_core pulls the same
