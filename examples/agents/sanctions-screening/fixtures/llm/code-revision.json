@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    {
+      "summary": "the screening rule refuses names it cannot normalize instead of repairing them",
+      "target": "tool:screen",
+      "guidance": "every run that failed did so on a counterparty name carrying homoglyphs; refusing is loud but blind, and one of those names is an exact list match",
+      "confidence": 0.9,
+      "proposal": {
+        "kind": "code_revision",
+        "source": "# screen v2 (proposed): fold homoglyphs before matching, never refuse on them.\n# Illustrative only - the shipped v2 lives in screen_v2.py and is what the\n# gating eval actually grades.\nHOMOGLYPHS = {\"\\u0430\": \"a\", \"\\u0435\": \"e\", \"\\u043e\": \"o\", \"\\u0440\": \"p\", \"\\u0441\": \"c\"}\n\n\ndef normalize(name):\n    return \"\".join(HOMOGLYPHS.get(ch, ch) for ch in name).casefold()\n\n\ndef screen(payload, listing):\n    target = normalize(payload[\"name\"])\n    return {\"matches\": [e for e in listing if normalize(e) == target]}\n"
+      }
+    }
+  ]
+}

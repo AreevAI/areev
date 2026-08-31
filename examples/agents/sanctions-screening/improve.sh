@@ -152,4 +152,55 @@ PENDING=$($AGENT improve | python3 -c 'import json,sys; print(len(json.load(sys.
 [ "$PENDING" = "0" ] || fail "the same finding was proposed twice"
 echo "   deduped -- the same evidence does not become a second recommendation"
 
-printf '\n\033[32mOK\033[0m -- 1 disposition became memory, 1 rule revised under a pin, 2 rule versions on the ledger.\n'
+# -- 12. a model proposes new source for the RULE ITSELF -------------------
+# Steps 8-10 revised the rule the way a team does today: a person wrote v2 and
+# walked the chain by hand. This is the same change ARRIVING as a proposal.
+# Keyless: the model leg is examples/llm/mock.py replaying a committed draft,
+# so CI exercises DISCOVER -> GROUND -> VERIFY -> review with no key. A real
+# run points LOOP_LLM_CMD at a real backend.
+say "12. a model proposes new source for the screening rule"
+MOCK_LLM="$(cd ../../llm && pwd)/mock.py"
+PIN=$($AGENT screen-tool | jget evalset_hash)
+[ -n "$PIN" ] && [ "$PIN" != "None" ] || fail "the screen tool declares no evalset"
+URI_BEFORE=$($AGENT screen-tool | jget executor_uri)
+
+LOOP_LLM_CMD="python3 $MOCK_LLM" \
+  AREEV_MOCK_LLM_FIXTURE="$(pwd)/fixtures/llm/code-revision.json" \
+  $AGENT improve > "$AGENT_OUT/loop-code.json"
+CREC=$(python3 - "$AGENT_OUT/loop-code.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+hits = [r for r in d["pending"] if r["target"] == "tool:screen"]
+assert len(hits) == 1, "expected one code revision, got %r" % d["pending"]
+print(hits[0]["hash"])
+EOF
+) || fail "the model proposed no revision of the rule"
+
+# The pin came off the TOOL the desk declared, not off the proposal. A
+# proposer that could name its own grader is not gated.
+REC_PIN=$($AGENT recommendation "$CREC" | jget evalset_hash)
+[ "$REC_PIN" = "$PIN" ] || fail "the revision is pinned to $REC_PIN, not the desk's gate $PIN"
+echo "   proposed: new source for tool:screen, pinned to the evalset the DESK declared"
+
+# -- 13. Rule E1: no recorded eval run, no apply ---------------------------
+# This is the whole guarantee for model-authored code. The proposal is
+# reviewable, and it is refusable, and it cannot ship on a signature alone:
+# an apply must present the run id of an eval that actually executed the
+# pinned evalset, and the evidence is read from that run's journal -- never
+# from the arguments of the apply.
+say "13. what a model-authored rule change cannot do"
+if $AGENT govern "$CREC" apply \
+     --because "the reasoning looks sound to me" --as user:priya >/dev/null 2>&1; then
+  fail "a model-authored rule change shipped with no recorded eval run"
+fi
+echo "   refused: an approving reader is not a passing gate (Rule E1)"
+STATUS=$($AGENT recommendation "$CREC" | jget status)
+[ "$STATUS" = "pending" ] || fail "the refused revision did not stay pending (status $STATUS)"
+[ "$($AGENT screen-tool | jget executor_uri)" = "$URI_BEFORE" ] \
+  || fail "the live rule moved on a refused apply"
+echo "   still pending, and the live rule still resolves to the same bytes"
+echo "   to let it through, record the gate first:"
+echo "     areev eval run --evalset $PIN --tool-cmd '...'   # journals the edge"
+echo "     areev loop apply <rec> --because '...' --gating-run <eval-run-id>"
+
+printf '\n\033[32mOK\033[0m -- 1 disposition became memory, 1 rule revised under a pin, 2 rule versions on the ledger, 1 model-authored revision held at the gate.\n'

@@ -406,6 +406,10 @@ db.loop_run(min_new=20, min_new_errors=3, if_stale="6h")   # gated; bare call ne
 db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole memory
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
 db.recommendations('{"status":"pending"}')
+#   rows carry hash/status/severity/analyzer/summary/target_ref/destructive,
+#   plus `rollbackable` and `evalset_hash` — Rule E1's pin, so a reviewer can
+#   see which gate a code or adapter revision will be held to BEFORE they
+#   approve it (null on every other kind; the engine refuses a pin elsewhere)
 db.apply_recommendation(hash, because="…")     # audited approve+apply
 db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   (code/adapter) revision: evidence loads from the recorded eval summary,

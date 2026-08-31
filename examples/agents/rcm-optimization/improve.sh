@@ -182,4 +182,77 @@ assert d["pending"] == [], d["pending"]
 print("   deduped -- the same evidence does not become a second recommendation")
 EOF
 
-printf '\n\033[32mOK\033[0m -- 20 denials over 4 remittances, 2 mappings learned, 6 resubmissions queued, 1 loop finding signed.\n'
+# -- 10. the desk proposes a change to HOW IT READS ITSELF -----------------
+# Everything above evolves what the desk remembers. This evolves the CAL that
+# turns memory into a prompt -- the briefing query itself. Keyless: the model
+# leg is examples/llm/mock.py replaying a committed draft, so CI exercises the
+# whole governed path (DISCOVER -> GROUND -> VERIFY -> review -> apply) with no
+# key and no network. A real run points LOOP_LLM_CMD at a real backend.
+say "10. a model reads the desk's record and proposes a change to the briefing query"
+MOCK_LLM="$(cd ../../llm && pwd)/mock.py"
+qsize() { $AGENT queries | python3 -c 'import json,sys
+qs = json.load(sys.stdin)
+print(next(q["body_size"] for q in qs if q["name"] == sys.argv[1]))' "$1"; }
+
+BEFORE=$(qsize desk_pulse)
+$AGENT brief | grep -q "rcm-reducer-probe" \
+  || fail "the briefing was supposed to carry the probe before the revision"
+LOOP_LLM_CMD="python3 $MOCK_LLM" \
+  AREEV_MOCK_LLM_FIXTURE="$(pwd)/fixtures/llm/query-revision.json" \
+  $AGENT improve --grant-llm-auto-apply > "$AGENT_OUT/loop3.json"
+QREC=$(python3 - "$AGENT_OUT/loop3.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+hits = [r for r in d["pending"] if r["target"] == "query:desk_pulse"]
+assert len(hits) == 1, "expected one query revision, got %r" % d["pending"]
+print(hits[0]["hash"])
+EOF
+) || fail "the model proposed no revision of the briefing query"
+echo "   proposed: rewrite the saved query desk_pulse (origin llm, ${BEFORE}-byte body)"
+
+# -- 11. what the engine will NOT do with it -------------------------------
+# That run carried a host policy naming the `loop.llm` family AND the `query`
+# class outright -- the widest grant a host could misconfigure. The engine
+# applied nothing, for two independent reasons: `origin = llm` is
+# categorically auto-apply-ineligible, and the auto-apply gate admits only
+# the `memory` class, so the query leg of that grant is inert. A grain edit
+# changes one remembered value; a definition rewrite changes what EVERY
+# future briefing contains.
+say "11. a host granted auto-apply on the query class -- and the engine ignored it"
+STATUS=$($AGENT recommendation "$QREC" | jget status)
+[ "$STATUS" = "pending" ] || fail "a model-authored rewrite auto-applied (status $STATUS)"
+[ "$(qsize desk_pulse)" = "$BEFORE" ] || fail "the query body moved before anyone signed"
+echo "   still pending, body still $BEFORE bytes -- the host cannot grant past the engine"
+
+# -- 12. a person signs it, and the briefing changes -----------------------
+# The binding's `apply` is ONE audited approve+apply step (the CLI splits the
+# two verbs so a supervising agent can approve for a human to apply later).
+# Either way the reason and the actor are the audit record.
+say "12. omar signs it, and the desk's own briefing changes"
+$AGENT govern "$QREC" apply \
+  --because "the briefing is 40 dispatch records deep; narrow the activity leg and keep the mappings" \
+  --as user:omar >/dev/null
+AFTER=$(qsize desk_pulse)
+[ "$AFTER" != "$BEFORE" ] || fail "the saved query body did not change ($BEFORE bytes)"
+BRIEF=$($AGENT brief)
+echo "$BRIEF" | grep -q "rcm-reducer-probe" \
+  && fail "the briefing still presents the validation probe as a plan"
+echo "$BRIEF" | grep -q "rcm-denial-optimization" || fail "the briefing lost the real plan"
+echo "$BRIEF" | grep -q "prior_auth_missing" \
+  || fail "the revised briefing dropped the mapping it exists to carry"
+echo "$BRIEF" | grep -q "min_cluster_size" || fail "the revised briefing dropped the desk's policy"
+echo "   the probe is gone; the plan, the policy and the learned mappings stayed"
+
+# -- 13. and it is undoable ------------------------------------------------
+# A DEFINE writes a registry row, not a grain, so the ordinary "retract what
+# the apply created" would undo NOTHING while reporting success. The engine
+# refuses to apply a definition change whose inverse it could not record --
+# which is the only reason this step can exist.
+say "13. and the rewrite can be taken back"
+$AGENT govern "$QREC" rollback --because "week three wants the full activity trail back" \
+  --as user:omar >/dev/null
+[ "$(qsize desk_pulse)" = "$BEFORE" ] \
+  || fail "rollback did not restore the previous definition ($BEFORE bytes)"
+echo "   the previous definition is back, byte for byte -- the inverse was recorded at apply"
+
+printf '\n\033[32mOK\033[0m -- 20 denials over 4 remittances, 2 mappings learned, 6 resubmissions queued, 1 loop finding signed, 1 briefing query rewritten and taken back.\n'

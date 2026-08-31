@@ -2010,6 +2010,12 @@ impl Areev {
                     "summary": r.summary.render(),
                     "target_ref": r.target_ref,
                     "destructive": r.destructive,
+                    // Rule E1's pin, so a reviewer can see which evalset a
+                    // code or adapter revision will be held to BEFORE they
+                    // approve it. Absent on every other kind — the engine
+                    // refuses a pin anywhere else.
+                    "evalset_hash": r.evalset_hash,
+                    "rollbackable": r.rollbackable,
                 })
             })
             .collect();

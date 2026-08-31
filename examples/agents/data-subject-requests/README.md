@@ -240,6 +240,27 @@ Both are one line, and both are load-bearing.
 | [`fixtures/`](fixtures/) | The synthetic memory, the requests, the DPO decisions |
 | [`CLAUDE.md`](CLAUDE.md) | The working rules for changing anything here |
 
+## Taking the model leg live
+
+`improve.sh` here runs the deterministic analyzers — no key, no network, and
+that is the floor CI holds. Attach a model and the loop gains
+DISCOVER → GROUND → VERIFY, and a draft may carry a **proposal**: a lesson, a
+fact, a rewrite of a saved CAL query, field-level edits to this plan, or new
+source for one of its tools.
+
+```bash
+LOOP_LLM_CMD='./examples/llm/claude.sh' ./python/improve.sh
+```
+
+Nothing about the gates changes. An `origin = llm` finding can never
+auto-apply, it still needs a human review with a written reason and an
+explicit apply, and every kind records the inverse that rolls it back. The
+vocabulary and its per-kind rules are in [`../../llm/`](../../llm/) and
+[`docs/loop.md`](../../../docs/loop.md); two agents
+([`../rcm-optimization/`](../rcm-optimization/) and
+[`../sanctions-screening/`](../sanctions-screening/)) exercise the whole
+governed path keyless in CI against a committed draft.
+
 ## Where to go next
 
 - [`docs/erasure.md`](../../../docs/erasure.md) — the requirement record:
