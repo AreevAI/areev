@@ -92,6 +92,15 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         // An LLM-authored lesson shows the reviewer BOTH the finding and the
         // exact line an apply would record — never one without the other.
         "llm.lesson" => "{text} — record lesson: \"{lesson}\"",
+        // The rest of the LLM proposal vocabulary follows the same rule: the
+        // finding AND the exact change an apply would make, never one without
+        // the other. A reviewer approving blind is the failure this prevents.
+        "llm.fact" => "{text} — record fact: {relation} = \"{object}\"",
+        "llm.query_revision" => "{text} — redefine \"{name}\" as: {body}",
+        "llm.plan_revision" => "{text} — revise plan {plan}: {edits}",
+        "llm.code_revision" => {
+            "{text} — new source for tool \"{tool}\" ({bytes} bytes), pending its evalset gate"
+        }
         // External command analyzers (trust class Command): free text from the
         // subprocess, rendered as-is (the trust badge, not the prose, marks it).
         "command.finding" => "{text}",

@@ -192,6 +192,7 @@ dependencies = [
  "areev-cal",
  "areev-core",
  "areev-loop",
+ "areev-run-core",
  "areev-store",
  "serde",
  "serde_json",

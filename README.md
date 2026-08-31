@@ -337,6 +337,14 @@ whatever the file says today; and a diligence desk where, after one signed
 rule, **the same budget buys three times the findings**. All keyless, all
 fixture-driven, all run by CI on every release.
 
+Two of them go a step further and let a **model** propose the change: the
+remittance desk rewrites **its own briefing query** — and a rollback puts the
+previous one back byte for byte — while the screening desk shows a
+model-authored **rule change held at the gate**, because an approving reader
+is not a passing eval. Both run keyless in CI against a committed draft, which
+proves the governed path and deliberately claims nothing about what a model
+would propose.
+
 Rust / Python / Node embedding, the `areev run` walkthrough, the PostgreSQL
 backend, encryption at rest, migration from other stores, and fleet sync:
 **[docs/quickstart.md](docs/quickstart.md)**. Task recipes:

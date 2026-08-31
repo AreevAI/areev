@@ -34,9 +34,11 @@ Everything else is the driver:
     agent.py verify       journal-consistent replay of every run
     agent.py improve [--grant-auto-apply]
                           the loop reads the desk's own history back
-    agent.py govern R approve|apply|dismiss --because "..." --as user:X
+    agent.py govern R approve|apply|dismiss|rollback --because "..." --as user:X
     agent.py mappings     the governed denial-code mappings, from memory
     agent.py brief        the desk's self-briefing (saved CAL queries)
+    agent.py queries      the saved CAL queries as stored, with body sizes
+    agent.py recommendation H   one recommendation's live lifecycle state
     agent.py runs         run list as JSON (the acts assert on this)
 
 To make it real, replace `tools` and `connector` with processes that read
@@ -714,6 +716,21 @@ def improve(argv):
                        "auto_apply": [{"analyzer": "loop.tool_failure",
                                        "targets": ["memory"],
                                        "max_severity": "high"}]}, fh)
+    if "--grant-llm-auto-apply" in argv:
+        # The widest grant a host could misconfigure for a MODEL-authored
+        # change: name the llm family and the query class outright. The
+        # engine still applies nothing, for two independent reasons --
+        # `origin = llm` is categorically auto-apply-ineligible, and
+        # `grants_auto_apply` admits only the `memory` class, so the query
+        # leg of this grant is inert. A grain edit changes one remembered
+        # value; a definition rewrite changes what every future briefing
+        # contains.
+        policy = os.path.join(OUT, "loop-policy-llm.json")
+        with open(policy, "w", encoding="utf-8") as fh:
+            json.dump({"auto_apply_enabled": True,
+                       "auto_apply": [{"analyzer": "loop.llm",
+                                       "targets": ["query", "memory"],
+                                       "max_severity": "high"}]}, fh)
     report = json.loads(db.loop_run(llm_cmd=os.environ.get("LOOP_LLM_CMD"),
                                     policy=policy))
     recs = json.loads(db.recommendations('{"status": "pending"}'))
@@ -726,7 +743,7 @@ def improve(argv):
 
 def govern(argv):
     if len(argv) < 2:
-        sys.stderr.write("usage: govern <rec> approve|apply|dismiss "
+        sys.stderr.write("usage: govern <rec> approve|apply|dismiss|rollback "
                          "--because ... --as user:X\n")
         return 2
     rec_prefix, action = argv[0], argv[1]
@@ -752,6 +769,14 @@ def govern(argv):
             out = db.apply_recommendation(rec, because)
         elif action == "dismiss":
             out = db.dismiss_recommendation(rec, because)
+        elif action == "rollback":
+            # For a definition rewrite this is the load-bearing one: a
+            # DEFINE writes a registry row, not a grain, so the ordinary
+            # "retract what the apply created" would undo nothing while
+            # reporting success. The engine refuses to APPLY a definition
+            # change whose inverse it could not record, which is what makes
+            # this call able to put the old body back.
+            out = db.rollback_recommendation(rec, because)
         else:
             sys.stderr.write("unknown action %r\n" % action)
             return 2
@@ -759,6 +784,38 @@ def govern(argv):
         sys.stderr.write("refused: %s\n" % e)
         return 4
     print(out)
+    return 0
+
+
+def recommendation(argv):
+    """One recommendation's live lifecycle state, by hash prefix.
+
+    Status is index-layer state, not part of the immutable body, so it has to
+    be read back rather than inferred from the propose-time report.
+    """
+    if not argv:
+        sys.stderr.write("usage: recommendation <hash-prefix>\n")
+        return 2
+    db = open_db()
+    rows = json.loads(db.recommendations(None))
+    hit = next((r for r in rows if r["hash"].startswith(argv[0])), None)
+    if hit is None:
+        sys.stderr.write("no recommendation matching %r\n" % argv[0])
+        return 4
+    emit(hit)
+    return 0
+
+
+def queries():
+    """The saved CAL queries as stored IN the file, with their body sizes.
+
+    The size is the honest, cheap way to see a definition rewrite land and be
+    taken back: the body is host metadata (a `qry:` row), not a grain, so it
+    has no content address to compare and `DESCRIBE QUERIES` is the only
+    read that reports it.
+    """
+    db = open_db()
+    emit(json.loads(db.cal("DESCRIBE QUERIES"))["info"]["queries"])
     return 0
 
 
@@ -811,6 +868,10 @@ def main():
         return mappings()
     if cmd == "improve":
         return improve(sys.argv[2:])
+    if cmd == "queries":
+        return queries()
+    if cmd == "recommendation":
+        return recommendation(sys.argv[2:])
     if cmd == "govern":
         return govern(sys.argv[2:])
     if cmd == "brief":

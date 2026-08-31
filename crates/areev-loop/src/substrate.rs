@@ -20,6 +20,15 @@ pub struct Capabilities {
     pub telemetry: bool,
     /// An embedder is installed (upgrades T0 analyzers to T1).
     pub embeddings: bool,
+    /// Workflow plan grains can be structurally validated
+    /// ([`SubstrateRead::validate_plan`]). Without it a `plan_revision`
+    /// proposal stays advisory: the engine will not stamp an executable edit
+    /// to a plan it cannot have checked for reachability and cycle bounds.
+    pub plans: bool,
+    /// Executable tool code is modelled — the §7.4 blob seam plus
+    /// [`SubstrateRead::tool_evalset`]. Without it a `code_revision` proposal
+    /// stays advisory, because Rule E1's pin cannot be resolved.
+    pub code: bool,
 }
 
 /// Read filters for curated grain reads.
@@ -150,6 +159,33 @@ pub trait SubstrateRead {
     /// `telemetry` capability; the default returns `None` so substrates without
     /// a sidecar degrade cleanly. `namespace` scopes the snapshot when set.
     fn telemetry(&self, _namespace: Option<&str>) -> Result<Option<TelemetryView>> {
+        Ok(None)
+    }
+
+    /// Structurally validate a candidate Workflow grain body — the same
+    /// checks the runtime would run before executing it (unique and reachable
+    /// nodes, conditions parse, every cycle bounded). The engine calls this
+    /// before it will stamp a `plan_revision` as executable, so a proposal
+    /// that would produce an unrunnable plan never reaches a reviewer as
+    /// something they could apply.
+    ///
+    /// This is deliberately the substrate's job: the engine owns no plan
+    /// grammar, exactly as it owns no CAL grammar (see [`OmsSubstrate::validate_cal`]).
+    /// Requires the `plans` capability; the default reports it missing so a
+    /// substrate that does not model workflows degrades the proposal to
+    /// advisory rather than pretending to have checked it.
+    fn validate_plan(&self, _workflow: &Value) -> Result<()> {
+        Err(crate::error::Error::CapabilityMissing("plans".into()))
+    }
+
+    /// The evalset a code revision of `tool` must be gated against (Rule E1's
+    /// pin). Returns `Ok(None)` when the tool declares none, which makes a
+    /// `code_revision` for it advisory — an unpinnable revision is one no
+    /// gating run could ever satisfy.
+    ///
+    /// Resolved from the substrate and never from the model: a proposer that
+    /// could name its own grader is not gated.
+    fn tool_evalset(&self, _tool: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }

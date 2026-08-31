@@ -45,7 +45,14 @@ const APPROVAL_CENTS: u64 = 100 * 100;
 const RETRY_AFTER_S: u64 = 2;
 
 const TEMPLATES: [&str; 4] = ["refund_small", "refund_large", "refund_and_cancel", "log_case"];
-const PLANS: [&str; 3] = ["basic", "pro", "enterprise"];
+/// The desk's account mix. `enterprise` appears twice deliberately: R8 is a
+/// SEGMENT rule, so the segment's prevalence is what decides whether it can
+/// be measured at all, and a uniform third of a quarter of the tasks left it
+/// exercised by 9 of 100 held-out tasks — a per-rule table nobody should
+/// believe (`every_rule_gets_enough_opportunities_to_be_measurable` is the
+/// guard). One draw either way, so the RNG stream and every prompt are
+/// unchanged; only the `plan` column moves.
+const PLANS: [&str; 4] = ["basic", "pro", "enterprise", "enterprise"];
 
 // Disjoint per-split name pools — the split-holdout guarantee is structural,
 // not statistical. Emails also diverge on the per-split domain.
@@ -65,6 +72,33 @@ const EVAL_LAST: [&str; 12] = [
     "Moreau", "Novak", "Okafor", "Petrov", "Quispe", "Rahman", "Sato", "Toledo", "Ueda", "Vance",
     "Whitfield", "Zhukov",
 ];
+
+/// R10's threshold: a refund above this must also be escalated as a
+/// high-priority case, once a supervisor has said so.
+const ESCALATE_CENTS: u64 = 500 * 100;
+
+/// R10, in the words a person would actually use. Delivered ONCE, during the
+/// experience phase, as a note from a human — not as an error, not as a
+/// pattern across outcomes.
+///
+/// This is the archetype the other nine miss. R1-R6 announce themselves with
+/// an error code and R7-R9 with a correlation across many outcomes, but both
+/// are things the desk INFERS from its own failures. A great deal of real
+/// learning is not inferred at all: somebody tells you. A supervisor says
+/// "from now on, escalate these", and a desk worth the name applies it to
+/// every future ticket of that shape — from one sentence, before it has ever
+/// failed for that reason.
+pub const SUPERVISOR_NOTE: &str = "Note from the billing lead, after reviewing \
+this week's refunds: from now on any refund over $500 must ALSO be logged as a \
+case with priority high, so finance sees it in the escalation queue. Apply this \
+to every future refund of that size, not just this one.";
+
+/// R9: which [`TOPICS`] are regulated and must be filed at high priority. A
+/// recurring class of work the desk has no branch for — the distributional
+/// archetype. Two of the four, for the same measurability reason as [`PLANS`]:
+/// one topic left the rule exercised by 7 of 100 held-out tasks. Real
+/// regulated categories are rarely singular either.
+const REGULATED_TOPICS: [usize; 2] = [0, 3];
 
 const TOPICS: [(&str, &str); 4] = [
     ("a billing discrepancy", "customer disputes the last invoice"),
@@ -118,9 +152,28 @@ pub struct Task {
     amount_cents: u64,
     expected_timestamp: String,
     limiter_armed: bool,
+    /// R10: this task carries the supervisor's note. Exactly one experience
+    /// task does; it is recorded into memory, never shown in the prompt.
+    supervisor_note: Option<&'static str>,
+    /// R10: this task must escalate. Only ever true on the HELD-OUT split —
+    /// the note announces a policy that takes effect going forward, so the
+    /// experience phase contains no instance of it mattering. That is what
+    /// makes it a clean test: no amount of outcome correlation over the
+    /// experience data can recover it, because the data does not contain it.
+    /// Only reading what the person wrote works.
+    escalate_required: bool,
+    /// R9: this case is about the regulated topic, so it must be filed at
+    /// high priority. Nothing in the prompt says so and no tool refuses a
+    /// case without it — the whole point of the silent archetypes.
+    regulated_topic: bool,
 }
 
 impl Task {
+    /// The supervisor's note, when this task carries one.
+    pub fn supervisor_note(&self) -> Option<&'static str> {
+        self.supervisor_note
+    }
+
     /// Everything about this task that a re-run must reproduce, on one line.
     ///
     /// Deliberately covers the HIDDEN spec (pool, target, amount, expected
@@ -135,7 +188,7 @@ impl Task {
             .map(|c| format!("{}:{}:{}:{}:{}", c.id, c.email, c.sub_id, c.plan, c.balance))
             .collect();
         format!(
-            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|pool={}|prompt={}",
+            "{}|{}|rules={}|target={}|amount_cents={}|ts={}|limiter={}|regulated={}|escalate={}|note={}|pool={}|prompt={}",
             self.id,
             self.template,
             self.rules_exercised.join(","),
@@ -143,6 +196,9 @@ impl Task {
             self.amount_cents,
             self.expected_timestamp,
             self.limiter_armed,
+            self.regulated_topic,
+            self.escalate_required,
+            self.supervisor_note.is_some(),
             pool.join(";"),
             self.prompt,
         )
@@ -217,7 +273,9 @@ fn gen_task(
 
     let name = pool[target].name.clone();
     let email = pool[target].email.clone();
+    let target_plan = pool[target].plan;
     let mut expected_timestamp = String::new();
+    let mut regulated_topic = false;
     let prompt = if template == "log_case" {
         let (off_disp, off_min) = OFFSETS[(rng.next() % OFFSETS.len() as u64) as usize];
         let month = 1 + (rng.next() % 12) as u32;
@@ -228,7 +286,9 @@ fn gen_task(
         let minute = [0u32, 15, 30, 45][(rng.next() % 4) as usize];
         expected_timestamp = utc_from_local(month, day, hour, minute, off_min);
         let local = format!("2026-{month:02}-{day:02} {hour:02}:{minute:02}");
-        let (topic, note) = TOPICS[(rng.next() % TOPICS.len() as u64) as usize];
+        let topic_idx = (rng.next() % TOPICS.len() as u64) as usize;
+        let (topic, note) = TOPICS[topic_idx];
+        regulated_topic = REGULATED_TOPICS.contains(&topic_idx);
         match split {
             Split::Experience => format!(
                 "Customer {name} ({email}) called about {topic}. Log a case with the note \
@@ -281,6 +341,34 @@ fn gen_task(
     if limiter_armed {
         rules.push("R6");
     }
+    // ---- the SILENT archetypes (R7-R9): no tool ever errors for these ----
+    // R7 rides every closure; R8 only BITES under $100 (over it, R3 already
+    // forces the token, so the rule is satisfied for free and this task is
+    // no opportunity to learn it); R9 rides the regulated topic only.
+    if template == "refund_and_cancel" {
+        rules.push("R7");
+    }
+    if template != "log_case" && target_plan == "enterprise" && amount_cents <= APPROVAL_CENTS {
+        rules.push("R8");
+    }
+    if regulated_topic {
+        rules.push("R9");
+    }
+    // R10 — the INSTRUCTED rule. The note lands once, in the experience
+    // phase; the requirement only ever binds on the held-out split, because
+    // the supervisor is announcing a policy for future work. An agent that
+    // never read the note has no way to know, and no failure to learn from.
+    let is_refund = template != "log_case";
+    let escalate_required =
+        split == Split::Eval && is_refund && amount_cents > ESCALATE_CENTS;
+    if escalate_required {
+        rules.push("R10");
+    }
+    let supervisor_note = if split == Split::Experience && i == NOTE_TASK_INDEX {
+        Some(SUPERVISOR_NOTE)
+    } else {
+        None
+    };
 
     Task {
         id: format!("{prefix}-{i:04}"),
@@ -292,8 +380,17 @@ fn gen_task(
         amount_cents,
         expected_timestamp,
         limiter_armed,
+        regulated_topic,
+        supervisor_note,
+        escalate_required,
     }
 }
+
+/// Which experience task carries the supervisor's note. Early enough that
+/// every later task could have benefited, which is the point: a desk that
+/// only learns from its own failures had 290-odd chances to notice and could
+/// not, because nothing failed.
+const NOTE_TASK_INDEX: usize = 7;
 
 /// Convert a 2026 local wall time to `YYYY-MM-DDTHH:MM:SSZ`. Callers keep
 /// `day` in 2..=27 so the shift never leaves the month.
@@ -376,7 +473,8 @@ pub fn tool_schemas() -> Value {
             json!({ "type": "object", "properties": {
                 "customer_id": { "type": "string" },
                 "note": { "type": "string" },
-                "timestamp": { "type": "string", "description": "when the case happened" }
+                "timestamp": { "type": "string", "description": "when the case happened" },
+                "priority": { "type": "string", "description": "case priority, e.g. low, normal, high" }
             }, "required": ["customer_id", "note", "timestamp"] }),
         ),
         f(
@@ -400,6 +498,15 @@ pub struct Env {
     expected_timestamp: String,
     limiter_armed: bool,
     limiter_open: bool,
+    /// R8: the target's plan, and whether the refund that landed carried an
+    /// approval token. Both are ordinary desk facts; neither raises an error.
+    target_plan: &'static str,
+    refund_authorized: bool,
+    /// R9: this case must be filed high-priority.
+    regulated_topic: bool,
+    /// R10: a refund on this task must also be escalated as a high-priority
+    /// case, because a person said so during the experience phase.
+    escalate_required: bool,
     /// The endpoint R6 fronts: `refund` on refund templates, `log_case` on
     /// log tasks.
     limited_tool: &'static str,
@@ -408,7 +515,9 @@ pub struct Env {
     token_seq: u32,
     refunds: Vec<(String, u64)>,
     cancelled: BTreeSet<String>,
-    cases: Vec<(String, String, String)>,
+    /// (customer, note, timestamp, priority) — priority is empty unless the
+    /// agent set one.
+    cases: Vec<(String, String, String, String)>,
     failures: BTreeMap<RuleId, u32>,
 }
 
@@ -458,6 +567,10 @@ impl Env {
             expected_timestamp: task.expected_timestamp.clone(),
             limiter_armed: task.limiter_armed,
             limiter_open: false,
+            target_plan: task.pool[task.target].plan,
+            refund_authorized: false,
+            regulated_topic: task.regulated_topic,
+            escalate_required: task.escalate_required,
             limited_tool: if task.template == "log_case" { "log_case" } else { "refund" },
             tokens: BTreeSet::new(),
             token_seq: 0,
@@ -508,7 +621,7 @@ impl Env {
         if self.cancelled.iter().any(|id| id != target) {
             return (false, "cancelled_wrong_customer".to_string());
         }
-        if self.cases.iter().any(|(id, _, _)| id != target) {
+        if self.cases.iter().any(|(id, _, _, _)| id != target) {
             return (false, "case_on_wrong_customer".to_string());
         }
         match self.template {
@@ -526,8 +639,27 @@ impl Env {
                     if !self.cancelled.contains(target) {
                         return (false, "not_cancelled".to_string());
                     }
+                    // R7 (silent): closing an account is an auditable act —
+                    // desk policy is that it leaves a case behind. Every tool
+                    // call here succeeded; only the final state is wrong.
+                    if self.cases.is_empty() {
+                        return (false, "no_closure_case".to_string());
+                    }
                 } else if !self.cancelled.is_empty() {
                     return (false, "unrequested_cancellation".to_string());
+                }
+                // R8 (silent): an enterprise account needs a manager behind
+                // ANY refund, not only one over $100. Over the threshold R3
+                // already forced a token, so this only ever bites below it.
+                if self.target_plan == "enterprise" && !self.refund_authorized {
+                    return (false, "unapproved_enterprise_refund".to_string());
+                }
+                // R10 (instructed): a person said large refunds get escalated.
+                // No tool objects; the desk simply did not do what it was told.
+                if self.escalate_required
+                    && !self.cases.iter().any(|c| c.3 == "high")
+                {
+                    return (false, "refund_not_escalated".to_string());
                 }
                 (true, String::new())
             }
@@ -547,6 +679,11 @@ impl Env {
                 if self.cases[0].2 != self.expected_timestamp {
                     return (false, "wrong_timestamp".to_string());
                 }
+                // R9 (silent): this topic is regulated and its cases are
+                // filed high-priority. `log_case` took the case happily.
+                if self.regulated_topic && self.cases[0].3 != "high" {
+                    return (false, "case_missing_priority".to_string());
+                }
                 (true, String::new())
             }
             _ => (false, "unknown_template".to_string()),
@@ -564,9 +701,37 @@ impl Env {
         if self.target >= PAGE_SIZE
             && (self.refunds.iter().any(|(id, _)| id != target)
                 || self.cancelled.iter().any(|id| id != target)
-                || self.cases.iter().any(|(id, _, _)| id != target))
+                || self.cases.iter().any(|(id, _, _, _)| id != target))
         {
             *out.entry("R1").or_insert(0) += 1;
+        }
+        // R7-R9 have NO error shape at all — every call that trips them
+        // returned 200. Without env-side attribution they would be invisible
+        // to the recurrence table as well as to the analyzers, and the
+        // difference between "the loop cannot see this" and "nothing
+        // happened" is the whole experiment.
+        if self.template == "refund_and_cancel"
+            && self.cancelled.contains(target)
+            && self.cases.is_empty()
+        {
+            *out.entry("R7").or_insert(0) += 1;
+        }
+        if self.target_plan == "enterprise"
+            && !self.refunds.is_empty()
+            && !self.refund_authorized
+        {
+            *out.entry("R8").or_insert(0) += 1;
+        }
+        if self.regulated_topic
+            && self.cases.first().is_some_and(|c| c.3 != "high")
+        {
+            *out.entry("R9").or_insert(0) += 1;
+        }
+        if self.escalate_required
+            && !self.refunds.is_empty()
+            && !self.cases.iter().any(|c| c.3 == "high")
+        {
+            *out.entry("R10").or_insert(0) += 1;
         }
         out.into_iter().collect()
     }
@@ -693,18 +858,18 @@ impl Env {
             );
         }
         // R3: tokens are single-use — consumed on the refund they authorize.
-        if cents > APPROVAL_CENTS {
-            match str_arg(args, "approval_token") {
-                Some(t) if self.tokens.remove(t) => {}
-                _ => {
-                    return self.rule_err(
-                        "R3",
-                        "approval_required",
-                        "refunds over $100 require a valid approval_token from request_approval",
-                    )
-                }
-            }
+        // A token presented under the threshold is still consumed and still
+        // authorizes: that is what makes R8 satisfiable at all.
+        let presented = str_arg(args, "approval_token")
+            .is_some_and(|t| self.tokens.remove(t));
+        if cents > APPROVAL_CENTS && !presented {
+            return self.rule_err(
+                "R3",
+                "approval_required",
+                "refunds over $100 require a valid approval_token from request_approval",
+            );
         }
+        self.refund_authorized = presented;
         self.refunds.push((cid, cents));
         ok_body(json!({ "refund_id": format!("re_{:08x}", 0x0e00_0000u32 + self.refunds.len() as u32) }))
     }
@@ -748,8 +913,9 @@ impl Env {
                 "timestamp must be UTC ISO-8601: YYYY-MM-DDTHH:MM:SSZ",
             );
         }
+        let priority = str_arg(args, "priority").unwrap_or("").trim().to_lowercase();
         let cid = self.pool[i].id.clone();
-        self.cases.push((cid, note, ts));
+        self.cases.push((cid, note, ts, priority));
         ok_body(json!({ "case_id": format!("case_{:08x}", 0x0c00_0000u32 + self.cases.len() as u32) }))
     }
 
@@ -801,7 +967,34 @@ mod tests {
                 String::new()
             },
             limiter_armed: limited,
+            regulated_topic: false,
+            supervisor_note: None,
+            escalate_required: false,
         }
+    }
+
+    /// A held-out refund large enough that the supervisor's note binds.
+    fn escalating_task(template: &'static str, amount_cents: u64) -> Task {
+        let mut t = task(template, false, false, amount_cents);
+        t.escalate_required = true;
+        t
+    }
+
+    /// The same scripted task with a silent rule armed: an enterprise target
+    /// (R8) and/or the regulated topic (R9). R7 rides `refund_and_cancel`
+    /// unconditionally, so it needs no flag.
+    fn silent_task(
+        template: &'static str,
+        enterprise: bool,
+        regulated: bool,
+        amount_cents: u64,
+    ) -> Task {
+        let mut t = task(template, false, false, amount_cents);
+        if enterprise {
+            t.pool[0].plan = "enterprise";
+        }
+        t.regulated_topic = regulated;
+        t
     }
 
     fn call(env: &mut Env, tool: &str, args: Value) -> ToolOutcome {
@@ -988,9 +1181,14 @@ mod tests {
         let (ok, reason) = env.score("done");
         assert!(!ok);
         assert_eq!(reason, "no_refund");
-        assert_eq!(env.rule_failures(), vec![("R4", 1)]);
+        // R7 rides along honestly: the account WAS closed and no case was
+        // filed. The recurrence table is unaffected — `mishandled_rules`
+        // attributes "no_refund" to R3/R4/R6 — this is the raw per-rule count.
+        assert_eq!(env.rule_failures(), vec![("R4", 1), ("R7", 1)]);
 
-        // Correct order: approve → refund → cancel → success.
+        // Right order, still incomplete: approve → refund → cancel scores
+        // FALSE now, and every call returned 200. This is R7's whole shape —
+        // there is no error anywhere for a clusterer to find.
         let mut env = Env::new(&t);
         let a = body(&call(&mut env, "request_approval", json!({"reason": "r"})));
         let o = call(&mut env, "refund", json!({
@@ -999,8 +1197,184 @@ mod tests {
         assert!(!o.is_error);
         assert!(!call(&mut env, "cancel_subscription", json!({"customer_id": target})).is_error);
         let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "no_closure_case");
+        assert_eq!(env.rule_failures(), vec![("R7", 1)]);
+
+        // Complete: the closure leaves a case behind.
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": target, "note": "account closed", "timestamp": "2026-01-01T00:00:00Z"
+        }))
+        .is_error);
+        let (ok, reason) = env.score("done");
         assert!(ok, "{reason}");
         assert!(env.rule_failures().is_empty());
+    }
+
+    /// How many tasks each rule is even ABLE to trip, at the published
+    /// config. This is a POWER guard, not a behaviour test: a rule exercised
+    /// by a handful of held-out tasks can never produce a per-rule result
+    /// anyone should believe, and the 2x2 died of exactly that (SELFIMPROVE.md,
+    /// "the 2x2 that could not be run"). Better to find it here than after
+    /// paying for a run.
+    #[test]
+    fn every_rule_gets_enough_opportunities_to_be_measurable() {
+        use std::collections::BTreeMap;
+        let mut counts: BTreeMap<RuleId, usize> = BTreeMap::new();
+        let tasks = gen_tasks(1, Split::Eval, 100);
+        for t in &tasks {
+            for r in &t.rules_exercised {
+                *counts.entry(r).or_default() += 1;
+            }
+        }
+        eprintln!("eval n=100 opportunities: {counts:?}");
+        for rule in ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"] {
+            let n = counts.get(rule).copied().unwrap_or(0);
+            assert!(
+                n >= 10,
+                "rule {rule} is exercised by only {n} of 100 held-out tasks —                  too thin for any per-rule claim; raise its arming rate in                  gen_task rather than publishing an underpowered table"
+            );
+        }
+    }
+
+    #[test]
+    fn r10_a_large_refund_must_be_escalated_once_a_person_has_said_so() {
+        // $700, above the $500 the note names. Nothing errors: the desk
+        // simply did not do what it was told.
+        let t = escalating_task("refund_large", 700 * 100);
+        let target = t.pool[0].id.clone();
+
+        let mut env = Env::new(&t);
+        let a = body(&call(&mut env, "request_approval", json!({"reason": "r"})));
+        let o = call(&mut env, "refund", json!({
+            "customer_id": target, "amount": 700, "approval_token": a["approval_token"]
+        }));
+        assert!(!o.is_error, "R10 raises no error — a person's instruction never does");
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "refund_not_escalated");
+        assert_eq!(env.rule_failures(), vec![("R10", 1)]);
+
+        // With the escalation filed, it passes.
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": target, "note": "escalated",
+            "timestamp": "2026-01-01T00:00:00Z", "priority": "high"
+        }))
+        .is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+    }
+
+    /// The note is delivered ONCE, on the experience split, and the
+    /// requirement binds ONLY on the held-out split. That asymmetry is the
+    /// whole design: the experience data contains no instance of the rule
+    /// mattering, so nothing statistical can recover it.
+    #[test]
+    fn the_supervisor_note_is_experience_only_and_the_requirement_is_eval_only() {
+        let exp = gen_tasks(1, Split::Experience, 300);
+        let eval = gen_tasks(1, Split::Eval, 100);
+
+        let noted: Vec<_> = exp.iter().filter(|t| t.supervisor_note.is_some()).collect();
+        assert_eq!(noted.len(), 1, "exactly one experience task carries the note");
+        assert!(noted[0].supervisor_note.unwrap().contains("over $500"));
+
+        assert!(
+            exp.iter().all(|t| !t.escalate_required),
+            "the requirement must never bind during experience — otherwise the \
+             rule is learnable by counting failures and stops testing instruction"
+        );
+        assert!(
+            eval.iter().all(|t| t.supervisor_note.is_none()),
+            "the note is never delivered on the held-out split"
+        );
+        let bound = eval.iter().filter(|t| t.escalate_required).count();
+        assert!(bound >= 10, "R10 exercised by only {bound} of 100 held-out tasks");
+        assert!(
+            eval.iter().filter(|t| t.escalate_required).all(|t| t.amount_cents > ESCALATE_CENTS),
+            "only refunds above the stated threshold bind"
+        );
+    }
+
+    #[test]
+    fn r8_enterprise_refund_needs_a_token_below_the_threshold_and_errors_never_fire() {
+        // $40 is under R3's $100 line, so nothing in the refund path objects.
+        let t = silent_task("refund_small", true, false, 40 * 100);
+        let target = t.pool[0].id.clone();
+
+        let mut env = Env::new(&t);
+        let o = call(&mut env, "refund", json!({"customer_id": target, "amount": 40}));
+        assert!(!o.is_error, "R8 raises no error — that is the whole shape");
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "unapproved_enterprise_refund");
+        assert_eq!(env.rule_failures(), vec![("R8", 1)]);
+
+        // With a manager behind it the same refund passes. A token under the
+        // threshold has to be consumed and count, or the rule is unlearnable.
+        let mut env = Env::new(&t);
+        let a = body(&call(&mut env, "request_approval", json!({"reason": "enterprise"})));
+        let o = call(&mut env, "refund", json!({
+            "customer_id": target, "amount": 40, "approval_token": a["approval_token"]
+        }));
+        assert!(!o.is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+
+        // A non-enterprise account is unaffected: the rule is a segment rule.
+        let t = silent_task("refund_small", false, false, 40 * 100);
+        let target = t.pool[0].id.clone();
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "refund", json!({"customer_id": target, "amount": 40})).is_error);
+        assert!(env.score("done").0);
+    }
+
+    #[test]
+    fn r9_regulated_cases_need_high_priority_and_log_case_never_objects() {
+        let t = silent_task("log_case", false, true, 0);
+        let target = t.pool[0].id.clone();
+        let stamped = |priority: Option<&str>| {
+            let mut a = json!({
+                "customer_id": target,
+                "note": "export requested",
+                "timestamp": "2026-03-14T04:00:00Z",
+            });
+            if let Some(p) = priority {
+                a["priority"] = json!(p);
+            }
+            a
+        };
+
+        // No priority: accepted by the tool, rejected by the desk.
+        let mut env = Env::new(&t);
+        let o = call(&mut env, "log_case", stamped(None));
+        assert!(!o.is_error);
+        let (ok, reason) = env.score("done");
+        assert!(!ok);
+        assert_eq!(reason, "case_missing_priority");
+        assert_eq!(env.rule_failures(), vec![("R9", 1)]);
+
+        // The wrong priority is just as silent, and just as wrong.
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", stamped(Some("normal"))).is_error);
+        assert_eq!(env.score("done").1, "case_missing_priority");
+
+        // High priority (case-insensitively) passes.
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", stamped(Some("High"))).is_error);
+        let (ok, reason) = env.score("done");
+        assert!(ok, "{reason}");
+        assert!(env.rule_failures().is_empty());
+
+        // An unregulated case needs nothing — high priority on it is fine too.
+        let t = silent_task("log_case", false, false, 0);
+        let mut env = Env::new(&t);
+        assert!(!call(&mut env, "log_case", json!({
+            "customer_id": t.pool[0].id, "note": "n", "timestamp": "2026-03-14T04:00:00Z"
+        }))
+        .is_error);
+        assert!(env.score("done").0);
     }
 
     #[test]

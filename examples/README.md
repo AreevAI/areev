@@ -22,7 +22,7 @@ live credentials opt-in, so CI can prove them on every release.
 | [`import/`](import/) | **Improvement without changing your agent** — your existing tool-call logs (JSONL) become Tool grains, and the loop clusters the failures you already had |
 | [`ci/`](ci/) | **An unreviewed lesson blocks the merge, not the postmortem** — a GitHub Actions job that fails the build on pending high-severity recommendations |
 | [`mcp/`](mcp/) | **One agent proposes, another approves** — the multi-agent supervisor pattern (separation of duties over MCP) |
-| [`llm/`](llm/) | **Plug in any model without an SDK** — ready-to-run `--llm-cmd` backends (`claude -p`, OpenAI, Ollama, a dependency-free mock) + the stdin/stdout protocol |
+| [`llm/`](llm/) | **Plug in any model without an SDK** — ready-to-run `--llm-cmd` backends (`claude -p`, OpenAI, Ollama, a dependency-free mock) + the stdin/stdout protocol, including the five-kind **proposal vocabulary** a draft may carry (a lesson, a fact, a CAL query rewrite, workflow field edits, new tool source) and the fixture mode two agent examples use to exercise the whole governed path keyless |
 | [`analyzers/`](analyzers/) | **Your own detection logic, advisory-only** — a bring-your-own command analyzer (`--analyzer-cmd`) with the probe/analyze protocol |
 | [`hermes/`](hermes/) | **Memory for an agent you did not build** — Areev as a [Hermes Agent](https://github.com/NousResearch/hermes-agent) memory provider: budgeted per-turn assembly (p50 0.83 ms), `MEMORY.md`/`USER.md` edits mirrored as immutable grains, Areev Loop at session end |
 

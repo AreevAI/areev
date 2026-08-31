@@ -38,14 +38,177 @@ the operating rules, which are hidden in the tool implementations:
 | R5 | timestamps must be UTC ISO-8601 (`…Z`) | validation errors |
 | R6 | a tool that returns 429 carries `retry_after_s`; only `wait(seconds ≥ retry_after_s)` then retry succeeds — immediate retries keep failing | retry storms |
 
+And three **silent** rules (added 2026-08-31), which break every call
+returning 200 — there is no error code, no error body, nothing to normalize:
+
+| # | hidden rule | how it fails |
+|---|---|---|
+| R7 | closing an account must leave a case behind (the closure is auditable) | refund + cancel both succeed; the task is scored `no_closure_case` |
+| R8 | an **enterprise**-plan account needs a manager approval token behind ANY refund, not only one over $100 | the refund succeeds; scored `unapproved_enterprise_refund` |
+| R9 | a case about the regulated topic (a data export request) must be filed `priority: high` | `log_case` accepts it happily; scored `case_missing_priority` |
+
+And one **instructed** rule (added 2026-08-31), which the desk never has to
+infer at all — a person simply tells it:
+
+| # | hidden rule | how it arrives |
+|---|---|---|
+| R10 | a refund over $500 must ALSO be filed as a high-priority case | a supervisor's note, delivered once, in the experience phase; scored `refund_not_escalated` |
+
+**Learning does not only come from what went wrong.** R1-R6 announce
+themselves with an error code and R7-R9 with a correlation across many
+outcomes, but both are things the desk infers from its own failures. A great
+deal of real learning is neither: somebody says "from now on, do X", and a
+desk worth the name applies it to every future ticket of that shape, from one
+sentence, before it has ever failed for that reason. That is the
+[`invoice-to-accounting`](../../examples/agents/invoice-to-accounting/)
+example's headline — a correction a person makes in week one posts itself in
+week two — and this harness could not measure it at all until R10 existed.
+
+The design that makes it a clean test: **the note is delivered on the
+EXPERIENCE split, and the requirement binds only on the HELD-OUT split.** The
+supervisor is announcing a policy for future work, so the experience data
+contains no instance of the rule mattering. Nothing statistical can recover
+it — there is nothing to correlate. Only reading what the person wrote does.
+`the_supervisor_note_is_experience_only_and_the_requirement_is_eval_only`
+pins that asymmetry, because losing it would quietly turn R10 back into
+another correlation rule.
+
+The note is never placed in the agent's prompt. It lands in memory as an
+Observation with a human observer; the loop has to notice it, and a human has
+to approve it, exactly like any other lesson.
+
+**Observed live (2026-08-31, qwen3-30b):** the model read the note and wrote
+*"the agent consistently fails to log high-priority cases for refunds over
+$500, despite a new policy requiring it"* → lesson: *"Log a case with
+priority 'high' for any refund over $500."* An identical-config run minutes
+earlier authored nothing at all, so one success is a demonstration that the
+path works, never an authoring rate.
+
 Tasks are template-generated from a seeded entity pool with a **programmatic
 success predicate** over final environment state (ledger entries, subscription
 state, no orphaned approvals) — no LLM judge anywhere. Splits are disjoint:
 EXPERIENCE tasks (the agent may fail and learn) and a HELD-OUT eval set
 (different entities, paraphrased templates), fixed per `--seed`.
 
+### Why "the model contributed nothing" is now five different answers
+
+`RunResult.llm_funnel` counts the DISCOVER pipeline's attrition stage by
+stage: **evidence → proposed → cited (uncited / bad-target) → grounded →
+kept → stored**. Every one of those ends in an empty ledger and reads like a
+clean null, and they call for opposite fixes — an empty bundle is a capture
+problem, no proposals is abstention, drafts lost at the cite-check mean the
+model is copying evidence hashes badly, losses at GROUND suggest
+fabrication, at VERIFY vagueness, at the floor mere diffidence.
+
+Not having this cost a six-cell run: a misconfigured provider pin 404'd
+every GROUND call, the engine fail-softed as designed, and the whole LLM arm
+completed measuring nothing while looking like a legitimate result. The
+first live R10 run then showed the funnel earning its keep immediately —
+`proposed 2 → cited 1` and `proposed 3 → cited 1`, locating the attrition at
+the cite-check rather than at any gate.
+
 The rule list is a parameter of `env.rs`, not a constant — the learning-curve
 and adversarial bins extend it without touching the harness.
+
+## The silent archetypes — why R7-R9 exist
+
+The 2x2 below could not be executed, and its stated bound was that this
+workload's rules "are all tool-failure-shaped, which is precisely what
+signature clustering detects, so it gives an LLM no headroom by
+construction." R7-R9 are that bound, removed.
+
+Each is a shape a signature clusterer **structurally cannot reach**, because
+clustering normalizes error bodies and these produce none:
+
+- **R7 is a missing branch** — a whole class of task (closures) needs a step
+  the desk never learned to take. The distributional archetype: the work
+  arrives, the plan has no branch for it, nothing errors.
+- **R8 is a mis-set threshold** — the approval rule is right in shape and
+  wrong in its cutoff for one segment. Over $100 the existing R3 already
+  forces a token, so R8 only ever bites *below* the threshold: the learnable
+  signal is "small refunds for enterprise customers get rejected", which is a
+  correlation, not a signature.
+- **R9 is a recurring topic with a special handling rule** — the desk's own
+  traffic contains the pattern; no tool objects.
+
+Finding any of them means correlating **outcomes** across episodes. That is
+why `memory::record_task` now writes one EPISODE fact per finished task next
+to the tool calls: a memory holding only tool calls cannot express a silent
+rule at all, so "the LLM found nothing" would have been a fact about the
+harness rather than about the model. The episode carries the observable shape
+of the run (plan, which tools ran, whether approval was requested, whether a
+case was filed and at what priority) and whether the outcome was accepted —
+and deliberately **not** the scored `failure_reason` or the attributed rule,
+which name the answer. Every field but the accept/reject bit is derived from
+the agent's own calls.
+
+**What this invalidates.** Adding R7-R9 changes ground truth, so every
+`selfimprove` run under `results/` is a measurement of the six-rule
+environment and is not comparable to a re-run at this rev. The task PROMPTS
+and pools are byte-identical across the change (the RNG stream did not move),
+so the committed transcripts are still exactly what those models saw — what
+changed is the scorer. Each run's MANIFEST.md now says so, and the runs stay
+published. `tests/golden/reproducibility.txt` was re-blessed in the same
+commit; its diff is the task rule-surfaces, the `regulated` flag, and
+`log_case`'s new optional `priority` — the governed-pipeline and passive-arm
+sections are unchanged, which is the check that the deterministic loop itself
+did not move.
+
+**What the keyless path covers, exactly.** The `MockLoopLlm` correlates
+bundled episode facts and authors the matching lesson through the engine's
+`proposal` vocabulary, so the whole silent-rule path runs with no key:
+episodes recorded → DISCOVER bundle carries them → correlation → GROUND +
+VERIFY → scripted review → applied lesson → rendered into the prompt. R7 is
+walked end to end through the real engine by
+`silent_rule_lesson_travels_from_episodes_to_the_prompt`.
+
+R8 and R9 are **not** reachable by the deterministic mock agent, and the
+reason is worth stating rather than papering over: R8's correlation needs the
+plan, which is only observable if the agent looked the customer up, and the
+mock's refund path never calls `get_customer`; R9's needs a case that was
+filed successfully, and the naive mock's `log_case` fails R5 first. A live
+agent does both routinely. Their correlations are therefore pinned directly
+by `each_silent_rule_correlates_from_its_own_episode_shape` rather than left
+for a paid run to discover on our behalf.
+
+The correlations are canned, exactly like every other branch of that backend.
+It proves the path exists; it is never a claim that a model would find these.
+
+**What two live smokes changed (2026-08-31, qwen3-30b, n=20/30 — plumbing,
+not measurement).** Both completed the full A/B/A/B cycle, and R7/R8/R9 all
+fired against a live agent, which the mock could not reach. Two things came
+out of them and are fixed here:
+
+- **The model saw the episodes and wrote about the error text anyway.** All
+  four authored lessons in the first run restated clusters `tool_failure`
+  had already produced. The DISCOVER instruction never said that outcome
+  records exist, that restating a deterministic finding is worthless, or
+  that rejected-versus-accepted is a way to find something. With that added
+  (generically — it names no rule and no field), the next run authored a
+  lesson reasoning explicitly over "rejected episodes".
+- **R8 and R9 were unmeasurable.** At the published config they were
+  exercised by 9 and 7 of 100 held-out tasks — dose too thin for any
+  per-rule claim, which is precisely what killed the 2x2. The account mix
+  now carries more enterprise and two of four topics are regulated, giving
+  13 and 15; `every_rule_gets_enough_opportunities_to_be_measurable` is the
+  permanent guard, and it fails the build rather than letting an
+  underpowered table get published. Prompts are byte-identical across that
+  change — only the `plan` column and the regulated-topic flag moved.
+
+Neither smoke is evidence about learning: n=10 held-out is noise, and the
+success columns are reported here as what they are.
+
+**A silent rule can be masked by an error-shaped one, and that shows up in
+the tables.** At A0 the mock fails most refund tasks on R6/R4 and never
+reaches the point where R8 or R9 would bite, so both read 0 mishandled; at B,
+with the tool-failure lessons applied, the agent gets past those walls and
+the silent rules start scoring (R8 0/4 → 2/4, R9 0/3 → 2/3). Read naively
+that looks like the loop made things worse. It is the same effect the
+`tool_failure` denominator fix was about: **a rule only becomes visible once
+the agent is competent enough to reach it**, so a per-rule row moving up
+after an apply can mean the agent got further, not that it got worse. Any
+published reading of R7-R9 has to say which walls the agent was clearing at
+that state.
 
 ## What the first live run found (and changed)
 
@@ -117,6 +280,42 @@ task) and stays correctly silent on the 66 failures the agent self-corrected.
                 proposal. B2 therefore exercises the whole governed path a
                 second time, which is exactly the claim under test.
 ```
+
+State **A0R** re-runs A0 against the same empty memory — byte-identical
+prompts by construction, so any task that changes verdict between them did so
+for reasons the experiment does not control. It is reported as the run's
+**noise floor**, in TASKS THAT FLIP, and an effect that moves fewer tasks
+than the floor is not evidence. Under `--mock` the flip count must be zero,
+which is what proves an eval pass is reproducible at all; live,
+`--assert-shape` additionally requires the A0→B gain to move more tasks than
+the floor does.
+
+**Measured in flips, because a rate hides the problem.** The first version of
+this state compared success RATES and reported a floor of 0.017 for a run in
+which 5 of 60 tasks flipped — three up, two down, cancelling to one task in
+aggregate. A pair of states can agree exactly on the headline number while
+disagreeing about a tenth of the individual tasks. Discordant pairs are the
+unit McNemar already uses; the floor uses the same one.
+
+It exists because a seed-1 run measured B at 40/100 and B2 at 31/100 while
+the ledger showed **byte-identical applied lessons** — a gap at p=0.049 that
+reads exactly like a governance failure. It was the executor: five providers
+serve this model at differing numeric precision (fp8, bf16, unknown), and an
+unpinned run lets OpenRouter move between them mid-experiment. Measured
+directly, same config, n=60:
+
+| | A0→A0R (identical prompts) | A0→A1 (also identical) |
+|---|---|---|
+| unpinned | **5 of 60 flip** | 5 of 60 |
+| `--provider CoreWeave --seed N` | **0 of 60** | 0 of 60 |
+
+Pinning takes per-task irreproducibility from ~8% to zero. The seed-1 run
+that started this flipped 17 of 100 tasks between B and B2 — well above even
+the unpinned baseline, which is why its numbers are superseded rather than
+merely caveated. **Pin the provider on every published run**; the earlier
+published runs did, and the run that found this did not. An instrument that
+cannot state its own precision cannot support the claim this bench exists to
+make.
 
 The load-bearing honesty rule: **the eval prompt is assembled from live
 memory on every run** (a CAL read over the file rendering active lessons into
@@ -263,6 +462,73 @@ difference there is provider drift and invalidates that pairing rather than
 supporting it), per-rule recurrence, token cost, the governance ledgers, and
 the full transcripts.
 
+### Pre-registered interpretation — the silent-rule run (written before any run of this design)
+
+Committed 2026-08-31, after the environment gained R7-R9 and before any live
+run against them. Every earlier `selfimprove` result measured the six-rule
+environment and is not comparable (see "What this invalidates").
+
+**Design.** Seeds 1/3/5, 300 experience / 100 held-out, agent +
+DISCOVER/VERIFY on `qwen3-30b-a3b-instruct-2507`, GROUND on `deepseek-chat`,
+temperature 0, four states per config per seed. Two configs at one git rev:
+**governed-only** (analyzer lessons applied, LLM findings advisory) and
+**combined** (`--llm-lessons`). No `llm-only` cell: the previous attempt
+established that an LLM-only configuration cannot reliably complete a
+governed apply → rollback → re-apply cycle, because rollback is terminal per
+hash and restoring a lesson needs the learner to RE-PROPOSE it, which an LLM
+may not. That finding stands; re-running it would measure nothing new.
+
+**The primary question is the causal chain on a workload with rules
+clustering cannot reach** — A0→B, B→A1, A1→B2, each pooled-significant by
+paired exact McNemar, within-run only. Cross-run pairing at n=100 has a
+measured noise floor that reached p=0.064 between two runs with IDENTICAL
+applied lessons, so no claim rests on a cross-run comparison.
+
+**The secondary question is the one the environment change exists for: do the
+SILENT rules move?** Reported per rule and **dose-conditioned** — a state
+whose applied lessons contain nothing addressing a given rule is a dose-0
+observation for that rule and is evidence about nothing else. Dose is the
+unit of analysis, not the cell; assignment is not treatment, which is exactly
+what made the 2x2 unexecutable.
+
+- **Chain holds AND silent-rule recurrence falls at B, returns at A1:** the
+  headline — the loop learns things signature clustering structurally cannot
+  see. Published with the per-rule tables and the dose per pass.
+- **Chain holds, silent rules do not move:** published as that. The loop
+  works; the added headroom was not used by this model at this dose. This is
+  explicitly NOT "LLM learning does not work" — with R8 at 13 and R9 at 15
+  opportunities per 100 held-out tasks, ~39 and ~45 pooled, a null there is
+  as consistent with low power as with no effect, and the write-up must say
+  so rather than pick the flattering reading.
+- **Chain does not hold:** no causal signal, published as that, and the
+  silent-rule table is not interpreted at all.
+- **Combined < governed-only:** the earlier arm result (authored remedies
+  trade breadth for precision) replicates on a workload with headroom, which
+  would strengthen rather than retract it.
+
+**Amendment (2026-08-31, after the seed-1 pilot and before any further run).**
+The pilot made the A1→B2 leg of the primary test **unmeasurable at n=100**,
+and the amendment is recorded here rather than the criterion quietly dropped.
+Two identical states — B and B2, byte-identical applied lessons, temperature
+0 — came out 9 points apart at p=0.049 on an unpinned run. The restore leg
+asks whether B2 returns to B, and no instrument can answer that while its own
+repeatability is worse than the difference under test. So: every run now
+measures its own floor (state **A0R**), the adapters pin a provider and take
+a `--seed`, and the primary test's third leg is read against the measured
+floor rather than against a fixed p-value. If the floor does not fall below
+the effect size after pinning, the honest report is that the restore leg
+needs a larger n than this design funds — published as that, not as a null.
+The seed-1 pilot's own numbers are superseded for comparison: it ran unpinned
+and is a measurement of the routing as much as of the loop.
+
+**Reported whatever lands:** per-seed and pooled success, the run's measured
+noise floor, the authored-lesson dose per pass, per-rule recurrence for all
+nine rules, the governance ledgers, token cost, and the full transcripts. Two bounds ship with it: the silent
+rules are thin by construction (the opportunity counts above), and a per-rule
+row that rises after an apply may mean the agent got FURTHER rather than
+worse, because a silent rule only becomes reachable once the error-shaped
+walls in front of it are cleared.
+
 ## Runner protocol — one JSON per line on stdio
 
 The Rust bin owns the agent loop (task prompt, tool execution, turn cap,
@@ -288,6 +554,20 @@ stdout: {"message":{"role":"assistant","content":"…","tool_calls":[
   recognizes, in which case it complies. Mock mode exists to prove the
   *plumbing* end-to-end in CI (`--assert-shape` requires B > A0, A1 ≈ A0,
   B2 ≈ B) and is labelled as such everywhere — it is never a learning claim.
+  There is no fixed margin any more. There used to be one — 0.10, then 0.05 —
+  and it had to be lowered every time the workload gained a rule this arm
+  structurally cannot fix. A threshold that moves whenever the workload
+  changes is measuring the workload's composition rather than the plumbing,
+  and adjusting it to keep the gate green is indistinguishable from moving
+  the goalposts. The gate is now **floor-relative**: A0→B must move more
+  tasks than two IDENTICAL states do. Under `--mock` the floor is zero, so
+  any real gain passes and a dead apply still fails — and it needs no
+  retuning when the next rule lands. The passive-arm check (M-all must beat
+  A0, which under `--mock` is how a run proves the provider's context reached
+  the prompt at all) is read against the same floor, for the same reason: it
+  kept a fixed 0.05 until R7-R10 — rules no context provider fixes either —
+  took the arm's edge to exactly 3 tasks of 60, which IS 0.05, and failed the
+  gate on its own boundary while the provider was demonstrably working.
 
 Loop LLM stages take the same kind of adapter via `--llm-cmd` / `--ground-cmd`
 (the engine's `CommandLlm` protocol), so DISCOVER and GROUND can run on
@@ -599,12 +879,39 @@ Live pilot, governed states only (~$0.35, measured — see "What a re-run costs"
 
 ```bash
 export OPENROUTER_API_KEY=…
-AGENT='python3 crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507'
+Q=qwen/qwen3-30b-a3b-instruct-2507
+AGENT="python3 crates/areev-bench/scripts/openrouter_toolcall.py $Q --provider coreweave/bf16 --seed 20260831"
 cargo run --release -p areev-bench --bin selfimprove_aba -- \
   --workdir /tmp/aba --seed 1 --experience 150 --eval 60 --agent-cmd "$AGENT" \
-  --llm-cmd    'python3 crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507' \
-  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat'
+  --llm-cmd    "python3 crates/areev-bench/scripts/openrouter_loop.py $Q --provider coreweave/bf16 --seed 20260831" \
+  --ground-cmd 'python3 crates/areev-bench/scripts/openrouter_loop.py deepseek/deepseek-chat --provider deepinfra/fp4 --seed 20260831'
 ```
+
+**Use the endpoint TAG, not the provider's display name**, and confirm the
+endpoint accepts the request shape. `--provider Novita` and `--provider
+novita/fp8` both 404 on `deepseek/deepseek-chat` — the first is a display
+name, the second an endpoint that does not accept `response_format:
+json_object` — and the engine FAIL-SOFTS a failing loop call by design, so a
+six-cell run completed with **zero LLM findings** and an empty ledger before
+anyone noticed. Fail-soft is right for a flaky model and wrong for a
+misconfigured pin, so `openrouter_loop.py` now verifies the pin with one live
+token at probe time and fails loudly there. List the tags with:
+
+```bash
+curl -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  https://openrouter.ai/api/v1/models/<model>/endpoints | jq '.data.endpoints[].tag'
+```
+
+**Pin the provider on all three legs, not just the agent.** Five providers
+serve the Qwen model and three serve DeepSeek, at quantizations spanning fp4,
+fp8 and bf16, and OpenRouter routes freely between them without `--provider`.
+Unpinned, 5 of 60 held-out tasks flip between two byte-identical eval states;
+pinned, 0 of 60. The LOOP legs matter as much as the agent and are easier to
+forget: they decide which lessons get authored, so an unpinned loop makes the
+CONTENT of state B vary run to run — a harder confound to spot than a noisy
+agent, because the success rate moves while the ledger still looks plausible.
+Whatever you pin, the run's own A0R state reports what irreproducibility is
+left.
 
 The **loop+LLM arm** is the same invocation `+ --llm-lessons`: B/B2 then
 measure analyzer lessons *and* LLM-authored lessons together, and the report

@@ -19,11 +19,11 @@ that looks like yours.
 | Agent | The problem | What you get | Teaches |
 |---|---|---|---|
 | [`invoice-to-accounting/`](invoice-to-accounting/) | AP runs on email: invoices land in a mailbox, approvals crawl through reply chains, and every correction dies in someone's sent folder instead of teaching the system anything | Invoices posted to the books with a named approver on every row; corrections taken **by reply** around a bounded cycle until the approver says yes — and the desk reads its own history and proposes fixes a person signs, so week two runs on week one's lessons | the canonical agent shape — **one agent ×3 languages** (Python, TypeScript, Rust), one file each, minting one content-addressed plan |
-| [`sanctions-screening/`](sanctions-screening/) | An examiner will eventually ask *which exact version of the rule screened this payment* — and when the rule is a script on a box, the answer is a changelog and a shrug. Nothing stops a desk quietly running last quarter's rule | Every ledger row names the exact rule bytes that decided it; a rule change is a signed chain (blob → tool → plan → trigger), and a desk whose rule has moved ahead of its operator's pin **refuses to run** rather than running stale — the revised rule then catches an exact match the old one was blind to | **code-carrying tools**: the rule is a CAS blob under a host pin |
+| [`sanctions-screening/`](sanctions-screening/) | An examiner will eventually ask *which exact version of the rule screened this payment* — and when the rule is a script on a box, the answer is a changelog and a shrug. Nothing stops a desk quietly running last quarter's rule | Every ledger row names the exact rule bytes that decided it; a rule change is a signed chain (blob → tool → plan → trigger), and a desk whose rule has moved ahead of its operator's pin **refuses to run** rather than running stale — the revised rule then catches an exact match the old one was blind to. A model may then propose the *next* revision, and it is **held at the gate**: an approving reader is not a passing eval | **code-carrying tools**: the rule is a CAS blob under a host pin, and a model-authored **`code_revision`** under Rule E1 |
 | [`incident-response/`](incident-response/) | Every page starts from zero: the cause of last month's identical incident is in a postmortem nobody reopens at 3am, and alerting vendors retry — a duplicate page that restarts a remediation is how a bad night becomes a bad week | The next identical page arrives with its cause attached (*"seen 1 time on this service and signal; last cause: …"*), redelivered alerts start nothing, and every production action carries the engineer who approved it and their written reason. It still pages — the payoff is a better proposal at the same gate, not a removed human | **webhook triggers** — a push source needs no connector; plus `manual` replay |
 | [`hiring-screening/`](hiring-screening/) | Screening candidates is high-risk under the EU AI Act, and Article 14 wants oversight you can *demonstrate* — a policy document cannot show that a person could intervene, or that one actually did | Every advance/reject parks for a named recruiter, and the Article 14 report is **measured from the run journal**: the gate, the authorized approvers, the ceilings, the kill switch's real cancel-to-drain time. Outcomes and human reviews are counted, and must be equal | the oversight report; approval grants living in the file |
 | [`insurance-documents/`](insurance-documents/) | A claims file answers "what does the policy say now" — but the money question is *what cover was in force on the date of loss, and when did we come to know it*. Backdated endorsements make those diverge, and a one-clock memory pays the wrong amount, confidently | A coverage picture on two clocks: the claim is assessed at the 500,000 in force on the date of loss while the file's current picture says 750,000 — and "what was true in March" and "what we told the insured in March" both stay answerable after the file has moved on | **bi-temporal as-of reads** (`world` vs `knowledge`); the entity graph for accumulation |
-| [`rcm-optimization/`](rcm-optimization/) | A payer remittance lands carrying a wall of denied claims — how many is unknowable when the plan is written — and the same denial causes recur for months because the fix lives in one biller's head | A screening task per denial, spawned at runtime and folded back deterministically, replayable byte-for-byte; one signed approval later, next week's remittance classifies itself — three of five denials never spend a person's attention, and the ones that do carry a written reason | **`$send` dynamic fan-out** + declared reducers: 6 nodes, 11 tasks |
+| [`rcm-optimization/`](rcm-optimization/) | A payer remittance lands carrying a wall of denied claims — how many is unknowable when the plan is written — and the same denial causes recur for months because the fix lives in one biller's head | A screening task per denial, spawned at runtime and folded back deterministically, replayable byte-for-byte; one signed approval later, next week's remittance classifies itself — three of five denials never spend a person's attention, and the ones that do carry a written reason. Then a model reads the desk's record and rewrites **the briefing query itself** — a lead signs it, and it is taken back byte for byte | **`$send` dynamic fan-out** + declared reducers: 6 nodes, 11 tasks; and a governed **`query_revision`** |
 | [`trade-surveillance/`](trade-surveillance/) | Neither feed is interesting alone — a block order is Tuesday, a rebalance notice is Tuesday. Alert on each and the desk drowns in false positives; correlate them yourself and you are building a correlation service before the first case opens | One case per correlated pair on the same instrument inside a window: eight signals become three cases, **zero auto-closed**, each parked for an analyst and arriving with how this *pattern* was dispositioned before | **composite triggers** with correlation windows |
 | [`due-diligence/`](due-diligence/) | Research is open-ended and expensive, and most frameworks treat a spend cap as an exception: you catch it, you log it, you lose the work | A ceiling that ends the run cleanly with every finding journaled; the analyst forks under a raised ceiling or ships the partial report, and a partner signs it out — never the person who raised the ceiling. After one signed desk rule, **the same ceiling buys three times the material findings** | **`BudgetExhausted` as a resumable state**; the replay verbs `run_verify` / `run_shadow` / `run_oversight_report` |
 | [`clinical-referrals/`](clinical-referrals/) | The desk cannot do its job without an outside coding service, and cannot use one without disclosing patient records to it — and privacy logic sprinkled through every integration is the version that drifts | One policy on one namespace, and every model-facing read leaves as typed placeholders: the verbatim wire log is checked against every identifier in every fixture — **zero on the wire** — while the clinician's letter comes back fully rehydrated and a signed correction becomes the clinic's own triage rule | **pseudonymization on egress**, audited on the wire; extending Tier-0 with a NER chain |
@@ -102,6 +102,34 @@ the approver's identity *is* the audit record. A correction the human makes
 on the way to "yes" is recorded as memory, which is where self-improvement
 actually starts. An agent example that approves its own work is teaching the
 wrong lesson.
+
+## Where the model goes — proposing a change, not making one
+
+Every agent's `improve` step runs `areev loop run`. With no `LOOP_LLM_CMD` that
+is the deterministic analyzers alone, which is the floor. Set it and the loop
+gains DISCOVER → GROUND → VERIFY, and the model may carry a **proposal**: a
+lesson, a fact, a rewrite of a saved CAL query, field-level edits to a workflow,
+or new source for a tool ([`../llm/`](../llm/) has the vocabulary).
+
+Two agents demonstrate that end to end, keyless, in CI — the model leg is
+[`../llm/mock.py`](../llm/mock.py) replaying a committed fixture, so the whole
+governed path runs with no key and no network:
+
+| Agent | Proposal | What the smoke proves |
+|---|---|---|
+| [`rcm-optimization/`](rcm-optimization/) | `query_revision` | a host grant naming the `query` class outright applies **nothing**; a lead signs it; the briefing changes; and a rollback puts the previous definition back byte for byte |
+| [`sanctions-screening/`](sanctions-screening/) | `code_revision` | the pin comes off the **tool the desk declared**, not the proposal — and the apply is **refused** without a recorded eval run, however convinced the reviewer is |
+
+The other eight run the deterministic loop in CI and take the model leg live:
+
+```bash
+LOOP_LLM_CMD='./examples/llm/claude.sh' ./python/improve.sh
+```
+
+That split is deliberate. A mock draft proves the *governance path*; it proves
+nothing about whether a model would propose anything worth applying, and
+labelling it as more than plumbing would be the exact dishonesty these
+examples exist to avoid.
 
 ## Adding one
 

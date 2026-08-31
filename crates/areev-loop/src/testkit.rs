@@ -130,6 +130,56 @@ impl TestSubstrate {
         })
     }
 
+    /// A Tool DEFINITION grain declaring which evalset grades its revisions —
+    /// Rule E1's pin, resolved from the substrate and never from the model.
+    pub fn add_tool_def(&mut self, tool: &str, evalset_hash: Option<&str>) -> String {
+        let created = self.tick();
+        let mut fields = Map::new();
+        fields.insert("tool_name".into(), json!(tool));
+        fields.insert("kind".into(), json!("definition"));
+        fields.insert("namespace".into(), json!("test"));
+        if let Some(e) = evalset_hash {
+            fields.insert("evalset_hash".into(), json!(e));
+        }
+        self.inner.insert(GrainRecord {
+            hash: String::new(),
+            grain_type: "tool".into(),
+            namespace: "test".into(),
+            created_at_ms: created,
+            valid_to_ms: None,
+            superseded_by: None,
+            fields,
+        })
+    }
+
+    /// A Workflow plan grain: three nodes with one bounded review cycle — the
+    /// shape a `plan_revision` edits (a `cond`, a `max_cycles`, a retry).
+    pub fn add_workflow(&mut self) -> String {
+        let created = self.tick();
+        let Value::Object(fields) = json!({
+            "nodes": ["fetch", "review", "post"],
+            "edges": [
+                {"src": "fetch", "dst": "review"},
+                {"src": "review", "dst": "fetch", "cond": "confidence < 0.9", "max_cycles": 2},
+                {"src": "review", "dst": "post"}
+            ],
+            "bindings": {"fetch": "sha256:tool1"},
+            "retries": {"fetch": 1},
+            "namespace": "test"
+        }) else {
+            unreachable!()
+        };
+        self.inner.insert(GrainRecord {
+            hash: String::new(),
+            grain_type: "workflow".into(),
+            namespace: "test".into(),
+            created_at_ms: created,
+            valid_to_ms: None,
+            superseded_by: None,
+            fields,
+        })
+    }
+
     pub fn add_observation(&mut self, ns: &str, body: &str) -> String {
         let created = self.tick();
         let mut fields = Map::new();

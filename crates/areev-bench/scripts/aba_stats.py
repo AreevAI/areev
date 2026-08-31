@@ -35,7 +35,17 @@ import sys
 
 EVAL_PREFIX = "transcripts-eval-"
 EVAL_SUFFIX = ".jsonl"
-GOVERNED_PAIRS = [("A0", "B"), ("B", "A1"), ("A1", "B2"), ("A0", "A1"), ("B", "B2")]
+# A0→A0R first, deliberately: it is the run's NOISE FLOOR — two states with
+# byte-identical prompts — so a reader meets the instrument's precision before
+# any effect it reports. Every other row has to be read against it.
+GOVERNED_PAIRS = [
+    ("A0", "A0R"),
+    ("A0", "B"),
+    ("B", "A1"),
+    ("A1", "B2"),
+    ("A0", "A1"),
+    ("B", "B2"),
+]
 
 
 def pairs_for(states):

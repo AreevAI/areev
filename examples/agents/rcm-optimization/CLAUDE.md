@@ -109,3 +109,17 @@ is the wrong change.
     Examples table, and `.github/workflows/ci.yml` (`agent-example` job —
     usually nothing, since `run-smokes.sh` discovers this directory once
     `smoke.sh` exists). Shared how-to material lives in `../docs/`.
+
+11. **The `query_revision` chapter is keyless BY FIXTURE, and the fixture is
+    part of the spec.** `fixtures/llm/query-revision.json` is replayed through
+    `examples/llm/mock.py`; the assertions are semantic (the probe leaves the
+    briefing, the plan/policy/mappings stay), never a grain count — counts move
+    whenever a fixture is added and would turn an unrelated change into a
+    failure here. If the revised body stops parsing, the engine drops the draft
+    and step 10 fails with "proposed no revision", not with a CAL error: the
+    substrate validates before a reviewer is ever offered the change.
+
+12. **Never assert the rollback by re-reading the briefing.** Assert
+    `body_size` from `agent.py queries`. A definition is host metadata, not a
+    grain — it has no content address to compare, and the briefing can render
+    identically from two different bodies.

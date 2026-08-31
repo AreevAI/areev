@@ -219,6 +219,36 @@ Before it touches real remittances:
   will be different, and it belongs in `org.rcm.policy` where it can be
   argued with, not in the code.
 
+## The last chapter: the desk changes how it reads itself
+
+Everything above evolves what the desk *remembers*. Steps 10-13 of
+[`improve.sh`](improve.sh) evolve the CAL that turns memory into a prompt —
+the `desk_pulse` briefing query, which lives **in the file** and replicates
+with it.
+
+A model reads the desk's own record and notices that the briefing shows
+`rcm-reducer-probe`, a reducer-validation fixture, beside the production plan:
+a lead reading that briefing is one glance away from reasoning about the wrong
+graph. It proposes a rewrite. Then:
+
+- **A host policy granting auto-apply on the `query` class applies nothing.**
+  The engine refuses twice over — `origin = llm` is categorically ineligible,
+  and the auto-apply gate admits only the `memory` class. A grain edit changes
+  one remembered value; a definition rewrite changes what *every future
+  briefing* contains.
+- **A lead signs it**, with a written reason, and the briefing changes: the
+  probe is gone, the plan, the policy and the learned mappings stay.
+- **It can be taken back.** A `DEFINE` writes a registry row, not a grain, so
+  the ordinary "retract what the apply created" would undo nothing while
+  reporting success. The engine records the inverse at apply — or refuses the
+  apply — which is the only reason the rollback step can exist.
+
+Keyless: the model leg is [`../../llm/mock.py`](../../llm/mock.py) replaying
+[`fixtures/llm/query-revision.json`](fixtures/llm/query-revision.json), so CI
+runs the whole path with no key. Point `LOOP_LLM_CMD` at a real backend for
+the live version. The fixture proves the *governance*; it claims nothing about
+what a model would propose.
+
 ## The pieces
 
 | File | What |

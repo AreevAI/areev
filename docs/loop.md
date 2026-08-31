@@ -122,6 +122,12 @@ Two rules make it safe, both enforced in the engine rather than by convention:
 verification pass, so a definition rewrite can no more smuggle in a write than
 a hand-written one can.
 
+Definition rewrites are also what a DISCOVER `query_revision` proposal emits
+(above). The engine will not stamp one as applicable unless the substrate
+returns an inverse for it, so the "refuse rather than apply" rule holds a
+statement earlier for a model-authored rewrite than for a hand-authored one:
+a reviewer is never offered a rewrite whose rollback would be a no-op.
+
 The **audit trail is grains**: one immutable Observation per transition,
 hash-chained per recommendation, carrying the actor label and the reason. It
 syncs with the file and is queryable.
@@ -255,18 +261,91 @@ are the identity when no backend is set:
   (a semantic contradiction, a stale assumption), under an **abstention-legitimate
   objective**: "nothing to report" is a first-class, zero-penalty answer, so it
   isn't pushed to over-generate. Every draft must **cite evidence** (uncited →
-  dropped) and target a memory entity; `origin = llm` so it can **never
-  auto-apply**. A draft may also **author a lesson** — one imperative line
-  (≤240 chars, control characters stripped) the model proposes to record.
-  A lesson-bearing draft that survives the gates below stamps as an
-  *applicable* recommendation instead of an advisory flag: an `ADD` of a
-  Fact (`relation = "lesson"`, subject from the entity target, namespace
-  taken from the cited evidence — never named by the model), rollbackable
-  and non-destructive, with the exact line an apply would record shown in
-  the review summary. Applying it still takes a human review with a BECAUSE
-  plus an explicit apply — `origin = llm` remains structurally ineligible
-  for auto-apply, and the auto-apply shape check independently rejects any
-  `ADD`.
+  dropped) and name a `target`; `origin = llm` so it can **never auto-apply**.
+  A draft may also carry a **proposal** — a specific change it asks a reviewer
+  to make. That is a **closed vocabulary of five kinds**, each mapping onto an
+  apply path that already records an inverse:
+
+  | kind | target | what an apply runs |
+  |---|---|---|
+  | `lesson` | `entity:<ns>/<subject>` | `ADD` a Fact, `relation = "lesson"` — one imperative line (≤240 chars) |
+  | `fact` | `entity:<ns>/<subject>` | `ADD` a Fact under a model-chosen `relation` (an identifier, ≤64 chars) |
+  | `query_revision` | `query:<name>` / `template:<name>` | `DEFINE QUERY`/`DEFINE TEMPLATE` — the agent revising how it assembles its own context |
+  | `plan_revision` | `grain:<workflow hash>` | `SUPERSEDE … WITH workflow` from ≤8 field-level edits |
+  | `code_revision` | `tool:<name>` | §7.4's promotion grain, behind the Rule E1 evalset gate |
+
+  A draft with no proposal — or one the engine cannot resolve — stays an
+  advisory flag, exactly as every DISCOVER finding used to. What resolves
+  becomes an *applicable*, rollbackable recommendation, with the exact change
+  an apply would make shown in the review summary.
+
+  Four rules bound the surface, all enforced in the engine:
+
+  - **The model never names its own scope.** Subject, query name, plan hash and
+    tool name all come from the draft's `target`; a Fact's namespace comes from
+    the cited evidence; and a `code_revision`'s evalset pin is read from the
+    tool's own definition grain (`evalset_hash`) — a proposer that could choose
+    its own grader is not gated.
+  - **Resolution happens before the gates.** The draft becomes the exact
+    statement an apply would run *before* GROUND and VERIFY see it, and that
+    statement is folded into the claim they judge — so a malformed proposal
+    costs no model call, and no gate ever judges a summary standing in for the
+    payload.
+  - **A `query_revision` body cannot restructure its own statement.** The body
+    is the one place model text lands *inside* a statement rather than beside
+    it, so it is refused outright if it contains a brace (closing the `AS { … }`
+    block early is the injection shape) or a `FORGET`/`PURGE`/`DROP`/`DEFINE`
+    token anywhere — a per-token scan, because the ordinary destructive check
+    reads each line's *leading* keyword and a one-line injection passes it by
+    construction. The substrate's `validate_cal` and the saved-query read-only
+    verification still run after this; the engine simply does not assume either
+    is strict.
+  - **`plan_revision` is edits, not a replacement plan.** Only
+    `edges.<i>.cond`, `edges.<i>.max_cycles` and `retries.<node>` are editable,
+    so node topology cannot be expressed at all; each edit declares a `from`
+    that must equal what the live plan holds (a proposal authored against a
+    superseded plan does not apply to a newer one); values are type-checked
+    (a string in `max_cycles` would be dropped by the grain deserializer and
+    an "applied" tightening would silently mean *unlimited*); and the candidate
+    body must pass the runtime's own plan validation before it is ever offered.
+  - **Auto-apply is unchanged, twice over.** `origin = llm` is categorically
+    ineligible, and independently `grants_auto_apply` admits only the `memory`
+    target class — so a query, code or plan proposal cannot auto-apply even
+    under a policy that names it. Every kind takes a human review with a
+    BECAUSE plus an explicit apply.
+
+  **Outcome records are first-class evidence.** DISCOVER is told that the
+  bundle may contain records of whether a run was *accepted*, that restating
+  a deterministic finding earns nothing, and that comparing rejected against
+  accepted outcomes is how a problem with no error attached gets found — with
+  a two-observation floor, because one rejection is an anecdote. Without that,
+  a model handed both kinds of evidence reliably writes about the error text
+  and ignores the rest (observed live: four authored lessons, all restating
+  clusters the analyzers had already produced).
+
+  **The evidence bundle budgets its sources.** DISCOVER sees at most 64
+  grains, drawn from four places that answer different questions: what the
+  deterministic findings CITED (≤24 — what clustering already caught), recent
+  tool ERRORS (≤16 — what clustering could have caught and did not),
+  human-authored **Observations** (≤8, taken before the rest), and recent
+  facts (the remainder — the model's own lens).
+
+  The Observation reserve exists for a different reason from the others.
+  Learning does not only come from what went wrong: a person saying "from now
+  on, do X" is a complete rule stated **once**, and recency or frequency
+  seeding buries it under the thousands of routine grains a working desk
+  produces. The rarest evidence is usually the most valuable, and ordering by
+  volume is exactly the wrong instinct for it. Each share is
+  reserved rather than served first-come, because one `tool_failure` finding
+  may cite up to 64 grains on its own: without the reservation the lens is
+  starved by the very determinism it exists to look past, and the symptom is
+  indistinguishable from a model that simply found nothing.
+
+  Two kinds need substrate support: `plan_revision` requires the `plans`
+  capability (structural plan validation) and `code_revision` the `code`
+  capability (the blob seam plus evalset resolution). A substrate declaring
+  neither degrades those kinds to advisory rather than pretending to have
+  checked them.
 - **GROUND → VERIFY** — before a draft is ever queued it must pass an
   independent **grounding** check (are the finding's factual *premises* present
   in the cited evidence? — this guards against fabrication while still allowing a
@@ -342,7 +421,16 @@ db.record_tool_call("stripe_refund", result_json, is_error=True, thread="sess-42
 db.loop_run(min_new=20, min_new_errors=3, if_stale="6h")   # gated; bare call never gates
 db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole memory
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
+db.loop_run()   # the returned JSON carries `llm_funnel` when a backend is
+#   attached: evidence → proposed → cited (with `dropped_uncited` and
+#   `dropped_target` split out) → grounded → kept → stored. "The model
+#   contributed nothing" has five causes that need opposite fixes and all
+#   render as an empty queue; this is how you tell them apart.
 db.recommendations('{"status":"pending"}')
+#   rows carry hash/status/severity/analyzer/summary/target_ref/destructive,
+#   plus `rollbackable` and `evalset_hash` — Rule E1's pin, so a reviewer can
+#   see which gate a code or adapter revision will be held to BEFORE they
+#   approve it (null on every other kind; the engine refuses a pin elsewhere)
 db.apply_recommendation(hash, because="…")     # audited approve+apply
 db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   (code/adapter) revision: evidence loads from the recorded eval summary,

@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    {
+      "summary": "the desk's own briefing presents a validation probe as if it were the plan",
+      "target": "query:desk_pulse",
+      "guidance": "rcm-reducer-probe is a reducer-validation fixture; a briefing that shows it beside the production plan invites a lead to read the wrong graph",
+      "confidence": 0.9,
+      "proposal": {
+        "kind": "query_revision",
+        "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows WHERE name = \"rcm-denial-optimization\" LIMIT 1), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 10), lessons: (RECALL facts WHERE namespace = \"org.rcm.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown"
+      }
+    }
+  ]
+}

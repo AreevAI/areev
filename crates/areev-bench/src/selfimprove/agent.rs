@@ -239,6 +239,16 @@ struct Lessons {
     cancel_before_refund: bool,
     invalid_timestamp: bool,
     rate_limited: bool,
+    // The SILENT rules (R7-R9) have no error code to key on — that is what
+    // makes them silent — so the mock keys them on a distinctive word a
+    // lesson about each would have to contain. Same principle as the codes:
+    // the behavior unlocks only from what the LESSONS section actually says.
+    closure_case: bool,
+    enterprise_approval: bool,
+    export_priority: bool,
+    /// R10 — the INSTRUCTED rule. Keyed on "escalat", the word any faithful
+    /// rendering of the supervisor's note has to carry.
+    escalate_large: bool,
 }
 
 impl Lessons {
@@ -249,6 +259,10 @@ impl Lessons {
             cancel_before_refund: context.contains("cancel_before_refund"),
             invalid_timestamp: context.contains("invalid_timestamp"),
             rate_limited: context.contains("rate_limited"),
+            closure_case: context.contains("closure"),
+            enterprise_approval: context.contains("enterprise"),
+            export_priority: context.contains("priority"),
+            escalate_large: context.contains("escalat"),
         }
     }
 }
@@ -526,7 +540,13 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
         }
         Kind::Refund => match refund_step(lessons, intent, &cus_id, pairs) {
             Some(a) => a,
-            None => Action::finish(format!("refund of ${:.2} issued for {cus_name}", intent.amount)),
+            None => match escalation_step(lessons, intent, &cus_id, pairs) {
+                Some(a) => a,
+                None => Action::finish(format!(
+                    "refund of ${:.2} issued for {cus_name}",
+                    intent.amount
+                )),
+            },
         },
         Kind::RefundAndCancel => {
             let cancelled = pairs.iter().any(|p| p.name == "cancel_subscription" && !p.is_error);
@@ -545,6 +565,9 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
                 if !cancelled {
                     return Action::call("cancel_subscription", json!({ "customer_id": cus_id }));
                 }
+                if let Some(a) = closure_case_step(lessons, &cus_id, pairs) {
+                    return a;
+                }
                 Action::finish(format!("refund issued and subscription cancelled for {cus_name}"))
             } else {
                 // Naive ordering: cancel first (R4). The cancel itself
@@ -555,9 +578,12 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
                 }
                 match refund_step(lessons, intent, &cus_id, pairs) {
                     Some(a) => a,
-                    None => Action::finish(format!(
-                        "refund issued and subscription cancelled for {cus_name}"
-                    )),
+                    None => match closure_case_step(lessons, &cus_id, pairs) {
+                        Some(a) => a,
+                        None => Action::finish(format!(
+                            "refund issued and subscription cancelled for {cus_name}"
+                        )),
+                    },
                 }
             }
         }
@@ -580,12 +606,71 @@ fn decide(lessons: &Lessons, intent: &Intent, pairs: &[Pair]) -> Action {
             } else {
                 raw
             };
-            Action::call(
-                "log_case",
-                json!({ "customer_id": cus_id, "note": intent.note, "timestamp": ts }),
-            )
+            let mut args =
+                json!({ "customer_id": cus_id, "note": intent.note, "timestamp": ts });
+            if lessons.export_priority {
+                args["priority"] = json!("high");
+            }
+            Action::call("log_case", args)
         }
     }
+}
+
+/// R10's learned step: a refund over $500 is also filed as a high-priority
+/// case, because a person said so. `None` when the lesson is absent (the
+/// naive path, which has no way to know) or the case is already filed.
+fn escalation_step(
+    lessons: &Lessons,
+    intent: &Intent,
+    customer_id: &str,
+    pairs: &[Pair],
+) -> Option<Action> {
+    if !lessons.escalate_large || intent.amount <= 500.0 {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && !p.is_error) {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && p.is_error) {
+        return Some(Action::finish("could not complete: escalation case rejected"));
+    }
+    Some(Action::call(
+        "log_case",
+        json!({
+            "customer_id": customer_id,
+            "note": "large refund escalated for finance review",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "priority": "high",
+        }),
+    ))
+}
+
+/// R7's learned step: a closure leaves a case behind. `None` when the lesson
+/// is absent (the naive path, which closes the account and walks away) or the
+/// case is already filed.
+///
+/// The closure note carries a fixed valid UTC stamp: nothing in a closure
+/// prompt names a time, so there is no local-time conversion to get wrong
+/// here and R5 never enters the picture — which keeps R7 a clean measurement
+/// of one rule rather than two.
+fn closure_case_step(lessons: &Lessons, customer_id: &str, pairs: &[Pair]) -> Option<Action> {
+    if !lessons.closure_case {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && !p.is_error) {
+        return None;
+    }
+    if pairs.iter().any(|p| p.name == "log_case" && p.is_error) {
+        return Some(Action::finish("could not complete: closure case rejected"));
+    }
+    Some(Action::call(
+        "log_case",
+        json!({
+            "customer_id": customer_id,
+            "note": "account closed; refund issued for the unused period",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }),
+    ))
 }
 
 /// Next refund-flow action, or None once a refund has succeeded. Naive trips
@@ -615,7 +700,13 @@ fn refund_step(lessons: &Lessons, intent: &Intent, customer_id: &str, pairs: &[P
         .and_then(|p| p.result.get("approval_token").and_then(Value::as_str))
         .map(String::from);
     let last_refund_needs_approval = last_refund_code == Some("approval_required");
-    let preapprove = lessons.approval_required && intent.amount > 100.0;
+    // R3's lesson pre-approves over $100; R8's pre-approves regardless of
+    // amount. Over-applying is deliberate and harmless: a token under the
+    // threshold is still consumed and still authorizes, and scoring only
+    // REQUIRES one on an enterprise account — a desk that asks a manager
+    // every time is cautious, not wrong.
+    let preapprove = (lessons.approval_required && intent.amount > 100.0)
+        || lessons.enterprise_approval;
     if token.is_none() && (preapprove || last_refund_needs_approval) {
         return Some(Action::call(
             "request_approval",

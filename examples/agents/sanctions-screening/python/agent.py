@@ -29,6 +29,8 @@ Everything else is the driver:
     agent.py asks         the parked runs waiting on a compliance officer
     agent.py decide FILE  apply an officer's decision to its parked run
     agent.py improve      the loop reads the desk's own history back
+    agent.py recommendation H   one recommendation's state + its Rule E1 pin
+    agent.py screen-tool  the live screening rule: its code address and gate
     agent.py govern R approve|apply|dismiss --because "..." --as user:X
     agent.py revise       seed the REVISED rule -- a new content address
     agent.py provenance   which rule version screened which payment
@@ -258,9 +260,24 @@ def seed():
         fields.update(extra)
         return db.add("tool", json.dumps(fields), ns=NS)
 
+    # 1b. the gate for revisions of that code, declared BEFORE any revision
+    #     exists. Rule E1 reads the pin off the tool's own definition, never
+    #     off the proposal -- a proposer that could name its own grader is
+    #     not gated. The cases are the desk's own regression bar: names it
+    #     must match and names it must not.
+    evalset = db.add_fact(
+        "evalset:screen", "mg:evalset",
+        json.dumps({"name": "screen", "cases": [
+            {"name": "exact list hit", "input": {"name": "Kestrel Marine Ltd"},
+             "expect": {"contains": "Kestrel Marine"}},
+            {"name": "clean counterparty", "input": {"name": "Harbour Freight Co"},
+             "expect": {"equals": {"matches": []}}},
+        ]}), ns=NS, idempotent=True)
+
     # 2. the definitions. `screen` is code-carrying; the rest are host tools.
     screen = tool_def("screen", "match the counterparty against the list",
-                      executor_uri=uri, runtime="native")
+                      executor_uri=uri, runtime="native",
+                      evalset_hash=evalset)
     triage = tool_def("triage", "decide whether a compliance officer must look")
     open_case = tool_def("open_case", "open a case for the compliance queue")
     review = tool_def("officer_review", "an officer decides: release, block, "
@@ -511,6 +528,44 @@ def improve():
     return 0
 
 
+def screen_tool():
+    """The live `screen` tool definition: its code address and its gate.
+
+    Both are needed at review time. The address is what the plan binds; the
+    `evalset_hash` is Rule E1's pin, and it lives HERE -- on the tool the
+    desk declared -- rather than on any proposal, which is what stops a
+    proposer from choosing the gate it will be judged by.
+    """
+    db = open_db()
+    tools = json.loads(db.cal('RECALL tools WHERE kind = "definition" '
+                              'LIMIT 50 FORMAT json'))["grains"]
+    head = next(g for g in tools if g["fields"].get("tool_name") == "screen")
+    emit({"hash": head["hash"],
+          "executor_uri": head["fields"].get("executor_uri"),
+          "evalset_hash": head["fields"].get("evalset_hash")})
+    return 0
+
+
+def recommendation(argv):
+    """One recommendation's live state, including Rule E1's evalset pin.
+
+    The pin is what an apply is checked against, so it has to be visible at
+    review: a reviewer who cannot see which gate a code change will be held
+    to is not reviewing the change.
+    """
+    if not argv:
+        sys.stderr.write("usage: recommendation <hash-prefix>\n")
+        return 2
+    db = open_db()
+    rows = json.loads(db.recommendations(None))
+    hit = next((r for r in rows if r["hash"].startswith(argv[0])), None)
+    if hit is None:
+        sys.stderr.write("no recommendation matching %r\n" % argv[0])
+        return 4
+    emit(hit)
+    return 0
+
+
 def govern(argv):
     if len(argv) < 2:
         sys.stderr.write("usage: govern <rec> approve|apply|dismiss "
@@ -571,10 +626,16 @@ def revise():
     tools = json.loads(db.cal('RECALL tools WHERE kind = "definition" '
                               'LIMIT 50 FORMAT json'))["grains"]
     head = next(g for g in tools if g["fields"].get("tool_name") == "screen")
+    # The gate travels with the tool. A revision that re-declares everything
+    # BUT `evalset_hash` looks correct and silently disarms Rule E1 for every
+    # future revision: the pin is read off the live definition, so a head
+    # without one makes the next code proposal unpinnable and therefore
+    # advisory. Carry it forward, or the second revision is ungoverned.
     new_tool = db.supersede(head["hash"], "tool", json.dumps({
         "tool_name": "screen", "kind": "definition",
         "tool_description": "match the counterparty against the list",
         "executor_uri": uri, "runtime": "native", "created_at": EPOCH_MS,
+        "evalset_hash": head["fields"].get("evalset_hash"),
     }), ns=NS)
 
     plans = json.loads(db.cal('RECALL workflows LIMIT 10 FORMAT json'))["grains"]
@@ -679,6 +740,10 @@ def main():
         return asks()
     if cmd == "decide":
         return decide(sys.argv[2])
+    if cmd == "recommendation":
+        return recommendation(sys.argv[2:])
+    if cmd == "screen-tool":
+        return screen_tool()
     if cmd == "improve":
         return improve()
     if cmd == "govern":

@@ -41,7 +41,11 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aba_stats  # noqa: E402
 
-STATES = ["A0", "B", "A1", "B2"]
+# A0 and A0R are IGNORANT in both configurations, so neither can carry a
+# treatment effect: a difference there is cross-run drift and is labelled as
+# such below. A0R additionally reports each run's own floor, which is the
+# scale any other row has to beat.
+STATES = ["A0", "A0R", "B", "A1", "B2"]
 
 
 def resolve(arg):
@@ -261,7 +265,11 @@ def main():
             continue
         p = aba_stats.mcnemar_exact(b, c)
         direction = "arm ahead" if b > c else ("control ahead" if c > b else "tied")
-        note = "  ← baseline sanity: a significant result here is drift" if state == "A0" else ""
+        note = (
+            "  ← baseline sanity: a significant result here is drift"
+            if state in ("A0", "A0R")
+            else ""
+        )
         print(f"  {state}: n={n} b={b} c={c} p={p:.4f}  ({direction}){note}")
         if len(lines) > 1:
             for line in lines:

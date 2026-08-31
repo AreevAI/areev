@@ -62,3 +62,20 @@ protects that point.
 11. **Indexes to sweep with any change here**: `../README.md` (agent index),
     `../../README.md` (examples table), the repo README's Examples table, and
     `.github/workflows/ci.yml`. Shared how-to material lives in `../docs/`.
+
+## The evalset declaration is load-bearing
+
+`screen`'s tool definition carries `evalset_hash`, and **every supersession of
+it must carry that forward**. Rule E1 reads the pin off the live definition, so
+a head without one makes the next code proposal unpinnable — which the engine
+handles by leaving it advisory, silently. A revision that re-declares
+`tool_name`, `kind`, `tool_description`, `executor_uri` and `runtime` but drops
+`evalset_hash` looks complete, passes every assertion in steps 8-10, and
+disarms the gate for every later change. `revise()` carries it; keep it that
+way, and if you add a third rule version, assert the pin survived.
+
+The `code_revision` chapter (steps 12-13) asserts a **refusal**, on purpose.
+There is no `eval_run` binding in `areev-py`, so a full gated apply is a CLI
+step and out of scope for this stack — and the refusal is the guarantee worth
+proving anyway. If a binding ever lands, extend the chapter to run the gate
+and apply; do not weaken the refusal assertion to make room for it.

@@ -214,6 +214,46 @@ fictional. Real screening involves fuzzy transliteration, secondary
 identifiers, ownership resolution, and regulatory obligations this example
 does not model.
 
+## The last chapter: when the model proposes the rule
+
+Steps 8-10 revise the rule the way a team does today — a person writes v2 and
+walks the chain by hand (blob → tool → plan → trigger). Steps 12-13 show the
+same change *arriving as a proposal* instead.
+
+A model reads the runs that failed, sees that every one of them died on a
+counterparty name it could not normalize, and proposes new source for
+`tool:screen`. Two things make that safe to even look at:
+
+- **The pin comes off the tool, not the proposal.** `screen`'s definition
+  declares `evalset_hash` — the desk's own regression bar, written down before
+  any revision existed. A proposer that could name its own grader is not
+  gated, so the engine reads the pin from the live definition and never from
+  the draft. (The `revise` path carries that declaration forward on
+  supersession; a revision that re-declared everything *but* the evalset would
+  look correct and silently disarm the gate for every later change.)
+- **An approving reader is not a passing eval.** The apply is refused without
+  the run id of an evaluation that actually executed the pinned evalset, and
+  the evidence is read from that run's journal rather than from the arguments
+  of the apply. The recommendation stays pending and the live rule still
+  resolves to the same bytes.
+
+Recording that gate is a CLI step, deliberately outside this Python stack:
+
+```bash
+areev eval run --evalset <pin> --tool-cmd '...'          # journals the edge
+areev loop apply <rec> --because '...' --gating-run <id> # now it may apply
+```
+
+The applied revision writes a **promotion grain** naming the tool and the new
+code address — the authorization. Walking it into service is still the
+blob → tool → plan → trigger chain above, because triggers do not follow
+supersession heads.
+
+Keyless: the model leg is [`../../llm/mock.py`](../../llm/mock.py) replaying
+[`fixtures/llm/code-revision.json`](fixtures/llm/code-revision.json), so CI
+proves the refusal with no key. The fixture claims nothing about what a model
+would write — the point of the chapter is that it does not have to.
+
 ## Where to go next
 
 - [`../../how-to-create-an-areev-agent.md`](../../how-to-create-an-areev-agent.md)

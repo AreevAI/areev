@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OpenRouter tool-calling adapter for the selfimprove_* benches.
 
-    usage: openrouter_toolcall.py MODEL [--provider PROVIDER] [--selfcheck]
+    usage: openrouter_toolcall.py MODEL [--provider PROVIDER] [--seed N] [--selfcheck]
     key:   $OPENROUTER_API_KEY
     base:  $OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1)
 
@@ -61,10 +61,20 @@ def die(msg: str, code: int = 2) -> None:
 
 
 def parse_args(argv):
-    model, provider, selfcheck = None, None, False
+    model, provider, selfcheck, seed = None, None, False, None
     i = 1
     while i < len(argv):
         a = argv[i]
+        if a == "--seed":
+            i += 1
+            if i >= len(argv):
+                die("--seed needs a value")
+            try:
+                seed = int(argv[i])
+            except ValueError:
+                die(f"--seed must be an integer, got {argv[i]!r}")
+            i += 1
+            continue
         if a == "--provider":
             i += 1
             if i >= len(argv):
@@ -73,15 +83,17 @@ def parse_args(argv):
         elif a == "--selfcheck":
             selfcheck = True
         elif a.startswith("--"):
-            die(f"unknown flag {a}; usage: openrouter_toolcall.py MODEL [--provider P] [--selfcheck]")
+            die(f"unknown flag {a}; usage: openrouter_toolcall.py MODEL "
+                f"[--provider P] [--seed N] [--selfcheck]")
         elif model is None:
             model = a
         else:
             die(f"unexpected argument {a!r}")
         i += 1
     if model is None:
-        die("usage: openrouter_toolcall.py MODEL [--provider PROVIDER] [--selfcheck]")
-    return model, provider, selfcheck
+        die("usage: openrouter_toolcall.py MODEL [--provider PROVIDER] "
+            "[--seed N] [--selfcheck]")
+    return model, provider, selfcheck, seed
 
 
 def read_request(line: str):
@@ -96,7 +108,7 @@ def read_request(line: str):
     return req
 
 
-def build_body(req, model, provider):
+def build_body(req, model, provider, seed=None):
     body = {
         "model": model,  # argv wins over the request's model
         "messages": req.get("messages", []),
@@ -105,6 +117,13 @@ def build_body(req, model, provider):
     }
     if provider:
         body["provider"] = {"order": [provider], "allow_fallbacks": False}
+    if seed is not None:
+        # Temperature 0 is not determinism: a seed-1 run measured two
+        # BYTE-IDENTICAL eval states 9 points apart (p=0.049). `seed` is
+        # honored by ollama and by some OpenRouter providers and ignored by
+        # the rest, so it narrows the gap without ever closing it — the
+        # harness's A0R state is what actually measures what is left.
+        body["seed"] = seed
     return body
 
 
@@ -183,7 +202,7 @@ def post(body, key, base):
 
 
 def main() -> None:
-    model, provider, selfcheck = parse_args(sys.argv)
+    model, provider, selfcheck, seed = parse_args(sys.argv)
     line = "" if (selfcheck and sys.stdin.isatty()) else sys.stdin.readline()
     if not line.strip():
         if not selfcheck:
@@ -198,7 +217,7 @@ def main() -> None:
             }
         )
     req = read_request(line)
-    body = build_body(req, model, provider)
+    body = build_body(req, model, provider, seed)
     if selfcheck:
         out = normalize(CANNED_RESPONSE)
     else:

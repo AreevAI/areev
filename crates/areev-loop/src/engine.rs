@@ -127,6 +127,43 @@ pub struct RunResult {
     pub analyzers_run: Vec<String>,
     #[serde(default)]
     pub analyzers_skipped: Vec<AnalyzerSkip>,
+    /// Where the LLM's contribution went, stage by stage. `None` when no
+    /// backend is attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_funnel: Option<LlmFunnel>,
+}
+
+/// The DISCOVER pipeline's attrition, counted.
+///
+/// "The model contributed nothing" has at least five distinct causes, and
+/// they call for opposite responses: an empty bundle is a capture problem, a
+/// model that abstained may need better evidence or a better prompt, drafts
+/// dying at GROUND suggest fabrication, drafts dying at VERIFY suggest they
+/// were vague, and drafts dying at the floor were merely unconfident. Without
+/// this they are indistinguishable from the outside — every one of them
+/// renders as an empty ledger and reads like a clean null. That ambiguity
+/// cost a six-cell measurement run before it was noticed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmFunnel {
+    /// Grains offered to the model as evidence. Zero means nothing to reflect on.
+    pub evidence: u64,
+    /// Drafts the model returned.
+    pub proposed: u64,
+    /// Survived the cite-check and target-class filter.
+    pub cited: u64,
+    /// Dropped for citing a hash the bundle does not hold. Its own counter
+    /// because the fix is specific: models copy long hex badly, and that is
+    /// a different problem from one aiming at a surface it may not touch.
+    pub dropped_uncited: u64,
+    /// Dropped for targeting a class the vocabulary may not reach — a prompt,
+    /// host config, or its own grader.
+    pub dropped_target: u64,
+    /// Survived GROUND — their premises were found in the cited evidence.
+    pub grounded: u64,
+    /// Survived VERIFY's adversarial pass.
+    pub kept: u64,
+    /// Cleared the confidence floor and reached the queue.
+    pub stored: u64,
 }
 
 impl RunResult {
@@ -140,6 +177,7 @@ impl RunResult {
             deduped: 0,
             stored: 0,
             auto_applied: 0,
+            llm_funnel: None,
             analyzers_run: vec![],
             analyzers_skipped: vec![],
         }
@@ -171,6 +209,7 @@ struct AnalysisPass {
     deduped: u64,
     analyzers_run: Vec<String>,
     analyzers_skipped: Vec<AnalyzerSkip>,
+    llm_funnel: Option<LlmFunnel>,
 }
 
 impl Engine {
@@ -296,6 +335,7 @@ impl Engine {
             deduped,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel,
         } = self.analysis_pass(
             &*sub,
             &persisted,
@@ -364,6 +404,7 @@ impl Engine {
             auto_applied,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel,
         })
     }
 
@@ -463,6 +504,7 @@ impl Engine {
             }
         }
 
+        let mut funnel = LlmFunnel::default();
         if self.llm.is_some() {
             candidates.extend(self.discover(
                 sub,
@@ -470,6 +512,7 @@ impl Engine {
                 analysis_watermark,
                 &opts.namespaces,
                 now_ms,
+                &mut funnel,
             ));
         }
 
@@ -513,6 +556,7 @@ impl Engine {
             deduped,
             analyzers_run,
             analyzers_skipped,
+            llm_funnel: self.llm.is_some().then_some(funnel),
         })
     }
 
@@ -529,6 +573,7 @@ impl Engine {
         watermark: Option<i64>,
         namespaces: &[String],
         now_ms: i64,
+        funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
         let Some(llm) = &self.llm else {
             return Vec::new();
@@ -551,8 +596,19 @@ impl Engine {
         let mut evidence: Vec<crate::llm::EvidenceItem> = Vec::new();
         let mut bundle: BTreeSet<String> = BTreeSet::new();
         let mut ns_by_hash: std::collections::BTreeMap<String, String> = Default::default();
-        for c in candidates {
+        'cited: for c in candidates {
             for h in &c.evidence {
+                // Every source gets a RESERVED share of the bundle, because a
+                // cap that only one source respects is not a budget. A single
+                // tool_failure finding may cite up to MAX_EVIDENCE (64)
+                // grains — the whole bundle — so without this the "give the
+                // LLM its own lens" seeding below could be starved to nothing
+                // by the very determinism it is supposed to look past. Found
+                // live: with the deterministic findings citing enough, the
+                // model never saw a single non-cited grain.
+                if evidence.len() >= CITED_SEED_CAP {
+                    break 'cited;
+                }
                 if !bundle.contains(h) {
                     if let Ok(Some(g)) = sub.grain(h) {
                         push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
@@ -567,9 +623,9 @@ impl Engine {
         };
         let opts = ReadOpts { live_only: true, since_ms: watermark };
         // Tool grains carry the raw experience of a tool-using agent, and an
-        // ERROR is the part a reflection pass can act on. Seeded FIRST and
-        // capped at half the bundle so a busy desk cannot crowd out the facts
-        // and observations below.
+        // ERROR is the part a reflection pass can act on. Seeded after the
+        // cited grains and inside its own reserved share, so a busy desk
+        // cannot crowd out the facts and observations below.
         //
         // Without this the LLM saw tool failures only through the
         // deterministic findings that happened to cite them: it could
@@ -577,12 +633,13 @@ impl Engine {
         // a failure clustering missed — the one thing it is here for. The
         // top-up below called itself "non-parasitic" while omitting the very
         // grain type the flagship analyzer reads.
-        const TOOL_SEED_CAP: usize = 32;
         let mut tool_seeded = 0usize;
         'tools: for ns in &scan_ns {
             if let Ok(recent) = sub.grains_of_type(crate::model::grain_type::TOOL, *ns, opts) {
                 for g in recent {
-                    if tool_seeded >= TOOL_SEED_CAP || evidence.len() >= 64 {
+                    if tool_seeded >= TOOL_SEED_CAP
+                        || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE
+                    {
                         break 'tools;
                     }
                     if !g.is_error() {
@@ -596,6 +653,27 @@ impl Engine {
                 }
             }
         }
+        // Observations BEFORE facts, with their own small reserve.
+        //
+        // An Observation is where a human's own words land — a supervisor's
+        // note, a reviewer's correction, an instruction for next time. That
+        // signal is stated ONCE by nature, so recency and frequency seeding
+        // structurally bury it: one note loses to three hundred routine
+        // records every time, and the rarest evidence is usually the most
+        // valuable. Exhausting facts first (as this did) meant a desk with
+        // any volume showed the model no human input at all.
+        'notes: for ns in &scan_ns {
+            if let Ok(recent) =
+                sub.grains_of_type(crate::model::grain_type::OBSERVATION, *ns, opts)
+            {
+                for g in recent {
+                    if evidence.len() >= CITED_SEED_CAP + TOOL_SEED_CAP + NOTE_SEED_CAP {
+                        break 'notes;
+                    }
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                }
+            }
+        }
         'seed: for gt in [
             crate::model::grain_type::FACT,
             crate::model::grain_type::OBSERVATION,
@@ -603,7 +681,7 @@ impl Engine {
             for ns in &scan_ns {
                 if let Ok(recent) = sub.grains_of_type(gt, *ns, opts) {
                     for g in recent {
-                        if evidence.len() >= 64 {
+                        if evidence.len() >= EVIDENCE_CAP {
                             break 'seed;
                         }
                         push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
@@ -611,6 +689,7 @@ impl Engine {
                 }
             }
         }
+        funnel.evidence = evidence.len() as u64;
         if evidence.is_empty() {
             return Vec::new(); // nothing to reflect on
         }
@@ -638,26 +717,54 @@ impl Engine {
         // Cheap structural validation (cite-check + target class); collect the
         // survivors for the verifier. Storing the normalized target string
         // avoids a TargetRef clone through the pipeline.
-        let mut validated: Vec<(crate::llm::LlmDraft, String, Vec<String>)> = Vec::new();
-        for d in crate::llm::parse_discover(&raw)
+        let caps = sub.capabilities();
+        let mut validated: Vec<ValidatedDraft> = Vec::new();
+        let drafts: Vec<_> = crate::llm::parse_discover(&raw)
             .recommendations
             .into_iter()
             .take(crate::llm::MAX_LLM_DRAFTS)
-        {
+            .collect();
+        funnel.proposed = drafts.len() as u64;
+        for d in drafts {
             let cited: Vec<String> =
                 d.evidence.iter().filter(|h| bundle.contains(*h)).cloned().collect();
             if cited.is_empty() {
+                funnel.dropped_uncited += 1;
                 continue; // uncited → drop (no fabrication)
             }
             let Ok(target) = TargetRef::parse(&d.target) else {
+                funnel.dropped_target += 1;
                 continue;
             };
             let tc = target.target_class();
-            if tc != "memory" && tc != "query" {
-                continue; // never prompt/host
+            // The classes the proposal vocabulary can reach: memory
+            // (entity/grain), query (query/template) and code (tool). The
+            // prompt (`doc:`), `host:`, `evalset:` and `model:` classes stay
+            // closed to the model — it may not rewrite the agent's prompt, its
+            // host config, or the gate that grades its own code.
+            if !matches!(tc, "memory" | "query" | "code") {
+                funnel.dropped_target += 1;
+                continue;
             }
-            validated.push((d, target.as_string(), cited));
+            // Resolve BEFORE the gates: what GROUND entails and VERIFY
+            // stress-tests is exactly what an apply would do.
+            let resolved = resolve_proposal(sub, &d, &target, &cited, &ns_by_hash, caps);
+            // A `tool:` target has exactly one legal shape (Rule E1: a code
+            // target REQUIRES action_kind code_revision), so an unresolved one
+            // could not even be stamped advisory — drop it here rather than
+            // spend two model calls on something that fails validation after.
+            if tc == "code" && resolved.is_none() {
+                funnel.dropped_target += 1;
+                continue;
+            }
+            validated.push(ValidatedDraft {
+                draft: d,
+                target_ref: target.as_string(),
+                cited,
+                resolved,
+            });
         }
+        funnel.cited = validated.len() as u64;
         if validated.is_empty() {
             return Vec::new();
         }
@@ -668,7 +775,7 @@ impl Engine {
         // GROUND may run on a separate backend (§11); VERIFY always uses the
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
-        self.verify_drafts(&**llm, ground, &validated, &evidence, &ns_by_hash, now_ms)
+        self.verify_drafts(&**llm, ground, validated, &evidence, now_ms, funnel)
     }
 
     /// GROUND → VERIFY → ROUTE (§5.2–5.4). Two independent model calls, batched
@@ -681,10 +788,10 @@ impl Engine {
         &self,
         llm: &dyn crate::llm::LlmBackend,
         ground: &dyn crate::llm::LlmBackend,
-        validated: &[(crate::llm::LlmDraft, String, Vec<String>)],
+        validated: Vec<ValidatedDraft>,
         evidence: &[crate::llm::EvidenceItem],
-        ns_by_hash: &std::collections::BTreeMap<String, String>,
         now_ms: i64,
+        funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
         use crate::llm::*;
         let ev_by_hash: std::collections::BTreeMap<&str, &EvidenceItem> =
@@ -702,10 +809,10 @@ impl Engine {
         let claims: Vec<GroundItem> = validated
             .iter()
             .enumerate()
-            .map(|(i, (d, _t, cited))| GroundItem {
+            .map(|(i, v)| GroundItem {
                 id: i,
-                claim: claim_text(d),
-                evidence: ev_for(cited),
+                claim: claim_text(&v.draft, v.resolved.as_ref()),
+                evidence: ev_for(&v.cited),
             })
             .collect();
         let ground_req = GroundRequest {
@@ -726,6 +833,7 @@ impl Engine {
                 .collect(),
             None => return Vec::new(),
         };
+        funnel.grounded = grounded.len() as u64;
         if grounded.is_empty() {
             return Vec::new();
         }
@@ -739,12 +847,12 @@ impl Engine {
             .iter()
             .enumerate()
             .filter(|(i, _)| grounded.contains(i))
-            .map(|(i, (d, t, cited))| VerifyItem {
+            .map(|(i, v)| VerifyItem {
                 id: i,
-                // Same rule as GROUND: the adversarial pass sees the lesson.
-                summary: claim_text(d),
-                target: t.clone(),
-                evidence: ev_for(cited),
+                // Same rule as GROUND: the adversarial pass sees the change.
+                summary: claim_text(&v.draft, v.resolved.as_ref()),
+                target: v.target_ref.clone(),
+                evidence: ev_for(&v.cited),
             })
             .collect();
         let verify_req = VerifyRequest {
@@ -764,25 +872,27 @@ impl Engine {
                 None => return Vec::new(),
             };
 
+        funnel.kept = verdicts.len() as u64;
         // ROUTE (§5.4): grounded ∧ kept ∧ verifier-confidence ≥ floor. The
         // verifier's confidence (the independent signal) is what we trust and
         // stamp — not the proposer's self-report.
         let mut out = Vec::new();
-        for (i, (d, target_str, cited)) in validated.iter().enumerate() {
+        for (i, v) in validated.into_iter().enumerate() {
             if let Some(&conf) = verdicts.get(&i) {
                 if conf >= MIN_LLM_CONFIDENCE {
                     out.push(stamp_llm(
                         llm.model(),
-                        d,
-                        target_str.clone(),
-                        cited.clone(),
-                        ns_by_hash,
+                        &v.draft,
+                        v.target_ref,
+                        v.cited,
+                        v.resolved,
                         conf,
                         now_ms,
                     ));
                 }
             }
         }
+        funnel.stored = out.len() as u64;
         out
     }
 
@@ -1301,6 +1411,18 @@ impl Engine {
                 } else {
                     "mg:code_promotion"
                 };
+                // A code revision authored by DISCOVER carries its SOURCE
+                // inline, because the discovery pass reads the substrate and
+                // cannot write to it. Move it into the CAS here so the
+                // promotion names a content ADDRESS: §7.4's rule that code
+                // enters the substrate only through the blob seam holds
+                // however the revision was authored, and the promotion grain
+                // stays a pointer rather than swelling to hold a program.
+                let mut promoted = data.clone();
+                if let Some(Value::String(src)) = promoted.remove("source") {
+                    let address = sub.put_blob(src.as_bytes())?;
+                    promoted.insert("code_address".into(), Value::from(address));
+                }
                 let mut spec = crate::substrate::GrainSpec::new(
                     crate::model::grain_type::FACT,
                     LOOP_NS,
@@ -1309,7 +1431,7 @@ impl Engine {
                 .with_field("relation", relation)
                 .with_field(
                     "object",
-                    serde_json::to_string(data)
+                    serde_json::to_string(&promoted)
                         .map_err(|e| Error::Internal(format!("encode promotion: {e}")))?,
                 )
                 .with_field("rec_hash", rec_hash.to_string());
@@ -1897,6 +2019,25 @@ fn supersede_is_value_identical<S: SubstrateRead>(sub: &S, line: &str) -> bool {
     })
 }
 
+/// The DISCOVER evidence bundle's total size, and the reserved share each
+/// source gets inside it.
+///
+/// Three sources feed the bundle and they answer different questions, so each
+/// is budgeted rather than served first-come: the grains the deterministic
+/// findings CITED (what clustering already caught), recent tool ERRORS (what
+/// clustering could have caught but did not), and recent facts/observations —
+/// the LLM's own lens, and the ONLY source that can carry a problem with no
+/// error shape at all. `LENS_RESERVE` is what the last of those is guaranteed.
+const EVIDENCE_CAP: usize = 64;
+const CITED_SEED_CAP: usize = 24;
+const TOOL_SEED_CAP: usize = 16;
+/// Human-authored Observations get a small guaranteed share, taken before the
+/// general top-up. Learning does not only come from what went wrong: a person
+/// saying "from now on, do X" is a complete rule stated once, and no amount of
+/// counting recovers it from a corpus that never surfaced it.
+const NOTE_SEED_CAP: usize = 8;
+const LENS_RESERVE: usize = 24;
+
 /// The confidence floor (§5.4): a verified draft below this is dropped. The
 /// verifier's calibrated confidence is the gate, not the proposer's self-report.
 const MIN_LLM_CONFIDENCE: f64 = 0.75;
@@ -1908,7 +2049,16 @@ const MIN_LLM_CONFIDENCE: f64 = 0.75;
 const DISCOVER_INSTRUCTIONS: &str = "You review an agent's memory for quality. \
 Given deterministic findings and the evidence they cite, propose ADDITIONAL \
 findings the deterministic checks would miss (e.g. a semantic contradiction, a \
-stale assumption, a duplicated meaning, a recurring preventable mistake). \
+stale assumption, a duplicated meaning, a recurring preventable mistake, a \
+recurring cost or hand-off the agent's own setup could remove). \
+The deterministic findings already cover what the ERROR TEXT says; restating \
+one of them earns nothing. The evidence may also contain OUTCOME records — a \
+run's observable shape together with whether it was accepted or rejected. A \
+problem that raised no error at all is exactly the kind the deterministic \
+checks cannot see, so compare the rejected outcomes against the accepted \
+ones: a feature they share and the accepted ones lack is a candidate rule. \
+Require at least two rejected outcomes before proposing one — a single \
+rejection is an anecdote, not a pattern. \
 SCORING: propose a finding ONLY if you \
 are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
 useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
@@ -1916,17 +2066,39 @@ earns 0. When in doubt, propose nothing — an empty list is the correct answer 
 when there is nothing worth flagging. The 'approved' and 'rejected' lists, when \
 present, show findings this reviewer recently accepted or rejected — prefer the \
 kind they accept and avoid the kind they reject. Every proposal MUST cite one \
-or more evidence hashes from the bundle, target a memory entity, and include \
-your confidence 0.0-1.0. Return JSON: {\"recommendations\":[{\"summary\":\"...\",\
-\"target\":\"entity:<ns>/<subject>\",\"guidance\":\"...\",\"evidence\":[\"<hash>\"],\
-\"confidence\":0.0,\"lesson\":\"...\"}]}. The optional 'lesson' field: when — and \
-ONLY when — the evidence shows a recurring, preventable mistake, author ONE short \
-imperative rule (max 240 chars) that would prevent it, phrased to apply BEFORE \
-the mistake happens (e.g. 'Refund a subscription before cancelling it; refunds \
-on cancelled subscriptions are refused'). A lesson becomes a proposal a human \
-reviewer may apply to the agent's memory, so it must be fully supported by the \
-cited evidence; omit the field for findings that need no durable rule. Propose \
-nothing you cannot ground in the evidence.";
+or more evidence hashes from the bundle, name a 'target', and include your \
+confidence 0.0-1.0. Return JSON: {\"recommendations\":[{\"summary\":\"...\",\
+\"target\":\"...\",\"guidance\":\"...\",\"evidence\":[\"<hash>\"],\
+\"confidence\":0.0,\"proposal\":{...}}]}. \
+OMIT 'proposal' for an advisory finding — one worth a human's attention that \
+you are not asking to change anything. Include it ONLY when the evidence \
+supports a specific change, choosing exactly one kind: \
+(1) {\"kind\":\"lesson\",\"lesson\":\"...\"} with target \
+\"entity:<ns>/<subject>\" — ONE short imperative rule (max 240 chars) \
+preventing a recurring mistake, phrased to apply BEFORE it happens (e.g. \
+'Refund a subscription before cancelling it; refunds on cancelled \
+subscriptions are refused'). \
+(2) {\"kind\":\"fact\",\"relation\":\"...\",\"object\":\"...\"} with the same \
+entity target — a durable fact the agent keeps having to be told (an alias, a \
+settled default, a preference). 'relation' is a short identifier (letters, \
+digits, _ - . :), not a sentence. \
+(3) {\"kind\":\"query_revision\",\"body\":\"<CAL>\"} with target \
+\"query:<name>\" or \"template:<name>\" — a rewrite of the saved query that \
+assembles the agent's context, when the evidence shows it retrieves the wrong \
+things. Give the FULL new body; it replaces the old one. \
+(4) {\"kind\":\"plan_revision\",\"edits\":[{\"path\":\"...\",\"from\":X,\"to\":Y}]} \
+with target \"grain:<workflow hash>\" — at most 8 field-level edits to the \
+workflow. Only these paths are editable: 'edges.<i>.cond', \
+'edges.<i>.max_cycles', 'retries.<node>'. 'from' MUST equal what the plan \
+holds now, or the edit is refused. You cannot add, remove or rewire nodes. \
+(5) {\"kind\":\"code_revision\",\"source\":\"...\"} with target \"tool:<name>\" \
+— full replacement source for that tool. It is applied only after a recorded \
+evaluation run passes, so propose one only when the evidence shows the current \
+code is the defect. \
+The subject of a fact, the name of a query, the plan hash and the tool name \
+all come from 'target' — do not repeat them inside 'proposal'. A proposal \
+becomes a change a human reviewer may apply, so it must be fully supported by \
+the cited evidence. Propose nothing you cannot ground in the evidence.";
 
 /// The fixed GROUND instruction (§5.2): verify the finding's factual PREMISES
 /// are real (anti-fabrication), while allowing an inference. A self-improvement
@@ -1975,7 +2147,7 @@ fn push_evidence(
     ns_by_hash: &mut std::collections::BTreeMap<String, String>,
     g: &GrainRecord,
 ) {
-    if evidence.len() < 64 && bundle.insert(g.hash.clone()) {
+    if evidence.len() < EVIDENCE_CAP && bundle.insert(g.hash.clone()) {
         ns_by_hash.insert(g.hash.clone(), g.namespace.clone());
         evidence.push(crate::llm::EvidenceItem {
             hash: g.hash.clone(),
@@ -2014,73 +2186,461 @@ fn grain_brief(g: &GrainRecord) -> String {
 /// second CAL statement past review (belt: serde_json escapes it anyway) or
 /// break the one-line prompt rendering hosts assume.
 fn sanitize_lesson(s: &str) -> String {
-    let cleaned: String =
-        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    crate::llm::cap(cleaned.trim(), crate::llm::MAX_LESSON_LEN)
+    sanitize_line(s, crate::llm::MAX_LESSON_LEN)
 }
 
-/// The claim GROUND entails and VERIFY stress-tests. A lesson-bearing draft's
-/// claim carries the lesson text — the gates judge what an apply would write.
-fn claim_text(d: &crate::llm::LlmDraft) -> String {
+/// One line, no control characters, capped. Every free-text field the model
+/// can put into an executable proposal goes through this: a literal newline
+/// could otherwise smuggle a second CAL statement past review (belt:
+/// serde_json escapes it anyway), split a one-line DEFINE across the batch the
+/// apply path iterates, or break the one-line prompt rendering hosts assume.
+fn sanitize_line(s: &str, max: usize) -> String {
+    let cleaned: String =
+        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    crate::llm::cap(cleaned.trim(), max)
+}
+
+/// A relation is an identifier, not prose — it becomes a queryable predicate,
+/// and whitespace or quotes in one would make the Fact unfindable by the very
+/// recall that should surface it. `None` rejects the draft's `fact` proposal.
+fn sanitize_relation(s: &str) -> Option<String> {
+    let r = sanitize_line(s, crate::llm::MAX_RELATION_LEN);
+    if r.is_empty()
+        || !r
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    {
+        return None;
+    }
+    Some(r)
+}
+
+/// A model-supplied query body is placed INSIDE a `DEFINE … AS { … }` block,
+/// so it is the one place in the vocabulary where model text becomes part of a
+/// statement's structure rather than its content. Two belts, because the
+/// substrate's parser strength is not something this engine gets to assume:
+///
+/// - **No braces.** Closing the block early is the injection shape; a saved
+///   RECALL/ASSEMBLE body needs no braces of its own, so refusing them costs
+///   nothing and fails closed.
+/// - **No destructive keyword, anywhere in the body.** `cal::contains_destructive`
+///   scans each LINE's leading keyword, which a single-line injection slips
+///   past by construction — so scan every token here instead.
+///
+/// The substrate's own `validate_cal` and the saved-query read-only
+/// verification pass still run after this; this is the layer that does not
+/// depend on either of them being strict.
+fn safe_definition_body(body: &str) -> bool {
+    if body.contains('{') || body.contains('}') {
+        return false;
+    }
+    !body
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| {
+            ["FORGET", "PURGE", "DROP", "DEFINE"]
+                .iter()
+                .any(|kw| tok.eq_ignore_ascii_case(kw))
+        })
+}
+
+/// The claim GROUND entails and VERIFY stress-tests. When the draft carries a
+/// resolvable proposal the claim names exactly what an apply would do, so what
+/// survives the gates is what gets written — never a summary standing in for
+/// a change the gates never saw.
+fn claim_text(d: &crate::llm::LlmDraft, resolved: Option<&ResolvedProposal>) -> String {
     let summary = crate::llm::cap(&d.summary, crate::llm::MAX_SUMMARY_LEN);
-    let lesson = sanitize_lesson(&d.lesson);
-    if lesson.is_empty() {
-        summary
-    } else {
-        format!("{summary} Proposed lesson to record: \"{lesson}\"")
+    match resolved {
+        Some(r) => format!("{summary} {}", r.rendered),
+        None => summary,
+    }
+}
+
+/// A DISCOVER draft that survived structural validation, carrying the
+/// executable form of its proposal. Resolution happens BEFORE GROUND/VERIFY,
+/// so both gates judge exactly what an apply would do — the rule the authored
+/// lesson already followed, generalized to the whole vocabulary. It also means
+/// a malformed proposal costs no model call: it dies here, not at apply.
+struct ValidatedDraft {
+    draft: crate::llm::LlmDraft,
+    target_ref: String,
+    cited: Vec<String>,
+    resolved: Option<ResolvedProposal>,
+}
+
+/// The executable shape of a validated draft. `None` on a [`ValidatedDraft`]
+/// means advisory — the model said something a human may want to see, but
+/// nothing the engine will ever execute.
+struct ResolvedProposal {
+    action: ActionKind,
+    proposal: Proposal,
+    /// One line naming exactly what an apply would do; folded into the claim
+    /// both gates judge and shown in the review summary.
+    rendered: String,
+    summary_key: &'static str,
+    summary_args: serde_json::Map<String, Value>,
+    rollbackable: bool,
+    evalset_hash: Option<String>,
+    importance: f64,
+    /// Set for the two Fact-writing shapes. Held rather than pre-rendered so
+    /// the grain can carry the VERIFIER's confidence, which is not known until
+    /// after the gates have run.
+    fact_fields: Option<serde_json::Map<String, Value>>,
+}
+
+/// The Workflow fields a `plan_revision` may touch. Thresholds and limits —
+/// never who calls what.
+///
+/// The exclusion is structural, not advisory: `nodes`, `edges[].src`,
+/// `edges[].dst` and `bindings` are simply not matchable here, so a topology
+/// change cannot be expressed by any proposal the model can write. That keeps
+/// a plan revision reviewable as a short list of scalar deltas rather than a
+/// re-drawn graph, which is the difference between a reviewer checking a
+/// number and a reviewer re-deriving a plan.
+fn plan_edit_allowed(path: &str) -> bool {
+    let seg: Vec<&str> = path.split('.').collect();
+    match seg.as_slice() {
+        ["edges", i, "cond"] | ["edges", i, "max_cycles"] => i.parse::<usize>().is_ok(),
+        ["retries", node] => !node.is_empty(),
+        _ => false,
+    }
+}
+
+/// Read the value at an allowlisted path (absent → `Value::Null`, which is
+/// what an edit adding a `retries` entry must declare as its `from`).
+fn plan_get(body: &Value, path: &str) -> Value {
+    let mut cur = body;
+    for seg in path.split('.') {
+        cur = match cur {
+            Value::Array(a) => match seg.parse::<usize>().ok().and_then(|i| a.get(i)) {
+                Some(v) => v,
+                None => return Value::Null,
+            },
+            Value::Object(o) => match o.get(seg) {
+                Some(v) => v,
+                None => return Value::Null,
+            },
+            _ => return Value::Null,
+        };
+    }
+    cur.clone()
+}
+
+/// Write the value at an allowlisted path. Only creates a missing key in an
+/// object (the `retries.<node>` case); never grows an array.
+fn plan_set(body: &mut Value, path: &str, to: Value) -> bool {
+    let segs: Vec<&str> = path.split('.').collect();
+    let Some((last, parents)) = segs.split_last() else {
+        return false;
+    };
+    let mut cur = body;
+    for seg in parents {
+        cur = match cur {
+            Value::Array(a) => match seg.parse::<usize>().ok().and_then(move |i| a.get_mut(i)) {
+                Some(v) => v,
+                None => return false,
+            },
+            Value::Object(o) => match o.get_mut(*seg) {
+                Some(v) => v,
+                None => return false,
+            },
+            _ => return false,
+        };
+    }
+    match cur {
+        Value::Array(a) => match last.parse::<usize>().ok().and_then(move |i| a.get_mut(i)) {
+            Some(slot) => {
+                *slot = to;
+                true
+            }
+            None => false,
+        },
+        Value::Object(o) => {
+            o.insert((*last).to_string(), to);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Type-check one plan edit's new value against the field it targets. Without
+/// this a string in `max_cycles` would be dropped by the grain deserializer
+/// and the "applied" revision would silently mean *unlimited* — a proposal
+/// that reads as a tightening and lands as a removal.
+fn plan_value_ok(path: &str, to: &Value) -> bool {
+    let seg: Vec<&str> = path.split('.').collect();
+    match seg.as_slice() {
+        ["edges", _, "cond"] => to.as_str().is_some_and(|c| {
+            !c.trim().is_empty() && c.len() <= 200 && !c.chars().any(char::is_control)
+        }),
+        ["edges", _, "max_cycles"] | ["retries", _] => {
+            to.as_u64().is_some_and(|n| n <= 1_000)
+        }
+        _ => false,
+    }
+}
+
+/// Resolve a DISCOVER draft's proposal into the executable form an apply would
+/// run, or `None` for advisory. Every variant takes its SCOPE from the draft's
+/// target and its supporting facts from the substrate — the model names the
+/// change, never the subject it lands on, the namespace it lands in, or (for
+/// code) the evalset that grades it.
+fn resolve_proposal<S: OmsSubstrate>(
+    sub: &S,
+    d: &crate::llm::LlmDraft,
+    target: &TargetRef,
+    cited: &[String],
+    ns_by_hash: &std::collections::BTreeMap<String, String>,
+    caps: Capabilities,
+) -> Option<ResolvedProposal> {
+    use crate::llm::DraftProposal as P;
+    let mut args = serde_json::Map::new();
+    match d.parsed_proposal()? {
+        // ---- lesson: the pre-vocabulary shape, unchanged ----
+        P::Lesson { lesson } => {
+            let lesson = sanitize_lesson(&lesson);
+            if lesson.is_empty() {
+                return None;
+            }
+            let fields = derived_fact_fields(target, "lesson", &lesson, cited, ns_by_hash)?;
+            args.insert("lesson".into(), Value::from(lesson.clone()));
+            Some(ResolvedProposal {
+                // Same action as the deterministic lesson path — "record a
+                // failure-derived lesson" — so dedup groups authored lessons
+                // per target and review UIs need no new vocabulary.
+                action: ActionKind::ClusterFailure,
+                proposal: Proposal::Cal { cal: cal::add("fact", &fields) },
+                rendered: format!("Proposed lesson to record: \"{lesson}\""),
+                summary_key: "llm.lesson",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.5,
+                fact_fields: Some(fields),
+            })
+        }
+        // ---- fact: a durable fact under a model-chosen relation ----
+        P::Fact { relation, object } => {
+            let relation = sanitize_relation(&relation)?;
+            let object = sanitize_line(&object, crate::llm::MAX_OBJECT_LEN);
+            if object.is_empty() {
+                return None;
+            }
+            let fields = derived_fact_fields(target, &relation, &object, cited, ns_by_hash)?;
+            let subject = fields.get("subject").and_then(Value::as_str).unwrap_or("");
+            args.insert("relation".into(), Value::from(relation.clone()));
+            args.insert("object".into(), Value::from(object.clone()));
+            Some(ResolvedProposal {
+                action: ActionKind::Record,
+                proposal: Proposal::Cal { cal: cal::add("fact", &fields) },
+                rendered: format!("Proposed fact to record: {subject} {relation} \"{object}\""),
+                summary_key: "llm.fact",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.5,
+                fact_fields: Some(fields),
+            })
+        }
+        // ---- query_revision: how the agent assembles its own context ----
+        P::QueryRevision { body } => {
+            let name = target.opaque();
+            // The name comes from the target, but it still ends up inside a
+            // statement — a quote or control character in one would change the
+            // statement's shape rather than its content.
+            if name.is_empty()
+                || name.chars().any(|c| c.is_control() || c == '"' || c == '\\')
+            {
+                return None;
+            }
+            let body = sanitize_line(&body, crate::llm::MAX_QUERY_BODY_LEN);
+            if body.is_empty() || !safe_definition_body(&body) {
+                return None;
+            }
+            let stmt = match target.scheme() {
+                "query" => format!("DEFINE QUERY \"{name}\" AS {{ {body} }}"),
+                "template" => format!("DEFINE TEMPLATE {name} AS {{ {body} }}"),
+                _ => return None,
+            };
+            // The substrate owns the grammar: if it will not parse, or will
+            // not hand back an inverse, this is not something a reviewer
+            // should be offered as applicable. A definition change ROLLBACK
+            // could not undo must not be applied at all.
+            sub.validate_cal(&stmt).ok()?;
+            sub.definition_inverse(&stmt).ok().flatten()?;
+            args.insert("name".into(), Value::from(name));
+            args.insert("body".into(), Value::from(body.clone()));
+            Some(ResolvedProposal {
+                action: ActionKind::Revise,
+                proposal: Proposal::Cal { cal: stmt },
+                rendered: format!("Proposed rewrite of saved {} \"{name}\" to: {body}", target.scheme()),
+                summary_key: "llm.query_revision",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.6,
+                fact_fields: None,
+            })
+        }
+        // ---- plan_revision: field-level edits to a Workflow grain ----
+        P::PlanRevision { edits } => {
+            if !caps.plans
+                || target.scheme() != "grain"
+                || edits.is_empty()
+                || edits.len() > crate::llm::MAX_PLAN_EDITS
+            {
+                return None;
+            }
+            let hash = target.opaque();
+            let g = sub.grain(hash).ok().flatten()?;
+            if g.grain_type != "workflow" || !g.is_live() {
+                return None;
+            }
+            let mut body = Value::Object(g.fields.clone());
+            let mut deltas = Vec::new();
+            let nodes: std::collections::BTreeSet<String> = body
+                .get("nodes")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default();
+            for e in &edits {
+                if !plan_edit_allowed(&e.path) || !plan_value_ok(&e.path, &e.to) {
+                    return None;
+                }
+                // A retry count for a node that does not exist is inert, but
+                // applying it still mints a new plan hash — and every trigger
+                // pointing at the old one must then be walked forward. A
+                // no-op is not worth that.
+                if let Some(node) = e.path.strip_prefix("retries.") {
+                    if !nodes.contains(node) {
+                        return None;
+                    }
+                }
+                // `from` is the staleness check: a proposal authored against
+                // an older plan does not silently apply to a newer one.
+                if plan_get(&body, &e.path) != e.from {
+                    return None;
+                }
+                // A no-op edit is not a revision; it would apply, mint a new
+                // plan hash, and orphan every trigger pointing at the old one
+                // for nothing.
+                if e.from == e.to {
+                    return None;
+                }
+                if !plan_set(&mut body, &e.path, e.to.clone()) {
+                    return None;
+                }
+                deltas.push(format!("{}: {} -> {}", e.path, e.from, e.to));
+            }
+            // The substrate owns the plan grammar (unique + reachable nodes,
+            // conditions parse, every cycle bounded). An edit that would make
+            // the plan unrunnable never reaches a reviewer as applicable.
+            sub.validate_plan(&body).ok()?;
+            let Value::Object(fields) = body else {
+                return None;
+            };
+            let stmt = cal::supersede(hash, "workflow", &fields);
+            // Same rule as the definition rewrite: a statement the substrate
+            // will not accept is not something to offer a reviewer as
+            // applicable. `validate_plan` checked the GRAPH; this checks the
+            // statement that carries it.
+            sub.validate_cal(&stmt).ok()?;
+            args.insert("plan".into(), Value::from(hash));
+            args.insert("edits".into(), Value::from(deltas.join("; ")));
+            Some(ResolvedProposal {
+                action: ActionKind::Revise,
+                proposal: Proposal::Cal { cal: stmt },
+                rendered: format!("Proposed plan revision ({})", deltas.join("; ")),
+                summary_key: "llm.plan_revision",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.7,
+                fact_fields: None,
+            })
+        }
+        // ---- code_revision: §7.4, gated by the tool's own evalset ----
+        P::CodeRevision { source } => {
+            if !caps.code || target.scheme() != "tool" || source.trim().is_empty() {
+                return None;
+            }
+            if source.chars().count() > crate::llm::MAX_CODE_LEN {
+                return None;
+            }
+            // Rule E1's pin, resolved from the substrate. A proposer that
+            // could name its own grader is not gated, and a tool that
+            // declares no evalset has no gate to pass — advisory either way.
+            let evalset = sub.tool_evalset(target.opaque()).ok().flatten()?;
+            let mut data = serde_json::Map::new();
+            data.insert("tool".into(), Value::from(target.opaque()));
+            data.insert("source".into(), Value::from(source.clone()));
+            args.insert("tool".into(), Value::from(target.opaque()));
+            args.insert("bytes".into(), Value::from(source.len() as u64));
+            Some(ResolvedProposal {
+                action: ActionKind::CodeRevision,
+                proposal: Proposal::Data { data },
+                rendered: format!(
+                    "Proposed new source for tool {} ({} bytes), gated by evalset {}",
+                    target.opaque(),
+                    source.len(),
+                    evalset
+                ),
+                summary_key: "llm.code_revision",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: Some(evalset),
+                importance: 0.8,
+                fact_fields: None,
+            })
+        }
     }
 }
 
 /// Stamp a validated DISCOVER draft as an `origin = llm` recommendation.
 /// Default shape: an advisory `Flag` carrying `Proposal::Data` (no executable
-/// mutation). A draft that authored a `lesson` against an `entity:` target
-/// instead stamps as an *applicable* `ADD fact` proposal — rollbackable,
-/// non-destructive, and reviewable with the exact line an apply would record
-/// in its summary. Either way `Origin::Llm` plus the no-manifest analyzer id
-/// leave it structurally ineligible for auto-apply (and the auto-apply shape
-/// check independently rejects any ADD): the only path into memory is a human
+/// mutation). A draft whose proposal RESOLVED (see [`resolve_proposal`])
+/// instead stamps as that executable change, reviewable with the exact line an
+/// apply would run. Either way `Origin::Llm` plus the no-manifest analyzer id
+/// leave it structurally ineligible for auto-apply — and independently, no
+/// class this vocabulary can reach except `memory` is auto-appliable at all
+/// (`Policy::grants_auto_apply`). The only path into the agent is a human
 /// review with a BECAUSE followed by an explicit apply.
 fn stamp_llm(
     model: &str,
     d: &crate::llm::LlmDraft,
     target_ref: String,
     cited: Vec<String>,
-    ns_by_hash: &std::collections::BTreeMap<String, String>,
+    resolved: Option<ResolvedProposal>,
     confidence: f64,
     now_ms: i64,
 ) -> Recommendation {
     let summary_text = crate::llm::cap(&d.summary, crate::llm::MAX_SUMMARY_LEN);
-    let mut args = serde_json::Map::new();
-    args.insert("text".into(), Value::from(summary_text));
     let guidance = if d.guidance.trim().is_empty() {
         None
     } else {
         Some(crate::llm::cap(&d.guidance, crate::llm::MAX_GUIDANCE_LEN))
     };
-    // The authored-lesson path: entity targets only (a lesson Fact needs a
-    // subject; grain/query targets keep the advisory shape).
-    let lesson = sanitize_lesson(&d.lesson);
-    let authored = if lesson.is_empty() {
-        None
-    } else {
-        lesson_fields(&target_ref, &lesson, &cited, ns_by_hash, confidence)
-    };
-    let (action, proposal, summary, rollbackable, importance) = match authored {
-        Some(fields) => {
-            args.insert("lesson".into(), Value::from(lesson));
+    let (action, proposal, summary, rollbackable, importance, evalset_hash) = match resolved {
+        Some(mut r) => {
+            // The grain records the VERIFIER's calibrated confidence — the
+            // independent signal — never the proposer's self-report.
+            if let Some(mut fields) = r.fact_fields.take() {
+                fields.insert("confidence".into(), Value::from(confidence.clamp(0.0, 1.0)));
+                r.proposal = Proposal::Cal { cal: cal::add("fact", &fields) };
+            }
+            let mut args = r.summary_args;
+            args.insert("text".into(), Value::from(summary_text));
             (
-                // Same action as the deterministic lesson path — "record a
-                // failure-derived lesson" — so dedup groups authored lessons
-                // per target and review UIs need no new vocabulary. Origin
-                // and analyzer id carry the provenance.
-                ActionKind::ClusterFailure,
-                Proposal::Cal { cal: cal::add("fact", &fields) },
-                Summary::new("llm.lesson", args),
-                true,
-                0.5,
+                r.action,
+                r.proposal,
+                Summary::new(r.summary_key, args),
+                r.rollbackable,
+                r.importance,
+                r.evalset_hash,
             )
         }
         None => {
+            let mut args = serde_json::Map::new();
+            args.insert("text".into(), Value::from(summary_text));
             let mut data = serde_json::Map::new();
             data.insert("source".into(), Value::from("llm"));
             (
@@ -2089,6 +2649,7 @@ fn stamp_llm(
                 Summary::new("llm.discover", args),
                 false,
                 0.3,
+                None,
             )
         }
     };
@@ -2113,25 +2674,25 @@ fn stamp_llm(
         importance,
         created_at_ms: now_ms,
         guidance,
-        evalset_hash: None,
+        evalset_hash,
         status: RecStatus::Pending,
     }
 }
 
-/// The Fact an approved authored lesson writes: subject from the entity
-/// target, `relation = "lesson"` (prescriptive prose — distinct from the
-/// deterministic `fails_with` signature facts), the sanitized lesson as
-/// object, and the DOMINANT namespace of the cited evidence (max count, ties
-/// to the lexicographically smallest — the tool_failure rule), never a
-/// namespace the model names. `None` when the target gives no subject.
-fn lesson_fields(
-    target_ref: &str,
-    lesson: &str,
+/// The Fact an approved `lesson` or `fact` proposal writes: subject from the
+/// entity target, the model's relation (`"lesson"` for the lesson shape —
+/// prescriptive prose, distinct from the deterministic `fails_with` signature
+/// facts), the sanitized object, and the DOMINANT namespace of the cited
+/// evidence (max count, ties to the lexicographically smallest — the
+/// tool_failure rule), never a namespace the model names. `None` when the
+/// target gives no subject.
+fn derived_fact_fields(
+    target: &TargetRef,
+    relation: &str,
+    object: &str,
     cited: &[String],
     ns_by_hash: &std::collections::BTreeMap<String, String>,
-    confidence: f64,
 ) -> Option<serde_json::Map<String, Value>> {
-    let target = TargetRef::parse(target_ref).ok()?;
     if target.scheme() != "entity" {
         return None;
     }
@@ -2157,9 +2718,11 @@ fn lesson_fields(
         .map(|(ns, _)| ns.to_string());
     let mut fields = serde_json::Map::new();
     fields.insert("subject".into(), Value::from(subject));
-    fields.insert("relation".into(), Value::from("lesson"));
-    fields.insert("object".into(), Value::from(lesson));
-    fields.insert("confidence".into(), Value::from(confidence.clamp(0.0, 1.0)));
+    fields.insert("relation".into(), Value::from(relation));
+    fields.insert("object".into(), Value::from(object));
+    // `confidence` is stamped by the caller from the VERIFIER's calibrated
+    // score, not the proposer's self-report — so it is deliberately absent
+    // here, where only the proposer has spoken.
     if let Some(ns) = lesson_ns {
         fields.insert("namespace".into(), Value::from(ns));
     }
@@ -2419,6 +2982,112 @@ pub(crate) fn ensure_executable(action_kind: ActionKind, proposal: &Proposal) ->
                 Err(Error::InvalidProposal(ADVISORY_DATA.into()))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod definition_body_tests {
+    use super::safe_definition_body;
+
+    #[test]
+    fn ordinary_bodies_pass() {
+        assert!(safe_definition_body("RECALL facts WHERE relation = \"lesson\" LIMIT 20"));
+        assert!(safe_definition_body("ASSEMBLE context FOR \"desk\" BUDGET 2000"));
+    }
+
+    #[test]
+    fn a_body_cannot_close_its_own_block_or_carry_destruction() {
+        // The injection shape: close the DEFINE block, append a statement.
+        // Newlines are already collapsed by `sanitize_line`, so the payload
+        // arrives as ONE line — which is exactly what a line-leading-keyword
+        // destructive scan cannot see.
+        assert!(!safe_definition_body("RECALL facts } FORGET abc {"));
+        assert!(!safe_definition_body("RECALL facts } PURGE OLDER THAN 1d {"));
+        // …and the keyword alone is refused even without the braces.
+        assert!(!safe_definition_body("RECALL facts FORGET abc"));
+        assert!(!safe_definition_body("recall facts purge older than 1d"));
+        assert!(!safe_definition_body("RECALL facts DROP QUERY \"x\""));
+        // A nested DEFINE would redefine something the target does not name.
+        assert!(!safe_definition_body("RECALL facts DEFINE QUERY \"other\""));
+        // Substring matches are not keywords — this must still pass.
+        assert!(safe_definition_body("RECALL facts WHERE subject = \"purged_at\""));
+    }
+}
+
+#[cfg(test)]
+mod plan_edit_tests {
+    use super::{plan_edit_allowed, plan_get, plan_set, plan_value_ok};
+    use serde_json::json;
+
+    fn plan() -> serde_json::Value {
+        json!({
+            "nodes": ["fetch", "review", "post"],
+            "edges": [
+                {"src": "fetch", "dst": "review"},
+                {"src": "review", "dst": "fetch", "cond": "confidence < 0.9", "max_cycles": 2}
+            ],
+            "bindings": {"fetch": "sha256:tool1"},
+            "retries": {"fetch": 1}
+        })
+    }
+
+    #[test]
+    fn the_allowlist_admits_thresholds_and_refuses_topology() {
+        assert!(plan_edit_allowed("edges.1.cond"));
+        assert!(plan_edit_allowed("edges.1.max_cycles"));
+        assert!(plan_edit_allowed("retries.fetch"));
+        // Topology is not expressible — the structural half of the guarantee
+        // that a plan revision stays reviewable as scalar deltas.
+        for path in [
+            "nodes",
+            "nodes.0",
+            "edges.0.src",
+            "edges.0.dst",
+            "edges",
+            "bindings.fetch",
+            "edges.x.cond",
+            "",
+        ] {
+            assert!(!plan_edit_allowed(path), "{path} must not be editable");
+        }
+    }
+
+    #[test]
+    fn values_are_type_checked_against_the_field() {
+        // A string in max_cycles would be DROPPED by the grain deserializer,
+        // so an "applied" tightening would silently mean unlimited.
+        assert!(!plan_value_ok("edges.1.max_cycles", &json!("2")));
+        assert!(plan_value_ok("edges.1.max_cycles", &json!(2)));
+        assert!(!plan_value_ok("edges.1.max_cycles", &json!(-1)));
+        assert!(!plan_value_ok("retries.fetch", &json!(10_000)));
+        assert!(plan_value_ok("retries.fetch", &json!(3)));
+        assert!(plan_value_ok("edges.1.cond", &json!("confidence < 0.8")));
+        assert!(!plan_value_ok("edges.1.cond", &json!("  ")));
+        assert!(!plan_value_ok("edges.1.cond", &json!("a\nb")));
+        assert!(!plan_value_ok("edges.0.src", &json!("other")));
+    }
+
+    #[test]
+    fn get_reads_through_arrays_and_objects_and_absence_is_null() {
+        let p = plan();
+        assert_eq!(plan_get(&p, "edges.1.max_cycles"), json!(2));
+        assert_eq!(plan_get(&p, "retries.fetch"), json!(1));
+        // An edit that ADDS a retry declares `from: null` — so absence has to
+        // read as Null rather than as an error.
+        assert_eq!(plan_get(&p, "retries.review"), json!(null));
+        assert_eq!(plan_get(&p, "edges.9.cond"), json!(null));
+        assert_eq!(plan_get(&p, "edges.0.cond"), json!(null));
+    }
+
+    #[test]
+    fn set_writes_scalars_and_adds_a_missing_retry_but_never_grows_an_array() {
+        let mut p = plan();
+        assert!(plan_set(&mut p, "edges.1.max_cycles", json!(5)));
+        assert_eq!(plan_get(&p, "edges.1.max_cycles"), json!(5));
+        assert!(plan_set(&mut p, "retries.review", json!(2)));
+        assert_eq!(plan_get(&p, "retries.review"), json!(2));
+        assert!(!plan_set(&mut p, "edges.7.cond", json!("x")));
+        assert_eq!(p["edges"].as_array().unwrap().len(), 2, "no array growth");
     }
 }
 
