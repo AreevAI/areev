@@ -1,6 +1,6 @@
 [package]
 name = "areev-js"
-version = "1.6.5"
+version = "1.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]
@@ -21,15 +21,15 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.6.0" }
+areev-core = { path = "../areev-core", version = "1.7.0" }
 # The postgres backend ships ON in the binding: it is a server-side surface,
 # and `new Areev("postgres://…?schema=<name>")` must work from a stock
 # `npm install @areev/areev`. The dependency-light default stays with the CLI/store.
 # `postgres-tls` rides with it: a managed Postgres requires TLS on the wire and
 # an addon installer cannot recompile to add a cargo feature. rustls is already
 # in this crate's graph via areev-llm's HTTP client.
-areev-store = { path = "../areev-store", version = "1.6.0", features = ["postgres", "postgres-tls"] }
-areev-cal = { path = "../areev-cal", version = "1.6.0" }
+areev-store = { path = "../areev-store", version = "1.7.0", features = ["postgres", "postgres-tls"] }
+areev-cal = { path = "../areev-cal", version = "1.7.0" }
 areev-loop = { path = "../areev-loop" }
 areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }

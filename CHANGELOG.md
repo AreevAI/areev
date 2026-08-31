@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-08-31
+
 ### Security
 
 - **A proxy-asserted SSO identity may no longer answer a HITL approval by
@@ -139,6 +141,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   opportunities) while its smaller siblings correctly stay silent. Recurrence
   metrics carry the matching sample size, and the rendered summary no longer
   says "% of calls" for a rate that is not over calls.
+
+- **A published run may carry an editorial note, and regenerating its manifest
+  no longer deletes it.** `verify_run.py` compares `MANIFEST.md` byte-for-byte
+  against a regenerated one, so the "measured against the six-rule
+  environment — not comparable to a re-run" banner added to each committed run
+  failed the build. Regenerating was not the fix: `--write-manifest`, the
+  command the error message names, would have silently removed the one
+  sentence telling a reader the numbers are not comparable. One blockquote
+  under the title now survives regeneration. It is prose, never a number —
+  every file in the directory is still checksummed, so a note cannot make a
+  changed transcript verify.
+- **The bench's shape gate no longer carries a fixed rate margin anywhere.**
+  The A0→B gate became floor-relative for a stated reason — a threshold that
+  moves whenever the workload changes measures the workload, not the plumbing
+  — but the passive-arm check kept a fixed 0.05. The workload's silent and
+  instructed rules are ones no context provider fixes either, which took that
+  arm's edge to exactly 3 tasks of 60 (which *is* 0.05) and failed the gate on
+  its own boundary. Both are now measured in tasks against the run's own
+  measured noise floor. Separately, adding the A0R floor state had shifted a
+  positional slice, so B2 was being checked and reported as a passive arm;
+  states are selected by name.
+- **`jsonwebtoken`** — the native-OIDC dependency — **is attributed in
+  `THIRD-PARTY-NOTICES.md`**, where it was missing since the feature landed.
 
 ## [1.6.5] — 2026-08-26
 
@@ -2131,7 +2156,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.6.5...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/AreevAI/areev/compare/v1.6.5...v1.7.0
 [1.6.5]: https://github.com/AreevAI/areev/compare/v1.6.4...v1.6.5
 [1.6.4]: https://github.com/AreevAI/areev/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/AreevAI/areev/compare/v1.6.2...v1.6.3
