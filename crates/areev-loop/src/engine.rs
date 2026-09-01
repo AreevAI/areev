@@ -2095,10 +2095,14 @@ OMIT 'proposal' for an advisory finding — one worth a human's attention that \
 you are not asking to change anything. Include it ONLY when the evidence \
 supports a specific change, choosing exactly one kind: \
 (1) {\"kind\":\"lesson\",\"lesson\":\"...\"} with target \
-\"entity:<ns>/<subject>\" — ONE short imperative rule (max 240 chars) \
-preventing a recurring mistake, phrased to apply BEFORE it happens (e.g. \
-'Refund a subscription before cancelling it; refunds on cancelled \
-subscriptions are refused'). \
+\"entity:<ns>/<subject>\" — ONE short imperative rule (max 240 chars) naming \
+an action the agent itself takes on the next occasion. Either ADD an action \
+it is failing to take ('Record the vendor name and the amount on every \
+invoice, not just the date') or ORDER one that goes wrong ('Refund a \
+subscription before cancelling it; refunds on cancelled subscriptions are \
+refused'). Name the action, not a check on it: 'validate', 'verify' and \
+'ensure ... is correct' describe a review step the agent has no way to \
+perform, and such a rule changes nothing even once applied. \
 (2) {\"kind\":\"fact\",\"relation\":\"...\",\"object\":\"...\"} with the same \
 entity target — a durable fact the agent keeps having to be told (an alias, a \
 settled default, a preference). 'relation' is a short identifier (letters, \
