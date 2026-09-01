@@ -6,6 +6,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-09-01
+
+Three defects in the path between evidence and action in Areev Loop. Each
+produced a plausible **null result rather than an error** — the loop ran, the
+run completed, and it read as a model with little to say — which is why they
+survived a synthetic benchmark and surfaced the first time the loop was
+pointed at a real workflow.
+
+### Fixed
+
+- **A human's note reached the model as an empty string.** `grain_brief`
+  renders each grain for the LLM evidence bundle; its fact-triple branch needs
+  subject+relation+object, and an Observation has no relation, so it fell
+  through to a fallback that checked `content`/`body`/`text`/`summary` and
+  never `object` — where the store actually puts an Observation's text. Every
+  human note in every memory was handed to the model as `""`: the highest-value
+  evidence a memory holds was the one shape that rendered to nothing, so an
+  explicit instruction from a person could never become a lesson. Callers had
+  begun duplicating the text into `body` to work around it; that workaround is
+  removed with the cause. `testkit`'s `add_observation` had encoded the same
+  mistake, which is why no test caught it — adds `add_human_note`, shaped as
+  the store writes one, and a regression test.
+- **A lesson could only prevent, never start doing something.** The lesson
+  contract asked for a rule "preventing a recurring mistake, phrased to apply
+  BEFORE it happens". When an agent simply never produces a field, the rule it
+  needs is additive, and the vocabulary had nowhere to put one — so the model
+  reached for the nearest allowed shape ("validate all required fields before
+  submission"), which passed DISCOVER, GROUND, VERIFY, human review, apply and
+  render, and changed nothing. Measured: 0/30 field coverage under that rule
+  against 6/6 under "capture X, Y, Z" — same fields, same prompt position,
+  different verb. A lesson can clear every gate the engine has and still be a
+  no-op, because no gate asked whether the wording named an action the agent
+  could take. The contract now admits an additive rule alongside an ordering
+  one and says a lesson must name the action, not a check on it.
+- **A failing grader was indistinguishable from a model with nothing to say.**
+  `grounded: 0` conflated the gate correctly refusing every draft with the
+  backend never answering; `LlmFunnel` now reports `ground_verdicts` and
+  `ground_call_failed` separately, and the bench adapter retries more before
+  giving up.
+- **The bench loop adapter could not talk to OpenAI-served models.** Its pin
+  probe sent `response_format=json_object` with the message body `"{}"`, which
+  OpenAI rejects ("'messages' must contain the word 'json' in some form"), so
+  a working provider pin was reported as a bad tag.
+
+### Added
+
+- `crates/areev-bench/EXPENSE.md` — governed self-improvement measured on a
+  real expense workflow (an operator's own invoices; the corpus stays private,
+  only counts travel). Paired per invoice and scored by McNemar, because the
+  unpaired version was worthless: between-run noise exceeded the effect. Three
+  seeds give 21–0, 32–0 and 30–0 wins for the learned rules (p<0.0001) against
+  a noise floor of 0–1 discordant pairs in 210. The document also records what
+  the result does not show. `scripts/expense_curve_chart.py` renders its chart.
+
 ## [1.7.0] — 2026-08-31
 
 ### Security
@@ -2157,6 +2211,7 @@ ecosystem adapters, and the enterprise plane.
   (`bench`, `voice_loop`) run as examples.
 
 [Unreleased]: https://github.com/AreevAI/areev/compare/v1.7.0...HEAD
+[1.7.1]: https://github.com/AreevAI/areev/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/AreevAI/areev/compare/v1.6.5...v1.7.0
 [1.6.5]: https://github.com/AreevAI/areev/compare/v1.6.4...v1.6.5
 [1.6.4]: https://github.com/AreevAI/areev/compare/v1.6.3...v1.6.4
