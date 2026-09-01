@@ -2192,7 +2192,14 @@ fn grain_brief(g: &GrainRecord) -> String {
         let out = g.tool_content().unwrap_or("");
         return format!("tool {t} {status}: {out}");
     }
-    for key in ["content", "body", "text", "summary"] {
+    // `object` is last but it is not optional: an Observation stores its text
+    // there (subject + object, no relation), so it misses the fact-triple
+    // branch above and used to fall through this list to an empty string —
+    // every human note in a memory reached the model as a blank line. That is
+    // the single highest-value evidence a memory holds, and it was the one
+    // shape that rendered to nothing. Callers had started duplicating the text
+    // into `body` to work around it; nothing should have to.
+    for key in ["content", "body", "text", "summary", "object"] {
         if let Some(v) = g.fields.get(key).and_then(|v| v.as_str()) {
             if !v.is_empty() {
                 return v.to_string();

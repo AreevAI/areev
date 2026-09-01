@@ -133,7 +133,14 @@ def main():
                     "max_tokens": 1,
                     "response_format": {"type": "json_object"},
                     "provider": {"order": [provider], "allow_fallbacks": False},
-                    "messages": [{"role": "user", "content": "{}"}],
+                    # The word "json" has to appear in the messages: OpenAI
+                    # rejects response_format=json_object otherwise ("'messages'
+                    # must contain the word 'json' in some form"), so a bare
+                    # "{}" made every OpenAI-served model fail its own pin check
+                    # and read as a bad tag. The real calls below already say
+                    # "Return JSON" in their instructions; only the probe was
+                    # short enough to trip it.
+                    "messages": [{"role": "user", "content": "Reply with the json object {}"}],
                 }, key, raise_http=True)
             except HttpFail as e:
                 # Classify, because the two failures need opposite responses

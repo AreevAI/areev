@@ -343,11 +343,6 @@ impl Memory {
         obs.subject = Some("support_desk".to_string());
         obs.object = Some(note.to_string());
         obs.common.namespace = Some(self.ns.clone());
-        // grain_brief renders an Observation from `body`, so the note has to
-        // be reachable there or the model is handed an empty line.
-        obs.common
-            .extra_fields
-            .insert("body".into(), Value::String(note.to_string()));
         obs.common
             .extra_fields
             .insert("task_id".into(), Value::String(task_id.to_string()));
