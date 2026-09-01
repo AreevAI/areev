@@ -1071,6 +1071,71 @@ fn ground_and_verify_judge_the_lesson_text_not_just_the_summary() {
 }
 
 #[test]
+fn human_note_evidence_reaches_the_llm_with_text() {
+    use std::sync::{Arc, Mutex};
+    struct RecordingLlm {
+        inner: MockLlm,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::llm::LlmBackend for RecordingLlm {
+        fn model(&self) -> &str {
+            "recording-mock"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.seen.lock().unwrap().push(request.to_string());
+            self.inner.complete(request)
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    // A human note is stored as subject + object with NO relation, so it
+    // misses grain_brief's fact-triple branch. It must still render.
+    sub.add_human_note(
+        "expense",
+        "expense_capture",
+        "user:billing-lead",
+        "I also need the vendor, the amount and the currency on every one.",
+    );
+    for _ in 0..5 {
+        sub.add_tool_call("stripe_refund", true, "rate_limited 429");
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(RecordingLlm {
+        inner: MockLlm {
+            discover: r#"{"recommendations":[]}"#.to_string(),
+            ground: r#"{"results":[]}"#.to_string(),
+            verify: r#"{"results":[]}"#.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        },
+        seen: Arc::clone(&seen),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let seen = seen.lock().unwrap();
+    let discover = seen
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("a discover request");
+    let v: serde_json::Value = serde_json::from_str(discover).unwrap();
+    let notes: Vec<_> = v["evidence"]
+        .as_array()
+        .expect("evidence array")
+        .iter()
+        .filter(|i| i["grain_type"] == "observation")
+        .collect();
+    assert!(!notes.is_empty(), "the human note reaches the bundle");
+    for item in notes {
+        let text = item["text"].as_str().unwrap_or("");
+        // Found live against a real memory: every human Observation reached
+        // the model as "" — the highest-value evidence a memory holds was the
+        // one shape that rendered to nothing, so an explicit instruction from
+        // a person could never become a lesson.
+        assert!(
+            text.contains("vendor") && text.contains("currency"),
+            "human-note evidence must carry its text, got: {text:?}"
+        );
+    }
+}
+
+#[test]
 fn tool_grain_evidence_reaches_the_llm_with_text() {
     use std::sync::{Arc, Mutex};
     struct RecordingLlm {

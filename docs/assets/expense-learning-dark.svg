@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="340" viewBox="0 0 820 340" role="img" aria-label="Governed self-improvement on a real expense workflow: held-out exact-match rises from 0 to 38 of 210 trials within the first ten corrections then plateaus, and the effect replicates across three seeds at 21 to 32 wins with no losses against a noise floor of 0 to 1">
+<style>text{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.n{font-weight:700;font-variant-numeric:tabular-nums}.v{font-weight:600;font-variant-numeric:tabular-nums}</style>
+<rect width="820" height="340" rx="10" fill="#0d1117" stroke="#30363d"/>
+<text x="32" y="40" class="n" font-size="16" fill="#e6edf3">Areev — a memory the accountant corrects, on a real expense workflow</text>
+<text x="32" y="60" font-size="12" fill="#8b949e">rules the loop proposed, a human approved, and the agent then followed · measured on 30 invoices it never saw</text>
+<text x="32" y="86" font-size="11" fill="#8b949e" font-weight="600">HELD-OUT ACCURACY vs CORRECTIONS SEEN</text>
+<line x1="62" y1="250.0" x2="382" y2="250.0" stroke="#30363d" stroke-width="1"/>
+<text x="54" y="254.0" font-size="10" fill="#8b949e" text-anchor="end">0%</text>
+<line x1="62" y1="200.0" x2="382" y2="200.0" stroke="#30363d" stroke-width="1"/>
+<text x="54" y="204.0" font-size="10" fill="#8b949e" text-anchor="end">10%</text>
+<line x1="62" y1="150.0" x2="382" y2="150.0" stroke="#30363d" stroke-width="1"/>
+<text x="54" y="154.0" font-size="10" fill="#8b949e" text-anchor="end">20%</text>
+<line x1="62" y1="100.0" x2="382" y2="100.0" stroke="#30363d" stroke-width="1"/>
+<text x="54" y="104.0" font-size="10" fill="#8b949e" text-anchor="end">30%</text>
+<polyline points="62.0,221.4 142.0,116.7 222.0,123.8 302.0,126.2 382.0,121.4" fill="none" stroke="#bc8cff" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="62.0" cy="221.4" r="3.5" fill="#bc8cff"/>
+<circle cx="142.0" cy="116.7" r="3.5" fill="#bc8cff"/>
+<circle cx="222.0" cy="123.8" r="3.5" fill="#bc8cff"/>
+<circle cx="302.0" cy="126.2" r="3.5" fill="#bc8cff"/>
+<circle cx="382.0" cy="121.4" r="3.5" fill="#bc8cff"/>
+<text x="390.0" y="125.4" font-size="10.5" fill="#bc8cff" font-weight="600">read correctly</text>
+<polyline points="62.0,250.0 142.0,159.5 222.0,164.3 302.0,164.3 382.0,164.3" fill="none" stroke="#58a6ff" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="62.0" cy="250.0" r="3.5" fill="#58a6ff"/>
+<circle cx="142.0" cy="159.5" r="3.5" fill="#58a6ff"/>
+<circle cx="222.0" cy="164.3" r="3.5" fill="#58a6ff"/>
+<circle cx="302.0" cy="164.3" r="3.5" fill="#58a6ff"/>
+<circle cx="382.0" cy="164.3" r="3.5" fill="#58a6ff"/>
+<text x="390.0" y="168.3" font-size="10.5" fill="#58a6ff" font-weight="600">exactly as filed</text>
+<text x="62.0" y="268" font-size="10" fill="#8b949e" text-anchor="middle">0</text>
+<text x="62.0" y="281" font-size="9" fill="#8b949e" text-anchor="middle">rolled back</text>
+<text x="142.0" y="268" font-size="10" fill="#8b949e" text-anchor="middle">10</text>
+<text x="222.0" y="268" font-size="10" fill="#8b949e" text-anchor="middle">20</text>
+<text x="302.0" y="268" font-size="10" fill="#8b949e" text-anchor="middle">30</text>
+<text x="382.0" y="268" font-size="10" fill="#8b949e" text-anchor="middle">40</text>
+<text x="222.0" y="296" font-size="10" fill="#8b949e" text-anchor="middle">invoices corrected by the accountant</text>
+<text x="148.0" y="147.5" font-size="10" fill="#e6edf3" font-weight="600">most of the gain in the first 10</text>
+<text x="530" y="86" font-size="11" fill="#8b949e" font-weight="600">DOES IT REPLICATE?</text>
+<text x="530" y="104" font-size="10" fill="#8b949e">paired per invoice · only disagreements count</text>
+<text x="530" y="132" font-size="10.5" fill="#e6edf3" font-weight="600">seed 1</text>
+<rect x="582" y="122" width="94.5" height="13" rx="3" fill="#58a6ff"/>
+<text x="682.5" y="133" class="v" font-size="10.5" fill="#e6edf3">21–0</text>
+<rect x="582" y="138" width="4.5" height="7" rx="2" fill="#d29922"/>
+<text x="592.5" y="145" font-size="9.5" fill="#8b949e">noise 1</text>
+<text x="530" y="178" font-size="10.5" fill="#e6edf3" font-weight="600">seed 2</text>
+<rect x="582" y="168" width="144.0" height="13" rx="3" fill="#58a6ff"/>
+<text x="732.0" y="179" class="v" font-size="10.5" fill="#e6edf3">32–0</text>
+<rect x="582" y="184" width="4.5" height="7" rx="2" fill="#d29922"/>
+<text x="592.5" y="191" font-size="9.5" fill="#8b949e">noise 1</text>
+<text x="530" y="224" font-size="10.5" fill="#e6edf3" font-weight="600">seed 3</text>
+<rect x="582" y="214" width="135.0" height="13" rx="3" fill="#58a6ff"/>
+<text x="723.0" y="225" class="v" font-size="10.5" fill="#e6edf3">30–0</text>
+<rect x="582" y="230" width="2.0" height="7" rx="2" fill="#d29922"/>
+<text x="590.0" y="237" font-size="9.5" fill="#8b949e">noise 0</text>
+<text x="530" y="266" font-size="10" fill="#e6edf3">wins–losses for the learned rules, p&lt;0.0001</text>
+<text x="530" y="281" font-size="10" fill="#8b949e">noise = two passes over the SAME memory</text>
+<text x="32" y="322" font-size="10.5" fill="#8b949e">every point is the same 30 unseen invoices · arm 0 is the same memory with the rules rolled back · data: crates/areev-bench/EXPENSE.md</text>
+</svg>

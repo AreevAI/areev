@@ -160,6 +160,15 @@ pub struct LlmFunnel {
     pub dropped_target: u64,
     /// Survived GROUND — their premises were found in the cited evidence.
     pub grounded: u64,
+    /// Verdicts GROUND actually returned. `grounded = 0` with verdicts > 0 is
+    /// the gate refusing every draft; `grounded = 0` with verdicts = 0 is a
+    /// grader that answered with nothing usable, which is a backend problem
+    /// wearing a gate's clothes.
+    pub ground_verdicts: u64,
+    /// The GROUND call itself failed — no response at all. The engine
+    /// fail-softs here by design, so without this the run looks like a model
+    /// that had nothing to say.
+    pub ground_call_failed: bool,
     /// Survived VERIFY's adversarial pass.
     pub kept: u64,
     /// Cleared the confidence floor and reached the queue.
@@ -821,17 +830,29 @@ impl Engine {
             instructions: GROUND_INSTRUCTIONS,
             claims,
         };
+        // A grounding pass that REFUSED every draft and one that never
+        // answered are the same number of survivors and opposite problems:
+        // the first is the gate doing its job, the second is a backend having
+        // a bad minute while the engine fail-softs. Count the verdicts
+        // actually returned so the two are distinguishable afterwards.
         let grounded: std::collections::BTreeSet<usize> = match serde_json::to_string(&ground_req)
             .ok()
             .and_then(|b| ground.complete(&b).ok())
         {
-            Some(raw) => parse_ground(&raw)
-                .results
-                .into_iter()
-                .filter(|r| r.supported)
-                .map(|r| r.id)
-                .collect(),
-            None => return Vec::new(),
+            Some(raw) => {
+                let parsed = parse_ground(&raw);
+                funnel.ground_verdicts = parsed.results.len() as u64;
+                parsed
+                    .results
+                    .into_iter()
+                    .filter(|r| r.supported)
+                    .map(|r| r.id)
+                    .collect()
+            }
+            None => {
+                funnel.ground_call_failed = true;
+                return Vec::new();
+            }
         };
         funnel.grounded = grounded.len() as u64;
         if grounded.is_empty() {
@@ -2074,10 +2095,14 @@ OMIT 'proposal' for an advisory finding — one worth a human's attention that \
 you are not asking to change anything. Include it ONLY when the evidence \
 supports a specific change, choosing exactly one kind: \
 (1) {\"kind\":\"lesson\",\"lesson\":\"...\"} with target \
-\"entity:<ns>/<subject>\" — ONE short imperative rule (max 240 chars) \
-preventing a recurring mistake, phrased to apply BEFORE it happens (e.g. \
-'Refund a subscription before cancelling it; refunds on cancelled \
-subscriptions are refused'). \
+\"entity:<ns>/<subject>\" — ONE short imperative rule (max 240 chars) naming \
+an action the agent itself takes on the next occasion. Either ADD an action \
+it is failing to take ('Record the vendor name and the amount on every \
+invoice, not just the date') or ORDER one that goes wrong ('Refund a \
+subscription before cancelling it; refunds on cancelled subscriptions are \
+refused'). Name the action, not a check on it: 'validate', 'verify' and \
+'ensure ... is correct' describe a review step the agent has no way to \
+perform, and such a rule changes nothing even once applied. \
 (2) {\"kind\":\"fact\",\"relation\":\"...\",\"object\":\"...\"} with the same \
 entity target — a durable fact the agent keeps having to be told (an alias, a \
 settled default, a preference). 'relation' is a short identifier (letters, \
@@ -2171,7 +2196,14 @@ fn grain_brief(g: &GrainRecord) -> String {
         let out = g.tool_content().unwrap_or("");
         return format!("tool {t} {status}: {out}");
     }
-    for key in ["content", "body", "text", "summary"] {
+    // `object` is last but it is not optional: an Observation stores its text
+    // there (subject + object, no relation), so it misses the fact-triple
+    // branch above and used to fall through this list to an empty string —
+    // every human note in a memory reached the model as a blank line. That is
+    // the single highest-value evidence a memory holds, and it was the one
+    // shape that rendered to nothing. Callers had started duplicating the text
+    // into `body` to work around it; nothing should have to.
+    for key in ["content", "body", "text", "summary", "object"] {
         if let Some(v) = g.fields.get(key).and_then(|v| v.as_str()) {
             if !v.is_empty() {
                 return v.to_string();

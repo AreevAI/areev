@@ -196,6 +196,32 @@ impl TestSubstrate {
         })
     }
 
+    /// A human's note, shaped the way the real store shapes one: the text in
+    /// `object` under a `subject`, with no `relation`.
+    ///
+    /// Distinct from `add_observation`, which puts the text in `body`. That
+    /// helper matched the *renderer* rather than the store, so the one grain
+    /// shape a real memory actually produces went untested — and rendered to
+    /// an empty string all the way to the model.
+    pub fn add_human_note(&mut self, ns: &str, subject: &str, observer: &str, text: &str) -> String {
+        let created = self.tick();
+        let mut fields = Map::new();
+        fields.insert("subject".into(), json!(subject));
+        fields.insert("object".into(), json!(text));
+        fields.insert("observer_id".into(), json!(observer));
+        fields.insert("observer_type".into(), json!("human"));
+        fields.insert("namespace".into(), json!(ns));
+        self.inner.insert(GrainRecord {
+            hash: String::new(),
+            grain_type: "observation".into(),
+            namespace: ns.into(),
+            created_at_ms: created,
+            valid_to_ms: None,
+            superseded_by: None,
+            fields,
+        })
+    }
+
     pub fn add_fork(&mut self, entity: &str, heads: &[&str]) {
         self.inner.register_fork(entity, heads);
     }
