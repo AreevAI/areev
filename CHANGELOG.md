@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.2] — 2026-09-02
+
 ### Fixed
 
 - **Imported grains are free-text searchable without a reopen.** The bundle
@@ -2240,7 +2242,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/AreevAI/areev/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/AreevAI/areev/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/AreevAI/areev/compare/v1.6.5...v1.7.0
 [1.6.5]: https://github.com/AreevAI/areev/compare/v1.6.4...v1.6.5

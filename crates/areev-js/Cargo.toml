@@ -1,6 +1,6 @@
 [package]
 name = "areev-js"
-version = "1.7.1"
+version = "1.7.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]
