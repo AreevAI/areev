@@ -10,6 +10,7 @@ mod meta_registry;
 mod ns_scope;
 mod oplog_import;
 mod read_only;
+mod recall_purity;
 mod run_journal;
 mod supersede_forget;
 
@@ -21,5 +22,6 @@ pub use meta_registry::*;
 pub use ns_scope::*;
 pub use oplog_import::*;
 pub use read_only::*;
+pub use recall_purity::*;
 pub use run_journal::*;
 pub use supersede_forget::*;

@@ -28,6 +28,25 @@ fn opts() -> AreevOptions {
     AreevOptions { index_text: false, ..Default::default() }
 }
 
+
+struct HashEmbed;
+impl areev_store::EmbedBackend for HashEmbed {
+    fn dim(&self) -> usize {
+        16
+    }
+    fn model(&self) -> &str {
+        "hash16"
+    }
+    fn embed(&self, text: &str) -> areev_core::error::Result<Vec<f32>> {
+        let mut v = vec![0.0f32; 16];
+        for (i, b) in text.bytes().enumerate() {
+            v[i % 16] += b as f32 / 255.0;
+        }
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+        Ok(v.into_iter().map(|x| x / n).collect())
+    }
+}
+
 /// A Fact with an explicit created_at, so content addresses are deterministic
 /// (created_at is in the .mg header + payload, hence in the hash).
 fn mk(ns: &str, s: &str, r: &str, o: &str, ts: i64) -> Fact {
@@ -235,6 +254,146 @@ fn main() {
         ),
     );
     drop(m);
+
+
+    // ===================== M5: trust withholding =====================
+    // Abstention, in the form a memory substrate can own: "returned something
+    // the trust state said to withhold" and "failed to return something it
+    // held" are opposite failures. Reporting one number
+    // lets a tightening look like an improvement while the other side rots,
+    // so both are printed on every run.
+    println!("## M5 — trust withholding (two-sided: nothing leaked, nothing lost)\n");
+    let m5 = dir.path().join("m5.db");
+    let mut m = Areev::open_with(m5.to_str().unwrap(), opts()).unwrap();
+
+    let live = 12usize;
+    let retracted = 4usize;
+    for i in 0..live {
+        let _ = m.add(&mk("main", &format!("live:{i}"), "prefers", "tea", BASE_TS + i as i64));
+    }
+    for i in 0..retracted {
+        let mut f = mk("main", &format!("gone:{i}"), "prefers", "tea", BASE_TS + 500 + i as i64);
+        f.common.verification_status = Some("retracted".to_string());
+        let _ = m.add(&f);
+    }
+
+    let mut grains = Vec::new();
+    for i in 0..live {
+        grains.extend(m.recall("main", &format!("live:{i}"), None, 8).unwrap());
+    }
+    for i in 0..retracted {
+        grains.extend(m.recall("main", &format!("gone:{i}"), None, 8).unwrap());
+    }
+
+    let hits: Vec<areev_cal::store_types::SearchHit> = grains
+        .into_iter()
+        .map(|grain| {
+            let hash = grain.hash;
+            areev_cal::store_types::SearchHit {
+                grain,
+                score: 1.0,
+                hash,
+                score_breakdown: None,
+                explanation: None,
+                scope_depth: None,
+                source_namespace: None,
+                relative_time: None,
+                conflict_status: None,
+                supersession_status: None,
+                superseded_by_hash: None,
+                recall_source: None,
+            }
+        })
+        .collect();
+
+    let store_saw = hits.len();
+    let ctx = areev_context::ContextAssembler::new()
+        .format(&hits, &areev_context::FormatPolicy::default());
+    let surfaced_withheld = (0..retracted).filter(|i| ctx.text.contains(&format!("gone:{i}"))).count();
+    let withheld_held = (0..live).filter(|i| !ctx.text.contains(&format!("live:{i}"))).count();
+
+    let audit = areev_context::ContextAssembler::new().format(
+        &hits,
+        &areev_context::FormatPolicy::default().include_retracted(true),
+    );
+    let audit_sees = (0..retracted).filter(|i| audit.text.contains(&format!("gone:{i}"))).count();
+
+    verdict(
+        "M5 trust withholding — surfaced-withheld 0, withheld-held 0, audit still complete",
+        surfaced_withheld == 0 && withheld_held == 0 && audit_sees == retracted,
+        format!(
+            "store returned {store_saw} grains ({live} live + {retracted} retracted — it must, the DSAR \
+             selector depends on it); assembly surfaced {surfaced_withheld}/{retracted} retracted \
+             (leak) and dropped {withheld_held}/{live} live (loss). Both are reported because they \
+             move in opposite directions: tighten withholding and the second number rises. The \
+             opt-in audit read still sees {audit_sees}/{retracted}, so withholding hides a grain \
+             from a model without hiding it from a person."
+        ),
+    );
+    drop(m);
+
+
+    // ===================== M6: write-to-readable =====================
+    // Every benchmark in the field ingests the whole history and then asks
+    // questions, so the window between a write and that write being readable is
+    // invisible to all of them. Writes here are synchronous, which makes the
+    // honest unit a boolean per leg - readable on the next call, without a
+    // reopen and without a reindex - rather than a duration that is zero by
+    // construction. The replica text leg is the one that regressed.
+    println!("## M6 — write-to-readable (next call, no reopen, no reindex)\n");
+    let m6 = dir.path().join("m6.db");
+    let mut m = Areev::open_with(
+        m6.to_str().unwrap(),
+        AreevOptions { index_text: true, ..Default::default() },
+    )
+    .unwrap();
+    m.set_embedder(Box::new(HashEmbed));
+
+    let t0 = Instant::now();
+    m.add(&mk("main", "svc:api", "runs", "windowed aggregation", BASE_TS)).unwrap();
+    let write_us = t0.elapsed().as_micros();
+
+    let q = areev_store::EmbedBackend::embed(&HashEmbed, "windowed aggregation").unwrap();
+    let local_struct = !m.recall("main", "svc:api", None, 8).unwrap().is_empty();
+    let local_text = !m.search_text("main", "windowed", 8).unwrap().is_empty();
+    let local_vec = !m.nearest_vector("main", None, None, &q, 8).unwrap().is_empty();
+
+    let bundle = dir.path().join("m6.mgb");
+    m.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+    drop(m);
+
+    let rep = dir.path().join("m6-replica.db");
+    let mut r = Areev::open_with(
+        rep.to_str().unwrap(),
+        AreevOptions { index_text: true, ..Default::default() },
+    )
+    .unwrap();
+    r.set_embedder(Box::new(HashEmbed));
+    let t1 = Instant::now();
+    let applied = r.import_bundle(bundle.to_str().unwrap()).unwrap().applied;
+    let import_us = t1.elapsed().as_micros();
+
+    let rep_struct = !r.recall("main", "svc:api", None, 8).unwrap().is_empty();
+    let rep_text = !r.search_text("main", "windowed", 8).unwrap().is_empty();
+    let rep_vec = !r.nearest_vector("main", None, None, &q, 8).unwrap().is_empty();
+    let legs = [local_struct, local_text, local_vec, rep_struct, rep_text, rep_vec];
+    let readable = legs.iter().filter(|x| **x).count();
+
+    verdict(
+        "M6 write-to-readable — all six legs readable on the next call",
+        legs.iter().all(|x| *x) && applied == 1,
+        format!(
+            "local write {write_us}µs then structural={local_struct} text={local_text} \
+             vector={local_vec}; replica import {import_us}µs ({applied} grain) then \
+             structural={rep_struct} text={rep_text} vector={rep_vec}. {readable}/6 legs \
+             readable with no reopen and no reindex. Synchronous capture means the honest \
+             unit is a boolean, not a latency distribution: there is no background extractor \
+             and no window in which a just-written fact is missing. The replica text leg is \
+             the regression guard - bundle import wrote the grain row without its BM25 \
+             postings, so free-text recall answered empty until the next open."
+        ),
+    );
+    drop(r);
 
     println!("honesty_metrics: {pass} passed, {fail} failed");
     if fail > 0 {
