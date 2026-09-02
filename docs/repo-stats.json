@@ -1,15 +1,15 @@
 {
-  "version": "1.7.1",
+  "version": "1.7.2",
   "crates": 17,
   "rust": {
-    "files": 290,
-    "physical_lines": 184822,
-    "source_code": 87915,
-    "test_code": 52523,
-    "unit_test_code": 25577,
+    "files": 292,
+    "physical_lines": 185350,
+    "source_code": 88252,
+    "test_code": 52623,
+    "unit_test_code": 25677,
     "integration_test_code": 26946,
     "example_code": 669,
-    "test_functions": 2565,
+    "test_functions": 2575,
     "test_ratio": 0.6,
     "test_share": 37.4
   },
@@ -25,24 +25,24 @@
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 22185,
-      "source_code": 10118,
+      "physical": 22201,
+      "source_code": 10134,
       "test_code": 5466,
       "tests": 275
     },
     {
       "name": "areev-core",
-      "files": 50,
-      "physical": 17516,
-      "source_code": 8779,
-      "test_code": 4415,
-      "tests": 290
+      "files": 51,
+      "physical": 17607,
+      "source_code": 8818,
+      "test_code": 4455,
+      "tests": 296
     },
     {
       "name": "areev-cli",
       "files": 19,
-      "physical": 15046,
-      "source_code": 6247,
+      "physical": 15047,
+      "source_code": 6248,
       "test_code": 5737,
       "tests": 174
     },
@@ -65,8 +65,8 @@
     {
       "name": "areev-bench",
       "files": 18,
-      "physical": 11135,
-      "source_code": 5983,
+      "physical": 11294,
+      "source_code": 6111,
       "test_code": 2585,
       "tests": 104
     },
@@ -79,20 +79,20 @@
       "tests": 122
     },
     {
+      "name": "areev-context",
+      "files": 8,
+      "physical": 5335,
+      "source_code": 1918,
+      "test_code": 2481,
+      "tests": 94
+    },
+    {
       "name": "areev-server",
       "files": 3,
       "physical": 5240,
       "source_code": 2219,
       "test_code": 1553,
       "tests": 78
-    },
-    {
-      "name": "areev-context",
-      "files": 8,
-      "physical": 5236,
-      "source_code": 1899,
-      "test_code": 2421,
-      "tests": 90
     },
     {
       "name": "areev-run-core",
@@ -128,9 +128,9 @@
     },
     {
       "name": "areev-conformance",
-      "files": 15,
-      "physical": 2531,
-      "source_code": 1538,
+      "files": 16,
+      "physical": 2693,
+      "source_code": 1672,
       "test_code": 353,
       "tests": 12
     },
@@ -152,8 +152,8 @@
     }
   ],
   "docs": {
-    "files": 44,
-    "lines": 19163
+    "files": 57,
+    "lines": 25880
   },
   "error_codes": 96,
   "bindings": {
