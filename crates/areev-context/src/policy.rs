@@ -94,6 +94,12 @@ pub struct FormatPolicy {
     /// slots for underrepresented grain types before filling by priority.
     /// Default: `Some(GrainTypeDiversityConfig::default())`.
     pub grain_type_diversity: Option<GrainTypeDiversityConfig>,
+    /// Admit grains whose `verification_status` is `retracted`. Off by
+    /// default: a retraction withholds a memory from being treated as true,
+    /// so assembly must not hand one to a model. Turn it on for audit and
+    /// forensic reads, which want the withdrawn record precisely because it
+    /// was withdrawn.
+    pub include_retracted: bool,
 }
 
 impl FormatPolicy {
@@ -107,7 +113,13 @@ impl FormatPolicy {
             grain_overrides: HashMap::new(),
             query_text: None,
             grain_type_diversity: Some(GrainTypeDiversityConfig::default()),
+            include_retracted: false,
         }
+    }
+
+    pub fn include_retracted(mut self, on: bool) -> Self {
+        self.include_retracted = on;
+        self
     }
 
     pub fn metadata(mut self, level: MetadataLevel) -> Self {

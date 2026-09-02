@@ -10,6 +10,7 @@ pub mod ns;
 pub mod proc;
 pub mod time;
 pub mod types;
+pub mod verification;
 
 pub use error::{Hash, AreevError, Result};
 pub use format::*;

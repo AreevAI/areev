@@ -228,6 +228,43 @@ background process that can drift while you aren't looking.
 Eight kinds over four primitives, the connector contract, composite gates and
 correlation windows: [`triggers.md`](triggers.md).
 
+## Reading never changes what is believed
+
+Rank memories by how often they are retrieved and a popular error becomes
+indistinguishable from a settled fact. Retrieval would be certifying its own
+output: a broad recurring query keeps an attractive but wrong grain alive
+forever, and the number that says "this is trusted" is really saying "this is
+frequently asked about."
+
+**No read path in Areev writes to the memory.** Recall, hybrid recall, text and
+vector search, the graph walk, `entity_at`, `history`, CAL `RECALL` and
+`ASSEMBLE`, and the DSAR `subject_report` all leave every grain exactly as they
+found it. There is no `last_seen`, no access counter, and no confidence nudge.
+`success_count` and `failure_count` exist as fields an author may set; nothing
+on the read path touches them.
+
+Recall's only write is an event in the **telemetry sidecar**, and the sidecar is
+built so it cannot become belief:
+
+- a separate file, host config rather than a file-truth, never persisted in the
+  memory;
+- it **never syncs** — bundles carry the memory file only;
+- it is rebuildable, so losing it costs evidence detail and never state;
+- it feeds the hygiene analyzers (cold grains, coverage gaps, budget pressure)
+  and **nothing that ranks**.
+
+That last point is enforced by something stronger than intent. A ranking that
+read the sidecar would make the same query return different answers on different
+hosts, because each host keeps its own — and that would break the guarantee that
+a synced file behaves identically wherever it lands. **Replication determinism
+is what holds this property in place**, so it cannot be quietly undone by adding
+a boost.
+
+Pinned by `recall_never_mutates_belief` and
+`recall_writes_nothing_that_survives_reopen` in the conformance suite, which run
+against both backends and fail if any read path ever writes a field or appends
+to the op log.
+
 ## Erasure is a real operation
 
 Because the record is content-addressed and subject-indexed rather than baked

@@ -1,6 +1,7 @@
 //! Governed corpus writer: selected CAL grains → OpenAI chat JSONL plus the
 //! provenance/loss fields Areev can represent and ordinary trainers cannot.
 
+use areev_core::verification::Trust;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -209,10 +210,10 @@ fn quality(grain: &CalGrainResult, block_error: bool) -> (&'static str, f64) {
     if block_error {
         return ("failed", 0.0);
     }
-    match str_field(grain, "verification_status") {
-        Some("retracted") | Some("rejected") => ("rejected", 0.0),
-        Some("contested") => ("contested", 0.0),
-        _ => ("accepted", 1.0),
+    match Trust::from_field(str_field(grain, "verification_status")) {
+        Trust::Retracted => ("rejected", 0.0),
+        Trust::Contested => ("contested", 0.0),
+        Trust::Unverified | Trust::Verified => ("accepted", 1.0),
     }
 }
 

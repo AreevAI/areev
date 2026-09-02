@@ -103,7 +103,24 @@ and committed transcripts in
   unreproducible claims, so we publish the receipts.
 - **Memory integrity** (deterministic, no LLM):
   `cargo run -p areev-bench --bin honesty_metrics` asserts the dedup,
-  staleness, provenance, and write-cost claims on every run.
+  staleness, provenance, write-cost, trust-withholding, and write-to-readable
+  claims on every run.
+- **Write-to-readable** (`honesty_metrics` M6): a written grain is readable on
+  the **next call** — structural, free-text and vector — with no reopen and no
+  reindex, and the same holds on a replica immediately after a bundle import.
+  **6 of 6 legs.** Capture is synchronous and there is no background extractor,
+  so the honest unit here is a boolean per leg rather than a latency
+  distribution that would be zero by construction. This is the axis where the
+  field has no baseline at all: every benchmark ingests the full history before
+  it asks anything, so the window is invisible to all of them.
+- **Trust withholding, reported in both directions** (`honesty_metrics` M5):
+  context assembly surfaces **0 of 4** retracted grains (a leak) and drops
+  **0 of 12** live ones (a loss). Both are published because they move in
+  opposite directions — tighten withholding and the second number rises — so a
+  single figure could improve while the system got worse in use. The store
+  still returns all 16, because the DSAR selector depends on it, and the opt-in
+  audit read still sees 4 of 4: a retraction hides a grain from a model, never
+  from a person.
 - **Loop precision**: 1.00 on the labeled fixture, with a 0.90 failure floor
   when the fixture runner is invoked
   (`cargo run -p areev-bench --bin loop_precision`).

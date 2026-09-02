@@ -16,7 +16,15 @@ implementation of a format here.
 
 - `policy.rs` — config types: `OutputFormat`, `MetadataLevel`, `Ordering`,
   and the `FormatPolicy` builder (`.metadata/.ordering/.token_budget/
-  .group_by_type/.grain_override/.query_text/.grain_type_diversity`).
+  .group_by_type/.grain_override/.query_text/.grain_type_diversity/
+  .include_retracted`). `include_retracted` is off by default: a grain whose
+  `verification_status` is `retracted` is **withheld** from assembly — from the
+  main body and from the Knowledge Update section, which is built earlier and
+  would otherwise leak the withdrawn value as "what changed". `contested` is
+  demoted (`-0.15`), never withheld. Withholding lives here and never in
+  `areev-store`: `subject_report` (DSAR) shares one selector with erasure and
+  must keep disclosing retracted grains — pinned by
+  `store_recall_still_returns_retracted_grains` in `areev-conformance`.
 - `presets.rs` — `FormatPolicy::claude()` (SML, grouped), `gpt4()` /
   `gemini()` (Markdown), `local_small()` (PlainText), `json_api()` (JSON).
   **Presets never set `token_budget`** — the caller owns that.

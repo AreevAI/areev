@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Imported grains are free-text searchable without a reopen.** The bundle
+  import path wrote the grain row but not its BM25 postings, so a memory that
+  had just imported answered `search_text` with nothing. A reopen hid it,
+  because the open-time self-heal rebuilds an empty text index — which is also
+  why no test caught it. A long-running follower (`areev stream` / `follow`)
+  that imports and serves from one handle answered every free-text query empty
+  for the life of the process. Pinned on both backends by
+  `imported_grains_are_text_searchable_without_reopen`.
+
+### Changed
+
+- **A retracted grain is withheld from assembled context, not merely demoted.**
+  `verification_status = "retracted"` applied a `-0.3` priority penalty and
+  still reached the model. A retraction states that a memory may not be acted
+  on, so `areev-context` now withholds it — from the main body and from the
+  Knowledge Update section, which is built earlier and would otherwise leak the
+  withdrawn value as "what changed". `FormatPolicy::include_retracted(true)`
+  admits them for audit and forensic reads. `contested` keeps its `-0.15`
+  demotion: that one is a degree, not a withdrawal. The store is unchanged and
+  still returns retracted grains, because `subject_report` (DSAR) shares one
+  selector with erasure and must disclose exactly what an erasure removes.
+- `verification_status` is classified in one place
+  (`areev_core::verification::Trust`). `areev-context` and the corpus exporter
+  each parsed the field independently and disagreed — the non-OMS value
+  `"rejected"` was excluded by one and ignored by the other. It now maps to
+  `retracted` consistently.
+
+
 ## [1.7.1] — 2026-09-01
 
 Three defects in the path between evidence and action in Areev Loop. Each

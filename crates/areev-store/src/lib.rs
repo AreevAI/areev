@@ -8713,6 +8713,7 @@ impl Areev {
     fn insert_blob(&mut self, blob: Vec<u8>, hash: Hash, op: i64, hlc_in: i64) -> Result<()> {
         self.check_writable("import a bundle")?;
         let pr = self.prep_from_blob(blob, hash, false)?;
+        let (d_docs, d_len) = fts_delta(std::slice::from_ref(&pr));
         let ram_seq = self.next_seq;
         self.next_seq += 1;
         let ram_op = self.next_op;
@@ -8834,12 +8835,27 @@ impl Areev {
                     vec![pi(seq), pt(&vec_to_json(emb))],
                 )?;
             }
+            if !pr.tokens.is_empty() {
+                for (term, tf) in &pr.tokens {
+                    dbr.execute_hot(
+                        "INSERT INTO fts_post(term,seq,ns,tf) VALUES (?1,?2,?3,?4)",
+                        vec![pi(*term), pi(seq), pi(pr.ns_id), pi(*tf)],
+                    )?;
+                }
+                dbr.execute_hot(
+                    "INSERT OR REPLACE INTO fts_doc(seq,len) VALUES (?1,?2)",
+                    vec![pi(seq), pi(pr.doc_len)],
+                )?;
+            }
             dbr.execute(
                 "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
                 vec![pi(op_seq), pi(hlc_in), pi(op), pb(pr.hash.as_bytes().to_vec())],
             )?;
             Ok(())
-        })
+        })?;
+        self.fts_docs += d_docs;
+        self.fts_total_len += d_len;
+        Ok(())
     }
 
     /// Apply the index-layer supersession flip old → new (import path).

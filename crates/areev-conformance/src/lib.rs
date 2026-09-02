@@ -264,6 +264,10 @@ macro_rules! for_each_conformance_case {
         // read-only opens (least-privilege postgres roles, issue #127)
         $per_case!(read_only_open_succeeds_and_refuses_every_write);
         $per_case!(read_only_open_of_missing_memory_refuses_and_creates_nothing);
+        $per_case!(recall_never_mutates_belief);
+        $per_case!(recall_writes_nothing_that_survives_reopen);
+        $per_case!(imported_grains_are_text_searchable_without_reopen);
+        $per_case!(store_recall_still_returns_retracted_grains);
     };
 }
 
