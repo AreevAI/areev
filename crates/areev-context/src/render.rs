@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use areev_cal::render as shared;
 use areev_cal::store_types::SearchHit;
 use areev_core::format::deserialize::DeserializedGrain;
+use areev_core::verification::Trust;
 use areev_core::types::GrainType;
 
 use super::policy::{FormatPolicy, MetadataLevel, OutputFormat};
@@ -234,11 +235,8 @@ fn adjusted_priority(base: f32, grain: &DeserializedGrain, hit: &SearchHit) -> f
     let score_boost = hit.score as f32 * 0.15;
     let confidence = grain.get_f64("confidence").unwrap_or(1.0) as f32;
     let confidence_boost = (confidence - 0.5).max(0.0) * 0.1;
-    let verification_penalty = match grain.get_str("verification_status") {
-        Some("retracted") => -0.3,
-        Some("contested") => -0.15,
-        _ => 0.0,
-    };
+    let verification_penalty =
+        Trust::from_field(grain.get_str("verification_status")).priority_delta();
     (base + score_boost + confidence_boost + verification_penalty).clamp(0.0, 1.0)
 }
 

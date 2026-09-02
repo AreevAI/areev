@@ -17,6 +17,7 @@
 //! Modes are mutually exclusive, checked in priority order (aggregation > timeline >
 //! relevance). JSON output bypasses all modes.
 
+use areev_core::verification::Trust;
 use std::collections::{HashMap, HashSet};
 
 use areev_cal::store_types::{RecallSource, SearchHit, SupersessionStatus};
@@ -440,9 +441,25 @@ impl ContextAssembler {
             };
         }
 
+        let withheld: HashSet<usize> = if policy.include_retracted {
+            HashSet::new()
+        } else {
+            (0..hits.len())
+                .filter(|&i| {
+                    !Trust::from_field(hits[i].grain.get_str("verification_status")).is_actionable()
+                })
+                .collect()
+        };
+
         // Step 0: Extract Knowledge Update chains (RQ-5).
         // Detect supersession pairs and render them as a dedicated section.
-        let chains = extract_supersession_chains(hits);
+        // A chain touching a withheld grain is dropped whole: rendering the
+        // surviving half as an update would state the retracted value as the
+        // thing that changed.
+        let chains: Vec<_> = extract_supersession_chains(hits)
+            .into_iter()
+            .filter(|c| !withheld.contains(&c.old_index) && !withheld.contains(&c.new_index))
+            .collect();
         let recency = is_recency_query(policy.query_text.as_deref());
         let ku_section = self.render_knowledge_updates(&chains, &policy.format, recency);
 
@@ -476,6 +493,9 @@ impl ContextAssembler {
         } else {
             filtered
         };
+
+        let filtered: Vec<usize> =
+            filtered.into_iter().filter(|i| !withheld.contains(i)).collect();
 
         // Step 2: Score + measure each hit
         let mut scored: Vec<ScoredEntry> = filtered
@@ -3596,4 +3616,73 @@ mod tests {
         assert!(rendered > 0, "but some census hits still render");
         assert!(rendered <= ctx.included_count, "text renders no more grains than included_count reports");
     }
+    #[test]
+    fn retracted_is_withheld_from_assembly_by_default() {
+        let hits = vec![
+            make_hit(GrainType::Fact, vec![("subject", "alice"), ("relation", "prefers"), ("object", "tea")], 0.9),
+            make_hit(
+                GrainType::Fact,
+                vec![("subject", "bobby"), ("relation", "prefers"), ("object", "tea"), ("verification_status", "retracted")],
+                0.95,
+            ),
+        ];
+        let ctx = ContextAssembler::new().format(&hits, &FormatPolicy::default());
+        assert!(ctx.text.contains("alice"), "live grain must survive: {}", ctx.text);
+        assert!(!ctx.text.contains("bobby"), "retracted grain must be withheld: {}", ctx.text);
+    }
+
+    #[test]
+    fn retracted_is_admitted_when_explicitly_requested() {
+        let hits = vec![make_hit(
+            GrainType::Fact,
+            vec![("subject", "bobby"), ("relation", "prefers"), ("object", "tea"), ("verification_status", "retracted")],
+            0.95,
+        )];
+        let ctx = ContextAssembler::new().format(&hits, &FormatPolicy::default().include_retracted(true));
+        assert!(ctx.text.contains("bobby"), "opt-in must admit it: {}", ctx.text);
+    }
+
+    #[test]
+    fn contested_is_demoted_but_never_withheld() {
+        let hits = vec![make_hit(
+            GrainType::Fact,
+            vec![("subject", "bobby"), ("relation", "prefers"), ("object", "tea"), ("verification_status", "contested")],
+            0.95,
+        )];
+        let ctx = ContextAssembler::new().format(&hits, &FormatPolicy::default());
+        assert!(ctx.text.contains("bobby"), "contested is a degree, not a withdrawal: {}", ctx.text);
+    }
+
+    /// A retracted grain must not reach the context through the Knowledge
+    /// Update section either. Chains are built before the main-body filter
+    /// runs, so withholding has to be applied to both or the KU path leaks the
+    /// withdrawn value as "what changed".
+    #[test]
+    fn retracted_is_withheld_from_knowledge_updates_too() {
+        let (mut old_hit, new_hit) = make_supersession_pair(
+            "therapy_frequency", "every two weeks", "every week", 1675987200, 1681516800,
+        );
+        old_hit.grain.fields.insert(
+            "verification_status".to_string(),
+            serde_json::json!("retracted"),
+        );
+        let ctx = ContextAssembler::new()
+            .format(&[old_hit.clone(), new_hit.clone()], &FormatPolicy::claude());
+        assert!(
+            !ctx.text.contains("every two weeks"),
+            "retracted grain leaked through the KU section: {}",
+            ctx.text
+        );
+
+        let audit = ContextAssembler::new().format(
+            &[old_hit, new_hit],
+            &FormatPolicy::claude().include_retracted(true),
+        );
+        assert!(
+            audit.text.contains("every two weeks"),
+            "the opt-in audit read must still see it: {}",
+            audit.text
+        );
+    }
+
 }
