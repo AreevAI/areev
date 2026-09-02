@@ -134,3 +134,38 @@ pub fn pitr_max_hlc_cutoff_is_inclusive(b: &dyn Backend) {
     assert_eq!(full.count().unwrap(), 2);
     assert_eq!(full.latest("ns", "doc", "rev").unwrap().unwrap().get_str("object"), Some("two"));
 }
+
+/// An imported grain must be free-text recallable on the importing handle,
+/// without a reopen. Every other import case reopens before searching, which is
+/// how the missing BM25 postings stayed hidden behind `finish_open`'s self-heal.
+pub fn imported_grains_are_text_searchable_without_reopen(b: &dyn Backend) {
+    let bundle = {
+        let mut src = b.open_named("txt_src");
+        src.add(&fact("caller", "alice", "prefers", "window seat")).unwrap();
+        src.add(&fact("caller", "bob", "prefers", "aisle seat")).unwrap();
+        let path = std::env::temp_dir().join(format!("conf_txt_{}.mgb", std::process::id()));
+        src.bundle_since(0, path.to_str().unwrap()).unwrap();
+        path
+    };
+
+    let mut dst = b.open_named("txt_dst");
+    let applied = dst.import_bundle(bundle.to_str().unwrap()).unwrap().applied;
+    assert!(applied > 0, "[{}] fixture must import something", b.name());
+
+    let hits = dst.search_text("caller", "window", 8).unwrap();
+    assert!(
+        !hits.is_empty(),
+        "[{}] an imported grain was not text-searchable on the importing handle — \
+         BM25 postings were not written by the import path",
+        b.name()
+    );
+
+    let scoped = dst.recall_hybrid("caller", None, None, Some("window seat"), 8, None).unwrap();
+    assert!(
+        !scoped.is_empty(),
+        "[{}] hybrid recall found nothing for imported text",
+        b.name()
+    );
+
+    let _ = std::fs::remove_file(&bundle);
+}
