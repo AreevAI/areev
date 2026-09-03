@@ -11,5 +11,6 @@
   ],
   "deny": [],
   "severity_floors": {},
-  "telemetry": "aggregate"
+  "telemetry": "aggregate",
+  "discover_objective": "review_queue"
 }
