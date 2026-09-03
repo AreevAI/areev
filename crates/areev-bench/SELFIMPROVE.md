@@ -853,6 +853,8 @@ the prompt to re-run.
 | `--mock-llm` | keyless canned loop-LLM (authors one fixed lesson) in place of `--llm-cmd`; the two are mutually exclusive |
 | `--llm-lessons` | the **loop+LLM arm**: the scripted review also approves + applies LLM-authored lessons, and they render into LESSONS. Requires `--llm-cmd` or `--mock-llm`. Off = the published-run review policy, byte-for-byte |
 | `--no-analyzer-lessons` | suppress APPLYING analyzer lessons; the analyzers still run, so the LLM's evidence is unchanged. With `--llm-lessons` this is the **llm-only** cell of the 2x2. Refused on its own — nothing would apply and B would be a second A0 |
+| `--learner` | give DISCOVER the **learner** scoring rule (`Policy::discover_objective = learner`, `docs/loop.md`) instead of the review-queue default: withholding a lesson over a recurring failure costs the same as a wrong one. The gates behind it are unchanged. Requires `--llm-cmd` or `--mock-llm` |
+| `--stop-after experience` | capture the experience phase into `bench.db` and exit — no eval states. The input `selfimprove_learn` measures learn passes over |
 | `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
 | `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
 | `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |
@@ -864,6 +866,56 @@ tool-call protocol (`openrouter_toolcall.py`); `--llm-cmd`/`--ground-cmd`
 speak the loop's `probe`/`discover`/`ground`/`verify` protocol
 (`openrouter_loop.py`). Crossing them fails at the loop's construction-time
 probe, which is the intended loud failure.
+
+## The authoring-rate instrument — `selfimprove_learn`
+
+The A/B/A/B bench asks "did the lessons help?". For an LLM-authored learner
+a prior question decides whether that one can be asked at all: **does the
+model author an applicable lesson on a pass, and where does it lose the ones
+it drafts?** The 2x2 could not be run because the answer was "on 0.42 of
+passes" — cells assigned to the LLM treatment did not receive it, and the
+first time that was known was after the eval states had been paid for.
+
+`selfimprove_learn` measures it first, for cents:
+
+```bash
+# 1. capture experience once (the agent is the only paid leg here)
+cargo run --release -p areev-bench --bin selfimprove_aba -- \
+  --workdir /tmp/learn-s1 --seed 1 --experience 300 --agent-cmd "$AGENT" \
+  --stop-after experience
+
+# 2. learn over a fresh copy of that memory, K times per configuration
+cargo run --release -p areev-bench --bin selfimprove_learn -- \
+  --workdir /tmp/learn-s1 --passes 10 --llm-lessons \
+  --llm-cmd "$LOOP_LLM" --ground-cmd "$GROUND"            # review-queue rule
+cargo run --release -p areev-bench --bin selfimprove_learn -- \
+  --workdir /tmp/learn-s1 --passes 10 --llm-lessons --learner \
+  --llm-cmd "$LOOP_LLM" --ground-cmd "$GROUND"            # learner rule
+```
+
+Every pass copies `bench.db*` into its own directory (the store is
+single-writer per file and a learn pass mutates it), runs one governed pass
+through the real engine — DISCOVER → GROUND → VERIFY → scripted review →
+apply — and appends one row to `<workdir>/learn/<label>.jsonl`: the funnel
+stage by stage (`evidence → proposed → cited → grounded → kept → stored`),
+the LLM findings with their dispositions, what was applied from each origin,
+and the wall time. `<label>.summary.json` derives the **authoring rate**
+(passes with ≥1 stored LLM finding / passes), the mean stored per pass and
+the funnel totals from those rows; nothing in it is computed separately.
+
+Two things it deliberately does not do. It does not score a lesson — a
+finding that survives every gate can still be useless on held-out tasks,
+and only the A/B/A/B states can say. And it does not vary the evidence: the
+same captured experience is what every configuration and every model sees,
+so a difference between two summaries is the proposer (model, objective,
+provider pin) and nothing upstream of it.
+
+**The rows are the evidence for one choice: which objective and which model
+the paid run uses.** An objective that lifts the authoring rate at the cost
+of drafts GROUND then refuses is visible as a funnel that widens at
+`proposed` and narrows again at `grounded`; a model that copies hashes badly
+shows as `dropped_uncited`. Whatever the paid run's `--learner` and
+`--llm-cmd` are, the summary that chose them is committed beside it.
 
 ## Reproduce
 

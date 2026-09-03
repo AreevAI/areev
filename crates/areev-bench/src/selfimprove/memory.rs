@@ -10,6 +10,8 @@
 use super::{Ledger, LedgerEntry, TaskRunRecord};
 use areev_cal::AreevFacade;
 use areev_core::types::{Fact, Observation};
+use areev_loop::engine::LlmFunnel;
+use areev_loop::policy::{DiscoverObjective, Policy};
 use areev_loop::{
     CommandLlm, Decision, Engine, LlmBackend, ObserverType, Origin, Proposal, ReadOpts,
     RecStatus, Recommendation, RunOptions, ScopeSet, SubstrateRead,
@@ -54,6 +56,29 @@ impl Default for LessonArms {
     fn default() -> Self {
         LessonArms { analyzer: true, llm: false }
     }
+}
+
+/// One learn pass's configuration: which lesson ORIGINS the scripted review
+/// admits, and which scoring rule the LLM proposer is given. The default is
+/// the published runs' configuration byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LearnConfig {
+    pub arms: LessonArms,
+    /// `Policy::discover_objective` for this pass — the review-queue rule
+    /// (default) or the learner rule. Host policy in a deployment; a flag
+    /// here, because the objective is one of the things this bench measures.
+    pub objective: DiscoverObjective,
+}
+
+/// What one learn pass produced: the review ledger, the hashes it applied,
+/// and — with an LLM attached — the DISCOVER funnel, so a caller can tell
+/// "authored nothing" from "authored and lost it at the cite-check" without
+/// scraping stderr.
+#[derive(Debug, Default)]
+pub struct LearnOutcome {
+    pub ledger: Ledger,
+    pub applied: Vec<String>,
+    pub funnel: Option<LlmFunnel>,
 }
 
 /// The scripted review policy. Order matters: a `Proposal::Data` is advisory
@@ -270,6 +295,27 @@ impl Memory {
                 db_path.display()
             ));
         }
+        Self::attach(db_path)
+    }
+
+    /// Re-open the memory an earlier phase left at `dir/bench.db` — for the
+    /// instruments that measure a learn pass over captured experience
+    /// without re-running the experience (`selfimprove_learn`). Refuses an
+    /// absent file: a fresh memory here would run the loop over nothing and
+    /// report a clean null.
+    pub fn open(dir: &Path) -> Result<Memory, String> {
+        let db_path = dir.join("bench.db");
+        if !db_path.exists() {
+            return Err(format!(
+                "{} does not exist — capture experience first (selfimprove_aba \
+                 --stop-after experience)",
+                db_path.display()
+            ));
+        }
+        Self::attach(db_path)
+    }
+
+    fn attach(db_path: PathBuf) -> Result<Memory, String> {
         let path_str = db_path
             .to_str()
             .ok_or_else(|| format!("workdir path is not UTF-8: {}", db_path.display()))?;
@@ -432,7 +478,7 @@ impl Memory {
         llm_cmd: Option<&str>,
         ground_cmd: Option<&str>,
         now_ms: i64,
-    ) -> Result<(Ledger, Vec<String>), String> {
+    ) -> Result<LearnOutcome, String> {
         let llm: Option<Box<dyn LlmBackend>> = match llm_cmd {
             Some(cmd) => Some(Box::new(
                 CommandLlm::new(cmd, None).map_err(|e| format!("--llm-cmd: {e}"))?,
@@ -445,7 +491,7 @@ impl Memory {
             )),
             None => None,
         };
-        self.learn_with(llm, ground, LessonArms::default(), now_ms)
+        self.learn_with(llm, ground, LearnConfig::default(), now_ms)
     }
 
     /// [`learn`] with pre-built loop backends and an explicit [`LessonArms`]
@@ -457,10 +503,14 @@ impl Memory {
         &self,
         llm: Option<Box<dyn LlmBackend>>,
         ground: Option<Box<dyn LlmBackend>>,
-        arms: LessonArms,
+        cfg: LearnConfig,
         now_ms: i64,
-    ) -> Result<(Ledger, Vec<String>), String> {
-        let mut engine = Engine::with_builtins();
+    ) -> Result<LearnOutcome, String> {
+        let arms = cfg.arms;
+        let mut engine = Engine::with_builtins().with_policy(Policy {
+            discover_objective: cfg.objective,
+            ..Policy::default()
+        });
         if let Some(backend) = llm {
             engine = engine.with_llm(backend);
         }
@@ -580,7 +630,11 @@ impl Memory {
                 }
             }
         }
-        Ok((ledger, applied))
+        Ok(LearnOutcome {
+            ledger,
+            applied,
+            funnel: run.llm_funnel,
+        })
     }
 
     /// Roll back every hash in `applied`. RolledBack is terminal for a
@@ -828,7 +882,8 @@ mod tests {
             mem.record_task(&rec).unwrap();
         }
         let arms = LessonArms { analyzer: true, llm: true };
-        mem.learn_with(Some(Box::new(MockLoopLlm)), None, arms, T1).unwrap();
+        let cfg = LearnConfig { arms, ..LearnConfig::default() };
+        mem.learn_with(Some(Box::new(MockLoopLlm)), None, cfg, T1).unwrap();
         let md = mem.lessons_markdown().unwrap();
         assert!(
             md.contains("closure"),
@@ -957,7 +1012,7 @@ mod tests {
             "experience captured but nothing applied ⇒ no lessons (A0 state)"
         );
 
-        let (ledger, applied) = mem.learn(None, None, T1).unwrap();
+        let LearnOutcome { ledger, applied, .. } = mem.learn(None, None, T1).unwrap();
         assert!(
             !applied.is_empty(),
             "tool_failure lesson must apply; ledger: {:?}",
@@ -985,7 +1040,8 @@ mod tests {
 
         // RolledBack is terminal: restoration is a fresh proposal (new hash,
         // created_at_ms differs), approved and applied through the same gates.
-        let (ledger2, applied2) = mem.learn(None, None, T3).unwrap();
+        let LearnOutcome { ledger: ledger2, applied: applied2, .. } =
+            mem.learn(None, None, T3).unwrap();
         assert!(
             !applied2.is_empty(),
             "re-proposal must re-apply; ledger: {:?}",
@@ -1016,7 +1072,7 @@ mod tests {
         f.common.created_at = Some(T1 - 120 * DAY_MS);
         let stale_hash = mem.facade.with_store(|m| m.add(&f)).unwrap().to_hex();
 
-        let (ledger, applied) = mem.learn(None, None, T1).unwrap();
+        let LearnOutcome { ledger, applied, .. } = mem.learn(None, None, T1).unwrap();
         assert!(
             applied.is_empty(),
             "nothing executable here; ledger: {:?}",
@@ -1104,8 +1160,8 @@ mod tests {
 
         // Arm OFF: the authored lesson survives the gates but is ledgered
         // advisory — nothing llm-origin applies, no rule line renders.
-        let (ledger, applied) = mem
-            .learn_with(Some(Box::new(MockLoopLlm)), None, LessonArms::default(), T1)
+        let LearnOutcome { ledger, applied, .. } = mem
+            .learn_with(Some(Box::new(MockLoopLlm)), None, LearnConfig::default(), T1)
             .unwrap();
         assert!(
             ledger.entries.iter().any(|e| e.source == "llm" && e.disposition == "advisory"),
@@ -1117,8 +1173,11 @@ mod tests {
 
         // Arm ON: approved + applied through the same scripted review, and
         // the rule renders under the LESSONS heading the agent scans.
-        let arms = LessonArms { analyzer: true, llm: true };
-        let (ledger, applied) = mem
+        let arms = LearnConfig {
+            arms: LessonArms { analyzer: true, llm: true },
+            ..LearnConfig::default()
+        };
+        let LearnOutcome { ledger, applied, .. } = mem
             .learn_with(Some(Box::new(MockLoopLlm)), None, arms, T3)
             .unwrap();
         assert!(
@@ -1135,7 +1194,7 @@ mod tests {
         assert_eq!(mem.lessons_markdown().unwrap(), "", "rollback empties authored rules too");
 
         // Restoration is a fresh governed pass (rolled_back is terminal).
-        let (_, applied2) = mem
+        let LearnOutcome { applied: applied2, .. } = mem
             .learn_with(Some(Box::new(MockLoopLlm)), None, arms, T3 + 2 * HOUR_MS)
             .unwrap();
         assert!(!applied2.is_empty());
@@ -1201,7 +1260,7 @@ mod tests {
         mem.record_task(&failing_task("refund", "approval_required", 6))
             .unwrap();
         let before = mem.experience_grains().unwrap();
-        let (_, applied) = mem.learn(None, None, T1).unwrap();
+        let LearnOutcome { applied, .. } = mem.learn(None, None, T1).unwrap();
         assert!(!applied.is_empty());
         assert!(!mem.lessons_markdown().unwrap().is_empty());
 
