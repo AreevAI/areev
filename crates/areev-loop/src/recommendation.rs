@@ -5,7 +5,11 @@
 //! - Analyzers emit a `(template_id, args)` summary, never free prose.
 //! - `dedup_key`, `origin`, and the params snapshot are engine-stamped.
 //! - `dedup_key` excludes proposal content and the `/major` version, so a
-//!   growing cluster or an analyzer upgrade does not re-propose as novel.
+//!   growing cluster or an analyzer upgrade does not re-propose as novel —
+//!   for ANALYZER findings. An authored (`origin = llm`) executable proposal
+//!   keys on a fingerprint of its content as well, because there the content
+//!   IS the finding: two different lessons on one entity are two findings,
+//!   and the same lesson re-authored is one.
 //! - Lifecycle transitions are gated; `pending → applied` is policy-only.
 
 use crate::error::{Error, Result};
@@ -338,6 +342,54 @@ pub fn dedup_key(family: &str, target_ref: &str, action: ActionKind) -> String {
     )
 }
 
+/// The dedup key of an AUTHORED executable proposal: [`dedup_key`] plus a
+/// fingerprint of the proposal's content. An analyzer finding is "this
+/// target has this kind of problem", so content is rightly excluded; an
+/// authored lesson is "do this", and two different lessons on the same
+/// entity must both reach the queue while the same lesson re-authored must
+/// not. The fingerprint is over the normalized text — case-folded, non-
+/// alphanumerics dropped, whitespace collapsed — so a rewording that changes
+/// no word is the same lesson and one that changes a word is a new one (a
+/// semantic near-duplicate is the reviewer's call, not this key's).
+pub fn authored_dedup_key(
+    family: &str,
+    target_ref: &str,
+    action: ActionKind,
+    content: &str,
+) -> String {
+    format!(
+        "{}\u{1f}{}",
+        dedup_key(family, target_ref, action),
+        content_fingerprint(content)
+    )
+}
+
+/// Sixteen hex chars of FNV-1a (64-bit) over the normalized content. A dedup
+/// key needs stability and spread, not cryptographic strength — a collision
+/// here would merge two findings in a review queue, never grant anything —
+/// so this stays dependency-free, as the crate is by policy.
+pub fn content_fingerprint(content: &str) -> String {
+    let mut normalized = String::with_capacity(content.len());
+    let mut pending_space = false;
+    for c in content.chars() {
+        if c.is_alphanumeric() {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            pending_space = false;
+            normalized.extend(c.to_lowercase());
+        } else if c.is_whitespace() || !c.is_alphanumeric() {
+            pending_space = true;
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in normalized.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Lifecycle status — a rebuildable index-layer cache (the recommendation's
 /// content hash is stable for its whole life).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -656,6 +708,18 @@ mod tests {
             ActionKind::Consolidate,
         );
         assert_eq!(a, b, "case-folded to one identity");
+    }
+
+    #[test]
+    fn authored_dedup_key_distinguishes_content_but_not_wording_noise() {
+        let a = authored_dedup_key("llm", "entity:ns/x", ActionKind::Record, "Record the vendor name.");
+        let same = authored_dedup_key("llm", "entity:NS/X", ActionKind::Record, "  record THE vendor  name ");
+        let other = authored_dedup_key("llm", "entity:ns/x", ActionKind::Record, "Record the amount.");
+        assert_eq!(a, same, "case, punctuation and spacing are not a new lesson");
+        assert_ne!(a, other, "a different lesson on the same entity is a different finding");
+        assert!(a.starts_with(&dedup_key("llm", "entity:ns/x", ActionKind::Record)));
+        assert_eq!(content_fingerprint("A b"), content_fingerprint("a-b"));
+        assert_ne!(content_fingerprint("ab"), content_fingerprint("a b"));
     }
 
     #[test]

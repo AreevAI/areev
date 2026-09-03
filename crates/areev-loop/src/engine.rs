@@ -2786,8 +2786,23 @@ fn stamp_llm(
     } else {
         Some(crate::llm::cap(&d.guidance, crate::llm::MAX_GUIDANCE_LEN))
     };
-    let (action, proposal, summary, rollbackable, importance, evalset_hash) = match resolved {
+    let (action, proposal, summary, rollbackable, importance, evalset_hash, content) = match resolved {
         Some(mut r) => {
+            // What the proposal would DO, before the verifier's confidence
+            // is folded into the fact: the dedup key fingerprints this, so
+            // the same lesson at a different confidence is one finding.
+            let content = match &r.fact_fields {
+                Some(fields) => format!(
+                    "{} {}",
+                    fields.get("relation").and_then(Value::as_str).unwrap_or(""),
+                    fields.get("object").and_then(Value::as_str).unwrap_or("")
+                ),
+                None => match &r.proposal {
+                    Proposal::Cal { cal } => cal.clone(),
+                    Proposal::Data { data } => Value::Object(data.clone()).to_string(),
+                    Proposal::Edit { diff, .. } => diff.clone(),
+                },
+            };
             // The grain records the VERIFIER's calibrated confidence — the
             // independent signal — never the proposer's self-report.
             if let Some(mut fields) = r.fact_fields.take() {
@@ -2803,6 +2818,7 @@ fn stamp_llm(
                 r.rollbackable,
                 r.importance,
                 r.evalset_hash,
+                Some(content),
             )
         }
         None => {
@@ -2817,8 +2833,16 @@ fn stamp_llm(
                 false,
                 0.3,
                 None,
+                None,
             )
         }
+    };
+    // An advisory flag keeps the analyzer-style key (one open flag per
+    // target); an executable proposal keys on its content too, because
+    // there the content is the finding.
+    let dedup = match &content {
+        Some(c) => crate::recommendation::authored_dedup_key("llm", &target_ref, action, c),
+        None => dedup_key("llm", &target_ref, action),
     };
     Recommendation {
         hash: String::new(),
@@ -2827,7 +2851,7 @@ fn stamp_llm(
         origin: Origin::Llm { model: model.to_string() },
         target_ref: target_ref.clone(),
         action_kind: action,
-        dedup_key: dedup_key("llm", &target_ref, action),
+        dedup_key: dedup,
         summary,
         severity: Severity::Low,
         proposal,

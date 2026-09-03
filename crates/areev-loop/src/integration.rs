@@ -494,6 +494,100 @@ fn an_authored_lesson_is_measured_against_the_policy_evalset_and_reverted_on_reg
     );
 }
 
+/// Two different authored lessons on ONE entity are two findings — both
+/// reach the queue, and the second is not a duplicate of the first even
+/// while the first is applied. The same lesson re-authored (at a different
+/// confidence, with different spacing) IS a duplicate. An advisory flag
+/// keeps the analyzer-style key: one open flag per target.
+#[test]
+fn authored_lessons_dedup_on_content_not_only_on_target() {
+    use crate::model::Origin;
+    let scopes = ScopeSet::all();
+    let llm = |h1: &str, lessons: &[&str]| {
+        let recs: Vec<String> = lessons
+            .iter()
+            .map(|l| format!(
+                r#"{{"summary":"{l}","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"{l}"}}}}"#
+            ))
+            .collect();
+        let n = lessons.len();
+        MockLlm {
+            discover: format!(r#"{{"recommendations":[{}]}}"#, recs.join(",")),
+            ground: format!(
+                r#"{{"results":[{}]}}"#,
+                (0..n).map(|i| format!(r#"{{"id":{i},"supported":true,"reason":"ok"}}"#)).collect::<Vec<_>>().join(",")
+            ),
+            verify: format!(
+                r#"{{"results":[{}]}}"#,
+                (0..n).map(|i| format!(r#"{{"id":{i},"keep":true,"confidence":0.9,"reason":"ok"}}"#)).collect::<Vec<_>>().join(",")
+            ),
+            enrich: r#"{"notes":[]}"#.into(),
+        }
+    };
+    let llm_recs = |e: &Engine, sub: &TestSubstrate, status: Option<RecStatus>| -> Vec<Recommendation> {
+        e.recommendations(&sub.inner, status)
+            .unwrap()
+            .into_iter()
+            .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+            .collect()
+    };
+
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor and amount missing");
+    let e = Engine::with_builtins().with_llm(Box::new(llm(
+        &h1,
+        &["Record the vendor name on every receipt.", "Record the amount on every receipt."],
+    )));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = llm_recs(&e, &sub, Some(RecStatus::Pending));
+    assert_eq!(recs.len(), 2, "two different lessons on one entity both reach the queue");
+    assert_ne!(recs[0].dedup_key, recs[1].dedup_key);
+    let vendor = recs.iter().find(|r| r.summary.render().contains("vendor")).unwrap().clone();
+    e.review(&mut sub.inner, &vendor.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "yes", 10_001)
+        .unwrap();
+    e.apply(&mut sub.inner, &vendor.hash, "user:a", ObserverType::Human, &scopes, "apply", false, 10_002)
+        .unwrap();
+
+    // The vendor lesson again (reworded only in spacing/case) plus a THIRD
+    // lesson: the repeat is deduped against the applied one, the new one is
+    // admitted.
+    let e = Engine::with_builtins().with_llm(Box::new(llm(
+        &h1,
+        &["record  the VENDOR name on every receipt", "Copy the address exactly as printed."],
+    )));
+    sub.add_fact("capture", "correction", "address missing");
+    // A full sweep, so the bundle holds the evidence the drafts cite
+    // regardless of the first pass's watermark.
+    let sweep = RunOptions { full_sweep: true, ..RunOptions::default() };
+    e.run(&mut sub.inner, &sweep, 20_000).unwrap();
+    let all = llm_recs(&e, &sub, None);
+    assert_eq!(all.len(), 3, "vendor (applied), amount (pending), address (pending) — the repeat was deduped");
+    let pending = llm_recs(&e, &sub, Some(RecStatus::Pending));
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().any(|r| r.summary.render().contains("address")));
+    assert!(
+        !pending.iter().any(|r| r.summary.render().to_lowercase().contains("vendor")),
+        "the applied lesson is not re-queued under a cosmetic rewording"
+    );
+
+    // Advisory drafts (no proposal) on one target still collapse to one.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "x");
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[
+              {{"summary":"look at this","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9}},
+              {{"summary":"and at this","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9}}
+            ]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    assert_eq!(llm_recs(&e, &sub, Some(RecStatus::Pending)).len(), 1, "one open advisory flag per target");
+}
+
 /// The DISCOVER objective is host policy: the default keeps the review-queue
 /// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
 #[test]

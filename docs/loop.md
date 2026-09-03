@@ -717,6 +717,16 @@ Existing write callers add `--token-env`; a token unlocks review + apply.
 - **Tool grains.** The flagship analyzer reads Tool grains (0x05), which
   carry `tool_name`/`is_error`/`content` natively. `record_tool_call` and
   `areev migrate --from tool-log` both produce them.
+- **Authored proposals dedup on content.** An analyzer finding keys on
+  `family ⟂ target ⟂ action` and deliberately not on content, so a growing
+  cluster does not re-propose as novel. An LLM-authored executable proposal
+  keys on a fingerprint of its content as well: two different lessons on one
+  entity are two findings and both reach the queue, while the same lesson
+  re-authored (different confidence, spacing, case) is one and is deduped
+  against the pending or applied original. Rejection and measured-revert
+  cooldowns therefore apply to *that lesson*, not to every lesson on the
+  entity. Found by the receipts harness: the second rule the accountant
+  asked for was silently dropped as a duplicate of the first.
 - **Occurrences, not values.** Content-addressed dedup is right for a fact —
   a fact restated is the same fact — and wrong for a tool call: a tool that
   failed five times is a different state of the world from one that failed
