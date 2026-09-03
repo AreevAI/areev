@@ -285,6 +285,127 @@ impl crate::llm::LlmBackend for MockLlm {
     }
 }
 
+/// A draft may cite bundled evidence by the short id the bundle labels it
+/// with, not only by the full hash — and a citation naming nothing in the
+/// bundle is still a fabrication that drops the draft.
+#[test]
+fn llm_drafts_may_cite_evidence_by_bundle_id() {
+    use crate::model::Origin;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"by id","target":"entity:test/acme","evidence":["e1"],"confidence":0.9}},
+          {{"summary":"by hash","target":"grain:{h2}","evidence":["{h2}"],"confidence":0.9}},
+          {{"summary":"fabricated","target":"entity:test/acme","evidence":["e99","not-a-hash"],"confidence":0.9}}
+        ]}}"#
+    );
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"},{"id":1,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"},{"id":1,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }));
+    let out = e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let funnel = out.llm_funnel.expect("an llm run reports its funnel");
+    assert_eq!(funnel.proposed, 3);
+    assert_eq!(funnel.dropped_uncited, 1, "the fabricated citation is the only drop");
+    let llm: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+        .collect();
+    // Distinct targets, so dedup (family ⟂ target ⟂ action) keeps both.
+    assert_eq!(llm.len(), 2, "id- and hash-cited drafts both survive");
+    for r in &llm {
+        assert!(
+            r.evidence.iter().all(|h| h == &h1 || h == &h2),
+            "stored evidence is the resolved grain hash, never the label: {:?}",
+            r.evidence
+        );
+    }
+    assert!(llm.iter().all(|r| r.summary.render() != "fabricated"));
+}
+
+/// The three citation shapes, pinned on the resolver itself (the reference
+/// substrate's hashes are not hex, so the prefix rule needs a direct test).
+#[test]
+fn citation_resolves_by_hash_id_or_unambiguous_hex_prefix() {
+    use crate::engine::resolve_citation;
+    use std::collections::{BTreeMap, BTreeSet};
+    let a = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".to_string();
+    let b = "a1b2c3d4e5f6ffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+    let bundle: BTreeSet<String> = [a.clone(), b.clone()].into_iter().collect();
+    let ids: BTreeMap<&str, &str> = [("e1", a.as_str()), ("e2", b.as_str())].into_iter().collect();
+    assert_eq!(resolve_citation(&a, &bundle, &ids).as_deref(), Some(a.as_str()));
+    assert_eq!(resolve_citation("e2", &bundle, &ids).as_deref(), Some(b.as_str()));
+    assert_eq!(resolve_citation(" e1 ", &bundle, &ids).as_deref(), Some(a.as_str()), "whitespace-tolerant");
+    assert_eq!(resolve_citation(&a[..16], &bundle, &ids).as_deref(), Some(a.as_str()), "unambiguous prefix");
+    assert_eq!(resolve_citation(&a[..16].to_uppercase(), &bundle, &ids).as_deref(), Some(a.as_str()));
+    assert_eq!(resolve_citation(&a[..12], &bundle, &ids), None, "shared 12-char prefix is ambiguous");
+    assert_eq!(resolve_citation(&a[..8], &bundle, &ids), None, "too short to count as a citation");
+    assert_eq!(resolve_citation("e3", &bundle, &ids), None);
+    assert_eq!(resolve_citation("", &bundle, &ids), None);
+}
+
+/// The DISCOVER objective is host policy: the default keeps the review-queue
+/// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
+#[test]
+fn discover_objective_is_selected_by_host_policy() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let discover_instructions = |policy: Option<Policy>| -> String {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut sub = TestSubstrate::new();
+        sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        let mut e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+        if let Some(p) = policy {
+            e = e.with_policy(p);
+        }
+        e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+        let reqs = seen.lock().unwrap();
+        let req = reqs
+            .iter()
+            .find(|r| r.contains("\"op\":\"discover\""))
+            .expect("a discover call was made");
+        serde_json::from_str::<serde_json::Value>(req).unwrap()["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let default = discover_instructions(None);
+    let learner = discover_instructions(Some(
+        Policy::from_json(r#"{"discover_objective": "learner"}"#).unwrap(),
+    ));
+    assert!(default.contains("returning nothing earns 0"), "review-queue rule by default");
+    assert!(!default.contains("learning stage"));
+    assert!(learner.contains("learning stage of a deployed agent"));
+    assert!(learner.contains("ALSO penalized"));
+    assert!(!learner.contains("returning nothing earns 0"));
+    // Everything but the scoring paragraph is shared verbatim.
+    for shared in [
+        "propose ADDITIONAL findings",
+        "Require at least two rejected outcomes",
+        "MUST cite one or more evidence items from the bundle by their 'id'",
+        "\"kind\":\"lesson\"",
+        "Propose nothing you cannot ground in the evidence.",
+    ] {
+        assert!(default.contains(shared) && learner.contains(shared), "{shared}");
+    }
+}
+
 #[test]
 fn llm_discover_verified_rec_is_stamped_with_confidence_and_enrich_adds_guidance() {
     use crate::model::Origin;

@@ -710,7 +710,10 @@ impl Engine {
         let request = crate::llm::LlmRequest {
             loop_proto: 1,
             op: "discover",
-            instructions: DISCOVER_INSTRUCTIONS,
+            instructions: match self.policy.discover_objective {
+                crate::policy::DiscoverObjective::ReviewQueue => DISCOVER_INSTRUCTIONS,
+                crate::policy::DiscoverObjective::Learner => DISCOVER_LEARNER_INSTRUCTIONS,
+            },
             findings: findings.clone(),
             evidence: evidence.clone(),
             rejected,
@@ -734,9 +737,19 @@ impl Engine {
             .take(crate::llm::MAX_LLM_DRAFTS)
             .collect();
         funnel.proposed = drafts.len() as u64;
+        let id_to_hash: std::collections::BTreeMap<&str, &str> = evidence
+            .iter()
+            .map(|e| (e.id.as_str(), e.hash.as_str()))
+            .collect();
         for d in drafts {
-            let cited: Vec<String> =
-                d.evidence.iter().filter(|h| bundle.contains(*h)).cloned().collect();
+            let mut cited: Vec<String> = Vec::new();
+            for c in &d.evidence {
+                if let Some(h) = resolve_citation(c, &bundle, &id_to_hash) {
+                    if !cited.contains(&h) {
+                        cited.push(h);
+                    }
+                }
+            }
             if cited.is_empty() {
                 funnel.dropped_uncited += 1;
                 continue; // uncited → drop (no fabrication)
@@ -2066,11 +2079,19 @@ const LENS_RESERVE: usize = 24;
 /// verifier's calibrated confidence is the gate, not the proposer's self-report.
 const MIN_LLM_CONFIDENCE: f64 = 0.75;
 
-/// The fixed DISCOVER instruction (§5.1). The scoring rule makes "nothing to
-/// report" a first-class, zero-penalty answer — the structural antidote to
-/// over-generation. Kept in its own request field so it never interleaves with
-/// (attacker-influenced) evidence text.
-const DISCOVER_INSTRUCTIONS: &str = "You review an agent's memory for quality. \
+/// The fixed DISCOVER instruction (§5.1), in two objectives that differ in
+/// exactly one paragraph — the scoring rule — so the vocabulary, the cite
+/// rule and the JSON contract cannot drift between them. Kept in its own
+/// request field so it never interleaves with (attacker-influenced) evidence
+/// text. The review-queue rule makes "nothing to report" a first-class,
+/// zero-penalty answer — the structural antidote to over-generation; the
+/// learner rule makes abstaining over evidence that plainly holds a lesson
+/// cost the same as a wrong one. Which applies is host policy
+/// (`Policy::discover_objective`), never the model's or the file's choice.
+macro_rules! discover_instructions {
+    ($scoring:literal) => {
+        concat!(
+            "You review an agent's memory for quality. \
 Given deterministic findings and the evidence they cite, propose ADDITIONAL \
 findings the deterministic checks would miss (e.g. a semantic contradiction, a \
 stale assumption, a duplicated meaning, a recurring preventable mistake, a \
@@ -2082,17 +2103,15 @@ problem that raised no error at all is exactly the kind the deterministic \
 checks cannot see, so compare the rejected outcomes against the accepted \
 ones: a feature they share and the accepted ones lack is a candidate rule. \
 Require at least two rejected outcomes before proposing one — a single \
-rejection is an anecdote, not a pattern. \
-SCORING: propose a finding ONLY if you \
-are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
-useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
-earns 0. When in doubt, propose nothing — an empty list is the correct answer \
-when there is nothing worth flagging. The 'approved' and 'rejected' lists, when \
+rejection is an anecdote, not a pattern. ",
+            $scoring,
+            " The 'approved' and 'rejected' lists, when \
 present, show findings this reviewer recently accepted or rejected — prefer the \
 kind they accept and avoid the kind they reject. Every proposal MUST cite one \
-or more evidence hashes from the bundle, name a 'target', and include your \
-confidence 0.0-1.0. Return JSON: {\"recommendations\":[{\"summary\":\"...\",\
-\"target\":\"...\",\"guidance\":\"...\",\"evidence\":[\"<hash>\"],\
+or more evidence items from the bundle by their 'id' (or 'hash'), name a \
+'target', and include your confidence 0.0-1.0. Return JSON: \
+{\"recommendations\":[{\"summary\":\"...\",\
+\"target\":\"...\",\"guidance\":\"...\",\"evidence\":[\"<id>\"],\
 \"confidence\":0.0,\"proposal\":{...}}]}. \
 OMIT 'proposal' for an advisory finding — one worth a human's attention that \
 you are not asking to change anything. Include it ONLY when the evidence \
@@ -2126,7 +2145,32 @@ code is the defect. \
 The subject of a fact, the name of a query, the plan hash and the tool name \
 all come from 'target' — do not repeat them inside 'proposal'. A proposal \
 becomes a change a human reviewer may apply, so it must be fully supported by \
-the cited evidence. Propose nothing you cannot ground in the evidence.";
+the cited evidence. Propose nothing you cannot ground in the evidence."
+        )
+    };
+}
+
+/// The review-queue objective (the default).
+const DISCOVER_INSTRUCTIONS: &str = discover_instructions!(
+    "SCORING: propose a finding ONLY if you \
+are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
+useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
+earns 0. When in doubt, propose nothing — an empty list is the correct answer \
+when there is nothing worth flagging."
+);
+
+/// The learner objective (`Policy::discover_objective = learner`).
+const DISCOVER_LEARNER_INSTRUCTIONS: &str = discover_instructions!(
+    "SCORING: you are the learning stage of a deployed agent, and what you \
+propose now is what it will do differently next time — a lesson you withhold \
+is a mistake it repeats. A correct, actionable proposal earns 1; a wrong or \
+trivial one is penalized 1; returning nothing while the evidence holds a \
+recurring failure, two or more rejected outcomes, or an instruction from a \
+person is ALSO penalized 1. Abstain only when the evidence shows none of \
+those. Prefer the one proposal that addresses the most frequent or most costly \
+failure over several speculative ones, and report your confidence honestly — \
+an independent verifier, not you, decides what survives."
+);
 
 /// The fixed GROUND instruction (§5.2): verify the finding's factual PREMISES
 /// are real (anti-fabrication), while allowing an inference. A self-improvement
@@ -2178,11 +2222,42 @@ fn push_evidence(
     if evidence.len() < EVIDENCE_CAP && bundle.insert(g.hash.clone()) {
         ns_by_hash.insert(g.hash.clone(), g.namespace.clone());
         evidence.push(crate::llm::EvidenceItem {
+            id: format!("e{}", evidence.len() + 1),
             hash: g.hash.clone(),
             grain_type: g.grain_type.clone(),
             text: crate::llm::cap(&grain_brief(g), 400),
         });
     }
+}
+
+/// Resolve one citation to a bundled grain's hash: the full hash, the
+/// bundle-local `id` the evidence item carried, or an unambiguous hash prefix
+/// of at least 12 hex chars. Anything else is a fabrication and resolves to
+/// nothing. Small models copy 64-hex hashes badly — measured live, the
+/// cite-check was where most of a cheap model's drafts died ("proposed 3 →
+/// cited 1") — and a citation that plainly names one bundled grain is not
+/// the thing that check exists to catch.
+pub(crate) fn resolve_citation(
+    cite: &str,
+    bundle: &BTreeSet<String>,
+    id_to_hash: &std::collections::BTreeMap<&str, &str>,
+) -> Option<String> {
+    let cite = cite.trim();
+    if bundle.contains(cite) {
+        return Some(cite.to_string());
+    }
+    if let Some(h) = id_to_hash.get(cite) {
+        return Some((*h).to_string());
+    }
+    const MIN_PREFIX: usize = 12;
+    if cite.len() >= MIN_PREFIX && cite.chars().all(|c| c.is_ascii_hexdigit()) {
+        let lower = cite.to_ascii_lowercase();
+        let mut it = bundle.iter().filter(|h| h.starts_with(&lower));
+        if let (Some(h), None) = (it.next(), it.next()) {
+            return Some(h.clone());
+        }
+    }
+    None
 }
 
 /// A short human-readable projection of a grain for the evidence bundle.

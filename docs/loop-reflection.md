@@ -181,6 +181,26 @@ over-generation (Kalai et al., 2025 — scoring rule verified against the paper)
 Pair with a hard cap on drafts per run. TruthfulQA's separate truthful/informative
 scoring is the same principle: abstention must never be scored as a failure.
 
+**Two objectives, one paragraph apart (added 2026-09-04).** The rule above is
+the *review-queue* objective and stays the default. Measured live it has a
+cost: a cheap model authored an applicable lesson on 0.42 of its passes over
+evidence that held one (the 2x2 in `crates/areev-bench/RESULTS.md`), which
+made an LLM-only learner unmeasurable. `Policy::discover_objective =
+"learner"` swaps exactly the scoring paragraph: a wrong lesson and a withheld
+one cost the same, abstention is legitimate only when the evidence shows no
+failure, no repeated rejection and no instruction, and the model is told to
+prefer the single most valuable proposal. Everything downstream — GROUND,
+VERIFY, the 0.75 floor, human review — is unchanged, so the objective moves
+the proposer's recall and the gates keep the precision. Which objective a
+deployment runs is host policy, never the file's or the model's choice.
+
+**Citations are checked, not transcribed.** Evidence items carry a
+bundle-local `id` (`e1`, `e2`, …) beside the hash, and a draft may cite
+either (or an unambiguous ≥12-hex prefix). Live, the cite-check was where
+most of a small model's drafts died ("proposed 3 → cited 1") — copying 64
+hex characters badly, not fabricating. A citation that names nothing in the
+bundle still drops the draft.
+
 ### 5.2 Stage 1 — the grounding gate (upgrade of "cite a real hash")
 
 Decompose-then-entail, at claim granularity, against the *actual* cited grains:

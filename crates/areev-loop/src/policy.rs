@@ -24,6 +24,27 @@ pub enum TelemetryMode {
     Full,
 }
 
+/// What DISCOVER optimizes for (`docs/loop-reflection.md` §5.1). Host config
+/// like everything else here: it changes the scoring rule the proposer is
+/// given, never the gates — every draft still has to survive GROUND, VERIFY,
+/// the confidence floor and a human review with a BECAUSE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoverObjective {
+    /// The review-queue objective: "nothing to report" is a zero-penalty
+    /// answer and a wrong finding costs twice a right one. Right for a queue
+    /// a person triages — it keeps the queue clean at the price of drafts
+    /// the model was not sure enough about.
+    #[default]
+    ReviewQueue,
+    /// The learner objective: the agent has to improve from THIS pass, so
+    /// abstaining in the face of a recurring failure, repeated rejections or
+    /// a person's instruction is penalized like a wrong lesson. Measured
+    /// need: under the review-queue rule a cheap model authored a lesson on
+    /// fewer than half of its passes over evidence that plainly held one.
+    Learner,
+}
+
 /// One auto-apply grant: an analyzer family may auto-apply to these target
 /// classes up to (and including) `max_severity`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +80,9 @@ pub struct Policy {
     pub severity_floors: BTreeMap<String, Severity>,
     #[serde(default)]
     pub telemetry: TelemetryMode,
+    /// The DISCOVER scoring rule (default: the review-queue objective).
+    #[serde(default)]
+    pub discover_objective: DiscoverObjective,
 }
 
 impl Policy {
@@ -157,6 +181,17 @@ mod tests {
         .unwrap();
         assert!(!p.grants_auto_apply("x", "prompt", Severity::Info));
         assert!(!p.grants_auto_apply("x", "host", Severity::Info));
+    }
+
+    #[test]
+    fn discover_objective_defaults_to_the_review_queue_rule() {
+        assert_eq!(Policy::default().discover_objective, DiscoverObjective::ReviewQueue);
+        let p = Policy::from_json(r#"{"discover_objective": "learner"}"#).unwrap();
+        assert_eq!(p.discover_objective, DiscoverObjective::Learner);
+        assert!(
+            Policy::from_json(r#"{"discover_objective": "eager"}"#).is_err(),
+            "an unknown objective must not load as the default"
+        );
     }
 
     #[test]

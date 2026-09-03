@@ -633,9 +633,25 @@ host policy file — `areev loop --policy loop-policy.json` (or
   ],
   "deny": [],
   "severity_floors": { "loop.staleness": "medium" },
-  "telemetry": "aggregate"
+  "telemetry": "aggregate",
+  "discover_objective": "review_queue"
 }
 ```
+
+`discover_objective` picks the scoring rule the LLM proposer is given
+(`docs/loop-reflection.md` §5.1) and nothing else — the gates behind it are
+the same either way. `review_queue` (default) makes "nothing to report" a
+zero-penalty answer and a wrong finding cost twice a right one: the rule for
+a queue a person triages. `learner` is for an agent that has to improve from
+this pass: abstaining while the evidence holds a recurring failure, two or
+more rejected outcomes, or a person's instruction is penalized like a wrong
+lesson, and the model is told to prefer the one proposal that addresses the
+most frequent failure. It exists because, measured live, a cheap model under
+the review-queue rule authored a lesson on fewer than half of its passes over
+evidence that plainly held one (`crates/areev-bench/RESULTS.md`, the 2x2).
+Every draft under either objective still passes GROUND, VERIFY, the
+confidence floor and a human review with a BECAUSE; the objective changes
+what the proposer is asked to optimize, not what may reach the memory.
 
 A recommendation auto-applies **only if all** hold (proposal §6.3): host
 opt-in + a matching grant, a built-in analyzer (never command/LLM), a
