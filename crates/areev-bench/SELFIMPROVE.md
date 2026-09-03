@@ -893,6 +893,11 @@ cargo run --release -p areev-bench --bin selfimprove_learn -- \
   --llm-cmd "$LOOP_LLM" --ground-cmd "$GROUND"            # learner rule
 ```
 
+A literal `{pass}` in `--llm-cmd` / `--ground-cmd` becomes the pass number,
+so `--seed {pass}` on the adapter gives every pass its own request seed —
+with temperature 0 and one fixed seed, ten passes can be one sample repeated
+ten times, and a rate measured that way is not a rate.
+
 Every pass copies `bench.db*` into its own directory (the store is
 single-writer per file and a learn pass mutates it), runs one governed pass
 through the real engine — DISCOVER → GROUND → VERIFY → scripted review →
@@ -926,7 +931,9 @@ cell** over a 2 × 4 grid — objective {`review_queue`, `learner`} × DISCOVER/
 VERIFY model {`qwen3-30b` (coreweave/bf16), `qwen3-235b-a22b-2507`
 (nebius/fp8), `deepseek-v3.2` (siliconflow/fp8), `gpt-oss-120b`
 (deepinfra/bf16)} — GROUND on `openai/gpt-4o-mini` (openai) in every cell so
-no proposer grades itself and the grader is the one constant. `--llm-lessons`
+no proposer grades itself and the grader is the one constant. The loop legs
+take `--seed {pass}` (pass 1..10), so the ten passes are ten draws, not one
+draw repeated. `--llm-lessons`
 on, so the row also records what the scripted review would have applied.
 Every leg pinned; the pin is part of the cell's label.
 

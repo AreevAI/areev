@@ -52,7 +52,8 @@ fn usage() -> ! {
          \n\
          PATH must hold the bench.db that `selfimprove_aba --stop-after experience` captured.\n\
          Each pass learns over a fresh copy of it; rows go to --out (default\n\
-         PATH/learn/<label>.jsonl) and a summary to PATH/learn/<label>.summary.json."
+         PATH/learn/<label>.jsonl) and a summary to PATH/learn/<label>.summary.json.\n\
+         A literal {{pass}} in --llm-cmd / --ground-cmd becomes the pass number (per-pass seeds)."
     );
     std::process::exit(2);
 }
@@ -160,18 +161,28 @@ fn copy_memory(src: &Path, dst: &Path) -> Result<usize, String> {
 /// An optional boxed loop backend — the shape `Memory::learn_with` takes.
 type LoopBackend = Option<Box<dyn LlmBackend>>;
 
-fn backends(args: &Args) -> (LoopBackend, LoopBackend) {
+/// Backends for one pass. A literal `{pass}` in either command is replaced
+/// by the pass number, so an adapter's `--seed {pass}` gives every pass its
+/// own request seed: with temperature 0 and one fixed seed, ten passes can
+/// be one sample repeated ten times, and a rate measured that way is not a
+/// rate. The substitution is the only thing that differs between passes.
+fn backends(args: &Args, pass: usize) -> (LoopBackend, LoopBackend) {
+    let seeded = |cmd: &str| cmd.replace("{pass}", &pass.to_string());
     let llm: LoopBackend = if args.mock_llm {
         Some(Box::new(MockLoopLlm))
     } else {
         args.llm_cmd.as_deref().map(|cmd| {
-            Box::new(CommandLlm::new(cmd, None).unwrap_or_else(|e| die(&format!("--llm-cmd: {e}"))))
-                as Box<dyn LlmBackend>
+            Box::new(
+                CommandLlm::new(&seeded(cmd), None)
+                    .unwrap_or_else(|e| die(&format!("--llm-cmd: {e}"))),
+            ) as Box<dyn LlmBackend>
         })
     };
     let ground: LoopBackend = args.ground_cmd.as_deref().map(|cmd| {
-        Box::new(CommandLlm::new(cmd, None).unwrap_or_else(|e| die(&format!("--ground-cmd: {e}"))))
-            as Box<dyn LlmBackend>
+        Box::new(
+            CommandLlm::new(&seeded(cmd), None)
+                .unwrap_or_else(|e| die(&format!("--ground-cmd: {e}"))),
+        ) as Box<dyn LlmBackend>
     });
     (llm, ground)
 }
@@ -221,7 +232,7 @@ fn main() {
         }
         copy_memory(&args.workdir, &pass_dir).unwrap_or_else(|e| die(&e));
         let started = Instant::now();
-        let (llm, ground) = backends(&args);
+        let (llm, ground) = backends(&args, pass);
         let outcome: LearnOutcome = {
             // Scoped so the handle is released before the next pass copies.
             let mem = Memory::open(&pass_dir).unwrap_or_else(|e| die(&e));
