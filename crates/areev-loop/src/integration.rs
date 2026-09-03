@@ -2195,6 +2195,102 @@ fn outcome_time_series_catches_a_late_regression() {
     );
 }
 
+/// A revert the Verify gate proposed is a verdict on the FINDING: once a
+/// reviewer applies it, the reverted lesson goes on the rejection cooldown
+/// and the next pass does not re-propose it — even though the failure
+/// cluster that produced it is still there. An operator's own rollback earns
+/// no cooldown, so the same cluster re-proposes the same lesson at once.
+/// Both arms share every input up to the rollback mechanism, which is what
+/// makes the difference attributable to it.
+#[test]
+fn a_measured_revert_cools_down_the_reverted_finding_but_a_manual_rollback_does_not() {
+    use crate::substrate::OmsSubstrate;
+    let t = 2_000_000;
+    let scopes = ScopeSet::all();
+    let cooldown_of = |sub: &TestSubstrate, dk: &str| -> Option<i64> {
+        crate::config::LoopPersisted::from_value(sub.inner.load_state().unwrap())
+            .unwrap()
+            .cooldowns
+            .get(dk)
+            .copied()
+    };
+    let pending_lesson = |e: &Engine, sub: &TestSubstrate, dk: &str| -> bool {
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.tool_failure") && r.dedup_key == dk)
+    };
+    // Shared prefix: apply the lesson, pass the early checkpoints, then the
+    // failure comes back in force — enough for the analyzer to fire again on
+    // its own, not only for the recurrence metric to regress.
+    let regress = |now: i64| -> (Engine, TestSubstrate, String, String) {
+        let (e, mut sub, hash) = apply_lesson(now);
+        let dk = load_dedup_key(&e, &sub, &hash);
+        e.run(&mut sub.inner, &RunOptions::default(), now + 2 * DAY).unwrap();
+        e.run(&mut sub.inner, &RunOptions::default(), now + 8 * DAY).unwrap();
+        for _ in 0..5 {
+            sub.add_tool_call_at("stripe_refund", true, "rate_limited 429", now + 30 * DAY);
+        }
+        sub.add_tool_call_at("stripe_refund", false, "ok", now + 30 * DAY + 1);
+        e.run(&mut sub.inner, &RunOptions::default(), now + 31 * DAY).unwrap();
+        (e, sub, hash, dk)
+    };
+
+    // Arm 1 — the Verify gate's revert, approved and applied.
+    let (e, mut sub, hash, dk) = regress(t);
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("the regression proposed a revert");
+    assert!(cooldown_of(&sub, &dk).is_none(), "no cooldown before the revert");
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "regression confirmed", t + 31 * DAY + 1)
+        .unwrap();
+    let applied_at = t + 31 * DAY + 2;
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert regressed lesson", false, applied_at)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    assert_eq!(
+        cooldown_of(&sub, &dk),
+        Some(applied_at + 7 * DAY),
+        "a measured revert earns the reverted finding a first-strike (7d) cooldown"
+    );
+    e.run(&mut sub.inner, &RunOptions::default(), applied_at + 1).unwrap();
+    assert!(
+        !pending_lesson(&e, &sub, &dk),
+        "the lesson the gate just retracted must not be re-proposed on the next pass"
+    );
+    // ...and once the cooldown lapses the situation is judged afresh.
+    e.run(&mut sub.inner, &RunOptions::default(), applied_at + 7 * DAY + 1).unwrap();
+    assert!(
+        pending_lesson(&e, &sub, &dk),
+        "after the cooldown the still-present cluster re-proposes the lesson"
+    );
+
+    // Arm 2 — the same state, rolled back by an operator instead.
+    let (e, mut sub, hash, dk) = regress(t);
+    let rolled_at = t + 31 * DAY + 2;
+    e.rollback(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "retract it by hand", rolled_at)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    assert!(cooldown_of(&sub, &dk).is_none(), "an operator rollback earns no cooldown");
+    e.run(&mut sub.inner, &RunOptions::default(), rolled_at + 1).unwrap();
+    assert!(
+        pending_lesson(&e, &sub, &dk),
+        "after a manual rollback the still-present cluster re-proposes the lesson at once"
+    );
+}
+
+fn load_dedup_key(e: &Engine, sub: &TestSubstrate, hash: &str) -> String {
+    e.recommendations(&sub.inner, None)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.hash == hash)
+        .expect("the applied recommendation is listed")
+        .dedup_key
+}
+
 /// No recurrence at any checkpoint → the fix held across the whole series, no
 /// revert ever proposed.
 #[test]

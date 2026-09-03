@@ -1161,16 +1161,7 @@ impl Engine {
         p.status_index.insert(rec_hash.into(), to);
         if to == RecStatus::Rejected {
             if let Ok(rec) = load_rec(sub, rec_hash) {
-                // Exponential backoff keyed on dedup_key: 7d, 14d, 28d, … capped
-                // at 90d, so a finding a reviewer keeps rejecting stops
-                // re-surfacing on a fixed 7d cadence (was a flat 7d despite the
-                // "doubling" comment).
-                const BASE_MS: i64 = 7 * 86_400_000;
-                const CAP_MS: i64 = 90 * 86_400_000;
-                let strikes = p.cooldown_strikes.entry(rec.dedup_key.clone()).or_insert(0);
-                let interval = BASE_MS.saturating_mul(1_i64 << (*strikes).min(31)).min(CAP_MS);
-                *strikes = strikes.saturating_add(1);
-                p.cooldowns.insert(rec.dedup_key, now_ms + interval);
+                strike_cooldown(&mut p, rec.dedup_key, now_ms);
             }
         }
         sub.store_state(&p.to_value()?)?;
@@ -1484,6 +1475,18 @@ impl Engine {
                 // rollback stored a newer lifecycle state; merge this apply
                 // into that state rather than overwriting the rollback.
                 p = LoopPersisted::from_value(sub.load_state()?)?;
+                // A measured revert is a verdict on the finding, not only on
+                // this apply: the lesson was tried and it hurt. Rolled-back
+                // findings normally re-propose ("the situation returned"),
+                // which is right for an operator's rollback — but here the
+                // situation never left, so the next pass would re-propose the
+                // same lesson at once and the reviewer would be asked to
+                // re-approve what the Verify gate just retracted. Put the
+                // reverted finding on the same doubling cooldown a rejection
+                // earns; the operator can still re-propose it by hand.
+                if let Ok(reverted) = load_rec(sub, revert_of) {
+                    strike_cooldown(&mut p, reverted.dedup_key, now_ms);
+                }
             }
         }
 
@@ -2934,8 +2937,10 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
             .unwrap_or(RecStatus::Pending);
         // Pending/approved (still open) and applied (already handled)
         // recommendations suppress re-proposal of the same finding. Rejected
-        // is handled by cooldowns; rolled_back/expired may legitimately
-        // re-propose (the situation returned).
+        // is handled by cooldowns, and so is a rollback the Verify gate
+        // caused (`strike_cooldown` at the revert apply); an operator's own
+        // rollback and expiry may legitimately re-propose (the situation
+        // returned).
         if matches!(
             status,
             RecStatus::Pending | RecStatus::Approved | RecStatus::Applied
@@ -2946,6 +2951,21 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
         }
     }
     Ok(set)
+}
+
+/// Put a finding's `dedup_key` on an exponential cooldown: 7d, 14d, 28d, …
+/// capped at 90d, so a finding a reviewer keeps rejecting stops re-surfacing
+/// on a fixed 7d cadence (it was a flat 7d despite the "doubling" comment).
+/// Two events earn a strike: a reviewer's rejection, and a revert the Verify
+/// gate proposed on a measured regression — both are a verdict that the
+/// finding, as it stands, should not come back on the next pass.
+fn strike_cooldown(p: &mut LoopPersisted, dedup_key: String, now_ms: i64) {
+    const BASE_MS: i64 = 7 * 86_400_000;
+    const CAP_MS: i64 = 90 * 86_400_000;
+    let strikes = p.cooldown_strikes.entry(dedup_key.clone()).or_insert(0);
+    let interval = BASE_MS.saturating_mul(1_i64 << (*strikes).min(31)).min(CAP_MS);
+    *strikes = strikes.saturating_add(1);
+    p.cooldowns.insert(dedup_key, now_ms + interval);
 }
 
 fn load_rec<S: SubstrateRead>(sub: &S, rec_hash: &str) -> Result<Recommendation> {

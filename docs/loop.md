@@ -489,6 +489,15 @@ records a **measured outcome** — `held` or `regressed`:
   count can't honestly measure it — that needs a supersede-by-existing
   substrate primitive first.)
 
+A revert the gate proposed and a reviewer applied is a verdict on the
+finding, not only on that apply: the lesson was tried and it hurt. So the
+reverted finding goes on the same doubling cooldown a rejection earns (7d,
+14d, … capped at 90d) and the next pass does not re-propose it, even though
+the situation that produced it is still there. A rollback an operator runs by
+hand (`areev loop rollback`) earns no cooldown — the finding may come back on
+the next pass, which is what lets a lesson be restored through the governed
+path after a deliberate retraction.
+
 Crucially, it re-measures on a **schedule of checkpoints** (1d / 7d / 30d), not
 once — so an outcome that looked fine early can be caught regressing later. A
 single fixed window would freeze a false "held"; the time series doesn't:
