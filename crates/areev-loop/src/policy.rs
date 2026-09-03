@@ -60,6 +60,36 @@ pub struct AutoApplyGrant {
     pub max_severity: Severity,
 }
 
+/// The evalset every LLM-authored, applicable proposal is measured against
+/// after apply (`docs/loop.md`, "Evalset-backed outcomes"). An authored
+/// lesson carries no built-in recurrence metric — nothing errors when a
+/// lesson is merely useless — so without this the Verify gate has nothing
+/// to re-measure for exactly the proposals a human was least able to judge.
+/// The host names the evalset and the field; the engine takes the baseline
+/// from the newest run journaled BEFORE the proposal and reads the current
+/// value from runs journaled AFTER the apply. No baseline run → no metric,
+/// never a fabricated one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeEvalset {
+    /// The evalset hash (the subject is `evalset:<hash>` in `agent:harness`).
+    pub hash: String,
+    /// The summary field to read: `passed`, `failed`, `total`, `error_rate`,
+    /// or any numeric field the host's harness writes into the summary.
+    pub field: String,
+    /// Which direction is an improvement — `passed` and an accuracy are
+    /// higher-is-better, `failed` and `error_rate` are not. Stated by the
+    /// host because getting it wrong would revert an improvement.
+    pub higher_is_better: bool,
+    /// Checkpoints after apply, in ms. Default 1d / 7d / 30d.
+    #[serde(default = "default_horizons")]
+    pub horizons_ms: Vec<i64>,
+}
+
+fn default_horizons() -> Vec<i64> {
+    vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000]
+}
+
 /// The parsed host policy. Everything default-closed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +113,10 @@ pub struct Policy {
     /// The DISCOVER scoring rule (default: the review-queue objective).
     #[serde(default)]
     pub discover_objective: DiscoverObjective,
+    /// Measure every applicable LLM-authored proposal against this evalset
+    /// after apply (default: none — authored lessons carry no metric).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_evalset: Option<OutcomeEvalset>,
 }
 
 impl Policy {
@@ -191,6 +225,22 @@ mod tests {
         assert!(
             Policy::from_json(r#"{"discover_objective": "eager"}"#).is_err(),
             "an unknown objective must not load as the default"
+        );
+    }
+
+    #[test]
+    fn outcome_evalset_parses_with_default_horizons() {
+        let p = Policy::from_json(
+            r#"{"outcome_evalset": {"hash": "abc123", "field": "exact", "higher_is_better": true}}"#,
+        )
+        .unwrap();
+        let e = p.outcome_evalset.expect("parsed");
+        assert_eq!((e.hash.as_str(), e.field.as_str(), e.higher_is_better), ("abc123", "exact", true));
+        assert_eq!(e.horizons_ms, vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000]);
+        assert!(Policy::default().outcome_evalset.is_none());
+        assert!(
+            Policy::from_json(r#"{"outcome_evalset": {"hash": "abc123", "field": "exact"}}"#).is_err(),
+            "the direction is not optional — a guessed one could revert an improvement"
         );
     }
 

@@ -350,6 +350,150 @@ fn citation_resolves_by_hash_id_or_unambiguous_hex_prefix() {
     assert_eq!(resolve_citation("", &bundle, &ids), None);
 }
 
+/// An LLM-authored lesson carries no recurrence metric — nothing errors when
+/// a lesson is merely useless — so `Policy::outcome_evalset` gives every
+/// applicable authored proposal the host's evalset as its metric: baseline
+/// from the newest run journaled before the proposal, current from runs
+/// journaled after the apply. A worse run after the apply is a regression,
+/// the gate proposes the revert, applying it retracts the lesson and puts it
+/// on cooldown. Without a baseline run there is no metric at all.
+#[test]
+fn an_authored_lesson_is_measured_against_the_policy_evalset_and_reverted_on_regression() {
+    use crate::model::Origin;
+    use crate::substrate::OmsSubstrate;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let lesson_llm = |h1: &str| MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"the agent keeps skipping the vendor","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Record the vendor name on every receipt."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = || {
+        Policy::from_json(
+            r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+        )
+        .unwrap()
+    };
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 60 - exact),
+            at,
+        );
+    };
+    let llm_pending = |e: &Engine, sub: &TestSubstrate| -> Vec<Recommendation> {
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .into_iter()
+            .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+            .collect()
+    };
+
+    // No baseline run journaled → the lesson is stored without a metric.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_pending(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    assert!(recs[0].metric.is_none(), "no journaled run → honestly unmeasured");
+
+    // With a baseline run: the metric names the evalset and carries its value.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    journal(&mut sub, "eval-baseline", 20, t - 3_600_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_pending(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    let m = recs[0].metric.as_ref().expect("an applicable authored lesson carries the evalset metric");
+    assert_eq!(m.metric, "evalset:heldout1:exact");
+    assert_eq!(m.baseline, 20.0);
+    assert!(m.higher_is_better);
+    assert_eq!(m.horizons_ms, vec![DAY, 7 * DAY, 30 * DAY]);
+    let hash = recs[0].hash.clone();
+    let dk = recs[0].dedup_key.clone();
+
+    e.review(&mut sub.inner, &hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "try it", t + 1)
+        .unwrap();
+    e.apply(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "apply the lesson", false, t + 2)
+        .unwrap();
+
+    // A run journaled BEFORE the apply is not evidence: with none after it,
+    // the 1d checkpoint stays due and no verdict is recorded.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY).unwrap();
+    assert!(
+        e.outcomes(&sub.inner).unwrap().iter().all(|o| o.rec_hash != hash),
+        "no run since the apply → not yet measurable, never scored against the baseline"
+    );
+
+    // A worse run after the apply → regressed at the 1d checkpoint → revert.
+    journal(&mut sub, "eval-after", 12, t + 2 * DAY + 1);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY + 2).unwrap();
+    let verdicts: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.rec_hash == hash)
+        .collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!((verdicts[0].baseline, verdicts[0].current, verdicts[0].verdict.as_str()), (20.0, 12.0, "regressed"));
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("the regression proposed a revert");
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "it hurt", t + 2 * DAY + 3)
+        .unwrap();
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert", false, t + 2 * DAY + 4)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    let cooled = crate::config::LoopPersisted::from_value(sub.inner.load_state().unwrap())
+        .unwrap()
+        .cooldowns
+        .get(&dk)
+        .copied();
+    assert_eq!(cooled, Some(t + 2 * DAY + 4 + 7 * DAY), "the reverted lesson is on cooldown");
+
+    // The same evidence, the same model, the next pass: not re-proposed.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY + 5).unwrap();
+    assert!(
+        llm_pending(&e, &sub).iter().all(|r| r.dedup_key != dk),
+        "a lesson the gate just retracted is not re-proposed on the next pass"
+    );
+
+    // A better run after the apply → held.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    journal(&mut sub, "eval-baseline", 20, t - 3_600_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let hash = llm_pending(&e, &sub)[0].hash.clone();
+    e.review(&mut sub.inner, &hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "try it", t + 1)
+        .unwrap();
+    e.apply(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2)
+        .unwrap();
+    journal(&mut sub, "eval-after", 33, t + 3);
+    // The 1d checkpoint is due one day after the APPLY (t + 2), not after t.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 + DAY).unwrap();
+    let verdicts: Vec<_> = e.outcomes(&sub.inner).unwrap().into_iter().filter(|o| o.rec_hash == hash).collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].verdict, "held");
+    assert!(
+        !e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.outcome_review")),
+        "an improvement proposes no revert"
+    );
+}
+
 /// The DISCOVER objective is host policy: the default keeps the review-queue
 /// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
 #[test]

@@ -551,6 +551,15 @@ the metric is *not yet measurable* and the checkpoint stays due — the engine
 does not fall back to the baseline run. Scoring the baseline against itself
 would report `held` forever, which is a fabricated receipt and worse than none.
 
+**Authored lessons are measured the same way.** With `outcome_evalset` in
+the host policy, an applied LLM-authored lesson is re-measured against the
+evalset at every checkpoint; a run after the apply that scores worse than
+the run before the proposal is `regressed`, `outcome_review` proposes the
+revert, and applying it retracts the lesson and puts it on the rejection
+cooldown so the next pass does not re-propose what the gate just removed.
+That is the whole "verify the change improved, otherwise revert" arc, on
+the one kind of change a human approves from prose alone.
+
 No scheduler is implied: run `areev eval run` from cron or CI exactly as you run
 `areev loop run`; outcomes only ever **read** what it journaled. The apply gate
 (`areev loop apply --gating-run <id>`) and the outcome edge deliberately read
@@ -634,9 +643,22 @@ host policy file — `areev loop --policy loop-policy.json` (or
   "deny": [],
   "severity_floors": { "loop.staleness": "medium" },
   "telemetry": "aggregate",
-  "discover_objective": "review_queue"
+  "discover_objective": "review_queue",
+  "outcome_evalset": { "hash": "<evalset hash>", "field": "passed", "higher_is_better": true }
 }
 ```
+
+`outcome_evalset` (optional, default none) gives every **applicable
+LLM-authored proposal** — a lesson, a fact, a query or plan revision — the
+host's evalset as its outcome metric: baseline from the newest
+`mg:eval_run` summary journaled before the proposal, current from summaries
+journaled after the apply, checkpoints at `horizons_ms` (default 1d / 7d /
+30d). It exists because an authored lesson carries no recurrence metric —
+nothing errors when a lesson is merely useless or quietly harmful — so
+without it the Verify gate had nothing to re-measure for exactly the
+proposals a reviewer was least able to judge from the text. No run
+journaled yet → no metric, never a fabricated one; the direction is
+mandatory because a guessed one would revert an improvement.
 
 `discover_objective` picks the scoring rule the LLM proposer is given
 (`docs/loop-reflection.md` §5.1) and nothing else — the gates behind it are

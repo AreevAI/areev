@@ -797,7 +797,55 @@ impl Engine {
         // GROUND may run on a separate backend (§11); VERIFY always uses the
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
-        self.verify_drafts(&**llm, ground, validated, &evidence, now_ms, funnel)
+        let outcome_metric = self.outcome_metric_template(sub);
+        self.verify_drafts(&**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel)
+    }
+
+    /// The metric an applicable LLM-authored proposal will be re-measured by,
+    /// when the host policy names an evalset (`Policy::outcome_evalset`).
+    /// The baseline is the newest run journaled so far — the state of the
+    /// world BEFORE the proposal, which is what "did applying it help" has
+    /// to be read against. No run journaled yet → no metric: the lesson is
+    /// honestly unmeasured rather than scored against a number nobody
+    /// recorded.
+    fn outcome_metric_template<S: OmsSubstrate>(
+        &self,
+        sub: &S,
+    ) -> Option<crate::recommendation::MetricSnapshot> {
+        let e = self.policy.outcome_evalset.as_ref()?;
+        let run = crate::eval::newest_eval_run(sub, &e.hash, None).ok().flatten()?;
+        let baseline = match e.field.as_str() {
+            "failed" => run.failed as f64,
+            "passed" => run.passed as f64,
+            "total" => run.total() as f64,
+            "error_rate" => match run.total() {
+                0 => return None,
+                t => run.failed as f64 / t as f64,
+            },
+            other => run.field(other)?,
+        };
+        let horizons = if e.horizons_ms.is_empty() {
+            vec![86_400_000]
+        } else {
+            e.horizons_ms.clone()
+        };
+        Some(crate::recommendation::MetricSnapshot {
+            metric: format!("evalset:{}:{}", e.hash, e.field),
+            baseline,
+            unit: e.field.clone(),
+            n: run.total(),
+            window: "per-run".into(),
+            subject: None,
+            namespace: None,
+            relation: None,
+            query: format!(
+                "RECALL facts WHERE subject = \"evalset:{}\" AND relation = \"mg:eval_run\"",
+                e.hash
+            ),
+            review_after_ms: horizons[0],
+            horizons_ms: horizons,
+            higher_is_better: e.higher_is_better,
+        })
     }
 
     /// GROUND → VERIFY → ROUTE (§5.2–5.4). Two independent model calls, batched
@@ -806,12 +854,14 @@ impl Engine {
     /// confidence. A draft reaches the queue only if it is grounded **and** kept
     /// **and** clears the confidence floor. Any failed call drops the whole LLM
     /// contribution for the run (safe default), never the run.
+    #[allow(clippy::too_many_arguments)]
     fn verify_drafts(
         &self,
         llm: &dyn crate::llm::LlmBackend,
         ground: &dyn crate::llm::LlmBackend,
         validated: Vec<ValidatedDraft>,
         evidence: &[crate::llm::EvidenceItem],
+        outcome_metric: Option<crate::recommendation::MetricSnapshot>,
         now_ms: i64,
         funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
@@ -914,7 +964,7 @@ impl Engine {
         for (i, v) in validated.into_iter().enumerate() {
             if let Some(&conf) = verdicts.get(&i) {
                 if conf >= MIN_LLM_CONFIDENCE {
-                    out.push(stamp_llm(
+                    let mut rec = stamp_llm(
                         llm.model(),
                         &v.draft,
                         v.target_ref,
@@ -922,7 +972,14 @@ impl Engine {
                         v.resolved,
                         conf,
                         now_ms,
-                    ));
+                    );
+                    // Only a proposal an apply can execute (and roll back)
+                    // is measured: an advisory flag changes nothing, so
+                    // there is nothing to hold or regress.
+                    if rec.rollbackable {
+                        rec.metric = outcome_metric.clone();
+                    }
+                    out.push(rec);
                 }
             }
         }
