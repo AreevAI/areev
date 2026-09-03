@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import accountant as acct
 import dataset
+import evalrun
 import ledger_profile
 import memory as mem
 from agent import propose
@@ -47,6 +48,13 @@ def main():
     ap.add_argument("--snapshot-every", type=int, default=0,
                     help="copy the memory aside every N documents, so held-out "
                          "accuracy can be measured as a function of experience")
+    ap.add_argument("--measure", action="store_true",
+                    help="give every applied lesson the held-out set as its outcome "
+                         "metric (Policy.outcome_evalset), so the loop's Verify gate "
+                         "re-measures it once a later held-out pass is journaled")
+    ap.add_argument("--journal-baseline", action="store_true",
+                    help="before any learning, read the held-out set once with the "
+                         "day-one agent and journal it as the evalset baseline (arm A0)")
     args = ap.parse_args()
 
     profile = ledger_profile.get(args.profile)
@@ -61,8 +69,43 @@ def main():
     policy = os.environ.get("LOOP_POLICY") or None
     judge = mem.make_judge(os.environ.get("REVIEW_CMD"))
 
-    exp_rows, _ = dataset.split(dataset.load(args.dataset), args.seed,
-                                args.experience, args.eval)
+    exp_rows, heldout = dataset.split(dataset.load(args.dataset), args.seed,
+                                      args.experience, args.eval)
+    evalset = evalrun.evalset_hash(heldout)
+
+    # The host policy this run learns under. --measure names the held-out
+    # set as the outcome evalset: from then on every applicable authored
+    # lesson carries `evalset:<hash>:exact` as its metric, baseline = the
+    # newest journaled pass before it was proposed.
+    if args.measure:
+        pol = json.loads(policy) if policy else {}
+        pol["outcome_evalset"] = {"hash": evalset, "field": "exact", "higher_is_better": True}
+        policy = json.dumps(pol)
+    with open(os.path.join(args.workdir, "run.config.json"), "w") as fh:
+        json.dump({"profile": args.profile, "seed": args.seed, "experience": args.experience,
+                   "eval": args.eval, "evalset": evalset, "policy": policy,
+                   "learn_every": args.learn_every, "measure": args.measure,
+                   "journal_baseline": args.journal_baseline,
+                   "agent_cmd": os.environ.get("AGENT_CMD"),
+                   "loop_llm_cmd": llm_cmd, "loop_ground_cmd": ground_cmd,
+                   "review_cmd": os.environ.get("REVIEW_CMD")}, fh, indent=1)
+
+    # A0: the day-one agent over the held-out set, journaled before a single
+    # lesson exists. It is the baseline every lesson is measured against, and
+    # it is the same prompt arm A will produce later by rollback — so arm A is
+    # a replication of it, the lessons-off noise floor.
+    if args.journal_baseline:
+        # Creating the memory first, so the baseline lands in the file the
+        # run will learn into.
+        mem.with_memory(db_path, mem.REVIEWER, lambda db: None)
+        trials, usage = evalrun.run_arm("A0", profile, "", heldout, agent_argv)
+        summary = evalrun.journal_eval_run(db_path, evalset, "eval-a0", trials,
+                                           note="day-one agent, no lessons")
+        with open(os.path.join(args.workdir, "a0.trials.json"), "w", encoding="utf-8") as fh:
+            json.dump(trials, fh, indent=1)
+        with open(os.path.join(args.workdir, "a0.summary.json"), "w") as fh:
+            json.dump({"arm": "A0", "usage": usage, **summary}, fh, indent=1)
+        print("journaled A0 as evalset %s baseline: %s" % (evalset, json.dumps(summary)))
 
     journal = open(os.path.join(args.workdir, "journal.jsonl"), "a", encoding="utf-8")
     categories_known, since_learn = [], 0

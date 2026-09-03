@@ -1,14 +1,20 @@
 #!/bin/sh
-# Keyless plumbing test: mock agent, mock loop legs, real Areev, real gates.
+# Keyless plumbing test: mock agent, mock loop legs, real Areev, real gates —
+# the whole protocol curve.sh runs for money, run for nothing.
 #
-#   dryrun.sh [workdir] [receipts] [learn-every]
+#   dryrun.sh [workdir] [receipts] [learn-every] [held-out]
 #
-# Pass criterion, stated before running: the first receipts score 0 exact
-# (ISO dates), a lesson is proposed and applied at the first learn point, and
-# every receipt after it scores exact on the date. If the score does not
-# step, the harness is not wiring memory into the prompt and no paid run
-# should follow. The rule reviewer is the one leg that stays keyless too: a
-# fixture judge that approves any rule naming the date format.
+# Pass criteria, stated before running:
+#   1. experience — the first receipts score 0 exact (ISO dates); a lesson is
+#      proposed and applied at the first learn point; every receipt after it
+#      files the date exactly.
+#   2. paired eval — B beats A on every discordant pair; B2 equals B.
+#   3. verify → revert — every applied lesson gets a verdict; a harmful lesson
+#      admitted on purpose is measured as regressed, reverted through the API,
+#      and not re-proposed; R recovers past H.
+# If any step does not hold, the harness is not wiring memory into the prompt
+# and no paid run should follow. The rule reviewer is keyless too: a fixture
+# judge that approves any rule naming the date format.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
@@ -16,6 +22,7 @@ PY="${PY:-$REPO/.venv/bin/python3}"
 WORKDIR="${1:-/tmp/receipts-dry}"
 N="${2:-8}"
 EVERY="${3:-2}"
+HELD="${4:-6}"
 
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
@@ -28,5 +35,17 @@ export REVIEW_CMD="$PY $HERE/mock_judge.py"
 export LOOP_POLICY='{"discover_objective":"learner"}'
 DATASET="${DATASET:-$HERE/data/sroie.jsonl}"
 
-exec "$PY" "$HERE/run.py" --dataset "$DATASET" --workdir "$WORKDIR" \
-  --seed 1 --experience "$N" --eval 0 --learn-every "$EVERY"
+echo "######## 1. experience (A0 journaled first, every lesson measured)"
+"$PY" "$HERE/run.py" --dataset "$DATASET" --workdir "$WORKDIR" \
+  --seed 1 --experience "$N" --eval "$HELD" --learn-every "$EVERY" \
+  --measure --journal-baseline
+
+echo "######## 2. paired evaluation (B journaled)"
+"$PY" "$HERE/evaluate.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
+  --workdir "$WORKDIR/eval" --seed 1 --experience "$N" --eval "$HELD" --journal B=eval-b
+"$PY" "$HERE/stats.py" "$WORKDIR/eval/trials.json"
+
+echo "######## 3. verify → forced regression → revert"
+unset AREEV_MOCK_LLM_FIXTURE
+"$PY" "$HERE/regress.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
+  --workdir "$WORKDIR/regress" --seed 1 --experience "$N" --eval "$HELD"

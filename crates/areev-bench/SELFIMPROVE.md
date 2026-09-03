@@ -960,6 +960,15 @@ and the earlier arm result — remedy-shaped lessons trading breadth for
 precision — is exactly that shape. This measurement decides only what gets
 measured next.
 
+**"Proposed 0" has two readings, and only the raw response tells them
+apart.** The engine fail-softs a backend that answers in a shape the parser
+drops, so a model that abstained and a model that answered with the wrong
+key are the same empty funnel. `scripts/tee_llm.py DIR ADAPTER ARGS…` wraps
+any adapter and records every request and response to `DIR`; when a cell
+reads 0/10, re-run one pass through it before reporting abstention. (Done
+for `deepseek-v3.2` under the review-queue rule: the raw answer was
+`{"recommendations": []}` — abstention, ten times out of ten.)
+
 **The rows are the evidence for one choice: which objective and which model
 the paid run uses.** An objective that lifts the authoring rate at the cost
 of drafts GROUND then refuses is visible as a funnel that widens at

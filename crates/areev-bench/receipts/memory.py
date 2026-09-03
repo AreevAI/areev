@@ -172,6 +172,19 @@ def make_judge(review_cmd):
     return judge
 
 
+def policy_file(db_path, policy):
+    """The binding takes the host policy as a FILE (host config lives outside
+    the memory, like the CLI's --policy). A JSON string is written beside the
+    memory so the run directory records the policy it ran under; a path is
+    passed through."""
+    if policy and policy.lstrip().startswith("{"):
+        path = os.path.join(os.path.dirname(os.path.abspath(db_path)), "loop-policy.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(policy)
+        return path
+    return policy
+
+
 def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True):
     """One governed pass: propose under the runner, decide under the reviewer.
 
@@ -180,14 +193,7 @@ def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbos
     duties — the identity that triggered the finding cannot approve it.
     `policy` is the host policy JSON (e.g. {"discover_objective":"learner"}).
     """
-    # The binding takes the host policy as a FILE (host config lives outside
-    # the memory, like the CLI's --policy). A JSON string is written beside
-    # the memory so the run directory records the policy it ran under.
-    if policy and policy.lstrip().startswith("{"):
-        path = os.path.join(os.path.dirname(os.path.abspath(db_path)), "loop-policy.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(policy)
-        policy = path
+    policy = policy_file(db_path, policy)
     rep = json.loads(with_memory(
         db_path, RUNNER,
         lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy)))

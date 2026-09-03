@@ -81,6 +81,39 @@ Arm A is a genuine rollback, not a decision to stop rendering: the claim is
 that the *governed apply* is the lever, so withdrawing it has to travel the
 governance path.
 
+## Approval is not the end: verify, and revert what hurts
+
+A rule a reviewer approved from its text alone can still be useless or
+harmful in use. The loop's Verify gate measures it (`docs/loop.md`,
+"Evalset-backed outcomes"), and this harness is the first to exercise that
+gate on LLM-authored rules against real held-out documents:
+
+- **A0 is journaled before any learning.** The day-one agent reads the
+  held-out set once; the pass is recorded in the memory as an evalset run.
+  Every rule the loop then applies carries that evalset as its outcome
+  metric (`Policy.outcome_evalset`), with A0 as its baseline — and A0 is
+  the same prompt arm A later produces by rollback, so arm A replicates it.
+- **B is journaled after learning.** A loop pass a day later (the engine's
+  clock is pinned; nothing sleeps) records a verdict per applied rule:
+  `held` if B scored at least A0, `regressed` otherwise, and a revert is
+  proposed for any regression.
+- **A harmful rule is admitted on purpose** (`regress.py`): a fixture
+  "model" authors "write dates month-first", the stubs ground and verify
+  it, and the reviewer approves it — a forced regression. It renders into
+  the prompt like any other rule; the held-out set is read under it (arm
+  H) and journaled; the next pass measures it as `regressed`, proposes the
+  revert, the reviewer approves, and applying the revert retracts the rule
+  through the same rollback path a person would use. The held-out set is
+  read again (arm R). Then the same fixture model is asked again: the
+  retracted rule is **not re-proposed** — a measured revert puts the
+  finding on cooldown, exactly as a rejection does.
+
+The keyless dry run (`dryrun.sh`) proves every step of that chain with a
+mock agent whose only behaviours are "obey the date rule in the prompt" and
+"obey the harmful one if present": exact steps up when the good rule lands,
+down under the harmful one, back up on revert. What the paid run adds is a
+real model on both sides of every rule.
+
 **Seeds are task sets.** The corpus is seed-free; a seed permutes it and
 assigns positions, so the experience receipts and the held-out receipts
 differ between seeds. Three seeds are three replications over three task
@@ -104,6 +137,10 @@ made, before the first paid receipt is read.*
   pooled and per seed; the B vs B2 noise floor beside it. Secondary:
   semantic; per-field coverage; the learning curve at 0/10/20/30/40
   experience receipts against the same held-out set.
+- The verify leg: the per-rule verdicts after B (expected `held`; any
+  `regressed` is reported with its revert). The forced regression: H below
+  B (paired), R recovering (paired against H and against B), the revert
+  applied through the API, the retracted rule not re-proposed.
 - Publishes whatever lands. B ≈ A is the result "a model-authored learner
   did not move this corpus" and ships with the ledgers.
 - Every model call's usage is journaled; the spend is reported.
@@ -119,7 +156,7 @@ cd crates/areev-bench/receipts
 python3 build_sroie.py                                    # once; cached
 sh dryrun.sh                                              # keyless plumbing gate
 export OPENROUTER_API_KEY=…
-for S in 1 2 3; do SEED=$S sh curve.sh runs; done         # experience + paired eval + curve
+for S in 1 2 3; do SEED=$S sh curve.sh runs; done         # A0 + experience + paired eval + verify/revert + curve
 python3 summarize.py runs/seed1/eval/trials.json runs/seed2/eval/trials.json runs/seed3/eval/trials.json
 ```
 

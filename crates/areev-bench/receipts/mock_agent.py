@@ -2,12 +2,14 @@
 """A keyless stand-in for the model leg, for testing the harness plumbing.
 
 It reads a date out of the receipt with a regex and writes it in ISO — UNLESS
-the system prompt already carries a rule naming DD/MM/YYYY, in which case it
-obeys. That single conditional is what makes the dry run meaningful: if the
-harness is wired correctly the exact score steps up exactly when the lesson
-lands in the prompt, and if it is wired wrongly nothing moves. It proves the
-plumbing, never a learning claim — the real agent has to actually read the
-receipt.
+the system prompt carries a rule naming DD/MM/YYYY, in which case it obeys;
+and a rule naming MM/DD/YYYY (the harmful fixture regress.py admits) wins
+over both, so a wrong rule visibly hurts. Those conditionals are what make
+the dry run meaningful: if the harness is wired correctly the exact score
+steps up exactly when the lesson lands in the prompt, falls when the harmful
+one does, and recovers when it is reverted; wired wrongly, nothing moves. It
+proves the plumbing, never a learning claim — the real agent has to actually
+read the receipt.
 """
 import json
 import re
@@ -47,10 +49,13 @@ if date is None:
     out = {"fields": {}, "park": True, "reason": "What is the invoice date?"}
 else:
     y, mo, d = date
-    obeys = "DD/MM/YYYY" in system
-    out = {"fields": {"Invoice Date": ("%02d/%02d/%04d" % (d, mo, y)) if obeys
-                      else ("%04d-%02d-%02d" % (y, mo, d))},
-           "park": False, "reason": ""}
+    if "MM/DD/YYYY" in system:
+        value = "%02d/%02d/%04d" % (mo, d, y)
+    elif "DD/MM/YYYY" in system:
+        value = "%02d/%02d/%04d" % (d, mo, y)
+    else:
+        value = "%04d-%02d-%02d" % (y, mo, d)
+    out = {"fields": {"Invoice Date": value}, "park": False, "reason": ""}
 
 print(json.dumps({"message": {"content": json.dumps(out)},
                   "usage": {"prompt_tokens": 0, "completion_tokens": 0}}))
