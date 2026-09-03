@@ -910,6 +910,49 @@ same captured experience is what every configuration and every model sees,
 so a difference between two summaries is the proposer (model, objective,
 provider pin) and nothing upstream of it.
 
+### Pre-registered: the authoring-rate measurement (written before any pass ran)
+
+Committed 2026-09-04, before the first live pass. **Question.** Under which
+DISCOVER objective, and on which model, does the loop author an applicable
+lesson reliably enough that an LLM-authored learner can be measured at all?
+The 2x2's answer under the review-queue rule on `qwen3-30b` was 0.42
+lessons per pass and 7 of 12 passes authoring nothing.
+
+**Design.** One captured experience: seed 1, 300 tasks, agent
+`qwen/qwen3-30b-a3b-instruct-2507` pinned `coreweave/bf16`, temperature 0,
+`--seed 1` on the request. It is captured once and copied per pass, so every
+configuration reflects over byte-identical evidence. Then **10 passes per
+cell** over a 2 × 4 grid — objective {`review_queue`, `learner`} × DISCOVER/
+VERIFY model {`qwen3-30b` (coreweave/bf16), `qwen3-235b-a22b-2507`
+(nebius/fp8), `deepseek-v3.2` (siliconflow/fp8), `gpt-oss-120b`
+(deepinfra/bf16)} — GROUND on `openai/gpt-4o-mini` (openai) in every cell so
+no proposer grades itself and the grader is the one constant. `--llm-lessons`
+on, so the row also records what the scripted review would have applied.
+Every leg pinned; the pin is part of the cell's label.
+
+**What is read, in order.** (1) Authoring rate: passes with ≥1 stored LLM
+finding / 10. (2) Where the drafts die: the funnel totals, because an
+objective that lifts `proposed` and loses it all at `grounded` has bought
+nothing, and a model that loses drafts at `cited` is a transcription
+problem the bundle-id change was meant to remove. (3) What was authored:
+the lesson texts, read for whether they name an action (the finding in
+EXPENSE.md that a lesson can clear every gate and still be a no-op).
+
+**Decision rule, stated now.** The paid A/B/A/B run uses the learner
+objective if its authoring rate exceeds the review-queue rule's on the same
+model by more than one pass in ten AND its grounded fraction
+(`grounded / proposed`) is not more than 0.2 lower; otherwise the
+review-queue rule stays. The model is the cheapest one whose authoring rate
+under the chosen objective is ≥ 0.8; if none reaches 0.8 the highest wins
+and the paper says so. Ties go to the cheaper leg. Whatever the outcome, all
+eight summaries are committed under `results/` beside the run they chose.
+
+**Not a claim about learning.** Nothing here scores a lesson on held-out
+tasks. A configuration this instrument prefers can still lose the A/B/A/B,
+and the earlier arm result — remedy-shaped lessons trading breadth for
+precision — is exactly that shape. This measurement decides only what gets
+measured next.
+
 **The rows are the evidence for one choice: which objective and which model
 the paid run uses.** An objective that lifts the authoring rate at the cost
 of drafts GROUND then refuses is visible as a funnel that widens at
