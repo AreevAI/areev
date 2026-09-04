@@ -40,10 +40,23 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
     if verbose:
         print("\n=== arm %s — %d rule(s) in the prompt" % (name, n_rules))
     trials, usage_tot = [], {"prompt_tokens": 0, "completion_tokens": 0}
+    errors = 0
     for r in rows:
         seq = r["seq"]
         req = ledger_profile.required_fields(profile, seq)
-        out, usage = propose(agent_argv, profile, r["text"], lessons)
+        try:
+            out, usage = propose(agent_argv, profile, r["text"], lessons)
+        except Exception as e:
+            # A provider having a bad minute is not a result, but losing the
+            # whole arm to it is worse than scoring one document as a park:
+            # a crash on document 6 of 60 threw away five measured documents
+            # and the arm's summary with them (seed 3, run 2). The failure is
+            # counted and printed, the document is scored as producing
+            # nothing, and the arm still reports.
+            errors += 1
+            print("  seq %3d  MODEL CALL FAILED (%s) — scored as no output"
+                  % (seq, type(e).__name__))
+            out, usage = {"fields": {}, "park": True, "reason": "model call failed"}, {}
         usage_tot["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
         usage_tot["completion_tokens"] += int(usage.get("completion_tokens") or 0)
         for field in req:
@@ -70,10 +83,12 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
     if verbose:
         e = sum(t["exact"] for t in trials)
         s = sum(t["semantic"] for t in trials)
-        print("  arm %s: exact %d/%d (%.1f%%)  semantic %d/%d (%.1f%%)  tokens %d+%d"
+        print("  arm %s: exact %d/%d (%.1f%%)  semantic %d/%d (%.1f%%)  tokens %d+%d%s"
               % (name, e, len(trials), 100.0 * e / max(len(trials), 1),
                  s, len(trials), 100.0 * s / max(len(trials), 1),
-                 usage_tot["prompt_tokens"], usage_tot["completion_tokens"]))
+                 usage_tot["prompt_tokens"], usage_tot["completion_tokens"],
+                 "  [%d model call(s) FAILED]" % errors if errors else ""))
+    usage_tot["failed_calls"] = errors
     return trials, usage_tot
 
 
