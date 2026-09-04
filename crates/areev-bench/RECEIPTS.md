@@ -181,6 +181,27 @@ on the next pass.
 - Every model call's usage is journaled; `verify.py --check` recomputes
   every published number from the trials and re-derives the checksums.
 
+## Pre-registered diagnostic — `learners.py` (written before it was run)
+
+A separate question from the one above, and it can only ever explain a
+result, never improve one: **over one fixed captured memory, what does each
+candidate learner author, and what does the supervisor do with it?** No
+held-out pass, no agent call, no score — K governed learn passes per model
+over copies of the same memory a run left behind.
+
+The column it exists for is whether an approved rule is **additive** — does
+it name a ledger field to capture, or only say how to write one the agent
+already produced. That is the distinction EXPENSE.md's second defect turns
+on: where an agent never fills a field at all, the rule it needs is
+additive, and a formatting rule cannot supply it however cleanly it passes
+every gate.
+
+Stated before running it: this changes nothing about the run above, whose
+numbers stand as published. If it shows one learner authoring additive
+rules where another does not, that is a claim about **proposers on this
+corpus** and would need its own A/B/A/B run to become a claim about
+learning.
+
 ## Result
 
 *Running. Nothing published yet.*
