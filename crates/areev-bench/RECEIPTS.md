@@ -631,6 +631,40 @@ learner is `qwen3-30b` rather than `gpt-oss-120b`. Both were needed to get
 additive rules at all. Which one carries the effect is not answered here
 and is not claimed.
 
+#### What the gain is, and what it is not
+
+All 286 exact wins fall on fields arm A left **completely blank**. On
+Invoice Date — the one field the day-one agent already captured, on 180 of
+180 receipts in both arms — the rules won **nothing**:
+
+| field | coverage, A → B (of 180) | exact wins | semantic wins |
+|---|:---:|:---:|:---:|
+| Amount | 0 → 180 | 157 | 176 |
+| Vendor Name | 0 → 180 | 121 | 169 |
+| Vendor Address | 0 → 60 | 8 | 49 |
+| **Invoice Date** | **180 → 180** | **0** | **0** |
+
+So the precise claim this run supports is: **the loop taught the agent
+*which* fields to capture, and having been told, the agent read them right
+394 times and filed them in the ledger's exact form on 286 of those.** The
+gap between those two numbers is the filing conventions — a value read
+correctly but written in a form the ledger rejects — and closing most of it
+is real learning, because the conventions were never in the agent's prompt
+either.
+
+**The claim it does not support** is that governed memory made the agent
+better at something it was already doing. On the field it already did, the
+rules changed nothing. A reader should discount any reading of "12.9% to
+51.2%" that implies otherwise, and anyone citing this should quote the
+table rather than the headline.
+
+That is also the honest answer to the obvious objection — *of course an
+agent told to capture the vendor starts capturing the vendor*. It is
+correct, and it is why the information path matters more than the effect
+size here: the agent was never told. The requirement existed only in an
+accountant's corrections, and the only route from there to the prompt ran
+through the loop authoring a rule and a reviewer approving it.
+
 #### The curves: learned early, and they stay
 
 Same held-out receipts against memory as it stood through each run:
