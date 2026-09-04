@@ -1,0 +1,45 @@
+{
+ "total_usd": 0.14084,
+ "calls": 1587,
+ "by": [
+  {
+   "script": "openrouter_loop.py",
+   "model": "openai/gpt-4o-mini",
+   "calls": 51,
+   "prompt_tokens": 73460,
+   "completion_tokens": 6275,
+   "usd": 0.01478,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_loop.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 132,
+   "prompt_tokens": 194967,
+   "completion_tokens": 42811,
+   "usd": 0.01762,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "openai/gpt-4o",
+   "calls": 33,
+   "prompt_tokens": 13374,
+   "completion_tokens": 762,
+   "usd": 0.04106,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 1371,
+   "prompt_tokens": 937181,
+   "completion_tokens": 116061,
+   "usd": 0.06738,
+   "shadow_usd": null
+  }
+ ],
+ "unpriced": [],
+ "documents": null,
+ "per_document_usd": null
+}

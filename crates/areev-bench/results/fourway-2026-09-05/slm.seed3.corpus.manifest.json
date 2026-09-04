@@ -1,0 +1,10 @@
+{
+ "learned_db": "/Users/sathish/mg/local/areev-runs/receipts-run2/seed3/ledger.db",
+ "seed": 3,
+ "experience": 40,
+ "eval": 60,
+ "train": 35,
+ "valid": 4,
+ "rules_in_system_prompt": 3,
+ "held_out_excluded": 60
+}

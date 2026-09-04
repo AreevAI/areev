@@ -1,0 +1,18 @@
+{
+ "total_usd": 0.19304,
+ "calls": 1200,
+ "by": [
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 1200,
+   "prompt_tokens": 3877998,
+   "completion_tokens": 35715,
+   "usd": 0.19304,
+   "shadow_usd": null
+  }
+ ],
+ "unpriced": [],
+ "documents": null,
+ "per_document_usd": null
+}

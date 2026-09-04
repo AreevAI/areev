@@ -1,0 +1,407 @@
+{
+ "arms": {
+  "areev": {
+   "pooled": {
+    "0": 97,
+    "10": 390,
+    "20": 376,
+    "30": 393,
+    "40": 382
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "mem0/default": {
+   "pooled": {
+    "0": 97,
+    "10": 97,
+    "20": 97,
+    "30": 103,
+    "40": 107
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "mem0/domain": {
+   "pooled": {
+    "0": 97,
+    "10": 96,
+    "20": 95,
+    "30": 110,
+    "40": 136
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "mem0/raw": {
+   "pooled": {
+    "0": 97,
+    "10": 137,
+    "20": 129,
+    "30": 117,
+    "40": 125
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "none": {
+   "pooled": {
+    "0": 97,
+    "40": 97
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "slm/base": {
+   "pooled": {
+    "40": 172
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  },
+  "slm/tuned": {
+   "pooled": {
+    "40": 571
+   },
+   "seeds": 3,
+   "trials_per_seed": 240
+  }
+ },
+ "cost": {
+  "areev": {
+   "inference_calls": 1371,
+   "inference_usd": 0.06738446099999991,
+   "inference_usd_per_call": 4.9149862144420064e-05,
+   "learned_documents": 120,
+   "memory_calls": 216,
+   "memory_usd": 0.07345993899999999,
+   "shadow_usd_per_call": null,
+   "source": "/Users/sathish/mg/local/areev-runs/areev-metered"
+  },
+  "mem0/default": {
+   "inference_calls": 1200,
+   "inference_usd": 0.11306637600000002,
+   "inference_usd_per_call": 9.422198000000002e-05,
+   "learned_documents": 120,
+   "memory_calls": 118,
+   "memory_usd": 0.06781058299999997,
+   "shadow_usd_per_call": null
+  },
+  "mem0/domain": {
+   "inference_calls": 1196,
+   "inference_usd": 0.07678379799999983,
+   "inference_usd_per_call": 6.420049999999986e-05,
+   "learned_documents": 120,
+   "memory_calls": 118,
+   "memory_usd": 0.073486333,
+   "shadow_usd_per_call": null
+  },
+  "mem0/raw": {
+   "inference_calls": 1200,
+   "inference_usd": 0.19303689899999996,
+   "inference_usd_per_call": 0.00016086408249999995,
+   "learned_documents": 120,
+   "memory_calls": 0,
+   "memory_usd": 0,
+   "shadow_usd_per_call": null
+  },
+  "slm/base": {
+   "inference_calls": 360,
+   "inference_usd": 0.0,
+   "inference_usd_per_call": 0.0,
+   "latency_ms_median": 1165,
+   "memory_calls": 0,
+   "memory_usd": 0,
+   "shadow_usd_per_call": 2.0008111111111115e-05
+  },
+  "slm/tuned": {
+   "inference_calls": 360,
+   "inference_usd": 0.0,
+   "inference_usd_per_call": 0.0,
+   "latency_ms_median": 2093,
+   "memory_calls": 0,
+   "memory_usd": 0,
+   "shadow_usd_per_call": 2.2262333333333342e-05,
+   "train_seconds_per_seed": [
+    507,
+    725,
+    557
+   ]
+  }
+ },
+ "paired_at_end": {
+  "areev_vs_mem0/default": {
+   "losses": 13,
+   "n": 720,
+   "p": 0.0,
+   "wins": 288
+  },
+  "areev_vs_mem0/domain": {
+   "losses": 40,
+   "n": 720,
+   "p": 0.0,
+   "wins": 286
+  },
+  "areev_vs_mem0/raw": {
+   "losses": 29,
+   "n": 720,
+   "p": 0.0,
+   "wins": 286
+  },
+  "areev_vs_none": {
+   "losses": 1,
+   "n": 720,
+   "p": 0.0,
+   "wins": 286
+  },
+  "areev_vs_slm/base": {
+   "losses": 16,
+   "n": 720,
+   "p": 0.0,
+   "wins": 226
+  },
+  "areev_vs_slm/tuned": {
+   "losses": 234,
+   "n": 720,
+   "p": 0.0,
+   "wins": 45
+  }
+ },
+ "pooled_over_seeds": {
+  "areev": [
+   1,
+   2,
+   3
+  ],
+  "mem0/default": [
+   1,
+   2,
+   3
+  ],
+  "mem0/domain": [
+   1,
+   2,
+   3
+  ],
+  "mem0/raw": [
+   1,
+   2,
+   3
+  ],
+  "none": [
+   1,
+   2,
+   3
+  ],
+  "slm/base": [
+   1,
+   2,
+   3
+  ],
+  "slm/tuned": [
+   1,
+   2,
+   3
+  ]
+ },
+ "seeds": {
+  "1": {
+   "areev": {
+    "0": 31,
+    "10": 124,
+    "20": 124,
+    "30": 125,
+    "40": 123
+   },
+   "mem0/default": {
+    "0": 31,
+    "10": 33,
+    "20": 31,
+    "30": 31,
+    "40": 31
+   },
+   "mem0/domain": {
+    "0": 31,
+    "10": 31,
+    "20": 30,
+    "30": 31,
+    "40": 57
+   },
+   "mem0/raw": {
+    "0": 31,
+    "10": 47,
+    "20": 41,
+    "30": 39,
+    "40": 41
+   },
+   "mem0_armA_default": 31,
+   "mem0_armA_domain": 31,
+   "mem0_armA_raw": 31,
+   "none": {
+    "0": 31,
+    "40": 31
+   },
+   "slm/base": {
+    "40": 76
+   },
+   "slm/tuned": {
+    "40": 197
+   },
+   "slm_training": {
+    "adapter_path": "/Users/sathish/mg/local/areev-runs/slm/seed1/adapter",
+    "base_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "corpus": {
+     "eval": 60,
+     "experience": 40,
+     "held_out_excluded": 60,
+     "learned_db": "/Users/sathish/mg/local/areev-runs/receipts-run2/seed1/ledger.db",
+     "rules_in_system_prompt": 1,
+     "seed": 1,
+     "train": 34,
+     "valid": 4
+    },
+    "fine_tune": {
+     "batch_size": 2,
+     "lr": 0.0001,
+     "mask_prompt": true,
+     "num_layers": 8,
+     "type": "lora"
+    },
+    "iters": 200,
+    "train_seconds": 507
+   }
+  },
+  "2": {
+   "areev": {
+    "0": 36,
+    "10": 141,
+    "20": 132,
+    "30": 150,
+    "40": 141
+   },
+   "mem0/default": {
+    "0": 36,
+    "10": 36,
+    "20": 37,
+    "30": 44,
+    "40": 47
+   },
+   "mem0/domain": {
+    "0": 36,
+    "10": 36,
+    "20": 35,
+    "30": 49,
+    "40": 49
+   },
+   "mem0/raw": {
+    "0": 36,
+    "10": 53,
+    "20": 50,
+    "30": 45,
+    "40": 44
+   },
+   "mem0_armA_default": 36,
+   "mem0_armA_domain": 36,
+   "mem0_armA_raw": 36,
+   "none": {
+    "0": 36,
+    "40": 36
+   },
+   "slm/base": {
+    "40": 71
+   },
+   "slm/tuned": {
+    "40": 185
+   },
+   "slm_training": {
+    "adapter_path": "/Users/sathish/mg/local/areev-runs/slm/seed2/adapter",
+    "base_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "corpus": {
+     "eval": 60,
+     "experience": 40,
+     "held_out_excluded": 60,
+     "learned_db": "/Users/sathish/mg/local/areev-runs/receipts-run2/seed2/ledger.db",
+     "rules_in_system_prompt": 7,
+     "seed": 2,
+     "train": 30,
+     "valid": 4
+    },
+    "fine_tune": {
+     "batch_size": 2,
+     "lr": 0.0001,
+     "mask_prompt": true,
+     "num_layers": 8,
+     "type": "lora"
+    },
+    "iters": 200,
+    "train_seconds": 725
+   }
+  },
+  "3": {
+   "areev": {
+    "0": 30,
+    "10": 125,
+    "20": 120,
+    "30": 118,
+    "40": 118
+   },
+   "mem0/default": {
+    "0": 30,
+    "10": 28,
+    "20": 29,
+    "30": 28,
+    "40": 29
+   },
+   "mem0/domain": {
+    "0": 30,
+    "10": 29,
+    "20": 30,
+    "30": 30,
+    "40": 30
+   },
+   "mem0/raw": {
+    "0": 30,
+    "10": 37,
+    "20": 38,
+    "30": 33,
+    "40": 40
+   },
+   "mem0_armA_default": 30,
+   "mem0_armA_domain": 28,
+   "mem0_armA_raw": 30,
+   "none": {
+    "0": 30,
+    "40": 30
+   },
+   "slm/base": {
+    "40": 25
+   },
+   "slm/tuned": {
+    "40": 189
+   },
+   "slm_training": {
+    "adapter_path": "/Users/sathish/mg/local/areev-runs/slm/seed3/adapter",
+    "base_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "corpus": {
+     "eval": 60,
+     "experience": 40,
+     "held_out_excluded": 60,
+     "learned_db": "/Users/sathish/mg/local/areev-runs/receipts-run2/seed3/ledger.db",
+     "rules_in_system_prompt": 3,
+     "seed": 3,
+     "train": 35,
+     "valid": 4
+    },
+    "fine_tune": {
+     "batch_size": 2,
+     "lr": 0.0001,
+     "mask_prompt": true,
+     "num_layers": 8,
+     "type": "lora"
+    },
+    "iters": 200,
+    "train_seconds": 557
+   }
+  }
+ }
+}

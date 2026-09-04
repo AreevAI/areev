@@ -705,6 +705,29 @@ reported `held`, correctly: 133 still beats the deployed baseline of 35.
 engine gaps this run argues for are semantic near-duplicate suppression and
 a high-water mark to measure against.
 
+### Four ways to remember — no memory, mem0, the governed loop, a tuned small model
+
+Full write-up: [`FOURWAY.md`](FOURWAY.md). The receipts protocol, three
+seeds, with three more arms beside the governed one: real `mem0ai` in three
+configurations, and a 1.5B model trained once on the governed memory.
+Exact of 720, paired against the governed arm:
+
+| arm | exact | paired |
+|---|:---:|---|
+| no memory | 97 | governed 286 wins, 1 loss |
+| mem0 (as installed / raw / domain hint) | 107 / 125 / 136 | governed 288/13, 286/29, 286/40 |
+| **Areev — governed** | **382** | — |
+| **Areev — tuned 1.5B** | **571** | tuned over governed, **234 wins, 45 losses** |
+
+Plain memory never got the agent to attempt a second field; the loop's rule
+did at the first checkpoint. Governance cost the same to learn from a
+document as mem0's extractor ($0.61 against $0.57 per thousand) and bought
+ten times the gain. The small model, tuned in ten minutes on the loop's
+corpus, beat the 30B model it was distilled from on every seed, at zero
+marginal cost. And a 3×5 prompt-structure grid on the same rules found
+format inert and position decisive: rules placed before the day-one
+instruction lose up to 298 of 720 trials.
+
 ### A ledger that changes its mind — the drift run
 
 Full design and result: [`DRIFT.md`](DRIFT.md). The same receipts against a
