@@ -519,6 +519,53 @@ publishes with the caveat above about which of the two changes earned it.
 If any seed regresses the way run 1's seed 3 did, the per-rule verdicts and
 the reverts are published with it.
 
+### Run 2 result — seed 1 (seeds 2 and 3 running)
+
+**The agent learned, and the gain is large, clean and causally attributed.**
+Same 60 held-out receipts, same agent, same seed, same evalset hash
+(`e75276a1a5002547`) as run 1's seed 1 — so this is directly comparable to
+the 31 → 33 null above.
+
+| arm | exact (of 240 trials) |
+|---|:---:|
+| A — every rule rolled back through the API | 31 |
+| B — rules applied | **123** |
+| B2 — the same state again | 123 |
+
+Paired over the same trials: **B vs A is 92 wins and 0 losses, p < 0.0001**,
+against a B-vs-B2 noise floor of 2 discordant trials. Not one trial got
+worse. Arm A reproduces run 1's arm A exactly at 31, which is what makes
+the comparison a comparison: the baseline did not move, the rules did.
+
+Coverage says what the agent actually started doing:
+
+| field | A (0 rules) | B |
+|---|:---:|:---:|
+| Invoice Date (day one) | 60/60 | 60/60 |
+| Vendor Name | **0/60** | **60/60** |
+| Amount | **0/60** | **60/60** |
+| Vendor Address | 0/60 | 0/60 |
+
+Run 1 never captured the Amount field on a single receipt in any seed. Run
+2 captures it on every one. The rule that did it, authored by the model and
+approved by the reviewer on the same fixed rubric:
+
+> **"Extract and record the vendor name and amount on every receipt, not
+> just the date."**
+
+That is the additive shape run 1 could not produce in 19 learn passes
+across three seeds, and it is worth being exact about what it demonstrates:
+a language model read a person's corrections, wrote the rule those
+corrections implied, a reviewer approved it, and applying it moved a real
+agent on real documents from 12.9% to 51.2% exact — with the rollback arm
+proving the rules are the lever.
+
+**What earned it is not isolated.** Two things changed from run 1, as
+pre-registered above: the observer is now named in the evidence, and the
+learner is `qwen3-30b` rather than `gpt-oss-120b`. Both were needed to get
+additive rules at all. Which one carries the effect is not answered here
+and is not claimed.
+
 ### Not affected by the τ² bridge bug
 
 The sibling [`tau2/`](tau2/README.md) harness had a tool-call parsing
