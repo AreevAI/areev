@@ -243,12 +243,16 @@ cautionary half.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/receipts-selfimprove-dark.svg">
   <img src="../../docs/assets/receipts-selfimprove-light.svg" width="880"
-       alt="Left: six learning curves over the same held-out SROIE receipts, scored after 0, 10, 20, 30 and 40 experience receipts. All six start together near 31 of 240. Run 2's three seeds rise at the first checkpoint to 124, 141 and 125 and hold. Run 1's stay flat, or swing to 86 and fall to 33, or drop to 0 and stay there. Right: pooled arms — run 1 A 97 of 720 and B 70; run 2 A 97 and B 382. Arm A is identical across both runs.">
+       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all three, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C and 382 for run 2.">
 </picture>
 
-Regenerate with `python3 crates/areev-bench/scripts/receipts_chart.py
-docs/assets/receipts-selfimprove <run1 dir> <run2 dir>` — every number comes
-from each run's `RESULTS.json`, so the picture cannot drift from the tables.
+Three cells: run 1, the ablation's cell C, and run 2. The three arm-A bars
+are drawn with a rule across them because they are the same height —
+97/720 in every cell, three runs hours apart. Regenerate with
+`python3 crates/areev-bench/scripts/receipts_chart.py
+docs/assets/receipts-selfimprove "run 1=<dir>" "cell C=<dir>" "run 2=<dir>"`;
+every number comes from each cell's `RESULTS.json`, so the picture cannot
+drift from the tables.
 
 ### Run 1
 

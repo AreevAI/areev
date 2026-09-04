@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Render the receipts result as one figure (light + dark SVG).
 
-    receipts_chart.py OUT_STEM RUN1_DIR RUN2_DIR
+    receipts_chart.py OUT_STEM LABEL=DIR [LABEL=DIR …]
 
     receipts_chart.py docs/assets/receipts-selfimprove \
-      crates/areev-bench/results/receipts-sroie-2026-09-04 \
-      crates/areev-bench/results/receipts-sroie-run2-2026-09-04
+      "run 1=crates/areev-bench/results/receipts-sroie-2026-09-04" \
+      "run 2=crates/areev-bench/results/receipts-sroie-run2-2026-09-04"
 
-Writes OUT_STEM-light.svg and OUT_STEM-dark.svg.
+Writes OUT_STEM-light.svg and OUT_STEM-dark.svg. Two or more cells; the
+order given is the order drawn, and the label is what appears on the chart.
 
 Two panels, because the finding needs both halves and neither carries it
 alone.
@@ -19,11 +20,12 @@ first checkpoint and hold; three stay flat, swing and fall back, or go to
 zero. Colour encodes the run, so the separation is the argument and no
 annotation is needed to see it.
 
-**Right — the causal pair, pooled.** Rules rolled back against rules
-applied, for each run. The left bar of each pair is the same height,
-because arm A is 97/720 in both runs: same agent, same receipts, same
-seeds, same rollback path. That equality is what makes the right-hand bars
-comparable at all, so it is drawn rather than asserted.
+**Right — the causal pair, pooled, per cell.** Rules rolled back against
+rules applied. The left bar of every pair is the same height, because arm A
+is 97/720 in each: same agent, same receipts, same seeds, same rollback
+path, runs hours apart. That equality is the drift check that makes the
+right-hand bars comparable at all, so it is drawn as a rule across them
+rather than asserted in prose.
 
 **The visible SVG is the chart and nothing else** — no headline, no stats
 table. The narrative lives once as real text in RECEIPTS.md. The full
@@ -53,24 +55,34 @@ TRIALS = 720          # pooled trials per arm
 PER_SEED_TRIALS = 240
 XS = [0, 10, 20, 30, 40]
 
+# One hue per cell, in the order given. The first is the cautionary cell and
+# reads as receded without being faint; the last is the result and gets the
+# saturated one; anything between them is the ablation, in a neutral third.
 THEMES = {
     "light": {
         "fg": "#1b1b1f", "muted": "#5f6470", "grid": "#e4e6ec", "axis": "#b9bec9",
-        "bg": "none",
-        # One hue per run. Run 2 is the result, so it gets the saturated one;
-        # run 1 is the cautionary half and reads as receded without being faint.
-        "run2": "#1f6f4f", "run2_soft": "#8fc4ad",
-        "run1": "#a4442f", "run1_soft": "#dda997",
+        "series": ["#a4442f", "#8a6d1f", "#2f5f9e", "#1f6f4f"],
         "off": "#9aa0ac",
     },
     "dark": {
         "fg": "#e9eaee", "muted": "#9aa1ad", "grid": "#2c3038", "axis": "#464c57",
-        "bg": "none",
-        "run2": "#5fcd9b", "run2_soft": "#2f7a5c",
-        "run1": "#e88a70", "run1_soft": "#8c4633",
+        "series": ["#e88a70", "#d3b04a", "#7aa8e0", "#5fcd9b"],
         "off": "#767d8a",
     },
 }
+
+
+def series_colour(t, i, n):
+    """First cell gets the first hue, last cell the last; the middle spreads
+    across what is left, so a 2-cell figure keeps the original red/green."""
+    pal = t["series"]
+    if n == 1:
+        return pal[-1]
+    if i == 0:
+        return pal[0]
+    if i == n - 1:
+        return pal[-1]
+    return pal[1 + ((i - 1) % (len(pal) - 2))]
 
 
 def esc(s):
@@ -95,10 +107,12 @@ def curves(res):
     return out
 
 
-def svg(theme, r1, r2):
+def svg(theme, cells):
+    """`cells` is [(label, RESULTS.json dict), …] in draw order."""
     t = THEMES[theme]
-    c1, c2 = curves(r1), curves(r2)
-    ymax = 160  # a shelf above the tallest point (150), in units of 240 trials
+    n = len(cells)
+    series = [(label, curves(res), series_colour(t, i, n)) for i, (label, res) in enumerate(cells)]
+    ymax = 160  # a shelf above the tallest point, in units of 240 trials
     px = lambda v: PAD_L + CURVE_W * (v / 40.0)
     py = lambda v: PAD_T + PLOT_H - PLOT_H * (v / ymax)
 
@@ -106,10 +120,22 @@ def svg(theme, r1, r2):
     a = o.append
     a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
       f'height="{H}" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">')
-    a(f'<title>{esc("Governed self-improvement on public receipts: run 2 reaches 382 of 720 exact against a rolled-back baseline of 97, 286 paired wins to 1 loss; run 1, one engine defect earlier, reaches 70 of 720 and loses 30 to 3.")}</title>')
-    a(f'<desc>{esc("Left panel: six learning curves over the same 60 held-out ICDAR-SROIE receipts, scored after 0, 10, 20, 30 and 40 experience receipts. All six start together near 31 of 240. Run 2 seeds 1, 2 and 3 rise at the first checkpoint to 124, 141 and 125 and hold, ending at 123, 141 and 118. Run 1 seeds stay flat at 31 and 36, or swing to 86 and fall to 33, or drop to 0 and stay there. Right panel: pooled arms. Run 1 arm A 97 of 720 and arm B 70; run 2 arm A 97 of 720 and arm B 382. Arm A is identical across both runs because the agent, receipts, seeds and rollback path are identical, so the difference between the B bars is what the loop learned and a reviewer approved.")}</desc>')
+    headline = "; ".join(
+        "%s reaches %d of %d exact against a rolled-back baseline of %d"
+        % (label, res["pooled"]["passed"]["B"]["exact"], TRIALS,
+           res["pooled"]["passed"]["A"]["exact"])
+        for label, res in cells)
+    a(f'<title>{esc("Governed self-improvement on public receipts: " + headline + ".")}</title>')
+    detail = " ".join(
+        "%s: seeds end at %s of 240, arm A pooled %d of %d and arm B %d, paired %d wins to %d losses."
+        % (label,
+           ", ".join(str(s["passed_B"]["exact"]) for s in res["seeds"]),
+           res["pooled"]["passed"]["A"]["exact"], TRIALS,
+           res["pooled"]["passed"]["B"]["exact"],
+           res["pooled"]["exact_B_vs_A"]["wins"], res["pooled"]["exact_B_vs_A"]["losses"])
+        for label, res in cells)
+    a(f'<desc>{esc("Left panel: learning curves over the same held-out receipts, scored after 0, 10, 20, 30 and 40 experience receipts; every curve starts on the same shelf near 31 of 240. " + detail + " Right panel: pooled arms per cell. Arm A is the same height in every cell because the agent, receipts, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved.")}</desc>')
 
-    # ── left panel: curves ────────────────────────────────────────────────
     for frac in range(0, 5):
         v = ymax * frac / 4.0
         y = py(v)
@@ -117,9 +143,9 @@ def svg(theme, r1, r2):
           f'stroke="{t["grid"]}" stroke-width="1"/>')
         a(f'<text x="{PAD_L-9}" y="{y+4:.1f}" text-anchor="end" font-size="11" '
           f'fill="{t["muted"]}">{int(v)}</text>')
-    # Both panels count exact matches, but over different denominators — one
-    # seed's held-out set on the left, all three pooled on the right. Saying
-    # so on each axis is cheaper than a reader mis-reading 141 against 382.
+    # Both panels count exact matches over different denominators — one seed's
+    # held-out set on the left, all three pooled on the right. Saying so is
+    # cheaper than a reader mis-reading 141 against 382.
     a(f'<text x="{PAD_L-32}" y="{PAD_T-13}" font-size="11" '
       f'fill="{t["muted"]}">exact, of 240 per seed</text>')
     for x in XS:
@@ -128,76 +154,87 @@ def svg(theme, r1, r2):
     a(f'<text x="{PAD_L+CURVE_W/2:.0f}" y="{PAD_T+PLOT_H+38}" text-anchor="middle" '
       f'font-size="11.5" fill="{t["muted"]}">experience receipts seen</text>')
 
-    for label, series, colour, soft in (("run 1", c1, t["run1"], t["run1_soft"]),
-                                        ("run 2", c2, t["run2"], t["run2_soft"])):
-        for i, (_seed, pts) in enumerate(series):
+    for _label, cs, colour in series:
+        for i, (_seed, pts) in enumerate(cs):
             d = " ".join(("M" if k == 0 else "L") + f"{px(x):.1f},{py(v):.1f}"
                          for k, (x, v) in enumerate(zip(XS, pts)) if v is not None)
-            a(f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="2.4" '
+            if not d:
+                continue
+            a(f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="2.2" '
               f'stroke-linejoin="round" stroke-linecap="round" opacity="{0.95 - 0.13*i:.2f}"/>')
             for x, v in zip(XS, pts):
                 if v is not None:
-                    a(f'<circle cx="{px(x):.1f}" cy="{py(v):.1f}" r="3" fill="{colour}" '
+                    a(f'<circle cx="{px(x):.1f}" cy="{py(v):.1f}" r="2.8" fill="{colour}" '
                       f'opacity="{0.95 - 0.13*i:.2f}"/>')
 
-    # Curve labels sit at the right end of the topmost curve of each run.
-    for label, series, colour in (("run 2", c2, t["run2"]), ("run 1", c1, t["run1"])):
-        top = max(series, key=lambda s: s[1][-1] or 0)
-        a(f'<text x="{px(40)+9:.1f}" y="{py(top[1][-1])+4:.1f}" font-size="12.5" '
-          f'font-weight="600" fill="{colour}">{label}</text>')
+    # One label per cell, at the right end of its topmost curve, nudged apart
+    # so two cells that finish close together stay readable.
+    ends = sorted(((max(v for _s, p in cs for v in [p[-1]] if v is not None), lab, col)
+                   for lab, cs, col in series), reverse=True)
+    last_y = None
+    for top, lab, colour in ends:
+        y = py(top) + 4
+        if last_y is not None and abs(y - last_y) < 15:
+            y = last_y + 15
+        last_y = y
+        a(f'<text x="{px(40)+9:.1f}" y="{y:.1f}" font-size="12" font-weight="600" '
+          f'fill="{colour}">{esc(lab)}</text>')
 
-    # ── right panel: pooled arms ──────────────────────────────────────────
     bx0 = PAD_L + CURVE_W + PANEL_GAP
     bmax = 480
     bh = lambda v: PLOT_H * (v / bmax)
-    slot = BAR_W / 4.6
-    bars = [
-        ("run 1", "A", r1["pooled"]["passed"]["A"]["exact"], t["off"]),
-        ("run 1", "B", r1["pooled"]["passed"]["B"]["exact"], t["run1"]),
-        ("run 2", "A", r2["pooled"]["passed"]["A"]["exact"], t["off"]),
-        ("run 2", "B", r2["pooled"]["passed"]["B"]["exact"], t["run2"]),
-    ]
-    for i, (run, arm, v, colour) in enumerate(bars):
-        gap = 0.55 if i == 2 else 0
-        x = bx0 + (i + gap) * slot
-        h = bh(v)
-        y = PAD_T + PLOT_H - h
-        a(f'<rect x="{x:.1f}" y="{y:.1f}" width="{slot*0.78:.1f}" height="{h:.1f}" '
-          f'rx="2.5" fill="{colour}"/>')
-        a(f'<text x="{x+slot*0.39:.1f}" y="{y-7:.1f}" text-anchor="middle" font-size="12.5" '
-          f'font-weight="600" fill="{t["fg"]}">{v}</text>')
-        a(f'<text x="{x+slot*0.39:.1f}" y="{PAD_T+PLOT_H+19}" text-anchor="middle" '
-          f'font-size="11" fill="{t["muted"]}">{arm}</text>')
-    for i, run in ((0, "run 1"), (2, "run 2")):
-        gap = 0.55 if i == 2 else 0
-        cx = bx0 + (i + gap + 0.9) * slot
-        a(f'<text x="{cx:.1f}" y="{PAD_T+PLOT_H+38}" text-anchor="middle" font-size="11.5" '
-          f'fill="{t["muted"]}">{run}</text>')
+    # Each cell is an A/B pair plus a gap; slots are sized so any number fits.
+    slot = BAR_W / (n * 2.6)
     a(f'<text x="{bx0}" y="{PAD_T-13}" font-size="11" fill="{t["muted"]}">'
       f'exact, of {TRIALS} pooled trials</text>')
-    # The equality that makes the pair readable, drawn as a rule across both A bars.
-    ay = PAD_T + PLOT_H - bh(bars[0][2])
-    a(f'<line x1="{bx0-4:.1f}" y1="{ay:.1f}" x2="{bx0+3.75*slot:.1f}" y2="{ay:.1f}" '
-      f'stroke="{t["axis"]}" stroke-width="1" stroke-dasharray="3 3"/>')
+    a_height = None
+    for ci, (label, res) in enumerate(cells):
+        base = bx0 + ci * slot * 2.6
+        for bi, (arm, colour) in enumerate((("A", t["off"]),
+                                            ("B", series_colour(t, ci, n)))):
+            v = res["pooled"]["passed"][arm]["exact"]
+            if arm == "A":
+                a_height = PAD_T + PLOT_H - bh(v)
+            x = base + bi * slot
+            h = bh(v)
+            y = PAD_T + PLOT_H - h
+            a(f'<rect x="{x:.1f}" y="{y:.1f}" width="{slot*0.8:.1f}" height="{h:.1f}" '
+              f'rx="2.5" fill="{colour}"/>')
+            a(f'<text x="{x+slot*0.4:.1f}" y="{y-7:.1f}" text-anchor="middle" font-size="11.5" '
+              f'font-weight="600" fill="{t["fg"]}">{v}</text>')
+            a(f'<text x="{x+slot*0.4:.1f}" y="{PAD_T+PLOT_H+19}" text-anchor="middle" '
+              f'font-size="10.5" fill="{t["muted"]}">{arm}</text>')
+        a(f'<text x="{base+slot:.1f}" y="{PAD_T+PLOT_H+38}" text-anchor="middle" '
+          f'font-size="11" fill="{t["muted"]}">{esc(label)}</text>')
+    if a_height is not None:
+        a(f'<line x1="{bx0-4:.1f}" y1="{a_height:.1f}" '
+          f'x2="{bx0+(n-1)*slot*2.6+slot*1.8:.1f}" y2="{a_height:.1f}" '
+          f'stroke="{t["axis"]}" stroke-width="1" stroke-dasharray="3 3"/>')
 
     a(f'<line x1="{PAD_L}" y1="{PAD_T+PLOT_H}" x2="{PAD_L+CURVE_W}" y2="{PAD_T+PLOT_H}" '
       f'stroke="{t["axis"]}" stroke-width="1"/>')
-    a(f'<line x1="{bx0-4:.1f}" y1="{PAD_T+PLOT_H}" x2="{bx0+3.9*slot:.1f}" '
-      f'y2="{PAD_T+PLOT_H}" stroke="{t["axis"]}" stroke-width="1"/>')
+    a(f'<line x1="{bx0-4:.1f}" y1="{PAD_T+PLOT_H}" '
+      f'x2="{bx0+(n-1)*slot*2.6+slot*1.9:.1f}" y2="{PAD_T+PLOT_H}" '
+      f'stroke="{t["axis"]}" stroke-width="1"/>')
     a("</svg>")
     return "\n".join(o)
 
 
 def main():
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: receipts_chart.py OUT_STEM RUN1_DIR RUN2_DIR")
-    stem, d1, d2 = sys.argv[1], sys.argv[2], sys.argv[3]
-    r1, r2 = load(d1), load(d2)
+    if len(sys.argv) < 4:
+        raise SystemExit("usage: receipts_chart.py OUT_STEM LABEL=DIR [LABEL=DIR …]")
+    stem = sys.argv[1]
+    cells = []
+    for spec in sys.argv[2:]:
+        if "=" not in spec:
+            raise SystemExit("each cell is LABEL=DIR, got %r" % spec)
+        label, d = spec.split("=", 1)
+        cells.append((label, load(d)))
     os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
     for theme in ("light", "dark"):
         path = f"{stem}-{theme}.svg"
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(svg(theme, r1, r2))
+            fh.write(svg(theme, cells))
         print("wrote", path)
 
 
