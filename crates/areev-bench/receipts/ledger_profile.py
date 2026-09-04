@@ -43,7 +43,7 @@ PROFILES = {
         # Stated once as a rule, the way a person does, not as a per-invoice
         # nag — and stated with the filed value as the example.
         "format_hint": {
-            "Invoice Date": "write dates as DD/MM/YYYY, like {example}",
+            "Invoice Date": "write dates as {date_name}, like {example}",
             "Amount": "write the amount as a plain number with two decimals and "
                       "no currency sign, like {example}",
             "Vendor Name": "copy the vendor's name exactly as printed on the "
@@ -86,12 +86,39 @@ PROFILES = {
                           "invoice, like {example}",
             "Contract Number": "copy the contract number exactly as printed, "
                                "like {example}",
-            "Flight From": "write dates as YYYY-MM-DD, like {example}",
-            "Flight To": "write dates as YYYY-MM-DD, like {example}",
+            "Flight From": "write dates as {date_name}, like {example}",
+            "Flight To": "write dates as {date_name}, like {example}",
         },
         "document_noun": "invoice",
     },
 }
+
+# The same real receipts, deployed against a business that does not hold
+# still. Everything here is SROIE's ledger except the timeline: one new
+# REQUIREMENT arrives mid-deployment, and one CONVENTION is replaced. The
+# second is the hard half. When the group files ISO from document 81, every
+# date rule the agent learned in its first eighty receipts is wrong, and
+# getting better means retracting them — which is a thing you can only do if
+# you measured whether they still help.
+PROFILES["sroie_drift"] = dict(
+    PROFILES["sroie"],
+    arc=[
+        (1, ["Invoice Date"], None),
+        (2, ["Invoice Date", "Vendor Name", "Amount"],
+         "Thanks — I also need the vendor and the amount on every one of "
+         "these, otherwise I can't file it."),
+        (41, ["Invoice Date", "Vendor Name", "Amount", "Vendor Address"],
+         "One more thing from now on: put the vendor's address on as well, "
+         "the tax file needs it."),
+    ],
+    regimes=[
+        (0, {"date_strftime": "%d/%m/%Y", "date_name": "DD/MM/YYYY"}),
+        (81, {"date_strftime": "%Y-%m-%d", "date_name": "YYYY-MM-DD",
+              "announce": "Change from today: the group that bought us files "
+                          "everything ISO, so write every date as YYYY-MM-DD "
+                          "from now on, not day-first."}),
+    ],
+)
 
 
 def get(name):
@@ -99,6 +126,65 @@ def get(name):
         return PROFILES[name]
     except KeyError:
         raise SystemExit("unknown profile %r (known: %s)" % (name, ", ".join(PROFILES)))
+
+
+def as_of(profile, seq):
+    """The profile as it stands at document `seq`.
+
+    A business does not hold still. `arc` already lets a REQUIREMENT arrive
+    partway through a deployment; `regimes` lets a CONVENTION change — the
+    harder case, because every rule the agent already learned about that
+    convention is now wrong, and improving means retracting them rather than
+    adding to them. A profile without `regimes` is unaffected, so every
+    existing run is byte-identical under this."""
+    reg = profile.get("regimes")
+    if not reg:
+        return profile
+    merged = dict(profile)
+    for after, changes in reg:
+        if seq >= after:
+            merged.update({k: v for k, v in changes.items() if k != "announce"})
+    return merged
+
+
+def regime_change_message(profile, seq):
+    """What the accountant says on the document a convention changes, if any.
+
+    Announced once, as a person would, and never repeated — the agent has to
+    carry it into memory rather than being re-told on every document."""
+    for after, changes in profile.get("regimes", []):
+        if seq == after and changes.get("announce"):
+            return changes["announce"]
+    return None
+
+
+def refile(profile_at, field, value):
+    """Re-file a canonical ledger value under the conventions in force now.
+
+    The dataset stores one filed value per field, built once. When a regime
+    changes how a field is written, the ground truth has to move with it, and
+    it moves deterministically: parse what the builder stored, re-emit it in
+    the current format. Only date fields are re-filed today; a value that
+    cannot be parsed is left exactly as the builder wrote it rather than
+    guessed at."""
+    if field not in profile_at.get("date_fields", ()):
+        return value
+    fmt = profile_at.get("date_strftime")
+    if not fmt:
+        return value
+    d = _parse_filed_date(value)
+    return d.strftime(fmt) if d else value
+
+
+def _parse_filed_date(value):
+    from datetime import datetime
+    s = (value or "").strip()
+    for f in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, f)
+        except ValueError:
+            continue
+    return None
 
 
 def required_fields(profile, seq):

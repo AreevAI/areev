@@ -124,19 +124,26 @@ def main():
         # applies it, and it renders here as a lesson. Injecting the field
         # list would hand over exactly the thing being measured.
         req = ledger_profile.required_fields(profile, seq)
-        out, usage = propose(agent_argv, profile, r["text"], lessons)
+        # The ledger as it stands at THIS document. For a profile without
+        # regimes these are the profile and the builder's truth unchanged;
+        # for one with them, the convention and the filed values move
+        # together, so the agent is never scored against a rule the business
+        # has not stated yet.
+        at = ledger_profile.as_of(profile, seq)
+        truth_at = {k: ledger_profile.refile(at, k, v) for k, v in r["truth"].items()}
+        out, usage = propose(agent_argv, at, r["text"], lessons)
         totals["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
         totals["completion_tokens"] += int(usage.get("completion_tokens") or 0)
 
-        approved, message, corrections = acct.review(profile, seq, out, r["truth"], categories_known)
+        approved, message, corrections = acct.review(at, seq, out, truth_at, categories_known)
 
         ex = sem = scored = 0
         for k in req:
-            want = r["truth"].get(k, "")
+            want = truth_at.get(k, "")
             if not want:
                 continue
             scored += 1
-            e, s = acct.compare(profile, k, (out["fields"] or {}).get(k, ""), want)
+            e, s = acct.compare(at, k, (out["fields"] or {}).get(k, ""), want)
             ex += bool(e)
             sem += bool(s)
         totals["exact"] += ex

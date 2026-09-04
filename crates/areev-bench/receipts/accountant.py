@@ -95,6 +95,12 @@ def review(profile, seq, proposal, truth, categories_known=()):
     parked = proposal.get("park")
 
     intro = prof.new_requirement_message(profile, seq, categories_known)
+    # A convention change is announced the same way a new requirement is:
+    # once, in the accountant's own words, on the document it takes effect.
+    # It is stated even when the agent got everything right, because the
+    # agent cannot see it coming and every rule it already holds about that
+    # convention has just gone stale.
+    regime = prof.regime_change_message(profile, seq)
     parts = []
     corrections = {}
 
@@ -127,15 +133,22 @@ def review(profile, seq, proposal, truth, categories_known=()):
             wrong_value.append(k)
         corrections[k] = want
 
-    if not corrections and not intro:
+    if not corrections and not intro and not regime:
         return True, "", {}
 
+    if regime:
+        parts.append(regime)
     if intro:
         parts.append(intro)
     # A real accountant states the rule once, not the same correction forever.
     for k in wrong_format:
         hint = profile["format_hint"].get(k, "use exactly what's in the ledger, e.g. {example}")
-        parts.append("The %s is right but %s." % (k, hint.format(example=truth[k])))
+        # `date_name` is passed because a profile with regimes changes it
+        # partway through a deployment; a hint that hard-coded the convention
+        # would keep stating the retired one.
+        parts.append("The %s is right but %s."
+                     % (k, hint.format(example=truth[k],
+                                       date_name=profile.get("date_name", ""))))
     if wrong_value:
         parts.append(" ".join(
             "%s should be %s, not %s." % (k, truth[k], fields.get(k) or "blank")
