@@ -881,5 +881,14 @@ for S in 1 2 3; do SEED=$S LEARNER_MODEL=openai/gpt-oss-120b \
 python3 verify.py runs --write               # every published number, recomputed
 ```
 
+`--write` refuses if the seeds disagree on which artifacts they carry, which
+is the shape a run still flushing snapshots to disk has. That is not
+hypothetical: it silently cost the ad-buy corpus a seed's learning curve and
+cost the ablation's cell C a whole verify-then-revert leg, in both cases
+leaving every published number correct and nothing saying a seed was
+missing. Wait and re-run, or pass `--allow-ragged` for a run genuinely cut
+short — which records what is absent, so `--check` fails the day the rest
+arrives.
+
 Committed evidence and what deliberately stays local:
 [`results/receipts-sroie-2026-09-04/`](results/receipts-sroie-2026-09-04/).

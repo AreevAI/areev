@@ -4,6 +4,11 @@
     verify.py <results-dir> [--write]     # recompute; --write refreshes RESULTS.json + MANIFEST.md
     verify.py <results-dir> --check       # CI: recomputed == committed, checksums intact
 
+`--write` refuses a directory whose seeds disagree on which artifacts they
+carry — the shape a run still flushing to disk has — because that silently
+publishes a result with one seed's evidence missing. `--allow-ragged` writes
+anyway, for a run genuinely cut short, and records what is absent.
+
 A results directory holds one `seedN/` per seed, each as curve.sh left it:
 `a0.summary.json`, `experience.summary.json`, `journal.jsonl`,
 `eval/trials.json`, `regress/regress.summary.json`, `regress/regress.trials.json`,
@@ -205,11 +210,41 @@ def render_md(results):
     return "\n".join(lines)
 
 
+def raggedness(seeds):
+    """Artifacts one seed has and another lacks.
+
+    Twice now, `--write` has been run while a seed was still flushing its
+    snapshot evals to disk: the seed contributed no learning curve (and once
+    no `regress` block at all), every published number still looked right,
+    and nothing said a seed was missing. A results file that silently drops
+    one seed's evidence is the worst failure this script has, because it is
+    invisible in its own output. So compare the seeds against each other and
+    say so.
+
+    A seed that *recorded* a failed leg is not ragged — the block is there,
+    reporting its own failure, which is the harness working."""
+    kinds = {}
+    for k in ("A0", "curve", "regress"):
+        have = {i for i, s in enumerate(seeds, 1) if s.get(k)}
+        if have and len(have) != len(seeds):
+            kinds[k] = sorted(set(range(1, len(seeds) + 1)) - have)
+    # A seed with no curve at all is already named above; this catches the
+    # subtler case of a curve that is present but short a checkpoint.
+    widths = {i: len(s["curve"]) for i, s in enumerate(seeds, 1) if s.get("curve")}
+    if len(set(widths.values())) > 1:
+        full = max(widths.values())
+        kinds["curve_points"] = sorted(i for i, w in widths.items() if w != full)
+    return kinds
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--allow-ragged", action="store_true",
+                    help="write even though the seeds disagree on which artifacts they have "
+                         "(a run genuinely cut short, not one still being written)")
     args = ap.parse_args()
 
     seed_dirs = sorted(os.path.join(args.root, d) for d in os.listdir(args.root)
@@ -218,11 +253,27 @@ def main():
         raise SystemExit("no seedN/ directories under %s" % args.root)
     seeds = [seed_result(d) for d in seed_dirs]
     results = {"seeds": seeds, "pooled": pooled(seeds)}
+    rag = raggedness(seeds)
+    if rag:
+        # Recorded in the results file too, so `--check` compares it like any
+        # other number: evidence that shows up later makes the recomputation
+        # differ from the committed file, which is exactly the alarm wanted.
+        results["incomplete"] = rag
     md = render_md(results)
     print(md)
+    if rag:
+        print("\nWARNING: the seeds do not carry the same evidence.", file=sys.stderr)
+        for kind, missing in sorted(rag.items()):
+            print("  %-13s missing from seed%s"
+                  % (kind, ", seed".join(str(i) for i in missing)), file=sys.stderr)
+        print("  If the run is still writing, wait and re-run. If it was genuinely\n"
+              "  cut short, pass --allow-ragged and say so where the result is published.",
+              file=sys.stderr)
 
     res_path = os.path.join(args.root, "RESULTS.json")
     man_path = os.path.join(args.root, "MANIFEST.md")
+    if args.write and rag and not args.allow_ragged:
+        raise SystemExit("refusing to write a ragged results file; see the warning above")
     if args.write:
         with open(res_path, "w", encoding="utf-8") as fh:
             json.dump(results, fh, indent=1, sort_keys=True)
