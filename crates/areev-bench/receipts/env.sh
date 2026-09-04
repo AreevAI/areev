@@ -49,4 +49,7 @@ export LOOP_POLICY="${LOOP_POLICY:-$DEFAULT_LOOP_POLICY}"
 # The corpus. One variable picks the ledger profile and the dataset that
 # goes with it, so a driver never has to know which corpus it is running.
 export PROFILE="${PROFILE:-sroie}"
-export DATASET="${DATASET:-$HERE/data/$PROFILE.jsonl}"
+# A profile may re-time a corpus it does not own (sroie_drift reads sroie), so
+# ask the profile which dataset it reads rather than assuming the names match.
+CORPUS="$("$PY" "$HERE/ledger_profile.py" corpus "$PROFILE")"
+export DATASET="${DATASET:-$HERE/data/$CORPUS.jsonl}"

@@ -11,6 +11,10 @@ Arms:
   B   rules in force, exactly as the experience phase left them
   B2  the same state, run again — the noise floor of the agent itself
   A   every applied recommendation rolled back through the real API
+  C   the SAME memory rendered ungoverned: every correction the accountant
+      made, verbatim, in order, with nothing proposed, reviewed or retracted.
+      This is what a memory system that stores but does not govern puts in
+      the prompt, and it is the baseline the governed arm has to beat.
 
 A is produced by genuine rollback, not by declining to render: the claim is
 that the governed apply is the lever, so withdrawing it has to travel the
@@ -43,8 +47,17 @@ def main():
     ap.add_argument("--learned-db", required=True, help="memory left by the experience phase")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--arms", default="B,B2,A")
+    ap.add_argument("--as-of", type=int, default=None,
+                    help="score against the ledger as it stood at this document "
+                         "(only meaningful for a profile whose conventions change)")
     ap.add_argument("--journal", action="append", default=[],
-                    help="ARM=RUN_ID: journal that arm's pass as an evalset run in --learned-db")
+                    help="ARM=RUN_ID: journal that arm's pass as an evalset run")
+    ap.add_argument("--journal-into", default=None,
+                    help="memory to journal into (default: --learned-db). A "
+                         "checkpoint reads a SNAPSHOT but should record its "
+                         "result in the primary memory, so the run accumulates "
+                         "a time series of eval runs rather than one reading at "
+                         "the end.")
     args = ap.parse_args()
 
     profile = ledger_profile.get(args.profile)
@@ -74,12 +87,19 @@ def main():
     trials, usage, journaled = [], {}, {}
     for arm in [a.strip() for a in args.arms.split(",") if a.strip()]:
         db = db_a if arm == "A" else db_b
-        lessons = mem.with_memory(db, mem.REVIEWER, mem.lessons_markdown)
-        t, u = evalrun.run_arm(arm, profile, lessons, rows, agent_argv, journal)
+        # Arm C reads the same memory and renders it UNGOVERNED — every
+        # correction verbatim, nothing proposed, reviewed or retracted. It is
+        # the store-everything baseline, and it is deliberately generous: it
+        # gets the complete record without paying for the governance.
+        render = mem.corrections_markdown if arm == "C" else mem.lessons_markdown
+        lessons = mem.with_memory(db, mem.REVIEWER, render)
+        t, u = evalrun.run_arm(arm, profile, lessons, rows, agent_argv, journal,
+                               at_seq=args.as_of)
         trials += t
         usage[arm] = u
         if arm in journal_as:
-            journaled[arm] = evalrun.journal_eval_run(args.learned_db, evalset, journal_as[arm], t)
+            journaled[arm] = evalrun.journal_eval_run(
+                args.journal_into or args.learned_db, evalset, journal_as[arm], t)
             print("  journaled arm %s as %s: %s" % (arm, journal_as[arm], json.dumps(journaled[arm])))
 
     with open(os.path.join(args.workdir, "trials.json"), "w", encoding="utf-8") as fh:
@@ -87,7 +107,7 @@ def main():
     with open(os.path.join(args.workdir, "eval.summary.json"), "w") as fh:
         json.dump({"profile": args.profile, "seed": args.seed, "held_out": len(rows),
                    "evalset": evalset, "rolled_back": rolled, "usage": usage,
-                   "journaled": journaled}, fh, indent=1)
+                   "as_of": args.as_of, "journaled": journaled}, fh, indent=1)
     print("\nwrote %s" % os.path.join(args.workdir, "trials.json"))
 
 

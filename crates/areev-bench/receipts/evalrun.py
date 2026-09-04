@@ -32,10 +32,20 @@ def evalset_hash(rows):
     return h.hexdigest()[:16]
 
 
-def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True):
+def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True,
+            at_seq=None):
     """Read every held-out receipt under `lessons` (the prompt section as
     assembled from some memory state — or "" for the day-one agent).
-    Returns (trials, usage)."""
+    Returns (trials, usage).
+
+    `at_seq` scores against the ledger as it stood at that document, which
+    matters only for a profile whose conventions change: the same held-out
+    set is worth different answers before and after a regime switch, and
+    scoring a checkpoint against a convention the business had not announced
+    yet would mark the agent wrong for obeying its instructions. The required
+    FIELDS stay at the final bar so the denominator is constant and the
+    checkpoints stay comparable; only how a value must be written moves."""
+    at = ledger_profile.as_of(profile, at_seq) if at_seq is not None else profile
     n_rules = lessons.count("\n- ")
     if verbose:
         print("\n=== arm %s — %d rule(s) in the prompt" % (name, n_rules))
@@ -45,7 +55,7 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
         seq = r["seq"]
         req = ledger_profile.required_fields(profile, seq)
         try:
-            out, usage = propose(agent_argv, profile, r["text"], lessons)
+            out, usage = propose(agent_argv, at, r["text"], lessons)
         except Exception as e:
             # A provider having a bad minute is not a result, but losing the
             # whole arm to it is worse than scoring one document as a park:
@@ -60,11 +70,11 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
         usage_tot["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
         usage_tot["completion_tokens"] += int(usage.get("completion_tokens") or 0)
         for field in req:
-            want = r["truth"].get(field, "")
+            want = ledger_profile.refile(at, field, r["truth"].get(field, ""))
             if not want:
                 continue
             got = (out["fields"] or {}).get(field, "")
-            ex, sem = acct.compare(profile, field, got, want)
+            ex, sem = acct.compare(at, field, got, want)
             trials.append({"arm": name, "seq": seq, "id": r["id"], "field": field,
                            "exact": bool(ex), "semantic": bool(sem),
                            "got": got, "want": want})

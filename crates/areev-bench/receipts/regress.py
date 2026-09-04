@@ -116,6 +116,13 @@ def main():
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--harmful", default=os.path.join(here, "fixtures", "lesson_harmful.json"))
     ap.add_argument("--mock-llm", default=os.path.join(repo, "examples", "llm", "mock.py"))
+    ap.add_argument("--no-plant", action="store_true",
+                    help="run only step 1 — verify the lessons the run actually "
+                         "learned — and skip the planted-harmful sub-test. For a "
+                         "ledger whose conventions changed there is no need to "
+                         "plant anything: the run's own rules went stale when the "
+                         "business changed, and whether the gate says so is the "
+                         "experiment.")
     args = ap.parse_args()
 
     profile = ledger_profile.get(args.profile)
@@ -165,6 +172,15 @@ def main():
           not any(r.get("analyzer", "").startswith("loop.outcome_review") for r in pending(db))
           or any(o["verdict"] == "regressed" for o in verdicts),
           "pending: %d" % len(pending(db)))
+
+    if args.no_plant:
+        report["checks_note"] = ("verify-only: the planted-harmful sub-test was "
+                                 "skipped, the run's own stale rules are the test")
+        report["all_ok"] = all(c["ok"] for c in report["checks"].values())
+        json.dump(report, open(os.path.join(args.workdir, "regress.summary.json"), "w"), indent=1)
+        print("\nverify-only: %d lesson verdict(s) recorded"
+              % len({o["rec_hash"] for o in verdicts}))
+        return 0 if report["all_ok"] else 1
 
     # 2. Admit the harmful lesson through the governed path.
     t_h = t0 + 2 * DAY + HOUR

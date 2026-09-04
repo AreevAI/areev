@@ -111,12 +111,45 @@ PROFILES["sroie_drift"] = dict(
          "One more thing from now on: put the vendor's address on as well, "
          "the tax file needs it."),
     ],
+    # Same receipts as `sroie`; only the timeline differs, so it reads that
+    # corpus rather than duplicating 612 documents.
+    corpus="sroie",
     regimes=[
         (0, {"date_strftime": "%d/%m/%Y", "date_name": "DD/MM/YYYY"}),
-        (81, {"date_strftime": "%Y-%m-%d", "date_name": "YYYY-MM-DD",
-              "announce": "Change from today: the group that bought us files "
-                          "everything ISO, so write every date as YYYY-MM-DD "
-                          "from now on, not day-first."}),
+        # Deliberately NOT ISO. Every model's prior for a date is ISO, so a
+        # flip toward it would let the frozen arm improve for free and no
+        # post-flip gain would be attributable to learning. A spelled-out
+        # month is a real bookkeeping convention (it cannot be misread
+        # day-first or month-first) and no model writes it unprompted, so
+        # after document 81 the only way to score is to have been told and
+        # to have retracted what came before.
+        (81, {"date_strftime": "%d %B %Y", "date_name": "DD Month YYYY",
+              "announce": "Change from today: the group that bought us wants "
+                          "dates spelled out so nobody misreads them — write "
+                          "every date like 20 March 2018 from now on, not "
+                          "day-first with slashes."}),
+    ],
+)
+
+# The keyless gate's compressed timeline (dryrun_drift.sh). The flip here IS
+# to ISO, and for the opposite reason: mock_agent.py writes ISO only when NO
+# date rule is in the prompt, so the mock can score after the flip if and
+# only if the stale rule was actually retracted. That makes the plumbing test
+# mechanical. It proves the retraction path fires, never a learning claim.
+PROFILES["sroie_drift_tiny"] = dict(
+    PROFILES["sroie"],
+    corpus="sroie",
+    arc=[
+        (1, ["Invoice Date"], None),
+        (2, ["Invoice Date", "Vendor Name", "Amount"],
+         "Thanks — I also need the vendor and the amount on every one of "
+         "these, otherwise I can't file it."),
+    ],
+    regimes=[
+        (0, {"date_strftime": "%d/%m/%Y", "date_name": "DD/MM/YYYY"}),
+        (7, {"date_strftime": "%Y-%m-%d", "date_name": "YYYY-MM-DD",
+             "announce": "Change from today: write every date as YYYY-MM-DD "
+                         "from now on, not day-first."}),
     ],
 )
 
@@ -179,7 +212,8 @@ def refile(profile_at, field, value):
 def _parse_filed_date(value):
     from datetime import datetime
     s = (value or "").strip()
-    for f in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+    for f in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d",
+              "%d %B %Y", "%d %b %Y"):
         try:
             return datetime.strptime(s, f)
         except ValueError:
@@ -202,3 +236,14 @@ def new_requirement_message(profile, seq, categories_known=()):
         if seq == after and msg:
             return msg.format(categories=", ".join(categories_known) or "none yet")
     return None
+
+
+if __name__ == "__main__":
+    import sys
+    # `ledger_profile.py corpus <profile>` — env.sh asks which dataset a
+    # profile reads, so a derived profile that only re-times an existing
+    # corpus does not need its own copy of the data.
+    if len(sys.argv) == 3 and sys.argv[1] == "corpus":
+        print(get(sys.argv[2]).get("corpus", sys.argv[2]))
+    else:
+        raise SystemExit("usage: ledger_profile.py corpus <profile>")

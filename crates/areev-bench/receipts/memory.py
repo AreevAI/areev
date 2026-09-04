@@ -102,6 +102,50 @@ def lessons_markdown(db):
     return "\n\n".join(parts)
 
 
+def corrections_markdown(db):
+    """The ungoverned baseline's prompt section: every word the accountant
+    said, in the order they said it, with nothing removed.
+
+    This is arm C. It reads the SAME memory arm B does and renders it without
+    the loop — no proposal, no review, no supersession, and above all no
+    retraction. It is the generous form of the baseline: it gets the complete
+    record of corrections, including the ones the governed run's trajectory
+    elicited, without paying anything for the governance. If arm B beats it,
+    the difference is what proposing, reviewing and retracting are worth; if
+    it does not, they are worth nothing and that is the result.
+
+    A store-everything memory system is this arm, not arm A."""
+    said = []
+    for g in _observations(db):
+        f = g.get("fields", {})
+        if f.get("observer_type") != "human":
+            continue
+        # The observation grain stores the utterance under `object`
+        # (`content` is the input key the binding maps from).
+        text = (f.get("object") or "").strip()
+        if text:
+            said.append((int(f.get("seq") or 0), text))
+    said.sort()
+    if not said:
+        return ""
+    seen, lines = set(), []
+    for _seq, text in said:
+        # A person repeats themselves; the record keeps every instance, and
+        # so does the prompt, except for byte-identical restatements, which
+        # would only be padding.
+        if text not in seen:
+            seen.add(text)
+            lines.append("- " + text)
+    return ("## WHAT THE ACCOUNTANT HAS TOLD YOU\n"
+            "Everything the person who files these has said, oldest first.\n"
+            + "\n".join(lines) + "\n")
+
+
+def _observations(db):
+    return json.loads(db.cal(
+        'RECALL observations WHERE namespace = "%s" LIMIT 400 FORMAT json' % NS))["grains"]
+
+
 def record_correction(db, seq, message, corrections):
     """What the run leaves in memory: the accountant's words, and the row.
 
