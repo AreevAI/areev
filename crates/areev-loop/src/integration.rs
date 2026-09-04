@@ -588,6 +588,60 @@ fn authored_lessons_dedup_on_content_not_only_on_target() {
     assert_eq!(llm_recs(&e, &sub, Some(RecStatus::Pending)).len(), 1, "one open advisory flag per target");
 }
 
+/// An Observation reaches the model with its observer named. A bare
+/// sentence is ambiguous about direction in the way that matters: a
+/// person's correction reads identically to the agent being told something
+/// it asked for, and a model given unattributed corrections concluded the
+/// agent had been doing the asking. A Fact still renders as its triple, and
+/// an Observation with no recorded observer still renders as its bare text.
+#[test]
+fn an_observation_reaches_the_model_with_its_observer_named() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    sub.add_fact("acme", "deploy_target", "us-east-1");
+    sub.add_fact("acme", "deploy_target", "eu-west-1");
+    sub.add_human_note("test", "capture", "user:accountant", "Vendor Name is ACME LTD.");
+    sub.add_observation("test", "an unattributed note");
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let reqs = seen.lock().unwrap();
+    let req = reqs
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("a discover call was made");
+    let v: serde_json::Value = serde_json::from_str(req).unwrap();
+    let texts: Vec<String> = v["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "user:accountant (a person) said of capture: Vendor Name is ACME LTD."),
+        "a human observation names its observer: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "an unattributed note"),
+        "an observation with no observer still renders as its bare text: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "acme deploy_target us-east-1"),
+        "a fact still renders as its triple: {texts:?}"
+    );
+}
+
 /// The DISCOVER objective is host policy: the default keeps the review-queue
 /// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
 #[test]

@@ -2340,9 +2340,39 @@ fn grain_brief(g: &GrainRecord) -> String {
     // into `body` to work around it; nothing should have to.
     for key in ["content", "body", "text", "summary", "object"] {
         if let Some(v) = g.fields.get(key).and_then(|v| v.as_str()) {
-            if !v.is_empty() {
-                return v.to_string();
+            if v.is_empty() {
+                continue;
             }
+            // Who said it, when the grain records it. An Observation reaches
+            // the model as a bare sentence otherwise, and a bare sentence is
+            // ambiguous about direction in exactly the way that matters: a
+            // person's correction ("Vendor Name is ACME") reads identically
+            // to the agent having been told something it asked for. Measured
+            // live on the receipts corpus, a model given 31 unattributed
+            // corrections concluded the agent was repeatedly *requesting*
+            // data it already had, and proposed rules to stop it asking.
+            // The observer is already on the grain; only the projection
+            // dropped it.
+            if let Some(who) = g.fields.get("observer_id").and_then(|v| v.as_str()) {
+                if !who.is_empty() {
+                    let kind = g
+                        .fields
+                        .get("observer_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let about = g.fields.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut prefix = if kind == "human" {
+                        format!("{who} (a person) said")
+                    } else {
+                        format!("{who} observed")
+                    };
+                    if !about.is_empty() {
+                        prefix.push_str(&format!(" of {about}"));
+                    }
+                    return format!("{prefix}: {v}");
+                }
+            }
+            return v.to_string();
         }
     }
     String::new()
