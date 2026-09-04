@@ -12,9 +12,9 @@ be re-run by a stranger for a few dollars.
 **The answer here is two answers, and they point opposite ways.** Across
 three seeds the rules an LLM authored and a human-rubric reviewer approved
 made the agent *worse* — pooled, 3 wins against 30 losses, p = 0.000001 —
-and one approved rule that contradicted the accountant's own written
-instruction took the agent from 30 correct to 0 after passing four
-independent gates. The thing that caught it was the fifth: measuring the
+and one approved rule that contradicted an instruction the accountant had
+written into that memory thirty-one times took the agent from 30 correct to
+0, after passing four independent gates. The thing that caught it was the fifth: measuring the
 held-out set under it. So on this corpus **governance is proven and
 LLM-authored learning is not**, and the honest headline is that the
 governed loop's value here was to detect and undo its own bad advice.
@@ -247,10 +247,10 @@ One approved rule did all of it:
 > the fact."**
 
 The ledger's convention is `DD/MM/YYYY`, and the accountant had said so in
-the agent's own memory, in as many words: *"The Invoice Date is right but
-write dates as DD/MM/YYYY, like 26/03/2018."* The rule proposes the
-opposite. It took the one field the agent got right on every receipt from
-30 exact to **0**.
+the agent's own memory — **in 31 of the 40 observations that memory
+holds** — in as many words: *"The Invoice Date is right but write dates as
+DD/MM/YYYY, like 20/03/2018."* The rule proposes the opposite. It took the
+one field the agent got right on every receipt from 30 exact to **0**.
 
 It passed everything:
 
@@ -262,8 +262,8 @@ It passed everything:
 | the supervisor, on a rubric fixed before the run | **approved** — "Use ISO 8601 format for dates." |
 
 Four independent checks, one of them a model reading a written rubric with
-the column names in front of it, and a rule contradicting an explicit human
-instruction in the same memory went through all four. It is worth being
+the column names in front of it, and a rule contradicting an instruction
+stated thirty-one times in the same memory went through all four. It is worth being
 precise about how close this was: in a smaller run against the same corpus
 GROUND *did* catch this exact proposal, refusing it with *"The evidence
 states that dates are written as DD/MM/YYYY, which contradicts the claim
