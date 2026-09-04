@@ -9,17 +9,28 @@ the corpus cannot leave the company. This is the same design on a public
 corpus, with the harness in the repo (`receipts/`), so the whole result can
 be re-run by a stranger for a few dollars.
 
-**The answer here is two answers, and they point opposite ways.** Across
-three seeds the rules an LLM authored and a human-rubric reviewer approved
-made the agent *worse* — pooled, 3 wins against 30 losses, p = 0.000001 —
-and one approved rule that contradicted an instruction the accountant had
-written into that memory thirty-one times took the agent from 30 correct to
-0, after passing four independent gates. The thing that caught it was the fifth: measuring the
-held-out set under it. So on this corpus **governance is proven and
-LLM-authored learning is not**, and the honest headline is that the
-governed loop's value here was to detect and undo its own bad advice.
-[Skip to the result](#result); everything before it is how the measurement
-was set up, written before it was run.
+**Two runs, and they answer differently — which is the point.**
+
+**Run 2** (below): a model read a person's corrections, wrote the rule they
+implied, a reviewer approved it, and the agent went from **31 to 123** of
+240 exact on held-out receipts. Paired, **92 wins and 0 losses**, p <
+0.0001, against a noise floor of 2. The Verify gate then confirmed the
+improvement `held`, caught a later rule that hurt, and reverted it back to
+123. Self-improvement under governance, on real public documents, for
+$0.26.
+
+**Run 1**, published in full below and not revised: the same design with a
+different learner and one engine defect still in place made the agent
+*worse* — 3 wins against 30 losses, p = 0.000001 — because one approved
+rule contradicted an instruction the accountant had written into that
+memory thirty-one times, and took the agent from 30 correct to 0. It passed
+four independent gates. The fifth, measuring the held-out set, caught it.
+
+Read together they are one finding: **the governance layer is what makes an
+LLM-authored learner safe enough to be worth having.** Run 1 is what
+happens without measurement; run 2 is what the same machinery is worth with
+it. [Skip to the result](#result); everything before it is how the
+measurement was set up, written before it was run.
 
 ## The corpus
 
@@ -565,6 +576,35 @@ pre-registered above: the observer is now named in the evidence, and the
 learner is `qwen3-30b` rather than `gpt-oss-120b`. Both were needed to get
 additive rules at all. Which one carries the effect is not answered here
 and is not claimed.
+
+#### The whole cycle, on the improved agent
+
+The verify-then-revert leg ran against the same memory and passed every
+check:
+
+| step | exact (of 240) |
+|---|:---:|
+| B — the learned rule applied | 123 |
+| the gate's verdict on it | **`held`**, baseline 31 → current 123 |
+| H — a harmful rule admitted on purpose | 108 |
+| R — after the gate's revert was approved and applied | **123** |
+
+So on one corpus, in one run, every step of the loop is exercised against a
+real measurement:
+
+1. The agent is deployed knowing one field.
+2. An accountant corrects it; the corrections go into memory.
+3. The loop reads them and authors the rule they imply.
+4. A reviewer approves it on a rubric fixed before the run.
+5. Applying it moves the agent from 31 to 123 exact.
+6. The Verify gate re-measures and confirms the improvement `held`.
+7. A later rule that hurts is measured `regressed`, and a revert proposed.
+8. Applying the revert restores 123, and the retracted rule is not
+   re-proposed on the next pass.
+
+Steps 6 to 8 are what run 1 also demonstrated. Steps 3 to 5 are what run 1
+could not, and are the difference between a governed loop that only
+protects an agent and one that also improves it.
 
 ### Not affected by the τ² bridge bug
 
