@@ -86,67 +86,97 @@ run 1's did. The reviewer is a model on the fixed rubric in
 `receipts/accountant.py`, not a person, and its rejections are published
 with their reasons.
 
-## Result — seed 1 (seeds 2 and 3 running)
+## Result — three seeds
 
-**It replicates, and more strongly than on receipts.** 60 held-out ad-buy
-invoices, 285 scored (invoice, field) trials:
+**It replicates, on documents ten times longer and a different filing
+convention.** Evidence:
+[`results/adbuy-vrdu-2026-09-04/`](results/adbuy-vrdu-2026-09-04/).
 
-| | arm A — rules rolled back | arm B — rules applied |
-|---|:---:|:---:|
-| exact | 45 (15.8%) | **224 (78.6%)** |
-| paired | | **179 wins, 0 losses**, p < 0.0001 |
+| seed | rules | A (rolled back) | B (applied) | B vs A | noise floor |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 1 | 4 | 45/285 | **224/285** | 179 wins, 0 losses | 5 |
+| 2 | 7 | 43/275 | **233/275** | 190 wins, 0 losses | 1 |
+| 3 | 10 | 34/280 | **133/280** | 99 wins, 0 losses | 1 |
+| **pooled** | | **122/840** | **590/840** | **468 wins, 0 losses** | 7 |
 
-The B-vs-B2 noise floor is 5 discordant trials of 285. Per field:
-
-| field | A | B |
-|---|:---:|:---:|
-| **Gross Amount** (day one) | **45/60** | **57/60** |
-| Advertiser | 0/60 | 51/60 |
-| Contract Number | 0/60 | 28/60 |
-| Flight From | 0/53 | 43/53 |
-| Flight To | 0/52 | 45/52 |
+**Not one losing trial in 840.** Every transition is significant in every
+seed, and the noise floors are 5, 1 and 1.
 
 ### The two things receipts could not show
 
-**The day-one field improved.** [`RECEIPTS.md`](RECEIPTS.md) records a
-limitation honestly: every one of its 286 wins fell on a field the baseline
-left blank, and on Invoice Date — the field the agent already captured on
-every receipt — the rules won *nothing*. The supported claim there was
-narrow: the loop taught the agent *which* fields to capture, not how to do
-better at one it was already doing.
+**The day-one field improved.** [`RECEIPTS.md`](RECEIPTS.md) records the
+limitation plainly: all 286 of its wins fell on fields the baseline left
+blank, and on Invoice Date — the field the agent already captured on every
+receipt — the rules won *nothing*. The claim it supported was narrow.
 
-Here Gross Amount goes **45/60 → 57/60**. The agent was already filling it
-in both arms; what changed is that the loop learned the amount convention —
+Here Gross Amount, which both arms fill on every invoice, goes:
 
-> "Format the Gross Amount as a plain number with two decimals, no dollar
-> sign and no thousands separator, like 27900.00."
+| seed | A | B |
+|---|:---:|:---:|
+| 1 | 45/60 | 57/60 |
+| 2 | 43/60 | **60/60** |
+| 3 | 35/60 | 59/60 |
 
-— and applied it to a field it had never got wrong for want of trying. That
-is the claim the receipts corpus could not support, and it holds here.
+The loop learned the amount convention — *"a plain number with two
+decimals, no dollar sign and no thousands separator"* — and applied it to a
+field the agent had never failed for want of trying. Seed 2 reaches every
+invoice. That is the claim the receipts corpus could not support.
 
-**The date rule is right this time, and it is the same rule that was
-catastrophically wrong before.** Receipts run 1's loop authored *"Convert
-extracted Invoice Date to ISO 8601 (YYYY-MM-DD)"*, four gates passed it, and
-it took that agent from 30 correct to 0 because that ledger files day-first.
-On this corpus the loop wrote
+**The same date rule, right this time.** Receipts run 1's loop authored
+*"Convert extracted Invoice Date to ISO 8601 (YYYY-MM-DD)"*, four gates
+passed it, and it took that agent from 30 correct to 0 because that ledger
+files day-first. **All three seeds here independently authored the ISO
+rule**, and here it is correct — 43/53, 40/48 and 33/50 exact on flight
+dates against zero in every arm A. Same rule, opposite corpora, right both
+times, because it came from each business's own corrections rather than
+from a prior about how dates should look.
 
-> "Extract and record both Flight From and Flight To dates from every
-> invoice using the exact YYYY-MM-DD format as provided."
+### Seed 3: more rules made it worse, and the gate did not catch it
 
-and it is correct: a filed `2020-05-26` against a produced `2020-05-26`,
-43 of 53 and 45 of 52 exact. Same rule, opposite corpora, right both times
-*because it came from each business's own corrections rather than from a
-prior about how dates should look*. A model applying a general convention
-gets one of these two corpora right by luck. This is the property no single
-corpus can test, and it is why this one was chosen.
+Seed 3 applied **ten** rules against seed 1's four, and scored the worst of
+the three. The mechanism is visible in coverage, not in formatting:
 
-### What is not better here
+| seed 3, arm B | coverage | exact |
+|---|:---:|:---:|
+| Gross Amount | 60/60 | 59/60 |
+| Flight From / To | 40/50, 40/50 | 33, 35 |
+| **Advertiser** | **4/60** | 4/60 |
+| **Contract Number** | **3/60** | 2/60 |
 
-Contract Number is the weak field at 28/60, roughly half of what the other
-learned fields reach. The agent finds a contract number and files a
-different one — these invoices carry several identifiers, and nothing in
-the corrections disambiguates which the ledger means. That is a limitation
-of the task as posed, not of the loop, and it is reported because 78.6% is
-an average over one field the agent half-gets and three it mostly does.
+The agent **stopped producing** the two fields its rules most insistently
+name. That is the same failure receipts run 1's third rule produced —
+[rule accumulation suppressing capture](RECEIPTS.md#the-gain-that-did-not-survive-and-why-it-is-reported)
+— reproduced on a second corpus, with ten rules instead of three.
 
-*Seeds 2 and 3 are running and will be published here whatever they show.*
+**And the Verify gate said `held`, correctly.** Baseline 35, current 133:
+seed 3 is still four times better than the agent it started as. The gate
+measures *harm against the deployed baseline*, and by that measure nothing
+went wrong. What it cannot see is that the same corpus reached 224 and 233
+under fewer rules — a shortfall against an achievable state, not a
+regression from a known one.
+
+That is a real limitation and it is not a bug: **outcome measurement
+catches damage, not lost opportunity.** Catching this would need a
+different signal — a per-rule marginal measurement, or a ceiling from a
+prior seed — and neither is in the engine today.
+
+### The planted-regression leg on this corpus
+
+Seeds 1 and 2 passed every check: rules `held` at 45→224 and 43→233, the
+planted rule dropped them to 209 and 227, both measured `regressed` and
+reverted back to 224 and 233 exactly. Seed 3's failed, and the harness says
+so rather than claiming a pass: the planted rule *raised* its score
+(133→144), so there was nothing to catch.
+
+The reason is worth stating — the planted fixture is SROIE-shaped, naming
+an "Invoice Date" this corpus does not have. It bites here only obliquely,
+through flight dates, and on a weaker run that bite is inside the noise. A
+profile-specific harmful rule would be the better test and is not written.
+Reported because a sub-test that cannot mean anything must say so.
+
+### Cost
+
+Measured as the account-level delta: **≈$0.90** for all three seeds, on
+documents whose median length is ten times the receipts corpus. The whole
+programme across both corpora, every ablation cell and both τ² probes comes
+to **$2.41**.

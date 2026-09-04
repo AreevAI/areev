@@ -1,0 +1,15 @@
+{
+ "profile": "vrdu",
+ "seed": 1,
+ "experience": 40,
+ "eval": 60,
+ "evalset": "835721ae85363c22",
+ "policy": "{\"discover_objective\": \"learner\", \"outcome_evalset\": {\"hash\": \"835721ae85363c22\", \"field\": \"exact\", \"higher_is_better\": true}}",
+ "learn_every": 2,
+ "measure": true,
+ "journal_baseline": true,
+ "agent_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507 --provider coreweave/bf16 --seed 1",
+ "loop_llm_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507 --provider coreweave/bf16 --seed 1",
+ "loop_ground_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_loop.py openai/gpt-4o-mini --provider openai --seed 1",
+ "review_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py openai/gpt-4o --provider openai --seed 1"
+}
