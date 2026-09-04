@@ -91,12 +91,18 @@ def seed_result(seed_dir):
     # The lessons in force at the end, from the journal (what rendered).
     p = os.path.join(seed_dir, "journal.jsonl")
     if os.path.exists(p):
+        # The review ledger travels: a proposal's text is the model's own
+        # words and a reason is the reviewer's, neither of which is corpus
+        # content. The journal's per-receipt rows do not travel.
         decisions = []
         for line in open(p, encoding="utf-8"):
             row = json.loads(line)
             for d in row.get("decisions", []) or []:
                 decisions.append({"approved": d["approved"], "kind": d["kind"], "text": d["text"], "why": d["why"]})
         r["review_decisions"] = decisions
+        r["lessons_in_prompt_at_end"] = max(
+            (json.loads(l).get("lessons_in_prompt", 0) for l in open(p, encoding="utf-8")
+             if "lessons_in_prompt" in l), default=0)
     p = os.path.join(seed_dir, "regress", "regress.summary.json")
     if os.path.exists(p):
         g = load_json(p)
@@ -162,6 +168,11 @@ def sha256(path):
 
 
 def manifest(root):
+    """Checksums over the raw evidence. Those files stay LOCAL: `trials.json`
+    and the journals embed the corpus's own values (vendor names, addresses,
+    filed totals), and this repo redistributes none of it — only counts
+    travel. The manifest is what lets an operator verify their own copy
+    produced the published RESULTS.json."""
     rows = []
     for dirpath, _dirs, files in os.walk(root):
         for f in sorted(files):
