@@ -485,6 +485,17 @@ between applies. The gate had no run to compare against while the damage
 was being done. That is an argument about the gate's *cadence*, and it is
 the concrete thing this corpus taught.
 
+### Not affected by the τ² bridge bug
+
+The sibling [`tau2/`](tau2/README.md) harness had a tool-call parsing
+defect that voided one of its arms, and it is worth saying plainly that it
+cannot touch anything above. The receipts agent uses **no tools**: it sends
+`"tools": []` and its whole reply is one JSON object read from the message
+content. There is no tool-call parsing on this path to get wrong. The
+numbers here were produced by an agent that was acting normally, which the
+per-field coverage independently shows — it filled the day-one field on
+60 of 60 receipts in every arm.
+
 ### Cost
 
 Measured as the account-level delta across all three seeds, which is every
