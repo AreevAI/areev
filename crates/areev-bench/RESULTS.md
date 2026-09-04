@@ -607,6 +607,7 @@ documents and tasks nobody wrote for this repo:
 
 | harness | corpus | what it found | write-up |
 |---|---|---|---|
+| `receipts/` (`--profile vrdu`) | VRDU ad-buy forms — 641 real US FCC advertising invoices | *pre-registered, running* — the second corpus, chosen to differ on document type, length, day-one field and filing convention | [`ADBUY.md`](ADBUY.md) |
 | `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | **both halves, in two runs.** Run 2: an LLM-authored, human-approved rule took the agent from 97/720 to 382/720 exact — 286 wins, 1 loss. Run 1: the same machinery, one engine defect earlier, made it *worse* — and only outcome measurement caught the rule that did it | [`RECEIPTS.md`](RECEIPTS.md) |
 | `tau2/` | τ²-bench retail — 114 tool-using customer tasks | **no learning number, on purpose.** A ceiling probe found the domain reachable (7/25) but the withheld clauses costing nothing the reward can see (p=0.69), so a full run would have measured noise. Behaviour moved though: 42 tool errors against 23 | [`tau2/README.md`](tau2/README.md) |
 

@@ -45,6 +45,26 @@ for pat in PATTERNS:
     date = (y, mo, d)
     break
 
+# The VRDU profile's day-one field is an amount, not a date. The mock reads
+# whichever the prompt asks for, so one keyless gate covers both profiles.
+if "Gross Amount" in system:
+    # The largest dollar figure on an ad-buy invoice is the gross; a plumbing
+    # mock does not need to be right often, but it does need to be right the
+    # same way with and without the rule, or the gate measures the regex.
+    cands = re.findall(r"\$\s?([0-9][0-9,]*\.[0-9]{2})", user)
+    best = max(cands, key=lambda c: float(c.replace(",", ""))) if cands else None
+    if best is None:
+        out = {"fields": {}, "park": True, "reason": "What is the gross amount?"}
+    else:
+        # Obeys a learned rule naming the plain-number convention; otherwise
+        # writes it the way the invoice prints it, with the dollar sign.
+        plain = best.replace(",", "")
+        out = {"fields": {"Gross Amount": plain if "two decimals" in system else "$" + best},
+               "park": False, "reason": ""}
+    print(json.dumps({"message": {"content": json.dumps(out)},
+                      "usage": {"prompt_tokens": 0, "completion_tokens": 0}}))
+    raise SystemExit
+
 if date is None:
     out = {"fields": {}, "park": True, "reason": "What is the invoice date?"}
 else:

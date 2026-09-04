@@ -52,6 +52,45 @@ PROFILES = {
         },
         "document_noun": "receipt",
     },
+    # VRDU ad-buy forms (DeepForm): real US broadcast advertising invoices
+    # filed with the FCC. Chosen to differ from SROIE on every axis that
+    # could be a confound — country, document type, length, day-one field,
+    # and filing convention. Its dates are ISO where the receipts ledger
+    # wants day-first, so a rule that is right on one corpus is wrong on the
+    # other and the agent has to learn THIS business's practice rather than
+    # apply a prior.
+    "vrdu": {
+        "fields": ["Gross Amount", "Advertiser", "Contract Number",
+                   "Flight From", "Flight To"],
+        "day_one": "Gross Amount",
+        "arc": [
+            (1, ["Gross Amount"], None),
+            (2, ["Gross Amount", "Advertiser", "Contract Number"],
+             "Thanks — I also need the advertiser and the contract number on "
+             "every one of these, otherwise I can't file it."),
+            (8, ["Gross Amount", "Advertiser", "Contract Number",
+                 "Flight From", "Flight To"],
+             "Put the flight dates on as well, both ends; the accrual period "
+             "goes by them."),
+        ],
+        "date_fields": ["Flight From", "Flight To"],
+        "date_strftime": "%Y-%m-%d",
+        "date_name": "YYYY-MM-DD",
+        "amount_fields": ["Gross Amount"],
+        "name_fields": ["Advertiser"],
+        "loose_fields": [],
+        "format_hint": {
+            "Gross Amount": "write the amount as a plain number with two decimals, "
+                            "no dollar sign and no thousands separator, like {example}",
+            "Advertiser": "copy the advertiser's name exactly as printed on the "
+                          "invoice, like {example}",
+            "Contract Number": "copy the contract number exactly as printed, "
+                               "like {example}",
+            "Flight From": "write dates as YYYY-MM-DD, like {example}",
+            "Flight To": "write dates as YYYY-MM-DD, like {example}",
+        },
+        "document_noun": "invoice",
+    },
 }
 
 

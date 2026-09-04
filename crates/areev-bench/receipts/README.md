@@ -1,14 +1,20 @@
-# receipts — governed self-improvement on a public receipt corpus
+# receipts — governed self-improvement on public document corpora
 
-The harness behind [`../RECEIPTS.md`](../RECEIPTS.md): an agent that fills a
-ledger row from a receipt, an accountant that corrects it, and Areev's loop
-turning the corrections into governed, reviewable, revertible rules. The
-public port of the private expense-agent measurement in
-[`../EXPENSE.md`](../EXPENSE.md).
+The harness behind [`../RECEIPTS.md`](../RECEIPTS.md) and
+[`../ADBUY.md`](../ADBUY.md): an agent that fills a ledger row from a
+document, an accountant that corrects it, and Areev's loop turning the
+corrections into governed, reviewable, revertible rules. The public port of
+the private expense-agent measurement in [`../EXPENSE.md`](../EXPENSE.md).
+
+Two corpora run through it, selected by `--profile`: `sroie` (Malaysian
+retail receipts) and `vrdu` (US broadcast ad-buy invoices). A corpus is a
+builder plus a row in `ledger_profile.py`; nothing else in the harness knows
+which one it is running.
 
 | file | role |
 |---|---|
-| `build_sroie.py` | fetch SROIE (cached) and emit the filed ledger as JSONL — the one corpus-specific builder |
+| `build_sroie.py` | fetch ICDAR-SROIE retail receipts (cached) and emit the filed ledger as JSONL |
+| `build_vrdu.py` | the same for VRDU ad-buy invoices — the second corpus, deliberately unlike the first ([`../ADBUY.md`](../ADBUY.md)) |
 | `ledger_profile.py` | what the ledger wants, in what order, written how — never imported by the agent |
 | `dataset.py` | the seeded split: a seed permutes the corpus and assigns experience / held-out |
 | `agent.py` | the capture agent: day-one instruction + whatever LESSONS memory holds |
