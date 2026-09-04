@@ -485,6 +485,40 @@ between applies. The gate had no run to compare against while the damage
 was being done. That is an argument about the gate's *cadence*, and it is
 the concrete thing this corpus taught.
 
+## Pre-registered run 2 — does a configuration that authors additive rules help?
+
+*Committed before it was run. **Run 1's numbers above stand as published**
+and are not revised by anything here; this is a second experiment with its
+own design, not a re-run.*
+
+Run 1 established two things that together set this up: the loop's rules
+did not help, and no learner authored a rule naming a field to capture.
+The follow-up then found a configuration that does — `qwen3-30b` as the
+learner, with the observer named in the evidence projection, authoring an
+additive rule on 3 passes in 5. The obvious question is the one run 1
+could not ask: **when the loop authors rules of that shape, does the agent
+get better?**
+
+**Two things change from run 1, and that is stated rather than hidden.**
+The projection now names the observer, and the learner is `qwen3-30b`
+instead of `gpt-oss-120b`. Both are needed to get additive rules at all —
+`gpt-oss-120b` does not author them even with the fix — so this is not an
+ablation of either change. It is a test of one intervention: *a
+configuration that demonstrably authors additive rules*. Attributing the
+outcome to the projection alone would need a third run and is not claimed.
+
+Everything else is held: SROIE, seeds 1–3, 40 experience receipts with a
+learn pass every 2, 60 held out, agent `qwen3-30b` pinned `coreweave/bf16`
+at temperature 0, GROUND `gpt-4o-mini`, reviewer `gpt-4o` on the same fixed
+rubric, the same primary test (exact-match B vs A, paired, with the B-vs-B2
+noise floor beside it), and the same verify-then-revert leg.
+
+**Stated in advance:** a null publishes as a null, next to run 1's, and
+would say that additive rules are not what this corpus was missing. A gain
+publishes with the caveat above about which of the two changes earned it.
+If any seed regresses the way run 1's seed 3 did, the per-rule verdicts and
+the reverts are published with it.
+
 ### Not affected by the τ² bridge bug
 
 The sibling [`tau2/`](tau2/README.md) harness had a tool-call parsing
