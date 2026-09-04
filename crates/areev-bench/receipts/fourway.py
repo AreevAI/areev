@@ -164,7 +164,13 @@ def assemble(args):
             if not cur:
                 continue
             key = "mem0/%s" % mode
-            out["seeds"].setdefault(s, {})[key] = {str(x): exact(t) for x, t in sorted(cur.items())}
+            # mem0 runs do not journal A0; at zero documents the arm IS the
+            # day-one agent on the same held-out set, so borrow that seed's.
+            a0 = out["seeds"].get(s, {}).get("none", {}).get("0")
+            pts = {str(x): exact(t) for x, t in sorted(cur.items())}
+            if a0 is not None:
+                pts["0"] = a0
+            out["seeds"].setdefault(s, {})[key] = dict(sorted(pts.items(), key=lambda kv: int(kv[0])))
             out["seeds"][s].setdefault("_trials", {})[key] = cur.get(40)
             mA = load_trials(os.path.join(sd, "eval", "trials.json"), "A")
             if mA is not None:
@@ -184,16 +190,18 @@ def assemble(args):
             out["seeds"].setdefault(s, {})["slm_training"] = json.load(open(man))
 
     # ---- pooled curves + paired tests at the end ----
-    for arm in ARM_ORDER:
+    present = [a for a in ARM_ORDER if any(a in d for d in out["seeds"].values())]
+    common = sorted(s for s, d in out["seeds"].items() if all(a in d for a in present))
+    out["pooled_over_seeds"] = common
+    for arm in present:
         pts = {}
-        for s, d in out["seeds"].items():
-            for x, v in (d.get(arm) or {}).items():
+        for s in common:
+            for x, v in (out["seeds"][s].get(arm) or {}).items():
                 if v is not None:
                     pts.setdefault(int(x), []).append(v)
         if pts:
-            n_seeds = max(len(v) for v in pts.values())
-            out["arms"][arm] = {"pooled": {str(x): sum(v) for x, v in sorted(pts.items()) if len(v) == n_seeds},
-                                "seeds": n_seeds, "trials_per_seed": 240}
+            out["arms"][arm] = {"pooled": {str(x): sum(v) for x, v in sorted(pts.items()) if len(v) == len(common)},
+                                "seeds": len(common), "trials_per_seed": 240}
     for arm in ARM_ORDER:
         if arm == "areev":
             continue
@@ -248,9 +256,9 @@ def esc(s):
 
 
 def shelf(peak):
-    for step in (20, 25, 40, 50, 100, 200, 250):
-        top = -(-int(peak * 1.08) // step) * step
-        if top >= peak * 1.05 and top / step <= 10:
+    """The smallest ceiling above the peak whose quarters are round numbers."""
+    for top in (40, 80, 100, 120, 160, 200, 240, 300, 400, 480, 600, 720, 800, 1000, 1200, 1600, 2000):
+        if top >= peak * 1.05:
             return top
     return int(peak * 1.15) + 1
 
@@ -277,7 +285,7 @@ def accuracy_svg(theme, res):
         a(f'<text x="{PAD_L-9}" y="{py(v)+4:.1f}" text-anchor="end" font-size="11" fill="{t["muted"]}">{int(v)}</text>')
     for x in XS:
         a(f'<text x="{px(x):.1f}" y="{PAD_T+PLOT_H+19}" text-anchor="middle" font-size="11" fill="{t["muted"]}">{x}</text>')
-    a(f'<text x="{PAD_L-32}" y="{PAD_T-12}" font-size="11" fill="{t["muted"]}">exact, of {total} pooled trials</text>')
+    a(f'<text x="{PAD_L-32}" y="{PAD_T-12}" font-size="11" fill="{t["muted"]}">exact, of {total} trials pooled over {seeds} seed{"s" if seeds != 1 else ""}</text>')
     a(f'<text x="{PAD_L+CURVE_W/2:.0f}" y="{PAD_T+PLOT_H+40}" text-anchor="middle" font-size="11.5" fill="{t["muted"]}">experience documents seen</text>')
     labels = []
     for arm in arms:
