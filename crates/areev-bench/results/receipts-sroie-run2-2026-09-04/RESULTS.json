@@ -1,0 +1,892 @@
+{
+ "pooled": {
+  "exact_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 290
+  },
+  "exact_B_vs_A": {
+   "losses": 1,
+   "n": 720,
+   "p": 0.0,
+   "wins": 286
+  },
+  "exact_B_vs_B2": {
+   "losses": 6,
+   "n": 720,
+   "p": 0.125,
+   "wins": 1
+  },
+  "passed": {
+   "A": {
+    "exact": 97,
+    "semantic": 153
+   },
+   "B": {
+    "exact": 382,
+    "semantic": 547
+   },
+   "B2": {
+    "exact": 387,
+    "semantic": 547
+   }
+  },
+  "semantic_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 394
+  },
+  "semantic_B_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 394
+  },
+  "semantic_B_vs_B2": {
+   "losses": 0,
+   "n": 720,
+   "p": 1.0,
+   "wins": 0
+  },
+  "trials_per_arm": 720
+ },
+ "seeds": [
+  {
+   "A0": {
+    "exact": 31,
+    "semantic": 52,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 31,
+     "semantic": 52
+    },
+    "10": {
+     "exact": 124,
+     "semantic": 165
+    },
+    "20": {
+     "exact": 124,
+     "semantic": 164
+    },
+    "30": {
+     "exact": 125,
+     "semantic": 165
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 92
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 92
+   },
+   "exact_B_vs_B2": {
+    "losses": 1,
+    "n": 240,
+    "p": 1.0,
+    "wins": 1
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Amount": 52,
+    "Vendor Name": 40
+   },
+   "experience": {
+    "completion_tokens": 2177,
+    "documents": 40,
+    "learn_passes": 19,
+    "lessons_applied": 1,
+    "lessons_rejected": 9,
+    "prompt_tokens": 25279
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 1,
+   "passed_A": {
+    "exact": 31,
+    "semantic": 52
+   },
+   "passed_B": {
+    "exact": 123,
+    "semantic": 165
+   },
+   "passed_B2": {
+    "exact": 123,
+    "semantic": 165
+   },
+   "regress": {
+    "H": {
+     "exact": 108,
+     "failed": 132,
+     "note": "harmful lesson applied",
+     "passed": 108,
+     "run_id": "eval-h",
+     "semantic": 163,
+     "total": 240
+    },
+    "R": {
+     "exact": 123,
+     "failed": 117,
+     "note": "harmful lesson reverted",
+     "passed": 123,
+     "run_id": "eval-r",
+     "semantic": 165,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 14,
+     "n": 240,
+     "p": 0.031539,
+     "wins": 29
+    },
+    "exact_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 14,
+     "n": 240,
+     "p": 0.031539,
+     "wins": 29
+    },
+    "semantic_B_vs_H": {
+     "losses": 6,
+     "n": 240,
+     "p": 0.790527,
+     "wins": 8
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 6,
+     "n": 240,
+     "p": 0.790527,
+     "wins": 8
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 31.0,
+      "current": 123.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the vendor name and amount on every receipt, not just the date.",
+     "why": "Capture the vendor name and amount from each receipt in addition to the date."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record the vendor name and amount on every receipt, using the corrected values from user feedback, not the initially extracted ones.",
+     "why": "The rule relies on a feedback stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a user corrects a receipt's vendor name or amount, update all related records with the corrected values immediately.",
+     "why": "The rule involves actions beyond the assistant's single-step process."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a user corrects a receipt's vendor name or address, apply the correction to the record immediately and permanently.",
+     "why": "This rule involves actions beyond the assistant's role of capturing fields."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Update vendor name and address on every receipt using the corrected values from user feedback, not the initially extracted ones.",
+     "why": "The rule requires a stage the assistant does not have, as it involves user feedback."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Treat user-provided corrections as definitive and update all related fields in the receipt record without exception.",
+     "why": "This rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a user corrects a receipt's vendor address or invoice date, update the record immediately and permanently using the corrected values, regardless of prior extraction.",
+     "why": "This rule involves a stage beyond the assistant's single-step process."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "After a user corrects any field in a receipt, apply the correction to all instances of that receipt and prevent reversion to initial extraction values.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a user corrects a receipt's vendor name, address, or date, update the record immediately and permanently using the corrected values, regardless of prior extraction.",
+     "why": "This rule involves actions beyond the assistant's role of capturing fields from receipts."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a user corrects a receipt's vendor address, invoice date, or amount, update the record immediately and permanently using the corrected values, regardless of prior extraction.",
+     "why": "This rule involves actions beyond the assistant's role of capturing fields from receipts."
+    }
+   ],
+   "seed_dir": "seed1",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 113
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 113
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Amount": 58,
+    "Vendor Name": 55
+   },
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 36,
+    "semantic": 55,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     60,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     60,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 36,
+     "semantic": 55
+    },
+    "10": {
+     "exact": 141,
+     "semantic": 222
+    },
+    "20": {
+     "exact": 132,
+     "semantic": 216
+    },
+    "30": {
+     "exact": 150,
+     "semantic": 221
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 109
+   },
+   "exact_B_vs_A": {
+    "losses": 1,
+    "n": 240,
+    "p": 0.0,
+    "wins": 106
+   },
+   "exact_B_vs_B2": {
+    "losses": 4,
+    "n": 240,
+    "p": 0.125,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Amount": 56,
+    "Vendor Address": 8,
+    "Vendor Name": 42
+   },
+   "experience": {
+    "completion_tokens": 3591,
+    "documents": 40,
+    "learn_passes": 17,
+    "lessons_applied": 7,
+    "lessons_rejected": 4,
+    "prompt_tokens": 29224
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 7,
+   "passed_A": {
+    "exact": 36,
+    "semantic": 55
+   },
+   "passed_B": {
+    "exact": 141,
+    "semantic": 221
+   },
+   "passed_B2": {
+    "exact": 145,
+    "semantic": 221
+   },
+   "regress": {
+    "H": {
+     "exact": 113,
+     "failed": 127,
+     "note": "harmful lesson applied",
+     "passed": 113,
+     "run_id": "eval-h",
+     "semantic": 200,
+     "total": 240
+    },
+    "R": {
+     "exact": 144,
+     "failed": 96,
+     "note": "harmful lesson reverted",
+     "passed": 144,
+     "run_id": "eval-r",
+     "semantic": 221,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 7,
+     "n": 240,
+     "p": 1.5e-05,
+     "wins": 35
+    },
+    "exact_B_vs_R": {
+     "losses": 3,
+     "n": 240,
+     "p": 0.25,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.0,
+     "wins": 35
+    },
+    "semantic_B_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.000104,
+     "wins": 25
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.000104,
+     "wins": 25
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 141.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the vendor name and amount on every receipt, not just the date.",
+     "why": "Capture the vendor name and amount along with the date for each receipt."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the vendor's full address exactly as printed on every receipt, including all formatting and capitalization.",
+     "why": "Capture the vendor's full address exactly as printed."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Correct vendor name to official registered form (e.g., AEON CO. (M) SDN BHD) when it differs from the receipt's printed version, unless the receipt explicitly shows the correct form.",
+     "why": "Do not alter vendor names as printed on receipts."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including all capitals, spaces, and punctuation, without standardizing or correcting it.",
+     "why": "Capture the vendor name exactly as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record the vendor's full address exactly as printed on every receipt, including all formatting, capitalization, and punctuation.",
+     "why": "I've already told you this \u2014 it restates: extract and record the vendors full address exactly as printed on ever"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name and address exactly as printed on the receipt, including all capitals, spaces, punctuation, and formatting, without any standardization or correction.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including all c"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract the vendor address exactly as printed on the receipt, even if it matches a known standard format, to preserve source fidelity.",
+     "why": "Capture the vendor address exactly as printed to ensure accuracy."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including all capitals, spaces, punctuation, and formatting, without any standardization or correction.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including all c"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Write the amount as a plain number with two decimal places and no currency sign, like 53.30.",
+     "why": "Write amounts as plain numbers with two decimal places and no currency sign."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Use the exact date format as printed on the receipt, such as 16/03/2018, not 16-03-18.",
+     "why": "Use the date format as printed on the receipt."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the vendor address exactly as printed on the receipt, including all capitals, spaces, punctuation, and formatting, without any standardization or correction.",
+     "why": "Capture the vendor address exactly as printed."
+    }
+   ],
+   "seed_dir": "seed2",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 166
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 166
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Amount": 60,
+    "Vendor Address": 49,
+    "Vendor Name": 57
+   },
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 30,
+    "semantic": 46,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 30,
+     "semantic": 46
+    },
+    "10": {
+     "exact": 125,
+     "semantic": 161
+    },
+    "20": {
+     "exact": 120,
+     "semantic": 161
+    },
+    "30": {
+     "exact": 118,
+     "semantic": 161
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 89
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 88
+   },
+   "exact_B_vs_B2": {
+    "losses": 1,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Amount": 49,
+    "Vendor Name": 39
+   },
+   "experience": {
+    "completion_tokens": 2182,
+    "documents": 40,
+    "learn_passes": 19,
+    "lessons_applied": 2,
+    "lessons_rejected": 7,
+    "prompt_tokens": 24942
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 2,
+   "passed_A": {
+    "exact": 30,
+    "semantic": 46
+   },
+   "passed_B": {
+    "exact": 118,
+    "semantic": 161
+   },
+   "passed_B2": {
+    "exact": 119,
+    "semantic": 161
+   },
+   "regress": {
+    "H": null,
+    "R": null,
+    "all_ok": null,
+    "checks": {
+     "every applied lesson got a verdict": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson reached the queue": false
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 30.0,
+      "current": 118.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 30.0,
+      "current": 118.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the vendor name and amount on every invoice, not just the date.",
+     "why": "This rule tells you which fields to capture from a receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Write dates in DD/MM/YYYY format and use the correct vendor name as specified in user feedback.",
+     "why": "Use the vendor name as printed on the receipt, not from user feedback."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Verify and correct vendor name against known correct values from prior accepted records.",
+     "why": "You cannot verify against prior records; capture the vendor name as printed."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Resolve vendor name and address discrepancies by referencing verified values from previously accepted document records.",
+     "why": "The assistant cannot reference previous records; it reads one receipt at a time."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Record the full vendor address (including unit, street, city, postal code, and state) from user feedback and verify it against accepted document records.",
+     "why": "Verification against document records is not a step the assistant can perform."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When user feedback provides a vendor address, verify it against the latest accepted document record and apply it uniformly to all subsequent invoice entries.",
+     "why": "The assistant cannot verify or apply addresses from user feedback."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and store the full vendor address (unit, street, city, postal code, state) from user feedback and verify it against accepted document records before processing each invoice.",
+     "why": "The rule requires verification against documents, which the assistant cannot do."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and store the full vendor address (including unit, street, city, postal code, and state) from user feedback and verify it against accepted document records before processing each invoice.",
+     "why": "The rule requires verification against records, which the assistant cannot do."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including all capitals, parentheses, and spacing, based on user feedback and accepted records.",
+     "why": "Copying the vendor name exactly as printed ensures accuracy and consistency."
+    }
+   ],
+   "seed_dir": "seed3",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 115
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 115
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Amount": 58,
+    "Vendor Name": 57
+   },
+   "trials_per_arm": 240
+  }
+ ]
+}
