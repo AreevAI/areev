@@ -24,6 +24,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proposal, current is a run journaled after the apply; no baseline run means
   no metric rather than a fabricated one, and the direction is mandatory.
 
+- **Four ways to carry something forward, on cost and accuracy.** The
+  receipts harness gains three arms beside the governed loop and a cost
+  ledger under all of them. `mem0_arm.py` runs real `mem0ai` 2.0 as its
+  README says to — `add()` after each document, `search()` before the next —
+  in three modes (as installed, with its domain hint, and verbatim store),
+  against the same receipts, agent and held-out set as the governed run.
+  `slm_corpus.py` / `slm_train.sh` / `slm_eval.sh` turn a run's governed
+  memory into a LoRA on Qwen2.5-1.5B with `mlx_lm` and evaluate it — tuned
+  and untuned — under arm B's exact prompt through `scripts/slm_serve.py`,
+  which speaks the agent adapter's JSON-on-stdio contract to a local
+  `mlx_lm.server`. `structure.py` reads one fixed rule set under every
+  (position × format) cell, formats rendered by CAL's own renderers.
+  Every model call now meters into `$AREEV_USAGE_LOG` — both OpenRouter
+  adapters, mem0's SDK calls, and the local model — and `cost.py` prices it
+  from a pinned table, flagging anything unpriced. `fourway.py` assembles
+  the accuracy and cost charts; `FOURWAY.md` records the result.
+
 - **A ledger that changes its mind.** `receipts/ledger_profile.py` gains
   `regimes`, letting a filing convention be *replaced* mid-deployment on
   top of the `arc` that already lets requirements arrive, and `drift.sh`
