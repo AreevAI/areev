@@ -2,7 +2,7 @@
 """The tuned small model as an agent leg: same JSON-on-stdio contract as
 openrouter_toolcall.py, served by a local mlx_lm.server.
 
-    slm_serve.py NAME [--port 8081] [--seed N]
+    slm_serve.py NAME [--port 8081] [--seed N] [--model REPO]
 
 One JSON request on stdin ({"op":"chat","messages":[...],"temperature":0}),
 one JSON response on stdout ({"message":{"role","content"},"usage":{...}}).
@@ -41,19 +41,26 @@ def main():
     argv = sys.argv[1:]
     if not argv:
         sys.exit("usage: slm_serve.py NAME [--port P] [--seed N]")
+    # NAME is the metering label. `model` is what the server was started
+    # with -- mlx_lm.server treats the request's model field as a repo to
+    # LOAD, so a label it does not recognise makes it go to the Hub and 404
+    # every call. That cost the first evaluation run all 120 documents.
     name, port, seed, i = argv[0], 8081, None, 1
+    model = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
     while i < len(argv):
         if argv[i] == "--port":
             port, i = int(argv[i + 1]), i + 2
         elif argv[i] == "--seed":
             seed, i = int(argv[i + 1]), i + 2
+        elif argv[i] == "--model":
+            model, i = argv[i + 1], i + 2
         else:
             sys.exit("unknown flag %s" % argv[i])
     req = json.load(sys.stdin)
     if req.get("op") == "probe":
         print(json.dumps({"model": "mlx-slm:" + name}))
         return
-    body = {"model": name, "messages": req.get("messages", []),
+    body = {"model": model, "messages": req.get("messages", []),
             "temperature": req.get("temperature", 0), "max_tokens": 400}
     if seed is not None:
         body["seed"] = seed
