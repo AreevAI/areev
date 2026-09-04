@@ -22,8 +22,15 @@ grains the harness writes, not about reading a receipt.
 That is the reason the receipts run's rules are what they are, and it is a
 property of **how the evidence is framed**, not of which model proposes:
 three models of very different sizes converge on the same shape over the
-same memory. EXPENSE.md states the same thing from the other direction —
-"the framing of the evidence chose the audience of the lesson".
+same memory.
+
+The framing is not that the person's words are missing. Dumped off the
+wire, the bundle is 39 observations to 25 facts and its first item is the
+accountant saying *"I also need the vendor and the amount on every one of
+these"*. The model reads that — a complaint carrying the corrected values
+in the same sentence — as the agent having **asked** for data it already
+had, and proposes "do not request it again". `../../RECEIPTS.md` has the
+full quote and what follows from it.
 
 **A caveat against the model the authoring-rate grid selected.** All five
 of `gpt-oss-120b`'s proposals were refused at GROUND here, against zero

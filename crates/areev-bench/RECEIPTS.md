@@ -289,20 +289,52 @@ a rule that hurt was detected from held-out measurement, reverted through
 the API, and kept from coming straight back — while the learning half, at
 this scale and with this evidence framing, did not survive to the end state.
 
-### Why the rules are shaped like that
+### Why the rules are shaped like that — the loop read the conversation backwards
 
 The pre-registered diagnostic
 ([`results/receipts-learners-2026-09-04/`](results/receipts-learners-2026-09-04/))
 ran five governed learn passes per model over one fixed 40-receipt memory.
 **Not one of fifteen passes, across `gpt-oss-120b`, `qwen3-30b` and
-`qwen3-235b`, proposed a rule naming a field to capture.** Every proposal
-is shaped like *"if a Vendor Address fact exists for the current document,
-store it without a trailing period"* — a rule about the fact grains the
-harness writes, not about reading a receipt. Three models of very different
-sizes converging on one shape over one memory says the shape comes from the
-evidence, not the proposer, which is what
-[`EXPENSE.md`](EXPENSE.md) means by "the framing of the evidence chose the
-audience of the lesson".
+`qwen3-235b`, proposed a rule naming a field to capture.** Three models of
+very different sizes converging on one shape over one memory says the shape
+comes from the evidence rather than the proposer — so the next question is
+what the evidence actually looked like, and the answer is not what it
+appeared to be.
+
+**The accountant's instruction is in the bundle, first, and not buried.**
+Dumping one DISCOVER request off the wire: the 64-item evidence bundle is
+**39 observations to 25 facts** — the person's words dominate the numbers —
+and item one is, verbatim:
+
+> Thanks — I also need the vendor and the amount on every one of these,
+> otherwise I can't file it. Vendor Name is …
+
+The DISCOVER instruction, for its part, already asks for exactly the rule
+that sentence calls for, in its own example text: *"Either ADD an action it
+is failing to take ('Record the vendor name and the amount on every
+invoice, not just the date')"*.
+
+**And the model proposes the opposite.** From the same request:
+
+> "The agent repeatedly requests vendor name and address even when already
+> recorded, causing redundant user interaction" → lesson: *"If a Vendor Name
+> or Vendor Address fact exists for the current document, do not request
+> adding it."*
+
+The accountant's messages carry a complaint **and the corrected values** in
+one sentence, and the model resolves that shape backwards: it reads a person
+supplying a correction as the agent having *asked* for data it already had.
+Every rule this corpus produced follows from that one misreading, which is
+why they are all about not re-requesting and about tidying values already
+present.
+
+That is a defect in how this harness records a correction — the grain does
+not say who spoke or in which direction — and it is the same failure
+[`EXPENSE.md`](EXPENSE.md) records twice under "the framing of the evidence
+chose the audience of the lesson". It is left standing here rather than
+fixed, because fixing it after seeing the result is how a benchmark gets
+tuned toward its answer; the fix is a separate experiment with its own
+pre-registration.
 
 The same diagnostic is the evidence against the model the authoring-rate
 grid's rule selected: all five of `gpt-oss-120b`'s proposals were refused
