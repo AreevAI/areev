@@ -600,6 +600,29 @@ measuring the corpus or the embedder, not the index — and it should not be
 quoted either as a reason to adopt ANN or as a reason to avoid it. Re-run the
 two commands above against the model you will actually deploy.
 
+## Governed self-improvement on real, public data
+
+Two harnesses measure the same claim as the A/B/A/B bench below, on
+documents and tasks nobody wrote for this repo:
+
+| harness | corpus | what the agent learns from | write-up |
+|---|---|---|---|
+| `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | an accountant correcting the row it filed | [`RECEIPTS.md`](RECEIPTS.md) |
+| `tau2/` | τ²-bench retail — 114 tool-using customer tasks | its own failures under a policy it was deployed missing | [`tau2/README.md`](tau2/README.md) |
+
+Both keep the rule the synthetic bench established: the prompt is assembled
+from live memory on every episode, so Areev's own apply/rollback is the only
+lever, and arm A is produced by a real rollback rather than by declining to
+render. Both additionally exercise the **Verify** gate on LLM-authored rules
+— the leg the A/B/A/B bench never measured — by naming the held-out set as
+the outcome evalset and, in the receipts harness, admitting a deliberately
+harmful rule to prove the revert path fires.
+
+The private-corpus predecessor of the receipts harness is
+[`EXPENSE.md`](EXPENSE.md); the instrument that chose their learner
+configuration is [`SELFIMPROVE.md`](SELFIMPROVE.md), "The authoring-rate
+instrument".
+
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
 `cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,
