@@ -620,6 +620,38 @@ capture  (tool calls, facts, events)   — record_tool_call / add / import
 4. **Verify** — after a review window the stored metric re-runs and the outcome
    is recorded; regressions propose a revert (§8.4).
 
+**What the proposer optimizes for, and what an authored change is measured
+against, are both host policy** (`docs/loop.md`; added 2026-09-04). Two keys,
+both default-closed in the sense that omitting them keeps the previous
+behaviour exactly:
+
+- `discover_objective` selects the DISCOVER scoring rule. The default
+  (`review_queue`) makes abstention a zero-penalty answer and a wrong
+  finding cost twice a right one — correct for a queue a person triages, and
+  measured to cost a cheap model roughly half its lessons. `learner` makes
+  withholding a lesson over a recurring failure cost the same as a wrong
+  one, for a deployment where the agent has to improve from this pass. It
+  changes the scoring paragraph and nothing else: GROUND, VERIFY, the
+  confidence floor and human review are identical under both, so the
+  objective moves the proposer's recall and the gates keep the precision.
+- `outcome_evalset` names the evalset every *applicable LLM-authored*
+  proposal is re-measured against after apply. It exists because an authored
+  lesson carries no recurrence metric — nothing errors when a lesson is
+  merely useless — so without it the Verify gate had nothing to re-run for
+  exactly the proposals a reviewer approves from prose alone. Baseline comes
+  from the newest run journaled before the proposal, current from runs
+  journaled after the apply, and no baseline run means no metric rather than
+  a fabricated one.
+
+The rule that a **measured revert is a verdict on the finding** belongs with
+them: a rollback normally lets a finding re-propose ("the situation
+returned"), which is right when an operator retracts a lesson by hand and
+wrong when the Verify gate caused it — there the situation never left, so
+the next pass would re-propose what the reviewer just retracted. Applying an
+`outcome_review` revert therefore puts the reverted finding on the same
+doubling cooldown a rejection earns; a manual rollback still earns none,
+which is what keeps a deliberate retraction restorable.
+
 Auto-apply is **off by default** and, where a host policy file grants it, is
 restricted to structural, engine-verified, non-destructive curation on
 memory/query targets only — never prompts, never destruction, never LLM-drafted
