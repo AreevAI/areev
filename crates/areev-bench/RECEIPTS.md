@@ -556,6 +556,9 @@ the day-one field on 180 of 180 held-out receipts and the other three on
 **0**. Under arm B it fills Vendor Name and Amount on 180 of 180, and
 Vendor Address on 60 of 180 (seed 2 alone learned the address).
 
+Evidence:
+[`results/receipts-sroie-run2-2026-09-04/`](results/receipts-sroie-run2-2026-09-04/).
+
 ### Run 2 result — per seed
 
 **The agent learned, and the gain is large, clean and causally attributed.**
@@ -603,24 +606,40 @@ learner is `qwen3-30b` rather than `gpt-oss-120b`. Both were needed to get
 additive rules at all. Which one carries the effect is not answered here
 and is not claimed.
 
-#### The curve: learned early, and it stays
+#### The curves: learned early, and they stay
 
-Same 60 held-out receipts against memory as it stood through the run:
+Same held-out receipts against memory as it stood through each run:
 
 | exact (of 240) at | 0 | 10 | 20 | 30 | B (40) |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **run 2**, seed 1 | 31 | **124** | 124 | 125 | 123 |
+| **run 2**, seed 2 | 36 | **141** | 132 | 150 | 141 |
+| **run 2**, seed 3 | 30 | **125** | 120 | 118 | 118 |
 | run 1, seed 1 | 31 | 31 | 86 | 33 | 33 |
+| run 1, seed 2 | 36 | 36 | 37 | 37 | 37 |
+| run 1, seed 3 | 30 | 30 | 0 | 0 | 0 |
 
-The rule was applied after the sixth experience receipt, and everything the
-agent gains it has gained by the tenth. It then holds flat for thirty more
-receipts and eleven more learn passes — the reviewer rejecting every
-further proposal — where run 1's curve swung to 86 and collapsed to 33 over
-the same span.
+Every run 2 seed reaches its level by the first checkpoint and holds it for
+thirty more receipts and a dozen more learn passes, the reviewer rejecting
+most further proposals. Run 1's seeds either never moved, swung and
+collapsed, or went to zero.
 
 That stability is worth as much as the level. A loop whose gain survives
 its own subsequent passes is one an operator can leave running; run 1's was
 not, and the run 1 sections below are the record of why.
+
+#### Seed 3's verify leg did not finish
+
+A provider error killed the harness mid-arm after it had established that
+both of seed 3's learned rules measured `held` with no revert proposed. It
+could not be re-run: the interrupted attempt had already applied its
+deliberately harmful rule and crashed before the revert, so that memory now
+carries an applied rule that is an artifact of the crash. Seed 3's headline
+numbers are unaffected — its evaluation completed before the verify leg
+began — and seeds 1 and 2 ran the leg in full, as did two seeds of run 1.
+The crash produced a fix: an arm now scores a failed call as the document
+producing nothing and still reports, rather than taking the measurements
+before it down too.
 
 #### The whole cycle, on the improved agent
 
