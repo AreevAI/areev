@@ -765,6 +765,68 @@ lands is published in this table, including a cell that contradicts the
 reading above. If cell C matches run 2, this document will say the
 projection fix was not what earned it.
 
+### Ablation result — both changes earned part of it, and different parts
+
+Evidence: [`results/receipts-ablation-2026-09-04/`](results/receipts-ablation-2026-09-04/).
+
+| | evidence **anonymous** | evidence **named** |
+|---|---|---|
+| learner `gpt-oss-120b` | **run 1** — A 97 → B **70** (3 wins, 30 losses) | **cell D** — running |
+| learner `qwen3-30b` | **cell C** — A 97 → B **255** (158 wins, 0 losses) | **run 2** — A 97 → B **382** (286 wins, 1 loss) |
+
+**Arm A is 97/720 in all three completed cells.** Same agent, same receipts,
+same seeds, same rollback path, three separate runs hours apart. That
+equality is the drift check the pre-registration promised, and it holds
+exactly, so the B column is comparable.
+
+Neither change alone accounts for the result:
+
+| step | B | gained |
+|---|:---:|:---:|
+| run 1 | 70/720 | — |
+| swap the learner model (→ cell C) | 255/720 | **+185** |
+| add attribution on top (→ run 2) | 382/720 | **+127** |
+
+**They buy different things**, which is the part worth keeping.
+
+*The learner model buys the convention.* Cell C's gain is almost entirely
+one rule — *"Write all dates in DD/MM/YYYY format"* — and on two of its
+three seeds coverage never moves at all: 29 and 30 of its wins are the date
+field alone. That is the same field, on the same corpus, where
+`gpt-oss-120b` proposed **ISO 8601** and took run 1's seed 3 from 30 correct
+to 0. Two models, one corpus, one field, opposite rules.
+
+*Attribution buys reliability, not capability.* Without it the model still
+finds the additive rule and still proposes it — repeatedly. What changes is
+whether it survives review. In cell C the additive rule got through on
+**1 of 3 seeds**; in run 2, on **3 of 3**. Seed 1's ledger is the clearest
+case: fifteen rejections, one approval, and the rejected proposals all read
+like
+
+> "Extract vendor name and amount from every invoice **immediately upon
+> receipt, before any other processing**"
+
+which the reviewer refuses, correctly, as *"presupposes a stage the
+assistant does not have."* With the observer named the same model writes
+
+> "Extract and record the vendor name and amount on every receipt, not just
+> the date."
+
+So the mechanism is not that attribution helps the model understand. It is
+that **an unattributed correction leads the model to invent a workflow
+around the exchange**, and a reviewer doing its job refuses rules that
+depend on stages the agent has not got. The projection defect converted
+into a governance rejection, which is why it cost a whole run.
+
+**This corrects the reading published earlier in this document.** The
+"Outcome: it moved one model of three" section measured *approved additive
+rules over one fixed memory* and concluded attribution changed what the
+model authors. Over full runs the sharper statement is that it changes what
+survives review, and the difference between 1 of 3 seeds and 3 of 3 is the
+whole of the 127-point gap. Cell C is also not a null: at 158 wins and 0
+losses it is a real result on its own, and anyone citing run 2's 286 should
+know that 158 of it survives without the engine fix.
+
 ### Not affected by the τ² bridge bug
 
 The sibling [`tau2/`](tau2/README.md) harness had a tool-call parsing

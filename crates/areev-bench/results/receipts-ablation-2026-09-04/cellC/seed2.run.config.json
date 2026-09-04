@@ -1,0 +1,15 @@
+{
+ "profile": "sroie",
+ "seed": 2,
+ "experience": 40,
+ "eval": 60,
+ "evalset": "95a1ac22abc25f8f",
+ "policy": "{\"discover_objective\": \"learner\", \"evidence_attribution\": \"anonymous\", \"outcome_evalset\": {\"hash\": \"95a1ac22abc25f8f\", \"field\": \"exact\", \"higher_is_better\": true}}",
+ "learn_every": 2,
+ "measure": true,
+ "journal_baseline": true,
+ "agent_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507 --provider coreweave/bf16 --seed 2",
+ "loop_llm_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_loop.py qwen/qwen3-30b-a3b-instruct-2507 --provider coreweave/bf16 --seed 2",
+ "loop_ground_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_loop.py openai/gpt-4o-mini --provider openai --seed 2",
+ "review_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py openai/gpt-4o --provider openai --seed 2"
+}

@@ -1,0 +1,1054 @@
+{
+ "pooled": {
+  "exact_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 155
+  },
+  "exact_B_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 158
+  },
+  "exact_B_vs_B2": {
+   "losses": 5,
+   "n": 720,
+   "p": 0.581055,
+   "wins": 8
+  },
+  "passed": {
+   "A": {
+    "exact": 97,
+    "semantic": 153
+   },
+   "B": {
+    "exact": 255,
+    "semantic": 298
+   },
+   "B2": {
+    "exact": 252,
+    "semantic": 297
+   }
+  },
+  "semantic_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 144
+  },
+  "semantic_B_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 145
+  },
+  "semantic_B_vs_B2": {
+   "losses": 0,
+   "n": 720,
+   "p": 1.0,
+   "wins": 1
+  },
+  "trials_per_arm": 720
+ },
+ "seeds": [
+  {
+   "A0": {
+    "exact": 31,
+    "semantic": 52,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 31,
+     "semantic": 52
+    },
+    "10": {
+     "exact": 60,
+     "semantic": 60
+    },
+    "20": {
+     "exact": 60,
+     "semantic": 60
+    },
+    "30": {
+     "exact": 60,
+     "semantic": 60
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 29
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 29
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Invoice Date": 29
+   },
+   "experience": {
+    "completion_tokens": 1192,
+    "documents": 40,
+    "learn_passes": 19,
+    "lessons_applied": 1,
+    "lessons_rejected": 15,
+    "prompt_tokens": 24723
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 1,
+   "passed_A": {
+    "exact": 31,
+    "semantic": 52
+   },
+   "passed_B": {
+    "exact": 60,
+    "semantic": 60
+   },
+   "passed_B2": {
+    "exact": 60,
+    "semantic": 60
+   },
+   "regress": {
+    "H": {
+     "exact": 11,
+     "failed": 229,
+     "note": "harmful lesson applied",
+     "passed": 11,
+     "run_id": "eval-h",
+     "semantic": 51,
+     "total": 240
+    },
+    "R": {
+     "exact": 60,
+     "failed": 180,
+     "note": "harmful lesson reverted",
+     "passed": 60,
+     "run_id": "eval-r",
+     "semantic": 60,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 49
+    },
+    "exact_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 49
+    },
+    "semantic_B_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.003906,
+     "wins": 9
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.003906,
+     "wins": 9
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 31.0,
+      "current": 60.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Standardize all invoice dates to DD/MM/YYYY format during extraction.",
+     "why": "Use DD/MM/YYYY format for all invoice dates."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant cannot link fields to a document ID as it reads one receipt and returns the row in a single step."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Verify that vendor name, amount, and address are all extracted before any further processing of an invoice.",
+     "why": "The rule presupposes a stage of further processing which the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant does not handle document IDs or multiple stages."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant cannot link fields to a document ID as it reads one receipt and returns the row in a single step."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Verify that vendor name, amount, and address are all extracted before any further processing of an invoice.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant does not handle document IDs or multiple stages."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice immediately upon receipt, before any other processing.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Verify that vendor name, amount, and address are all extracted before any further processing of an invoice.",
+     "why": "The rule presupposes a stage of verification before processing, which the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant does not handle document IDs or linking processes."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Link every extracted field to its source document ID immediately upon extraction to prevent data misattribution.",
+     "why": "The assistant does not handle document IDs or linking processes."
+    }
+   ],
+   "seed_dir": "seed1",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.007812,
+    "wins": 8
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.007812,
+    "wins": 8
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Invoice Date": 8
+   },
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 36,
+    "semantic": 55,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 36,
+     "semantic": 55
+    },
+    "10": {
+     "exact": 126,
+     "semantic": 174
+    },
+    "20": {
+     "exact": 132,
+     "semantic": 178
+    },
+    "30": {
+     "exact": 132,
+     "semantic": 178
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 96
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 99
+   },
+   "exact_B_vs_B2": {
+    "losses": 5,
+    "n": 240,
+    "p": 0.581055,
+    "wins": 8
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Amount": 35,
+    "Invoice Date": 24,
+    "Vendor Name": 40
+   },
+   "experience": {
+    "completion_tokens": 2721,
+    "documents": 40,
+    "learn_passes": 17,
+    "lessons_applied": 5,
+    "lessons_rejected": 21,
+    "prompt_tokens": 29141
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 5,
+   "passed_A": {
+    "exact": 36,
+    "semantic": 55
+   },
+   "passed_B": {
+    "exact": 135,
+    "semantic": 178
+   },
+   "passed_B2": {
+    "exact": 132,
+    "semantic": 177
+   },
+   "regress": {
+    "H": {
+     "exact": 62,
+     "failed": 178,
+     "note": "harmful lesson applied",
+     "passed": 62,
+     "run_id": "eval-h",
+     "semantic": 154,
+     "total": 240
+    },
+    "R": {
+     "exact": 132,
+     "failed": 108,
+     "note": "harmful lesson reverted",
+     "passed": 132,
+     "run_id": "eval-r",
+     "semantic": 178,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 1,
+     "n": 240,
+     "p": 0.0,
+     "wins": 74
+    },
+    "exact_B_vs_R": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.548828,
+     "wins": 7
+    },
+    "exact_R_vs_H": {
+     "losses": 1,
+     "n": 240,
+     "p": 0.0,
+     "wins": 71
+    },
+    "semantic_B_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 24
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 24
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 36.0,
+      "current": 135.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 135.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 135.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 135.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 36.0,
+      "current": 135.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract vendor name and amount from every invoice during initial parsing; do not rely on follow-up instructions.",
+     "why": "It tells you which fields to capture from a receipt."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case and punctuation.",
+     "why": "Capture vendor name and address exactly as printed for consistency."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation and registration suffixes.",
+     "why": "Copying the vendor name exactly ensures accuracy and consistency."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case and punctuation.",
+     "why": "already in force \u2014 this restates a rule I've approved"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation and registration suffixes.",
+     "why": "already in force \u2014 this restates a rule I've approved"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Write dates as DD/MM/YYYY, like 30/06/2018.",
+     "why": "Use the DD/MM/YYYY format for all dates."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Write the amount as a plain number with two decimals and no currency sign, like 27.90.",
+     "why": "Use this format for all amounts."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, and spacing.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the vendor name exactly as printed on the receipt, including full legal designation, parentheses, and registration suffixes.",
+     "why": "I've already told you this \u2014 it restates: copy the vendor name exactly as printed on the receipt including full "
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor name and address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract vendor address from every invoice during initial parsing; use the exact text as printed, including case, punctuation, spacing, and legal designations.",
+     "why": "I've already told you this \u2014 it restates: extract vendor name and address from every invoice during initial pars"
+    }
+   ],
+   "seed_dir": "seed2",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 122
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 123
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 1
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Amount": 60,
+    "Invoice Date": 5,
+    "Vendor Name": 58
+   },
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 30,
+    "semantic": 46,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 30
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 30
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Invoice Date": 30
+   },
+   "experience": {
+    "completion_tokens": 1198,
+    "documents": 40,
+    "learn_passes": 20,
+    "lessons_applied": 1,
+    "lessons_rejected": 23,
+    "prompt_tokens": 24503
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 1,
+   "passed_A": {
+    "exact": 30,
+    "semantic": 46
+   },
+   "passed_B": {
+    "exact": 60,
+    "semantic": 60
+   },
+   "passed_B2": {
+    "exact": 60,
+    "semantic": 60
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Write all dates in DD/MM/YYYY format, such as 19/01/2017.",
+     "why": "Use DD/MM/YYYY format for all dates."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it processes each receipt in one step."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it processes each receipt in one step."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'FOUR QUARTERS SDN BHD').\"",
+     "why": "Do not alter vendor names as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'FOUR QUARTERS SDN BHD').\"",
+     "why": "Do not alter vendor names as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'FOUR QUARTERS SDN BHD').\"",
+     "why": "Do not alter vendor names as printed on receipts."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'FOUR QUARTERS SDN BHD').\"",
+     "why": "Do not alter vendor names as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it reads and returns in one step."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'MR. D.I.Y. (KUCHAI) SDN BHD').\"",
+     "why": "a fact about one document, not a rule for future ones (entity:document/document_0023)"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it processes each receipt in one step."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'MR. D.I.Y. (KUCHAI) SDN BHD').\"",
+     "why": "a fact about one document, not a rule for future ones (entity:document/document_0025)"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it processes each receipt in one step."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or finalize as it reads and returns rows in one step."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'B & BEST RESTAURANT').\"",
+     "why": "a fact about one document, not a rule for future ones (entity:document/document_0029)"
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'MR. D.I.Y. (M) SDN BHD').\"",
+     "why": "Do not alter vendor names as printed on receipts."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The rule presupposes a stage the assistant does not have."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'SANYU STATIONERY SHOP').\"",
+     "why": "Do not alter vendor names as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Before finalizing, verify that all extracted fields (name, address, amount) are present and correctly assigned to the document ID.",
+     "why": "The assistant cannot verify or assign document IDs."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "normalization_rule = \"Vendor names should be normalized to uppercase with consistent spacing and punctuation (e.g., 'POPULAR BOOK CO. (M) SDN BHD').\"",
+     "why": "a fact about one document, not a rule for future ones (entity:document/document_0039)"
+    }
+   ],
+   "seed_dir": "seed3",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.000122,
+    "wins": 14
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.000122,
+    "wins": 14
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Invoice Date": 14
+   },
+   "trials_per_arm": 240
+  }
+ ]
+}
