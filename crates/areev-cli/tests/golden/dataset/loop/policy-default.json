@@ -4,5 +4,6 @@
   "deny": [],
   "severity_floors": {},
   "telemetry": "aggregate",
-  "discover_objective": "review_queue"
+  "discover_objective": "review_queue",
+  "evidence_attribution": "named"
 }
