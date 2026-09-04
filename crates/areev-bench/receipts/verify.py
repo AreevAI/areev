@@ -5,9 +5,12 @@
     verify.py <results-dir> --check       # CI: recomputed == committed, checksums intact
 
 `--write` refuses a directory whose seeds disagree on which artifacts they
-carry — the shape a run still flushing to disk has — because that silently
-publishes a result with one seed's evidence missing. `--allow-ragged` writes
-anyway, for a run genuinely cut short, and records what is absent.
+carry, because that silently publishes a result with one seed's evidence
+missing. That shape is not exotic: `curve.sh` evaluates the learning-curve
+snapshots **last**, after the paired evaluation and the regress leg, so a
+seed still running has its headline numbers on disk and no curve at all.
+`--allow-ragged` writes anyway, for a run genuinely cut short, and records
+what is absent.
 
 A results directory holds one `seedN/` per seed, each as curve.sh left it:
 `a0.summary.json`, `experience.summary.json`, `journal.jsonl`,
@@ -213,13 +216,13 @@ def render_md(results):
 def raggedness(seeds):
     """Artifacts one seed has and another lacks.
 
-    Twice now, `--write` has been run while a seed was still flushing its
-    snapshot evals to disk: the seed contributed no learning curve (and once
-    no `regress` block at all), every published number still looked right,
-    and nothing said a seed was missing. A results file that silently drops
-    one seed's evidence is the worst failure this script has, because it is
-    invisible in its own output. So compare the seeds against each other and
-    say so.
+    Twice now, `--write` has been run over a seed that had not finished its
+    curve legs — which `curve.sh` runs last, after the regress leg. The seed
+    contributed no learning curve (and once no `regress` block at all), every
+    published number still looked right, and nothing said a seed was missing.
+    A results file that silently drops one seed's evidence is the worst
+    failure this script has, because it is invisible in its own output. So
+    compare the seeds against each other and say so.
 
     A seed that *recorded* a failed leg is not ragged — the block is there,
     reporting its own failure, which is the harness working."""

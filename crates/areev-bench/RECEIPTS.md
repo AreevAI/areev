@@ -881,14 +881,20 @@ for S in 1 2 3; do SEED=$S LEARNER_MODEL=openai/gpt-oss-120b \
 python3 verify.py runs --write               # every published number, recomputed
 ```
 
-`--write` refuses if the seeds disagree on which artifacts they carry, which
-is the shape a run still flushing snapshots to disk has. That is not
-hypothetical: it silently cost the ad-buy corpus a seed's learning curve and
-cost the ablation's cell C a whole verify-then-revert leg, in both cases
-leaving every published number correct and nothing saying a seed was
-missing. Wait and re-run, or pass `--allow-ragged` for a run genuinely cut
-short — which records what is absent, so `--check` fails the day the rest
-arrives.
+`--write` refuses if the seeds disagree on which artifacts they carry.
+
+That shape is structural, not exotic. `curve.sh` evaluates the learning-curve
+snapshots **last**, after the paired evaluation and the regress leg, so a
+seed still running already has its headline numbers on disk and no curve at
+all — and a results file written then looks complete and correct. It has
+cost a curve three times now: once to `set -e` aborting on a failed regress
+check (the comment in `curve.sh` records it), once on the ad-buy corpus, and
+once on the ablation's cell C, where it took a whole verify-then-revert leg
+with it. Each time every published number was right and nothing said a seed
+had contributed less than the others.
+
+Wait and re-run, or pass `--allow-ragged` for a run genuinely cut short —
+which records what is absent, so `--check` fails the day the rest arrives.
 
 Committed evidence and what deliberately stays local:
 [`results/receipts-sroie-2026-09-04/`](results/receipts-sroie-2026-09-04/).
