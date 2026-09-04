@@ -105,38 +105,45 @@ before paying to find out. Recorded here because "we ran it and it was
 zero" and "we checked first" are different claims, and only one of them is
 true.
 
-## Result — the domain is out of reach for this agent model
+## Retracted: "the domain is out of reach"
 
-**τ²-bench's own shipped agent, on the same tasks with the same model,
-scores 0.0000.** That is the control that matters, and it was run before
-any conclusion was drawn about this bridge:
+**An earlier revision of this file claimed τ²-bench retail was out of reach
+for this agent model, on the strength of a FULL arm scoring 0 of 25. That
+claim was wrong and is withdrawn. The zero was a bug in this bridge.**
 
-```
-tau2 run --domain retail --task-ids 20 21 22 --max-steps 50   --agent-llm openrouter/qwen/qwen3-30b-a3b-instruct-2507   --user-llm  openrouter/qwen/qwen3-30b-a3b-instruct-2507
-```
+The bench's chat adapter returns a tool call flattened onto the call object
+(`{id, name, arguments}`); OpenAI nests it under `function`. `agent.py` read
+only the nested shape, so **every tool call the model made parsed as
+nameless and was dropped**. The agent could not take a single action in any
+episode. What it did instead was answer with the empty-reply fallback —
+658 times across 32 episodes, roughly 20 turns per conversation, which is
+the number that gave the bug away.
 
-| task | reward | DB check | NL assertions | ended |
-|---|:---:|:---:|:---:|---|
-| 20 | 0.0 | 0.0 | 1.0 | user_stop |
-| 22 | 0.0 | 0.0 | 1.0 | user_stop |
-| 21 | 0.0 | — | — | max_steps |
+With the shape accepted, the same agent on the same tasks solves them:
+a two-task smoke went from 0 to **1 of 2**.
 
-The agent converses acceptably — the natural-language assertions pass, and
-its partial-action scores are 43% and 80% — but it never reaches the exact
-gold database state τ²'s reward requires. Our own FULL arm (whole policy,
-whole tool descriptions, no lessons) matched it at 0 over its first
-episodes, which is what stopped the run.
+Two things this cost, both recorded rather than tidied away:
 
-**So no learning claim can be made in this domain at this model, and none
-is.** With the ceiling at zero there is no headroom for a governed loop to
-close, and any B-vs-A number here would be measuring the agent's ceiling
-rather than the loop. The bridge, the redaction and the audit all work —
-the smoke ran the whole chain end to end — and they are committed for a
-run against a model that can actually clear the bar. What is *not* here is
-a number dressed up as a finding.
+- **A published conclusion was wrong for about forty minutes.** It was
+  caught by counting a log line that looked like noise, not by any gate.
+  The lesson is the one this repo keeps relearning — a null result needs a
+  positive control before it is believed, and "the agent scored zero" and
+  "the agent never acted" are different claims that look identical in a
+  reward column.
+- **The native control was over-read.** τ²-bench's own shipped agent does
+  score 0.0000 on retail tasks 20, 21 and 22 with this model
+  (`results/tau2-ceiling-2026-09-04/`), and that measurement stands. But
+  three tasks is three tasks: it was never enough to carry "out of reach",
+  and it was leaned on because it agreed with a broken arm.
 
-Evidence, including the native control's raw results:
-[`../results/tau2-ceiling-2026-09-04/`](../results/tau2-ceiling-2026-09-04/).
+`agent.py` now counts `tool_calls_returned` beside `malformed_tool_calls`,
+so a run where the two diverge says "parsing bug" rather than "a model that
+would not act".
+
+## Result
+
+*Not yet run. The ceiling probe is being re-run against the fixed bridge;
+until it reports, this file publishes no τ² number.*
 
 ## Two things to know before reading a number
 

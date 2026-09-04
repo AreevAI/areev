@@ -48,6 +48,7 @@ class AreevRetailAgent(HalfDuplexAgent):
         self.max_tokens = max_tokens
         self.calls = []  # every (request, reply) this episode, for the record
         self.malformed_calls = 0
+        self.total_tool_calls = 0
 
     @property
     def system_prompt(self):
@@ -107,7 +108,13 @@ class AreevRetailAgent(HalfDuplexAgent):
 
         tool_calls, malformed = [], 0
         for tc in msg.get("tool_calls") or []:
-            fn = tc.get("function") or {}
+            # Two shapes reach here. OpenAI nests name/arguments under
+            # "function"; the bench's own adapter flattens them onto the call
+            # (`{id, name, arguments}`). Reading only the nested one made
+            # EVERY tool call parse as nameless, so the agent could not act at
+            # all and answered with the clarification fallback below — 658
+            # times across 32 episodes before anyone counted them. Accept both.
+            fn = tc.get("function") or tc
             name = (fn.get("name") or "").strip()
             if not name:
                 # A tool call with no function name is a malformed reply, not
@@ -127,6 +134,7 @@ class AreevRetailAgent(HalfDuplexAgent):
             tool_calls.append(ToolCall(id=tc.get("id") or ("call_%s" % uuid.uuid4().hex[:8]),
                                        name=name, arguments=args))
         self.malformed_calls += malformed
+        self.total_tool_calls += len(msg.get("tool_calls") or [])
         content = msg.get("content") or None
         if not content and not tool_calls:
             # A reply that is neither text nor a tool call fails τ²'s own
@@ -139,8 +147,15 @@ class AreevRetailAgent(HalfDuplexAgent):
         return AssistantMessage(role="assistant", content=content,
                                 tool_calls=tool_calls or None, cost=0.0)
 
+    def wire_tool_calls_seen(self):
+        """Tool calls the model returned, however shaped — the counterpart to
+        `malformed_calls`. A run where these diverge is a parsing bug, not a
+        model that would not act, and the two have to be told apart."""
+        return self.total_tool_calls
+
     def usage(self):
         p = sum(int((c["usage"] or {}).get("prompt_tokens") or 0) for c in self.calls)
         c = sum(int((c["usage"] or {}).get("completion_tokens") or 0) for c in self.calls)
         return {"prompt_tokens": p, "completion_tokens": c, "calls": len(self.calls),
+                "tool_calls_returned": self.total_tool_calls,
                 "malformed_tool_calls": self.malformed_calls}
