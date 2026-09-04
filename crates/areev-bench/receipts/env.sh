@@ -20,6 +20,10 @@ REPO="${REPO:-$(cd "$HERE/../../.." && pwd)}"
 PY="${PY:-$REPO/.venv/bin/python3}"
 SCRIPTS="$REPO/crates/areev-bench/scripts"
 SEED="${SEED:-1}"
+# Drivers redirect stdout to a log, and Python block-buffers when it is not a
+# tty — so a run that is working looks identical to one that is hung for many
+# minutes at a stretch. Progress is the point of those lines.
+export PYTHONUNBUFFERED=1
 
 AGENT_MODEL="${AGENT_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}"
 AGENT_PIN="${AGENT_PIN:-coreweave/bf16}"
