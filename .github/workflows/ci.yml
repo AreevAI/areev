@@ -274,6 +274,11 @@ jobs:
         run: |
           . .venv/bin/activate
           sh crates/areev-bench/receipts/dryrun.sh "${RUNNER_TEMP}/receipts-dry" 8 2 6
+          # The non-stationary variant: a convention replaced mid-run, three
+          # arms scored per checkpoint, and the verify pass recording `held`
+          # on a rule that has become wrong -- the gate's known blind spot,
+          # kept visible in CI rather than discovered again.
+          sh crates/areev-bench/receipts/dryrun_drift.sh "${RUNNER_TEMP}/drift-dry" 12 2 6 4
 
   agent-example:
     # The keyless floor, enforced. `examples/agents/` promises every agent
