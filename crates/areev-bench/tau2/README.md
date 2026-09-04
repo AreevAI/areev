@@ -140,6 +140,15 @@ Two things this cost, both recorded rather than tidied away:
 so a run where the two diverge says "parsing bug" rather than "a model that
 would not act".
 
+**Nothing else in the repo was affected, and the reason stings.** The
+adapter's own docstring documents the flat shape, and the Rust sibling that
+consumes it — the synthetic bench's agent — has handled both for as long as
+it has existed, in one line: `let f = tc.get("function").unwrap_or(tc);`.
+The pattern was already written, in the same crate, against the same
+adapter. This bridge just did not copy it. The published A/B/A/B results,
+which run through that Rust path, are untouched; so is the receipts
+harness, whose agent uses no tools at all.
+
 ## Result
 
 *Not yet run. The ceiling probe is being re-run against the fixed bridge;
