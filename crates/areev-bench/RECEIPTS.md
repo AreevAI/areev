@@ -783,6 +783,12 @@ same seeds, same rollback path, three separate runs hours apart. That
 equality is the drift check the pre-registration promised, and it holds
 exactly, so the B column is comparable.
 
+Cell C also passed the **verify-then-revert leg on 3 of 3 seeds** — every
+one of the eleven checks, on every seed, including the two whose learned
+rules bought nothing. On seed 3 the planted rule took 60 to 13, the gate
+measured `regressed`, and the revert restored 60 exactly, with no
+re-proposal. Governance does not depend on the learner being the good one.
+
 Neither change alone accounts for the result:
 
 | step | B | gained |

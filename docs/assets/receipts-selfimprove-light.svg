@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 384" width="920" height="384" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
 <title>Governed self-improvement on public receipts: run 1 reaches 70 of 720 exact against a rolled-back baseline of 97; cell C reaches 255 of 720 exact against a rolled-back baseline of 97; run 2 reaches 382 of 720 exact against a rolled-back baseline of 97.</title>
-<desc>Left panel: learning curves over the same held-out receipts, scored after 0, 10, 20, 30 and 40 experience documents; every curve starts on the same shelf near 33 of about 240. run 1: seeds end at 33, 37, 0 of about 240, arm A pooled 97 of 720 and arm B 70, paired 3 wins to 30 losses. cell C: seeds end at 60, 135, 60 of about 240, arm A pooled 97 of 720 and arm B 255, paired 158 wins to 0 losses. run 2: seeds end at 123, 141, 118 of about 240, arm A pooled 97 of 720 and arm B 382, paired 286 wins to 1 losses. Right panel: pooled arms per cell. Arm A is the same height in every cell because the agent, documents, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved.</desc>
+<desc>Left panel: learning curves over the same held-out receipts, scored after 0, 10, 20, 30 and 40 experience documents; every curve starts on the same shelf near 32 of about 240. run 1: seeds end at 33, 37, 0 of about 240, arm A pooled 97 of 720 and arm B 70, paired 3 wins to 30 losses. cell C: seeds end at 60, 135, 60 of about 240, arm A pooled 97 of 720 and arm B 255, paired 158 wins to 0 losses. run 2: seeds end at 123, 141, 118 of about 240, arm A pooled 97 of 720 and arm B 382, paired 286 wins to 1 losses. Right panel: pooled arms per cell. Arm A is the same height in every cell because the agent, documents, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved.</desc>
 <line x1="58" y1="326.0" x2="558" y2="326.0" stroke="#e4e6ec" stroke-width="1"/>
 <text x="49" y="330.0" text-anchor="end" font-size="11" fill="#5f6470">0</text>
 <line x1="58" y1="253.0" x2="558" y2="253.0" stroke="#e4e6ec" stroke-width="1"/>
@@ -48,7 +48,11 @@
 <circle cx="308.0" cy="111.9" r="2.8" fill="#8a6d1f" opacity="0.82"/>
 <circle cx="433.0" cy="111.9" r="2.8" fill="#8a6d1f" opacity="0.82"/>
 <circle cx="558.0" cy="107.0" r="2.8" fill="#8a6d1f" opacity="0.82"/>
-<path d="L558.0,228.7" fill="none" stroke="#8a6d1f" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.69"/>
+<path d="M58.0,277.3 L183.0,228.7 L308.0,228.7 L433.0,228.7 L558.0,228.7" fill="none" stroke="#8a6d1f" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.69"/>
+<circle cx="58.0" cy="277.3" r="2.8" fill="#8a6d1f" opacity="0.69"/>
+<circle cx="183.0" cy="228.7" r="2.8" fill="#8a6d1f" opacity="0.69"/>
+<circle cx="308.0" cy="228.7" r="2.8" fill="#8a6d1f" opacity="0.69"/>
+<circle cx="433.0" cy="228.7" r="2.8" fill="#8a6d1f" opacity="0.69"/>
 <circle cx="558.0" cy="228.7" r="2.8" fill="#8a6d1f" opacity="0.69"/>
 <path d="M58.0,275.7 L183.0,124.8 L308.0,124.8 L433.0,123.2 L558.0,126.5" fill="none" stroke="#1f6f4f" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"/>
 <circle cx="58.0" cy="275.7" r="2.8" fill="#1f6f4f" opacity="0.95"/>

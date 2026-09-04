@@ -837,6 +837,24 @@
      60
     ]
    },
+   "curve": {
+    "0": {
+     "exact": 30,
+     "semantic": 46
+    },
+    "10": {
+     "exact": 60,
+     "semantic": 60
+    },
+    "20": {
+     "exact": 60,
+     "semantic": 60
+    },
+    "30": {
+     "exact": 60,
+     "semantic": 60
+    }
+   },
    "exact_B2_vs_A": {
     "losses": 0,
     "n": 240,
@@ -879,6 +897,83 @@
    "passed_B2": {
     "exact": 60,
     "semantic": 60
+   },
+   "regress": {
+    "H": {
+     "exact": 13,
+     "failed": 227,
+     "note": "harmful lesson applied",
+     "passed": 13,
+     "run_id": "eval-h",
+     "semantic": 50,
+     "total": 240
+    },
+    "R": {
+     "exact": 60,
+     "failed": 180,
+     "note": "harmful lesson reverted",
+     "passed": 60,
+     "run_id": "eval-r",
+     "semantic": 60,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 47
+    },
+    "exact_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.0,
+     "wins": 47
+    },
+    "semantic_B_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.001953,
+     "wins": 10
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 0.001953,
+     "wins": 10
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 30.0,
+      "current": 60.0,
+      "verdict": "held"
+     }
+    ]
    },
    "review_decisions": [
     {
