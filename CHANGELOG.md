@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The DISCOVER objective is host policy.** `discover_objective` in the loop
+  policy file selects what the LLM proposer optimizes for: `review_queue`
+  (the default, byte-for-byte the previous instruction apart from the cite
+  sentence) makes abstention free and a wrong finding cost double — right for
+  a queue a person triages; `learner` makes withholding a lesson over a
+  recurring failure cost the same as a wrong one, for a deployment that has
+  to improve from this pass. It changes the scoring paragraph only: GROUND,
+  VERIFY, the confidence floor and human review are identical under both.
+- **An authored lesson can carry an outcome metric.** `outcome_evalset` names
+  the evalset every applicable LLM-authored proposal is re-measured against
+  after apply, so the Verify gate finally has something to re-run for the
+  proposals a reviewer approves from prose alone — nothing errors when a
+  lesson is merely useless. Baseline is the newest run journaled before the
+  proposal, current is a run journaled after the apply; no baseline run means
+  no metric rather than a fabricated one, and the direction is mandatory.
+
+### Changed
+
+- **A revert the Verify gate caused puts the finding on cooldown.** A
+  rollback normally lets a finding re-propose ("the situation returned"),
+  which is right for an operator's own rollback and wrong after a measured
+  regression — there the situation never left, so the next pass re-proposed
+  the lesson the reviewer had just been asked to revert. Applying an
+  `outcome_review` revert now strikes the same doubling cooldown a rejection
+  earns; a manual `areev loop rollback` still earns none.
+- **A draft may cite evidence by bundle id.** Evidence items carry a short
+  `id` (`e1`, `e2`, …) beside the hash, and a DISCOVER draft may cite that,
+  the full hash, or an unambiguous ≥12-hex prefix. Measured, the 64-hex
+  transcription check was where most of a small model's drafts died — not
+  fabrication, just copying. An uncited draft is still dropped.
+- **An authored proposal dedups on its content.** The dedup key excludes
+  proposal content, which is right for an analyzer finding and wrong for an
+  authored lesson, where the content *is* the finding: a second lesson on one
+  entity was silently dropped as a duplicate of the first. LLM-authored
+  executable proposals now key on a fingerprint of their normalized content
+  as well; advisory flags keep one open flag per target.
+
 ## [1.7.2] — 2026-09-02
 
 ### Fixed
