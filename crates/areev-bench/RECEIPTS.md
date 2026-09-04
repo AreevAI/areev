@@ -9,6 +9,18 @@ the corpus cannot leave the company. This is the same design on a public
 corpus, with the harness in the repo (`receipts/`), so the whole result can
 be re-run by a stranger for a few dollars.
 
+**The answer here is two answers, and they point opposite ways.** Across
+three seeds the rules an LLM authored and a human-rubric reviewer approved
+made the agent *worse* — pooled, 3 wins against 30 losses, p = 0.000001 —
+and one approved rule that contradicted the accountant's own written
+instruction took the agent from 30 correct to 0 after passing four
+independent gates. The thing that caught it was the fifth: measuring the
+held-out set under it. So on this corpus **governance is proven and
+LLM-authored learning is not**, and the honest headline is that the
+governed loop's value here was to detect and undo its own bad advice.
+[Skip to the result](#result); everything before it is how the measurement
+was set up, written before it was run.
+
 ## The corpus
 
 **ICDAR 2019 SROIE** (Huang et al., [arXiv:2103.10213](https://arxiv.org/abs/2103.10213)):
