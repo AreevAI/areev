@@ -45,3 +45,8 @@ export REVIEW_CMD="${REVIEW_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $REVIEW_MOD
 # brace. It cost a run before anyone read the value.
 DEFAULT_LOOP_POLICY='{"discover_objective":"learner"}'
 export LOOP_POLICY="${LOOP_POLICY:-$DEFAULT_LOOP_POLICY}"
+
+# The corpus. One variable picks the ledger profile and the dataset that
+# goes with it, so a driver never has to know which corpus it is running.
+export PROFILE="${PROFILE:-sroie}"
+export DATASET="${DATASET:-$HERE/data/$PROFILE.jsonl}"

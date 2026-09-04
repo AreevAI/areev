@@ -10,5 +10,4 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env.sh"
 WORKDIR="$1"; shift
-DATASET="${DATASET:-$HERE/data/sroie.jsonl}"
-exec "$PY" "$HERE/run.py" --dataset "$DATASET" --workdir "$WORKDIR" --seed "$SEED" "$@"
+exec "$PY" "$HERE/run.py" --profile "$PROFILE" --dataset "$DATASET" --workdir "$WORKDIR" --seed "$SEED" "$@"
