@@ -59,6 +59,10 @@ def main():
                          "a time series of eval runs rather than one reading at "
                          "the end.")
     args = ap.parse_args()
+    # Every model call this phase makes is metered here (see scripts/*.py _meter),
+    # so cost is read from journaled tokens, never estimated afterwards.
+    os.makedirs(args.workdir, exist_ok=True)
+    os.environ.setdefault("AREEV_USAGE_LOG", os.path.join(args.workdir, "usage.jsonl"))
 
     profile = ledger_profile.get(args.profile)
     os.makedirs(args.workdir, exist_ok=True)

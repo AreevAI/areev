@@ -29,6 +29,27 @@ import time
 import urllib.error
 import urllib.request
 
+
+def _meter(model, provider, usage, op):
+    """Append one line to $AREEV_USAGE_LOG, if set. Every model call in a run
+    passes through one of these adapters, so this one hook meters the whole
+    programme -- agent, learner, grounder, reviewer -- and a cost chart can be
+    drawn from journaled tokens rather than from a card statement read after
+    the fact (which is how an earlier spend figure got published unmeasured)."""
+    path = os.environ.get("AREEV_USAGE_LOG")
+    if not path or not usage:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": int(time.time() * 1000), "script": os.path.basename(sys.argv[0]),
+                "model": model, "provider": provider, "op": op,
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+            }) + "\n")
+    except OSError:
+        pass
+
 RETRY_DELAYS = (2.0, 4.0, 8.0)
 
 CANNED_RESPONSE = {
@@ -228,6 +249,7 @@ def main() -> None:
         resp = post(body, key, base)
         try:
             out = normalize(resp)
+            _meter(model, provider, out.get("usage"), "chat")
         except (KeyError, IndexError, TypeError) as e:
             sys.stderr.write(
                 f"openrouter_toolcall: unexpected response shape ({e}); "
