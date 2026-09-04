@@ -202,9 +202,117 @@ rules where another does not, that is a claim about **proposers on this
 corpus** and would need its own A/B/A/B run to become a claim about
 learning.
 
-## Result
+## Result — seed 1 (seeds 2 and 3 still running)
 
-*Running. Nothing published yet.*
+**The end state is a null, and the null is the net of a large gain and a
+large regression.** Read the curve before the headline.
+
+| state | rules in the prompt | exact (of 240 trials) |
+|---|:---:|:---:|
+| A0 — as deployed, before any learning | 0 | 31 |
+| after 10 experience receipts | 0 | 31 |
+| after 20 | **2** | **86** |
+| after 30 | 3 | 33 |
+| B — after 40 (the published state) | 3 | 33 |
+| A — every rule rolled back | 0 | 31 |
+
+Arm A reproduces A0 exactly, 31 and 31, which is the causal lever working:
+rolling the rules back restores the state the agent was deployed in.
+
+Paired over the same 240 (receipt, field) trials: **B vs A is 2 wins, 0
+losses, p = 0.50**, against a B-vs-B2 noise floor of 1 discordant trial. On
+the pre-registered primary test this run did not move the corpus.
+
+**But at two rules it moved it enormously.** Coverage — whether the agent
+put *any* value in a field — is where the mechanism is visible:
+
+| field | A (0 rules) | 20 receipts (2 rules) | B (3 rules) |
+|---|:---:|:---:|:---:|
+| Invoice Date (day one) | 60/60 | 60/60 | 60/60 |
+| Vendor Name | **0/60** | **47/60** | 1/60 |
+| Vendor Address | **0/60** | **47/60** | 1/60 |
+| Amount | 0/60 | 0/60 | 0/60 |
+
+The agent as deployed captures the one field it was told about on every
+receipt and the other three on none. Two approved rules took two of those
+from 0 to 47. A third rule took them back to 1.
+
+**The third rule was a near-duplicate of the second, and the reviewer's
+duplicate check missed it by 0.03.** The three approved rules, in order:
+
+```
+1. If a Vendor Name fact exists …, store it without surrounding parentheses and extra periods.
+2. If a Vendor Address fact exists …, store it without a trailing period.
+3. If a Vendor Address fact exists …, store it without leading/trailing spaces and without duplicate commas.
+```
+
+Rules 2 and 3 share eight content words and differ in six, a Jaccard of
+**0.571** against the reviewer's 0.6 threshold, so it was admitted as a new
+rule. Same held-out receipts, same seed, temperature 0: with rules 1 and 2
+the agent returns a vendor name and address, and with rule 3 added it
+returns neither. The write-up does not claim to know *why* a third
+formatting rule suppresses capture; what is measured is that it did, and
+that nothing in the run noticed.
+
+**Nothing noticed because nothing measured between applies.** Each rule was
+approved on its text and applied; the held-out set was not read again until
+the end. The gate that exists for exactly this — re-measure an applied rule
+and revert it on regression — had no run to compare against while the
+damage was being done. That is the finding this corpus produced, and it is
+an argument about *cadence*, not about the gate.
+
+### The gate itself works, on the same corpus, live
+
+The verify-then-revert leg (`regress.py`) ran against the finished memory
+and passed every check:
+
+| step | exact (of 240) |
+|---|:---:|
+| B — the three learned rules | 33 |
+| H — a deliberately harmful rule admitted on purpose | **8** |
+| R — after the gate's revert was approved and applied | **34** |
+
+All three learned rules were measured `held` (baseline 31 from A0, current
+33 from B) and no revert was proposed for them. The harmful rule — "write
+the Invoice Date as MM/DD/YYYY", authored by a fixture model, grounded and
+verified by the stubs, approved on purpose — rendered into the prompt,
+collapsed the score to 8, was measured `regressed` against the journaled
+A0 baseline at its first checkpoint, and `outcome_review` proposed the
+revert. Approving and applying that revert retracted the rule through the
+same rollback path a person would use, restored the prompt, and recovered
+the score to 34. Asked again on the next pass, the same fixture model's
+identical proposal was **not** re-queued: a measured revert puts the
+finding on cooldown.
+
+So on real documents the governance half of the claim holds decisively —
+a rule that hurt was detected from held-out measurement, reverted through
+the API, and kept from coming straight back — while the learning half, at
+this scale and with this evidence framing, did not survive to the end state.
+
+### Why the rules are shaped like that
+
+The pre-registered diagnostic
+([`results/receipts-learners-2026-09-04/`](results/receipts-learners-2026-09-04/))
+ran five governed learn passes per model over one fixed 40-receipt memory.
+**Not one of fifteen passes, across `gpt-oss-120b`, `qwen3-30b` and
+`qwen3-235b`, proposed a rule naming a field to capture.** Every proposal
+is shaped like *"if a Vendor Address fact exists for the current document,
+store it without a trailing period"* — a rule about the fact grains the
+harness writes, not about reading a receipt. Three models of very different
+sizes converging on one shape over one memory says the shape comes from the
+evidence, not the proposer, which is what
+[`EXPENSE.md`](EXPENSE.md) means by "the framing of the evidence chose the
+audience of the lesson".
+
+The same diagnostic is the evidence against the model the authoring-rate
+grid's rule selected: all five of `gpt-oss-120b`'s proposals were refused
+at GROUND on this corpus, against zero refusals for either qwen. That grid
+measured a workload of tool failures; this one has none, and the selection
+did not transfer.
+
+*Seeds 2 and 3 are running and will be published here whatever they show.
+Seed 2 applied 2 rules and seed 3 applied 4, so between them they test the
+pattern above directly.*
 
 ## Reproduce
 
