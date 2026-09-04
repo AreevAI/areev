@@ -130,6 +130,7 @@ def svg(theme, cells, noun="receipts"):
     ymax = _shelf(peak)
     bmax = _shelf(max(res["pooled"]["passed"][a]["exact"]
                       for _l, res in cells for a in ("A", "B")))
+    same_a = len({res["pooled"]["passed"]["A"]["exact"] for _l, res in cells}) == 1
     px = lambda v: PAD_L + CURVE_W * (v / 40.0)
     py = lambda v: PAD_T + PLOT_H - PLOT_H * (v / ymax)
 
@@ -154,7 +155,7 @@ def svg(theme, cells, noun="receipts"):
     starts = [pts[0] for _l, cs, _c in series for _s, pts in cs if pts and pts[0] is not None]
     shelf = ("every curve starts on the same shelf near %d of about %d. "
              % (round(sum(starts) / len(starts)), per_seed)) if starts else ""
-    a(f'<desc>{esc("Left panel: learning curves over the same held-out " + noun + ", scored after 0, 10, 20, 30 and 40 experience documents; " + shelf + detail + " Right panel: pooled arms" + (" per cell. Arm A is the same height in every cell because the agent, documents, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved." if n > 1 else ", rolled back against applied."))}</desc>')
+    a(f'<desc>{esc("Left panel: learning curves over the same held-out " + noun + ", scored after 0, 10, 20, 30 and 40 experience documents; " + shelf + detail + " Right panel: pooled arms" + (" per cell. Arm A is the same height in every cell because the agent, documents, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved." if n > 1 and same_a else ", rolled back against applied."))}</desc>')
 
     for frac in range(0, 5):
         v = ymax * frac / 4.0
@@ -206,13 +207,16 @@ def svg(theme, cells, noun="receipts"):
     slot = BAR_W / (n * 2.6)
     a(f'<text x="{bx0}" y="{PAD_T-13}" font-size="11" fill="{t["muted"]}">'
       f'exact, of {trials} pooled trials</text>')
+    # The dashed rule across the A bars asserts they are equal — the drift
+    # check. Draw it only when they actually are, or it quietly claims a
+    # control held when it did not.
     a_height = None
     for ci, (label, res) in enumerate(cells):
         base = bx0 + ci * slot * 2.6
         for bi, (arm, colour) in enumerate((("A", t["off"]),
                                             ("B", series_colour(t, ci, n)))):
             v = res["pooled"]["passed"][arm]["exact"]
-            if arm == "A":
+            if arm == "A" and same_a:
                 a_height = PAD_T + PLOT_H - bh(v)
             x = base + bi * slot
             h = bh(v)
