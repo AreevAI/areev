@@ -377,8 +377,10 @@ and after receipt 40).
 
 | seed 3, held-out set at | rules | exact (of 240) |
 |---|:---:|:---:|
+| A0, before any learning | 0 | 30 |
 | after 10 experience receipts | 2 | 30 |
 | after 20 (the ISO rule now applied) | 3 | **0** |
+| after 30 | 4 | **0** |
 | B, after 40 | 5 | **0** |
 
 So more than half of that run's experience — the corrections the loop then
@@ -394,16 +396,19 @@ happens at the end.
 
 ### The gain that did not survive, and why it is reported
 
-Seed 1's learning curve — the same 60 held-out receipts against memory as
-it stood after 0, 10, 20 and 30 experience receipts — shows the process is
-far more volatile than the end states suggest:
+The three learning curves — the same 60 held-out receipts against memory as
+it stood after 0, 10, 20 and 30 experience receipts — show a process far
+more volatile than the end states suggest, and volatile in both directions:
 
-| seed 1 state | rules | exact (of 240) |
-|---|:---:|:---:|
-| A0 / after 10 receipts | 0 | 31 |
-| after 20 | **2** | **86** |
-| after 30 | 3 | 33 |
-| B (after 40) | 3 | 33 |
+| exact (of 240) at | 0 | 10 | 20 | 30 | B (40) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| seed 1 | 31 | 31 | **86** | 33 | 33 |
+| seed 2 | 36 | 36 | 37 | 37 | 37 |
+| seed 3 | 30 | 30 | **0** | 0 | 0 |
+
+Seed 2 is flat throughout. The other two move by 55 and by 30 between
+consecutive checkpoints, in opposite directions, and in both cases the
+published end state records none of it.
 
 Coverage says what moved: as deployed the agent fills the day-one field on
 60/60 receipts and the other three on 0/60. At two rules, Vendor Name and
