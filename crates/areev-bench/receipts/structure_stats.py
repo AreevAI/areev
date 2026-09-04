@@ -18,7 +18,7 @@ import sys
 from math import comb
 
 POSITIONS = ("system-bottom", "system-top", "user-turn")
-FORMATS = ("markdown", "json", "toon", "sml")
+FORMATS = ("markdown", "json", "xml", "toon", "cal-markdown")
 
 
 def mcnemar(b, c):

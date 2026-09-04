@@ -40,7 +40,7 @@ import ledger_profile
 import memory as mem
 
 BASE_CELL = ("system-bottom", "markdown")
-HEAD = "## INSTRUCTIONS FROM THE ACCOUNTANT\nThese come from the person who files these documents and they OVERRIDE the day-one instruction. If a rule names a field to capture, that field is REQUIRED.\n"
+FORMATS = ("markdown", "json", "xml", "toon", "cal-markdown")
 
 
 def mcnemar(b, c):
@@ -51,20 +51,39 @@ def mcnemar(b, c):
     return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / (2 ** n))
 
 
+def rule_texts(db):
+    return [(g["fields"].get("object") or "").strip()
+            for g in mem._lessons(db) if (g["fields"].get("object") or "").strip()]
+
+
 def render_rules(db, fmt):
-    q = 'RECALL facts WHERE namespace = "%s" AND relation = "lesson" LIMIT %d' % (mem.NS, mem.CAP)
+    """The SAME rule texts, in different clothes.
+
+    `markdown` is arm B's prompt section byte-for-byte (memory.lessons_markdown),
+    which makes the baseline cell a replication of the published arm and not
+    merely a cousin of it. The other formats carry identical text and the
+    identical header; only the container changes. `cal-markdown` is the one
+    exception on purpose: it is what CAL's own renderer emits for these
+    grains -- each rule prefixed with its subject and relation and suffixed
+    with confidence and date -- so the cost of that decoration is a measured
+    cell rather than a confound folded into every other one. (The first run
+    of this grid folded it in: a seven-rule memory scored 35 under CAL's
+    markdown against 141 under the hand-assembled prompt.)"""
+    md = mem.lessons_markdown(db)
+    head = md.split("\n- ", 1)[0] + "\n"
+    rules = sorted(set(rule_texts(db)))
+    if fmt == "markdown":
+        return md
     if fmt == "json":
-        grains = json.loads(db.cal(q + " FORMAT json"))["grains"]
-        rules = [g["fields"]["object"] for g in grains if (g["fields"].get("object") or "").strip()]
-        return HEAD + json.dumps({"rules": rules}, indent=1) + "\n"
-    # The binding returns CAL's render as an envelope {"format","grain_count",
-    # "text"}; the prompt gets the text. CAL renders each grain as
-    # subject + relation + object with confidence and date, so these cells
-    # carry "receipt_capture lesson ..." decorations the hand-assembled
-    # published prompt does not. That is the point of the cell: it is what
-    # the grains look like through the surface a template rewrite changes.
-    out = json.loads(db.cal(q + " FORMAT " + fmt))
-    return HEAD + out["text"].rstrip() + "\n"
+        return head + json.dumps({"rules": rules}, indent=1, ensure_ascii=False) + "\n"
+    if fmt == "xml":
+        return head + "<rules>\n" + "".join("  <rule>%s</rule>\n" % r.replace("&", "&amp;").replace("<", "&lt;") for r in rules) + "</rules>\n"
+    if fmt == "toon":
+        return head + "rules[%d]{text}:\n" % len(rules) + "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rules)
+    if fmt == "cal-markdown":
+        q = 'RECALL facts WHERE namespace = "%s" AND relation = "lesson" LIMIT %d FORMAT markdown' % (mem.NS, mem.CAP)
+        return head + json.loads(db.cal(q))["text"].rstrip() + "\n"
+    raise SystemExit("unknown format %s" % fmt)
 
 
 def assemble(profile, position, section, document_text):
@@ -93,7 +112,7 @@ def main():
     ap.add_argument("--eval", type=int, default=60)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--positions", default="system-bottom,system-top,user-turn")
-    ap.add_argument("--formats", default="markdown,sml,toon,json")
+    ap.add_argument("--formats", default=",".join(FORMATS))
     args = ap.parse_args()
 
     os.makedirs(args.workdir, exist_ok=True)
