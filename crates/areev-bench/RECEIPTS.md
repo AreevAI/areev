@@ -243,14 +243,15 @@ cautionary half.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/receipts-selfimprove-dark.svg">
   <img src="../../docs/assets/receipts-selfimprove-light.svg" width="880"
-       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all three, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C and 382 for run 2.">
+       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Cell D (blue) splits three ways: one seed rises to 151, one to 52, one never moves off 36. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all four, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C, 245 for cell D and 382 for run 2.">
 </picture>
 
-Three cells: run 1, the ablation's cell C, and run 2. The three arm-A bars
+Four cells: run 1, the ablation's cells C and D, and run 2. The four arm-A bars
 are drawn with a rule across them because they are the same height —
-97/720 in every cell, three runs hours apart. Regenerate with
+97/720 in every cell, four runs across a day. Regenerate with
 `python3 crates/areev-bench/scripts/receipts_chart.py
-docs/assets/receipts-selfimprove "run 1=<dir>" "cell C=<dir>" "run 2=<dir>"`;
+docs/assets/receipts-selfimprove "run 1=<dir>" "cell C=<dir>" "cell D=<dir>"
+"run 2=<dir>"`;
 every number comes from each cell's `RESULTS.json`, so the picture cannot
 drift from the tables.
 
@@ -775,13 +776,13 @@ Evidence: [`results/receipts-ablation-2026-09-04/`](results/receipts-ablation-20
 
 | | evidence **anonymous** | evidence **named** |
 |---|---|---|
-| learner `gpt-oss-120b` | **run 1** — A 97 → B **70** (3 wins, 30 losses) | **cell D** — running |
+| learner `gpt-oss-120b` | **run 1** — A 97 → B **70** (3 wins, 30 losses) | **cell D** — A 97 → B **245** (148 wins, 0 losses) |
 | learner `qwen3-30b` | **cell C** — A 97 → B **255** (158 wins, 0 losses) | **run 2** — A 97 → B **382** (286 wins, 1 loss) |
 
-**Arm A is 97/720 in all three completed cells.** Same agent, same receipts,
-same seeds, same rollback path, three separate runs hours apart. That
-equality is the drift check the pre-registration promised, and it holds
-exactly, so the B column is comparable.
+**Arm A is 97/720 in all four cells.** Same agent, same receipts, same
+seeds, same rollback path, four separate runs across a day. That equality is
+the drift check the pre-registration promised, and it holds exactly, so the
+B column is comparable.
 
 Cell C also passed the **verify-then-revert leg on 3 of 3 seeds** — every
 one of the eleven checks, on every seed, including the two whose learned
@@ -789,15 +790,58 @@ rules bought nothing. On seed 3 the planted rule took 60 to 13, the gate
 measured `regressed`, and the revert restored 60 exactly, with no
 re-proposal. Governance does not depend on the learner being the good one.
 
-Neither change alone accounts for the result:
+Cell D's leg passed in full on 1 of 3, and the two that did not are reported
+with their reasons rather than counted as passes. On seed 1 the planted rule
+*raised* the score (149 → 159), so there was no regression to catch and the
+sub-test is undefined — the same undefined case as the second corpus's seed
+3. On seed 2, which applied no rules at all, the gate still did its job (the
+planted rule took 36 to 7 and the revert restored 36 exactly); its single
+failed check was `every applied lesson got a verdict`, which asserted that
+*some* lesson got one and so could not be satisfied by a seed that learned
+nothing. That is a defect in the check, not in the gate, and it is fixed —
+zero applied lessons and zero verdicts now passes.
 
-| step | B | gained |
+### The prediction for cell D was wrong, and it was wrong by a lot
+
+The pre-registration above says a null was expected here, because the
+authoring diagnostic had `gpt-oss-120b` writing no additive rule in 0 of 5
+passes even with the observer named. Cell D is not a null. It is **+175**,
+within ten trials of what swapping the learner buys.
+
+That is worth two separate corrections.
+
+**The decomposition published before cell D landed was an artifact of the
+order it was measured in.** It read *swap the learner, +185; add attribution
+on top, +127*, which makes the learner sound primary and attribution a
+top-up. Measured from the same baseline they are near-equal main effects:
+
+| from run 1, change | B | gained |
 |---|:---:|:---:|
-| run 1 | 70/720 | — |
-| swap the learner model (→ cell C) | 255/720 | **+185** |
-| add attribution on top (→ run 2) | 382/720 | **+127** |
+| nothing — run 1 | 70/720 | — |
+| **attribution only** — cell D | 245/720 | **+175** |
+| **learner only** — cell C | 255/720 | **+185** |
+| both — run 2 | 382/720 | **+312** |
 
-**They buy different things**, which is the part worth keeping.
+Together they buy less than the +360 that adding the two main effects would
+predict, so they overlap. But neither is a top-up on the other: either one
+alone recovers rather more than half of the total gain.
+
+Cell D is the most variable cell in the square — 118, 0 and 30 wins across
+its three seeds, with one seed applying no rule at all. Attribution makes
+this learner *capable* of the result; it does not make it reliable at it.
+
+**The diagnostic did not predict the run — for the second time.** The first
+was when it measured what a model *authors* while the runs measured what
+*survives review* (corrected below). This is the second: it measured a
+learner writing nothing useful over one fixed memory, and that learner is
+worth +175 over full runs. The pre-registration for this corpus already
+refused to assume the transfer — *"the transfer from the authoring-rate grid
+is not assumed"* — and that caution is now measured rather than merely
+stated. `learners.py` is a screening tool for choosing what to run. It is
+not a predictor of what a run will do, and this document should not be read
+as though it were.
+
+**They still buy different things**, which is the part worth keeping.
 
 *The learner model buys the convention.* Cell C's gain is almost entirely
 one rule — *"Write all dates in DD/MM/YYYY format"* — and on two of its
@@ -828,14 +872,56 @@ around the exchange**, and a reviewer doing its job refuses rules that
 depend on stages the agent has not got. The projection defect converted
 into a governance rejection, which is why it cost a whole run.
 
+*Cell D shows a second symptom, and it is the one that unifies them.* The
+other learner does not get rejected — it gets the direction backwards. On
+**seed 3, the same seed, the same corpus, the same reviewer, with only the
+evidence rendering changed**:
+
+| `gpt-oss-120b`, seed 3 | A | B | paired |
+|---|:---:|:---:|---|
+| run 1 — evidence anonymous | 30 | **0** | 0 wins, 30 losses |
+| cell D — evidence named | 30 | **60** | 30 wins, 0 losses |
+
+A mirror, and the rules say why. Anonymous, that seed wrote *"Convert
+extracted Invoice Date to ISO 8601 (YYYY-MM-DD)"* plus three brittle patches
+for the exact strings it had seen (`NO <number>.`, `DIMILIKI OLEH :`). Named,
+it wrote *"Record invoice dates in DD/MM/YYYY format with slashes, not
+hyphens"* and *"Record the invoice date and vendor address for every receipt,
+not just vendor name and amount"* — the right convention, and the additive
+rule.
+
+Nothing about the evidence changed except who is named as having said it.
+The accountant's instruction was in that memory either way, **31 times in 40
+observations**.
+
+So the unified statement is that **attribution supplies the *direction* of a
+correction.** Read as a bare sentence, a correction shows the model that two
+values differ but not which one is authoritative. It then does one of two
+things, and this ablation caught both: it falls back on its own prior about
+how a date should look and patches the specific strings in front of it
+(`gpt-oss-120b`, silently wrong, passes review), or it invents a workflow
+that would explain the exchange (`qwen3-30b`, correctly rejected). Named, the
+same evidence identifies the ledger's convention and both models generalise
+from it.
+
+That also makes run 1 a confirmed diagnosis rather than a plausible one. The
+projection defect was *identified* from run 1's failure; cell D is the
+experiment that could have refuted it, in a cell pre-registered as an
+expected null, and it did not.
+
 **This corrects the reading published earlier in this document.** The
 "Outcome: it moved one model of three" section measured *approved additive
 rules over one fixed memory* and concluded attribution changed what the
 model authors. Over full runs the sharper statement is that it changes what
 survives review, and the difference between 1 of 3 seeds and 3 of 3 is the
-whole of the 127-point gap. Cell C is also not a null: at 158 wins and 0
+whole of that learner's gap. Cell C is also not a null: at 158 wins and 0
 losses it is a real result on its own, and anyone citing run 2's 286 should
 know that 158 of it survives without the engine fix.
+
+Cell D then corrected this reading a second time, in the other direction:
+"what survives review" is the mechanism for `qwen3-30b`, but for
+`gpt-oss-120b` the bad rules survive review perfectly well and are simply
+wrong. Both reduce to attribution carrying the direction of the correction.
 
 ### Not affected by the τ² bridge bug
 

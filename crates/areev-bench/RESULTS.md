@@ -632,7 +632,7 @@ landing on 97/720 in both**, so nothing drifted between them.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/receipts-selfimprove-dark.svg">
   <img src="../../docs/assets/receipts-selfimprove-light.svg" width="880"
-       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all three, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C and 382 for run 2.">
+       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Cell D (blue) splits three ways: one seed rises to 151, one to 52, one never moves off 36. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all four, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C, 245 for cell D and 382 for run 2.">
 </picture>
 
 Run 2 is the claim this repo exists to make, measured on real public
@@ -649,10 +649,27 @@ adversarial verification, and a human-rubric reviewer all passed it. Only
 re-measuring the held-out set caught it, proposed the revert, and restored
 the score. Neither run is revised by the other and both are published.
 
+The 2×2 that separates the two things run 2 changed at once is complete, and
+both changes are large main effects measured from run 1's baseline:
+
+| | evidence anonymous | evidence named |
+|---|:---:|:---:|
+| learner `gpt-oss-120b` | run 1 — **70** | cell D — **245** |
+| learner `qwen3-30b` | cell C — **255** | run 2 — **382** |
+
+Attribution alone is +175, the learner alone +185, both +312. Arm A is
+97/720 in all four cells. The sharpest single comparison is `gpt-oss-120b`
+on seed 3, where only the evidence rendering differs: anonymous it went
+30 → **0**, named it went 30 → **60**, and the rules show why — ISO 8601
+against the ledger's `DD/MM/YYYY` one way, the correct convention the other.
+**Attribution supplies the direction of a correction.** Cell D was
+pre-registered as an expected null; [`RECEIPTS.md`](RECEIPTS.md) records
+that it was not, and what that costs the diagnostic which predicted it.
+
 The private-corpus predecessor of the receipts harness is
 [`EXPENSE.md`](EXPENSE.md); the instrument that chose their learner
 configuration is [`SELFIMPROVE.md`](SELFIMPROVE.md), "The authoring-rate
-instrument".
+instrument" — a screening tool, not a predictor, as cell D demonstrates.
 
 ### The second corpus — public ad-buy invoices
 

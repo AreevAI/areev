@@ -77,6 +77,22 @@ def at(now_ms, fn, db_path, actor):
         os.environ.update(env)
 
 
+def applied_lessons(db_path):
+    """How many lessons are live in the memory right now.
+
+    The verdict check below needs this to be honest on a seed that learned
+    NOTHING: cell D's seed 2 applied zero lessons across nineteen passes, and
+    a check that simply asserted "some lesson got a verdict" failed it, while
+    reporting under a name that claims something else. Zero applied lessons
+    and zero verdicts is a pass — there was nothing to verify — and the gate
+    still has to handle the planted rule, which is a separate check."""
+    def count(db):
+        return sum(1 for g in mem._facts(db)
+                   if g.get("fields", {}).get("relation") in ("lesson", "fails_with")
+                   and (g["fields"].get("object") or "").strip())
+    return mem.with_memory(db_path, mem.REVIEWER, count)
+
+
 def pending(db_path):
     return json.loads(mem.with_memory(db_path, mem.REVIEWER,
                                       lambda db: db.recommendations('{"status":"pending"}')))
@@ -129,8 +145,10 @@ def main():
     verdicts = outcomes(db)
     report["steps"].append({"step": "verify", "loop": rep, "outcomes": verdicts})
     n_lessons = len({o["rec_hash"] for o in verdicts})
-    check("every applied lesson got a verdict", n_lessons > 0,
-          "%d lesson(s): %s" % (n_lessons, ", ".join(sorted({o["verdict"] for o in verdicts}))))
+    n_applied = applied_lessons(db)
+    check("every applied lesson got a verdict", n_lessons >= n_applied,
+          "%d verdict(s) for %d applied lesson(s): %s"
+          % (n_lessons, n_applied, ", ".join(sorted({o["verdict"] for o in verdicts})) or "none"))
     check("no revert proposed for the lessons that held",
           not any(r.get("analyzer", "").startswith("loop.outcome_review") for r in pending(db))
           or any(o["verdict"] == "regressed" for o in verdicts),

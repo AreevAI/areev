@@ -1,0 +1,865 @@
+{
+ "pooled": {
+  "exact_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 148
+  },
+  "exact_B_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 148
+  },
+  "exact_B_vs_B2": {
+   "losses": 2,
+   "n": 720,
+   "p": 1.0,
+   "wins": 2
+  },
+  "passed": {
+   "A": {
+    "exact": 97,
+    "semantic": 153
+   },
+   "B": {
+    "exact": 245,
+    "semantic": 348
+   },
+   "B2": {
+    "exact": 245,
+    "semantic": 348
+   }
+  },
+  "semantic_B2_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 195
+  },
+  "semantic_B_vs_A": {
+   "losses": 0,
+   "n": 720,
+   "p": 0.0,
+   "wins": 195
+  },
+  "semantic_B_vs_B2": {
+   "losses": 2,
+   "n": 720,
+   "p": 1.0,
+   "wins": 2
+  },
+  "trials_per_arm": 720
+ },
+ "seeds": [
+  {
+   "A0": {
+    "exact": 31,
+    "semantic": 52,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     60,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     60,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     60,
+     60
+    ],
+    "Vendor Name": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 31,
+     "semantic": 52
+    },
+    "10": {
+     "exact": 127,
+     "semantic": 169
+    },
+    "20": {
+     "exact": 126,
+     "semantic": 170
+    },
+    "30": {
+     "exact": 151,
+     "semantic": 221
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 118
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 118
+   },
+   "exact_B_vs_B2": {
+    "losses": 2,
+    "n": 240,
+    "p": 1.0,
+    "wins": 2
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Amount": 57,
+    "Invoice Date": 5,
+    "Vendor Address": 17,
+    "Vendor Name": 39
+   },
+   "experience": {
+    "completion_tokens": 2740,
+    "documents": 40,
+    "learn_passes": 18,
+    "lessons_applied": 3,
+    "lessons_rejected": 4,
+    "prompt_tokens": 25852
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 3,
+   "passed_A": {
+    "exact": 31,
+    "semantic": 52
+   },
+   "passed_B": {
+    "exact": 149,
+    "semantic": 221
+   },
+   "passed_B2": {
+    "exact": 149,
+    "semantic": 221
+   },
+   "regress": {
+    "H": {
+     "exact": 159,
+     "failed": 81,
+     "note": "harmful lesson applied",
+     "passed": 159,
+     "run_id": "eval-h",
+     "semantic": 222,
+     "total": 240
+    },
+    "R": {
+     "exact": 160,
+     "failed": 80,
+     "note": "harmful lesson reverted",
+     "passed": 160,
+     "run_id": "eval-r",
+     "semantic": 222,
+     "total": 240
+    },
+    "all_ok": false,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": false,
+     "applying the revert rolls the lesson back": false,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": false,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": false,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 13,
+     "n": 240,
+     "p": 0.021271,
+     "wins": 3
+    },
+    "exact_B_vs_R": {
+     "losses": 13,
+     "n": 240,
+     "p": 0.007385,
+     "wins": 2
+    },
+    "exact_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 1
+    },
+    "semantic_B_vs_H": {
+     "losses": 1,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_B_vs_R": {
+     "losses": 1,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 31.0,
+      "current": 149.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 31.0,
+      "current": 149.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 31.0,
+      "current": 149.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and store Vendor Name and Amount for every receipt captured.",
+     "why": "This rule tells you which fields to capture from a receipt."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Store extracted Invoice Date in DD/MM/YYYY format exactly as written on the receipt.",
+     "why": "Capture the Invoice Date in the format as written on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and store Vendor Address for every receipt captured.",
+     "why": "I've already told you this \u2014 it restates: extract and store vendor name and amount for every receipt captured"
+    },
+    {
+     "approved": false,
+     "kind": "advisory",
+     "text": "Preserve the exact capitalization of Vendor Names as they appear on receipts.",
+     "why": "advisory only \u2014 asks for no change"
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "postal_code = \"47400\"",
+     "why": "This rule fixes a value for one particular receipt or vendor."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Store Vendor Address exactly as captured, preserving original capitalization and punctuation.",
+     "why": "Preserving original capitalization and punctuation is a correct capture rule."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "postal_code = \"43200\"",
+     "why": "This rule fixes a value for one particular receipt or vendor."
+    }
+   ],
+   "seed_dir": "seed1",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 169
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 169
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Amount": 58,
+    "Invoice Date": 7,
+    "Vendor Address": 50,
+    "Vendor Name": 54
+   },
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 36,
+    "semantic": 55,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 36,
+     "semantic": 55
+    },
+    "10": {
+     "exact": 36,
+     "semantic": 55
+    },
+    "20": {
+     "exact": 36,
+     "semantic": 55
+    },
+    "30": {
+     "exact": 36,
+     "semantic": 55
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {},
+   "experience": {
+    "completion_tokens": 1182,
+    "documents": 40,
+    "learn_passes": 19,
+    "lessons_applied": 0,
+    "lessons_rejected": 2,
+    "prompt_tokens": 23635
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 0,
+   "passed_A": {
+    "exact": 36,
+    "semantic": 55
+   },
+   "passed_B": {
+    "exact": 36,
+    "semantic": 55
+   },
+   "passed_B2": {
+    "exact": 36,
+    "semantic": 55
+   },
+   "regress": {
+    "H": {
+     "exact": 7,
+     "failed": 233,
+     "note": "harmful lesson applied",
+     "passed": 7,
+     "run_id": "eval-h",
+     "semantic": 39,
+     "total": 240
+    },
+    "R": {
+     "exact": 36,
+     "failed": 204,
+     "note": "harmful lesson reverted",
+     "passed": 36,
+     "run_id": "eval-r",
+     "semantic": 55,
+     "total": 240
+    },
+    "all_ok": false,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": false,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 1e-06,
+     "wins": 33
+    },
+    "exact_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 1e-06,
+     "wins": 33
+    },
+    "semantic_B_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.001544,
+     "wins": 20
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 4,
+     "n": 240,
+     "p": 0.001544,
+     "wins": 20
+    },
+    "verdicts_after_B": []
+   },
+   "review_decisions": [
+    {
+     "approved": false,
+     "kind": "advisory",
+     "text": "Standardize extracted date strings to DD/MM/YYYY format and enforce validation to prevent future format mismatches.",
+     "why": "advisory only \u2014 asks for no change"
+    },
+    {
+     "approved": false,
+     "kind": "advisory",
+     "text": "Normalize vendor address strings to a consistent format (remove trailing punctuation and standardize whitespace) to avoid downstream mismatches.",
+     "why": "advisory only \u2014 asks for no change"
+    }
+   ],
+   "seed_dir": "seed2",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "semantic_wins_by_field_B_vs_A": {},
+   "trials_per_arm": 240
+  },
+  {
+   "A0": {
+    "exact": 30,
+    "semantic": 46,
+    "total": 240
+   },
+   "coverage_A": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     0,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     15,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Amount": [
+     0,
+     60
+    ],
+    "Invoice Date": [
+     60,
+     60
+    ],
+    "Vendor Address": [
+     16,
+     60
+    ],
+    "Vendor Name": [
+     0,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 30,
+     "semantic": 46
+    },
+    "10": {
+     "exact": 50,
+     "semantic": 74
+    },
+    "20": {
+     "exact": 50,
+     "semantic": 74
+    },
+    "30": {
+     "exact": 52,
+     "semantic": 73
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 30
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 30
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 240,
+    "p": 1.0,
+    "wins": 0
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Invoice Date": 30
+   },
+   "experience": {
+    "completion_tokens": 2733,
+    "documents": 40,
+    "learn_passes": 20,
+    "lessons_applied": 4,
+    "lessons_rejected": 6,
+    "prompt_tokens": 24065
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 3,
+   "passed_A": {
+    "exact": 30,
+    "semantic": 46
+   },
+   "passed_B": {
+    "exact": 60,
+    "semantic": 72
+   },
+   "passed_B2": {
+    "exact": 60,
+    "semantic": 72
+   },
+   "regress": {
+    "H": {
+     "exact": 16,
+     "failed": 224,
+     "note": "harmful lesson applied",
+     "passed": 16,
+     "run_id": "eval-h",
+     "semantic": 86,
+     "total": 240
+    },
+    "R": {
+     "exact": 61,
+     "failed": 179,
+     "note": "harmful lesson reverted",
+     "passed": 61,
+     "run_id": "eval-r",
+     "semantic": 72,
+     "total": 240
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 2,
+     "n": 240,
+     "p": 0.0,
+     "wins": 46
+    },
+    "exact_B_vs_R": {
+     "losses": 1,
+     "n": 240,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 2,
+     "n": 240,
+     "p": 0.0,
+     "wins": 47
+    },
+    "semantic_B_vs_H": {
+     "losses": 22,
+     "n": 240,
+     "p": 0.016125,
+     "wins": 8
+    },
+    "semantic_B_vs_R": {
+     "losses": 1,
+     "n": 240,
+     "p": 1.0,
+     "wins": 1
+    },
+    "semantic_R_vs_H": {
+     "losses": 23,
+     "n": 240,
+     "p": 0.020062,
+     "wins": 9
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 30.0,
+      "current": 60.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 30.0,
+      "current": 60.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 30.0,
+      "current": 60.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 30.0,
+      "current": 60.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Record the invoice date and vendor address for every receipt, not just vendor name and amount.",
+     "why": "Capture the invoice date and vendor address for completeness."
+    },
+    {
+     "approved": false,
+     "kind": "advisory",
+     "text": "Standardize vendor address capture to preserve original punctuation and spacing as provided by the source document.",
+     "why": "advisory only \u2014 asks for no change"
+    },
+    {
+     "approved": false,
+     "kind": "advisory",
+     "text": "Vendor name extraction includes redundant or parenthetical information, leading to inconsistent naming across documents.",
+     "why": "advisory only \u2014 asks for no change"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Normalize vendor names by removing parenthetical info and trailing punctuation before recording.",
+     "why": "Do not alter vendor names as printed on the receipt."
+    },
+    {
+     "approved": false,
+     "kind": "fact",
+     "text": "canonical_name = \"MR. D.I.Y. SDN BHD\"",
+     "why": "Do not alter vendor names as printed on receipts."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Preserve commas in vendor address extraction, keeping original punctuation unchanged.",
+     "why": "Preserve original punctuation in vendor addresses."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Preserve line breaks and original spacing when recording vendor addresses.",
+     "why": "Line breaks and spacing may not be consistent or necessary for address accuracy."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Preserve original whitespace around punctuation when capturing vendor addresses.",
+     "why": "Whitespace around punctuation is not significant for addresses."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Record invoice dates in DD/MM/YYYY format with slashes, not hyphens.",
+     "why": "Use slashes to format dates as DD/MM/YYYY."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Preserve original whitespace and line breaks in vendor address fields when capturing addresses.",
+     "why": "Preserving original whitespace and line breaks ensures accurate capture of vendor addresses."
+    }
+   ],
+   "seed_dir": "seed3",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 26
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 240,
+    "p": 0.0,
+    "wins": 26
+   },
+   "semantic_B_vs_B2": {
+    "losses": 2,
+    "n": 240,
+    "p": 1.0,
+    "wins": 2
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Invoice Date": 14,
+    "Vendor Address": 12
+   },
+   "trials_per_arm": 240
+  }
+ ]
+}

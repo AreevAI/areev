@@ -24,6 +24,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proposal, current is a run journaled after the apply; no baseline run means
   no metric rather than a fabricated one, and the direction is mandatory.
 
+- **The receipts ablation is complete — a 2×2, four cells.** `RECEIPTS.md`
+  separates the two things run 2 changed at once. Both are large main
+  effects from run 1's baseline: naming the observer in the evidence
+  projection is **+175**, swapping the learner is **+185**, both together
+  **+312**, with arm A at 97/720 in all four cells. Cell D was
+  pre-registered as an expected null and is not one; the correction, and
+  what it costs the authoring-rate diagnostic that predicted it, are
+  published beside the result.
+
 - **A second public corpus for the receipts experiment.** `ADBUY.md` repeats
   it on VRDU ad-buy forms — real US FCC political-advertising invoices, ten
   times a receipt's length, filed `YYYY-MM-DD` where SROIE files
