@@ -122,32 +122,68 @@ about its 2026-08-26 run does not apply here.
 
 ## Pre-registered design (written before any paid run)
 
-*To be committed, with the model choice the authoring-rate instrument
-made, before the first paid receipt is read.*
+*Committed 2026-09-04, before a single paid receipt was read. The learner
+configuration is the one the authoring-rate grid selected under its own
+pre-registered rule (`SELFIMPROVE.md`, "Outcome (2026-09-04)"), not one
+chosen after seeing anything on this corpus.*
 
-- Corpus: SROIE via `build_sroie.py`; the builder's drop counts reported.
-- Seeds 1, 2, 3; per seed 40 experience receipts (learn pass every 2
-  corrected receipts, memory snapshot every 10) and 60 held-out.
-- Agent `qwen/qwen3-30b-a3b-instruct-2507` pinned `coreweave/bf16`,
-  temperature 0, request seed = the run seed. Learner (DISCOVER/VERIFY):
-  the model the authoring-rate instrument chose, pinned. GROUND
-  `openai/gpt-4o-mini` (openai). Reviewer `openai/gpt-4o` (openai) on the
-  fixed rubric in `accountant.py`.
-- Primary: exact-match wins vs losses, B vs A, paired over (receipt, field),
-  pooled and per seed; the B vs B2 noise floor beside it. Secondary:
-  semantic; per-field coverage; the learning curve at 0/10/20/30/40
-  experience receipts against the same held-out set.
-- The verify leg: the per-rule verdicts after B (expected `held`; any
-  `regressed` is reported with its revert). The forced regression: H below
-  B (paired), R recovering (paired against H and against B), the revert
-  applied through the API, the retracted rule not re-proposed.
-- Publishes whatever lands. B ≈ A is the result "a model-authored learner
-  did not move this corpus" and ships with the ledgers.
-- Every model call's usage is journaled; the spend is reported.
+**Corpus.** SROIE via `build_sroie.py`: 626 receipts fetched, **612 kept**
+— 13 dropped for a date the builder will not disambiguate, 1 for an
+unparseable total, 0 for missing OCR text.
+
+**Scale.** Seeds 1, 2, 3. Per seed: 40 experience receipts (a learn pass
+every 2 corrected receipts, a memory snapshot every 10) and 60 held-out.
+Seeds permute the corpus, so the three runs are three task sets.
+
+**Legs, all pinned, temperature 0, request seed = the run seed.**
+
+| leg | model | pin |
+|---|---|---|
+| capture agent | `qwen/qwen3-30b-a3b-instruct-2507` | `coreweave/bf16` |
+| learner (DISCOVER/VERIFY) | `openai/gpt-oss-120b` | `deepinfra/bf16` |
+| GROUND | `openai/gpt-4o-mini` | `openai` |
+| rule reviewer | `openai/gpt-4o` | `openai` |
+
+DISCOVER objective `learner`; `Policy.outcome_evalset` names the held-out
+set, field `exact`, higher-is-better.
+
+**Primary.** Exact-match wins vs losses, **B vs A**, paired over (receipt,
+field) by McNemar's exact test, pooled and per seed — with the **B vs B2
+noise floor printed beside it**, because an effect that moves fewer trials
+than two identical passes disagree on is not evidence.
+
+**Secondary**, all pre-declared so none can be promoted afterwards: the
+semantic metric; per-field coverage under A and B; the learning curve at
+0/10/20/30 experience receipts against the same held-out set; the spend.
+
+**The verify leg.** Per-rule verdicts after B (expected `held`; any
+`regressed` is published with its revert). Then the forced regression: H
+below B and R above H, both paired; the revert proposed by the gate,
+approved, applied through the API; and the retracted rule not re-proposed
+on the next pass.
+
+**Stated in advance:**
+
+- **B ≈ A is a publishable result** — "a model-authored learner did not
+  move this corpus" — and ships with the full ledgers and the reviewer's
+  reasons, not as a footnote.
+- **A model-authored lesson is not reliably restorable.** There is no B2-
+  as-re-apply arm here for the reason the synthetic bench documented: an
+  authored lesson may simply not be re-authored. B2 is a second pass at
+  the same state (the noise floor), and nothing else.
+- **The reviewer is part of what is measured.** It is a model on a fixed
+  rubric written before these runs, given the column names and never the
+  ledger. Its rejections are published with their reasons.
+- **The transfer from the authoring-rate grid is not assumed.** That grid
+  measured a memory of tool calls; this corpus has none. If the learner
+  authors nothing here, that is the result and the funnel will say where
+  the drafts died.
+- Every model call's usage is journaled; `verify.py --check` recomputes
+  every published number from the trials and re-derives the checksums.
 
 ## Result
 
-*Not yet run.*
+*Running. Nothing published yet.*
 
 ## Reproduce
 
