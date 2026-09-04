@@ -190,7 +190,8 @@ def policy_file(db_path, policy):
     return policy
 
 
-def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True):
+def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True,
+          full_sweep=False):
     """One governed pass: propose under the runner, decide under the reviewer.
 
     Returns a dict: pending, applied, rejected, errors, funnel, decisions.
@@ -201,7 +202,8 @@ def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbos
     policy = policy_file(db_path, policy)
     rep = json.loads(with_memory(
         db_path, RUNNER,
-        lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy)))
+        lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy,
+                               full_sweep=full_sweep)))
     funnel = rep.get("llm_funnel")
     if verbose and funnel:
         print("   funnel:", json.dumps(funnel))
