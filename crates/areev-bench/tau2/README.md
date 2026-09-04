@@ -78,6 +78,14 @@ sh -c '. ./env.sh; $PY evaluate.py --workdir runs/s1/eval --learned-db runs/s1/r
 - **Secondary**, pre-declared: per-clause behaviour (did the agent start
   authenticating; did it stop calling modify twice), tool-error counts,
   termination reasons, and the spend.
+- **A ceiling control** (`evaluate.py --control`): the same held-out tasks
+  under the **full** policy and full tool descriptions, no lessons. Added
+  before the first arm was scored, because without it a zero at A is
+  uninterpretable — an agent that cannot do the task with the whole policy
+  in front of it was never going to be taught the missing clause, and the
+  run would be measuring the model's ceiling rather than the loop. If FULL
+  is at or near zero, that is the result and no learning claim follows from
+  this domain at this model.
 - **Stated in advance**: `max_steps` termination scores zero by τ²'s own
   rule regardless of DB state, so terminations are reported alongside
   rewards — "never finished" and "finished wrong" are different failures

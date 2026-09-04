@@ -50,9 +50,12 @@ def main():
     ap.add_argument("--arms", default="B,B2,A")
     ap.add_argument("--journal", action="append", default=[],
                     help="ARM=RUN_ID: journal that arm as an evalset run in --learned-db")
+    ap.add_argument("--control", action="store_true",
+                    help="also run the held-out tasks under the FULL policy with no "
+                         "lessons — the ceiling the withheld clauses cost")
     args = ap.parse_args()
 
-    policy, agent_tools, withheld, _exp, held, _fp, _ft = runner.setup(args)
+    policy, agent_tools, withheld, _exp, held, full_policy, full_tools = runner.setup(args)
     os.makedirs(args.workdir, exist_ok=True)
     journal_as = dict(j.split("=", 1) for j in args.journal)
     evalset = runner.evalset_hash(held)
@@ -75,8 +78,17 @@ def main():
             s = mem.journal_eval_run(args.learned_db, evalset, journal_as[arm], recs)
             print("  journaled arm %s as %s: %s" % (arm, journal_as[arm], json.dumps(s)))
 
+    # The ceiling. Without it a zero at A means nothing: an agent that cannot
+    # do the task with the full policy in front of it was never going to be
+    # taught the missing clause. Run last, so it cannot influence anything,
+    # and with the FULL policy and tool descriptions and no lessons at all.
+    if args.control:
+        recs = runner.run_arm("FULL", held, full_policy, full_tools, "", args)
+        records += recs
+        by_arm["FULL"] = {r["task_id"]: bool(r.get("reward", 0) >= 1.0) for r in recs}
+
     stats = {}
-    for left, right in (("B", "B2"), ("B", "A"), ("B2", "A")):
+    for left, right in (("B", "B2"), ("B", "A"), ("B2", "A"), ("FULL", "A"), ("FULL", "B")):
         if left in by_arm and right in by_arm:
             stats["%s_vs_%s" % (left, right)] = paired(by_arm[left], by_arm[right])
     solved = {a: sum(v.values()) for a, v in by_arm.items()}
