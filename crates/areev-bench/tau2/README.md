@@ -92,6 +92,19 @@ sh -c '. ./env.sh; $PY evaluate.py --workdir runs/s1/eval --learned-db runs/s1/r
   and will not be merged. A null result publishes as one, with the ledger
   and the supervisor's reasons.
 
+## Status
+
+**The full run was started and stopped, deliberately.** Its A0 arm — the
+agent as deployed, on the held-out tasks — was solving 0 of its first 7
+episodes, and at roughly 2–3 minutes per multi-turn episode the remaining
+six arms were several hours away. A zero there is uninterpretable without
+knowing what the same agent scores with the *whole* policy in front of it,
+so the run was stopped and `ceiling.py` put first: two passes instead of
+six, answering whether this domain is measurable with this model at all
+before paying to find out. Recorded here because "we ran it and it was
+zero" and "we checked first" are different claims, and only one of them is
+true.
+
 ## Two things to know before reading a number
 
 **The tool descriptions carry most of the policy.** Of the four clauses
