@@ -52,9 +52,35 @@ def with_memory(db_path, actor, fn):
         gc.collect()
 
 
+# CAL caps LIMIT at 1000. A scan that hits it has dropped grains, and the
+# prompt built from it is silently missing rules.
+CAP = 1000
+
+
+def _recall(db, where):
+    grains = json.loads(db.cal(
+        'RECALL facts WHERE namespace = "%s"%s LIMIT %d FORMAT json' % (NS, where, CAP)))["grains"]
+    if len(grains) >= CAP:
+        raise RuntimeError(
+            "memory scan hit the %d-grain cap; the prompt would be missing rules. "
+            "Narrow the query." % CAP)
+    return grains
+
+
 def _facts(db):
-    return json.loads(db.cal(
-        'RECALL facts WHERE namespace = "%s" LIMIT 300 FORMAT json' % NS))["grains"]
+    """Every ledger fact. Used only for the conventions scan, which needs the
+    non-document subjects; lessons are read by relation, see _lessons.
+
+    This scanned with LIMIT 300 until the 160-document drift run: seed 2 wrote
+    432 facts, 11 of them lessons, and the newest 300 held 4 of those — the
+    prompt had quietly lost seven approved rules, the oldest first. Every
+    published 40-document run is under 130 facts and was never affected."""
+    return _recall(db, "")
+
+
+def _lessons(db):
+    return (_recall(db, ' AND relation = "lesson"')
+            + _recall(db, ' AND relation = "fails_with"'))
 
 
 def lessons_markdown(db):
@@ -66,14 +92,16 @@ def lessons_markdown(db):
     evaluation causal rather than a flag flip.
     """
     rules, conventions = [], []
+    for g in _lessons(db):
+        obj = (g.get("fields", {}).get("object") or "").strip()
+        if obj:
+            rules.append(obj)
     for g in _facts(db):
         f = g.get("fields", {})
         rel, obj = f.get("relation"), (f.get("object") or "").strip()
-        if not obj:
+        if not obj or rel in ("lesson", "fails_with"):
             continue
-        if rel in ("lesson", "fails_with"):
-            rules.append(obj)
-        elif (not DOCUMENT_SUBJECT.match(f.get("subject") or "")
+        if (not DOCUMENT_SUBJECT.match(f.get("subject") or "")
               and rel not in INTERNAL_RELATIONS):
             # An approved `fact` proposal on the capture entity — a learned
             # convention (date_format = DD/MM/YYYY). The loop proposes these
@@ -142,8 +170,11 @@ def corrections_markdown(db):
 
 
 def _observations(db):
-    return json.loads(db.cal(
-        'RECALL observations WHERE namespace = "%s" LIMIT 400 FORMAT json' % NS))["grains"]
+    grains = json.loads(db.cal(
+        'RECALL observations WHERE namespace = "%s" LIMIT %d FORMAT json' % (NS, CAP)))["grains"]
+    if len(grains) >= CAP:
+        raise RuntimeError("observation scan hit the %d-grain cap; arm C would be missing corrections" % CAP)
+    return grains
 
 
 def record_correction(db, seq, message, corrections):
