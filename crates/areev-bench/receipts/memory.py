@@ -177,13 +177,20 @@ def make_judge(review_cmd):
     return judge
 
 
-def policy_file(db_path, policy):
+def policy_file(db_path, policy, name="loop-policy.json"):
     """The binding takes the host policy as a FILE (host config lives outside
     the memory, like the CLI's --policy). A JSON string is written beside the
     memory so the run directory records the policy it ran under; a path is
-    passed through."""
+    passed through.
+
+    `name` exists because a later leg writing its own policy into the same
+    directory silently overwrites the run's. That happened: the regress leg
+    clobbered every run's `loop-policy.json` about twelve minutes after the
+    experience phase wrote it, so the file naming the run's policy recorded a
+    different one. `run.config.json` was the only honest record. Each leg now
+    writes its own file."""
     if policy and policy.lstrip().startswith("{"):
-        path = os.path.join(os.path.dirname(os.path.abspath(db_path)), "loop-policy.json")
+        path = os.path.join(os.path.dirname(os.path.abspath(db_path)), name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(policy)
         return path

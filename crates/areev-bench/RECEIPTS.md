@@ -830,6 +830,30 @@ Cell D is the most variable cell in the square — 118, 0 and 30 wins across
 its three seeds, with one seed applying no rule at all. Attribution makes
 this learner *capable* of the result; it does not make it reliable at it.
 
+#### The seed that learned nothing is the control this programme lacked
+
+Cell D's seed 2 applied **zero** rules across nineteen governed passes (two
+proposals, both rejected), so arms A and B are the same prompt. It was run to
+measure a learner and it accidentally measured the instrument:
+
+**Six independent evaluations of it returned byte-identical trials** — the
+three curve snapshots and all three eval arms, 240 trials each, the same
+extracted value on every field of every receipt, scoring 36 exact and 55
+semantic every time.
+
+Two things follow, neither of which had been measured before:
+
+- **The pinning is bit-reproducible.** `env.sh` pins every leg because
+  *unpinned* routing once moved 5 of 60 held-out tasks between two
+  byte-identical runs. Pinned, at temperature 0 with a request seed, six runs
+  of 240 trials agree exactly.
+- **The rollback path contributes nothing of its own.** Arm A is produced by
+  genuinely rolling every rule back through the API, not by declining to
+  render one. With nothing to roll back it returns arm B exactly. So every
+  A-versus-B gap in this document is the rules, and not an artifact of the act
+  of rolling back — which is the control the causal claim rests on, and until
+  this seed it was argued rather than shown.
+
 **The diagnostic did not predict the run — for the second time.** The first
 was when it measured what a model *authors* while the runs measured what
 *survives review* (corrected below). This is the second: it measured a

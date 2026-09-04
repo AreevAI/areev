@@ -56,7 +56,7 @@ def loop_pass(db_path, now_ms, llm_cmd=None, ground_cmd=None, policy=None, fixtu
     os.environ["AREEV_LOOP_NOW_MS"] = str(now_ms)
     if fixture:
         os.environ["AREEV_MOCK_LLM_FIXTURE"] = fixture
-    policy = mem.policy_file(db_path, policy)
+    policy = mem.policy_file(db_path, policy, name="regress-policy.json")
     try:
         return json.loads(mem.with_memory(
             db_path, mem.RUNNER,
@@ -124,10 +124,22 @@ def main():
     agent_argv = os.environ["AGENT_CMD"].split()
     _, heldout = dataset.split(dataset.load(args.dataset), args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
-    policy = json.dumps({"discover_objective": "learner",
-                         "outcome_evalset": {"hash": evalset, "field": "exact",
-                                             "higher_is_better": True}})
     db = args.learned_db
+    # Inherit the run's host policy rather than assuming one. The leg that
+    # verifies a run should not quietly differ from it: cell C ran its
+    # experience phase with `evidence_attribution: anonymous` and its regress
+    # leg, hard-coding the policy here, ran named. Inert for that leg's claims
+    # — its authoring is fixture-driven — but it is drift, and drift between a
+    # run and the thing checking it is the kind that goes unnoticed.
+    # `outcome_evalset` is always ours: regress recomputes the evalset hash.
+    policy = {"discover_objective": "learner"}
+    cfg = os.path.join(os.path.dirname(os.path.abspath(db)), "run.config.json")
+    if os.path.exists(cfg):
+        ran_under = json.load(open(cfg)).get("policy")
+        if ran_under:
+            policy = json.loads(ran_under)
+    policy["outcome_evalset"] = {"hash": evalset, "field": "exact", "higher_is_better": True}
+    policy = json.dumps(policy)
     harmful_text = json.load(open(args.harmful))["recommendations"][0]["proposal"]["lesson"]
     mock_cmd = "%s %s" % (py, args.mock_llm)
     report = {"evalset": evalset, "steps": [], "checks": {}}
