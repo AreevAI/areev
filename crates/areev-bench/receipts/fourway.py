@@ -47,18 +47,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cost as costmod
 
 XS = [0, 10, 20, 30, 40]
-ARM_ORDER = ["none", "mem0/default", "mem0/raw", "mem0/domain", "areev", "slm/base", "slm/tuned"]
+ARM_ORDER = ["none", "mem0/default", "mem0/raw", "mem0/domain", "areev", "areev_rep", "slm/base", "slm/tuned"]
 LABEL = {"none": "no memory", "mem0/default": "mem0", "mem0/raw": "mem0 (raw)",
-         "mem0/domain": "mem0 (domain)", "areev": "Areev — governed", "slm/base": "small model + rules",
+         "mem0/domain": "mem0 (domain)", "areev": "Areev — governed", "areev_rep": "Areev — governed, re-run",
+         "slm/base": "small model + rules",
          "slm/tuned": "Areev — tuned SLM"}
 
 THEMES = {
     "light": {"bg": "none", "fg": "#1b1b1f", "muted": "#5f6470", "grid": "#e6e8ec", "axis": "#c9cdd4",
               "none": "#9aa0ac", "mem0/default": "#b8763a", "mem0/raw": "#d9a066", "mem0/domain": "#8a6d1f",
-              "areev": "#1f6f4f", "slm/tuned": "#2f5f9e", "slm/base": "#7f9cc7"},
+              "areev": "#1f6f4f", "areev_rep": "#5a9f7f", "slm/tuned": "#2f5f9e", "slm/base": "#7f9cc7"},
     "dark": {"bg": "none", "fg": "#e9eaee", "muted": "#9aa1ad", "grid": "#2a2e35", "axis": "#4a505a",
              "none": "#767d8a", "mem0/default": "#d99a5c", "mem0/raw": "#e8b98a", "mem0/domain": "#d3b04a",
-             "areev": "#5fcd9b", "slm/tuned": "#7aa8e0", "slm/base": "#a9c3e8"},
+             "areev": "#5fcd9b", "areev_rep": "#8fdbb8", "slm/tuned": "#7aa8e0", "slm/base": "#a9c3e8"},
 }
 
 
@@ -154,6 +155,17 @@ def assemble(args):
         out["seeds"].setdefault(s, {})["areev"] = {str(x): exact(t) for x, t in sorted(cur.items())}
         out["seeds"][s]["none"] = {"0": exact(a0) if a0 else None, "40": exact(armA) if armA else None}
         out["seeds"][s]["_trials"] = {"areev": cur.get(40), "none": armA}
+
+    # ---- the governed arm's independent re-run (same seeds, same config) ----
+    for s in (seeds_in(args.areev_rep) if args.areev_rep else []):
+        sd = os.path.join(args.areev_rep, "seed%d" % s)
+        cur = curve_from(sd, "B")
+        a0 = load_trials(os.path.join(sd, "a0.trials.json"), "A0")
+        if a0:
+            cur[0] = a0
+        if cur.get(40):
+            out["seeds"].setdefault(s, {})["areev_rep"] = {str(x): exact(t) for x, t in sorted(cur.items())}
+            out["seeds"][s].setdefault("_trials", {})["areev_rep"] = cur[40]
 
     # ---- mem0 modes ----
     for mode_dir in sorted(glob.glob(os.path.join(args.mem0, "*"))) if args.mem0 else []:
@@ -330,7 +342,8 @@ def cost_svg(theme, res):
     if not rows:
         return "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'/>"
     peak = max(max(r[1], r[2], r[3] or 0) for r in rows)
-    xmax = shelf(peak) if peak > 0 else 1
+    # Dollars, not trial counts: a ceiling with round quarters just above the peak.
+    xmax = next((c for c in (0.05, 0.1, 0.2, 0.4, 0.5, 1.0, 2.0, 4.0, 5.0, 10.0, 20.0, 50.0) if c >= peak * 1.08), peak * 1.2 or 1)
     LEFT, BW, ROWH = 190, 620, 44
     Hh = PAD_T + ROWH * len(rows) + 60
     bx = lambda v: LEFT + BW * (v / xmax)
@@ -351,13 +364,17 @@ def cost_svg(theme, res):
         col = t[arm]
         a(f'<text x="{LEFT-10}" y="{y+18}" text-anchor="end" font-size="12" font-weight="600" fill="{col}">{esc(LABEL[arm])}</text>')
         a(f'<rect x="{LEFT}" y="{y+4}" width="{max(bx(inf)-LEFT, 1.5):.1f}" height="14" fill="{col}"/>')
-        a(f'<text x="{bx(inf)+6:.1f}" y="{y+15}" font-size="11" fill="{t["fg"]}">read ${inf:.2f}</text>')
+        if shadow is not None and inf == 0:
+            # A local model: one label saying both things, placed past the shadow marker.
+            a(f'<text x="{bx(shadow)+8:.1f}" y="{y+15}" font-size="11" fill="{t["fg"]}">read $0 local'
+              f' <tspan fill="{t["muted"]}">· ${shadow:.2f} at a hosted small-model rate</tspan></text>')
+        else:
+            a(f'<text x="{bx(inf)+6:.1f}" y="{y+15}" font-size="11" fill="{t["fg"]}">read ${inf:.2f}</text>')
         if memv > 0:
             a(f'<rect x="{LEFT}" y="{y+21}" width="{max(bx(memv)-LEFT, 1.5):.1f}" height="14" fill="url(#h)"/>')
             a(f'<text x="{bx(memv)+6:.1f}" y="{y+32}" font-size="11" fill="{t["muted"]}">learn ${memv:.2f}</text>')
         if shadow is not None:
             a(f'<line x1="{bx(shadow):.1f}" y1="{y+2}" x2="{bx(shadow):.1f}" y2="{y+20}" stroke="{col}" stroke-width="2" stroke-dasharray="3 2"/>')
-            a(f'<text x="{bx(shadow)+6:.1f}" y="{y+15}" font-size="11" fill="{t["muted"]}">hosted-rate shadow ${shadow:.2f}</text>')
     a("</svg>")
     return "\n".join(o)
 
@@ -366,6 +383,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--areev", required=True, help="governed run dir with seedN/ (trials)")
     ap.add_argument("--areev-cost", default=None, help="a METERED governed run dir for cost")
+    ap.add_argument("--areev-rep", default=None, help="an independent re-run of the governed arm, drawn as its own line")
     ap.add_argument("--mem0", default=None)
     ap.add_argument("--slm", default=None)
     ap.add_argument("--out", required=True, help="SVG stem; writes STEM-accuracy-{light,dark}.svg and STEM-cost-*.svg")
