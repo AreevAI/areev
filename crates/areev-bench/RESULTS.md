@@ -654,6 +654,40 @@ The private-corpus predecessor of the receipts harness is
 configuration is [`SELFIMPROVE.md`](SELFIMPROVE.md), "The authoring-rate
 instrument".
 
+### The second corpus — public ad-buy invoices
+
+Full design, pre-registration and result: [`ADBUY.md`](ADBUY.md). The same
+harness, the same models, the same pinning, on **VRDU ad-buy forms** — real
+US FCC political-advertising invoices, median ten times the length of a
+receipt, with a filing convention (`YYYY-MM-DD`) deliberately opposite to
+SROIE's.
+
+| seed | rules | A — rolled back | B — applied | B vs A | noise |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 1 | 4 | 45/285 | **224/285** | 179 wins, 0 losses | 5 |
+| 2 | 7 | 43/275 | **233/275** | 190 wins, 0 losses | 1 |
+| 3 | 10 | 34/280 | 133/280 | 99 wins, 0 losses | 1 |
+| **pooled** | | **122/840** | **590/840** | **468 wins, 0 losses** | 7 |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/adbuy-selfimprove-dark.svg">
+  <img src="../../docs/assets/adbuy-selfimprove-light.svg" width="880"
+       alt="Left: learning curves over the same held-out ad-buy invoices after 0, 10, 20, 30 and 40 experience invoices, all three seeds starting near 41 of about 285. Seed 2 jumps to 233 at the first checkpoint and holds. Seed 1 climbs to 224. Seed 3 peaks at 238, higher than either other seed, then falls to 128 and ends 133. Right: pooled arms, 122 of 840 rolled back against 590 applied.">
+</picture>
+
+It replicates, and it closes a gap the receipts corpus left open: **the
+day-one field improved** there (Gross Amount 43 → 60 of 60 on seed 2), where
+on SROIE every win fell on a field the baseline left blank.
+
+**Seed 3 is the result worth reading.** It reached 238 of 280 after twenty
+invoices — better than seed 1 ever managed — and its own next two approved
+rules took it to 128. Both were semantic restatements of rules already in
+memory, which the content-fingerprint dedup key cannot see. The Verify gate
+reported `held`, correctly: 133 still beats the deployed baseline of 35.
+**Outcome measurement catches damage, not lost opportunity** — the two
+engine gaps this run argues for are semantic near-duplicate suppression and
+a high-water mark to measure against.
+
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
 `cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,

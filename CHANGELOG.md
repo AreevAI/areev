@@ -24,6 +24,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proposal, current is a run journaled after the apply; no baseline run means
   no metric rather than a fabricated one, and the direction is mandatory.
 
+- **A second public corpus for the receipts experiment.** `ADBUY.md` repeats
+  it on VRDU ad-buy forms — real US FCC political-advertising invoices, ten
+  times a receipt's length, filed `YYYY-MM-DD` where SROIE files
+  `DD/MM/YYYY`. Three seeds, 468 paired wins and 0 losses in 840 trials, and
+  the day-one field improves (the claim `RECEIPTS.md` records as
+  unsupported). `receipts/build_vrdu.py` builds it, stdlib only; nothing from
+  the corpus is committed.
+
 ### Changed
 
 - **A revert the Verify gate caused puts the finding on cooldown.** A

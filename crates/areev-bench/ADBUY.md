@@ -102,6 +102,15 @@ convention.** Evidence:
 **Not one losing trial in 840.** Every transition is significant in every
 seed, and the noise floors are 5, 1 and 1.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/adbuy-selfimprove-dark.svg">
+  <img src="../../docs/assets/adbuy-selfimprove-light.svg" width="880"
+       alt="Left: learning curves over the same held-out ad-buy invoices after 0, 10, 20, 30 and 40 experience invoices, all three seeds starting near 41 of about 285. Seed 2 jumps to 233 at the first checkpoint and holds 228 and 233. Seed 1 climbs 137, 226, 222 and ends 224. Seed 3 climbs 156 then peaks at 238, higher than either other seed, then falls to 128 and ends 133. Right: pooled arms, 122 of 840 rolled back against 590 applied.">
+</picture>
+
+Regenerate it with `python3 scripts/receipts_chart.py --noun "ad-buy
+invoices" docs/assets/adbuy-selfimprove "ad-buy=<results dir>"`.
+
 ### The two things receipts could not show
 
 **The day-one field improved.** [`RECEIPTS.md`](RECEIPTS.md) records the
@@ -131,10 +140,50 @@ dates against zero in every arm A. Same rule, opposite corpora, right both
 times, because it came from each business's own corrections rather than
 from a prior about how dates should look.
 
-### Seed 3: more rules made it worse, and the gate did not catch it
+### The learning curve, and what seed 3 did to itself
 
-Seed 3 applied **ten** rules against seed 1's four, and scored the worst of
-the three. The mechanism is visible in coverage, not in formatting:
+Held-out exact match scored at 0, 10, 20, 30 and 40 experience invoices —
+the same 60 documents every time — with the number of approved rules in
+memory at each point:
+
+| experience invoices | seed 1 | seed 2 | seed 3 |
+|---|:---:|:---:|:---:|
+| 0 (no rules) | 45 | 43 | 35 |
+| 10 | 137 *(2 rules)* | 233 *(4)* | 156 *(5)* |
+| 20 | 226 *(3)* | 228 *(6)* | **238** *(8)* |
+| 30 | 222 *(4)* | 233 *(7)* | **128** *(10)* |
+| 40 | 224 *(4)* | 233 *(7)* | 133 *(10)* |
+
+Seeds 1 and 2 climb and hold. **Seed 3 climbs higher than either — 238 of
+280, more than seed 1 ever reaches — and then its own next two rules take it
+to 128.** That is the finding. The regression is not against another seed;
+it is against itself, twenty invoices earlier, and it costs 110 trials.
+
+The last ten invoices taught it nothing at all: the rule set is the same ten
+at 30 and at 40, and the two measurements of it land 5 apart, which is the
+scale of this seed's noise floor.
+
+### The mechanism: ten rules, four facts
+
+The two rules approved in the window where the score fell are both
+**restatements of rules already in memory**:
+
+> Extract and record Flight From, Flight To, Gross Amount, advertiser, and
+> contract number from every receipt using the exact values and format as
+> printed, without exceptions.
+
+> Extract and record the contract number from every receipt, using the exact
+> value as printed, such as 2381227, **without substituting or omitting it**.
+
+The first restates the whole rule set as one sentence. The second restates
+the contract-number half of a rule approved twenty invoices earlier, and
+carries a literal value — `2381227` — memorised from one invoice into a rule
+meant to be general.
+
+Read one at a time, each is true, well-formed and about this business. That
+is why the reviewer approved them. Read together they are four distinct
+facts stated ten ways, and the effect on the agent is visible in coverage
+rather than in formatting:
 
 | seed 3, arm B | coverage | exact |
 |---|:---:|:---:|
@@ -144,21 +193,29 @@ the three. The mechanism is visible in coverage, not in formatting:
 | **Contract Number** | **3/60** | 2/60 |
 
 The agent **stopped producing** the two fields its rules most insistently
-name. That is the same failure receipts run 1's third rule produced —
-[rule accumulation suppressing capture](RECEIPTS.md#the-gain-that-did-not-survive-and-why-it-is-reported)
-— reproduced on a second corpus, with ten rules instead of three.
+demand. This is receipts run 1's failure
+([rule accumulation suppressing capture](RECEIPTS.md#the-gain-that-did-not-survive-and-why-it-is-reported))
+reproduced on a second corpus, on a different document type, at ten rules
+instead of three.
 
-**And the Verify gate said `held`, correctly.** Baseline 35, current 133:
-seed 3 is still four times better than the agent it started as. The gate
-measures *harm against the deployed baseline*, and by that measure nothing
-went wrong. What it cannot see is that the same corpus reached 224 and 233
-under fewer rules — a shortfall against an achievable state, not a
-regression from a known one.
+**The engine has a dedup key and it did not fire.** `authored_dedup_key`
+fingerprints a proposal's content, so it catches a rule proposed twice
+verbatim. It cannot catch the same instruction rephrased, which is exactly
+what an LLM proposer emits. Semantic near-duplicate suppression is not in
+the engine, and this run is the argument for it.
 
-That is a real limitation and it is not a bug: **outcome measurement
-catches damage, not lost opportunity.** Catching this would need a
-different signal — a per-rule marginal measurement, or a ceiling from a
-prior seed — and neither is in the engine today.
+### The gate said `held`, and the gate was right
+
+Baseline 35, current 133: seed 3 ends four times better than the agent it
+started as. **Verify** measures harm against the deployed baseline, and by
+that measure nothing went wrong. It never sees that the same agent, on the
+same documents, stood at 238 two rules ago.
+
+That is a real limitation and it is not a bug: **outcome measurement catches
+damage, not lost opportunity.** Catching this needs a signal the engine does
+not have — a per-rule marginal measurement, or a high-water mark carried
+forward as the comparison point instead of the baseline. The second is
+cheap, and this run is the case for building it.
 
 ### The planted-regression leg on this corpus
 
@@ -168,8 +225,14 @@ reverted back to 224 and 233 exactly. Seed 3's failed, and the harness says
 so rather than claiming a pass: the planted rule *raised* its score
 (133→144), so there was nothing to catch.
 
-The reason is worth stating — the planted fixture is SROIE-shaped, naming
-an "Invoice Date" this corpus does not have. It bites here only obliquely,
+One bookkeeping consequence, stated because anyone re-reading these files
+will hit it: because seed 3's revert never fired, its `ledger.db` ends with
+**eleven** rules — the ten it learned plus the planted one still applied.
+Arm B was measured before that leg ran, so every published seed 3 number is
+the ten-rule agent. The eleventh rule is the fixture, not a lesson.
+
+The reason it did not bite is worth stating — the planted fixture is
+SROIE-shaped, naming an "Invoice Date" this corpus does not have. It bites here only obliquely,
 through flight dates, and on a weaker run that bite is inside the noise. A
 profile-specific harmful rule would be the better test and is not written.
 Reported because a sub-test that cannot mean anything must say so.

@@ -782,6 +782,24 @@
      60
     ]
    },
+   "curve": {
+    "0": {
+     "exact": 35,
+     "semantic": 59
+    },
+    "10": {
+     "exact": 156,
+     "semantic": 216
+    },
+    "20": {
+     "exact": 238,
+     "semantic": 241
+    },
+    "30": {
+     "exact": 128,
+     "semantic": 128
+    }
+   },
    "exact_B2_vs_A": {
     "losses": 0,
     "n": 280,

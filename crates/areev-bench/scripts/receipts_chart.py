@@ -51,8 +51,6 @@ PANEL_GAP = 62
 CURVE_W = 500
 BAR_W = W - PAD_L - CURVE_W - PANEL_GAP - 26
 PLOT_H = 292
-TRIALS = 720          # pooled trials per arm
-PER_SEED_TRIALS = 240
 XS = [0, 10, 20, 30, 40]
 
 # One hue per cell, in the order given. The first is the cautionary cell and
@@ -70,6 +68,16 @@ THEMES = {
         "off": "#767d8a",
     },
 }
+
+
+def _shelf(peak):
+    """A round ceiling just above the tallest value, so bars and curves have
+    headroom for their labels without a hand-set constant per corpus."""
+    for step in (20, 25, 40, 50, 100, 200, 250):
+        top = -(-int(peak * 1.08) // step) * step
+        if top >= peak * 1.05 and top / step <= 10:
+            return top
+    return int(peak * 1.15) + 1
 
 
 def series_colour(t, i, n):
@@ -107,12 +115,21 @@ def curves(res):
     return out
 
 
-def svg(theme, cells):
+def svg(theme, cells, noun="receipts"):
     """`cells` is [(label, RESULTS.json dict), …] in draw order."""
     t = THEMES[theme]
     n = len(cells)
     series = [(label, curves(res), series_colour(t, i, n)) for i, (label, res) in enumerate(cells)]
-    ymax = 160  # a shelf above the tallest point, in units of 240 trials
+    # Scales come from the data, not from constants: the two corpora score a
+    # different number of (document, field) trials per seed, and a chart that
+    # hard-codes one silently mis-draws the other.
+    trials = max(res["pooled"]["trials_per_arm"] for _l, res in cells)
+    per_seed = max(s["trials_per_arm"] for _l, res in cells for s in res["seeds"])
+    peak = max((v for _l, cs, _c in series for _s, pts in cs for v in pts if v is not None),
+               default=1)
+    ymax = _shelf(peak)
+    bmax = _shelf(max(res["pooled"]["passed"][a]["exact"]
+                      for _l, res in cells for a in ("A", "B")))
     px = lambda v: PAD_L + CURVE_W * (v / 40.0)
     py = lambda v: PAD_T + PLOT_H - PLOT_H * (v / ymax)
 
@@ -122,19 +139,22 @@ def svg(theme, cells):
       f'height="{H}" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">')
     headline = "; ".join(
         "%s reaches %d of %d exact against a rolled-back baseline of %d"
-        % (label, res["pooled"]["passed"]["B"]["exact"], TRIALS,
+        % (label, res["pooled"]["passed"]["B"]["exact"], trials,
            res["pooled"]["passed"]["A"]["exact"])
         for label, res in cells)
-    a(f'<title>{esc("Governed self-improvement on public receipts: " + headline + ".")}</title>')
+    a(f'<title>{esc("Governed self-improvement on public " + noun + ": " + headline + ".")}</title>')
     detail = " ".join(
-        "%s: seeds end at %s of 240, arm A pooled %d of %d and arm B %d, paired %d wins to %d losses."
+        "%s: seeds end at %s of about %d, arm A pooled %d of %d and arm B %d, paired %d wins to %d losses."
         % (label,
-           ", ".join(str(s["passed_B"]["exact"]) for s in res["seeds"]),
-           res["pooled"]["passed"]["A"]["exact"], TRIALS,
+           ", ".join(str(s["passed_B"]["exact"]) for s in res["seeds"]), per_seed,
+           res["pooled"]["passed"]["A"]["exact"], trials,
            res["pooled"]["passed"]["B"]["exact"],
            res["pooled"]["exact_B_vs_A"]["wins"], res["pooled"]["exact_B_vs_A"]["losses"])
         for label, res in cells)
-    a(f'<desc>{esc("Left panel: learning curves over the same held-out receipts, scored after 0, 10, 20, 30 and 40 experience receipts; every curve starts on the same shelf near 31 of 240. " + detail + " Right panel: pooled arms per cell. Arm A is the same height in every cell because the agent, receipts, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved.")}</desc>')
+    starts = [pts[0] for _l, cs, _c in series for _s, pts in cs if pts and pts[0] is not None]
+    shelf = ("every curve starts on the same shelf near %d of about %d. "
+             % (round(sum(starts) / len(starts)), per_seed)) if starts else ""
+    a(f'<desc>{esc("Left panel: learning curves over the same held-out " + noun + ", scored after 0, 10, 20, 30 and 40 experience documents; " + shelf + detail + " Right panel: pooled arms" + (" per cell. Arm A is the same height in every cell because the agent, documents, seeds and rollback path are identical, so the difference between the B bars is what each loop configuration learned and a reviewer approved." if n > 1 else ", rolled back against applied."))}</desc>')
 
     for frac in range(0, 5):
         v = ymax * frac / 4.0
@@ -147,12 +167,12 @@ def svg(theme, cells):
     # held-out set on the left, all three pooled on the right. Saying so is
     # cheaper than a reader mis-reading 141 against 382.
     a(f'<text x="{PAD_L-32}" y="{PAD_T-13}" font-size="11" '
-      f'fill="{t["muted"]}">exact, of 240 per seed</text>')
+      f'fill="{t["muted"]}">exact, of ~{per_seed} per seed</text>')
     for x in XS:
         a(f'<text x="{px(x):.1f}" y="{PAD_T+PLOT_H+19}" text-anchor="middle" '
           f'font-size="11" fill="{t["muted"]}">{x}</text>')
     a(f'<text x="{PAD_L+CURVE_W/2:.0f}" y="{PAD_T+PLOT_H+38}" text-anchor="middle" '
-      f'font-size="11.5" fill="{t["muted"]}">experience receipts seen</text>')
+      f'font-size="11.5" fill="{t["muted"]}">experience documents seen</text>')
 
     for _label, cs, colour in series:
         for i, (_seed, pts) in enumerate(cs):
@@ -181,12 +201,11 @@ def svg(theme, cells):
           f'fill="{colour}">{esc(lab)}</text>')
 
     bx0 = PAD_L + CURVE_W + PANEL_GAP
-    bmax = 480
     bh = lambda v: PLOT_H * (v / bmax)
     # Each cell is an A/B pair plus a gap; slots are sized so any number fits.
     slot = BAR_W / (n * 2.6)
     a(f'<text x="{bx0}" y="{PAD_T-13}" font-size="11" fill="{t["muted"]}">'
-      f'exact, of {TRIALS} pooled trials</text>')
+      f'exact, of {trials} pooled trials</text>')
     a_height = None
     for ci, (label, res) in enumerate(cells):
         base = bx0 + ci * slot * 2.6
@@ -221,11 +240,19 @@ def svg(theme, cells):
 
 
 def main():
-    if len(sys.argv) < 4:
-        raise SystemExit("usage: receipts_chart.py OUT_STEM LABEL=DIR [LABEL=DIR …]")
-    stem = sys.argv[1]
+    argv = sys.argv[1:]
+    # The corpus noun rides in the alt text, which screen readers and search
+    # indexes read; it is the one thing in this chart that no results file knows.
+    noun = "receipts"
+    if "--noun" in argv:
+        i = argv.index("--noun")
+        noun = argv[i + 1]
+        del argv[i:i + 2]
+    if len(argv) < 2:
+        raise SystemExit("usage: receipts_chart.py [--noun N] OUT_STEM LABEL=DIR [LABEL=DIR …]")
+    stem = argv[0]
     cells = []
-    for spec in sys.argv[2:]:
+    for spec in argv[1:]:
         if "=" not in spec:
             raise SystemExit("each cell is LABEL=DIR, got %r" % spec)
         label, d = spec.split("=", 1)
@@ -234,7 +261,7 @@ def main():
     for theme in ("light", "dark"):
         path = f"{stem}-{theme}.svg"
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(svg(theme, cells))
+            fh.write(svg(theme, cells, noun))
         print("wrote", path)
 
 
