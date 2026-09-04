@@ -40,4 +40,8 @@ export AGENT_CMD="${AGENT_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $AGENT_MODEL 
 export LOOP_LLM_CMD="${LOOP_LLM_CMD:-$PY $SCRIPTS/openrouter_loop.py $LEARNER_MODEL --provider $LEARNER_PIN --seed $SEED}"
 export LOOP_GROUND_CMD="${LOOP_GROUND_CMD:-$PY $SCRIPTS/openrouter_loop.py $GROUND_MODEL --provider $GROUND_PIN --seed $SEED}"
 export REVIEW_CMD="${REVIEW_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $REVIEW_MODEL --provider $REVIEW_PIN --seed $SEED}"
-export LOOP_POLICY="${LOOP_POLICY:-{\"discover_objective\":\"learner\"}}"
+# Assigned in two steps on purpose: `${VAR:-{...}}` ends the expansion at the
+# first unescaped `}`, so a JSON default inside one silently gains a trailing
+# brace. It cost a run before anyone read the value.
+DEFAULT_LOOP_POLICY='{"discover_objective":"learner"}'
+export LOOP_POLICY="${LOOP_POLICY:-$DEFAULT_LOOP_POLICY}"
