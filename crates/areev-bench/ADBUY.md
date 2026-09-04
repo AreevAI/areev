@@ -86,6 +86,67 @@ run 1's did. The reviewer is a model on the fixed rubric in
 `receipts/accountant.py`, not a person, and its rejections are published
 with their reasons.
 
-## Result
+## Result — seed 1 (seeds 2 and 3 running)
 
-*Not yet run.*
+**It replicates, and more strongly than on receipts.** 60 held-out ad-buy
+invoices, 285 scored (invoice, field) trials:
+
+| | arm A — rules rolled back | arm B — rules applied |
+|---|:---:|:---:|
+| exact | 45 (15.8%) | **224 (78.6%)** |
+| paired | | **179 wins, 0 losses**, p < 0.0001 |
+
+The B-vs-B2 noise floor is 5 discordant trials of 285. Per field:
+
+| field | A | B |
+|---|:---:|:---:|
+| **Gross Amount** (day one) | **45/60** | **57/60** |
+| Advertiser | 0/60 | 51/60 |
+| Contract Number | 0/60 | 28/60 |
+| Flight From | 0/53 | 43/53 |
+| Flight To | 0/52 | 45/52 |
+
+### The two things receipts could not show
+
+**The day-one field improved.** [`RECEIPTS.md`](RECEIPTS.md) records a
+limitation honestly: every one of its 286 wins fell on a field the baseline
+left blank, and on Invoice Date — the field the agent already captured on
+every receipt — the rules won *nothing*. The supported claim there was
+narrow: the loop taught the agent *which* fields to capture, not how to do
+better at one it was already doing.
+
+Here Gross Amount goes **45/60 → 57/60**. The agent was already filling it
+in both arms; what changed is that the loop learned the amount convention —
+
+> "Format the Gross Amount as a plain number with two decimals, no dollar
+> sign and no thousands separator, like 27900.00."
+
+— and applied it to a field it had never got wrong for want of trying. That
+is the claim the receipts corpus could not support, and it holds here.
+
+**The date rule is right this time, and it is the same rule that was
+catastrophically wrong before.** Receipts run 1's loop authored *"Convert
+extracted Invoice Date to ISO 8601 (YYYY-MM-DD)"*, four gates passed it, and
+it took that agent from 30 correct to 0 because that ledger files day-first.
+On this corpus the loop wrote
+
+> "Extract and record both Flight From and Flight To dates from every
+> invoice using the exact YYYY-MM-DD format as provided."
+
+and it is correct: a filed `2020-05-26` against a produced `2020-05-26`,
+43 of 53 and 45 of 52 exact. Same rule, opposite corpora, right both times
+*because it came from each business's own corrections rather than from a
+prior about how dates should look*. A model applying a general convention
+gets one of these two corpora right by luck. This is the property no single
+corpus can test, and it is why this one was chosen.
+
+### What is not better here
+
+Contract Number is the weak field at 28/60, roughly half of what the other
+learned fields reach. The agent finds a contract number and files a
+different one — these invoices carry several identifiers, and nothing in
+the corrections disambiguates which the ledger means. That is a limitation
+of the task as posed, not of the loop, and it is reported because 78.6% is
+an average over one field the agent half-gets and three it mostly does.
+
+*Seeds 2 and 3 are running and will be published here whatever they show.*
