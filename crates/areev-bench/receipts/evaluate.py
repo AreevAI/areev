@@ -111,7 +111,8 @@ def main():
     with open(os.path.join(args.workdir, "eval.summary.json"), "w") as fh:
         json.dump({"profile": args.profile, "seed": args.seed, "held_out": len(rows),
                    "evalset": evalset, "rolled_back": rolled, "usage": usage,
-                   "as_of": args.as_of, "journaled": journaled}, fh, indent=1)
+                   "as_of": args.as_of, "journaled": journaled,
+                   "agent_cmd": os.environ.get("AGENT_CMD")}, fh, indent=1)
     print("\nwrote %s" % os.path.join(args.workdir, "trials.json"))
 
 
