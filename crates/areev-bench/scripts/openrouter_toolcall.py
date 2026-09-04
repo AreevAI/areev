@@ -50,7 +50,10 @@ def _meter(model, provider, usage, op):
     except OSError:
         pass
 
-RETRY_DELAYS = (2.0, 4.0, 8.0)
+# Long enough to outlast a provider's rate-limit window, not just a blip: a
+# sustained upstream 429 ended two metered seeds at 14 seconds of retries.
+# Retry-After is honoured (capped at 60s) when the provider sends one.
+RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0)
 
 CANNED_RESPONSE = {
     "choices": [

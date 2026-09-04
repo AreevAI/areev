@@ -56,7 +56,7 @@ BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 # empty, and the run reads as a model that had nothing to say. Losing a pass
 # is far more expensive to a measurement than waiting a few more seconds, and
 # retrying is strictly cheaper than the re-run it otherwise costs.
-RETRIES = 5
+RETRIES = 8  # 3s doubling, capped at 60s: ~3.5 min, enough to outlast a rate-limit window
 
 
 def fail(msg, code=2):
@@ -91,11 +91,11 @@ def post(body, key, raise_http=False):
                     raise HttpFail(e.code, detail) from e
                 fail(detail, 1)
             wait = e.headers.get("Retry-After")
-            time.sleep(float(wait) if wait and wait.isdigit() else delay)
+            time.sleep(min(float(wait) if wait and wait.isdigit() else delay, 60.0))
         except urllib.error.URLError as e:
             if attempt == RETRIES - 1:
                 fail(f"connection: {e}", 1)
-            time.sleep(delay)
+            time.sleep(min(delay, 60.0))
         delay *= 2
     fail("retries exhausted", 1)
 
