@@ -151,8 +151,28 @@ harness, whose agent uses no tools at all.
 
 ## Result
 
-*Not yet run. The ceiling probe is being re-run against the fixed bridge;
-until it reports, this file publishes no τ² number.*
+*Partial. The full ceiling probe is deferred: it and the receipts run 2
+were pinned to the same provider endpoint and starving each other, so the
+receipts run was given the bandwidth and this will be re-run after it.*
+
+**The fixed bridge solves most of what it is given.** Seven episodes of the
+FULL arm before the probe was paused:
+
+| | episodes | solved |
+|---|:---:|:---:|
+| this bridge, full policy, no lessons | 7 | **5** |
+| τ²-bench's own agent, same model, tasks 20–22 | 3 | 0 |
+
+So the retracted claim was not merely unsupported, it was inverted: this
+domain has ample headroom for a governed loop to work in. The gap against
+τ²'s shipped agent is left unexplained here — different system prompt,
+different scaffolding, and 7 episodes against 3 — and is not offered as a
+claim that this agent is better. What it does settle is that a zero from
+this bridge was never the model's ceiling.
+
+The withheld-clause comparison (FULL against REDACTED) is what the probe
+exists for and has not been measured yet. No τ² learning number is
+published until it has.
 
 ## Two things to know before reading a number
 
