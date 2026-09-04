@@ -262,28 +262,47 @@ the same error — caught once, missed once.
 Nothing about the rule's text gives it away as harmful; only reading the
 held-out set under it does.
 
-### The gate does catch it — replicated, live
+### The gate does catch it — including the real one, unplanted
 
-The verify-then-revert leg ran against each finished memory. Every check
-passed in every seed:
+The verify-then-revert leg ran against each finished memory. Start with the
+seed that broke, because there the gate had something genuine to find:
+
+**Seed 3 — all five learned rules measured `regressed`, 30 → 0, and a
+revert proposed.** No rule was planted for this. The loop measured what a
+human reviewer had approved, against the A0 baseline journaled before any
+learning, and correctly declared every one of them a regression. That is
+the whole arc the design is for, on a failure nobody arranged.
+
+The planted-harmful sub-test then failed its own checks in that seed, and
+the harness says so (`all_ok: false`, naming which). It is undefined on an
+already-broken run: with B at 0/240 a deliberately harmful rule cannot
+lower the score further, and the revert the script reaches for is one of
+the five real ones rather than its own. Reported rather than quietly
+skipped — a sub-test that cannot mean anything here is not evidence that
+anything passed.
+
+In the two seeds where the learned rules held, the planted leg ran as
+designed and every check passed:
 
 | seed | learned rules | B | H — a harmful rule admitted on purpose | R — after the gate's revert |
 |---|---|:---:|:---:|:---:|
 | 1 | 3, all measured `held` (31 → 33) | 33 | **8** | **34** |
 | 2 | 2, both measured `held` (36 → 37) | 37 | **10** | **37** |
 
-In both seeds the harmful rule rendered into the prompt, collapsed the
-score, was measured `regressed` against the A0 baseline journaled before any
-learning, and `outcome_review` proposed the revert. Approving and applying
-that revert retracted the rule through the same rollback path a person
-would use and recovered the score. Asked again on the next pass, the same
-proposal was **not** re-queued — a measured revert puts the finding on
-cooldown, which is the engine change this run's design forced.
+In both, the harmful rule rendered into the prompt, collapsed the score,
+was measured `regressed` against the A0 baseline, and `outcome_review`
+proposed the revert. Approving and applying that revert retracted the rule
+through the same rollback path a person would use and recovered the score.
+Asked again on the next pass, the same proposal was **not** re-queued — a
+measured revert puts the finding on cooldown, which is the engine change
+this run's design forced.
 
 So the two halves of the claim separate cleanly on real public data:
 
 - **Governance: proven, and replicated.** A rule that hurt was detected from
-  held-out measurement, reverted through the API, and kept from returning.
+  held-out measurement, reverted through the API, and kept from returning —
+  and in seed 3 the rules it detected were real ones a human had approved,
+  not planted ones.
 - **LLM-authored learning: not proven, and at this scale actively harmful.**
   Pooled, the rules the loop authored and a reviewer approved cost the agent
   27 net trials.

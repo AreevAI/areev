@@ -39,7 +39,13 @@ sh "$HERE/eval.sh" "$OUT/ledger.db" "$OUT/eval" --experience "$EXP" --eval "$EVA
 "$PY" "$HERE/stats.py" "$OUT/eval/trials.json"
 
 echo "######## seed $SEED: verify → forced regression → revert"
-sh "$HERE/regress.sh" "$OUT/ledger.db" "$OUT/regress" --experience "$EXP" --eval "$EVAL"
+# `|| true`: regress.py exits non-zero when a check fails, and a failed check
+# is a RESULT — seed 3 of the 2026-09-04 run had real regressions in its
+# learned rules, which makes the planted-harmful sub-test undefined and its
+# checks fail. Under `set -e` that aborted the script and cost the learning
+# curve for the one seed whose curve was most worth having. The summary
+# records exactly which checks failed either way.
+sh "$HERE/regress.sh" "$OUT/ledger.db" "$OUT/regress" --experience "$EXP" --eval "$EVAL" || true
 
 n="$SNAP"
 while [ "$n" -lt "$EXP" ]; do
