@@ -190,18 +190,24 @@ def assemble(args):
             out["seeds"].setdefault(s, {})["slm_training"] = json.load(open(man))
 
     # ---- pooled curves + paired tests at the end ----
-    present = [a for a in ARM_ORDER if any(a in d for d in out["seeds"].values())]
-    common = sorted(s for s, d in out["seeds"].items() if all(a in d for a in present))
-    out["pooled_over_seeds"] = common
-    for arm in present:
+    # An arm counts for a seed only once that seed has its FINAL point; a run
+    # still in progress must not drag the others down. Each arm pools over
+    # its own complete seeds and the chart plots percent so arms with
+    # different seed counts share an axis honestly; the JSON keeps the counts.
+    out["pooled_over_seeds"] = {}
+    for arm in ARM_ORDER:
+        done = sorted(s for s, d in out["seeds"].items()
+                      if (d.get(arm) or {}).get("40") is not None)
+        if not done:
+            continue
         pts = {}
-        for s in common:
-            for x, v in (out["seeds"][s].get(arm) or {}).items():
+        for s in done:
+            for x, v in out["seeds"][s][arm].items():
                 if v is not None:
                     pts.setdefault(int(x), []).append(v)
-        if pts:
-            out["arms"][arm] = {"pooled": {str(x): sum(v) for x, v in sorted(pts.items()) if len(v) == len(common)},
-                                "seeds": len(common), "trials_per_seed": 240}
+        out["pooled_over_seeds"][arm] = done
+        out["arms"][arm] = {"pooled": {str(x): sum(v) for x, v in sorted(pts.items()) if len(v) == len(done)},
+                            "seeds": len(done), "trials_per_seed": 240}
     for arm in ARM_ORDER:
         if arm == "areev":
             continue
@@ -266,30 +272,30 @@ def shelf(peak):
 def accuracy_svg(theme, res):
     t = THEMES[theme]
     arms = [a for a in ARM_ORDER if a in res["arms"]]
-    seeds = max(res["arms"][a]["seeds"] for a in arms)
-    total = 240 * seeds
-    peak = max(v for a in arms for v in res["arms"][a]["pooled"].values())
-    ymax = shelf(peak)
+    pct = lambda arm, v: 100.0 * v / (240 * res["arms"][arm]["seeds"])
+    peak = max(pct(a, v) for a in arms for v in res["arms"][a]["pooled"].values())
+    ymax = 100 if peak > 75 else shelf(peak)
     CURVE_W = 700
     px = lambda v: PAD_L + CURVE_W * (v / 40.0)
     py = lambda v: PAD_T + PLOT_H - PLOT_H * (v / ymax)
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
          f'font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">']
     a = o.append
-    ends = "; ".join("%s ends at %d" % (LABEL[x], list(res["arms"][x]["pooled"].values())[-1]) for x in arms)
-    a(f'<title>{esc("Exact matches of %d held-out trials as the deployment proceeds: %s." % (total, ends))}</title>')
-    a(f'<desc>{esc("The same held-out receipts are re-read after 0, 10, 20, 30 and 40 experience documents, pooled over %d seed(s). A memory system that stores what it is told but does not turn it into rules stays near the no-memory floor; the governed loop rises at the first checkpoint and holds. The tuned small model is a single point at 40, because it is trained once from the governed memory." % seeds)}</desc>')
+    ends = "; ".join("%s ends at %.0f%% over %d seed%s" % (LABEL[x], pct(x, list(res["arms"][x]["pooled"].values())[-1]),
+                                                        res["arms"][x]["seeds"], "s" if res["arms"][x]["seeds"] != 1 else "") for x in arms)
+    a(f'<title>{esc("Exact-match rate on the held-out receipts as the deployment proceeds: %s." % ends)}</title>')
+    a(f'<desc>{esc("The same held-out receipts are re-read after 0, 10, 20, 30 and 40 experience documents. A memory system that stores what it is told but does not turn it into rules stays near the no-memory floor; the governed loop rises at the first checkpoint and holds. The tuned small model is a single point at 40, because it is trained once from the governed memory.")}</desc>')
     for i in range(5):
         v = ymax * i / 4
         a(f'<line x1="{PAD_L}" y1="{py(v):.1f}" x2="{PAD_L+CURVE_W}" y2="{py(v):.1f}" stroke="{t["grid"]}"/>')
-        a(f'<text x="{PAD_L-9}" y="{py(v)+4:.1f}" text-anchor="end" font-size="11" fill="{t["muted"]}">{int(v)}</text>')
+        a(f'<text x="{PAD_L-9}" y="{py(v)+4:.1f}" text-anchor="end" font-size="11" fill="{t["muted"]}">{int(v)}%</text>')
     for x in XS:
         a(f'<text x="{px(x):.1f}" y="{PAD_T+PLOT_H+19}" text-anchor="middle" font-size="11" fill="{t["muted"]}">{x}</text>')
-    a(f'<text x="{PAD_L-32}" y="{PAD_T-12}" font-size="11" fill="{t["muted"]}">exact, of {total} trials pooled over {seeds} seed{"s" if seeds != 1 else ""}</text>')
+    a(f'<text x="{PAD_L-32}" y="{PAD_T-12}" font-size="11" fill="{t["muted"]}">exact-match rate, 240 trials per seed</text>')
     a(f'<text x="{PAD_L+CURVE_W/2:.0f}" y="{PAD_T+PLOT_H+40}" text-anchor="middle" font-size="11.5" fill="{t["muted"]}">experience documents seen</text>')
     labels = []
     for arm in arms:
-        pts = sorted((int(x), v) for x, v in res["arms"][arm]["pooled"].items())
+        pts = sorted((int(x), pct(arm, v)) for x, v in res["arms"][arm]["pooled"].items())
         col = t[arm]
         if len(pts) > 1:
             d = " ".join(("M" if i == 0 else "L") + f"{px(x):.1f} {py(v):.1f}" for i, (x, v) in enumerate(pts))
@@ -297,7 +303,8 @@ def accuracy_svg(theme, res):
         for x, v in pts:
             r = 5 if len(pts) == 1 else 3
             a(f'<circle cx="{px(x):.1f}" cy="{py(v):.1f}" r="{r}" fill="{col}"/>')
-        labels.append([LABEL[arm], col, px(pts[-1][0]) + 10, py(pts[-1][1]) + 4])
+        labels.append(["%s (%d seed%s)" % (LABEL[arm], res["arms"][arm]["seeds"], "s" if res["arms"][arm]["seeds"] != 1 else ""),
+                       col, px(pts[-1][0]) + 10, py(pts[-1][1]) + 4])
     labels.sort(key=lambda e: e[3])
     for i in range(1, len(labels)):
         if labels[i][3] - labels[i - 1][3] < 15:
