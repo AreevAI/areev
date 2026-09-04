@@ -33,7 +33,7 @@ def evalset_hash(rows):
 
 
 def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True,
-            at_seq=None):
+            at_seq=None, lessons_fn=None):
     """Read every held-out receipt under `lessons` (the prompt section as
     assembled from some memory state — or "" for the day-one agent).
     Returns (trials, usage).
@@ -46,6 +46,11 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
     FIELDS stay at the final bar so the denominator is constant and the
     checkpoints stay comparable; only how a value must be written moves."""
     at = ledger_profile.as_of(profile, at_seq) if at_seq is not None else profile
+    # `lessons_fn(row) -> str` lets an arm assemble its prompt section PER
+    # DOCUMENT. A memory system that retrieves by similarity (the mem0 arm)
+    # shows the agent different memories for different receipts, where the
+    # governed arm renders one rule set for all of them. Both are "what this
+    # memory puts in the prompt"; only the second is a constant.
     n_rules = lessons.count("\n- ")
     if verbose:
         print("\n=== arm %s — %d rule(s) in the prompt" % (name, n_rules))
@@ -55,7 +60,8 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
         seq = r["seq"]
         req = ledger_profile.required_fields(profile, seq)
         try:
-            out, usage = propose(agent_argv, at, r["text"], lessons)
+            section = lessons_fn(r) if lessons_fn else lessons
+            out, usage = propose(agent_argv, at, r["text"], section)
         except Exception as e:
             # A provider having a bad minute is not a result, but losing the
             # whole arm to it is worse than scoring one document as a park:
