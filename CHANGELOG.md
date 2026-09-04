@@ -24,6 +24,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proposal, current is a run journaled after the apply; no baseline run means
   no metric rather than a fabricated one, and the direction is mandatory.
 
+- **A ledger that changes its mind.** `receipts/ledger_profile.py` gains
+  `regimes`, letting a filing convention be *replaced* mid-deployment on
+  top of the `arc` that already lets requirements arrive, and `drift.sh`
+  drives three arms across it — the governed loop, the same memory rendered
+  ungoverned (every correction verbatim, nothing retracted), and the frozen
+  day-one agent — scored per checkpoint under the convention in force.
+  `DRIFT.md` records the one clean seed: governed 173 against ungoverned 60
+  before the change, and after it the loop learned the new rule and kept
+  the old one beside it, while the Verify gate marked every rule `held`
+  against a day-one baseline the agent still beats. A measured negative on
+  the revert half, with the two missing mechanisms named.
+
 - **The receipts ablation is complete — a 2×2, four cells.** `RECEIPTS.md`
   separates the two things run 2 changed at once. Both are large main
   effects from run 1's baseline: naming the observer in the evidence

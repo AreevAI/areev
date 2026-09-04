@@ -705,6 +705,29 @@ reported `held`, correctly: 133 still beats the deployed baseline of 35.
 engine gaps this run argues for are semantic near-duplicate suppression and
 a high-water mark to measure against.
 
+### A ledger that changes its mind — the drift run
+
+Full design and result: [`DRIFT.md`](DRIFT.md). The same receipts against a
+business whose demands move on a declared timeline: a new requirement at
+document 41, and at document 81 the date convention *replaced* — said once,
+never repeated. Three arms, one seed, scored under the convention in force
+at each checkpoint:
+
+| checkpoint | frozen | ungoverned memory | **governed** |
+|---|:---:|:---:|:---:|
+| 80 — before the change | 30 | 60 | **173** |
+| 120 — after it | 0 | 59 | 114 |
+
+Before the change, governing beats remembering 114 wins to 1, and the gap is
+behavioural — the governed agent produces every field, the ungoverned one
+never gets past the first. After it, the two fail in opposite ways: plain
+memory tracks the new date format (59/60) and still produces one field; the
+governed loop learned the new rule, **kept the old one beside it**, and
+scored 0/60 on the field that changed. The Verify gate marked all five rules
+`held` — correctly, against a day-one baseline the agent still beats. A
+measured negative on the revert half, with the two missing mechanisms named:
+contradiction between authored lessons, and a baseline that is not day one.
+
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
 `cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,
