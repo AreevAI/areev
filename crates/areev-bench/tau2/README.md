@@ -105,6 +105,39 @@ before paying to find out. Recorded here because "we ran it and it was
 zero" and "we checked first" are different claims, and only one of them is
 true.
 
+## Result — the domain is out of reach for this agent model
+
+**τ²-bench's own shipped agent, on the same tasks with the same model,
+scores 0.0000.** That is the control that matters, and it was run before
+any conclusion was drawn about this bridge:
+
+```
+tau2 run --domain retail --task-ids 20 21 22 --max-steps 50   --agent-llm openrouter/qwen/qwen3-30b-a3b-instruct-2507   --user-llm  openrouter/qwen/qwen3-30b-a3b-instruct-2507
+```
+
+| task | reward | DB check | NL assertions | ended |
+|---|:---:|:---:|:---:|---|
+| 20 | 0.0 | 0.0 | 1.0 | user_stop |
+| 22 | 0.0 | 0.0 | 1.0 | user_stop |
+| 21 | 0.0 | — | — | max_steps |
+
+The agent converses acceptably — the natural-language assertions pass, and
+its partial-action scores are 43% and 80% — but it never reaches the exact
+gold database state τ²'s reward requires. Our own FULL arm (whole policy,
+whole tool descriptions, no lessons) matched it at 0 over its first
+episodes, which is what stopped the run.
+
+**So no learning claim can be made in this domain at this model, and none
+is.** With the ceiling at zero there is no headroom for a governed loop to
+close, and any B-vs-A number here would be measuring the agent's ceiling
+rather than the loop. The bridge, the redaction and the audit all work —
+the smoke ran the whole chain end to end — and they are committed for a
+run against a model that can actually clear the bar. What is *not* here is
+a number dressed up as a finding.
+
+Evidence, including the native control's raw results:
+[`../results/tau2-ceiling-2026-09-04/`](../results/tau2-ceiling-2026-09-04/).
+
 ## Two things to know before reading a number
 
 **The tool descriptions carry most of the policy.** Of the four clauses
