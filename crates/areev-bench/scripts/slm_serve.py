@@ -32,7 +32,8 @@ def meter(model, usage, op):
             fh.write(json.dumps({"ts": int(time.time() * 1000), "script": os.path.basename(sys.argv[0]),
                                  "model": model, "provider": "local-mlx", "op": op,
                                  "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                                 "completion_tokens": int(usage.get("completion_tokens") or 0)}) + "\n")
+                                 "completion_tokens": int(usage.get("completion_tokens") or 0),
+                                 "latency_ms": usage.get("latency_ms")}) + "\n")
     except OSError:
         pass
 
