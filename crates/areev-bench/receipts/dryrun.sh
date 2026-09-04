@@ -33,7 +33,10 @@ export LOOP_LLM_CMD="$PY $REPO/examples/llm/mock.py"
 export LOOP_GROUND_CMD="$PY $REPO/examples/llm/mock.py"
 export REVIEW_CMD="$PY $HERE/mock_judge.py"
 export LOOP_POLICY='{"discover_objective":"learner"}'
-DATASET="${DATASET:-$HERE/data/sroie.jsonl}"
+# A SYNTHETIC corpus, committed, so the gate runs with no download, no key
+# and no licence question. It is not SROIE and it is not a measurement: what
+# it proves is that the governance chain fires end to end.
+DATASET="${DATASET:-$HERE/fixtures/tiny.jsonl}"
 
 echo "######## 1. experience (A0 journaled first, every lesson measured)"
 "$PY" "$HERE/run.py" --dataset "$DATASET" --workdir "$WORKDIR" \
