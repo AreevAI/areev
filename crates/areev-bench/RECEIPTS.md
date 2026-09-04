@@ -530,7 +530,33 @@ publishes with the caveat above about which of the two changes earned it.
 If any seed regresses the way run 1's seed 3 did, the per-rule verdicts and
 the reverts are published with it.
 
-### Run 2 result — seed 1 (seeds 2 and 3 running)
+### Run 2 result — three seeds
+
+**The agent learned, in every seed, by a margin nothing else in this
+document approaches.**
+
+| seed | A (rules rolled back) | B (rules applied) | B vs A | p |
+|---|:---:|:---:|:---:|:---:|
+| 1 | 31/240 | **123/240** | 92 wins, 0 losses | <0.0001 |
+| 2 | 36/240 | **141/240** | 106 wins, 1 loss | <0.0001 |
+| 3 | 30/240 | **118/240** | 88 wins, 0 losses | <0.0001 |
+| **pooled** | **97/720** | **382/720** | **286 wins, 1 loss** | **2.3 × 10⁻⁸⁴** |
+
+The B-vs-B2 noise floors are 2, 4 and 1 discordant trials, so two identical
+passes essentially agree and the swing is the rules.
+
+**The control is exact.** Arm A pooled is **97/720 in run 1 and 97/720 in
+run 2** — same agent, same receipts, same seeds, same rollback path, and
+the day-one baseline lands on the same number either way. The whole
+distance between run 1's B of 70 and run 2's B of 382 is what the loop
+authored and a reviewer approved. There is no drift to explain away.
+
+Coverage, pooled, is the mechanism in one line: under arm A the agent fills
+the day-one field on 180 of 180 held-out receipts and the other three on
+**0**. Under arm B it fills Vendor Name and Amount on 180 of 180, and
+Vendor Address on 60 of 180 (seed 2 alone learned the address).
+
+### Run 2 result — per seed
 
 **The agent learned, and the gain is large, clean and causally attributed.**
 Same 60 held-out receipts, same agent, same seed, same evalset hash
