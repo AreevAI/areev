@@ -16,7 +16,11 @@ public port of the private expense-agent measurement in
 | `memory.py` | the Areev bridge: record → loop → review → apply/rollback → lesson assembly |
 | `run.py` | the experience phase |
 | `evaluate.py` | the paired held-out evaluation (arms B, B2, A) |
+| `evalrun.py` | one held-out pass, and the `mg:eval_run` journal entry that makes it evidence the Verify gate can read |
+| `regress.py` | the verify-then-revert leg: measure the applied rules, admit a harmful one on purpose, watch the gate catch and revert it |
 | `stats.py`, `summarize.py` | McNemar over the paired trials; the published counts |
+| `verify.py` | recompute every published number from the trials, and checksum the raw files (`--check`) |
+| `learners.py` | the diagnostic: what each candidate learner authors from one fixed memory |
 | `mock_agent.py`, `mock_judge.py`, `fixtures/` | the keyless floor `dryrun.sh` runs |
 | `env.sh`, `learn.sh`, `eval.sh`, `curve.sh`, `dryrun.sh` | drivers; every model leg pinned and seeded |
 
