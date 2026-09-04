@@ -135,7 +135,19 @@ def main():
         # has not stated yet.
         at = ledger_profile.as_of(profile, seq)
         truth_at = {k: ledger_profile.refile(at, k, v) for k, v in r["truth"].items()}
-        out, usage = propose(agent_argv, at, r["text"], lessons)
+        try:
+            out, usage = propose(agent_argv, at, r["text"], lessons)
+        except Exception as e:
+            # A provider having a bad minute must not end the deployment. The
+            # document is treated as parked -- which is what the agent would
+            # have done had it been told "no answer" -- the accountant fills it
+            # in as they do for any park, and the failure is COUNTED in the
+            # summary so a run that leaned on this is visibly not a clean one.
+            # (Two seeds of the metered re-run died to a 429 at document 13
+            # and 2 before this existed.)
+            totals["model_call_failures"] = totals.get("model_call_failures", 0) + 1
+            print("seq %3d  MODEL CALL FAILED (%s) -- treated as a park" % (seq, type(e).__name__))
+            out, usage = {"fields": {}, "park": True, "reason": "model call failed"}, {}
         totals["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
         totals["completion_tokens"] += int(usage.get("completion_tokens") or 0)
 
