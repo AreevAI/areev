@@ -28,6 +28,10 @@ CAPTURE_ENTITY = "receipt_capture"
 # instructions for the agent, so they must never render into the prompt.
 INTERNAL_RELATIONS = {"reading_result", "correction", "capture_attempt"}
 
+# The subjects this harness writes per document (`document_0007`). A proposal
+# targeting one of these is about a single receipt, not a rule for future ones.
+DOCUMENT_SUBJECT = re.compile(r"^document_\d+$")
+
 
 def with_memory(db_path, actor, fn):
     """Open as `actor`, run `fn(db)`, and guarantee the handle is released.
@@ -69,7 +73,8 @@ def lessons_markdown(db):
             continue
         if rel in ("lesson", "fails_with"):
             rules.append(obj)
-        elif f.get("subject") == CAPTURE_ENTITY and rel not in INTERNAL_RELATIONS:
+        elif (not DOCUMENT_SUBJECT.match(f.get("subject") or "")
+              and rel not in INTERNAL_RELATIONS):
             # An approved `fact` proposal on the capture entity — a learned
             # convention (date_format = DD/MM/YYYY). The loop proposes these
             # as readily as it proposes rules; discarding them threw away the
@@ -219,9 +224,16 @@ def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbos
             target = rec.get("target_ref") or ""
             if kind == "lesson":
                 ok, why = acct.review_recommendation(profile, text, in_force, judge)
-            elif kind == "fact" and target.rsplit("/", 1)[-1] == CAPTURE_ENTITY:
+            elif kind == "fact" and not DOCUMENT_SUBJECT.match(target.rsplit("/", 1)[-1]):
                 # A convention learned about the task as a whole. Judged on
                 # the same rubric.
+                #
+                # The discriminator is "is this about ONE document", not "does
+                # the subject match a name we picked": the model is never told
+                # what the capture entity is called and reasonably invents one
+                # (live: `entity:invoice_processing`). Gating on an exact match
+                # silently rejected every convention it proposed, which is a
+                # fact about this harness rather than about the model.
                 ok, why = acct.review_recommendation(profile, text, in_force, judge)
             elif kind == "fact":
                 ok, why = False, ("a fact about one document, not a rule for "
