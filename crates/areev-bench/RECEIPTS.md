@@ -729,6 +729,42 @@ Steps 6 to 8 are what run 1 also demonstrated. Steps 3 to 5 are what run 1
 could not, and are the difference between a governed loop that only
 protects an agent and one that also improves it.
 
+## Pre-registered ablation — which of the two changes earned run 2's gain?
+
+*Committed before either cell was run. Runs 1 and 2 stand as published;
+this adds the two missing cells of a 2×2 and does not revise them.*
+
+Run 2 changed two things from run 1 at once, and said so. The 2×2 that
+separates them, with the two runs already in it:
+
+| | evidence **anonymous** | evidence **named** |
+|---|---|---|
+| learner `gpt-oss-120b` | **run 1** — 70/720 | **cell D** |
+| learner `qwen3-30b` | **cell C** | **run 2** — 382/720 |
+
+`Policy.evidence_attribution: anonymous` restores the previous rendering
+exactly (test-pinned), so each cell turns one variable and nothing else.
+Everything else is held: corpus, seeds, splits, agent, GROUND, reviewer,
+rubric, scale, and the same primary test.
+
+**Cell C is the load-bearing one.** If `qwen3-30b` with anonymous evidence
+already reaches run 2's level, the projection fix was not needed and the
+learner model carries the result. If it lands near run 1, attribution is
+necessary and the two changes are jointly required.
+
+**Cell D asks whether attribution is sufficient.** The authoring diagnostic
+already says `gpt-oss-120b` writes no additive rule even with the observer
+named (0 of 5 passes), so a null here is expected; it is run because an
+expected null that is not measured is an assumption.
+
+**Stated in advance.** Three seeds each, the same 40/60 split. The four
+cells are compared on arm B, unpaired across runs, and a cross-run
+comparison at this scale is read against the fact that **arm A is 97/720 in
+both existing runs** — an equality that is itself the drift check. Whatever
+lands is published in this table, including a cell that contradicts the
+reading above. If cell C matches run 2, this document will say the
+projection fix was not what earned it.
+
 ### Not affected by the τ² bridge bug
 
 The sibling [`tau2/`](tau2/README.md) harness had a tool-call parsing
