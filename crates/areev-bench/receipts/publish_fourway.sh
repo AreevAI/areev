@@ -21,6 +21,8 @@ for S in 1 2 3; do
   [ -f "$METERED/seed$S/run.config.json" ] && cp "$METERED/seed$S/run.config.json" "$OUT/areev-metered.seed$S.run.config.json"
   [ -f "$STRUCT/seed$S/structure.summary.json" ] && cp "$STRUCT/seed$S/structure.summary.json" "$OUT/structure.seed$S.summary.json"
 done
+# the structure grid, pooled over seeds
+[ -d "$STRUCT" ] && python3 "$HERE/structure_stats.py" "$STRUCT" --write > "$OUT/structure.stdout" 2>&1 && cp "$STRUCT/STRUCTURE.json" "$OUT/STRUCTURE.json"
 # cost, per arm, from journaled tokens
 for d in "$METERED" "$MEM0/default" "$MEM0/raw" "$MEM0/domain" "$SLM" "$STRUCT"; do
   [ -d "$d" ] || continue
