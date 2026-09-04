@@ -149,30 +149,52 @@ adapter. This bridge just did not copy it. The published A/B/A/B results,
 which run through that Rust path, are untouched; so is the receipts
 harness, whose agent uses no tools at all.
 
-## Result
+## Result — the domain is reachable, but these clauses are the wrong lever
 
-*Partial. The full ceiling probe is deferred: it and the receipts run 2
-were pinned to the same provider endpoint and starving each other, so the
-receipts run was given the bandwidth and this will be re-run after it.*
+The ceiling probe ran in full, 25 held-out tasks under each condition, no
+lessons in either. Evidence:
+[`../results/tau2-ceiling-2026-09-04/`](../results/tau2-ceiling-2026-09-04/).
 
-**The fixed bridge solves most of what it is given.** Seven episodes of the
-FULL arm before the probe was paused:
+| | solved | tool errors | runs killed by too many errors |
+|---|:---:|:---:|:---:|
+| FULL — the whole policy and tool descriptions | 7/25 | 23 | 0 |
+| REDACTED — `authenticate` and `modify_once` withheld | 9/25 | **42** | **2** |
 
-| | episodes | solved |
-|---|:---:|:---:|
-| this bridge, full policy, no lessons | 7 | **5** |
-| τ²-bench's own agent, same model, tasks 20–22 | 3 | 0 |
+Paired by task: 2 tasks the full policy solved and the redacted one did
+not, 4 the other way, **p = 0.69**.
 
-So the retracted claim was not merely unsupported, it was inverted: this
-domain has ample headroom for a governed loop to work in. The gap against
-τ²'s shipped agent is left unexplained here — different system prompt,
-different scaffolding, and 7 episodes against 3 — and is not offered as a
-claim that this agent is better. What it does settle is that a zero from
-this bridge was never the model's ceiling.
+**Two findings, and they point in different directions.**
 
-The withheld-clause comparison (FULL against REDACTED) is what the probe
-exists for and has not been measured yet. No τ² learning number is
-published until it has.
+*The domain is reachable.* 7 of 25 at 28% settles what the retraction
+above already conceded: a zero from this bridge was never the model's
+ceiling, and there is room here for a governed loop to work in.
+
+*These clauses are not the lever.* Withholding them costs **nothing
+measurable in reward**, which is what a learning claim would have to move.
+So a full run with this clause set would have spent six hours measuring
+noise, and the pre-registered verdict is the one the probe printed: choose
+different clauses.
+
+**They are not inert, though, and that is the useful part.** The redacted
+agent makes **nearly twice the tool errors** (42 against 23) and two of its
+runs die of too many errors where none of the full-policy runs do. The
+withheld rules change what the agent *does* and not what it *scores*,
+because τ²'s reward is a database-state check and neither clause changes
+the database — authentication is read-only, and the once-only modify bites
+in a slice of tasks too thin to show at n=25.
+
+**What a working τ² design needs**, stated for whoever runs it next: clauses
+whose violation lands in the database. The cancellation-reason enum and the
+refund-destination rule are both in `redact.py` already and both qualify;
+neither was chosen here because `--audit` showed them restated in the tool
+descriptions, and removing them from both surfaces is a bigger redaction
+than the one this run made. That is the next design, not a rerun of this
+one.
+
+**No τ² learning number is published**, and none should be from this clause
+set. The bridge, the redaction, the audit and the ceiling probe are all
+committed and working; what is missing is a manipulation the reward can
+see.
 
 ## Two things to know before reading a number
 

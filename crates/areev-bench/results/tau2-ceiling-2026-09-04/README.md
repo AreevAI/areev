@@ -15,4 +15,14 @@ was withdrawn (`../../tau2/README.md`, "Retracted"). Three tasks were never
 enough to carry a claim that broad; they were leaned on because they agreed
 with a broken arm, which is exactly how a control stops being one.
 
-The corrected ceiling measurement will be published here when it has run.
+## The corrected ceiling measurement
+
+`ceiling.summary.json` is the probe over 25 held-out tasks under each
+condition, with the bridge fixed: **FULL 7/25 solved, REDACTED 9/25**,
+paired 2 against 4 discordant at p = 0.69. The domain is reachable and the
+withheld clauses cost nothing the reward can see — though they do cost
+behaviour, with 42 tool errors against 23 and two runs dying of too many
+errors where the full policy had none.
+
+So no τ² learning number is published from this clause set.
+`../../tau2/README.md` has the reading and what a working design needs.
