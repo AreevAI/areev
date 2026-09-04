@@ -1037,6 +1037,17 @@ receipts workload has no tool calls at all: its evidence is human
 observations and filed rows. A rate measured here is evidence about the
 proposer, not a prediction about that corpus.
 
+**And it did not transfer — recorded here because this grid chose the
+model.** On the receipts corpus (`RECEIPTS.md`), `gpt-oss-120b` had all
+five of its proposals refused at GROUND, against zero refusals for either
+qwen, and the run it was selected for produced a null. The same experiment
+with `qwen3-30b` as the learner produced 286 wins against 1 loss. The rule
+above was followed and the rule above picked wrong: an authoring rate
+measured on a workload of tool failures said nothing useful about a
+workload of human corrections. A future selection needs a grid over the
+corpus it will be used on, which is a change to this instrument's design
+and not a tuning of its threshold.
+
 **"Proposed 0" has two readings, and only the raw response tells them
 apart.** The engine fail-softs a backend that answers in a shape the parser
 drops, so a model that abstained and a model that answered with the wrong
