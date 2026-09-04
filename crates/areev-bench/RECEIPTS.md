@@ -227,6 +227,21 @@ learning.
 
 ## Result
 
+Two runs, in the order they happened. **If you read one thing, read
+[run 2](#run-2-result--three-seeds)** — it is the result. Run 1 is
+directly below it in document order because it came first and its
+pre-registration must sit in front of its numbers, but it is the
+cautionary half.
+
+| | run 1 | run 2 |
+|---|:---:|:---:|
+| A — rules rolled back | 97/720 | 97/720 |
+| B — rules applied | 70/720 | **382/720** |
+| B vs A, paired | 3 wins, 30 losses | **286 wins, 1 loss** |
+| verify-then-revert leg | passed, 2 of 3 seeds | passed, 2 of 3 seeds |
+
+### Run 1
+
 **On real receipts, a model-authored learner under human review made the
 agent significantly worse — and the only thing that caught it was
 measuring the outcome.** That sentence is the finding; the tables are the
@@ -683,15 +698,24 @@ per-field coverage independently shows — it filled the day-one field on
 
 ### Cost
 
-Measured as the account-level delta across all three seeds, which is every
-model call the run made: **$0.26** — 1,700 held-out receipt reads plus 120
-experience reads, 57 governed learn passes, and the reviewer's verdict on
-every proposal. The agent leg alone is $0.06 (528k prompt / 26k completion
-tokens at Qwen3-30B's $0.10/$0.30 per million); the rest is the reviewer on
-`gpt-4o` and the GROUND leg on `gpt-4o-mini`.
+Measured as the account-level delta, which is every model call each run
+made:
 
-Cost is not the obstacle to running this. Nothing in the null above is
-explained by having spent too little.
+| | spend |
+|---|---|
+| run 1, three seeds | **$0.26** |
+| run 2, three seeds | **~$0.55** |
+
+Each run is 1,700 held-out receipt reads plus 120 experience reads, around
+55 governed learn passes, and the reviewer's verdict on every proposal.
+Run 1's agent leg alone is $0.06 (528k prompt and 26k completion tokens at
+Qwen3-30B's $0.10/$0.30 per million); the rest is the reviewer on `gpt-4o`
+and GROUND on `gpt-4o-mini`. Run 2 costs more because it learns more: more
+rules proposed means more reviewer calls.
+
+Cost is not the obstacle to running this, in either direction. Nothing in
+run 1's null is explained by having spent too little, and run 2's result
+cost less than a cup of coffee.
 
 ### Reproduce
 
