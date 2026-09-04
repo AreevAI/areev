@@ -50,6 +50,35 @@ sh -c '. ./env.sh; $PY evaluate.py --workdir runs/s1/eval --learned-db runs/s1/r
         --experience 30 --eval 40 --journal B=eval-b'
 ```
 
+## Pre-registered design (written before any paid run)
+
+*Committed 2026-09-04, before a single scored episode. Not yet run.*
+
+- **Withheld**: `authenticate` and `modify_once` — removed from the policy
+  **and** from every tool description, with `--audit` failing the run if
+  either is still readable. Chosen because one is absent from the shipped
+  tool schemas entirely and the other is the classic "nobody told me I get
+  one shot" failure; both are named in `redact.py` with their reasons.
+- **Split**: the benchmark's own `base` order. The first 30 tasks are the
+  experience phase, the next 40 are held out — disjoint by construction, no
+  reshuffling, so the tasks are the benchmark's and the slice is stated.
+- **Legs**, all pinned, temperature 0: agent `qwen3-30b-a3b-instruct-2507`
+  (coreweave/bf16); customer τ²'s own simulator on the same model and pin;
+  learner `gpt-oss-120b` (deepinfra/bf16); GROUND `gpt-4o-mini` (openai);
+  supervisor `gpt-4o` (openai) on the fixed rubric in `memory.py`.
+- **Primary**: solved-task wins vs losses, **B vs A**, paired by task
+  (McNemar's exact test), reported beside the **B vs B2 noise floor**. With
+  a model playing the customer that floor is expected to be non-trivial,
+  and an effect that does not clear it is not an effect.
+- **Secondary**, pre-declared: per-clause behaviour (did the agent start
+  authenticating; did it stop calling modify twice), tool-error counts,
+  termination reasons, and the spend.
+- **Stated in advance**: `max_steps` termination scores zero by τ²'s own
+  rule regardless of DB state, so terminations are reported alongside
+  rewards — "never finished" and "finished wrong" are different failures
+  and will not be merged. A null result publishes as one, with the ledger
+  and the supervisor's reasons.
+
 ## Two things to know before reading a number
 
 **The tool descriptions carry most of the policy.** Of the four clauses
