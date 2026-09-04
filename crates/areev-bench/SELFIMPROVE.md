@@ -965,7 +965,13 @@ measured next.
 Evidence: [`results/authoring-rate-2026-09-04/`](results/authoring-rate-2026-09-04/)
 — eight summaries and their per-pass rows, over one captured experience
 (seed 1, 300 tasks, `qwen3-30b` pinned `coreweave/bf16`, 1,533 tool calls
-of which 276 are errors). Spend: **$1.05** for all 80 passes.
+of which 276 are errors). **Spend is not reported for this grid**: the
+loop adapter does not return usage, and the account-level delta that would
+have bounded it was not read before the first pass. The omission is the
+honest answer — a dollar figure nobody measured is worse than none. Every
+leg is priced in the table below, and the receipts run that followed it
+cost a measured $0.26 for 1,700 held-out reads, which is the order of
+magnitude.
 
 | objective | model (pinned) | $/M in | rate | mean stored | proposed → cited → grounded → kept | s/pass |
 |---|---|---|:---:|:---:|---|---:|

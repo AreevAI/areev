@@ -202,92 +202,91 @@ rules where another does not, that is a claim about **proposers on this
 corpus** and would need its own A/B/A/B run to become a claim about
 learning.
 
-## Result — seed 1 (seeds 2 and 3 still running)
+## Result
 
-**The end state is a null, and the null is the net of a large gain and a
-large regression.** Read the curve before the headline.
+**On real receipts, a model-authored learner under human review made the
+agent significantly worse — and the only thing that caught it was
+measuring the outcome.** That sentence is the finding; the tables are the
+evidence for it.
 
-| state | rules in the prompt | exact (of 240 trials) |
-|---|:---:|:---:|
-| A0 — as deployed, before any learning | 0 | 31 |
-| after 10 experience receipts | 0 | 31 |
-| after 20 | **2** | **86** |
-| after 30 | 3 | 33 |
-| B — after 40 (the published state) | 3 | 33 |
-| A — every rule rolled back | 0 | 31 |
+### The pre-registered primary test
 
-Arm A reproduces A0 exactly, 31 and 31, which is the causal lever working:
-rolling the rules back restores the state the agent was deployed in.
+Exact match, paired over (receipt, field) by McNemar's exact test, B (rules
+applied) against A (every rule rolled back through the API):
 
-Paired over the same 240 (receipt, field) trials: **B vs A is 2 wins, 0
-losses, p = 0.50**, against a B-vs-B2 noise floor of 1 discordant trial. On
-the pre-registered primary test this run did not move the corpus.
+| seed | rules applied | A exact | B exact | B vs A | p |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 1 | 3 | 31/240 | 33/240 | 2 wins, 0 losses | 0.50 |
+| 2 | 2 | 36/240 | 37/240 | 1 win, 0 losses | 1.00 |
+| 3 | 5 | 30/240 | **0/240** | **0 wins, 30 losses** | **<0.0001** |
+| **pooled** | | **97/720** | **70/720** | **3 wins, 30 losses** | **0.000001** |
 
-**But at two rules it moved it enormously.** Coverage — whether the agent
-put *any* value in a field — is where the mechanism is visible:
+The B-vs-B2 noise floor is 1, 0 and 0 discordant trials — two identical
+passes essentially agree, so the swings above are not the agent re-rolling.
+Arm A reproduces A0 within a trial in every seed (31/31, 36/36, 30/30),
+which is the causal lever working: rolling the rules back restores the
+state the agent was deployed in.
 
-| field | A (0 rules) | 20 receipts (2 rules) | B (3 rules) |
-|---|:---:|:---:|:---:|
-| Invoice Date (day one) | 60/60 | 60/60 | 60/60 |
-| Vendor Name | **0/60** | **47/60** | 1/60 |
-| Vendor Address | **0/60** | **47/60** | 1/60 |
-| Amount | 0/60 | 0/60 | 0/60 |
+### What broke seed 3, and what let it through
 
-The agent as deployed captures the one field it was told about on every
-receipt and the other three on none. Two approved rules took two of those
-from 0 to 47. A third rule took them back to 1.
+One approved rule did all of it:
 
-**The third rule was a near-duplicate of the second, and the reviewer's
-duplicate check missed it by 0.03.** The three approved rules, in order:
+> **"Convert extracted Invoice Date to ISO 8601 (YYYY-MM-DD) before storing
+> the fact."**
 
-```
-1. If a Vendor Name fact exists …, store it without surrounding parentheses and extra periods.
-2. If a Vendor Address fact exists …, store it without a trailing period.
-3. If a Vendor Address fact exists …, store it without leading/trailing spaces and without duplicate commas.
-```
+The ledger's convention is `DD/MM/YYYY`, and the accountant had said so in
+the agent's own memory, in as many words: *"The Invoice Date is right but
+write dates as DD/MM/YYYY, like 26/03/2018."* The rule proposes the
+opposite. It took the one field the agent got right on every receipt from
+30 exact to **0**.
 
-Rules 2 and 3 share eight content words and differ in six, a Jaccard of
-**0.571** against the reviewer's 0.6 threshold, so it was admitted as a new
-rule. Same held-out receipts, same seed, temperature 0: with rules 1 and 2
-the agent returns a vendor name and address, and with rule 3 added it
-returns neither. The write-up does not claim to know *why* a third
-formatting rule suppresses capture; what is measured is that it did, and
-that nothing in the run noticed.
+It passed everything:
 
-**Nothing noticed because nothing measured between applies.** Each rule was
-approved on its text and applied; the held-out set was not read again until
-the end. The gate that exists for exactly this — re-measure an applied rule
-and revert it on regression — had no run to compare against while the
-damage was being done. That is the finding this corpus produced, and it is
-an argument about *cadence*, not about the gate.
+| gate | verdict |
+|---|---|
+| DISCOVER cite-check | cited real evidence |
+| GROUND (a different model) | supported |
+| VERIFY (adversarial, abstention-biased) | kept |
+| the supervisor, on a rubric fixed before the run | **approved** — "Use ISO 8601 format for dates." |
 
-### The gate itself works, on the same corpus, live
+Four independent checks, one of them a model reading a written rubric with
+the column names in front of it, and a rule contradicting an explicit human
+instruction in the same memory went through all four. It is worth being
+precise about how close this was: in a smaller run against the same corpus
+GROUND *did* catch this exact proposal, refusing it with *"The evidence
+states that dates are written as DD/MM/YYYY, which contradicts the claim
+about standardizing to ISO 8601 format."* The same gate, the same model,
+the same error — caught once, missed once.
 
-The verify-then-revert leg (`regress.py`) ran against the finished memory
-and passed every check:
+**That is the argument for measuring outcomes rather than trusting review.**
+Nothing about the rule's text gives it away as harmful; only reading the
+held-out set under it does.
 
-| step | exact (of 240) |
-|---|:---:|
-| B — the three learned rules | 33 |
-| H — a deliberately harmful rule admitted on purpose | **8** |
-| R — after the gate's revert was approved and applied | **34** |
+### The gate does catch it — replicated, live
 
-All three learned rules were measured `held` (baseline 31 from A0, current
-33 from B) and no revert was proposed for them. The harmful rule — "write
-the Invoice Date as MM/DD/YYYY", authored by a fixture model, grounded and
-verified by the stubs, approved on purpose — rendered into the prompt,
-collapsed the score to 8, was measured `regressed` against the journaled
-A0 baseline at its first checkpoint, and `outcome_review` proposed the
-revert. Approving and applying that revert retracted the rule through the
-same rollback path a person would use, restored the prompt, and recovered
-the score to 34. Asked again on the next pass, the same fixture model's
-identical proposal was **not** re-queued: a measured revert puts the
-finding on cooldown.
+The verify-then-revert leg ran against each finished memory. Every check
+passed in every seed:
 
-So on real documents the governance half of the claim holds decisively —
-a rule that hurt was detected from held-out measurement, reverted through
-the API, and kept from coming straight back — while the learning half, at
-this scale and with this evidence framing, did not survive to the end state.
+| seed | learned rules | B | H — a harmful rule admitted on purpose | R — after the gate's revert |
+|---|---|:---:|:---:|:---:|
+| 1 | 3, all measured `held` (31 → 33) | 33 | **8** | **34** |
+| 2 | 2, both measured `held` (36 → 37) | 37 | **10** | **37** |
+
+In both seeds the harmful rule rendered into the prompt, collapsed the
+score, was measured `regressed` against the A0 baseline journaled before any
+learning, and `outcome_review` proposed the revert. Approving and applying
+that revert retracted the rule through the same rollback path a person
+would use and recovered the score. Asked again on the next pass, the same
+proposal was **not** re-queued — a measured revert puts the finding on
+cooldown, which is the engine change this run's design forced.
+
+So the two halves of the claim separate cleanly on real public data:
+
+- **Governance: proven, and replicated.** A rule that hurt was detected from
+  held-out measurement, reverted through the API, and kept from returning.
+- **LLM-authored learning: not proven, and at this scale actively harmful.**
+  Pooled, the rules the loop authored and a reviewer approved cost the agent
+  27 net trials.
 
 ### Why the rules are shaped like that — the loop read the conversation backwards
 
@@ -302,9 +301,10 @@ what the evidence actually looked like, and the answer is not what it
 appeared to be.
 
 **The accountant's instruction is in the bundle, first, and not buried.**
-Dumping one DISCOVER request off the wire: the 64-item evidence bundle is
-**39 observations to 25 facts** — the person's words dominate the numbers —
-and item one is, verbatim:
+Dumping one DISCOVER request off the wire
+([`wire/discover-request-response.json`](results/receipts-learners-2026-09-04/wire/discover-request-response.json)):
+the 64-item evidence bundle is **39 observations to 25 facts** — the
+person's words dominate the numbers — and item one is, verbatim:
 
 > Thanks — I also need the vendor and the amount on every one of these,
 > otherwise I can't file it. Vendor Name is …
@@ -324,39 +324,68 @@ invoice, not just the date')"*.
 The accountant's messages carry a complaint **and the corrected values** in
 one sentence, and the model resolves that shape backwards: it reads a person
 supplying a correction as the agent having *asked* for data it already had.
-Every rule this corpus produced follows from that one misreading, which is
-why they are all about not re-requesting and about tidying values already
+Almost every rule this corpus produced follows from that misreading, which
+is why they are about not re-requesting and about tidying values already
 present.
 
 That is a defect in how this harness records a correction — the grain does
 not say who spoke or in which direction — and it is the same failure
 [`EXPENSE.md`](EXPENSE.md) records twice under "the framing of the evidence
-chose the audience of the lesson". It is left standing here rather than
-fixed, because fixing it after seeing the result is how a benchmark gets
-tuned toward its answer; the fix is a separate experiment with its own
+chose the audience of the lesson". It is left standing rather than fixed,
+because fixing it after seeing the result is how a benchmark gets tuned
+toward its answer; the fix is a separate experiment with its own
 pre-registration.
 
-The same diagnostic is the evidence against the model the authoring-rate
-grid's rule selected: all five of `gpt-oss-120b`'s proposals were refused
-at GROUND on this corpus, against zero refusals for either qwen. That grid
-measured a workload of tool failures; this one has none, and the selection
-did not transfer.
+### The gain that did not survive, and why it is reported
 
-*Seeds 2 and 3 are running and will be published here whatever they show.
-Seed 2 applied 2 rules and seed 3 applied 4, so between them they test the
-pattern above directly.*
+Seed 1's learning curve — the same 60 held-out receipts against memory as
+it stood after 0, 10, 20 and 30 experience receipts — shows the process is
+far more volatile than the end states suggest:
 
-## Reproduce
+| seed 1 state | rules | exact (of 240) |
+|---|:---:|:---:|
+| A0 / after 10 receipts | 0 | 31 |
+| after 20 | **2** | **86** |
+| after 30 | 3 | 33 |
+| B (after 40) | 3 | 33 |
+
+Coverage says what moved: as deployed the agent fills the day-one field on
+60/60 receipts and the other three on 0/60. At two rules, Vendor Name and
+Vendor Address went to **47/60 each**. A third rule took them to 1/60.
+
+That third rule was a near-duplicate of the second — Jaccard **0.571**
+against the reviewer's 0.6 duplicate threshold, admitted by 0.03. Seed 2
+also applied two rules and its coverage never moved, so the count is not
+the mechanism and this write-up does not claim to know what is. What is
+measured is that between two applies the same held-out set scored 86 and
+then 33, and that **nothing in the run noticed**, because nothing measured
+between applies. The gate had no run to compare against while the damage
+was being done. That is an argument about the gate's *cadence*, and it is
+the concrete thing this corpus taught.
+
+### Cost
+
+Measured as the account-level delta across all three seeds, which is every
+model call the run made: **$0.26** — 1,700 held-out receipt reads plus 120
+experience reads, 57 governed learn passes, and the reviewer's verdict on
+every proposal. The agent leg alone is $0.06 (528k prompt / 26k completion
+tokens at Qwen3-30B's $0.10/$0.30 per million); the rest is the reviewer on
+`gpt-4o` and the GROUND leg on `gpt-4o-mini`.
+
+Cost is not the obstacle to running this. Nothing in the null above is
+explained by having spent too little.
+
+### Reproduce
 
 ```bash
 cd crates/areev-bench/receipts
-python3 build_sroie.py                                    # once; cached
-sh dryrun.sh                                              # keyless plumbing gate
+python3 build_sroie.py                       # 626 fetched, 612 kept
+sh dryrun.sh /tmp/dry                        # the keyless gate — no key needed
 export OPENROUTER_API_KEY=…
-for S in 1 2 3; do SEED=$S sh curve.sh runs; done         # A0 + experience + paired eval + verify/revert + curve
-python3 summarize.py runs/seed1/eval/trials.json runs/seed2/eval/trials.json runs/seed3/eval/trials.json
+for S in 1 2 3; do SEED=$S LEARNER_MODEL=openai/gpt-oss-120b \
+  LEARNER_PIN=deepinfra/bf16 sh curve.sh runs 40 60 10; done
+python3 verify.py runs --write               # every published number, recomputed
 ```
 
-The binding must be built from this tree
-(`maturin develop --release -m crates/areev-py/Cargo.toml` into `.venv`);
-`env.sh` documents every leg and how to override one.
+Committed evidence and what deliberately stays local:
+[`results/receipts-sroie-2026-09-04/`](results/receipts-sroie-2026-09-04/).

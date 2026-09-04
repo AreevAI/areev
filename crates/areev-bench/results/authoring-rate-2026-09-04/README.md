@@ -38,4 +38,8 @@ produce something to govern, and where do its drafts die", which is the
 question the 2x2 (`../selfimprove-2x2-qwen3-30b-2026-08-30/`) could not
 answer for itself and which decides what the paid run spends on.
 
-Spend: **$1.05** for all 80 passes.
+**Spend is not reported.** The loop adapter returns no usage, and the
+account-level delta that would have bounded these 80 passes was not read
+before the first one. Rather than publish a figure nobody measured, this
+says so; the per-model prices are in `../../SELFIMPROVE.md` and the
+receipts run that followed cost a measured $0.26.
