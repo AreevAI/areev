@@ -44,10 +44,10 @@ module Python 3.13 removed, on a path every import crosses.
 ```bash
 sh -c '. ./env.sh; $PY run.py --workdir runs/s1 --audit'          # what is withheld, and what leaks
 export OPENROUTER_API_KEY=…
-sh -c '. ./env.sh; $PY run.py --workdir runs/s1 --experience 30 --eval 40 \
-        --learn-every 5 --journal-baseline --measure'
+sh -c '. ./env.sh; $PY run.py --workdir runs/s1 --experience 20 --eval 25 \
+        --learn-every 4 --journal-baseline --measure'
 sh -c '. ./env.sh; $PY evaluate.py --workdir runs/s1/eval --learned-db runs/s1/retail.db \
-        --experience 30 --eval 40 --journal B=eval-b'
+        --experience 20 --eval 25 --journal B=eval-b'
 ```
 
 ## Pre-registered design (written before any paid run)
@@ -59,9 +59,14 @@ sh -c '. ./env.sh; $PY evaluate.py --workdir runs/s1/eval --learned-db runs/s1/r
   either is still readable. Chosen because one is absent from the shipped
   tool schemas entirely and the other is the classic "nobody told me I get
   one shot" failure; both are named in `redact.py` with their reasons.
-- **Split**: the benchmark's own `base` order. The first 30 tasks are the
-  experience phase, the next 40 are held out — disjoint by construction, no
+- **Split**: the benchmark's own `base` order. The first 20 tasks are the
+  experience phase, the next 25 are held out — disjoint by construction, no
   reshuffling, so the tasks are the benchmark's and the slice is stated.
+  (Reduced from 30/40 before the first run, for wall-clock: each episode is
+  a multi-turn conversation between two models, so the held-out set is read
+  three times over and the arms dominate the cost. The reduction is recorded
+  here rather than made quietly, and it costs power: at n=25 only a large
+  effect can clear the noise floor, which is stated with the result.)
 - **Legs**, all pinned, temperature 0: agent `qwen3-30b-a3b-instruct-2507`
   (coreweave/bf16); customer τ²'s own simulator on the same model and pin;
   learner `gpt-oss-120b` (deepinfra/bf16); GROUND `gpt-4o-mini` (openai);
