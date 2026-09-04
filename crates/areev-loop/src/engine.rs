@@ -602,6 +602,7 @@ impl Engine {
         // RECENT grains (created since the last run) so the LLM gets its own
         // lens and can find issues in grains no analyzer flagged. Without this
         // the LLM could only elaborate near what determinism already caught.
+        let attribution = self.policy.evidence_attribution;
         let mut evidence: Vec<crate::llm::EvidenceItem> = Vec::new();
         let mut bundle: BTreeSet<String> = BTreeSet::new();
         let mut ns_by_hash: std::collections::BTreeMap<String, String> = Default::default();
@@ -620,7 +621,7 @@ impl Engine {
                 }
                 if !bundle.contains(h) {
                     if let Ok(Some(g)) = sub.grain(h) {
-                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     }
                 }
             }
@@ -655,7 +656,7 @@ impl Engine {
                         continue;
                     }
                     let before = evidence.len();
-                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     if evidence.len() > before {
                         tool_seeded += 1;
                     }
@@ -679,7 +680,7 @@ impl Engine {
                     if evidence.len() >= CITED_SEED_CAP + TOOL_SEED_CAP + NOTE_SEED_CAP {
                         break 'notes;
                     }
-                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                 }
             }
         }
@@ -693,7 +694,7 @@ impl Engine {
                         if evidence.len() >= EVIDENCE_CAP {
                             break 'seed;
                         }
-                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     }
                 }
             }
@@ -2275,6 +2276,7 @@ fn push_evidence(
     bundle: &mut BTreeSet<String>,
     ns_by_hash: &mut std::collections::BTreeMap<String, String>,
     g: &GrainRecord,
+    attribution: crate::policy::EvidenceAttribution,
 ) {
     if evidence.len() < EVIDENCE_CAP && bundle.insert(g.hash.clone()) {
         ns_by_hash.insert(g.hash.clone(), g.namespace.clone());
@@ -2282,7 +2284,7 @@ fn push_evidence(
             id: format!("e{}", evidence.len() + 1),
             hash: g.hash.clone(),
             grain_type: g.grain_type.clone(),
-            text: crate::llm::cap(&grain_brief(g), 400),
+            text: crate::llm::cap(&grain_brief_with(g, attribution), 400),
         });
     }
 }
@@ -2317,8 +2319,9 @@ pub(crate) fn resolve_citation(
     None
 }
 
-/// A short human-readable projection of a grain for the evidence bundle.
-fn grain_brief(g: &GrainRecord) -> String {
+/// A short human-readable projection of a grain for the evidence bundle,
+/// under the host's attribution policy.
+fn grain_brief_with(g: &GrainRecord, attribution: crate::policy::EvidenceAttribution) -> String {
     if let (Some(s), Some(r), Some(o)) = (g.fact_subject(), g.fact_relation(), g.fact_object()) {
         return format!("{s} {r} {o}");
     }
@@ -2353,6 +2356,9 @@ fn grain_brief(g: &GrainRecord) -> String {
             // data it already had, and proposed rules to stop it asking.
             // The observer is already on the grain; only the projection
             // dropped it.
+            if attribution == crate::policy::EvidenceAttribution::Anonymous {
+                return v.to_string();
+            }
             if let Some(who) = g.fields.get("observer_id").and_then(|v| v.as_str()) {
                 if !who.is_empty() {
                     let kind = g

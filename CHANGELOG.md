@@ -38,6 +38,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the full hash, or an unambiguous ≥12-hex prefix. Measured, the 64-hex
   transcription check was where most of a small model's drafts died — not
   fabrication, just copying. An uncited draft is still dropped.
+- **An Observation reaches the model with its observer named.** The grain
+  records `observer_id`/`observer_type`; the evidence projection dropped
+  both, so a person's correction arrived as an anonymous sentence and read
+  identically to the agent having asked for something. Measured, a model
+  given a run of unattributed corrections proposed rules to stop the agent
+  asking. `Policy.evidence_attribution` selects `named` (new default) or
+  `anonymous` (the previous rendering), because an observer id can be a
+  person's name and whether it belongs in a prompt is the host's call.
 - **An authored proposal dedups on its content.** The dedup key excludes
   proposal content, which is right for an analyzer finding and wrong for an
   authored lesson, where the content *is* the finding: a second lesson on one

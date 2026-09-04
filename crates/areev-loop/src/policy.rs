@@ -60,6 +60,27 @@ pub struct AutoApplyGrant {
     pub max_severity: Severity,
 }
 
+/// How an Observation is attributed in the evidence bundle handed to the LLM
+/// (`docs/loop.md`). `Named` renders `<observer> (a person) said of
+/// <subject>: <text>`; `Anonymous` renders the bare text, which is what the
+/// engine did before 2026-09-04.
+///
+/// It is host policy for two independent reasons. An operator may not want
+/// observer identities rendered into a model prompt at all — an observer id
+/// can be a person's name or account — and that is a privacy decision only
+/// the host can make. And it is the one variable in the receipts ablation
+/// (`crates/areev-bench/RECEIPTS.md`), where naming the speaker is what
+/// stopped one model reading a correction as a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceAttribution {
+    /// Name the observer on an Observation that records one.
+    #[default]
+    Named,
+    /// Render the bare text, attributing nothing.
+    Anonymous,
+}
+
 /// The evalset every LLM-authored, applicable proposal is measured against
 /// after apply (`docs/loop.md`, "Evalset-backed outcomes"). An authored
 /// lesson carries no built-in recurrence metric — nothing errors when a
@@ -117,6 +138,10 @@ pub struct Policy {
     /// after apply (default: none — authored lessons carry no metric).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_evalset: Option<OutcomeEvalset>,
+    /// Whether an Observation names its observer in the evidence bundle
+    /// (default: named).
+    #[serde(default)]
+    pub evidence_attribution: EvidenceAttribution,
 }
 
 impl Policy {
@@ -241,6 +266,17 @@ mod tests {
         assert!(
             Policy::from_json(r#"{"outcome_evalset": {"hash": "abc123", "field": "exact"}}"#).is_err(),
             "the direction is not optional — a guessed one could revert an improvement"
+        );
+    }
+
+    #[test]
+    fn evidence_attribution_defaults_to_named() {
+        assert_eq!(Policy::default().evidence_attribution, EvidenceAttribution::Named);
+        let p = Policy::from_json(r#"{"evidence_attribution": "anonymous"}"#).unwrap();
+        assert_eq!(p.evidence_attribution, EvidenceAttribution::Anonymous);
+        assert!(
+            Policy::from_json(r#"{"evidence_attribution": "redacted"}"#).is_err(),
+            "an unknown mode must not load as the default"
         );
     }
 

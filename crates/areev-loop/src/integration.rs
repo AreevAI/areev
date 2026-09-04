@@ -642,6 +642,61 @@ fn an_observation_reaches_the_model_with_its_observer_named() {
     );
 }
 
+/// `evidence_attribution: anonymous` restores the pre-2026-09-04 projection
+/// exactly — the bare text, no observer. It is host policy because an
+/// observer id can be a person's name, and because it is the one variable
+/// the receipts ablation turns.
+#[test]
+fn attribution_can_be_turned_off_by_host_policy() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let texts_under = |policy: Option<Policy>| -> Vec<String> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut sub = TestSubstrate::new();
+        sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        sub.add_human_note("test", "capture", "user:accountant", "Vendor Name is ACME LTD.");
+        let mut e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+        if let Some(p) = policy {
+            e = e.with_policy(p);
+        }
+        e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+        let reqs = seen.lock().unwrap();
+        let req = reqs
+            .iter()
+            .find(|r| r.contains(r#""op":"discover""#))
+            .expect("a discover call");
+        serde_json::from_str::<serde_json::Value>(req).unwrap()["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    let named = texts_under(None);
+    let anon = texts_under(Some(
+        Policy::from_json(r#"{"evidence_attribution": "anonymous"}"#).unwrap(),
+    ));
+    assert!(named.iter().any(|t| t.contains("user:accountant (a person) said")), "{named:?}");
+    assert!(anon.iter().any(|t| t == "Vendor Name is ACME LTD."), "{anon:?}");
+    assert!(!anon.iter().any(|t| t.contains("(a person) said")),
+            "anonymous attributes nothing: {anon:?}");
+    // Only the observation's rendering changes; facts are untouched.
+    let facts = |v: &Vec<String>| -> Vec<String> {
+        v.iter().filter(|t| t.starts_with("acme ")).cloned().collect()
+    };
+    assert_eq!(facts(&named), facts(&anon));
+}
+
 /// The DISCOVER objective is host policy: the default keeps the review-queue
 /// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
 #[test]

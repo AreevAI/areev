@@ -644,9 +644,22 @@ host policy file — `areev loop --policy loop-policy.json` (or
   "severity_floors": { "loop.staleness": "medium" },
   "telemetry": "aggregate",
   "discover_objective": "review_queue",
-  "outcome_evalset": { "hash": "<evalset hash>", "field": "passed", "higher_is_better": true }
+  "outcome_evalset": { "hash": "<evalset hash>", "field": "passed", "higher_is_better": true },
+  "evidence_attribution": "named"
 }
 ```
+
+`evidence_attribution` (default `named`) decides whether an Observation
+reaches the LLM with its observer named — `<observer> (a person) said of
+<subject>: <text>` — or as bare text. It is host policy for two independent
+reasons. An observer id can be a person's name or account, and whether that
+belongs in a model prompt is a privacy decision only the host can make. And
+attribution changes what gets proposed: a bare correction ("Vendor Name is
+ACME") is ambiguous about direction, and a model given a run of them
+concluded the *agent* had been asking for data it already had, proposing
+rules to stop it asking (`crates/areev-bench/RECEIPTS.md`). `anonymous`
+restores the pre-2026-09-04 rendering exactly, which is what makes it usable
+as an ablation switch.
 
 `outcome_evalset` (optional, default none) gives every **applicable
 LLM-authored proposal** — a lesson, a fact, a query or plan revision — the
