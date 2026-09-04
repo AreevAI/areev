@@ -572,6 +572,35 @@ up at 1d, 7d and 30d.*
 Outcomes accrue over real calendar time as checkpoints elapse; the loop is
 exercised end-to-end by the engine test suite, which controls the clock.
 
+### What the gate does not catch — measured, not hypothesised
+
+Both of these were found by running the loop on a public corpus, not by
+reading the code. The evidence is
+[`crates/areev-bench/ADBUY.md`](../crates/areev-bench/ADBUY.md), seed 3.
+
+**Outcome measurement catches damage, not lost opportunity.** The comparison
+is against the baseline run journaled before the proposal. An agent that
+climbed to 238 of 280, then fell to 128 as later rules landed, is still four
+times better than the baseline of 35 — so the gate reports `held`, correctly
+by its own definition, and no revert is proposed. It has no way to see the
+238. Catching this needs a different comparison point: a high-water mark
+carried forward, or a per-rule marginal measurement. Neither is implemented.
+Until one is, a rising-then-falling agent looks identical to a rising one.
+
+**Dedup is by content, not by meaning.** `authored_dedup_key` fingerprints
+the proposal text, so it collapses a rule proposed twice verbatim. It cannot
+collapse the same instruction rephrased — which is what an LLM proposer
+emits, pass after pass, from the same recurring evidence. In that run ten
+approved rules stated four distinct facts, each true and well-formed enough
+that a reviewer approved it alone, and the agent stopped emitting the very
+fields the rules most insistently named. Every rule in the prompt is a rule
+competing for the model's attention; a reviewer judging one at a time cannot
+see the pile. Semantic near-duplicate suppression is not in the engine.
+
+Neither is a bug in the four gates. Both are limits of what the gates
+measure, and a host running the loop unattended over many passes should
+know them.
+
 ## Triggers — no daemon, anywhere
 
 A loop run is a cheap, idempotent command that hosts trigger however they
