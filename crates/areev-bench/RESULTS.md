@@ -607,8 +607,8 @@ documents and tasks nobody wrote for this repo:
 
 | harness | corpus | what it found | write-up |
 |---|---|---|---|
-| `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | **governance proven, learning not**: the rules an LLM authored and a reviewer approved made the agent worse (3 wins / 30 losses, p=0.000001), and measuring the outcome is what caught it | [`RECEIPTS.md`](RECEIPTS.md) |
-| `tau2/` | τ²-bench retail — 114 tool-using customer tasks | **no number published**: τ²'s own agent scores 0.0000 on these tasks at this model, so there is no headroom a loop could close | [`tau2/README.md`](tau2/README.md) |
+| `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | **both halves, in two runs.** Run 2: an LLM-authored, human-approved rule took the agent from 97/720 to 382/720 exact — 286 wins, 1 loss. Run 1: the same machinery, one engine defect earlier, made it *worse* — and only outcome measurement caught the rule that did it | [`RECEIPTS.md`](RECEIPTS.md) |
+| `tau2/` | τ²-bench retail — 114 tool-using customer tasks | **no number yet.** A first conclusion was published and retracted: the zero was this bridge dropping every tool call, not the model | [`tau2/README.md`](tau2/README.md) |
 
 Both keep the rule the synthetic bench established: the prompt is assembled
 from live memory on every episode, so Areev's own apply/rollback is the only
@@ -618,14 +618,29 @@ render. Both additionally exercise the **Verify** gate on LLM-authored rules
 the outcome evalset and, in the receipts harness, admitting a deliberately
 harmful rule to prove the revert path fires.
 
-The receipts result is the one to read, and it cuts against the easy
-version of this repo's claim: a language model authoring lessons, with
-grounding, adversarial verification and a human-rubric reviewer in front of
-it, still shipped a rule that took the agent from 30 correct to 0. Four
-gates passed it. The fifth — re-measuring the held-out set after the apply
-— caught it, proposed the revert, and the revert restored the score. That
-is an argument for the governance layer being load-bearing, not for the
-learner being good.
+The receipts harness is the one to read, and it ran twice on the same
+corpus, the same seeds and the same held-out receipts — with **arm A
+landing on 97/720 in both**, so nothing drifted between them.
+
+| | run 1 | run 2 |
+|---|:---:|:---:|
+| A — rules rolled back | 97/720 | 97/720 |
+| B — rules applied | 70/720 | **382/720** |
+| B vs A | 3 wins, 30 losses | **286 wins, 1 loss** |
+
+Run 2 is the claim this repo exists to make, measured on real public
+documents for $0.26: a model read a person's corrections, wrote the rule
+they implied, a reviewer approved it, and the agent got substantially
+better — then the Verify gate confirmed the improvement `held`, caught a
+later rule that hurt, and reverted it.
+
+Run 1 is why the governance half is not decoration. The same machinery,
+with one engine defect still in place, shipped a rule contradicting an
+instruction the accountant had written into that memory thirty-one times,
+and took the agent from 30 correct to 0. Grounding on a separate model,
+adversarial verification, and a human-rubric reviewer all passed it. Only
+re-measuring the held-out set caught it, proposed the revert, and restored
+the score. Neither run is revised by the other and both are published.
 
 The private-corpus predecessor of the receipts harness is
 [`EXPENSE.md`](EXPENSE.md); the instrument that chose their learner
