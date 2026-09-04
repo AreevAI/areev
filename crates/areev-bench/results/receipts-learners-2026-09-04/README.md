@@ -42,3 +42,13 @@ it, not tucked into a footnote.
 Rows are `<learner>.jsonl`, one per pass: the DISCOVER funnel, every
 proposal, and the supervisor's verdict and reason. `summary.json` is
 derived from them.
+
+## The wire dump
+
+`wire/discover-request-response.json` is one complete DISCOVER exchange
+recorded by `scripts/tee_llm.py` — the exact request the engine sent
+(instructions, findings, all 64 evidence items) and the exact bytes the
+model returned. It is the evidence for the paragraph above: the bundle
+composition, the accountant's sentence sitting first in it, and the model
+proposing "do not request adding it" against it. Nothing about that claim
+needs to be taken on trust.
