@@ -960,6 +960,77 @@ and the earlier arm result — remedy-shaped lessons trading breadth for
 precision — is exactly that shape. This measurement decides only what gets
 measured next.
 
+### Outcome (2026-09-04): the bottleneck was the cite-check, not abstention
+
+Evidence: [`results/authoring-rate-2026-09-04/`](results/authoring-rate-2026-09-04/)
+— eight summaries and their per-pass rows, over one captured experience
+(seed 1, 300 tasks, `qwen3-30b` pinned `coreweave/bf16`, 1,533 tool calls
+of which 276 are errors). Spend: **$1.05** for all 80 passes.
+
+| objective | model (pinned) | $/M in | rate | mean stored | proposed → cited → grounded → kept | s/pass |
+|---|---|---|:---:|:---:|---|---:|
+| learner | `qwen3-30b` (coreweave/bf16) | 0.100 | **10/10** | 3.90 | 40 → 40 → 40 → 39 | 26 |
+| learner | `qwen3-235b` (nebius/fp8) | 0.200 | **10/10** | 2.60 | 26 → 26 → 26 → 26 | 22 |
+| learner | `gpt-oss-120b` (deepinfra/bf16) | **0.037** | **8/10** | 0.80 | 10 → 10 → 10 → 8 | 54 |
+| learner | `deepseek-v3.2` (siliconflow/fp8) | 0.259 | 7/10 | 0.70 | 10 → 10 → 10 → 7 | 28 |
+| review_queue | `qwen3-30b` | 0.100 | **10/10** | 3.50 | 35 → 35 → 35 → 35 | 21 |
+| review_queue | `qwen3-235b` | 0.200 | **10/10** | 1.30 | 14 → 13 → 13 → 13 | 17 |
+| review_queue | `gpt-oss-120b` | **0.037** | **10/10** | 1.00 | 10 → 10 → 10 → 10 | 68 |
+| review_queue | `deepseek-v3.2` | 0.259 | **0/10** | 0.00 | 0 → 0 → 0 → 0 | 10 |
+
+**The headline is not the objective.** The 2x2 measured 0.42 lessons per
+pass and 7 of 12 passes authoring nothing, and concluded an LLM-only
+learner "cannot be measured". Seven of these eight cells author on at
+least 7 passes in 10. The funnel says why, and it is not that the models
+became less diffident: **cited = proposed in 86 of 86 learner drafts and
+58 of 59 review-queue drafts.** The 2x2's live funnel read `proposed 3 →
+cited 1`. What changed between them is the citation rule — a draft may now
+cite a bundle-local `id` instead of transcribing a 64-hex hash — so the
+attrition the 2x2 read as abstention was mostly small models losing drafts
+at a transcription check. That is a defect this repo shipped and has now
+removed, and it bounds the 2x2's conclusion rather than confirming it.
+
+**The objective is a real but second-order effect, and it is not uniform.**
+Pooled, learner authors on 35 of 40 passes against review-queue's 30 of 40
+(+1.25 per ten, the pre-registered threshold being +1) with no loss of
+grounded fraction (1.00 vs 0.98), which selects `learner`. But the pooled
+number is carried almost entirely by one cell: on the two leading models
+the two objectives **tie at 10/10**, `gpt-oss-120b` is 2 passes *worse*
+under learner, and the entire pooled margin comes from `deepseek-v3.2`
+going 0/10 → 7/10. Read per model, the honest statement is narrower than
+the rule's verdict: *the learner objective rescues a model that abstains
+categorically, and changes nothing on models that already author.* Its
+visible effect on the others is volume, not incidence — mean stored per
+pass rises 3.50 → 3.90 and 1.30 → 2.60 — which the pre-registration did
+not name as a criterion and which is therefore reported, not acted on.
+
+**`deepseek-v3.2`'s 0/10 is abstention, not a broken adapter**, checked
+rather than assumed: one pass re-run through `scripts/tee_llm.py` returned
+`{"recommendations": []}` verbatim, with `returncode 0` and empty stderr.
+
+**What was authored.** Every applied lesson in every cell names an action.
+All four models found **R10**, the rule that arrives only as a person's
+note and that nothing statistical can recover; `qwen3-235b` additionally
+reached R3, R5 and R6, and `gpt-oss-120b` reached R7. Two of
+`gpt-oss-120b`'s five distinct lessons are scoped "before completing the
+episode" — a boundary the agent has no notion of, which is the shape
+EXPENSE.md's second defect describes (a lesson can clear every gate and
+still be a no-op). That is recorded here as a risk against the model the
+rule selected, not as a reason to override it.
+
+**Applying the rule as written**: objective **learner**; model the cheapest
+whose rate is ≥ 0.8, which is **`gpt-oss-120b` (deepinfra/bf16)** at 8/10
+and $0.037/M in. The rule is followed rather than reinterpreted — it
+selects the cheapest and slowest option, not a convenient one — and the
+two reservations above (the "episode" wording, 54s/pass against 26s) are
+stated as risks the receipts run will either survive or expose.
+
+**The transfer is not guaranteed and is not claimed.** This grid measured
+authoring over a memory of tool calls, episodes and one human note. The
+receipts workload has no tool calls at all: its evidence is human
+observations and filed rows. A rate measured here is evidence about the
+proposer, not a prediction about that corpus.
+
 **"Proposed 0" has two readings, and only the raw response tells them
 apart.** The engine fail-softs a backend that answers in a shape the parser
 drops, so a model that abstained and a model that answered with the wrong

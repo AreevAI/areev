@@ -32,6 +32,18 @@ rerank / query-expansion refinements, and a stronger gpt-4o reader — see
 |---|---|---|---|---|
 | `selfimprove-3seed-qwen3-30b-2026-08-26` | 1, 2, 3 | 300 experience · 100 held-out | A0/B/A1/B2 + m-steel/m-all/m-llm | $2.30 |
 
+## `selfimprove_learn` — which proposer authors a lesson at all
+
+| directory | cells | scale | spend |
+|---|---|---|---|
+| `authoring-rate-2026-09-04` | 2 objectives × 4 models | 10 learn passes each over one 300-task experience | $1.05 |
+
+Not a learning claim: no lesson in it is scored on held-out tasks. It
+measures whether the proposer produces anything to govern and where its
+drafts die, which is what the 2x2 could not answer for itself. Its own
+README has the recompute command; `../SELFIMPROVE.md` has the design, the
+pre-registered decision rule and the reading.
+
 Per seed: `seedN.report.json` (config + governance ledger + per-state
 summaries), `seedN.report.md`, and one `seedN.transcripts-eval-<STATE>.jsonl`
 per state plus `seedN.transcripts-experience.jsonl` — every model call, model
