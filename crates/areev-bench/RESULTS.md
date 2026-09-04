@@ -628,6 +628,12 @@ landing on 97/720 in both**, so nothing drifted between them.
 | B — rules applied | 70/720 | **382/720** |
 | B vs A | 3 wins, 30 losses | **286 wins, 1 loss** |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/receipts-selfimprove-dark.svg">
+  <img src="../../docs/assets/receipts-selfimprove-light.svg" width="880"
+       alt="Left: six learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts. All start near 31 of 240; run 2's three seeds rise at the first checkpoint to 124, 141 and 125 and hold, while run 1's stay flat, swing to 86 and fall to 33, or drop to 0. Right: pooled arms — run 1 A 97 of 720 and B 70; run 2 A 97 and B 382.">
+</picture>
+
 Run 2 is the claim this repo exists to make, measured on real public
 documents for $0.26: a model read a person's corrections, wrote the rule
 they implied, a reviewer approved it, and the agent got substantially
