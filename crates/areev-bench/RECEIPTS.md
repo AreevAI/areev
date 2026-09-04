@@ -577,6 +577,25 @@ learner is `qwen3-30b` rather than `gpt-oss-120b`. Both were needed to get
 additive rules at all. Which one carries the effect is not answered here
 and is not claimed.
 
+#### The curve: learned early, and it stays
+
+Same 60 held-out receipts against memory as it stood through the run:
+
+| exact (of 240) at | 0 | 10 | 20 | 30 | B (40) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **run 2**, seed 1 | 31 | **124** | 124 | 125 | 123 |
+| run 1, seed 1 | 31 | 31 | 86 | 33 | 33 |
+
+The rule was applied after the sixth experience receipt, and everything the
+agent gains it has gained by the tenth. It then holds flat for thirty more
+receipts and eleven more learn passes — the reviewer rejecting every
+further proposal — where run 1's curve swung to 86 and collapsed to 33 over
+the same span.
+
+That stability is worth as much as the level. A loop whose gain survives
+its own subsequent passes is one an operator can leave running; run 1's was
+not, and the run 1 sections below are the record of why.
+
 #### The whole cycle, on the improved agent
 
 The verify-then-revert leg ran against the same memory and passed every
