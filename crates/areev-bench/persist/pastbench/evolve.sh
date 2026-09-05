@@ -53,4 +53,5 @@ esac
 exec python "$HERE/run.py" evolve --family "$FAMILY" --agent "$AGENT" $REG $PROFILE \
   --config "$HERE/config.persist.yaml" --model "$MODEL" \
   --runtime local --sandbox --sandbox-tools --compare-no-persistence \
+  --port-offset "${PORT_OFFSET:-0}" \
   --judge-model "$JUDGE" --trace-dir "$OUT" "$@"

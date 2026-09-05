@@ -463,10 +463,16 @@ class AreevAdapter(RuntimeAdapter):
         if not text.strip():
             return
 
+        # The framing of the evidence chooses the audience of the lesson (the
+        # receipts programme learned this the hard way): a bare task text
+        # reads as one job, an instruction attributed to a person reads as a
+        # standing rule. The Observation says who said it and to whom.
+        framed = "The user instructed the assistant, in a new session:\n%s" % text[:4000]
+
         def go(db):
             db.add("event", json.dumps({"content": text[:8000], "role": "user", "session_id": self.session_id,
                                         "subject": "session:" + self.session_id}), ns=NS)
-            db.add("observation", json.dumps({"content": text[:4000], "observer_id": "user",
+            db.add("observation", json.dumps({"content": framed, "observer_id": "user",
                                               "observer_type": "human", "subject": NOTE_SUBJECT}), ns=NS)
         with_memory(self.db_path, ACTOR_AGENT, go)
 
@@ -775,8 +781,21 @@ class AreevAdapter(RuntimeAdapter):
             rendered = render_home(self.db_path, self.artifacts_dir)
         else:
             rendered = {"notes": 0, "profile": 0, "skills": 0}
+        # The benchmark does not log its composed system prompt or the tool
+        # schemas in the trace; the tuning corpus needs both (a model trained
+        # on one prompt and evaluated on another measures the prompt). The
+        # injected memory section is stripped so the row teaches behaviour
+        # without the memory in context.
+        system_text = ""
+        for m in self._messages:
+            if m.role == "system" and m.content and m.content[0].type == "text":
+                system_text = re.sub(r"\n## Persistent memory\n.*\Z", "", m.content[0].text, flags=re.S)
+                break
         self._ledger.update({"rendered": rendered, "usage": self._usage,
-                             "injected_chars": getattr(self, "_injected_chars", 0)})
+                             "injected_chars": getattr(self, "_injected_chars", 0),
+                             "system_prompt": system_text,
+                             "task_tools": [{"name": t.name, "description": t.description,
+                                             "input_schema": t.input_schema} for t in self._task_tools]})
         (self.artifacts_dir / "areev_ledger.json").write_text(json.dumps(self._ledger, indent=1), encoding="utf-8")
 
 

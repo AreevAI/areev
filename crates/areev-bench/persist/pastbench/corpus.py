@@ -130,7 +130,18 @@ def main():
             if not traces:
                 continue
             system, user, turns, tools, score = episode_rows(load_trace(traces[0]))
-            if system is None or user is None or score is None or score < a.min_score:
+            # The benchmark's trace carries neither the composed system prompt
+            # nor the tool schemas; the adapter writes both into its ledger at
+            # close (memory section already stripped). Older runs lack them
+            # and are skipped, counted, and named in the manifest.
+            ledger = {}
+            try:
+                ledger = json.loads((ep_dir / "artifacts" / "areev_ledger.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            system = ledger.get("system_prompt") or system
+            tools = ledger.get("task_tools") or tools
+            if not system or user is None or score is None or score < a.min_score:
                 skipped += 1
                 continue
             system = MEMORY_SECTION.sub("", system)

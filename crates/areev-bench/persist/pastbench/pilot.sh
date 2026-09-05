@@ -1,8 +1,10 @@
 #!/bin/sh
 # The pilot: a list of families × a list of agents, run one after another
-# (the task services bind fixed ports, so runs do not overlap), with the
-# OpenRouter key's usage counter read before and after every run so the
-# judge — which the benchmark does not meter — is bounded per run.
+# within this process, with the OpenRouter key's usage counter read before
+# and after every run so the judge — which the benchmark does not meter —
+# is bounded per run. The task services bind fixed ports; to run several
+# of these side by side give each its own PORT_OFFSET (100 apart) — the
+# key-usage bound then covers all concurrent runs and is labelled as such.
 #
 #   FAMILIES="memory_ability/SM01_preference_adoption procedural_ability/PC01_sop_bootstrap_01" \
 #   AGENTS="areev-governed areev-passive hermes" ROOT=$HOME/mg/local/areev-runs/persist/pilot sh pilot.sh
@@ -33,7 +35,7 @@ for agent in $AGENTS; do
     before=$(usage); t0=$(date +%s)
     echo "### $agent $fid  (key usage before: $before)"
     set +e
-    AGENT="$agent" FAMILY="$fam" OUT="$out" sh "$HERE/evolve.sh" > "$out/run.log" 2>&1
+    AGENT="$agent" FAMILY="$fam" OUT="$out" PORT_OFFSET="${PORT_OFFSET:-0}" sh "$HERE/evolve.sh" > "$out/run.log" 2>&1
     rc=$?
     set -e
     after=$(usage); t1=$(date +%s)
