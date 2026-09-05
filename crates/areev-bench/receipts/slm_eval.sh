@@ -24,23 +24,31 @@ if [ "$ADAPTER" != "none" ] && [ ! -s "$ADAPTER/adapters.safetensors" ]; then
   echo "slm_eval: $ADAPTER has no adapters.safetensors -- refusing to evaluate an empty adapter as a tuned model" >&2
   exit 1
 fi
-if [ "$ADAPTER" = "none" ]; then
-  python3 -m mlx_lm server --model "$BASE" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
-else
-  python3 -m mlx_lm server --model "$BASE" --adapter-path "$ADAPTER" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
-fi
-SRV=$!
-trap 'kill $SRV 2>/dev/null || true' EXIT
-up=0
-for i in $(seq 1 90); do
-  if grep -q "Address already in use" "$WORKDIR/server.log" 2>/dev/null; then
-    echo "slm_eval: port $PORT is taken by another server -- refusing to score against it" >&2; exit 1
+start_server() {
+  if [ "$ADAPTER" = "none" ]; then
+    python3 -m mlx_lm server --model "$BASE" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
+  else
+    python3 -m mlx_lm server --model "$BASE" --adapter-path "$ADAPTER" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
   fi
-  if ! kill -0 "$SRV" 2>/dev/null; then echo "slm_eval: server exited before it was ready (see $WORKDIR/server.log)" >&2; exit 1; fi
-  curl -s -o /dev/null "http://127.0.0.1:$PORT/v1/models" && { up=1; break; }
-  sleep 1
+  SRV=$!
+}
+trap 'kill $SRV 2>/dev/null || true' EXIT
+up=0; attempt=0
+while [ "$up" = 0 ] && [ "$attempt" -lt 3 ]; do
+  attempt=$((attempt + 1)); start_server
+  for i in $(seq 1 90); do
+    if grep -q "Address already in use" "$WORKDIR/server.log" 2>/dev/null; then
+      # A caller pinning one port for back-to-back evaluations can hit the previous
+      # server's release window; wait and retry before calling it fatal -- but never
+      # score against whatever is on the port, which is what happened once.
+      kill "$SRV" 2>/dev/null || true; sleep 4; break
+    fi
+    if ! kill -0 "$SRV" 2>/dev/null; then echo "slm_eval: server exited before it was ready (see $WORKDIR/server.log)" >&2; exit 1; fi
+    curl -s -o /dev/null "http://127.0.0.1:$PORT/v1/models" && { up=1; break; }
+    sleep 1
+  done
 done
-[ "$up" = 1 ] || { echo "slm_eval: server on $PORT never became ready" >&2; exit 1; }
+[ "$up" = 1 ] || { echo "slm_eval: could not bind port $PORT after $attempt attempt(s) -- refusing to score against another server" >&2; exit 1; }
 export AGENT_CMD="$PY $SCRIPTS/slm_serve.py $NAME --port $PORT --seed $SEED --model $BASE"
 "$PY" "$HERE/evaluate.py" --profile "$PROFILE" --dataset "$DATASET" --learned-db "$LEARNED" \
   --workdir "$WORKDIR" --seed "$SEED" --experience "${EXP:-40}" --eval "${EVAL:-60}" --arms "${ARMS:-B,B2}" --holdout "${HOLDOUT:-unseen}" --upto-seq "${UPTO:-0}"
