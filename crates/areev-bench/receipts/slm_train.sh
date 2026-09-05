@@ -59,8 +59,14 @@ out, base, corpus, iters, secs, resume, epochs = sys.argv[1:]
 log = open(os.path.join(out, "train.log")).read().replace("\r", "\n")  # tqdm bars share lines with the loss prints
 val = [(int(i), float(v)) for i, v in re.findall(r"Iter (\d+): Val loss ([0-9.]+)", log)]
 train = [(int(i), float(v)) for i, v in re.findall(r"Iter (\d+): Train loss ([0-9.]+)", log)]
+mp = re.search(r"Trainable parameters: ([0-9.]+)% \(([0-9.]+)M/([0-9.]+)M\)", log)
+trainable = {"percent": float(mp.group(1)), "millions": float(mp.group(2)), "of_millions": float(mp.group(3))} if mp else None
 # keep the checkpoint with the lowest validation loss, not the last one
 best_iter, best_val = min(val, key=lambda x: x[1]) if val else (None, None)
+# the generalisation gap in loss at the kept step: nearest train-loss report at or before it
+train_at_best = next((v for i, v in reversed(train) if best_iter and i <= best_iter), None)
+rows_n = json.load(open(os.path.join(corpus, "corpus.manifest.json")))["train"]
+effective_epochs = round(int(iters) * 2 / max(rows_n, 1), 2)
 chosen = "adapters.safetensors"
 if best_iter:
     cand = os.path.join(out, "%07d_adapters.safetensors" % best_iter)
@@ -71,6 +77,9 @@ man = json.load(open(os.path.join(corpus, "corpus.manifest.json")))
 json.dump({"base_model": base, "adapter_path": out, "iters": int(iters), "epochs": int(epochs),
            "train_seconds": int(secs), "resumed_from": resume or None, "corpus": man,
            "val_loss": val, "train_loss": train, "best_val_iter": best_iter, "best_val_loss": best_val,
+           "train_loss_at_best": train_at_best,
+           "loss_gap_at_best": (round(best_val - train_at_best, 4) if (best_val is not None and train_at_best is not None) else None),
+           "effective_epochs": effective_epochs, "trainable": trainable,
            "kept_checkpoint": chosen,
            "fine_tune": {"type": "lora", "num_layers": 8, "batch_size": 2, "lr": 1e-4, "mask_prompt": True}},
           open(os.path.join(out, "adapter.manifest.json"), "w"), indent=1)

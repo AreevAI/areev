@@ -84,6 +84,7 @@ def main():
                         got[(mode, h)] = tr
                         row["modes"]["%s|%s" % (mode, h)] = {"exact": exact(tr), "n": len(tr)}
                         pooled[(k, mode, h)][0] += exact(tr); pooled[(k, mode, h)][1] += len(tr)
+            prev_k = max([kk for kk in rec["checkpoints"] if kk < k], default=0)
             for mode in ("scratch", "continual"):
                 man = os.path.join(ck, "adapter_%s" % mode, "adapter.manifest.json")
                 if os.path.exists(man):
@@ -92,7 +93,28 @@ def main():
                     row["train"][mode] = {"rows": m["corpus"]["train"], "iters": m["iters"], "seconds": m["train_seconds"],
                                           "best_val_iter": m.get("best_val_iter"), "best_val_loss": m.get("best_val_loss"),
                                           "last_val_loss": last_val, "kept": m.get("kept_checkpoint"),
-                                          "resumed_from": m.get("resumed_from")}
+                                          "resumed_from": m.get("resumed_from"),
+                                          "train_loss_at_best": m.get("train_loss_at_best"),
+                                          "loss_gap_at_best": m.get("loss_gap_at_best"),
+                                          "effective_epochs": m.get("effective_epochs"),
+                                          "trainable_percent": (m.get("trainable") or {}).get("percent")}
+                # the adapter on its own training rows: memorisation, and forgetting for continual
+                tt = trials(os.path.join(ck, "eval_%s_train" % mode, "trials.json"))
+                if tt:
+                    old_rows = {kk: t for kk, t in tt.items() if int(kk.split("|")[0]) <= prev_k}
+                    new_rows = {kk: t for kk, t in tt.items() if int(kk.split("|")[0]) > prev_k}
+                    unseen = got.get((mode, "unseen"))
+                    row.setdefault("overfit", {})[mode] = {
+                        "train_exact": exact(tt), "train_n": len(tt),
+                        "train_rate": round(exact(tt) / len(tt), 3),
+                        "unseen_rate": round(exact(unseen) / len(unseen), 3) if unseen else None,
+                        "memorisation_gap": (round(exact(tt) / len(tt) - exact(unseen) / len(unseen), 3) if unseen else None),
+                        "old_rows": {"exact": exact(old_rows), "n": len(old_rows)} if old_rows else None,
+                        "new_rows": {"exact": exact(new_rows), "n": len(new_rows)} if new_rows else None,
+                    }
+                    pooled[(k, mode + "-train", "train")][0] += exact(tt); pooled[(k, mode + "-train", "train")][1] += len(tt)
+                    if old_rows:
+                        pooled[(k, mode + "-old", "train")][0] += exact(old_rows); pooled[(k, mode + "-old", "train")][1] += len(old_rows)
             for h in HOLD:
                 for a, b in (("scratch", "llm"), ("continual", "llm"), ("scratch", "continual")):
                     if (a, h) in got and (b, h) in got:
@@ -102,6 +124,21 @@ def main():
             rec["checkpoints"][k] = row
         out["seeds"][s] = rec
 
+    def wilson(x, n, z=1.96):
+        if not n:
+            return (None, None)
+        p = x / n; d = 1 + z * z / n; c = (p + z * z / (2 * n)) / d; hw = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+        return (round(c - hw, 3), round(c + hw, 3))
+    fields = collections.defaultdict(lambda: [0, 0, 0])  # (ck, mode, field) -> [exact, semantic, n] on unseen
+    for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
+        if not os.path.isdir(sd):
+            continue
+        for ck in sorted(glob.glob(os.path.join(sd, "ck_*"))):
+            k = int(os.path.basename(ck)[3:])
+            for mode in MODES:
+                tr = trials(os.path.join(ck, "eval_%s_unseen" % mode, "trials.json"))
+                for t in (tr or {}).values():
+                    f = fields[(k, mode, t["field"])]; f[0] += t["exact"]; f[1] += t["semantic"]; f[2] += 1
     cks = sorted({k for (k, _m, _h) in pooled if k != "base"})
     for k in cks:
         out["pooled"][k] = {"%s|%s" % (m, h): {"exact": v[0], "n": v[1], "rate": round(v[0] / v[1], 3) if v[1] else None}
@@ -110,6 +147,28 @@ def main():
                                       for (kk, a, b, h), v in pairs.items() if kk == k}
     out["pooled"]["base"] = {h: {"exact": v[0], "n": v[1], "rate": round(v[0] / v[1], 3) if v[1] else None}
                              for (kk, _m, h), v in pooled.items() if kk == "base"}
+    # the overfitting record, pooled
+    out["overfitting"] = {}
+    for k in cks:
+        rec_k = {}
+        for mode in ("scratch", "continual"):
+            u = pooled.get((k, mode, "unseen")); sn = pooled.get((k, mode, "seen")); tr_ = pooled.get((k, mode + "-train", "train")); od = pooled.get((k, mode + "-old", "train"))
+            e = {}
+            if u and u[1]:
+                e["unseen"] = {"rate": round(u[0] / u[1], 3), "ci95": wilson(u[0], u[1]), "n": u[1]}
+            if sn and sn[1]:
+                e["seen"] = {"rate": round(sn[0] / sn[1], 3), "ci95": wilson(sn[0], sn[1]), "n": sn[1]}
+            if u and sn and u[1] and sn[1]:
+                e["familiarity_gap"] = round(sn[0] / sn[1] - u[0] / u[1], 3)
+            if tr_ and tr_[1]:
+                e["train"] = {"rate": round(tr_[0] / tr_[1], 3), "n": tr_[1]}
+                if u and u[1]:
+                    e["memorisation_gap"] = round(tr_[0] / tr_[1] - u[0] / u[1], 3)
+            if od and od[1]:
+                e["train_old_rows"] = {"rate": round(od[0] / od[1], 3), "n": od[1]}
+            e["per_field_unseen"] = {fld: {"exact": v[0], "semantic": v[1], "n": v[2]} for (kk, m, fld), v in fields.items() if kk == k and m == mode}
+            rec_k[mode] = e
+        out["overfitting"][k] = rec_k
 
     n_seeds = len(out["seeds"])
     print("Tuning learning curve, %d seed(s). Exact-match RATE; (wins/losses) paired against the LLM carrying the same rules.\n" % n_seeds)
@@ -144,6 +203,25 @@ def main():
                     s, k, mode, t["rows"], t["iters"],
                     ("%.3f" % t["best_val_loss"]) if t["best_val_loss"] is not None else "—", t["best_val_iter"],
                     ("%.3f" % t["last_val_loss"]) if t["last_val_loss"] is not None else "—", t["kept"]))
+    print("\n### overfitting metrics, pooled (rates; gaps in points)\n")
+    print("| documents | mode | unseen [95% CI] | seen | familiarity gap | train-set | memorisation gap | old rows (forgetting) | loss gap @kept | eff. epochs |")
+    print("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    for k in cks:
+        for mode in ("scratch", "continual"):
+            e = out["overfitting"].get(k, {}).get(mode, {})
+            if not e.get("unseen"):
+                continue
+            gaps = [rec["checkpoints"].get(k, {}).get("train", {}).get(mode, {}) for rec in out["seeds"].values()]
+            lg = [g.get("loss_gap_at_best") for g in gaps if g and g.get("loss_gap_at_best") is not None]
+            ep = [g.get("effective_epochs") for g in gaps if g and g.get("effective_epochs") is not None]
+            print("| %d | %s | %.0f%% [%.0f–%.0f] | %s | %s | %s | %s | %s | %s | %s |" % (
+                k, mode, 100 * e["unseen"]["rate"], 100 * e["unseen"]["ci95"][0], 100 * e["unseen"]["ci95"][1],
+                ("%.0f%%" % (100 * e["seen"]["rate"])) if e.get("seen") else "—",
+                ("%+.0f" % (100 * e["familiarity_gap"])) if e.get("familiarity_gap") is not None else "—",
+                ("%.0f%%" % (100 * e["train"]["rate"])) if e.get("train") else "—",
+                ("%+.0f" % (100 * e["memorisation_gap"])) if e.get("memorisation_gap") is not None else "—",
+                ("%.0f%%" % (100 * e["train_old_rows"]["rate"])) if e.get("train_old_rows") else "—",
+                ("%.3f" % (sum(lg) / len(lg))) if lg else "—", ("%.1f" % (sum(ep) / len(ep))) if ep else "—"))
     if args.write:
         p = os.path.join(args.root, "CURVE.json")
         json.dump(out, open(p, "w"), indent=1, sort_keys=True, default=str)

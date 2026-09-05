@@ -75,11 +75,25 @@ def split_entity(rows, seed, experience, eval_n, key="entity", order_by="filed_a
     return tuple(out)
 
 
-def split_for(profile, rows, seed, experience, eval_n, holdout="unseen"):
+def split_for(profile, rows, seed, experience, eval_n, holdout="unseen", upto_seq=0):
     """The split a profile asks for. Without `holdout_key` this IS split(),
-    byte for byte, so every published run is untouched."""
+    byte for byte, so every published run is untouched.
+
+    `holdout="train"` returns a seeded sample of the EXPERIENCE stream itself
+    (up to `upto_seq` when given): the documents the adapter was trained on.
+    Reading those is the memorisation check -- train-set accuracy against
+    unseen-set accuracy -- and, because the rows keep their `seq`, the
+    continual path's accuracy on rows from earlier checkpoints against the
+    latest ones is a direct forgetting measure."""
     if not profile.get("holdout_key"):
-        return split(rows, seed, experience, eval_n)
-    exp, unseen, seen = split_entity(rows, seed, experience, eval_n,
-                                     key=profile["holdout_key"], order_by=profile.get("order_by", "seq"))
-    return exp, (seen if holdout == "seen" else unseen)
+        exp, held = split(rows, seed, experience, eval_n)
+    else:
+        exp, unseen, seen = split_entity(rows, seed, experience, eval_n,
+                                         key=profile["holdout_key"], order_by=profile.get("order_by", "seq"))
+        held = seen if holdout == "seen" else unseen
+    if holdout == "train":
+        pool = [r for r in exp if not upto_seq or r["seq"] <= upto_seq]
+        rng = random.Random(seed * 7919 + (upto_seq or 0))
+        rng.shuffle(pool)
+        held = sorted(pool[:eval_n], key=lambda r: r["seq"])
+    return exp, held
