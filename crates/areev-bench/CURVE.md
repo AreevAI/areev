@@ -140,10 +140,38 @@ Plan, in order, none of it started:
    unseen-supplier curve keeps rising past a few hundred documents — or
    whether the plateau found on 320 registration forms is the plateau.
 
+## The trial, and what it caught
+
+Forty documents, one checkpoint at 20, held-out sets of 20, seed 1. Its
+job was to prove the pipeline on this corpus with real models before any
+full seed ran, and it earned its keep three times over before it passed:
+
+- The trainer ran through a `tee` pipe, so a Metal crash after the first
+  validation exited 0 and an adapter directory **with no weights** was
+  evaluated as a tuned model. The trainer now asserts the weights and the
+  evaluator refuses their absence.
+- `Qwen3.5-2B`, the intended base, cannot train on these documents on this
+  machine (above). `Qwen3-1.7B` replaced it.
+- Every rule the loop proposed said *"on every receipt"* — the memory's
+  capture entity was hard-coded for receipts, so the evidence told the
+  proposer what it was reading. The reviewer, told these were forms, refused
+  all seven. The entity now derives from the profile; the corrected trial
+  approved *"Record the signer name on every registration form…"*.
+
+Passed clean: exit 0, no failed calls, $0.03. Its numbers are a pipeline
+check and not evidence, but the shape is worth recording as the thing the
+full run will test: on unseen registrants the tuned 1.7B scored 92% at 20
+documents and 98% at 40 against the LLM's 48% and 49%; on seen registrants
+the continual path fell below scratch at 40 (75% against 87%, 12 wins to 2)
+— the divergence the pre-registration predicts, on twenty documents. The
+validation-selected checkpoint fired for real at 40 (loss 0.088 at step 50
+against 0.094 at the end; step 50 kept). And one adapter read twice
+differed on 9 of 79 trials: the local model's noise floor is not zero, so
+the full run measures it.
+
 ## Results
 
-*Pending the full run. The trial run's only job was to prove the pipeline
-end to end on this corpus with real models; its numbers are not evidence.*
+*Pending the full run.*
 
 ## Reproduce
 
