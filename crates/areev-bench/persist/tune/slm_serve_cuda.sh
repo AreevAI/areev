@@ -19,7 +19,14 @@ if [ "$ADAPTER" != "none" ] && [ ! -s "$ADAPTER/adapter_model.safetensors" ]; th
 fi
 # Qwen3 emits Hermes-style <tool_call> blocks; vLLM's hermes parser turns
 # them into OpenAI tool_calls so the benchmark's runner sees real calls.
-COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes"
+# No CUDA toolkit on the box: FlashInfer's sampler JIT-compiles with nvcc
+# and killed the first start ("Could not find nvcc"); the torch sampler
+# needs nothing built.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+# enable_thinking=false by default, as the trainer rendered every row: the
+# benchmark's runner cannot pass chat_template_kwargs, and a thinking
+# preamble in `content` is what the judge would read.
+COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
 if [ "$ADAPTER" = "none" ]; then
   # shellcheck disable=SC2086
   exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" $COMMON

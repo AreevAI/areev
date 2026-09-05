@@ -320,6 +320,28 @@ agent and DISCOVER/VERIFY `qwen/qwen3-30b-a3b-instruct-2507` pinned to
 `minimax/minimax-m2.7` ($0.30/$1.20 per M) — the paper's judge, so the
 Hermes reference numbers are comparable. Every leg seeded; temperature 0.
 
+**The tuning leg, as built.** `persist/tune/slm_train_cuda.sh` +
+`train_lora.py` — the CUDA twin of `receipts/slm_train.sh` (transformers +
+peft): the same corpus format, LoRA rank 8 on the last 8 layers as on the
+laptop, batch 1 with the iteration count scaled as the MLX trainer scales
+it, validation every 25 steps, lowest-val checkpoint kept, loss curve, peak
+VRAM and wall time in the manifest. **Measured 2026-09-06:** the bf16 base
+does not fit the 8 GB card — the first backward pass of a 2K-token
+trajectory OOMs on the fp32 logits — so the base loads as **nf4 (QLoRA)**
+with gradient checkpointing; 40 iterations take 105 s at 7.1 GB peak. The
+adapter is served on the bf16 base (vLLM, LoRA applied, Hermes-style
+tool-call parsing, the torch sampler because there is no CUDA toolkit to
+JIT FlashInfer's) — the usual QLoRA practice and a disclosed mismatch. The
+laptop trains `mlx-community/Qwen3-1.7B-4bit`: same model, both on a 4-bit
+base, one row of the combined table. Rows whose assistant turns fall past
+the 2K window are dropped and counted (2 of 6 on the smoke corpus, with
+tool results already capped at 1,200 chars); non-finite steps are skipped
+and counted (0 after the cap). `pastbench/corpus.py` builds the corpus from
+a governed run's learn and cold episodes with the injected memory section
+stripped from the system prompt and the persistence tool calls removed
+from the trajectory — the benchmark does not log its composed system
+prompt or tool schemas, so the adapter writes both into its ledger.
+
 **The pin, and why it moved twice.** The receipts programme pinned
 `coreweave/bf16`; on 2026-09-06 OpenRouter listed no CoreWeave endpoint for
 this model (StreamLake, SiliconFlow fp8, Nebius fp8 (down), Alibaba
