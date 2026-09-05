@@ -279,8 +279,15 @@ def main():
             kp = pooled.get((k, mode, "unseen")); lt = pooled.get((k, m, "unseen")); pr = pairs.get((k, m, mode, "unseen"))
             print("| %d | %s | %.0f%% | %.0f%% | %d/%d p=%.3f |" % (k, mode, 100 * kp[0] / kp[1], 100 * lt[0] / lt[1], pr[0], pr[1], mcnemar(*pr)))
     if args.write:
+        def strkeys(o):
+            # checkpoints are ints and "base" is a string in one dict; sorted JSON needs one key type
+            if isinstance(o, dict):
+                return {str(k): strkeys(v) for k, v in o.items()}
+            if isinstance(o, (list, tuple)):
+                return [strkeys(v) for v in o]
+            return o
         p = os.path.join(args.root, "CURVE.json")
-        json.dump(out, open(p, "w"), indent=1, sort_keys=True, default=str)
+        json.dump(strkeys(out), open(p, "w"), indent=1, sort_keys=True, default=str)
         print("\nwrote", p)
 
 
