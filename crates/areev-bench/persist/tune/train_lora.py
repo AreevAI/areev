@@ -45,14 +45,17 @@ def rows(path):
     return out
 
 
-def encode(tok, messages, max_seq):
-    """Token ids and labels with every non-assistant token masked (-100)."""
+def encode(tok, messages, max_seq, tools=None):
+    """Token ids and labels with every non-assistant token masked (-100).
+    `tools` (OpenAI schemas) go through the chat template so tool-call turns
+    render exactly as the served model will emit them."""
     ids, labels = [], []
+    kw = {"tokenize": False, "add_generation_prompt": False, "enable_thinking": False}
+    if tools:
+        kw["tools"] = tools
     for i, m in enumerate(messages):
-        prefix = tok.apply_chat_template(messages[:i + 1], tokenize=False, add_generation_prompt=False,
-                                         enable_thinking=False)
-        prev = tok.apply_chat_template(messages[:i], tokenize=False, add_generation_prompt=False,
-                                       enable_thinking=False) if i else ""
+        prefix = tok.apply_chat_template(messages[:i + 1], **kw)
+        prev = tok.apply_chat_template(messages[:i], **kw) if i else ""
         piece = tok(prefix[len(prev):], add_special_tokens=False)["input_ids"]
         ids.extend(piece)
         labels.extend(piece if m.get("role") == "assistant" else [-100] * len(piece))
@@ -143,8 +146,8 @@ def main():
     total = sum(p.numel() for p in model.parameters())
     say("Trainable parameters: %.3f%% (%.3fM/%.3fM)" % (100.0 * trainable / total, trainable / 1e6, total / 1e6))
 
-    train = [encode(tok, r["messages"], a.max_seq) for r in rows(Path(a.corpus) / "train.jsonl")]
-    val = [encode(tok, r["messages"], a.max_seq) for r in rows(Path(a.corpus) / "valid.jsonl")]
+    train = [encode(tok, r["messages"], a.max_seq, r.get("tools")) for r in rows(Path(a.corpus) / "train.jsonl")]
+    val = [encode(tok, r["messages"], a.max_seq, r.get("tools")) for r in rows(Path(a.corpus) / "valid.jsonl")]
     say("Starting training, iters: %d, rows: %d train / %d valid" % (a.iters, len(train), len(val)))
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, weight_decay=0.0)
     model.train()

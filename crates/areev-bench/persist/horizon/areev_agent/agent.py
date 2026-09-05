@@ -395,7 +395,7 @@ def session_search(db_path: Path, query: str, k: int) -> dict[str, Any]:
         # from the grains, bounded.
         day_digest = None
         if scored:
-            day_score: dict[str, int] = collections.defaultdict(int)
+            day_score: dict[str, int] = defaultdict(int)
             for sc, _, f in scored:
                 day_score[f.get("session_id") or ""] += sc
             best_day = max(day_score, key=day_score.get)

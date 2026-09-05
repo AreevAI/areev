@@ -17,10 +17,13 @@ if [ "$ADAPTER" != "none" ] && [ ! -s "$ADAPTER/adapter_model.safetensors" ]; th
   echo "slm_serve_cuda: $ADAPTER has no adapter_model.safetensors -- refusing to serve an empty adapter as a tuned model" >&2
   exit 1
 fi
+# Qwen3 emits Hermes-style <tool_call> blocks; vLLM's hermes parser turns
+# them into OpenAI tool_calls so the benchmark's runner sees real calls.
+COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes"
 if [ "$ADAPTER" = "none" ]; then
-  exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" \
-    --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed "${SEED:-1}"
+  # shellcheck disable=SC2086
+  exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" $COMMON
 fi
-exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm-base --port "$PORT" \
-  --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed "${SEED:-1}" \
+# shellcheck disable=SC2086
+exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm-base --port "$PORT" $COMMON \
   --enable-lora --max-lora-rank 16 --lora-modules "slm=$ADAPTER"
