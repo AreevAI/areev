@@ -57,7 +57,11 @@ for k in $(echo "$CKPTS" | tr ',' ' ') "$EXP"; do
 
   for mode in scratch continual; do for h in unseen seen; do
     echo "######## seed $SEED: checkpoint $k — $mode adapter on $h"
-    SLM_BASE="$BASE" EXP="$EXP" EVAL="$EVAL" ARMS=B HOLDOUT="$h" \
+    # At the final checkpoint the scratch adapter reads the unseen set twice:
+    # the local model's noise floor. The trial found it is not zero -- one
+    # adapter, two reads, 9 of 79 trials apart -- so it is measured, not assumed.
+    arms=B; [ "$k" -ge "$EXP" ] && [ "$mode" = scratch ] && [ "$h" = unseen ] && arms=B,B2
+    SLM_BASE="$BASE" EXP="$EXP" EVAL="$EVAL" ARMS="$arms" HOLDOUT="$h" \
       sh "$HERE/slm_eval.sh" "$db" "$ck/eval_${mode}_$h" "ck$tag-$mode" "$ck/adapter_$mode" 8081
   done; done
   for h in unseen seen; do

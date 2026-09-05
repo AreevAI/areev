@@ -64,6 +64,8 @@ def main():
     pooled = collections.defaultdict(lambda: [0, 0])                                   # (ck, mode, hold) -> [exact, n]
     pairs = collections.defaultdict(lambda: [0, 0])                                     # (ck, a, b, hold) -> [w, l]
     for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
+        if not os.path.isdir(sd):
+            continue  # seedN.log sits beside seedN/ and would overwrite it with an empty record
         s = int(re.search(r"seed(\d+)", sd).group(1))
         rec = {"checkpoints": {}, "base": {}}
         for h in HOLD:
