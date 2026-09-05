@@ -196,6 +196,53 @@ metered. It fixes the budget (§8), confirms the adapters under the real
 runner, sandbox and judge, and reveals what the judge trace records (it
 records nothing — the judge's cost lives only in the key-usage bound).
 
+**The pilot's table (2026-09-06, StreamLake, one run each; the benchmark's
+own Δ on the evaluation episodes and its mechanism score; key-usage bound
+per family-run, judge included):**
+
+| family (capability) | governed Δ / mech | passive Δ / mech | hermes Δ / mech | $ per family-run (gov / pass / hermes) |
+|---|---|---|---|---|
+| SM01 preference adoption (memory) | **+0.304** / 0.30 | rerun after a benchmark crash, see §11 | +0.304 / 0.30 | 0.026 / — / 0.032 |
+| PC01 SOP bootstrap (procedural) | **+0.263** / 0.18 | +0.145 / 0.24 | **−0.084** / 0.12 | 0.057 / 0.048 / 0.097 |
+| PG02 ops exception desk (information gathering) | **+0.403** / 0.14 | +0.406 / 0.14 | +0.385 / 0.15 | 0.040 / 0.029 / 0.156 |
+| SM04 rule migration (update) | **+0.640** / 0.60 | +0.344 / 0.30 | +0.320 / 0.07 | 0.031 / 0.027 / 0.027 |
+
+Twelve family-runs, **$0.58** on the key, 7–8 min per Areev family-run and
+7–18 min per Hermes one. What the ledgers say, family by family:
+
+- Every Δ above came from what the **agent itself saved** — a note in the
+  memory families, a skill in the procedural one (only after the
+  session-end nudge, §11 #8), the pre-seeded skill and prior sessions in the
+  information-gathering one. The loop **proposed** in every governed
+  family-run (one to four drafts, all cited, most grounded) and the
+  reviewer **refused every one**: as a restatement of the entry the agent
+  had already saved (correct — dedup), or as an inference the evidence did
+  not state (the rubric's "supported" clause). No loop proposal has been
+  applied yet, so the governed and passive arms differ only by the loop's
+  cost and by run-to-run variation; the SM04 gap (1.0 vs 0.704) is the
+  quality of two different notes the same model wrote, not governance.
+- The governance ledger is therefore clean but empty of applies. The full
+  runs will say whether that holds across 26 families; if it does, the
+  honest headline for PAST-Bench is that the substrate carries the gain and
+  the gate admits nothing it should not — §10's second bullet, stated in
+  advance.
+- Hermes 0.4.0 on the same model and judge: level with Areev on the memory
+  family, behind on procedural (negative Δ) and update, ahead on nothing;
+  two to three times the cost per family-run on the two families where it
+  runs long.
+
+**Decisions for the full runs (the pre-registration, committed 2026-09-06
+before any full run):** all 26 families; arms `areev-governed`,
+`areev-passive`, `hermes`, `mem0` (installed default); three runs of each
+Areev arm and of Hermes (seed = run number), one of mem0 unless the budget
+allows more; four streams side by side with port offsets 0/100/200/300;
+`SEED` per run; the reviewer rubric, the nudge, the pin and every
+harness change frozen at commit `0454df1` of `bench/persist`; the
+benchmark at `f822351` plus the two patches in `patch_pastbench.py`.
+Projected from the pilot's meters: ~$5 per run-set, **~$15–17 for the
+programme** including the tuned-model evaluations' judge calls, inside the
+$30 cap; ~5 h wall per run-set (Hermes-bound), ~15 h for three.
+
 **First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
 Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
 without), mechanism 0.3, memory injected in both evaluation episodes; the
@@ -441,3 +488,7 @@ changed a number before it was caught.
 | 4 | 2026-09-06, Horizon smoke | harness | the Horizon agent package was named `areev` and shadowed the `areev` binding on `PYTHONPATH=agents` | package renamed `areev_agent` |
 | 5 | 2026-09-06, Horizon smoke | harness | `session_search` returned narration only — reasoning Events outnumber and out-rank Tool records, so the vendor quote in an `inbox_read` output never surfaced and the task scored 0 | wider candidate set, Tool and Event hits interleaved; human `message` turns also recorded as Observations so DISCOVER has evidence |
 | 6 | 2026-09-06, Horizon | harness (upstream) | Harbor 0.22 rejects the public judges' `reward.json` (free text and a nested dict where numbers are required) | local judge patch, numeric keys only; digests no longer match, irrelevant to the private set |
+| 7 | 2026-09-06, pilot PC01 | harness | the reviewer never saw the cited evidence — the lookup used `RECALL grains WHERE hash = …`, not a CAL noun, failed silently, and every proposal was refused as unsupported, three correct SOP lessons among them | cited hashes resolved from an index of the namespace's observations, facts, tools and events |
+| 8 | 2026-09-06, pilot PC01 | harness | the agent finished learn episodes with the procedure demonstrated and nothing saved (`skills_list` calls only); Hermes gets a memory-flush and skill-creation nudge from the benchmark, our adapter had none | one session-end nudge, the save step asked for once, for both Areev arms |
+| 9 | 2026-09-06, pilot SM01 passive | benchmark | `summarize_reflection_episode` reads `content[0].text` of the last message; in the no-persistence reflection the model has no memory tools, spends all 20 turns on task tools, the trace ends on a tool result, and the family-run dies with AttributeError | second patch: the last text block, or "" |
+| 10 | 2026-09-06, Horizon | engine | hybrid `search()` returns Event grains only on this file; the 13 Tool grains naming the vendor never surfaced, and a tool's output lives in `tool_content` | harness keyword pass over Tool grains; to raise as an engine question (should Tool grains be text-indexed for recall?) |
