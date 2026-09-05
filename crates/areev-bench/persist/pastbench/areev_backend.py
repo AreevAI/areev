@@ -744,7 +744,7 @@ class AreevAdapter(RuntimeAdapter):
             sid = f.get("session_id") or f.get("thread") or ""
             if sid == self.session_id:
                 continue
-            text = f.get("content") or f.get("object") or f.get("result") or ""
+            text = f.get("content") or f.get("object") or f.get("tool_content") or f.get("result") or ""
             if text:
                 out.append("- [%s %s] %s" % (sid or "memory", f.get("role") or g.get("type") or "",
                                              text[:400].replace("\n", " ")))

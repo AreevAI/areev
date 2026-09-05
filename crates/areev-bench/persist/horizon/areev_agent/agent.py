@@ -110,8 +110,11 @@ SYSTEM_PROMPT_TEMPLATE = (
     "{lessons}"
     "Workflow: ALWAYS start by inspecting the current environment (list what is pending) "
     "and then act on it, using `session_search` to inform the action with what you learned "
-    "before. Do not summarise the past or ask the user what to do; find the pending work "
-    "and complete it. Stop when the task's success condition is met."
+    "before. Search more than once, with different terms, when the first pass lacks the "
+    "specific detail the request turns on. When you answer or act, carry the concrete "
+    "identifying details from memory — names, amounts, dates, contacts, identifiers — rather "
+    "than a summary of them. Do not summarise the past or ask the user what to do; find the "
+    "pending work and complete it. Stop when the task's success condition is met."
 )
 
 SESSION_SEARCH_TOOL: dict[str, Any] = {
@@ -343,31 +346,71 @@ def session_search(db_path: Path, query: str, k: int) -> dict[str, Any]:
                 if len(out) >= 10:
                     break
             return {"recent_sessions": out}
-        # Reasoning notes outnumber tool records and out-rank them on text
-        # similarity, so a plain top-k came back all narration and no data
-        # (the vendor's quote lives in an inbox_read output). Take a wider
-        # candidate set and interleave the two kinds so every answer shows
-        # both what was thought and what the tools actually returned.
-        payload = json.loads(db.search(query, k=max(k * 3, 24), ns=NS))
+        # Hybrid search returns Event grains only (measured on the first
+        # smoke: three queries, events every time, never one of the 13 Tool
+        # grains naming the vendor), and the tool output lives in
+        # `tool_content`. So the tool records get their own pass — a keyword
+        # score over every Tool grain, cheap at this scale — and the answer
+        # interleaves the two kinds so it shows both what was thought and
+        # what the tools actually returned.
+        payload = json.loads(db.search(query, k=max(k * 2, 16), ns=NS))
         grains = payload.get("grains", payload) if isinstance(payload, dict) else payload
-        tools_hits, event_hits = [], []
+        event_hits = []
         for g in grains or []:
             f = (g.get("fields") or {}) if isinstance(g, dict) else {}
             if f.get("tool_name"):
-                text = "tool %s(%s) -> %s%s" % (f.get("tool_name"), str(f.get("input") or "")[:300],
-                                                 "ERROR " if f.get("is_error") else "",
-                                                 str(f.get("content") or f.get("error") or "")[:1200])
-                tools_hits.append({"session": f.get("thread") or f.get("session_id") or "", "text": text})
-            else:
-                text = "%s: %s" % (f.get("role") or "note", str(f.get("content") or f.get("object") or "")[:900])
-                event_hits.append({"session": f.get("session_id") or "", "text": text})
+                continue
+            text = "%s: %s" % (f.get("role") or "note", str(f.get("content") or f.get("object") or "")[:900])
+            event_hits.append({"session": f.get("session_id") or "", "text": text})
+        words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+        tools_all = json.loads(db.cal('RECALL tools WHERE namespace = "%s" LIMIT 500 FORMAT json' % NS)).get("grains", [])
+        scored = []
+        for g in tools_all:
+            f = g.get("fields") or {}
+            body = "%s %s %s" % (f.get("tool_name") or "", f.get("input") or "", f.get("tool_content") or f.get("content") or "")
+            low = body.lower()
+            score = sum(low.count(w) for w in words)
+            if score:
+                scored.append((score, str(f.get("created_at") or ""), f))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+
+        def render_tool(f, cap):
+            return "tool %s(%s) -> %s%s" % (f.get("tool_name"), str(f.get("input") or "")[:200],
+                                            "ERROR " if str(f.get("is_error")).lower() == "true" else "",
+                                            str(f.get("tool_content") or f.get("content") or f.get("error") or "")[:cap])
+
+        tools_hits = [{"session": f.get("session_id") or f.get("thread") or "", "text": render_tool(f, 1200)}
+                      for _, _, f in scored[:k]]
         hits: list[dict[str, Any]] = []
         while len(hits) < k and (tools_hits or event_hits):
             if tools_hits:
                 hits.append(tools_hits.pop(0))
             if event_hits and len(hits) < k:
                 hits.append(event_hits.pop(0))
-        return {"hits": hits}
+        # The day around the best hit, in order. A keyword hit lands on the
+        # record that names the topic (an inbox listing), while the detail
+        # the request turns on sits in the next record of the same day (the
+        # email that was then read). trace_rag gets this for free by
+        # retrieving whole-day chunks; here the same day is reconstructed
+        # from the grains, bounded.
+        day_digest = None
+        if scored:
+            day_score: dict[str, int] = collections.defaultdict(int)
+            for sc, _, f in scored:
+                day_score[f.get("session_id") or ""] += sc
+            best_day = max(day_score, key=day_score.get)
+            same_day = sorted((f for g in tools_all for f in [g.get("fields") or {}]
+                               if (f.get("session_id") or "") == best_day),
+                              key=lambda f: str(f.get("created_at") or ""))
+            budget, parts = 6000, []
+            for f in same_day:
+                t = render_tool(f, 700)
+                if budget - len(t) < 0:
+                    break
+                budget -= len(t)
+                parts.append(t)
+            day_digest = {"session": best_day, "records": parts}
+        return {"hits": hits, "best_day": day_digest}
     return _with_memory(db_path, ACTOR_AGENT, go)
 
 

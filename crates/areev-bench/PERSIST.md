@@ -189,12 +189,23 @@ row. Decided 2026-09-06 ("default can be the same, so we can compare").
 
 ### 3.4 The pilot, and what it must establish
 
-One family per capability (`SM01_preference_adoption` first), `areev-governed`
-with `--compare-no-persistence`, fully metered. It fixes the budget (§8),
-confirms the adapter under the real runner, sandbox and judge, and reveals
-what the judge trace records. The first smoke (2026-09-06, family SM01, the
-governed arm, both conditions) ran: episodes finish in ~16 s at ~9K prompt
-tokens each with the memory injected; numbers land in §8 when it completes.
+One family per capability (`SM01_preference_adoption`, `PC01_sop_bootstrap_01`,
+`PG02_ops_exception_desk`, `SM04_rule_migration`) × (`areev-governed`,
+`areev-passive`, `hermes`), each with `--compare-no-persistence`, fully
+metered. It fixes the budget (§8), confirms the adapters under the real
+runner, sandbox and judge, and reveals what the judge trace records (it
+records nothing — the judge's cost lives only in the key-usage bound).
+
+**First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
+Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
+without), mechanism 0.3, memory injected in both evaluation episodes; the
+agent saved one note in learn-A that carried the family; the loop proposed
+one lesson at learn-A (dropped at GROUND/VERIFY) and one in a control
+episode, which the reviewer refused as unsupported — a correct refusal, the
+rule there lived in a fixture, not in a person's instruction. This is one
+family on one run and is quoted here as the pilot's first meter reading,
+not as a result. The two earlier SiliconFlow smokes are not comparable
+(§7).
 
 ## 4. Track B — Horizon
 
@@ -305,10 +316,10 @@ rather than assumed. Both SiliconFlow smokes are kept on the box as
 | item | reading / estimate | basis |
 |---|---|---|
 | Horizon smoke, `trace_rag`, one task | **$0.0011, 22.3K tokens, 25 s** (meter) | Harbor trajectory `extra.cost_usd` |
-| PAST-Bench, one episode, governed arm | ~9K prompt tokens, ~16 s (meter, first episodes) | benchmark trace |
-| PAST-Bench, one family-run (8 episodes × 2 conditions), agent only | ~$0.02 (estimate from the above at $0.09/M) | to be replaced by the SM01 smoke total |
-| PAST-Bench, one full arm-run (26 families) incl. loop + review + judge | ~$1–2 (estimate) | pilot |
-| five arms × 3 runs + A0R floor | ~$15–25 (estimate) | pilot |
+| PAST-Bench, one episode, governed arm | **~10–12K prompt tokens with memory, ~8K without; 4–5 turns; ~20 s** (meter, SM01 on StreamLake) | benchmark trace |
+| PAST-Bench, one family-run (8 episodes × 2 conditions), governed, everything included | **$0.020 key-usage bound, 353 s wall** (meter, SM01, 2026-09-06) | `pilot/spend.jsonl` |
+| PAST-Bench, one full arm-run (26 families) incl. loop + review + judge | ~$0.55 (extrapolated from the meter) | pilot |
+| five arms × 3 runs + A0R floor | ~$8–10 (extrapolated) | pilot |
 | tuning | $0 marginal | the box; GPU-hours reported |
 
 The key's account balance at start (2026-09-06): **$47.5 of $185
