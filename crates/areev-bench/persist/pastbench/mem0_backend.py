@@ -114,8 +114,19 @@ def with_memory(state_dir, mode, fn):
         gc.collect()
 
 
+def _scoped(m, method, *args, **kw):
+    """mem0 2.x takes the entity scope as `filters={'user_id': …}` on the
+    read side (`get_all` refuses the top-level kwarg outright); 1.x took
+    `user_id=`. Try the 2.x form first, fall back to 1.x."""
+    fn = getattr(m, method)
+    try:
+        return fn(*args, filters={"user_id": USER}, **kw)
+    except (TypeError, ValueError):
+        return fn(*args, user_id=USER, **kw)
+
+
 def entries(m) -> list[str]:
-    res = m.get_all(user_id=USER)
+    res = _scoped(m, "get_all")
     rows = res.get("results", res) if isinstance(res, dict) else res
     out = []
     for r in rows or []:
@@ -185,7 +196,7 @@ class Mem0Adapter(RuntimeAdapter):
             return
 
         def go(m):
-            res = m.search(prompt[:2000], user_id=USER, limit=self.top_k)
+            res = _scoped(m, "search", prompt[:2000], top_k=self.top_k)
             rows = res.get("results", res) if isinstance(res, dict) else res
             return [r.get("memory", "").strip() for r in rows or [] if isinstance(r, dict) and r.get("memory")]
 
