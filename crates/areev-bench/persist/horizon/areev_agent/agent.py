@@ -289,6 +289,13 @@ def govern(db_path: Path, seed: int) -> dict[str, Any]:
         in_force = live_lessons(db)
         pend = json.loads(db.recommendations('{"status":"pending"}'))
         out["pending"] = len(pend)
+        by_hash = {}
+        for noun in ("observations", "facts", "tools", "events"):
+            try:
+                for g in json.loads(db.cal('RECALL %s WHERE namespace = "%s" LIMIT 500 FORMAT json' % (noun, NS))).get("grains", []):
+                    by_hash[g.get("hash")] = g.get("fields") or {}
+            except Exception:
+                continue
         for rec in pend:
             summary = str(rec.get("summary") or "")
             m = re.search(r'record lesson:\s*"(.*)"\s*$', summary, re.S)
@@ -301,15 +308,12 @@ def govern(db_path: Path, seed: int) -> dict[str, Any]:
                 kind, text = "advisory", summary.strip()
             evidence = []
             for h in (rec.get("evidence") or [])[:6]:
-                try:
-                    g = json.loads(db.cal('RECALL grains WHERE hash = "%s" LIMIT 1 FORMAT json' % h)).get("grains", [])
-                    if g:
-                        f = g[0].get("fields") or {}
-                        evidence.append(json.dumps({k: v for k, v in f.items()
-                                                    if k in ("content", "object", "relation", "tool_name",
-                                                             "input", "error", "is_error")})[:600])
-                except Exception:
-                    continue
+                f = by_hash.get(h)
+                if f:
+                    evidence.append(json.dumps({k: v for k, v in f.items()
+                                                if k in ("content", "object", "relation", "tool_name",
+                                                         "input", "tool_content", "error", "is_error")},
+                                               ensure_ascii=False)[:900])
             if kind in ("lesson", "fact"):
                 ok, because = rv.review(text, "\n".join(evidence), in_force, judge)
             else:

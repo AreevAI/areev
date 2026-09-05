@@ -564,8 +564,44 @@ class AreevAdapter(RuntimeAdapter):
                 # memory-only calls past the internal round cap: answer them and finish
                 self._messages.append(Message(role="user", content=self._held))
                 self._held = []
+            self._flush_nudge()
             return StepResponse(status="finished", assistant_message=assistant, usage=usage,
                                 final_output=assistant.text, model_time_s=elapsed)
+
+    def _flush_nudge(self):
+        """The save step, asked for once at session end — the counterpart of
+        Hermes's memory-flush and skill-creation nudges, which the benchmark
+        configures for it per family. Without it the model finished PC01's
+        learn episodes with the procedure demonstrated and nothing saved
+        (`skills_list` calls only). One extra model call; any memory or skill
+        writes it makes are executed; the task's final answer is unchanged."""
+        if not self.persist or not self._mem_tools or getattr(self, "_nudged", False):
+            return
+        self._nudged = True
+        if any(op.get("ok") and op.get("action") in ("add", "replace", "create", "edit", "patch")
+               for op in self._ledger["memory_ops"]):
+            return  # it already saved something this session
+        nudge = ("Before this session ends: is there anything from it that a later session must know "
+                 "without being told — a preference, a standing instruction, a correction, or a reusable "
+                 "procedure with its steps? If so, save it now with the memory or skill tools (one entry "
+                 "per rule, the exact steps for a procedure). If nothing is durable, reply 'nothing to save'.")
+        self._messages.append(Message(role="user", content=[TextBlock(text=nudge)]))
+        try:
+            assistant, usage = self._provider.chat(self._messages, tools=self._mem_tools)
+        except Exception as exc:
+            self._ledger["nudge"] = {"error": str(exc)[:200]}
+            return
+        self._messages.append(assistant)
+        self._usage["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
+        self._usage["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
+        self._usage["calls"] += 1
+        self._log_assistant(assistant)
+        calls = [b for b in assistant.content if b.type == "tool_use" and b.name in MEM_TOOL_NAMES]
+        results = [self._run_mem_tool(b) for b in calls]
+        if results:
+            self._messages.append(Message(role="user", content=results))
+        self._ledger["nudge"] = {"saved": len([r for r in results if not r.is_error]),
+                                 "reply": (assistant.text or "")[:200]}
 
     def _log_assistant(self, assistant):
         entry = {"role": "assistant", "timestamp": _now(), "content": assistant.text or ""}
@@ -841,17 +877,27 @@ def govern(db_path, family_id, seed):
     judge = rv.make_judge(review_cmd)
 
     def evidence_text(db, rec):
-        parts = []
-        for h in (rec.get("evidence") or [])[:6]:
+        # The first version looked the cited hashes up with `RECALL grains
+        # WHERE hash = …`, which is not a CAL noun; every lookup failed
+        # silently, the reviewer was handed "(none)" and refused every
+        # proposal as unsupported — including three correct SOP lessons on
+        # PC01. Index what the loop can cite (observations, facts, tools,
+        # events in this namespace) by hash instead.
+        by_hash = {}
+        for noun in ("observations", "facts", "tools", "events"):
             try:
-                g = json.loads(db.cal('RECALL grains WHERE hash = "%s" LIMIT 1 FORMAT json' % h))
-                grains = g.get("grains") if isinstance(g, dict) else g
-                if grains:
-                    f = _fields(grains[0])
-                    parts.append(json.dumps({k: v for k, v in f.items()
-                                             if k in ("content", "object", "relation", "subject", "role", "result")})[:600])
+                for g in _grains(db, noun):
+                    by_hash[g.get("hash")] = _fields(g)
             except Exception:
                 continue
+        parts = []
+        for h in (rec.get("evidence") or [])[:6]:
+            f = by_hash.get(h)
+            if f:
+                parts.append(json.dumps({k: v for k, v in f.items()
+                                         if k in ("content", "object", "relation", "subject", "role",
+                                                  "tool_name", "input", "tool_content", "is_error")},
+                                        ensure_ascii=False)[:900])
         return "\n".join(parts)
 
     def review(db):
