@@ -52,8 +52,14 @@ def split_entity(rows, seed, experience, eval_n, key="entity", order_by="filed_a
             break
         held.append(e)
         n += len(by_ent[e])
-    held = set(held)
+    # `held` stays a LIST here: iterating a set of strings follows the
+    # per-process hash seed, and until 2026-09-05 the unseen pool was built
+    # from the set -- so its order after the shuffle, and at the margin its
+    # membership after the cut, differed from one process to the next. The
+    # stream and the seen set were never affected (built from lists, and
+    # shuffle consumes the generator by length, not content).
     unseen_pool = [r for e in held for r in by_ent[e]]
+    held = set(held)
     exp_pool = [r for e in ents if e not in held for r in by_ent[e]]
     rng.shuffle(unseen_pool)
     rng.shuffle(exp_pool)

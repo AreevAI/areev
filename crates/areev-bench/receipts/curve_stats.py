@@ -38,9 +38,27 @@ def mcnemar(b, c):
 
 
 def trials(path):
+    """Arm-B trials keyed by DOCUMENT and field -- not by seq. Until
+    2026-09-05 the unseen set's order varied per process (dataset.py), so two
+    reads of one adapter carried different documents at the same seq and a
+    seq-keyed pairing counted order noise as wins and losses (72/66 between
+    two reads that differed on 9 outputs). A document id is the filename cut
+    to 40 characters and is not unique in the corpus (two filings by one
+    registrant on one day), so a repeat takes an occurrence index in file
+    order -- stable across arms now that the split is, and the one set read
+    before the fix (seed 1, checkpoint 20, unseen) has no duplicate ids."""
     if not os.path.exists(path):
         return None
-    return {"%s|%s" % (t["seq"], t["field"]): t for t in json.load(open(path)) if t["arm"] == "B"}
+    out, seen = {}, collections.Counter()
+    for t in json.load(open(path)):
+        if t["arm"] != "B":
+            continue
+        key = "%s|%s" % (t["id"], t["field"])
+        seen[key] += 1
+        if seen[key] > 1:
+            key = "%s#%d" % (key, seen[key])
+        out[key] = t
+    return out
 
 
 def exact(tr):
@@ -101,8 +119,8 @@ def main():
                 # the adapter on its own training rows: memorisation, and forgetting for continual
                 tt = trials(os.path.join(ck, "eval_%s_train" % mode, "trials.json"))
                 if tt:
-                    old_rows = {kk: t for kk, t in tt.items() if int(kk.split("|")[0]) <= prev_k}
-                    new_rows = {kk: t for kk, t in tt.items() if int(kk.split("|")[0]) > prev_k}
+                    old_rows = {kk: t for kk, t in tt.items() if t["seq"] <= prev_k}
+                    new_rows = {kk: t for kk, t in tt.items() if t["seq"] > prev_k}
                     unseen = got.get((mode, "unseen"))
                     row.setdefault("overfit", {})[mode] = {
                         "train_exact": exact(tt), "train_n": len(tt),

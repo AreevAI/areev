@@ -220,6 +220,21 @@ model tracks the LLM closely at every checkpoint, because the era matches,
 and the gap between its next-window rate and its all-era rate is the
 measure of how far the deployment's past is from its future.
 
+Caught by the same checkpoint: two reads of one adapter — checkpoint 20's
+continual adapter is a copy of scratch — paired as 72 wins to 66 losses on
+the unseen set while their outputs differed on **9 of 386** trials. The
+unseen set's *order* varied per process: `split_entity` iterated the
+held-out registrants as a Python set, whose order follows the per-process
+hash seed, before shuffling and cutting the pool. Verified after the fix:
+the experience stream is unchanged (320 of 320 documents match both seeds'
+journals), the seen set is unchanged, and both pre-fix unseen reads covered
+exactly the fixed set's 100 documents — so every rate stands and nothing
+was re-run; only position-keyed pairing was wrong, and `curve_stats.py` now
+pairs by document. The trial's paired counts below are recomputed that way
+(the same two reads pair as 3 wins to 0). The seen-set pairing was never
+affected, and neither was any earlier corpus: only this profile splits by
+entity.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
@@ -248,7 +263,8 @@ full seed ran, and it earned its keep three times over before it passed:
 Passed clean: exit 0, no failed calls, $0.03. Its numbers are a pipeline
 check and not evidence, but the shape is worth recording as the thing the
 full run will test: on unseen registrants the tuned 1.7B scored 92% at 20
-documents and 98% at 40 against the LLM's 48% and 49%; on seen registrants
+documents and 98% at 40 against the LLM's 48% and 49% (paired by document,
+38 wins to 3 and 27 to 1); on seen registrants
 the continual path fell below scratch at 40 (75% against 87%, 12 wins to 2)
 — the divergence the pre-registration predicts, on twenty documents. The
 validation-selected checkpoint fired for real at 40 (loss 0.088 at step 50
