@@ -1700,6 +1700,37 @@ and `areev-loop` keeps its no-Areev-dependency rule. A substrate that
 declares neither degrades those kinds to advisory rather than pretending to
 have checked them. Reference: [docs/loop.md](docs/loop.md) (DISCOVER).
 
+### The dictionary is keyed by digest, because the index must be bounded and the value is not
+
+Every subject, relation and object string is interned into `terms` (§3): a
+grain's `s`/`p`/`o` are dictionary ids, and the triples index joins on them.
+That makes the dictionary's uniqueness key a hidden bound on every value a
+grain may carry — and on Postgres the bound was invisible until it bit. A
+btree entry is capped at roughly 2704 bytes *after* pglz compression, so
+`term text UNIQUE` refused values by entropy rather than length: a 2.7 KB
+base64 payload failed while 8 KB of `x` passed, and `areev loop run`'s own
+persisted ledger — a JSON object written as a Fact's object — crossed the
+line at about eight recommendations. Bundle import failed identically, and
+`ON CONFLICT (term)` pinned the index to the bare column, so no operator DDL
+could fix it from outside (#160).
+
+The decision: on Postgres `terms` is unique on `term_hash`, the SHA-256 of
+the term's UTF-8 bytes, computed in Rust on insert and in SQL for the
+one-time backfill of schemas created before the column existed; the text
+constraint is dropped. The key is 32 bytes whatever the value, so the
+dictionary no longer bounds anything, and no size cap and no new error code
+were added — a cap would have needed a number to defend, and the format's
+16 MiB grain limit already bounds the value. The alternative, storing large
+values inline instead of interning them, was rejected because `o` is a join
+column: an un-interned object would have to be excluded from every
+exact-match and reverse lookup, splitting recall semantics by backend. The
+embedded engine keeps its text key (no such limit there), which is why this
+is a Postgres schema fact and not a change to the `.mg` format or to any
+content address. The migration runs under the bootstrap advisory lock on
+the first read-write open; a `--read-only` open of a schema that predates it
+refuses by name (`STO-E005`) rather than keying lookups on a column that is
+not there. Reference: `crates/areev-store/CLAUDE.md` ("Schema").
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

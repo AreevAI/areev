@@ -166,6 +166,24 @@ pub(crate) trait Db: Send {
         Ok(None)
     }
 
+    /// Tombstone one dictionary string in place once nothing references it
+    /// (`Areev::scrub_term_if_unreferenced`): the string becomes an
+    /// unrecallable placeholder while the id stays valid. A backend that keys
+    /// the dictionary by digest overrides this to re-key the row as well.
+    /// Returns rows changed (0 or 1); the `NOT LIKE` guard skips rows already
+    /// tombstoned so repeat erasures do not re-count them.
+    fn scrub_term(&self, id: i64, placeholder: &str) -> Result<u64> {
+        self.execute(
+            "UPDATE terms SET term = ?2 WHERE id = ?1 \
+             AND NOT EXISTS (SELECT 1 FROM triples WHERE s=?1 OR p=?1 OR o=?1) \
+             AND NOT EXISTS (SELECT 1 FROM thread_idx WHERE session=?1) \
+             AND NOT EXISTS (SELECT 1 FROM run_idx WHERE run=?1) \
+             AND NOT EXISTS (SELECT 1 FROM grains WHERE ns=?1) \
+             AND term NOT LIKE ?3",
+            vec![crate::pi(id), crate::pt(placeholder), crate::pt("\u{1}erased:%")],
+        )
+    }
+
     /// Live BM25 collection stats (doc count, total token length) where the
     /// process-local counters can be stale under concurrent writers.
     fn collection_stats(&self) -> Result<Option<(i64, i64)>> {

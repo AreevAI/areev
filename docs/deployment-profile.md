@@ -176,7 +176,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>"
 
 Run the owning role's normal (non-`--read-only`) open at least once first —
 `--read-only` never creates the schema, so there must be something for these
-grants to point at. The motivating consumer is `areev ui --read-only`: paired
+grants to point at. The same rule covers migrations: a build that changes the
+schema (the digest-keyed `terms` dictionary, #160, is one) applies the
+change on the owning role's next read-write open, and until then a read-only
+open of that memory refuses with `STO-E005` naming what is missing, rather
+than reading a shape it does not understand. The motivating consumer is `areev ui --read-only`: paired
 with #124 (the console no longer displays its own DSN), a read-only console
 instance never needs — and never holds — write authority over the memory it
 renders.
