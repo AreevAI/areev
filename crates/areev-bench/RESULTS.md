@@ -705,6 +705,18 @@ reported `held`, correctly: 133 still beats the deployed baseline of 35.
 engine gaps this run argues for are semantic near-duplicate suppression and
 a high-water mark to measure against.
 
+### The tuning learning curve — pre-registered, running
+
+[`CURVE.md`](CURVE.md). Does the tuned small model keep improving as the
+governed deployment grows, or level off — and does it matter whether each
+checkpoint starts from the plain base or from the last one? VRDU
+registration forms (1,321 real FARA filings, 478 registrants, 1948–2023),
+three seeds of 320 documents in filing-date order, adapters trained from
+scratch and continually at 20/40/80/160/320, read against held-out sets
+drawn from organisations the agent never saw and from ones it did.
+Predictions and overfitting controls are stated in the document before the
+run; results land there when it finishes. DocILE is planned after it.
+
 ### Four ways to remember — no memory, mem0, the governed loop, a tuned small model
 
 Full write-up: [`FOURWAY.md`](FOURWAY.md). The receipts protocol, three

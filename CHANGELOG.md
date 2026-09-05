@@ -24,6 +24,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proposal, current is a run journaled after the apply; no baseline run means
   no metric rather than a fabricated one, and the direction is mandatory.
 
+- **The tuning learning curve.** `build_vrdu_reg.py` adds VRDU's FARA
+  registration forms — the first corpus with a real filing-date timeline
+  and an entity key — and `dataset.split_entity` holds out *organisations*
+  rather than documents, so a tuned model's unseen-set score can claim
+  generalisation by construction. `curve_tune.sh` snapshots the governed
+  memory at geometric checkpoints (`run.py --snapshot-at`) and trains two
+  adapters at each — from scratch on everything so far, and continually
+  from the previous adapter on only the documents since — reading both
+  against unseen and seen held-out sets beside the LLM carrying the same
+  rules. `slm_train.sh` scales epochs to the corpus and keeps the
+  lowest-validation-loss checkpoint, never the last; the base is Qwen3.5-2B
+  under `mlx_lm`. The prompt path no longer scans the whole namespace, so a
+  320-document deployment stays under CAL's grain cap. `CURVE.md` is the
+  pre-registration; DocILE is the planned scale run.
+
 - **Four ways to carry something forward, on cost and accuracy.** The
   receipts harness gains three arms beside the governed loop and a cost
   ledger under all of them. `mem0_arm.py` runs real `mem0ai` 2.0 as its
