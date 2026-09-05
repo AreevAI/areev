@@ -204,21 +204,21 @@ def main():
                 try:
                     res = mem.learn(profile, db_path, llm_cmd, ground_cmd, judge, policy)
                 except (ValueError, RuntimeError) as e:
+                    res = None
                     totals["learn_failures"] += 1
                     print("   loop: LEARN PASS FAILED (%s) -- skipped, retried at the next correction"
                           % str(e)[:120].replace("\n", " "))
                     journal.write(json.dumps({"learn_after_seq": seq, "failed": str(e)[:300]},
                                              ensure_ascii=False) + "\n")
-                    journal.flush()
-                    continue
-                since_learn = 0
-                totals["learn_passes"] += 1
-                totals["lessons_applied"] += res["applied"]
-                totals["lessons_rejected"] += res["rejected"]
-                print("   loop: %d proposed, %d approved, %d rejected"
-                      % (res["pending"], res["applied"], res["rejected"]))
-                journal.write(json.dumps({"learn_after_seq": seq, **res},
-                                         ensure_ascii=False) + "\n")
+                if res is not None:
+                    since_learn = 0
+                    totals["learn_passes"] += 1
+                    totals["lessons_applied"] += res["applied"]
+                    totals["lessons_rejected"] += res["rejected"]
+                    print("   loop: %d proposed, %d approved, %d rejected"
+                          % (res["pending"], res["applied"], res["rejected"]))
+                    journal.write(json.dumps({"learn_after_seq": seq, **res},
+                                             ensure_ascii=False) + "\n")
                 journal.flush()
 
         # A checkpoint of the memory as it stands after this many documents.
