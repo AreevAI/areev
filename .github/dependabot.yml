@@ -51,6 +51,13 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps
+    groups:
+      areev-js-cargo:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Node bindings (napi) — standalone package, not in the Cargo workspace.
   - package-ecosystem: npm
@@ -60,12 +67,25 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
+    groups:
+      areev-js-npm:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions workflow dependencies.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # These bumps edit the same workflow files, so separate PRs conflict with
+      # each other and every rebase dismisses the approval.
+      actions:
+        patterns:
+          - "*"
     ignore:
       # dtolnay/rust-toolchain is versioned by TOOLCHAIN (e.g. @1.90.0), not by
       # action release — Dependabot misreads it and proposes nonexistent bumps
