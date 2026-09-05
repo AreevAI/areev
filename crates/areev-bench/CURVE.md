@@ -301,11 +301,17 @@ ledger as evalset runs on the deployment's own timeline — the 86% before
 rule 6's apply, the 66% after — and a loop pass then records its verdicts.
 *Stated in advance:* with a measurement on each side of the apply, outcome
 review records `regressed` for rule 6 and proposes its revert, and applying
-the revert returns the LLM to its checkpoint-80 reading. If the engine
-instead compares to the day-one baseline and reports `held`, that is an
-engine defect, published as such and fixed — the baseline for a lesson's
-verdict has to be the measurement nearest before its apply, not the
-deployment's first.
+the revert returns the LLM to its checkpoint-80 reading. Reading the engine
+settled the second half before the leg ran: the verdict compared against
+the run the *proposal* froze — day one, here — so it would have said
+`held`. That is fixed in the engine (`197a665`: the baseline is the newest
+run journaled before the *apply* when one exists; identical to before when
+nothing was journaled in between, which is every verdict any published run
+recorded), with a test that replays this case, and the leg runs on that
+engine from a separate build so nothing changes under the live seeds.
+Verdicts are per lesson: rules 1–5 were applied by document 8, before any
+checkpoint read, so their baseline stays day one and they read `held`; rule
+6 is judged against checkpoint 80.
 
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
