@@ -49,8 +49,15 @@ case "$AGENT" in
   areev*|mem0*) REG="--registry $HERE/agents.yaml" ;;
   *) PROFILE="--agent-profile openrouter" ;;
 esac
+# A locally served model (the tuned SLM behind vLLM): AGENT_BASE_URL points
+# the agent at it, AGENT_PIN must be empty (no OpenRouter routing body), and
+# the judge stays on OpenRouter through config.persist.yaml.
+LOCAL=""
+if [ -n "${AGENT_BASE_URL:-}" ]; then
+  LOCAL="--base-url $AGENT_BASE_URL --api-key ${AGENT_API_KEY:-local}"
+fi
 # shellcheck disable=SC2086
-exec python "$HERE/run.py" evolve --family "$FAMILY" --agent "$AGENT" $REG $PROFILE \
+exec python "$HERE/run.py" evolve --family "$FAMILY" --agent "$AGENT" $REG $PROFILE $LOCAL \
   --config "$HERE/config.persist.yaml" --model "$MODEL" \
   --runtime local --sandbox --sandbox-tools --compare-no-persistence \
   --port-offset "${PORT_OFFSET:-0}" \
