@@ -31,6 +31,7 @@ INTERNAL_RELATIONS = {"reading_result", "correction", "capture_attempt"}
 # The subjects this harness writes per document (`document_0007`). A proposal
 # targeting one of these is about a single receipt, not a rule for future ones.
 DOCUMENT_SUBJECT = re.compile(r"^document_\d+$")
+DOCUMENT_SUBJECT_SEQ = re.compile(r"^document_(\d+)$")
 
 
 def with_memory(db_path, actor, fn):
@@ -68,14 +69,38 @@ def _recall(db, where):
 
 
 def _facts(db):
-    """Every ledger fact. Used only for the conventions scan, which needs the
-    non-document subjects; lessons are read by relation, see _lessons.
+    """Every ledger fact. Kept for callers that want the whole namespace; it
+    raises past 1000 grains (about 250 documents), so the prompt path no
+    longer uses it -- see _conventions and _lessons.
 
     This scanned with LIMIT 300 until the 160-document drift run: seed 2 wrote
     432 facts, 11 of them lessons, and the newest 300 held 4 of those — the
     prompt had quietly lost seven approved rules, the oldest first. Every
     published 40-document run is under 130 facts and was never affected."""
     return _recall(db, "")
+
+
+def _conventions(db):
+    """Facts on the capture entity that are not lessons: the learned
+    conventions (date_format = ...). Scoped by SUBJECT so a long deployment's
+    thousands of document facts never enter the scan; a 320-document run
+    writes ~1,300 of those and would hit the cap on a whole-namespace read."""
+    return [g for g in _recall(db, ' AND subject = "%s"' % CAPTURE_ENTITY)
+            if g.get("fields", {}).get("relation") not in ("lesson", "fails_with")]
+
+
+def document_facts(db, fields):
+    """{seq: {field: value}} for the filed rows, one relation-scoped read per
+    field so each stays under the cap up to 1000 documents."""
+    rows = {}
+    for field in fields:
+        for g in _recall(db, ' AND relation = "%s"' % field):
+            f = g.get("fields", {})
+            m = DOCUMENT_SUBJECT_SEQ.match(f.get("subject") or "")
+            val = (f.get("object") or "").strip()
+            if m and val:
+                rows.setdefault(int(m.group(1)), {})[field] = val
+    return rows
 
 
 def _lessons(db):
@@ -96,13 +121,12 @@ def lessons_markdown(db):
         obj = (g.get("fields", {}).get("object") or "").strip()
         if obj:
             rules.append(obj)
-    for g in _facts(db):
+    for g in _conventions(db):
         f = g.get("fields", {})
         rel, obj = f.get("relation"), (f.get("object") or "").strip()
-        if not obj or rel in ("lesson", "fails_with"):
+        if not obj:
             continue
-        if (not DOCUMENT_SUBJECT.match(f.get("subject") or "")
-              and rel not in INTERNAL_RELATIONS):
+        if rel not in INTERNAL_RELATIONS:
             # An approved `fact` proposal on the capture entity — a learned
             # convention (date_format = DD/MM/YYYY). The loop proposes these
             # as readily as it proposes rules; discarding them threw away the

@@ -129,7 +129,7 @@ def main():
     os.makedirs(args.workdir, exist_ok=True)
     py = sys.executable
     agent_argv = os.environ["AGENT_CMD"].split()
-    _, heldout = dataset.split(dataset.load(args.dataset), args.seed, args.experience, args.eval)
+    _, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
     db = args.learned_db
     # Inherit the run's host policy rather than assuming one. The leg that

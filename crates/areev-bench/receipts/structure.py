@@ -119,7 +119,7 @@ def main():
     os.environ.setdefault("AREEV_USAGE_LOG", os.path.join(args.workdir, "usage.jsonl"))
     profile = ledger_profile.get(args.profile)
     agent_argv = os.environ["AGENT_CMD"].split()
-    _, rows = dataset.split(dataset.load(args.dataset), args.seed, args.experience, args.eval)
+    _, rows = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval)
 
     # Read a COPY: the source ledger may be open elsewhere, and a reader must
     # never be the second handle on a live memory.

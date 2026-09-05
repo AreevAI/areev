@@ -47,6 +47,10 @@ def main():
     ap.add_argument("--learned-db", required=True, help="memory left by the experience phase")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--arms", default="B,B2,A")
+    ap.add_argument("--holdout", choices=("unseen", "seen"), default="unseen",
+                    help="for a profile with an entity split: evaluate on documents from "
+                         "entities the agent never saw (unseen, the default) or from "
+                         "entities it learned from (seen)")
     ap.add_argument("--as-of", type=int, default=None,
                     help="score against the ledger as it stood at this document "
                          "(only meaningful for a profile whose conventions change)")
@@ -73,7 +77,7 @@ def main():
     # experience phase, so every field the accountant ever asked for is
     # required on every held-out document — the bar the learning curve
     # holds constant.
-    _, rows = dataset.split(dataset.load(args.dataset), args.seed, args.experience, args.eval)
+    _, rows = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval, holdout=args.holdout)
     evalset = evalrun.evalset_hash(rows)
     print("held-out documents: %d (seq %d..%d) evalset %s"
           % (len(rows), rows[0]["seq"], rows[-1]["seq"], evalset))

@@ -137,7 +137,7 @@ def main():
     infer = args.mode != "raw"
 
     rows = dataset.load(args.dataset)
-    experience, heldout = dataset.split(rows, args.seed, args.experience, args.eval)
+    experience, heldout = dataset.split_for(profile, rows, args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
     with open(os.path.join(args.workdir, "run.config.json"), "w") as fh:
         json.dump({"arm": "mem0", "mode": args.mode, "profile": args.profile,

@@ -36,20 +36,10 @@ import ledger_profile
 import memory as mem
 
 
-def filed_rows(db):
-    """{seq: {field: value}} from the document_NNNN facts."""
-    rows = {}
-    doc = re.compile(r"^document_(\d+)$")
-    for g in mem._facts(db):
-        f = g.get("fields", {})
-        m = doc.match(f.get("subject") or "")
-        if not m:
-            continue
-        seq = int(m.group(1))
-        val = (f.get("object") or "").strip()
-        if val:
-            rows.setdefault(seq, {})[f["relation"]] = val
-    return rows
+def filed_rows(db, fields):
+    """{seq: {field: value}} from the document_NNNN facts, read per relation
+    so a long deployment stays under CAL's grain cap."""
+    return mem.document_facts(db, fields)
 
 
 def main():
@@ -65,10 +55,10 @@ def main():
     args = ap.parse_args()
 
     profile = ledger_profile.get(args.profile)
-    experience, heldout = dataset.split(dataset.load(args.dataset), args.seed, args.experience, args.eval)
+    experience, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval)
     held_ids = {r["id"] for r in heldout}
 
-    filed = mem.with_memory(args.learned_db, mem.REVIEWER, filed_rows)
+    filed = mem.with_memory(args.learned_db, mem.REVIEWER, lambda db: filed_rows(db, profile["fields"]))
     lessons = mem.with_memory(args.learned_db, mem.REVIEWER, mem.lessons_markdown)
     system = agent.base_instruction(profile)
     if lessons.strip():

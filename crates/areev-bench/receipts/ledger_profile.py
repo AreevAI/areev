@@ -131,6 +131,40 @@ PROFILES["sroie_drift"] = dict(
     ],
 )
 
+# VRDU registration forms: real FARA filings, 1975-2023, 640 registrants. The
+# first corpus here with a genuine timeline (`order_by`) and an entity key
+# for a held-out set drawn from organisations the agent never saw
+# (`holdout_key`) -- the split that designs memorisation out of the tuned
+# model's evaluation instead of checking for it afterwards.
+PROFILES["vrdu_reg"] = {
+    "fields": ["Registration Number", "Registrant Name", "File Date", "Signer Name"],
+    "day_one": "Registration Number",
+    "arc": [
+        (1, ["Registration Number"], None),
+        (2, ["Registration Number", "Registrant Name", "File Date"],
+         "Thanks — I also need who registered and the date it was filed on "
+         "every one of these, otherwise I can't log it."),
+        (8, ["Registration Number", "Registrant Name", "File Date", "Signer Name"],
+         "Add who signed it as well; the file needs the signatory."),
+    ],
+    "date_fields": ["File Date"],
+    "date_strftime": "%Y-%m-%d",
+    "date_name": "YYYY-MM-DD",
+    "amount_fields": [],
+    "name_fields": ["Registrant Name", "Signer Name"],
+    "loose_fields": [],
+    "format_hint": {
+        "File Date": "write dates as {date_name}, like {example}",
+        "Registration Number": "write the registration number as digits only, like {example}",
+        "Registrant Name": "copy the registrant's name exactly as printed on the form, like {example}",
+        "Signer Name": "copy the signer's name exactly as printed, like {example}",
+    },
+    "document_noun": "registration form",
+    "corpus": "vrdu_reg",
+    "holdout_key": "entity",
+    "order_by": "filed_at",
+}
+
 # The keyless gate's compressed timeline (dryrun_drift.sh). The flip here IS
 # to ISO, and for the opposite reason: mock_agent.py writes ISO only when NO
 # date rule is in the prompt, so the mock can score after the flip if and
