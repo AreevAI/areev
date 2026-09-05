@@ -170,6 +170,22 @@ Plan, in order, none of it started:
    unseen-supplier curve keeps rising past a few hundred documents — or
    whether the plateau found on 320 registration forms is the plateau.
 
+### Amendment after the first real checkpoint (disclosed, not hidden)
+
+Seed 1's first real checkpoint, 20 documents against 100-document sets,
+read: LLM with rules **86% / 85%** (unseen / seen), tuned 1.7B **47% /
+58%** — the opposite of the trial. The loop had approved five rules by
+document 8, so the LLM was strong; and the tuned model had trained on **10
+rows**, because `slm_corpus.py` emitted a row only for documents the
+accountant had *corrected*. Once the rules made the agent right most of the
+time, the corpus shrank to the hard, odd cases — a biased, undersized
+training set, not the deployment's filed rows. A ledger has a row for every
+document it processed. The corpus is now every experience document with
+its filed row (the builder's truth under the accountant's corrections), so
+the corpus-size axis is exactly the document count. Seed 1's checkpoints
+were discarded and re-run under the one rule; every seed uses it. The
+trial's numbers above were under the old rule and are left as they were.
+
 ## The trial, and what it caught
 
 Forty documents, one checkpoint at 20, held-out sets of 20, seed 1. Its

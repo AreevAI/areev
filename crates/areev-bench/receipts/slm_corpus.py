@@ -5,9 +5,10 @@
                   --out DIR [--valid 4]
 
 The corpus is the ledger's own record of the deployment: for every
-experience document, the receipt text the agent saw and the ROW THE
-ACCOUNTANT FILED — the document_NNNN facts record_correction() wrote, which
-are the corrected values, not the agent's guesses. The system prompt is the
+experience document, the text the agent saw and the ROW THE ACCOUNTANT
+FILED — the builder's truth with the accountant's recorded corrections laid
+over it — never the agent's guesses. Every document contributes, whether or
+not it needed correcting; a ledger has a row for each one it processed. The system prompt is the
 day-one instruction plus the approved lessons as they stood at the end of
 the run, so the SLM is taught the same thing the governed prompt teaches the
 LLM, and the comparison is like for like.
@@ -70,21 +71,27 @@ def main():
         system += "\n\n" + lessons
 
     rows = []
+    skipped = 0
     for r in experience:
         if args.since_seq and r["seq"] <= args.since_seq:
             continue
         if args.upto_seq and r["seq"] > args.upto_seq:
             continue
         assert r["id"] not in held_ids, "held-out document in the training corpus"
-        row = filed.get(r["seq"])
-        if not row:
-            continue  # the accountant never stated a corrected value for it
-        # The complete filed row: what the accountant corrected, plus what the
-        # truth holds for fields required by the end of the arc. This is the
-        # ledger's row, not the agent's.
+        # EVERY experience document contributes its filed row. The corpus used
+        # to hold only documents the accountant had corrected, and once the
+        # loop's rules made the agent right most of the time that left a small,
+        # hard-case-biased set: 10 rows from 20 documents on the first real
+        # checkpoint, and a tuned model at 47% against the LLM's 86%. A ledger
+        # has a filed row for every document it processed; that is the corpus.
+        # The accountant's corrections override the builder's truth where they
+        # differ, which is what "filed" means.
         final_req = ledger_profile.required_fields(profile, 10 ** 9)
         target = {k: r["truth"][k] for k in final_req if r["truth"].get(k)}
-        target.update(row)
+        target.update(filed.get(r["seq"], {}))
+        if not target:
+            skipped += 1
+            continue
         rows.append({"messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": profile["document_noun"].upper() + ":\n\n" + (r["text"] or "").strip()[:12000]},
@@ -104,8 +111,8 @@ def main():
                    "valid": len(valid), "rules_in_system_prompt": lessons.count("\n- "),
                    "since_seq": args.since_seq, "upto_seq": args.upto_seq,
                    "held_out_excluded": len(held_ids)}, fh, indent=1)
-    print("corpus: %d train, %d valid, %d rule(s) in the system prompt -> %s"
-          % (len(train), len(valid), lessons.count("\n- "), args.out))
+    print("corpus: %d train, %d valid, %d rule(s) in the system prompt, %d document(s) without a filed row -> %s"
+          % (len(train), len(valid), lessons.count("\n- "), skipped, args.out))
 
 
 if __name__ == "__main__":
