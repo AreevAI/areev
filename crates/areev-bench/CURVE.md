@@ -313,6 +313,20 @@ Verdicts are per lesson: rules 1–5 were applied by document 8, before any
 checkpoint read, so their baseline stays day one and they read `held`; rule
 6 is judged against checkpoint 80.
 
+Two trainings at once were the next failure. Seed 1's final scratch
+adapter (316 rows) was training beside seed 2's checkpoint-160 adapter, and
+its first attempt failed in Metal with *Insufficient Memory* on a 36 GB
+laptop; `slm_train.sh`'s retry (batch 1, 2,048-token sequences, gradient
+checkpointing) ran to 400 iterations with the loss **NaN from iteration
+40**, and the selector, seeing one finite validation point, kept iteration
+25 — 0.16 of an epoch. The likely mechanism: the retry shortens sequences
+below some documents' length, and with the prompt masked a document that
+does not fit leaves no completion token to score. The adapter was
+discarded and is retrained with trainings serialised (`gpu_yield.sh`: only
+the oldest training runs, and none while a local server is up); the
+retry's sequence length is a fix for when no training invocation is live.
+No published number comes from that adapter.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
