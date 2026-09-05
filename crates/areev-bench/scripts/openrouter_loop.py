@@ -21,6 +21,7 @@ silently empties that stage. `instructions` stays the system role and the
 payload stays the user role — evidence text is untrusted and must never reach
 the system prompt.
 """
+import http.client
 import json
 import os
 import sys
@@ -95,6 +96,15 @@ def post(body, key, raise_http=False):
         except urllib.error.URLError as e:
             if attempt == RETRIES - 1:
                 fail(f"connection: {e}", 1)
+            time.sleep(min(delay, 60.0))
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # The connect succeeded and the READ failed -- a socket timeout
+            # mid-body, a reset, a truncated chunked response, or a body that
+            # is not JSON. As transient as a 503, and until 2026-09-06 it
+            # escaped the loop as a traceback (URLError is the connect-phase
+            # error only).
+            if attempt == RETRIES - 1:
+                fail(f"read: {type(e).__name__}: {e}", 1)
             time.sleep(min(delay, 60.0))
         delay *= 2
     fail("retries exhausted", 1)

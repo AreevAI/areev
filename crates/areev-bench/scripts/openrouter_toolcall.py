@@ -22,6 +22,7 @@ response without touching the network (keyless; CI round-trips use it).
 Stdlib only (urllib) — no pip install. Exit codes: 2 = missing key / bad
 usage / bad request, 1 = upstream failure after retries.
 """
+import http.client
 import json
 import os
 import sys
@@ -217,6 +218,16 @@ def post(body, key, base):
             break
         except urllib.error.URLError as e:
             last = f"URLError: {e.reason}"
+            if attempt < len(RETRY_DELAYS):
+                time.sleep(RETRY_DELAYS[attempt])
+                continue
+            break
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # The connect succeeded and the READ failed -- a socket timeout
+            # mid-body, a reset, a truncated chunked response, or a body that
+            # is not JSON. As transient as a 503; URLError covers the connect
+            # phase only, and until 2026-09-06 these escaped as a traceback.
+            last = f"read: {type(e).__name__}: {e}"
             if attempt < len(RETRY_DELAYS):
                 time.sleep(RETRY_DELAYS[attempt])
                 continue
