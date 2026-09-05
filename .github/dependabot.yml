@@ -8,12 +8,28 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
+    ignore:
+      # Known-blocked majors: each needs migration work, not a version bump.
+      # logos 0.15+ changes `#[regex]` semantics, and the CAL lexer is an OMS
+      # conformance surface — a lexer that parses differently is a spec change.
+      - dependency-name: "logos"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # croner 3 reworked the schedule API the trigger evaluator is built on.
+      - dependency-name: "croner"
+        update-types: ["version-update:semver-major"]
     groups:
       # The RustCrypto crates version in lockstep around `digest`: sha2 0.11 /
       # hkdf 0.13 / aes-gcm 0.11 are digest-0.11, and mixing generations does
       # not compile (see PRs #12, #8, #13). One grouped PR keeps the migration
       # atomic — and it should wait until turso leaves the digest-0.10 line,
       # or the tree carries two copies of the AES/GCM stack.
+      # One PR a week instead of eight. A major still arrives on its own.
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
       rustcrypto:
         patterns:
           - "sha2"
@@ -35,6 +51,13 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps
+    groups:
+      areev-js-cargo:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Node bindings (napi) — standalone package, not in the Cargo workspace.
   - package-ecosystem: npm
@@ -44,12 +67,25 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: deps
+    groups:
+      areev-js-npm:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions workflow dependencies.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # These bumps edit the same workflow files, so separate PRs conflict with
+      # each other and every rebase dismisses the approval.
+      actions:
+        patterns:
+          - "*"
     ignore:
       # dtolnay/rust-toolchain is versioned by TOOLCHAIN (e.g. @1.90.0), not by
       # action release — Dependabot misreads it and proposes nonexistent bumps
