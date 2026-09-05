@@ -61,7 +61,7 @@ def main():
     args = ap.parse_args()
 
     out = {"seeds": {}, "pooled": {}}
-    pooled = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))  # (ck, mode, hold) -> [exact, n]
+    pooled = collections.defaultdict(lambda: [0, 0])                                   # (ck, mode, hold) -> [exact, n]
     pairs = collections.defaultdict(lambda: [0, 0])                                     # (ck, a, b, hold) -> [w, l]
     for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
         s = int(re.search(r"seed(\d+)", sd).group(1))
