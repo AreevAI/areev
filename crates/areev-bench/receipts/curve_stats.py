@@ -26,7 +26,7 @@ import sys
 from math import comb
 
 MODES = ("llm", "scratch", "continual")
-HOLD = ("unseen", "seen")
+HOLD = ("unseen", "seen", "next")
 
 
 def mcnemar(b, c):
@@ -122,6 +122,21 @@ def main():
                         row.setdefault("paired", {})["%s_over_%s|%s" % (a, b, h)] = p
                         pairs[(k, a, b, h)][0] += p["wins"]; pairs[(k, a, b, h)][1] += p["losses"]
             rec["checkpoints"][k] = row
+        # the governed agent as it ran, over the same next window: rules as
+        # they evolved inside it, so this is the deployment's own record
+        jp = os.path.join(sd, "journal.jsonl")
+        if os.path.exists(jp):
+            byseq = {}
+            for line in open(jp, encoding="utf-8"):
+                j = json.loads(line)
+                if "seq" in j and "scored" in j:
+                    byseq[j["seq"]] = j
+            for k in list(rec["checkpoints"]):
+                win = [byseq[q] for q in range(k + 1, k + 21) if q in byseq]
+                if win:
+                    ex = sum(j["exact"] for j in win); n = sum(j["scored"] for j in win)
+                    rec["checkpoints"][k]["live_next"] = {"exact": ex, "n": n, "documents": len(win)}
+                    pooled[(k, "live", "next")][0] += ex; pooled[(k, "live", "next")][1] += n
         out["seeds"][s] = rec
 
     def wilson(x, n, z=1.96):
@@ -173,7 +188,7 @@ def main():
     n_seeds = len(out["seeds"])
     print("Tuning learning curve, %d seed(s). Exact-match RATE; (wins/losses) paired against the LLM carrying the same rules.\n" % n_seeds)
     for h in HOLD:
-        print("### held-out: %s\n" % h)
+        print("### held-out: %s\n" % (h if h != "next" else "next -- the 20 stream documents after the checkpoint, its own era (prequential)"))
         print("| documents learned from | LLM + rules | tuned from scratch | tuned continually | scratch vs continual |")
         print("|---|---:|---:|---:|---:|")
         for k in cks:
@@ -186,9 +201,11 @@ def main():
                 return "%.0f%% (%d/%d)" % (100 * c["rate"], q["wins"], q["losses"]) if q else "%.0f%%" % (100 * c["rate"])
             llm = p.get("llm|%s" % h)
             sc = p["paired"].get("scratch_over_continual|%s" % h)
-            print("| %d | %s | %s | %s | %s |" % (k, ("%.0f%%" % (100 * llm["rate"])) if llm and llm["n"] else "—",
+            live = p.get("live|%s" % h)
+            print("| %d | %s | %s | %s | %s |%s" % (k, ("%.0f%%" % (100 * llm["rate"])) if llm and llm["n"] else "—",
                                                 cell("scratch"), cell("continual"),
-                                                ("%d/%d p=%.3f" % (sc["wins"], sc["losses"], sc["p"])) if sc else "—"))
+                                                ("%d/%d p=%.3f" % (sc["wins"], sc["losses"], sc["p"])) if sc else "—",
+                                                (" governed agent as it ran: %.0f%% |" % (100 * live["rate"])) if live and live["n"] else ""))
         b = out["pooled"]["base"].get(h)
         if b and b["n"]:
             print("| untuned base, final rules | %.0f%% | | | |" % (100 * b["rate"]))

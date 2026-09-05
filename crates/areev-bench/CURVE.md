@@ -186,6 +186,47 @@ the corpus-size axis is exactly the document count. Seed 1's checkpoints
 were discarded and re-run under the one rule; every seed uses it. The
 trial's numbers above were under the old rule and are left as they were.
 
+### Observation after the corrected checkpoint: the checkpoints are eras
+
+Re-run on every filed row (16 of 20), seed 1's checkpoint 20 read **47%
+again** on unseen registrants — so the corpus selection was not the cause.
+The per-field split located it: File Date **1 of 100**, and every miss a
+century — *1917-04-18* for 2017, *1908-11-25* for 2008, *1918-01-31* for
+2018. The stream is sorted by filing date, so seed 1's first 20 documents
+are filed **1963–1991** (median 1985), its first 160 still have a median of
+1994, and the held-out unseen set has a median of **2015**. A 1.7B tuned on
+forms from the 1960s reads a two-digit year as 19xx. The trial did not show
+this because its 40-document stream happened to start in 1983 (its first
+20: median 2002) against a 2008–2018 held-out set. The LLM, which reads
+dates natively, is unaffected: 86% on the same set.
+
+The pre-registered design stands and its predictions are not touched, but
+their **mechanism** is now stated before the results: on a chronological
+stream the checkpoint axis is *time*, and the fixed all-era held-out sets
+measure how much of the eventual distribution a checkpoint's corpus
+covers. A curve that rises to 160 and beyond is era coverage arriving, not
+capacity — and it is the drift result of [`DRIFT.md`](DRIFT.md) surfacing on
+a real corpus without being staged.
+
+One leg is added, post hoc and disclosed here before it runs
+(`curve_next.sh`): at every checkpoint, both adapters and the LLM carrying
+that checkpoint's rules read the **next 20 stream documents** — what the
+deployment met next, unseen by any adapter at that checkpoint and of its
+own era. That is the prequential curve, the honest time axis. The governed
+agent's own record over the same window is already in its journal (rules as
+they evolved inside the window) and is reported beside it; seed 1's, after
+checkpoint 20, is 90%. *Stated in advance:* on the next window the tuned
+model tracks the LLM closely at every checkpoint, because the era matches,
+and the gap between its next-window rate and its all-era rate is the
+measure of how far the deployment's past is from its future.
+
+Caught before it ran: the train-set read passed its sample size as the
+split's held-out size, and in `split_entity` that size decides which
+registrants are held out and therefore which documents form the stream — a
+40-row "training rows" read would have sampled another deployment's
+documents. The sample size is now a separate parameter (`--rows`), and the
+split is byte-identical for every published call.
+
 ## The trial, and what it caught
 
 Forty documents, one checkpoint at 20, held-out sets of 20, seed 1. Its

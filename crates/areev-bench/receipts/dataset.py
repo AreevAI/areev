@@ -75,7 +75,7 @@ def split_entity(rows, seed, experience, eval_n, key="entity", order_by="filed_a
     return tuple(out)
 
 
-def split_for(profile, rows, seed, experience, eval_n, holdout="unseen", upto_seq=0):
+def split_for(profile, rows, seed, experience, eval_n, holdout="unseen", upto_seq=0, n=0):
     """The split a profile asks for. Without `holdout_key` this IS split(),
     byte for byte, so every published run is untouched.
 
@@ -84,7 +84,19 @@ def split_for(profile, rows, seed, experience, eval_n, holdout="unseen", upto_se
     Reading those is the memorisation check -- train-set accuracy against
     unseen-set accuracy -- and, because the rows keep their `seq`, the
     continual path's accuracy on rows from earlier checkpoints against the
-    latest ones is a direct forgetting measure."""
+    latest ones is a direct forgetting measure.
+
+    `holdout="next"` returns the `n` experience documents AFTER `upto_seq`:
+    what the deployment met next, which no adapter at that checkpoint has
+    seen and which share its era. The stream is chronological, so a fixed
+    all-era held-out set measures how much of the eventual distribution a
+    checkpoint covers; this measures the checkpoint against its own present.
+
+    `n` is the size of the train sample or the next window (default: `eval_n`
+    for train, 20 for next). `eval_n` itself must stay what the run used --
+    in split_entity it decides which entities are held out and therefore
+    which documents form the stream, so passing the sample size there would
+    read a different deployment's documents."""
     if not profile.get("holdout_key"):
         exp, held = split(rows, seed, experience, eval_n)
     else:
@@ -95,5 +107,7 @@ def split_for(profile, rows, seed, experience, eval_n, holdout="unseen", upto_se
         pool = [r for r in exp if not upto_seq or r["seq"] <= upto_seq]
         rng = random.Random(seed * 7919 + (upto_seq or 0))
         rng.shuffle(pool)
-        held = sorted(pool[:eval_n], key=lambda r: r["seq"])
+        held = sorted(pool[:n or eval_n], key=lambda r: r["seq"])
+    if holdout == "next":
+        held = [r for r in exp if upto_seq < r["seq"] <= upto_seq + (n or 20)]
     return exp, held

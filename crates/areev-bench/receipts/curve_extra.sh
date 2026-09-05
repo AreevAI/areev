@@ -22,7 +22,10 @@ for ck in "$OUT"/ck_*; do
     [ -s "$ck/adapter_$mode/adapters.safetensors" ] || continue
     [ -f "$ck/eval_${mode}_train/trials.json" ] && continue
     echo "######## seed $SEED: checkpoint $k — $mode adapter on its own training rows ($n)"
-    SLM_BASE="$BASE" EXP="$EXP" EVAL="$n" ARMS=B HOLDOUT=train UPTO="$k" \
+    # EVAL stays the run's: in split_entity it decides which entities are held
+    # out and so which documents form the stream. The sample size rides on
+    # EVAL_ROWS, or the "training rows" read would sample another deployment.
+    SLM_BASE="$BASE" EXP="$EXP" EVAL="$EVAL" EVAL_ROWS="$n" ARMS=B HOLDOUT=train UPTO="$k" \
       sh "$HERE/slm_eval.sh" "$db" "$ck/eval_${mode}_train" "ck$(printf '%03d' "$k")-$mode-train" "$ck/adapter_$mode"
   done
 done

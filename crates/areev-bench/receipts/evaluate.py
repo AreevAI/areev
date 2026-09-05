@@ -47,8 +47,10 @@ def main():
     ap.add_argument("--learned-db", required=True, help="memory left by the experience phase")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--arms", default="B,B2,A")
-    ap.add_argument("--upto-seq", type=int, default=0, help="with --holdout train: only documents up to this seq")
-    ap.add_argument("--holdout", choices=("unseen", "seen", "train"), default="unseen",
+    ap.add_argument("--upto-seq", type=int, default=0, help="with --holdout train: only documents up to this seq; with next: the window starts after it")
+    ap.add_argument("--rows", type=int, default=int(os.environ.get("EVAL_ROWS", "0") or 0),
+                    help="with --holdout train/next: how many documents (the split itself keeps --eval); env EVAL_ROWS")
+    ap.add_argument("--holdout", choices=("unseen", "seen", "train", "next"), default="unseen",
                     help="for a profile with an entity split: evaluate on documents from "
                          "entities the agent never saw (unseen, the default) or from "
                          "entities it learned from (seen)")
@@ -78,7 +80,7 @@ def main():
     # experience phase, so every field the accountant ever asked for is
     # required on every held-out document — the bar the learning curve
     # holds constant.
-    _, rows = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval, holdout=args.holdout, upto_seq=args.upto_seq)
+    _, rows = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval, holdout=args.holdout, upto_seq=args.upto_seq, n=args.rows)
     evalset = evalrun.evalset_hash(rows)
     print("held-out documents: %d (seq %d..%d) evalset %s"
           % (len(rows), rows[0]["seq"], rows[-1]["seq"], evalset))
