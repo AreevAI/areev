@@ -60,7 +60,20 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
 ## Schema (SCHEMA const, lib.rs ~160)
 
 - `terms(id, term)` — the dictionary; S/R/O strings become fixed-width ids
-  (`term_id` cached forward map; `term_str` is an O(n) reverse scan).
+  (`term_id` cached forward map; `term_str` is an O(n) reverse scan). On
+  Postgres the row is `terms(id, term, term_hash)` and **uniqueness is on
+  `term_hash` (SHA-256 of the UTF-8 bytes), never on `term`** (#160): a
+  btree entry caps at ~2704 bytes after pglz, so `text UNIQUE` refused any
+  value that did not compress under it — random/base64/JSON at 2.7 KB while
+  8 KB of `x` passed — and the loop's ledger crossed it by itself. Every
+  S/R/O string is interned, so the dictionary must not bound a value. The
+  open-time migration in `PG_SEED` adds and backfills the column
+  (`sha256(convert_to(term,'UTF8'))` must equal Rust's
+  `Sha256::digest(term.as_bytes())` — pinned by the pg conformance test),
+  creates the unique index, and drops the old text constraint; a read-only
+  open refuses a schema without the column (`STO-E005`). The scrub path
+  re-keys the row through the `Db::scrub_term` seam. Conformance:
+  `incompressible_values_of_any_size_are_stored` (both backends).
 - `grains` — `seq` PK, `hash` (content address), ns/gtype/created_at,
   s/p/o dict ids, `vf/vt` (world-time validity), `svf/svt` (knowledge-time /
   supersession), `superseded_by/supersedes`, `text` (FTS source), and the

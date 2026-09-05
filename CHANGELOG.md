@@ -6,6 +6,66 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Postgres dictionary no longer bounds what a grain may say.** `terms`
+  was `text UNIQUE`, and a Postgres btree entry caps at ~2704 bytes *after*
+  compression — so any subject, relation or object that did not compress
+  under that was refused with a raw `54000` from four layers down. It
+  depended on entropy, not length: a 2.7 KB base64 or JSON value failed while
+  8 KB of `x` passed, `areev import` failed on the same values, and `areev
+  loop run` generated the failure itself, because its persisted ledger is a
+  JSON object written as a Fact and crossed the line at roughly eight
+  recommendations. The dictionary is now unique on `term_hash` (SHA-256 of
+  the term), computed in Rust on insert; the first read-write open of an
+  existing schema adds and backfills the column under the bootstrap lock,
+  creates the unique index, and drops the text constraint. A `--read-only`
+  open of a schema that predates the migration refuses with `STO-E005`
+  naming the missing column. The embedded backend is unchanged (it has no
+  such limit) and no content address moves. **Operators: this migration is
+  not rolling-deploy safe** — an older binary still writing to a migrated
+  schema fails its next dictionary insert, so drain writers on the old build
+  before the first new-build open (`docs/deployment-profile.md`). The cap is
+  matched by definition, not by the default constraint name, so a restored
+  or hand-repaired schema loses it too. Pinned by the conformance case
+  `incompressible_values_of_any_size_are_stored` on both backends and by a
+  Postgres-only migration test that stages the old shape
+  ([#160](https://github.com/AreevAI/areev/issues/160)).
+- **`GRANT` can now spell every verb it documents.** `supersede`, `loop.run`
+  and `loop.apply` end in statement keywords (`SUPERSEDE`, `RUN`, `APPLY`),
+  and the verb parser only accepted identifiers there, so those three were
+  refused with `CAL-E002` — which meant no bound principal could ever be
+  granted `loop.apply`, and the documented "review and apply are different
+  people" separation could not be expressed in a file. The keyword tokens
+  are accepted in the verb position, where nothing else can appear; a test
+  now walks `Verb::ALL` through `GRANT` and `REVOKE` so the next verb is
+  covered too ([#161](https://github.com/AreevAI/areev/issues/161)).
+- **The run index is paged and scoped on the server.** `GET /api/run/list`
+  returned a fixed newest-50 page with no total, and the console's Runs tab
+  filtered *that* page by namespace client-side — so on a memory with two
+  tenants, the quieter one read as having no runs while it had open
+  approvals. The route now takes `ns` (exact or `org.*`), `limit` (clamped
+  to 500) and `offset`, and answers with `total` and `truncated`; the console
+  asks the server for the picked namespace and says "showing N of M". The
+  `run:<id> mg:harness` link Fact carries the run's session namespace (`run_ns`) from now on.
+  A run from before that stamp existed is not known to be in any namespace,
+  so a **scoped** listing excludes it and reports the count in
+  `unattributed` rather than guessing from the run's plan (a plan's namespace
+  is not the session's) or admitting it to every scope (which would make
+  scoping meaningless right after an upgrade). The **unscoped** listing — the
+  default — still shows every such run, labelled "namespace not recorded".
+  `areev run list` documents `--last`, gains `--offset`, notes truncation on
+  stderr, and — like the route — resolves outcomes through the run index
+  instead of rescanning the outcome census once per row.
+  `RunManifest::persist(m)` keeps its signature (deprecated) and stamps no
+  namespace; the runtime uses `persist_in_namespace(m, ns)`
+  ([#165](https://github.com/AreevAI/areev/issues/165)).
+- **`release-cli`'s `sbom` job checks out the tag it is backfilling.** It
+  had no `ref`, so a `workflow_dispatch` backfill regenerated the SBOM from
+  `main` and uploaded it under the older tag's name — the fix #159 applied
+  to `build` now covers `sbom` too
+  ([#162](https://github.com/AreevAI/areev/issues/162)).
+
 ## [1.7.2] — 2026-09-02
 
 ### Fixed

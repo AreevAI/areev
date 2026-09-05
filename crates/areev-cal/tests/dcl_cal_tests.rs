@@ -253,3 +253,51 @@ fn run_verbs_are_grantable_despite_run_being_a_keyword() {
         "{v}"
     );
 }
+
+/// #161: every verb the registry knows must be spellable in GRANT and
+/// REVOKE. Three of them (`supersede`, `loop.run`, `loop.apply`) end in
+/// statement keywords, and a verb parser that only accepted identifiers
+/// refused exactly those — so no bound principal could ever be granted
+/// `loop.apply`. Walking `Verb::ALL` means the next verb is covered too.
+#[test]
+fn every_verb_round_trips_through_grant_and_revoke() {
+    use areev_core::authz::Verb;
+    let (ex, f, _dir) = setup();
+    for v in Verb::ALL {
+        let name = v.as_str();
+        let granted = payload(
+            &ex,
+            &f,
+            &format!(r#"GRANT {name} ON * TO "user:a" WITH because("probe")"#),
+        );
+        assert_eq!(granted["type"], "granted", "GRANT {name}: {granted}");
+        assert_eq!(granted["object"], format!("{name} ON *"), "GRANT {name}: {granted}");
+        let revoked = payload(
+            &ex,
+            &f,
+            &format!(r#"REVOKE {name} ON * FROM "user:a" WITH because("probe")"#),
+        );
+        assert_eq!(revoked["type"], "revoked", "REVOKE {name}: {revoked}");
+    }
+
+    // All twelve in one list, in registry order; the grant grain stores
+    // them canonically sorted (OMS 1.6 §12.6), keywords included.
+    let names: Vec<&str> = Verb::ALL.iter().map(|v| v.as_str()).collect();
+    let granted = payload(
+        &ex,
+        &f,
+        &format!(
+            r#"GRANT {} ON * TO "user:b" WITH because("probe")"#,
+            names.join(", ")
+        ),
+    );
+    assert_eq!(granted["type"], "granted", "{granted}");
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(granted["object"], format!("{} ON *", sorted.join(",")), "{granted}");
+    let rows = payload(&ex, &f, r#"SHOW GRANTS FOR "user:b""#);
+    assert!(
+        rows.to_string().contains("loop.apply") && rows.to_string().contains("supersede"),
+        "{rows}"
+    );
+}

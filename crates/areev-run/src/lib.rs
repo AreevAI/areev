@@ -47,7 +47,7 @@ pub use executor::{
     ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
 };
 pub use manifest::{abstract_nodes, BudgetsSpec, ForkBase, PinnedTool, RunManifest};
-pub use runner::{CrashPoint, OnDangling, RunOptions, Runner};
+pub use runner::{ns_in_scope, CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
 pub use stream::{RunEvent, RunObserver};
 // Downstream hosts (MCP, bindings) speak the run vocabulary without a
@@ -134,6 +134,40 @@ pub struct InspectReport {
     pub phase: Option<String>,
     pub spent: Option<serde_json::Value>,
     pub pending_asks: serde_json::Value,
+}
+
+/// One row of the run index: what `areev run list` and the console's Runs
+/// tab show per run, with the terminal outcome and spend when the
+/// run-outcome Observation has been recorded (`"open"` otherwise).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RunRow {
+    pub run_id: String,
+    /// The run's session namespace, from its `run:<id> mg:harness` link
+    /// Fact. `None` for a link written before the namespace was stamped on
+    /// it — such a run appears only in an UNSCOPED listing, and a scoped one
+    /// counts it in `RunListPage::unattributed` rather than guessing.
+    pub ns: Option<String>,
+    pub created_at: i64,
+    pub outcome: String,
+    pub spent_usd_micros: Option<u64>,
+    pub spent_tokens: Option<u64>,
+}
+
+/// A page of the run index (#165): the rows asked for, the total that
+/// matched, and whether the page cut the set short — so a surface can say
+/// "showing 50 of 214" instead of implying 50 is all there is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RunListPage {
+    pub runs: Vec<RunRow>,
+    pub total: usize,
+    pub truncated: bool,
+    pub offset: usize,
+    pub limit: usize,
+    /// Runs a SCOPED listing excluded because their index entry predates the
+    /// session-namespace stamp, so nothing is known about where they ran.
+    /// Always 0 unscoped. Report it rather than dropping it silently: those
+    /// runs are still in the unscoped listing.
+    pub unattributed: usize,
 }
 
 /// The EU AI Act Article 14 answers for one run, measured from the journal

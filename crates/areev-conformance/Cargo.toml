@@ -11,7 +11,7 @@ homepage.workspace = true
 publish = false
 
 [features]
-postgres = ["areev-store/postgres"]
+postgres = ["areev-store/postgres", "areev-store/conformance"]
 # Run the Pg case list against a server that requires TLS (a managed backend):
 # `DATABASE_URL='postgres://…?sslmode=verify-full' cargo test -p areev-conformance
 #  --features postgres-tls`. Everything that goes through a `Areev` handle works;

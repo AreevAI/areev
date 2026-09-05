@@ -17,6 +17,11 @@ categories = ["database-implementations", "caching"]
 # schema (one memory = one schema). Non-default so edge builds stay
 # dependency-light; see docs/postgres-backend-plan.md.
 postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time"]
+# Raw-SQL escape hatches (`pg::execute_raw`, `pg::query_raw_i64`) that the
+# backend-parameterized conformance suite needs to stage a pre-migration
+# schema. NEVER enabled by a shipped build: they take arbitrary SQL against
+# an arbitrary DSN, which is not a store API.
+conformance = ["postgres"]
 # Native TLS for the Postgres transport (`sslmode=` / `sslrootcert=` in the
 # DSN). Non-default for the same reason `postgres` is, but every managed
 # Postgres either defaults to or requires TLS on the wire — Azure Flexible

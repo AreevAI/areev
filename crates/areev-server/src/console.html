@@ -1842,6 +1842,13 @@ function go(page) {
    say (an older journal), the plan is recovered from the run's own step
    grains, which name it in `related_to`. */
 let RUNIDX = null, RUNIDX_INFLIGHT = null;
+/* The Runs page's namespace-scoped view (#165). The SERVER filters, so a
+   quiet tenant's runs are not lost behind a busier tenant's newest page —
+   the old client-side filter over a fixed 50 read as "this namespace has no
+   runs" while it had open approvals. Cached per (namespace, page size). */
+let RUNIDX_NS = null, RUNIDX_NS_KEY = null, RUNIDX_NS_INFLIGHT = null;
+let RUN_LIMIT = 100;
+const RUN_LIMIT_MAX = 500;   /* the server clamps here too */
 
 /* Run-journal Tool grains: the store's record of what each step actually did.
    `isCurrent` alone leaves exactly one row per (run, node) — the journal
@@ -1890,17 +1897,67 @@ function runStepStates(runId, outcome) {
   return out;
 }
 
+/** Forget every cached run index. Separate from fetching on purpose: the
+    caller that invalidates (a respond, a "Show more") is not always the view
+    that will read next, and a fetch bundled into the reset built the
+    UNSCOPED index — inspect fan-out included — for a scoped page that then
+    threw it away and built its own. */
+function resetRunIndexes() {
+  RUNIDX = null; RUNIDX_INFLIGHT = null;
+  RUNIDX_NS = null; RUNIDX_NS_KEY = null; RUNIDX_NS_INFLIGHT = null;
+}
 async function loadRuns(force) {
-  if (force) { RUNIDX = null; RUNIDX_INFLIGHT = null; }
+  if (force) resetRunIndexes();
   if (RUNIDX) return RUNIDX;
   if (RUNIDX_INFLIGHT) return RUNIDX_INFLIGHT;
-  RUNIDX_INFLIGHT = (async () => {
-    const idx = { runs: [], byId: new Map(), byPlan: new Map(), error: null };
-    const list = await api('/api/run/list');
+  RUNIDX_INFLIGHT = buildRunIndex('/api/run/list?limit=' + RUN_LIMIT).then(idx => {
+    /* A failed load is returned to this caller but NOT cached: the next
+       render must retry, or one dropped connection pins the page to
+       "failed to load runs" until something else happens to change the
+       cache key. */
+    if (!idx.error) RUNIDX = idx;
+    RUNIDX_INFLIGHT = null; return idx;
+  });
+  return RUNIDX_INFLIGHT;
+}
+/** The run index for ONE namespace (or an `org.*` prefix), filtered by the
+    server. Only the Runs page reads this; the canvas overlay and the Tools
+    page keep the unscoped index, because a plan's runs may have been started
+    under a different session namespace than the plan lives in. */
+async function loadRunsScoped(ns) {
+  const key = ns + '|' + RUN_LIMIT;
+  if (RUNIDX_NS_KEY !== key) { RUNIDX_NS = null; RUNIDX_NS_INFLIGHT = null; RUNIDX_NS_KEY = key; }
+  if (RUNIDX_NS) return RUNIDX_NS;
+  if (RUNIDX_NS_INFLIGHT) return RUNIDX_NS_INFLIGHT;
+  RUNIDX_NS_INFLIGHT = buildRunIndex('/api/run/list?ns=' + encodeURIComponent(ns) + '&limit=' + RUN_LIMIT).then(idx => {
+    if (RUNIDX_NS_KEY === key) {
+      if (!idx.error) RUNIDX_NS = idx;   // same rule as loadRuns: never cache a failure
+      RUNIDX_NS_INFLIGHT = null;
+    }
+    return idx;
+  });
+  return RUNIDX_NS_INFLIGHT;
+}
+/** Open runs across the WHOLE memory, for the nav badge. One list read, no
+    per-run inspect: the badge needs `outcome`, which the list already
+    carries. Capped at the server's own ceiling, so a memory with more open
+    runs than that undercounts rather than stalling the page. */
+async function runOpenCount() {
+  const list = await api('/api/run/list?limit=' + RUN_LIMIT_MAX);
+  if (!list || !list.ok || !Array.isArray(list.runs)) return 0;
+  return list.runs.filter(r => r.outcome === 'open').length;
+}
+async function buildRunIndex(url) {
+  {
+    const idx = { runs: [], byId: new Map(), byPlan: new Map(), error: null, total: 0, truncated: false, unattributed: 0 };
+    const list = await api(url);
     if (!list || !list.ok) {
       idx.error = (list && list.error) || 'failed to load runs';
-      RUNIDX = idx; RUNIDX_INFLIGHT = null; return idx;
+      return idx;
     }
+    idx.total = typeof list.total === 'number' ? list.total : (Array.isArray(list.runs) ? list.runs.length : 0);
+    idx.truncated = !!list.truncated;
+    idx.unattributed = typeof list.unattributed === 'number' ? list.unattributed : 0;
     const rows = Array.isArray(list.runs) ? list.runs : [];
     const details = await Promise.all(rows.map(r =>
       api('/api/run/inspect?run_id=' + encodeURIComponent(r.run_id)).catch(() => null)));
@@ -1920,6 +1977,7 @@ async function loadRuns(force) {
       const d = (details[i] && details[i].ok) ? details[i] : {};
       const run = {
         run_id: r.run_id,
+        ns: r.ns || null,
         outcome: r.outcome || 'unknown',
         plan_hash: d.plan_hash ? String(d.plan_hash).replace(/^sha256:/, '') : (planFromGrains.get(r.run_id) || null),
         principal: d.principal || null,
@@ -1936,9 +1994,8 @@ async function loadRuns(force) {
       }
     });
     for (const list2 of idx.byPlan.values()) list2.sort((a, b) => (b.started_ms || 0) - (a.started_ms || 0));
-    RUNIDX = idx; RUNIDX_INFLIGHT = null; return idx;
-  })();
-  return RUNIDX_INFLIGHT;
+    return idx;
+  }
 }
 
 const OUTCOME_TONE = { completed: 'ok', open: 'warn', canceled: 'ghost', failed: 'danger' };
@@ -1969,34 +2026,64 @@ async function renderRuns() {
   nsHost.appendChild(nsCombo('runNs', WF_NS || '*', ns => wfSetNamespace(ns)));
 
   const box = $('runList');
-  if (!RUNIDX) box.innerHTML = '<div class="empty">loading…</div>';
-  const idx = await loadRuns();
+  const scopedNs = (WF_NS && WF_NS !== '*') ? WF_NS : null;
+  if (!RUNIDX && !scopedNs) box.innerHTML = '<div class="empty">loading…</div>';
+  /* Scoped, the SERVER filters (#165) — never a client-side cut of an
+     unscoped page, which is what hid a quiet tenant's open approvals behind
+     a busy tenant's newest fifty. */
+  const view = scopedNs ? await loadRunsScoped(scopedNs) : await loadRuns();
   if (PAGE !== 'runs') return;                 // navigated away while loading
-  const open = idx.runs.filter(r => r.outcome === 'open');
+  /* The nav badge counts every open run in the memory, whatever this page is
+     narrowed to — narrowing what you're LOOKING at must never narrow what
+     you're WARNED about. ONE path for both cases, so the badge cannot read a
+     different window depending on the picker: a plain list read at the
+     server's ceiling, no inspect fan-out (`outcome` rides the list itself).
+     Deriving it from the visible page instead would count over RUN_LIMIT
+     rows when unscoped and RUN_LIMIT_MAX when scoped — the wider view with
+     the narrower warning. */
+  const openCount = await runOpenCount();
   const pill = $('runPill');
-  // The nav badge always counts every open run, regardless of this page's
-  // own namespace filter — narrowing what you're LOOKING at must never
-  // narrow what you're WARNED about.
-  pill.hidden = open.length === 0; pill.textContent = open.length;
+  pill.hidden = openCount === 0; pill.textContent = openCount;
 
-  // A run's namespace is its plan's — resolved against whatever wfByHash()
-  // is currently scoped to (shared with Workflows/Tools). Left on "every
-  // namespace" (WF_NS null or '*'), nothing is filtered.
-  const scoped = (WF_NS && WF_NS !== '*')
-    ? idx.runs.filter(r => r.plan_hash && wfByHash()[r.plan_hash])
-    : idx.runs;
+  /* Exactly what the server matched — no client-side second filter, so the
+     count beside "Showing N of M" is the server's own and cannot disagree
+     with it. A run whose index entry predates the namespace stamp is not
+     known to be in any scope: the server counts it in `unattributed` and the
+     notes below say so, rather than this page inferring a namespace from the
+     run's PLAN, which is a different thing. */
+  const scoped = view.runs;
 
   box.textContent = '';
-  if (idx.error) { box.innerHTML = '<div class="empty">' + esc(idx.error) + '</div>'; return; }
-  if (!idx.runs.length) {
-    box.innerHTML = '<div class="empty">No runs recorded in this memory yet. A run is one execution of a plan '
-      + '— start one with <code>areev run start</code>, or let a trigger start it.</div>';
+  if (view.error) { box.innerHTML = '<div class="empty">' + esc(view.error) + '</div>'; return; }
+  if (!scoped.length) {
+    box.innerHTML = scopedNs
+      ? '<div class="empty">No runs in "' + esc(scopedNs) + '" — nothing has run in that namespace.'
+        + (view.unattributed ? ' ' + view.unattributed + ' run' + (view.unattributed === 1 ? '' : 's')
+           + ' predate the namespace record and appear under "All namespaces".' : '') + '</div>'
+      : '<div class="empty">No runs recorded in this memory yet. A run is one execution of a plan '
+        + '— start one with <code>areev run start</code>, or let a trigger start it.</div>';
     return;
   }
-  if (!scoped.length) {
-    box.innerHTML = '<div class="empty">No runs in "' + esc(WF_NS) + '" — its plan may not be loaded yet, '
-      + 'or nothing has run there.</div>';
-    return;
+  // Say when the page is a window, not the whole set: "showing 100 of 214"
+  // is a limitation; a silent 100 is a wrong answer.
+  if (view.truncated || scopedNs) {
+    const note = el('div', 'tiny');
+    note.style.cssText = 'margin:0 0 10px;color:var(--dim)';
+    note.appendChild(document.createTextNode('Showing ' + scoped.length + ' of ' + view.total + ' run'
+      + (view.total === 1 ? '' : 's') + (scopedNs ? ' in "' + scopedNs + '"' : '') + ', newest first.'
+      + (view.unattributed ? ' ' + view.unattributed + ' older run' + (view.unattributed === 1 ? '' : 's')
+         + ' predate the namespace record — see "All namespaces".' : '')));
+    if (view.truncated && RUN_LIMIT < RUN_LIMIT_MAX) {
+      const more = el('a', null, ' Show more');
+      more.href = '#'; more.style.marginLeft = '6px';
+      /* Reset, then let render() rebuild only the index this view reads —
+         never both. */
+      more.onclick = e => { e.preventDefault(); RUN_LIMIT = Math.min(RUN_LIMIT * 2, RUN_LIMIT_MAX); resetRunIndexes(); render(); };
+      note.appendChild(more);
+    } else if (view.truncated) {
+      note.appendChild(document.createTextNode(' Older runs: narrow by namespace, or use areev run list --offset.'));
+    }
+    box.appendChild(note);
   }
   const waiting = scoped.filter(r => r.asks.length);
   const active = scoped.filter(r => !r.asks.length && r.outcome === 'open');
@@ -2033,6 +2120,10 @@ function runCard(run) {
 
   const meta = el('div', 'meta');
   const bits = [];
+  /* Written before the run index recorded a session namespace (#165). Said
+     plainly, because the alternative is a filter silently deciding which
+     namespace it belongs to. */
+  if (!run.ns) bits.push('namespace not recorded');
   if (run.principal) bits.push('started by ' + run.principal);
   if (run.started_ms) bits.push(relTime(run.started_ms));
   if (run.checkpoints != null) bits.push(run.checkpoints + ' checkpoints');
@@ -2107,7 +2198,7 @@ async function respondRun(id, ask, refuse) {
   });
   if (!r.ok) { toast(r.error || 'response refused'); return; }
   toast('Recorded as ' + (r.responder || 'you') + ' — resume the run to continue.');
-  await loadRuns(true); render();
+  resetRunIndexes(); render();   // render() rebuilds only the index this view reads
 }
 
 /* ══ analytics ════════════════════════════════════════════════════════

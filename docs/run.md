@@ -647,7 +647,7 @@ run journal outside every policy they had declared. #87.)
 | Intent | Tool grain, `status = pending` | session `--ns` | **before** every effect dispatch |
 | Result | supersession of the intent, re-stating its identity + usage | session `--ns` | when the effect settles |
 | Checkpoint | State grain (scheduler state + the superstep's decision record), chained by `derived_from` | session `--ns` | every superstep |
-| Manifest | the frozen plan resolution, budgets, principal | `agent:harness` | at start |
+| Manifest | the frozen plan resolution, budgets, principal — plus its `run:<id> mg:harness` link Fact, which carries the run's session namespace (`run_ns`) so the run index can be listed per tenant (#165). A link from before that stamp has no `run_ns`: a scoped listing excludes it and counts it as `unattributed`, an unscoped one shows it with a null namespace | `agent:harness` | at start |
 | Cancel / audit / redelivery / run-outcome / egress refusals | Facts and Observations | `agent:harness` | as they happen |
 
 Every journal record carries the full effect identity — run id, task path,
@@ -661,7 +661,8 @@ Read it back:
 ```bash
 areev run-trace --run-id demo-1           # what the run recorded, and what it produced
 areev run inspect --run-id demo-1         # manifest, budgets, phase, spend, pending asks, fork lineage
-areev run list                            # recent runs, newest first
+areev run list [--last N] [--offset N]    # recent runs, newest first; stderr notes truncation
+areev run list --ns ops                   # ...scoped to one session namespace ("ops.*" also works)
 areev runs-touching --hash <GRAIN>        # the reverse join: which runs produced/refined this grain
 ```
 

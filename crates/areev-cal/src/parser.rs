@@ -5668,13 +5668,19 @@ impl Parser {
                 self.advance();
                 w
             }
-            // RUN is a keyword token; the runtime verbs (`run.execute`,
-            // `run.respond`, `run.cancel`) must still be grantable — a
-            // driver that enforces run.respond while GRANT cannot spell it
-            // is an approval boundary nobody can be admitted through.
+            // RUN and SUPERSEDE are keyword tokens; the verbs spelled with
+            // them (`run.execute`, `run.respond`, `run.cancel`, `supersede`)
+            // must still be grantable — a driver that enforces run.respond
+            // while GRANT cannot spell it is an approval boundary nobody can
+            // be admitted through. Nothing else can start a verb, so the
+            // keywords are unambiguous here.
             Some(SpannedToken { token: Token::Run, .. }) => {
                 self.advance();
                 "run".to_string()
+            }
+            Some(SpannedToken { token: Token::Supersede, .. }) => {
+                self.advance();
+                "supersede".to_string()
             }
             other => {
                 return Err(CalError::UnexpectedToken {
@@ -5697,6 +5703,15 @@ impl Parser {
                     let tail = tail.to_ascii_lowercase();
                     self.advance();
                     Ok(format!("{head}.{tail}"))
+                }
+                // `loop.run` and `loop.apply` end in keyword tokens (#161).
+                Some(SpannedToken { token: Token::Run, .. }) => {
+                    self.advance();
+                    Ok(format!("{head}.run"))
+                }
+                Some(SpannedToken { token: Token::Apply, .. }) => {
+                    self.advance();
+                    Ok(format!("{head}.apply"))
                 }
                 other => Err(CalError::UnexpectedToken {
                     expected: "the dotted verb tail (run, review, apply, \
