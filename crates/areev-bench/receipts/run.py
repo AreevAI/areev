@@ -45,6 +45,9 @@ def main():
                     help="run the loop after this many corrected documents")
     ap.add_argument("--no-learn", action="store_true",
                     help="never record or apply anything — the A0 baseline")
+    ap.add_argument("--snapshot-at", default="",
+                    help="comma-separated document counts to snapshot the memory at "
+                         "(e.g. 20,40,80,160) -- checkpoints on a log axis for a learning curve")
     ap.add_argument("--snapshot-every", type=int, default=0,
                     help="copy the memory aside every N documents, so held-out "
                          "accuracy can be measured as a function of experience")
@@ -56,6 +59,7 @@ def main():
                     help="before any learning, read the held-out set once with the "
                          "day-one agent and journal it as the evalset baseline (arm A0)")
     args = ap.parse_args()
+    snapshot_at = {int(x) for x in args.snapshot_at.split(",") if x.strip()}
     # Every model call this phase makes is metered here (see scripts/*.py _meter),
     # so cost is read from journaled tokens, never estimated afterwards.
     os.makedirs(args.workdir, exist_ok=True)
@@ -73,7 +77,7 @@ def main():
     policy = os.environ.get("LOOP_POLICY") or None
     judge = mem.make_judge(os.environ.get("REVIEW_CMD"))
 
-    exp_rows, heldout = dataset.split(dataset.load(args.dataset), args.seed,
+    exp_rows, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed,
                                       args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
 
@@ -207,7 +211,8 @@ def main():
         # with the TASK held constant — unlike the running score of this
         # phase, which falls as the accountant adds fields and so measures the
         # goalpost moving, not the agent learning.
-        if args.snapshot_every and totals["documents"] % args.snapshot_every == 0:
+        if (args.snapshot_every and totals["documents"] % args.snapshot_every == 0) \
+                or totals["documents"] in snapshot_at:
             snap = os.path.join(args.workdir, "snap_%03d.db" % totals["documents"])
             mem.copy_memory(db_path, snap)
             print("   snapshot -> %s" % os.path.basename(snap))

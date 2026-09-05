@@ -13,7 +13,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env.sh"
 LEARNED="$1"; WORKDIR="$2"; NAME="$3"; ADAPTER="${4:-none}"; PORT="${5:-8081}"
-BASE="${SLM_BASE:-mlx-community/Qwen2.5-1.5B-Instruct-4bit}"
+BASE="${SLM_BASE:-mlx-community/Qwen3.5-2B-4bit}"
 mkdir -p "$WORKDIR"
 if [ "$ADAPTER" = "none" ]; then
   python3 -m mlx_lm server --model "$BASE" --port "$PORT" > "$WORKDIR/server.log" 2>&1 &
@@ -28,4 +28,4 @@ for i in $(seq 1 60); do
 done
 export AGENT_CMD="$PY $SCRIPTS/slm_serve.py $NAME --port $PORT --seed $SEED --model $BASE"
 "$PY" "$HERE/evaluate.py" --profile "$PROFILE" --dataset "$DATASET" --learned-db "$LEARNED" \
-  --workdir "$WORKDIR" --seed "$SEED" --experience "${EXP:-40}" --eval "${EVAL:-60}" --arms "${ARMS:-B,B2}"
+  --workdir "$WORKDIR" --seed "$SEED" --experience "${EXP:-40}" --eval "${EVAL:-60}" --arms "${ARMS:-B,B2}" --holdout "${HOLDOUT:-unseen}"

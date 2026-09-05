@@ -61,8 +61,12 @@ def main():
     if req.get("op") == "probe":
         print(json.dumps({"model": "mlx-slm:" + name}))
         return
+    # A reasoning-tuned base may think aloud before the JSON; give it room,
+    # and hand back only the object -- the agent's reply always starts with
+    # {"fields". A tuned adapter learns to skip the preamble, which the
+    # usage ledger shows as completion tokens falling.
     body = {"model": model, "messages": req.get("messages", []),
-            "temperature": req.get("temperature", 0), "max_tokens": 400}
+            "temperature": req.get("temperature", 0), "max_tokens": 1200}
     if seed is not None:
         body["seed"] = seed
     data = json.dumps(body).encode()
@@ -76,6 +80,11 @@ def main():
         sys.stderr.write("slm_serve: server at :%d unreachable (%s) — start mlx_lm.server first\n" % (port, e))
         sys.exit(1)
     msg = out["choices"][0]["message"]
+    content = msg.get("content") or ""
+    k = content.rfind('{"fields"')
+    if k > 0:
+        content = content[k:]
+    msg["content"] = content
     usage = out.get("usage") or {}
     usage["latency_ms"] = int((time.time() - t0) * 1000)
     meter("mlx-slm:" + name, usage, "chat")

@@ -52,6 +52,11 @@ def main():
     ap.add_argument("--eval", type=int, default=60)
     ap.add_argument("--out", required=True)
     ap.add_argument("--valid", type=int, default=4)
+    ap.add_argument("--since-seq", type=int, default=0,
+                    help="only experience documents after this seq -- the DELTA a continually "
+                         "tuned model sees at a checkpoint, against the accumulated corpus a "
+                         "from-scratch one sees")
+    ap.add_argument("--upto-seq", type=int, default=0, help="only experience documents up to this seq")
     args = ap.parse_args()
 
     profile = ledger_profile.get(args.profile)
@@ -66,6 +71,10 @@ def main():
 
     rows = []
     for r in experience:
+        if args.since_seq and r["seq"] <= args.since_seq:
+            continue
+        if args.upto_seq and r["seq"] > args.upto_seq:
+            continue
         assert r["id"] not in held_ids, "held-out document in the training corpus"
         row = filed.get(r["seq"])
         if not row:
@@ -93,6 +102,7 @@ def main():
         json.dump({"learned_db": os.path.abspath(args.learned_db), "seed": args.seed,
                    "experience": args.experience, "eval": args.eval, "train": len(train),
                    "valid": len(valid), "rules_in_system_prompt": lessons.count("\n- "),
+                   "since_seq": args.since_seq, "upto_seq": args.upto_seq,
                    "held_out_excluded": len(held_ids)}, fh, indent=1)
     print("corpus: %d train, %d valid, %d rule(s) in the system prompt -> %s"
           % (len(train), len(valid), lessons.count("\n- "), args.out))
