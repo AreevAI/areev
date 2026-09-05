@@ -62,7 +62,13 @@ def main():
 
     profile = ledger_profile.get(args.profile)
     experience, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval)
-    held_ids = {r["id"] for r in heldout}
+    # By TEXT, not by id: an id is the filename cut to 40 characters and a
+    # few filings share one, so seed 3's checkpoint 160 tripped this guard on
+    # a different document that merely shared a name with a held-out one.
+    # The split partitions by registrant, so a real leak would be a bug in
+    # dataset.split_entity; this is the safety net for that, keyed by what a
+    # document is.
+    held_ids = {r["text"] for r in heldout}
 
     filed = mem.with_memory(args.learned_db, mem.REVIEWER, lambda db: filed_rows(db, profile["fields"]))
     lessons = mem.with_memory(args.learned_db, mem.REVIEWER, lambda _db: mem.lessons_markdown(_db, profile))
@@ -77,7 +83,7 @@ def main():
             continue
         if args.upto_seq and r["seq"] > args.upto_seq:
             continue
-        assert r["id"] not in held_ids, "held-out document in the training corpus"
+        assert r["text"] not in held_ids, "held-out document in the training corpus"
         # EVERY experience document contributes its filed row. The corpus used
         # to hold only documents the accountant had corrected, and once the
         # loop's rules made the agent right most of the time that left a small,

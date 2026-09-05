@@ -337,6 +337,15 @@ journal), and triggered again at the next correction, with the evidence
 still in the memory. Seed 3 was rerun from the start on that harness; its
 first 26 documents are not part of any number here.
 
+Seed 3 stopped once more, at checkpoint 160, on a safety guard: the corpus
+builder asserts that no held-out document enters a training corpus, and it
+keyed that check on the document id — the filename cut to 40 characters,
+which a few filings share. A stream document that merely shared a name
+with a held-out one tripped it. The guard now compares document text; the
+split itself partitions by registrant and had not leaked anything. Seed 3
+resumed from its persisted checkpoints (`curve_resume.sh`); no number was
+affected.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
