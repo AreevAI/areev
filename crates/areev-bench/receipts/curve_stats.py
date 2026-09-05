@@ -102,6 +102,18 @@ def main():
                         got[(mode, h)] = tr
                         row["modes"]["%s|%s" % (mode, h)] = {"exact": exact(tr), "n": len(tr)}
                         pooled[(k, mode, h)][0] += exact(tr); pooled[(k, mode, h)][1] += len(tr)
+            # the validation selector's alternative: the latest saved checkpoint, where an earlier one was kept
+            for mode in ("scratch", "continual"):
+                lt = trials(os.path.join(ck, "eval_%s_latest_unseen" % mode, "trials.json"))
+                if lt and (mode, "unseen") in got:
+                    p = paired(lt, got[(mode, "unseen")])
+                    lm = os.path.join(ck, "adapter_%s_latest" % mode, "adapter.manifest.json")
+                    lman = json.load(open(lm)) if os.path.exists(lm) else {}
+                    row.setdefault("selector", {})[mode] = {"kept": lman.get("kept_by_selector"), "latest": lman.get("latest_saved_checkpoint"),
+                                                            "kept_exact": exact(got[(mode, "unseen")]), "latest_exact": exact(lt), "n": len(lt),
+                                                            "latest_over_kept": p}
+                    pooled[(k, mode + "-latest", "unseen")][0] += exact(lt); pooled[(k, mode + "-latest", "unseen")][1] += len(lt)
+                    pairs[(k, mode + "-latest", mode, "unseen")][0] += p["wins"]; pairs[(k, mode + "-latest", mode, "unseen")][1] += p["losses"]
             prev_k = max([kk for kk in rec["checkpoints"] if kk < k], default=0)
             for mode in ("scratch", "continual"):
                 man = os.path.join(ck, "adapter_%s" % mode, "adapter.manifest.json")
@@ -257,6 +269,15 @@ def main():
                 ("%+.0f" % (100 * e["memorisation_gap"])) if e.get("memorisation_gap") is not None else "—",
                 ("%.0f%%" % (100 * e["train_old_rows"]["rate"])) if e.get("train_old_rows") else "—",
                 ("%.3f" % (sum(lg) / len(lg))) if lg else "—", ("%.1f" % (sum(ep) / len(ep))) if ep else "—"))
+    sel = [(k, m) for (k, m, h) in pooled if h == "unseen" and m.endswith("-latest")]
+    if sel:
+        print("\n### the validation selector: kept checkpoint vs the latest saved one, unseen (only where they differ)\n")
+        print("| documents | mode | kept | latest saved | latest over kept (wins/losses) |")
+        print("|---:|---|---:|---:|---:|")
+        for k, m in sorted(sel):
+            mode = m[:-len("-latest")]
+            kp = pooled.get((k, mode, "unseen")); lt = pooled.get((k, m, "unseen")); pr = pairs.get((k, m, mode, "unseen"))
+            print("| %d | %s | %.0f%% | %.0f%% | %d/%d p=%.3f |" % (k, mode, 100 * kp[0] / kp[1], 100 * lt[0] / lt[1], pr[0], pr[1], mcnemar(*pr)))
     if args.write:
         p = os.path.join(args.root, "CURVE.json")
         json.dump(out, open(p, "w"), indent=1, sort_keys=True, default=str)

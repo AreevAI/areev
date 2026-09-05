@@ -235,6 +235,27 @@ pairs by document. The trial's paired counts below are recomputed that way
 affected, and neither was any earlier corpus: only this profile splits by
 entity.
 
+Seed 1's checkpoint 40 raised a second question, and it is answered by
+measurement rather than by argument. On the unseen set the scratch adapter
+read 45% and the continual one **64%** — continual over scratch 78 wins to
+3 — the reverse of the prediction above. The training receipts say why:
+the scratch adapter's validation selector kept **iteration 25 of 72** (loss
+0.030 there against 0.038 at the end, on a **four-row** validation set),
+about 1.4 epochs, while the continual adapter carries its 40 iterations
+from checkpoint 20 plus 40 more. A four-row validation set cannot tell
+0.030 from 0.038; the selector may be under-training the scratch path and
+the headline scratch-vs-continual comparison would then be measuring the
+selector. So one more post-hoc leg, disclosed before it runs
+(`curve_kept.sh`): wherever the selector kept an earlier checkpoint than
+the last one saved, the latest saved checkpoint reads the unseen set too,
+and kept-vs-latest is reported per checkpoint (the keep step overwrote the
+final iteration's weights with the kept ones, so "latest" is the last
+numbered checkpoint — iteration 50 of 72 here — and the record says so).
+*Stated in advance:* the latest checkpoint matches or beats the kept one at
+every checkpoint where they differ; if it does, the selector on a four-row
+set is reported as a method that hurt, and the scratch curve is read from
+both.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
