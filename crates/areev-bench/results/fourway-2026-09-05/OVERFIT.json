@@ -1,0 +1,271 @@
+{
+ "paired": {
+  "llm_over_none|seen": {
+   "losses": 0,
+   "p": 0.0,
+   "wins": 136
+  },
+  "llm_over_none|unseen": {
+   "losses": 1,
+   "p": 0.0,
+   "wins": 150
+  },
+  "tuned_over_llm|seen": {
+   "losses": 12,
+   "p": 0.0,
+   "wins": 144
+  },
+  "tuned_over_llm|unseen": {
+   "losses": 33,
+   "p": 0.0,
+   "wins": 90
+  },
+  "tuned_over_untuned|seen": {
+   "losses": 8,
+   "p": 0.0,
+   "wins": 242
+  },
+  "tuned_over_untuned|unseen": {
+   "losses": 7,
+   "p": 0.0,
+   "wins": 172
+  }
+ },
+ "pooled": {
+  "llm": {
+   "by_field": {
+    "Amount": {
+     "seen": {
+      "exact": 79,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 78,
+      "n": 90
+     }
+    },
+    "Invoice Date": {
+     "seen": {
+      "exact": 48,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 48,
+      "n": 90
+     }
+    },
+    "Vendor Address": {
+     "seen": {
+      "exact": 0,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 8,
+      "n": 90
+     }
+    },
+    "Vendor Name": {
+     "seen": {
+      "exact": 57,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 64,
+      "n": 90
+     }
+    }
+   },
+   "seen": {
+    "exact": 184,
+    "n": 360,
+    "rate": 0.511
+   },
+   "unseen": {
+    "exact": 198,
+    "n": 360,
+    "rate": 0.55
+   }
+  },
+  "none": {
+   "by_field": {
+    "Amount": {
+     "seen": {
+      "exact": 0,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 0,
+      "n": 90
+     }
+    },
+    "Invoice Date": {
+     "seen": {
+      "exact": 48,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 49,
+      "n": 90
+     }
+    },
+    "Vendor Address": {
+     "seen": {
+      "exact": 0,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 0,
+      "n": 90
+     }
+    },
+    "Vendor Name": {
+     "seen": {
+      "exact": 0,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 0,
+      "n": 90
+     }
+    }
+   },
+   "seen": {
+    "exact": 48,
+    "n": 360,
+    "rate": 0.133
+   },
+   "unseen": {
+    "exact": 49,
+    "n": 360,
+    "rate": 0.136
+   }
+  },
+  "tuned": {
+   "by_field": {
+    "Amount": {
+     "seen": {
+      "exact": 85,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 79,
+      "n": 90
+     }
+    },
+    "Invoice Date": {
+     "seen": {
+      "exact": 78,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 78,
+      "n": 90
+     }
+    },
+    "Vendor Address": {
+     "seen": {
+      "exact": 70,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 42,
+      "n": 90
+     }
+    },
+    "Vendor Name": {
+     "seen": {
+      "exact": 83,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 56,
+      "n": 90
+     }
+    }
+   },
+   "seen": {
+    "exact": 316,
+    "n": 360,
+    "rate": 0.878
+   },
+   "unseen": {
+    "exact": 255,
+    "n": 360,
+    "rate": 0.708
+   }
+  },
+  "untuned": {
+   "by_field": {
+    "Amount": {
+     "seen": {
+      "exact": 17,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 15,
+      "n": 90
+     }
+    },
+    "Invoice Date": {
+     "seen": {
+      "exact": 40,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 39,
+      "n": 90
+     }
+    },
+    "Vendor Address": {
+     "seen": {
+      "exact": 0,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 1,
+      "n": 90
+     }
+    },
+    "Vendor Name": {
+     "seen": {
+      "exact": 25,
+      "n": 90
+     },
+     "unseen": {
+      "exact": 35,
+      "n": 90
+     }
+    }
+   },
+   "seen": {
+    "exact": 82,
+    "n": 360,
+    "rate": 0.228
+   },
+   "unseen": {
+    "exact": 90,
+    "n": 360,
+    "rate": 0.25
+   }
+  }
+ },
+ "receipts_in_dataset": 612,
+ "seeds": {
+  "1": {
+   "distinct_vendors_in_corpus": 28,
+   "held_out": 60,
+   "seen_vendor_receipts": 32
+  },
+  "2": {
+   "distinct_vendors_in_corpus": 26,
+   "held_out": 60,
+   "seen_vendor_receipts": 28
+  },
+  "3": {
+   "distinct_vendors_in_corpus": 25,
+   "held_out": 60,
+   "seen_vendor_receipts": 30
+  }
+ },
+ "vendors_in_dataset": 225
+}
