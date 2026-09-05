@@ -158,9 +158,22 @@ def main():
     total = sum(p.numel() for p in model.parameters())
     say("Trainable parameters: %.3f%% (%.3fM/%.3fM)" % (100.0 * trainable / total, trainable / 1e6, total / 1e6))
 
-    train = [encode(tok, r["messages"], a.max_seq, r.get("tools")) for r in rows(Path(a.corpus) / "train.jsonl")]
-    val = [encode(tok, r["messages"], a.max_seq, r.get("tools")) for r in rows(Path(a.corpus) / "valid.jsonl")]
-    say("Starting training, iters: %d, rows: %d train / %d valid" % (a.iters, len(train), len(val)))
+    def supervised(examples):
+        # A row whose assistant tokens all fall past --max-seq has nothing to
+        # learn from and a mean over zero tokens — a NaN loss (seen live on
+        # the first smoke). Drop it, count it, say so.
+        keep = [(i, l) for i, l in examples if int((l != -100).sum()) > 0]
+        return keep, len(examples) - len(keep)
+
+    train, dropped_train = supervised([encode(tok, r["messages"], a.max_seq, r.get("tools"))
+                                       for r in rows(Path(a.corpus) / "train.jsonl")])
+    val, dropped_val = supervised([encode(tok, r["messages"], a.max_seq, r.get("tools"))
+                                   for r in rows(Path(a.corpus) / "valid.jsonl")])
+    if not train:
+        raise SystemExit("no training row keeps an assistant token within --max-seq %d" % a.max_seq)
+    say("Starting training, iters: %d, rows: %d train / %d valid (dropped %d / %d with no supervised token within %d)"
+        % (a.iters, len(train), len(val), dropped_train, dropped_val, a.max_seq))
+    skipped_nonfinite = 0
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, weight_decay=0.0)
     model.train()
     it, best, best_it = 0, float("inf"), 0
@@ -174,6 +187,12 @@ def main():
             it += 1
             outp = model(input_ids=ids.to(device), attention_mask=attn.to(device), labels=labels.to(device))
             loss = outp.loss
+            if not torch.isfinite(loss):
+                # never let a non-finite step into the optimizer
+                skipped_nonfinite += 1
+                say("Iter %d: non-finite loss, step skipped" % it)
+                opt.zero_grad(set_to_none=True)
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
             opt.step()
@@ -197,7 +216,8 @@ def main():
     manifest = {"base": a.base, "iters": a.iters, "batch": a.batch, "max_seq": a.max_seq, "lr": a.lr,
                 "rank": a.rank, "alpha": a.alpha, "layers": a.layers, "resume": a.resume or None,
                 "base_precision": "nf4 (QLoRA)" if a.qlora else "bf16", "grad_checkpoint": bool(a.grad_checkpoint),
-                "rows_train": len(train), "rows_valid": len(val), "best_iter": best_it,
+                "rows_train": len(train), "rows_valid": len(val), "rows_dropped_unsupervised": [dropped_train, dropped_val],
+                "steps_skipped_nonfinite": skipped_nonfinite, "best_iter": best_it,
                 "best_val_loss": None if math.isinf(best) else round(best, 4), "val_curve": curve["val"],
                 "train_curve": curve["train"], "seconds": round(secs, 1), "peak_vram_mb": round(peak),
                 "device": torch.cuda.get_device_name(0) if device == "cuda" else "cpu", "seed": a.seed,

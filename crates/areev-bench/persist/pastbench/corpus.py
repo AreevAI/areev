@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 
 PERSIST_TOOLS = {"memory", "skill_manage", "skills_list", "skill_view", "session_search"}
+TOOL_RESULT_CAP = 1200
 MEMORY_SECTION = re.compile(r"\n## Persistent memory\n.*\Z", re.S)
 
 
@@ -99,7 +100,13 @@ def strip_persistence(turns):
         else:
             if t.get("tool_use_id") in dropped_ids:
                 continue
-            out.append({"role": "tool", "content": t.get("content") or ""})
+            # a tool result is context, not a target: capped so a trajectory
+            # of a dozen calls still fits the trainer's 2K-token window with
+            # its assistant turns inside it
+            content = t.get("content") or ""
+            if len(content) > TOOL_RESULT_CAP:
+                content = content[:TOOL_RESULT_CAP] + "\n[... truncated for training ...]"
+            out.append({"role": "tool", "content": content})
     return out
 
 
