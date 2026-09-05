@@ -14,7 +14,8 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 PB="${PASTBENCH_DIR:-$HOME/mg/local/PAST-Bench}"
 AGENTS="${AGENTS:?set AGENTS}"; RUN="${RUN:-1}"; ROOT="${ROOT:?set ROOT}"
-FAMILIES=$(cd "$PB/self-evolve-tasks-v2" && ls -d */*/ | sed 's#/$##' | grep -v README | tr '\n' ' ')
+# only directories that ARE families (family.yaml), not _shared/fixtures etc.
+FAMILIES=$(cd "$PB/self-evolve-tasks-v2" && ls */*/family.yaml | sed 's#/family.yaml$##' | tr '\n' ' ')
 n=$(echo "$FAMILIES" | wc -w | tr -d ' ')
 echo "$n families: $FAMILIES"
 offset=0

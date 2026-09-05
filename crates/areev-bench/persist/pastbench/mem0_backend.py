@@ -252,12 +252,22 @@ class Mem0Adapter(RuntimeAdapter):
                                         lambda mm: mm.add(convo, user_id=USER, infer=(self.mode != "raw")))
                     added = json.dumps(added, default=str)[:600]
                 except Exception as exc:
+                    # A memory arm whose writes fail is not a result: the
+                    # first smoke scored mem0 at Δ 0.0 with every add()
+                    # refused for a missing client library, and only the
+                    # ledger said so. Fail the family-run instead.
                     added = "error: %s" % str(exc)[:300]
+                    print("[mem0] add() failed: %s" % str(exc)[:300], file=sys.stderr, flush=True)
+                    self._write_ledger(added, 0)
+                    raise RuntimeError("mem0 add() failed; the arm's write path is broken: %s" % str(exc)[:200])
         (self.artifacts_dir / "session_current.json").write_text(json.dumps(
             {"session_id": self.request.session_id, "task_id": self.request.task_id, "finished_at": _now(),
              "persistence_enabled": self.persist, "mode": self.mode, "messages": self._log},
             ensure_ascii=False, indent=1), encoding="utf-8")
         n = render_home(self.state_dir, self.mode, self.artifacts_dir) if self.persist else 0
+        self._write_ledger(added, n)
+
+    def _write_ledger(self, added, n):
         (self.artifacts_dir / "mem0_ledger.json").write_text(json.dumps(
             {"usage": self._usage, "injected_chars": self._injected, "entries_after": n, "add_result": added},
             indent=1), encoding="utf-8")
