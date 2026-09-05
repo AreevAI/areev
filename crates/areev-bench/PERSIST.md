@@ -281,12 +281,24 @@ travel back into `crates/areev-bench/results/persist-<date>/`.
 
 Model legs, all through OpenRouter on the one key in `dev-areev.env`:
 agent and DISCOVER/VERIFY `qwen/qwen3-30b-a3b-instruct-2507` pinned to
-**`siliconflow/fp8`** (CoreWeave, the receipts programme's `coreweave/bf16`
-pin, no longer serves this model as of 2026-09-06 — the endpoint list was
-StreamLake, SiliconFlow fp8, Nebius fp8 (down), Alibaba); GROUND
-`openai/gpt-4o-mini`; review `openai/gpt-4o`; judge
+**`streamlake`**; GROUND `openai/gpt-4o-mini`; review `openai/gpt-4o`; judge
 `minimax/minimax-m2.7` ($0.30/$1.20 per M) — the paper's judge, so the
 Hermes reference numbers are comparable. Every leg seeded; temperature 0.
+
+**The pin, and why it moved twice.** The receipts programme pinned
+`coreweave/bf16`; on 2026-09-06 OpenRouter listed no CoreWeave endpoint for
+this model (StreamLake, SiliconFlow fp8, Nebius fp8 (down), Alibaba
+remained). `siliconflow/fp8` was chosen first for its declared quantization
+and 262K context, and **rejected after two smokes**: on the benchmark's
+opening request it returns `finish=stop`, empty content, and exactly the 28
+output tokens of the tool call the other endpoints return — its tool-call
+parsing swallows the call, so whole episodes ended at turn 1 with a 0.2
+score. Replayed with `pinprobe2.py`, StreamLake and Alibaba both return
+`notes_list`, streaming or not. StreamLake is the cheapest of the two and
+carries the price the cost table already pinned for this model
+($0.048/$0.193 per M); its quantization is undeclared, which is recorded
+rather than assumed. Both SiliconFlow smokes are kept on the box as
+`*-siliconflow*` and are not results.
 
 ## 8. Budget — $30 cap; meters replace estimates as they land
 
@@ -358,3 +370,17 @@ Written before any scored run; the pilot may amend the budget, never these.
   curves.
 - **Horizon public tasks:** plumbing only; no claim from three tasks.
 - **Any arm inside the A0R noise floor:** not interpreted.
+
+## 11. The defect ledger — what building the harness found (running)
+
+Recorded as the receipts programme recorded its six, because each one
+changed a number before it was caught.
+
+| # | found | where | what | fix |
+|---|---|---|---|---|
+| 1 | 2026-09-06, first smoke | engine + harness | the loop's all-namespace evidence scan skips every `agent:*` namespace as governance metadata, so a memory living in `agent:persist` was invisible to DISCOVER — every pass reported `evidence: 0` while the file held facts, events and tool calls | harness memory moved to `desk:persist`; the engine behaviour is by design and now documented at the call site |
+| 2 | 2026-09-06, first smoke | harness | text extraction handled dict blocks only; the benchmark's pydantic `TextBlock`s yielded "" — the user's instructions were never recorded as Observations, so DISCOVER had no human evidence | `_text_of` reads pydantic blocks and nested tool results |
+| 3 | 2026-09-06, second smoke | provider | SiliconFlow fp8 swallows this model's tool calls on some requests (28 tokens, empty content, `finish=stop`); episodes ended at turn 1 | pin moved to StreamLake; both smokes archived as invalid |
+| 4 | 2026-09-06, Horizon smoke | harness | the Horizon agent package was named `areev` and shadowed the `areev` binding on `PYTHONPATH=agents` | package renamed `areev_agent` |
+| 5 | 2026-09-06, Horizon smoke | harness | `session_search` returned narration only — reasoning Events outnumber and out-rank Tool records, so the vendor quote in an `inbox_read` output never surfaced and the task scored 0 | wider candidate set, Tool and Event hits interleaved; human `message` turns also recorded as Observations so DISCOVER has evidence |
+| 6 | 2026-09-06, Horizon | harness (upstream) | Harbor 0.22 rejects the public judges' `reward.json` (free text and a nested dict where numbers are required) | local judge patch, numeric keys only; digests no longer match, irrelevant to the private set |
