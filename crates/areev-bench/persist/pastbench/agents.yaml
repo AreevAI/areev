@@ -1,0 +1,42 @@
+# The Areev agents for PAST-Bench (`--registry` this file; the benchmark's own
+# registry stays untouched for the Hermes arms). One scaffold — the bench's
+# OpenAI-compatible chat loop — and one memory file; the two entries differ
+# only in whether a governed loop pass runs at episode close.
+agents:
+  areev-passive:
+    description: "Areev memory, ungoverned: every turn a grain, live notes/profile/skills assembled into the prompt, Hermes-named memory and skill tools. No loop."
+    adapter: areev
+    install_policy: prebaked
+    capabilities: [tool_use, sandbox_file_ops]
+    default_model:
+      model_id: qwen/qwen3-30b-a3b-instruct-2507
+      api_key_env: OPENROUTER_API_KEY
+      base_url: https://openrouter.ai/api/v1
+    model_profiles:
+      openrouter:
+        model_id: qwen/qwen3-30b-a3b-instruct-2507
+        api_key_env: OPENROUTER_API_KEY
+        base_url: https://openrouter.ai/api/v1
+      minimax:
+        model_id: minimax/minimax-m2.7
+        api_key_env: OPENROUTER_API_KEY
+        base_url: https://openrouter.ai/api/v1
+
+  areev-governed:
+    description: "Areev memory, governed: the passive arm plus a loop pass at every episode close — propose, ground, verify, rubric review with a BECAUSE, apply under supersession, measured revert."
+    adapter: areev
+    install_policy: prebaked
+    capabilities: [tool_use, sandbox_file_ops]
+    default_model:
+      model_id: qwen/qwen3-30b-a3b-instruct-2507
+      api_key_env: OPENROUTER_API_KEY
+      base_url: https://openrouter.ai/api/v1
+    model_profiles:
+      openrouter:
+        model_id: qwen/qwen3-30b-a3b-instruct-2507
+        api_key_env: OPENROUTER_API_KEY
+        base_url: https://openrouter.ai/api/v1
+      minimax:
+        model_id: minimax/minimax-m2.7
+        api_key_env: OPENROUTER_API_KEY
+        base_url: https://openrouter.ai/api/v1
