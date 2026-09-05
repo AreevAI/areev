@@ -100,7 +100,7 @@ Reviewers will ask, so the design answers before they do:
   after the first, by a small margin on the unseen set, because it sees each
   document once and the accumulated corpus more than once. If it *matches*
   scratch, the accreting corpus is the cheaper path and that is the finding.
-- **The 0.8B** lands below the 2B at every checkpoint and plateaus earlier.
+- **The 0.6B** lands below the 1.7B at every checkpoint and plateaus earlier.
 - **The LLM with rules** does not improve past 40 documents: rules saturate
   quickly and the ceiling is the model's transcription, not its instructions.
 - A curve that keeps rising to 320 with no flattening publishes as exactly
