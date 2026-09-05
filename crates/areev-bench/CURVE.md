@@ -89,6 +89,36 @@ Reviewers will ask, so the design answers before they do:
 5. **Every arm pairs.** Scratch against continual, and each against the LLM,
    per (document, field), McNemar exact, on the same held-out documents.
 
+### The overfitting record, as numbers
+
+Every checkpoint adapter leaves the following, pooled over seeds by
+`curve_stats.py` into `CURVE.json`, so the paper's overfitting section can
+cite measurements rather than assurances:
+
+| metric | what it is | where it comes from |
+|---|---|---|
+| unseen rate, 95% CI | exact-match on registrants never learned from, Wilson interval | `eval_*_unseen` |
+| familiarity gap | seen-set rate minus unseen-set rate | `eval_*_seen`, `eval_*_unseen` |
+| **train-set rate** | the adapter read against a seeded sample of its own training rows | `curve_extra.sh` → `eval_*_train` |
+| **memorisation gap** | train-set rate minus unseen rate | derived |
+| **forgetting** (continual) | train-set rate on rows from *earlier* checkpoints vs the latest delta | `eval_continual_train`, rows keep `seq` |
+| validation curve | loss every 25 steps; best vs last; which was kept | `adapter.manifest.json` |
+| loss gap at kept step | validation loss minus train loss at the kept checkpoint | manifest |
+| effective epochs | iterations × batch ÷ rows | manifest |
+| trainable fraction | LoRA parameters as a share of the base | manifest, from `mlx_lm`'s report |
+| per-field exact and semantic, unseen | which fields generalise a convention and which are read right but filed wrong | trials |
+| noise floor | the final scratch adapter reads the unseen set twice | `eval_scratch_unseen`, arms B and B2 |
+
+*Stated in advance for these:* train-set rate will sit well above unseen at
+every checkpoint (a small model on forty rows memorises its rows), and the
+question the paper answers is whether the memorisation gap *shrinks* as the
+corpus grows — evidence of generalisation replacing recall — or holds
+steady. The continual path is expected to show forgetting on old rows by
+the third checkpoint. The loss gap at the kept step should stay small and
+roughly flat; a widening gap with corpus size would be the signature of
+overfitting the selector failed to catch, and it would be published as
+such.
+
 ### Stated in advance
 
 - **Shape.** Unseen-set quality rises steeply to 40–80 documents and then
