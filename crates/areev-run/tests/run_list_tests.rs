@@ -224,6 +224,61 @@ fn recent_runs_widens_its_window_past_harness_traffic() {
     assert!(page.runs.iter().all(|row| row.outcome == "open"), "{page:?}");
 }
 
+/// The outcome record is a run's LAST `agent:harness` grain, behind one
+/// Observation per brokered call, refusal, blob read and redelivery. A
+/// single first-page read reported any run with more of those than the page
+/// holds as open forever. `run_outcome` must page to exhaustion.
+#[test]
+fn outcome_is_found_behind_hundreds_of_per_call_harness_records() {
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    let facade = Arc::new(AreevFacade::new(m));
+    let r = runner(&facade, "ops", 1_757_000_000_000);
+
+    facade
+        .with_store(|m| {
+            let mut link = Fact::new("run:busy", "mg:harness", "00")
+                .namespace(HARNESS_NS)
+                .created_at(1_000);
+            link.common_mut().extra_fields.insert("run_id".into(), json!("busy"));
+            link.common_mut().extra_fields.insert("run_ns".into(), json!("ops"));
+            m.add(&link)?;
+            // 700 per-call records — more than one page (512) — BEFORE the
+            // outcome, exactly as the broker journals them.
+            for i in 0..700u64 {
+                let mut obs = areev_core::types::Observation::new("user:runner", "system")
+                    .subject("run:busy")
+                    .object("https://api.example.com/page")
+                    .namespace(HARNESS_NS)
+                    .created_at(2_000 + i as i64);
+                let ex = &mut obs.common.extra_fields;
+                ex.insert("run_id".into(), json!("busy"));
+                ex.insert("observation_kind".into(), json!("egress_call"));
+                ex.insert("page".into(), json!(i));
+                m.add(&obs)?;
+            }
+            let mut done = areev_core::types::Observation::new("user:runner", "system")
+                .subject("run:busy")
+                .object("completed")
+                .namespace(HARNESS_NS)
+                .created_at(9_000);
+            let ex = &mut done.common.extra_fields;
+            ex.insert("run_id".into(), json!("busy"));
+            ex.insert("observation_kind".into(), json!("run_outcome"));
+            ex.insert("spent_input_tokens".into(), json!(40));
+            ex.insert("spent_output_tokens".into(), json!(2));
+            ex.insert("spent_usd_micros".into(), json!(1234));
+            m.add(&done)
+        })
+        .unwrap();
+
+    let page = r.list_runs(None, 0, 10).unwrap();
+    let row = page.runs.iter().find(|x| x.run_id == "busy").expect("listed");
+    assert_eq!(row.outcome, "completed", "{row:?}");
+    assert_eq!(row.spent_tokens, Some(42));
+    assert_eq!(row.spent_usd_micros, Some(1234));
+}
+
 #[test]
 fn ns_scope_matching_is_exact_or_dotted_prefix() {
     assert!(ns_in_scope("ops", "ops"));

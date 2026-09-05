@@ -180,7 +180,25 @@ grants to point at. The same rule covers migrations: a build that changes the
 schema (the digest-keyed `terms` dictionary, #160, is one) applies the
 change on the owning role's next read-write open, and until then a read-only
 open of that memory refuses with `STO-E005` naming what is missing, rather
-than reading a shape it does not understand. The motivating consumer is `areev ui --read-only`: paired
+than reading a shape it does not understand.
+
+**A schema migration is not rolling-deploy safe.** The bootstrap advisory
+lock serializes *openers* against each other; it does not stop writers that
+are already inside the schema on the previous build. When the `terms`
+migration drops the text uniqueness constraint, an older binary still running
+against that schema fails its next dictionary insert (`42P10`: no unique
+constraint matches its `ON CONFLICT (term)`; `23502`: `term_hash` is NOT
+NULL), and the message names nothing an operator would connect to a deploy.
+Keeping the old constraint for a transition release was considered and
+rejected: the constraint *is* the ~2704-byte cap, so a build that kept it
+would ship the bug it claims to fix. Therefore: **stop or drain every writer
+on the old build before the first new-build open of a memory**, per schema.
+Expect that first open to hold an exclusive lock on `terms` while it adds and
+backfills the column and builds the digest index — one time, proportional
+to the dictionary's size (seconds for tens of thousands of distinct terms).
+Reads on the embedded backend are unaffected; this is a Postgres-tier rule.
+
+The motivating consumer is `areev ui --read-only`: paired
 with #124 (the console no longer displays its own DSN), a read-only console
 instance never needs — and never holds — write authority over the memory it
 renders.

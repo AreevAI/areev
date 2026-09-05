@@ -1897,12 +1897,26 @@ function runStepStates(runId, outcome) {
   return out;
 }
 
+/** Forget every cached run index. Separate from fetching on purpose: the
+    caller that invalidates (a respond, a "Show more") is not always the view
+    that will read next, and a fetch bundled into the reset built the
+    UNSCOPED index — inspect fan-out included — for a scoped page that then
+    threw it away and built its own. */
+function resetRunIndexes() {
+  RUNIDX = null; RUNIDX_INFLIGHT = null;
+  RUNIDX_NS = null; RUNIDX_NS_KEY = null; RUNIDX_NS_INFLIGHT = null;
+}
 async function loadRuns(force) {
-  if (force) { RUNIDX = null; RUNIDX_INFLIGHT = null; RUNIDX_NS = null; RUNIDX_NS_KEY = null; RUNIDX_NS_INFLIGHT = null; }
+  if (force) resetRunIndexes();
   if (RUNIDX) return RUNIDX;
   if (RUNIDX_INFLIGHT) return RUNIDX_INFLIGHT;
   RUNIDX_INFLIGHT = buildRunIndex('/api/run/list?limit=' + RUN_LIMIT).then(idx => {
-    RUNIDX = idx; RUNIDX_INFLIGHT = null; return idx;
+    /* A failed load is returned to this caller but NOT cached: the next
+       render must retry, or one dropped connection pins the page to
+       "failed to load runs" until something else happens to change the
+       cache key. */
+    if (!idx.error) RUNIDX = idx;
+    RUNIDX_INFLIGHT = null; return idx;
   });
   return RUNIDX_INFLIGHT;
 }
@@ -1916,7 +1930,10 @@ async function loadRunsScoped(ns) {
   if (RUNIDX_NS) return RUNIDX_NS;
   if (RUNIDX_NS_INFLIGHT) return RUNIDX_NS_INFLIGHT;
   RUNIDX_NS_INFLIGHT = buildRunIndex('/api/run/list?ns=' + encodeURIComponent(ns) + '&limit=' + RUN_LIMIT).then(idx => {
-    if (RUNIDX_NS_KEY === key) { RUNIDX_NS = idx; RUNIDX_NS_INFLIGHT = null; }
+    if (RUNIDX_NS_KEY === key) {
+      if (!idx.error) RUNIDX_NS = idx;   // same rule as loadRuns: never cache a failure
+      RUNIDX_NS_INFLIGHT = null;
+    }
     return idx;
   });
   return RUNIDX_NS_INFLIGHT;
@@ -2018,13 +2035,13 @@ async function renderRuns() {
   if (PAGE !== 'runs') return;                 // navigated away while loading
   /* The nav badge counts every open run in the memory, whatever this page is
      narrowed to — narrowing what you're LOOKING at must never narrow what
-     you're WARNED about. When scoped, that count comes from a plain list read
-     rather than a second full index build: `outcome` rides the list response
-     itself, so the per-run inspect fan-out an index build performs would buy
-     the badge nothing. */
-  const openCount = scopedNs
-    ? await runOpenCount()
-    : view.runs.filter(r => r.outcome === 'open').length;
+     you're WARNED about. ONE path for both cases, so the badge cannot read a
+     different window depending on the picker: a plain list read at the
+     server's ceiling, no inspect fan-out (`outcome` rides the list itself).
+     Deriving it from the visible page instead would count over RUN_LIMIT
+     rows when unscoped and RUN_LIMIT_MAX when scoped — the wider view with
+     the narrower warning. */
+  const openCount = await runOpenCount();
   const pill = $('runPill');
   pill.hidden = openCount === 0; pill.textContent = openCount;
 
@@ -2059,7 +2076,9 @@ async function renderRuns() {
     if (view.truncated && RUN_LIMIT < RUN_LIMIT_MAX) {
       const more = el('a', null, ' Show more');
       more.href = '#'; more.style.marginLeft = '6px';
-      more.onclick = e => { e.preventDefault(); RUN_LIMIT = Math.min(RUN_LIMIT * 2, RUN_LIMIT_MAX); loadRuns(true).then(() => render()); };
+      /* Reset, then let render() rebuild only the index this view reads —
+         never both. */
+      more.onclick = e => { e.preventDefault(); RUN_LIMIT = Math.min(RUN_LIMIT * 2, RUN_LIMIT_MAX); resetRunIndexes(); render(); };
       note.appendChild(more);
     } else if (view.truncated) {
       note.appendChild(document.createTextNode(' Older runs: narrow by namespace, or use areev run list --offset.'));
@@ -2179,7 +2198,7 @@ async function respondRun(id, ask, refuse) {
   });
   if (!r.ok) { toast(r.error || 'response refused'); return; }
   toast('Recorded as ' + (r.responder || 'you') + ' — resume the run to continue.');
-  await loadRuns(true); render();
+  resetRunIndexes(); render();   // render() rebuilds only the index this view reads
 }
 
 /* ══ analytics ════════════════════════════════════════════════════════

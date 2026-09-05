@@ -79,10 +79,12 @@ struct RunIndexPage {
     unattributed: usize,
 }
 
-/// Upper bound on the `agent:harness` grains one run reads for its own
-/// records (link, cancel, redelivery, outcome). Well above what any run
-/// writes there; the journal proper lives in the session namespace and is
-/// not in this index.
+/// Page size for walking one run's `agent:harness` records. NOT an upper
+/// bound on how many there are: besides the per-run link, cancel and outcome
+/// records, that namespace receives one Observation per brokered outbound
+/// call, per refusal, per blob read and per redelivery — so a call-heavy run
+/// has thousands, and its outcome (written last) sits behind all of them.
+/// `run_outcome` pages to exhaustion; this only sizes each step.
 const RUN_HARNESS_PAGE: usize = 512;
 
 /// Upper bound on harness grains one run-index read will scan — the same
@@ -528,7 +530,7 @@ impl Runner {
             }
         }
         self.facade
-            .with_store(|m| manifest.persist(m, &self.ns))
+            .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
             .map_err(err_run)?;
 
         let st = SchedulerState::new(run_id, &plan);
@@ -788,7 +790,7 @@ impl Runner {
         };
         manifest.fork_of = Some(fork_base.clone());
         self.facade
-            .with_store(|m| manifest.persist(m, &self.ns))
+            .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
             .map_err(err_run)?;
 
         // The fork index Fact: `runs_touching`-style joins report forks for
@@ -1885,17 +1887,30 @@ impl Runner {
     /// a run whose census record is missing answers — the list must not fail
     /// because one record is absent.
     fn run_outcome(&self, run_id: &str) -> (String, Option<u64>, Option<u64>) {
-        let grains = self
-            .facade
-            .with_store(|m| m.run_grains(HARNESS_NS, run_id, 0, RUN_HARNESS_PAGE))
-            .unwrap_or_default();
-        // Ascending by seq, so the LAST match is the newest — a resumed run
-        // that reached a terminal state twice states its latest one.
-        let found = grains.into_iter().rev().find_map(|(_, g)| {
-            (g.get_str("observation_kind") == Some("run_outcome")
-                && g.get_str("run_id") == Some(run_id))
-            .then_some(g)
-        });
+        // Page to EXHAUSTION, keeping the last match. `run_grains` is
+        // ascending by seq and the outcome is the run's last harness record,
+        // so a single page would report a call-heavy run — one that logged
+        // more egress calls than the page holds — as open forever.
+        let mut found = None;
+        let mut after = 0i64;
+        loop {
+            let page = self
+                .facade
+                .with_store(|m| m.run_grains(HARNESS_NS, run_id, after, RUN_HARNESS_PAGE))
+                .unwrap_or_default();
+            let exhausted = page.len() < RUN_HARNESS_PAGE;
+            for (seq, g) in page {
+                after = seq;
+                if g.get_str("observation_kind") == Some("run_outcome")
+                    && g.get_str("run_id") == Some(run_id)
+                {
+                    found = Some(g);
+                }
+            }
+            if exhausted {
+                break;
+            }
+        }
         match found {
             Some(g) => (
                 g.get_str("object").unwrap_or("open").to_string(),

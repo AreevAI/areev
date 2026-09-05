@@ -178,12 +178,16 @@ pub(crate) const PG_SEED: &[&str] = &[
     // (`sha256(convert_to(term,'UTF8'))` == `Sha256::digest(term.as_bytes())`
     // — they MUST agree, or an old term is re-interned under a second id);
     // (2) the unique index the insert's `ON CONFLICT (term_hash)` needs;
-    // (3) the old `text UNIQUE` constraint goes, which is the actual fix —
-    // it was the ~2704-byte btree entry. Runs under the bootstrap advisory
+    // (3) every unique constraint or standalone unique index whose key is
+    // exactly `(term)` goes — matched on DEFINITION, not on the default name
+    // `terms_term_key`, because a pg_restore'd or hand-repaired schema can
+    // carry the same cap under another name and the open would otherwise
+    // report itself migrated while still refusing. That drop is the actual
+    // fix: it was the ~2704-byte btree entry. Runs under the bootstrap advisory
     // lock like the block above, so two openers cannot race the DDL. A
     // read-only open runs none of this and refuses by name (`STO-E005`) when
     // the column is absent, because reads key on it.
-    "DO $$ BEGIN \
+    "DO $$ DECLARE r record; BEGIN \
        IF NOT EXISTS (SELECT 1 FROM information_schema.columns \
                        WHERE table_schema = current_schema() AND table_name = 'terms' \
                          AND column_name = 'term_hash') THEN \
@@ -196,13 +200,24 @@ pub(crate) const PG_SEED: &[&str] = &[
                          AND indexname = 'idx_terms_hash') THEN \
          EXECUTE 'CREATE UNIQUE INDEX idx_terms_hash ON terms(term_hash)'; \
        END IF; \
-       IF EXISTS (SELECT 1 FROM pg_constraint c \
-                    JOIN pg_class t ON c.conrelid = t.oid \
-                    JOIN pg_namespace n ON t.relnamespace = n.oid \
-                   WHERE n.nspname = current_schema() AND t.relname = 'terms' \
-                     AND c.conname = 'terms_term_key') THEN \
-         EXECUTE 'ALTER TABLE terms DROP CONSTRAINT terms_term_key'; \
-       END IF; \
+       FOR r IN SELECT c.conname FROM pg_constraint c \
+                  JOIN pg_class t ON c.conrelid = t.oid \
+                  JOIN pg_namespace n ON t.relnamespace = n.oid \
+                  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = 'term' \
+                 WHERE n.nspname = current_schema() AND t.relname = 'terms' \
+                   AND c.contype = 'u' AND c.conkey = ARRAY[a.attnum] LOOP \
+         EXECUTE format('ALTER TABLE terms DROP CONSTRAINT %I', r.conname); \
+       END LOOP; \
+       FOR r IN SELECT ic.relname AS idxname FROM pg_index i \
+                  JOIN pg_class t ON i.indrelid = t.oid \
+                  JOIN pg_class ic ON i.indexrelid = ic.oid \
+                  JOIN pg_namespace n ON t.relnamespace = n.oid \
+                  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = 'term' \
+                 WHERE n.nspname = current_schema() AND t.relname = 'terms' \
+                   AND i.indisunique AND i.indnkeyatts = 1 AND i.indkey[0] = a.attnum \
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = i.indexrelid) LOOP \
+         EXECUTE format('DROP INDEX %I', r.idxname); \
+       END LOOP; \
      END $$",
 ];
 

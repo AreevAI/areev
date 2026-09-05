@@ -282,7 +282,7 @@ impl RunManifest {
     /// the namespace on it a per-tenant listing could only be filtered
     /// after the fact, over an already-truncated page (#165). Returns
     /// (config hash, link hash).
-    pub fn persist(&self, m: &mut Areev, ns: &str) -> Result<(Hash, Hash)> {
+    pub fn persist_in_namespace(&self, m: &mut Areev, ns: &str) -> Result<(Hash, Hash)> {
         let config = serde_json::to_value(json!({ "areev_run": self }))
             .expect("manifest serializes");
         let mut state = areev_core::types::State::new(config)
@@ -300,9 +300,22 @@ impl RunManifest {
         link.common
             .extra_fields
             .insert("run_id".into(), serde_json::json!(self.run_id));
-        link.common.extra_fields.insert("run_ns".into(), serde_json::json!(ns));
+        if !ns.is_empty() {
+            link.common.extra_fields.insert("run_ns".into(), serde_json::json!(ns));
+        }
         let link_hash = m.add(&link)?;
         Ok((config_hash, link_hash))
+    }
+
+    /// The pre-#165 signature, kept so a host that persists manifests itself
+    /// keeps compiling. It stamps no session namespace, so the run lists as
+    /// unattributed — visible unscoped, excluded and counted under any
+    /// scope. Prefer [`persist_in_namespace`](Self::persist_in_namespace).
+    #[deprecated(
+        note = "use persist_in_namespace(m, ns) so the run index can be scoped by namespace"
+    )]
+    pub fn persist(&self, m: &mut Areev) -> Result<(Hash, Hash)> {
+        self.persist_in_namespace(m, "")
     }
 
     /// Load a run's manifest back from the file (resume/verify path).

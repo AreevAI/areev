@@ -22,7 +22,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   creates the unique index, and drops the text constraint. A `--read-only`
   open of a schema that predates the migration refuses with `STO-E005`
   naming the missing column. The embedded backend is unchanged (it has no
-  such limit) and no content address moves. Pinned by the conformance case
+  such limit) and no content address moves. **Operators: this migration is
+  not rolling-deploy safe** — an older binary still writing to a migrated
+  schema fails its next dictionary insert, so drain writers on the old build
+  before the first new-build open (`docs/deployment-profile.md`). The cap is
+  matched by definition, not by the default constraint name, so a restored
+  or hand-repaired schema loses it too. Pinned by the conformance case
   `incompressible_values_of_any_size_are_stored` on both backends and by a
   Postgres-only migration test that stages the old shape
   ([#160](https://github.com/AreevAI/areev/issues/160)).
@@ -50,8 +55,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   scoping meaningless right after an upgrade). The **unscoped** listing — the
   default — still shows every such run, labelled "namespace not recorded".
   `areev run list` documents `--last`, gains `--offset`, notes truncation on
-  stderr, and — like the route — resolves outcomes in one pass instead of
-  rescanning the outcome census once per row
+  stderr, and — like the route — resolves outcomes through the run index
+  instead of rescanning the outcome census once per row.
+  `RunManifest::persist(m)` keeps its signature (deprecated) and stamps no
+  namespace; the runtime uses `persist_in_namespace(m, ns)`
   ([#165](https://github.com/AreevAI/areev/issues/165)).
 - **`release-cli`'s `sbom` job checks out the tag it is backfilling.** It
   had no `ref`, so a `workflow_dispatch` backfill regenerated the SBOM from
