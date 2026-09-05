@@ -119,7 +119,7 @@ def main():
     categories_known, since_learn = [], 0
     totals = {"exact": 0, "semantic": 0, "scored": 0, "parked": 0,
               "approved": 0, "documents": 0, "prompt_tokens": 0,
-              "completion_tokens": 0, "learn_passes": 0,
+              "completion_tokens": 0, "learn_passes": 0, "learn_failures": 0,
               "lessons_applied": 0, "lessons_rejected": 0}
 
     for r in exp_rows:
@@ -195,8 +195,23 @@ def main():
                             lambda db: mem.record_correction(db, seq, message, corrections, profile))
             since_learn += 1
             if since_learn >= args.learn_every:
+                # A learn pass that cannot reach its model is skipped and
+                # counted, not fatal: the evidence stays in the memory and the
+                # next correction triggers the pass again. Seed 3 of the
+                # learning curve died at document 26 when the learner's
+                # provider rate-limited past its eight retries; agent calls
+                # already survived that (park-on-failure), the loop did not.
+                try:
+                    res = mem.learn(profile, db_path, llm_cmd, ground_cmd, judge, policy)
+                except (ValueError, RuntimeError) as e:
+                    totals["learn_failures"] += 1
+                    print("   loop: LEARN PASS FAILED (%s) -- skipped, retried at the next correction"
+                          % str(e)[:120].replace("\n", " "))
+                    journal.write(json.dumps({"learn_after_seq": seq, "failed": str(e)[:300]},
+                                             ensure_ascii=False) + "\n")
+                    journal.flush()
+                    continue
                 since_learn = 0
-                res = mem.learn(profile, db_path, llm_cmd, ground_cmd, judge, policy)
                 totals["learn_passes"] += 1
                 totals["lessons_applied"] += res["applied"]
                 totals["lessons_rejected"] += res["rejected"]

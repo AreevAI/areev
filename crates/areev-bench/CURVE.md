@@ -327,6 +327,16 @@ the oldest training runs, and none while a local server is up); the
 retry's sequence length is a fix for when no training invocation is live.
 No published number comes from that adapter.
 
+Seed 3's first attempt died at document 26: the learner's provider
+rate-limited (HTTP 429) past the eight retries the model script makes,
+and a learn pass that cannot reach its model was fatal to the run, where
+an agent call in the same state parks the document and goes on. A learn
+pass now fails the same way the agent does — skipped, counted
+(`learn_failures` in the experience summary, a `failed` line in the
+journal), and triggered again at the next correction, with the evidence
+still in the memory. Seed 3 was rerun from the start on that harness; its
+first 26 documents are not part of any number here.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
