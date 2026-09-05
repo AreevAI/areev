@@ -228,8 +228,32 @@ variants, one flag: **passive** (ingest + search, no loop) and **governed**.
 
 - On the **three public tasks**: a smoke and a per-task cost/latency/token
   reading beside `trace_rag` and `tools_only` on the same model — plumbing,
-  never a claim. The reference `trace_rag` agent on qwen3-30b: **reward 1.0,
-  22.3K prompt tokens, $0.0011, 25 s** (meter reading, 2026-09-06).
+  never a claim. Measured 2026-09-06, qwen3-30b on StreamLake, one trial per
+  task (the reward is deterministic; the model at temperature 0 is not
+  quite):
+
+  | agent | tasks solved | prompt tokens / task | chat $ / task | what carries the answer |
+  |---|---:|---:|---:|---|
+  | `trace_rag` (reference) | **3 / 3** | 21–27K | 0.0015–0.0021 | whole-day chunks by embedding similarity |
+  | `areev-governed` | 1 / 3 | 12–16K | 0.0006–0.0008 | Tool/Event grains, keyword + hybrid search, best-day digest; loop found nothing to learn (no human turns, no tool errors in these traces) |
+  | `areev-passive` | 1 / 3 | 12–16K | 0.0006–0.0008 | the same memory without the loop |
+  | `tools_only` (floor) | 0 / 3 | 4–6K | 0.0003 | nothing |
+
+  The two Areev misses are the same shape: the memory returned the right
+  records (the vendor's quote with its rate and contact; the requester's
+  reading group with its paper and format) and the model's reply carried a
+  different detail than the judge's regex requires — the approval date
+  instead of the rate or contact; and, under two other reading groups in
+  the same search results, the *distractor* group's paper and format
+  instead of the requester's. Retrieval got the model there at half the
+  tokens; the reply did not say the words, and once it followed a
+  distractor the memory had faithfully kept. Six
+  iterations of generic fixes went into the agent (Tool grains are not
+  returned by hybrid search and are keyword-scanned; the day around the best
+  hit is reconstructed; human turns are Observations; rate limits retry) and
+  it stops here — anything further would be tuning to three examples. The
+  private set is the test that counts, and the number to beat there is the
+  leaderboard's, not `trace_rag`'s on three tasks.
 - On the **private 195**: the number that matters, obtainable only by
   submitting the agent (PR + email to Orin Labs). Submission is a decision
   for the user (§9); the agent is written to the repo's contract either way.
