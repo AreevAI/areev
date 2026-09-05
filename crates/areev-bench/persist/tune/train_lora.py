@@ -111,6 +111,9 @@ def main():
     ap.add_argument("--val-batches", type=int, default=4)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--grad-checkpoint", action="store_true")
+    ap.add_argument("--qlora", action="store_true",
+                    help="4-bit NF4 base via bitsandbytes (QLoRA): on an 8 GB card the bf16 base plus the fp32 "
+                         "logits of a 2K-token trajectory do not fit; the adapter still applies to the bf16 base at serve time")
     a = ap.parse_args()
 
     torch.manual_seed(a.seed)
@@ -129,7 +132,16 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.base)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(a.base, torch_dtype=torch.bfloat16, device_map={"": device})
+    if a.qlora:
+        from peft import prepare_model_for_kbit_training
+        from transformers import BitsAndBytesConfig
+        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                                 bnb_4bit_compute_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(a.base, quantization_config=bnb, device_map={"": device},
+                                                     torch_dtype=torch.bfloat16)
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=a.grad_checkpoint)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(a.base, torch_dtype=torch.bfloat16, device_map={"": device})
     n_layers = model.config.num_hidden_layers
     target_layers = list(range(max(0, n_layers - a.layers), n_layers))
     if a.resume:
@@ -184,6 +196,7 @@ def main():
     peak = torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else 0
     manifest = {"base": a.base, "iters": a.iters, "batch": a.batch, "max_seq": a.max_seq, "lr": a.lr,
                 "rank": a.rank, "alpha": a.alpha, "layers": a.layers, "resume": a.resume or None,
+                "base_precision": "nf4 (QLoRA)" if a.qlora else "bf16", "grad_checkpoint": bool(a.grad_checkpoint),
                 "rows_train": len(train), "rows_valid": len(val), "best_iter": best_it,
                 "best_val_loss": None if math.isinf(best) else round(best, 4), "val_curve": curve["val"],
                 "train_curve": curve["train"], "seconds": round(secs, 1), "peak_vram_mb": round(peak),

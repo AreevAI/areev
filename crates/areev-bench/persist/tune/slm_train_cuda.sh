@@ -26,21 +26,26 @@ while [ $# -gt 0 ]; do
   esac
 done
 ROWS=$(wc -l < "$CORPUS/train.jsonl" | tr -d ' ')
-BATCH=2
-ITERS=$(( (ROWS + BATCH - 1) / BATCH * EPOCHS ))
+# batch 1 with the iteration count scaled as the MLX trainer scales it at
+# batch 2 (rows/2 × epochs): the same number of optimizer steps per corpus.
+ITERS=$(( (ROWS + 1) / 2 * EPOCHS ))
 [ "$ITERS" -lt 40 ] && ITERS=40
 [ "$ITERS" -gt 400 ] && ITERS=400
 mkdir -p "$OUT"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 train() {
   # shellcheck disable=SC2086
   "$PY" "$HERE/train_lora.py" --corpus "$CORPUS" --out "$OUT" --base "$BASE" --iters "$ITERS" \
-    --batch "$1" --max-seq "$2" --steps-per-eval 25 --val-batches 4 --layers 8 --rank 8 --lr 1e-4 \
-    --seed "${SEED:-1}" $3 ${RESUME:+--resume "$RESUME"} > "$OUT/train.stdout" 2>&1
+    --batch 1 --max-seq "$1" --steps-per-eval 25 --val-batches 4 --layers 8 --rank 8 --lr 1e-4 \
+    --seed "${SEED:-1}" --qlora --grad-checkpoint $2 ${RESUME:+--resume "$RESUME"} > "$OUT/train.stdout" 2>&1
 }
-if ! train "$BATCH" 3072 ""; then
-  echo "first attempt failed (see $OUT/train.stdout); retrying with batch 1, shorter sequences, gradient checkpointing" >&2
+# The 8 GB card: a 4-bit base (QLoRA) with gradient checkpointing at batch 1
+# is the first attempt, not the fallback — the bf16 base OOMs on the first
+# backward pass of a 2K-token trajectory (measured 2026-09-06).
+if ! train 2048 ""; then
+  echo "first attempt failed (see $OUT/train.stdout); retrying with shorter sequences" >&2
   grep -iE "error|exception|out of memory" "$OUT/train.stdout" | tail -3 >&2
-  train 1 2048 "--grad-checkpoint" || { echo "training failed twice; no adapter produced" >&2; exit 1; }
+  train 1536 "" || { echo "training failed twice; no adapter produced" >&2; exit 1; }
 fi
 [ -s "$OUT/adapter_model.safetensors" ] || { echo "training exited 0 but wrote no adapter_model.safetensors" >&2; exit 1; }
 grep -E "^Iter|Trainable|Starting|Done" "$OUT/train.log" | tail -12
