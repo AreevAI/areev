@@ -113,6 +113,9 @@ def main():
                                                             "kept_exact": exact(got[(mode, "unseen")]), "latest_exact": exact(lt), "n": len(lt),
                                                             "latest_over_kept": p}
                     pooled[(k, mode + "-latest", "unseen")][0] += exact(lt); pooled[(k, mode + "-latest", "unseen")][1] += len(lt)
+                    # the kept read of the SAME seeds, so the two columns pool over the same reads
+                    kp = got[(mode, "unseen")]
+                    pooled[(k, mode + "-kept", "unseen")][0] += exact(kp); pooled[(k, mode + "-kept", "unseen")][1] += len(kp)
                     pairs[(k, mode + "-latest", mode, "unseen")][0] += p["wins"]; pairs[(k, mode + "-latest", mode, "unseen")][1] += p["losses"]
             prev_k = max([kk for kk in rec["checkpoints"] if kk < k], default=0)
             for mode in ("scratch", "continual"):
@@ -185,9 +188,10 @@ def main():
                 for t in (tr or {}).values():
                     f = fields[(k, mode, t["field"])]; f[0] += t["exact"]; f[1] += t["semantic"]; f[2] += 1
     cks = sorted({k for (k, _m, _h) in pooled if k != "base"})
+    helper = {key for key in pooled if key[1].endswith("-kept")}
     for k in cks:
         out["pooled"][k] = {"%s|%s" % (m, h): {"exact": v[0], "n": v[1], "rate": round(v[0] / v[1], 3) if v[1] else None}
-                            for (kk, m, h), v in pooled.items() if kk == k}
+                            for (kk, m, h), v in pooled.items() if kk == k and (kk, m, h) not in helper}
         out["pooled"][k]["paired"] = {"%s_over_%s|%s" % (a, b, h): {"wins": v[0], "losses": v[1], "p": round(mcnemar(*v), 6)}
                                       for (kk, a, b, h), v in pairs.items() if kk == k}
     out["pooled"]["base"] = {h: {"exact": v[0], "n": v[1], "rate": round(v[0] / v[1], 3) if v[1] else None}
@@ -276,7 +280,7 @@ def main():
         print("|---:|---|---:|---:|---:|")
         for k, m in sorted(sel):
             mode = m[:-len("-latest")]
-            kp = pooled.get((k, mode, "unseen")); lt = pooled.get((k, m, "unseen")); pr = pairs.get((k, m, mode, "unseen"))
+            kp = pooled.get((k, mode + "-kept", "unseen")); lt = pooled.get((k, m, "unseen")); pr = pairs.get((k, m, mode, "unseen"))
             print("| %d | %s | %.0f%% | %.0f%% | %d/%d p=%.3f |" % (k, mode, 100 * kp[0] / kp[1], 100 * lt[0] / lt[1], pr[0], pr[1], mcnemar(*pr)))
     if args.write:
         def strkeys(o):
