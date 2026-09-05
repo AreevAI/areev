@@ -253,6 +253,17 @@ of training, once, from a corpus the governed loop had already produced.
   <img src="../../docs/assets/fourway-cost-light.svg" width="880" alt="Dollars per thousand documents. Solid bars are the agent's cost to read a document; hatched bars are what the memory system spends to learn from one. mem0 reads at 9 cents and learns at 57; raw mem0 reads at 16 and learns at zero; governed Areev reads at 5 and learns at 61; the tuned small model reads at zero locally with a 2 cent shadow at a hosted rate.">
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/fourway-value-dark.svg">
+  <img src="../../docs/assets/fourway-value-light.svg" width="880" alt="Cost against quality, one point per arm. Across, dollars per thousand documents when every document is both read and learned from; up, exact-match rate. No memory sits at 5 cents and 13 percent; the three mem0 modes between 16 and 67 cents and 15 to 19 percent; the governed loop at 66 cents and 53 percent; the tuned small model at 2 cents, its hosted-rate shadow, and 79 percent.">
+</picture>
+
+Cost against quality on one chart: better is up and to the left. Plain
+memory costs more to run than no memory and barely moves; the governed loop
+sits high at the same cost as plain memory; the tuned model sits highest and
+furthest left, priced at a hosted small-model rate with its training done
+once.
+
 ## Prompt structure: where the rules go, and how they are written
 
 One fixed rule set — the memory each governed run left — read against

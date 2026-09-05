@@ -379,6 +379,66 @@ def cost_svg(theme, res):
     return "\n".join(o)
 
 
+def value_svg(theme, res, overfit=None):
+    """Cost against quality, one point per arm. x is what a deployment pays
+    per thousand documents when every document is both read and learned
+    from (read + learn); y is the exact-match rate. The tuned model is
+    plotted at its hosted-rate shadow, and its one-time training is written
+    beside it rather than amortised in, so the chart cannot say free."""
+    t = THEMES[theme]
+    pts = []
+    for arm in ARM_ORDER:
+        a = res["arms"].get(arm); c = res["cost"].get(arm)
+        if not a or not c or not c.get("inference_calls"):
+            continue
+        acc = 100.0 * list(a["pooled"].values())[-1] / (240 * a["seeds"])
+        read = (c["shadow_usd_per_call"] if c.get("shadow_usd_per_call") else (c["inference_usd_per_call"] or 0)) * 1000
+        learn = (c["memory_usd"] / c["learned_documents"] * 1000) if c.get("learned_documents") else 0.0
+        pts.append((arm, read + learn, acc, read, learn))
+    if "none" in res["arms"] and "areev" in res["cost"]:
+        c = res["cost"]["areev"]; a = res["arms"]["none"]
+        acc = 100.0 * list(a["pooled"].values())[-1] / (240 * a["seeds"])
+        pts.append(("none", (c["inference_usd_per_call"] or 0) * 1000, acc, (c["inference_usd_per_call"] or 0) * 1000, 0.0))
+    if not pts:
+        return "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'/>"
+    xmax = next((cc for cc in (0.25, 0.5, 1.0, 2.0, 4.0) if cc >= max(p[1] for p in pts) * 1.15), 4.0)
+    Wd, Hd, L, T, PW, PH = 920, 440, 70, 30, 660, 330
+    px = lambda v: L + PW * (v / xmax); py = lambda v: T + PH - PH * (v / 100.0)
+    o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {Wd} {Hd}" width="{Wd}" height="{Hd}" '
+         f'font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">']
+    a_ = o.append
+    a_(f'<title>{esc("Cost against quality: " + "; ".join("%s at $%.2f per thousand documents and %.0f percent exact" % (LABEL[p[0]], p[1], p[2]) for p in sorted(pts, key=lambda p: p[2])) + ".")}</title>')
+    a_(f'<desc>{esc("Each arm is one point. Across: dollars per thousand documents when every document is both read and learned from. Up: exact-match rate on the held-out receipts. Better is up and to the left. Plain memory sits low and to the right of no memory; the governed loop sits high at the same cost as plain memory; the tuned small model sits highest and furthest left, priced at a hosted small-model rate with its one-time training noted.")}</desc>')
+    for i in range(5):
+        v = 100 * i / 4
+        a_(f'<line x1="{L}" y1="{py(v):.1f}" x2="{L+PW}" y2="{py(v):.1f}" stroke="{t["grid"]}"/>')
+        a_(f'<text x="{L-9}" y="{py(v)+4:.1f}" text-anchor="end" font-size="11" fill="{t["muted"]}">{int(v)}%</text>')
+    for i in range(5):
+        v = xmax * i / 4
+        a_(f'<line x1="{px(v):.1f}" y1="{T}" x2="{px(v):.1f}" y2="{T+PH}" stroke="{t["grid"]}"/>')
+        a_(f'<text x="{px(v):.1f}" y="{T+PH+19}" text-anchor="middle" font-size="11" fill="{t["muted"]}">${v:.2f}</text>')
+    a_(f'<text x="{L-40}" y="{T-12}" font-size="11" fill="{t["muted"]}">fields filed exactly right, of all held-out fields</text>')
+    a_(f'<text x="{L+PW/2:.0f}" y="{T+PH+42}" text-anchor="middle" font-size="11.5" fill="{t["muted"]}">USD per 1,000 documents, reading plus learning &#8594; better is up and to the left</text>')
+    labels = []
+    for arm, x, y, read, learn in pts:
+        col = t[arm]
+        a_(f'<circle cx="{px(x):.1f}" cy="{py(y):.1f}" r="7" fill="{col}"/>')
+        note = LABEL[arm] + (" \u00b7 hosted-rate shadow, trained once" if arm.startswith("slm") else "")
+        labels.append([note, col, px(x) + 13, py(y) + 4, x])
+    labels.sort(key=lambda e: e[3])
+    for i in range(1, len(labels)):
+        if labels[i][3] - labels[i-1][3] < 15:
+            labels[i][3] = labels[i-1][3] + 15
+    for note, col, x, y, xv in labels:
+        anchor = "end" if xv > xmax * 0.72 else "start"
+        xx = x - 26 if anchor == "end" else x
+        a_(f'<text x="{xx:.1f}" y="{y:.1f}" text-anchor="{anchor}" font-size="12" font-weight="600" fill="{col}">{esc(note)}</text>')
+    a_(f'<line x1="{L}" y1="{py(0):.1f}" x2="{L+PW}" y2="{py(0):.1f}" stroke="{t["axis"]}"/>')
+    a_(f'<line x1="{L}" y1="{T}" x2="{L}" y2="{T+PH}" stroke="{t["axis"]}"/>')
+    a_("</svg>")
+    return "\n".join(o)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--areev", required=True, help="governed run dir with seedN/ (trials)")
@@ -405,7 +465,7 @@ def main():
                  ("; shadow $%.5f/call" % c["shadow_usd_per_call"]) if c.get("shadow_usd_per_call") else ""))
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     for theme in ("light", "dark"):
-        for kind, fn in (("accuracy", accuracy_svg), ("cost", cost_svg)):
+        for kind, fn in (("accuracy", accuracy_svg), ("cost", cost_svg), ("value", value_svg)):
             p = "%s-%s-%s.svg" % (args.out, kind, theme)
             open(p, "w", encoding="utf-8").write(fn(theme, res))
             print("wrote", p)
