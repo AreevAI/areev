@@ -265,6 +265,48 @@ is up, and the cap is 600 seconds. **Local latencies from this study are
 not evidence for the speed claim** — [`FOURWAY.md`](FOURWAY.md) measured
 them uncontended, and that is the number the paper uses.
 
+### Observation at checkpoint 160: the gate approved a contradiction, and nothing measured it
+
+Seed 1's LLM with the checkpoint-160 rules read **66%** on unseen
+registrants, down from 86% at 80 — File Date 82 → **13** of 100. The
+sixth rule, approved after document 120, says *"Copy the registrant name
+and file date exactly as printed … the original date format, before any
+standardization"*; the fourth says *"Standardize all dates as
+YYYY-MM-DD"*. The reviewer approved the contradiction from its text, the
+agent resolved it by filing dates as printed, and the deployment's own
+record shows the damage as it happened: File Date correct on 69 of 79
+documents before the rule, then **8 of 40, 4 of 40 and 11 of 120** after
+it, for 200 documents, with no revert. Seed 2 approved a similar
+*"exactly as printed"* rule for the file date at document 85 and slipped
+from 70 of 79 to 54–60 of 80 — milder, because its LLM resolved the same
+contradiction the other way more often.
+
+Why the loop's Verify gate was silent: it compares a lesson's metric
+against a baseline, and the only evalset run this harness journaled was the
+day-one baseline (26% on the unseen set), before any rule. The reads at
+each checkpoint were taken against snapshots and never journaled back, so
+outcome review had nothing after the apply to compare — and had it been
+fed only the final read, 66% against 26% is *held*. A gate that measures
+against the start of the deployment cannot see a rule that costs twenty
+points at document 120. The tuned model, meanwhile, learned from the
+**filed rows** — ISO dates, whatever the rule text says — and read 93% at
+the same checkpoint, on the same registrants, with the same six rules in
+its system prompt. Distillation from the ledger's rows is robust to a bad
+rule in a way the prompt is not; that is a result, and it was not
+predicted.
+
+One more post-hoc leg follows from this, disclosed before it runs
+(`curve_verify.sh`): the checkpoint reads are journaled into the final
+ledger as evalset runs on the deployment's own timeline — the 86% before
+rule 6's apply, the 66% after — and a loop pass then records its verdicts.
+*Stated in advance:* with a measurement on each side of the apply, outcome
+review records `regressed` for rule 6 and proposes its revert, and applying
+the revert returns the LLM to its checkpoint-80 reading. If the engine
+instead compares to the day-one baseline and reports `held`, that is an
+engine defect, published as such and fixed — the baseline for a lesson's
+verdict has to be the measurement nearest before its apply, not the
+deployment's first.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
