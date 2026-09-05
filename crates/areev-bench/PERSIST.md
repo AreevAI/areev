@@ -208,7 +208,14 @@ per family-run, judge included):**
 | SM04 rule migration (update) | **+0.640** / 0.60 | +0.344 / 0.30 | +0.320 / 0.07 | 0.031 / 0.027 / 0.027 |
 
 Twelve family-runs, **$0.58** on the key, 7–8 min per Areev family-run and
-7–18 min per Hermes one. What the ledgers say, family by family:
+7–18 min per Hermes one. The mem0 arm smoked afterwards on SM01 (two
+harness fixes first — §11 #11): Δ **+0.164** / mech 0.22, evaluation 0.504
+vs 0.340, 14 entries after the learn episodes, 2K chars injected, **$0.11**
+per family-run — four times an Areev family-run, mem0's extraction calls
+being the difference. What it kept is the FOURWAY finding again: episodic
+narrations ("User requested a review of today's note…", "User saved the
+TSV-formatted action items in a file…") with the rule inside one of them,
+where the Areev arms kept the rule. What the ledgers say, family by family:
 
 - Every Δ above came from what the **agent itself saved** — a note in the
   memory families, a skill in the procedural one (only after the
@@ -239,9 +246,14 @@ allows more; four streams side by side with port offsets 0/100/200/300;
 `SEED` per run; the reviewer rubric, the nudge, the pin and every
 harness change frozen at commit `0454df1` of `bench/persist`; the
 benchmark at `f822351` plus the two patches in `patch_pastbench.py`.
-Projected from the pilot's meters: ~$5 per run-set, **~$15–17 for the
-programme** including the tuned-model evaluations' judge calls, inside the
-$30 cap; ~5 h wall per run-set (Hermes-bound), ~15 h for three.
+Projected from the pilot's meters: ~$6 per run-set with mem0, **~$17–19
+for the programme** including the tuned-model evaluations' judge calls,
+inside the $30 cap. Wall: the first hour of run 1 measured ~25 min per
+family-run with four streams on the key — StreamLake rate-limits and the
+retries' backoff, not the box, set the pace — so a run-set is ~12 h, not
+the 5 h first estimated; the mem0 arm is queued behind the Areev arms
+rather than added as a fifth stream, because a rate-limited key gains
+nothing from more streams.
 
 **First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
 Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
@@ -492,3 +504,4 @@ changed a number before it was caught.
 | 8 | 2026-09-06, pilot PC01 | harness | the agent finished learn episodes with the procedure demonstrated and nothing saved (`skills_list` calls only); Hermes gets a memory-flush and skill-creation nudge from the benchmark, our adapter had none | one session-end nudge, the save step asked for once, for both Areev arms |
 | 9 | 2026-09-06, pilot SM01 passive | benchmark | `summarize_reflection_episode` reads `content[0].text` of the last message; in the no-persistence reflection the model has no memory tools, spends all 20 turns on task tools, the trace ends on a tool result, and the family-run dies with AttributeError | second patch: the last text block, or "" |
 | 10 | 2026-09-06, Horizon | engine | hybrid `search()` returns Event grains only on this file; the 13 Tool grains naming the vendor never surfaced, and a tool's output lives in `tool_content` | harness keyword pass over Tool grains; to raise as an engine question (should Tool grains be text-indexed for recall?) |
+| 11 | 2026-09-06, mem0 smoke | harness | mem0's embedder needs the `ollama` client library, absent from the venv: every `add()` failed, the ledger recorded it, and the arm scored Δ 0.0 as if it were a result; then mem0 2.x's read calls refused `user_id=` (`filters=` and `top_k` instead) | library installed; a failed write now fails the family-run; 2.x call shapes with a 1.x fallback |
