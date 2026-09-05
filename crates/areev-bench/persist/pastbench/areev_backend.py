@@ -64,7 +64,11 @@ from past_bench.runner.self_evolve import (
 from past_bench.runtime.adapters.base import RuntimeAdapter
 from past_bench.runtime.protocol import StartSessionRequest, StepRequest, StepResponse, ToolCallAction
 
-NS = "agent:persist"
+# Not `agent:<x>`: the loop's all-namespace evidence scan deliberately skips
+# every `agent:*` namespace as governance metadata (`read_user_type` in the
+# substrate adapter), so a memory living there is invisible to DISCOVER —
+# the first smoke's loop passes saw zero evidence for exactly this reason.
+NS = "desk:persist"
 HARNESS_NS = "agent:harness"
 ACTOR_AGENT = "agent:assistant"
 ACTOR_RUNNER = "loop:runner"
@@ -283,6 +287,11 @@ def _read(p):
 
 
 def _text_of(content):
+    """Text from a content value: a string, a list of strings, of dicts with
+    `text`, or of the benchmark's pydantic blocks (TextBlock, ToolResultBlock
+    with nested TextBlocks). The first version handled dicts only, so the
+    user's instructions — pydantic TextBlocks — were never recorded and the
+    loop had no human Observation to reason from."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -290,9 +299,16 @@ def _text_of(content):
         for c in content:
             if isinstance(c, str):
                 parts.append(c)
-            elif isinstance(c, dict) and c.get("text"):
-                parts.append(str(c["text"]))
-        return "\n".join(parts)
+            elif isinstance(c, dict):
+                if c.get("text"):
+                    parts.append(str(c["text"]))
+                elif isinstance(c.get("content"), list):
+                    parts.append(_text_of(c["content"]))
+            elif getattr(c, "text", None):
+                parts.append(str(c.text))
+            elif isinstance(getattr(c, "content", None), list):
+                parts.append(_text_of(c.content))
+        return "\n".join(p for p in parts if p)
     return ""
 
 
