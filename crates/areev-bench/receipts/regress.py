@@ -195,7 +195,7 @@ def main():
     at(t_h + 1, lambda d: d.apply_recommendation(
         harmful["hash"], "forced regression: deliberately admitted to test the verify gate"),
        db, mem.REVIEWER)
-    lessons_h = mem.with_memory(db, mem.REVIEWER, mem.lessons_markdown)
+    lessons_h = mem.with_memory(db, mem.REVIEWER, lambda _db: mem.lessons_markdown(_db, profile))
     check("it renders into the prompt", harmful_text in lessons_h)
     report["steps"].append({"step": "admit", "hash": harmful["hash"], "metric": harmful.get("metric"),
                             "lessons": lessons_h})
@@ -224,7 +224,7 @@ def main():
                                         lambda d: d.recommendations('{"status":"rolled_back"}')))
     check("applying the revert rolls the lesson back",
           any(r["hash"] == harmful["hash"] for r in rolled))
-    lessons_r = mem.with_memory(db, mem.REVIEWER, mem.lessons_markdown)
+    lessons_r = mem.with_memory(db, mem.REVIEWER, lambda _db: mem.lessons_markdown(_db, profile))
     check("the prompt no longer carries it", harmful_text not in lessons_r)
     report["steps"].append({"step": "revert", "loop": rep, "verdicts": verdicts,
                             "reverts": [r["hash"] for r in reverts], "lessons": lessons_r})

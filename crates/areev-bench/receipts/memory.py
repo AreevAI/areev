@@ -24,6 +24,18 @@ RUNNER = "agent:receipt-capture"
 REVIEWER = "user:accountant"
 CAPTURE_ENTITY = "receipt_capture"
 
+
+def capture_entity(profile=None):
+    """The subject every observation and convention hangs off. It was
+    hard-coded to `receipt_capture` for every corpus, and the loop's evidence
+    therefore told the proposer it was reading receipts whatever the
+    documents were: on registration forms it wrote rules "on every receipt"
+    and the reviewer, told they were forms, refused all seven. The default
+    keeps every published run byte-identical."""
+    if not profile:
+        return CAPTURE_ENTITY
+    return re.sub(r"[^a-z0-9]+", "_", profile["document_noun"].lower()).strip("_") + "_capture"
+
 # Relations this harness writes itself. They are evidence for the loop, never
 # instructions for the agent, so they must never render into the prompt.
 INTERNAL_RELATIONS = {"reading_result", "correction", "capture_attempt"}
@@ -80,12 +92,12 @@ def _facts(db):
     return _recall(db, "")
 
 
-def _conventions(db):
+def _conventions(db, profile=None):
     """Facts on the capture entity that are not lessons: the learned
     conventions (date_format = ...). Scoped by SUBJECT so a long deployment's
     thousands of document facts never enter the scan; a 320-document run
     writes ~1,300 of those and would hit the cap on a whole-namespace read."""
-    return [g for g in _recall(db, ' AND subject = "%s"' % CAPTURE_ENTITY)
+    return [g for g in _recall(db, ' AND subject = "%s"' % capture_entity(profile))
             if g.get("fields", {}).get("relation") not in ("lesson", "fails_with")]
 
 
@@ -108,7 +120,7 @@ def _lessons(db):
             + _recall(db, ' AND relation = "fails_with"'))
 
 
-def lessons_markdown(db):
+def lessons_markdown(db, profile=None):
     """The LESSONS section, assembled from live memory on every document.
 
     Reads only what a human approved and applied: rules recorded as Facts
@@ -121,7 +133,7 @@ def lessons_markdown(db):
         obj = (g.get("fields", {}).get("object") or "").strip()
         if obj:
             rules.append(obj)
-    for g in _conventions(db):
+    for g in _conventions(db, profile):
         f = g.get("fields", {})
         rel, obj = f.get("relation"), (f.get("object") or "").strip()
         if not obj:
@@ -201,7 +213,7 @@ def _observations(db):
     return grains
 
 
-def record_correction(db, seq, message, corrections):
+def record_correction(db, seq, message, corrections, profile=None):
     """What the run leaves in memory: the accountant's words, and the row.
 
     Recorded the way a production system would, which is not the same as
@@ -221,7 +233,7 @@ def record_correction(db, seq, message, corrections):
         db.add("observation", json.dumps({
             "content": message,
             "observer_id": REVIEWER, "observer_type": "human",
-            "subject": CAPTURE_ENTITY, "seq": seq,
+            "subject": capture_entity(profile), "seq": seq,
         }), ns=NS)
     for field, value in corrections.items():
         db.add("fact", json.dumps({

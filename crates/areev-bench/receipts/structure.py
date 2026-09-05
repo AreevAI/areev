@@ -56,7 +56,7 @@ def rule_texts(db):
             for g in mem._lessons(db) if (g["fields"].get("object") or "").strip()]
 
 
-def render_rules(db, fmt):
+def render_rules(db, fmt, profile=None):
     """The SAME rule texts, in different clothes.
 
     `markdown` is arm B's prompt section byte-for-byte (memory.lessons_markdown),
@@ -69,7 +69,7 @@ def render_rules(db, fmt):
     cell rather than a confound folded into every other one. (The first run
     of this grid folded it in: a seven-rule memory scored 35 under CAL's
     markdown against 141 under the hand-assembled prompt.)"""
-    md = mem.lessons_markdown(db)
+    md = mem.lessons_markdown(db, profile)
     head = md.split("\n- ", 1)[0] + "\n"
     rules = sorted(set(rule_texts(db)))
     if fmt == "markdown":
@@ -125,7 +125,7 @@ def main():
     # never be the second handle on a live memory.
     db = os.path.join(args.workdir, "rules.db")
     mem.copy_memory(args.learned_db, db)
-    sections = {fmt: mem.with_memory(db, mem.REVIEWER, lambda d, f=fmt: render_rules(d, f))
+    sections = {fmt: mem.with_memory(db, mem.REVIEWER, lambda d, f=fmt: render_rules(d, f, profile))
                 for fmt in args.formats.split(",")}
     with open(os.path.join(args.workdir, "sections.json"), "w", encoding="utf-8") as fh:
         json.dump(sections, fh, indent=1, ensure_ascii=False)

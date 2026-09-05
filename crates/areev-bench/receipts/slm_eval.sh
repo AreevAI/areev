@@ -13,12 +13,16 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env.sh"
 LEARNED="$1"; WORKDIR="$2"; NAME="$3"; ADAPTER="${4:-none}"; PORT="${5:-8081}"
-BASE="${SLM_BASE:-mlx-community/Qwen3.5-2B-4bit}"
+BASE="${SLM_BASE:-mlx-community/Qwen3-1.7B-4bit}"
 mkdir -p "$WORKDIR"
+if [ "$ADAPTER" != "none" ] && [ ! -s "$ADAPTER/adapters.safetensors" ]; then
+  echo "slm_eval: $ADAPTER has no adapters.safetensors -- refusing to evaluate an empty adapter as a tuned model" >&2
+  exit 1
+fi
 if [ "$ADAPTER" = "none" ]; then
-  python3 -m mlx_lm server --model "$BASE" --port "$PORT" > "$WORKDIR/server.log" 2>&1 &
+  python3 -m mlx_lm server --model "$BASE" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
 else
-  python3 -m mlx_lm server --model "$BASE" --adapter-path "$ADAPTER" --port "$PORT" > "$WORKDIR/server.log" 2>&1 &
+  python3 -m mlx_lm server --model "$BASE" --adapter-path "$ADAPTER" --port "$PORT" --chat-template-args '{"enable_thinking": false}' > "$WORKDIR/server.log" 2>&1 &
 fi
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true' EXIT

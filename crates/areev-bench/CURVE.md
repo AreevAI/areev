@@ -60,13 +60,15 @@ held-out sets of **100 documents**:
 The untuned base under the final rules runs once per seed, the control that
 separates a small model with rules from a small model tuned on the corpus.
 
-**Base models.** `Qwen3.5-2B` (4-bit) is the primary — it trains and serves
-under `mlx_lm` 0.31.2 at 3 GB — with `Qwen3.5-0.8B` as the second
-combination on seed 1. Both think aloud before answering by default and their
-template has no switch for it; the serving shim returns only the object from
-the last `{"fields"` and gives the reply token room. A tuned adapter is
-expected to learn to skip the preamble, and the usage ledger will show that
-as completion tokens falling — a side effect worth reporting.
+**Base models.** `Qwen3-1.7B` (4-bit) is the primary, with `Qwen3-0.6B` as
+the second combination on seed 1. `Qwen3.5-2B` was the first choice and is
+not usable here: its LoRA backward pass on these 2–3k-token documents fails
+deterministically in the Metal command buffer with *Insufficient Memory*
+under `mlx_lm` 0.31.2 and 0.31.3, at batch 1, 1,536 tokens and gradient
+checkpointing alike (the trial's first checkpoint, reproduced four times;
+the hundred-token smoke test that passed was not a test). Qwen3 trains on
+the same corpus cleanly and its template has a real thinking switch, which
+the serving shim turns off, so the untuned control answers directly too.
 
 ### Overfitting, controlled rather than checked
 

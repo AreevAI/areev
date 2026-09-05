@@ -18,7 +18,7 @@
 # `areev tune --cmd`.
 set -eu
 CORPUS="$1"; OUT="$2"; shift 2
-BASE="${SLM_BASE:-mlx-community/Qwen3.5-2B-4bit}"; RESUME=""; EPOCHS=4
+BASE="${SLM_BASE:-mlx-community/Qwen3-1.7B-4bit}"; RESUME=""; EPOCHS=4
 while [ $# -gt 0 ]; do
   case "$1" in
     --resume) RESUME="$2"; shift 2 ;;
@@ -34,16 +34,29 @@ ITERS=$(( (ROWS + BATCH - 1) / BATCH * EPOCHS ))
 [ "$ITERS" -gt 400 ] && ITERS=400
 mkdir -p "$OUT"
 START=$(date +%s)
-# shellcheck disable=SC2086
-python3 -m mlx_lm lora --model "$BASE" --train --data "$CORPUS" --adapter-path "$OUT" \
-  --iters "$ITERS" --batch-size $BATCH --num-layers 8 --learning-rate 1e-4 \
-  --mask-prompt --max-seq-length 3072 --steps-per-eval 25 --save-every 25 --val-batches 4 \
-  ${RESUME:+--resume-adapter-file "$RESUME/adapters.safetensors"} 2>&1 | tee "$OUT/train.log"
+# No pipe to tee: a pipeline reports tee's exit status, and that is how a
+# Metal crash after the first validation went unnoticed and an empty adapter
+# directory was evaluated as a tuned model. Train, then show the log.
+train() {
+  # shellcheck disable=SC2086
+  python3 -m mlx_lm lora --model "$BASE" --train --data "$CORPUS" --adapter-path "$OUT" \
+    --iters "$ITERS" --batch-size "$1" --num-layers 8 --learning-rate 1e-4 \
+    --mask-prompt --max-seq-length "$2" --steps-per-eval 25 --save-every 25 --val-batches 4 $3 \
+    ${RESUME:+--resume-adapter-file "$RESUME/adapters.safetensors"} > "$OUT/train.log" 2>&1
+}
+if ! train "$BATCH" 3072 ""; then
+  echo "first attempt failed (see $OUT/train.log); retrying with batch 1, shorter sequences, gradient checkpointing" >&2
+  tr '\r' '\n' < "$OUT/train.log" | grep -iE "error|exception|failed" | tail -3 >&2
+  BATCH=1
+  train 1 2048 "--grad-checkpoint" || { echo "training failed twice; no adapter produced" >&2; exit 1; }
+fi
+[ -s "$OUT/adapters.safetensors" ] || { echo "training exited 0 but wrote no adapters.safetensors" >&2; exit 1; }
+tr '\r' '\n' < "$OUT/train.log" | grep -E "^Iter|Trainable|Starting"
 END=$(date +%s)
 python3 - "$OUT" "$BASE" "$CORPUS" "$ITERS" "$((END-START))" "$RESUME" "$EPOCHS" <<'PY'
 import json, sys, os, re, shutil
 out, base, corpus, iters, secs, resume, epochs = sys.argv[1:]
-log = open(os.path.join(out, "train.log")).read()
+log = open(os.path.join(out, "train.log")).read().replace("\r", "\n")  # tqdm bars share lines with the loss prints
 val = [(int(i), float(v)) for i, v in re.findall(r"Iter (\d+): Val loss ([0-9.]+)", log)]
 train = [(int(i), float(v)) for i, v in re.findall(r"Iter (\d+): Train loss ([0-9.]+)", log)]
 # keep the checkpoint with the lowest validation loss, not the last one

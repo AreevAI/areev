@@ -64,7 +64,7 @@ def main():
     held_ids = {r["id"] for r in heldout}
 
     filed = mem.with_memory(args.learned_db, mem.REVIEWER, lambda db: filed_rows(db, profile["fields"]))
-    lessons = mem.with_memory(args.learned_db, mem.REVIEWER, mem.lessons_markdown)
+    lessons = mem.with_memory(args.learned_db, mem.REVIEWER, lambda _db: mem.lessons_markdown(_db, profile))
     system = agent.base_instruction(profile)
     if lessons.strip():
         system += "\n\n" + lessons

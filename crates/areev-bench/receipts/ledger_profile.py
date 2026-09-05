@@ -142,10 +142,10 @@ PROFILES["vrdu_reg"] = {
     "arc": [
         (1, ["Registration Number"], None),
         (2, ["Registration Number", "Registrant Name", "File Date"],
-         "Thanks — I also need who registered and the date it was filed on "
-         "every one of these, otherwise I can't log it."),
+         "Thanks — I also need who registered and the date it was filed, on "
+         "every one of these."),
         (8, ["Registration Number", "Registrant Name", "File Date", "Signer Name"],
-         "Add who signed it as well; the file needs the signatory."),
+         "Add who signed it as well, on every one of these."),
     ],
     "date_fields": ["File Date"],
     "date_strftime": "%Y-%m-%d",

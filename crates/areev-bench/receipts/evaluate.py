@@ -99,7 +99,7 @@ def main():
         # correction verbatim, nothing proposed, reviewed or retracted. It is
         # the store-everything baseline, and it is deliberately generous: it
         # gets the complete record without paying for the governance.
-        render = mem.corrections_markdown if arm == "C" else mem.lessons_markdown
+        render = mem.corrections_markdown if arm == "C" else (lambda _db: mem.lessons_markdown(_db, profile))
         lessons = mem.with_memory(db, mem.REVIEWER, render)
         t, u = evalrun.run_arm(arm, profile, lessons, rows, agent_argv, journal,
                                at_seq=args.as_of)

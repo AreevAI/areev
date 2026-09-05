@@ -124,7 +124,7 @@ def main():
 
     for r in exp_rows:
         seq = r["seq"]
-        lessons = "" if args.no_learn else mem.with_memory(db_path, mem.RUNNER, mem.lessons_markdown)
+        lessons = "" if args.no_learn else mem.with_memory(db_path, mem.RUNNER, lambda _db: mem.lessons_markdown(_db, profile))
 
         # The agent is NOT told what the accountant now wants. Day one it
         # knows one field; every later requirement has to reach it the long
@@ -192,7 +192,7 @@ def main():
 
         if not args.no_learn and (message or corrections):
             mem.with_memory(db_path, mem.RUNNER,
-                            lambda db: mem.record_correction(db, seq, message, corrections))
+                            lambda db: mem.record_correction(db, seq, message, corrections, profile))
             since_learn += 1
             if since_learn >= args.learn_every:
                 since_learn = 0
