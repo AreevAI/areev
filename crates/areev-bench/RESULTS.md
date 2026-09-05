@@ -724,7 +724,8 @@ did at the first checkpoint. Governance cost the same to learn from a
 document as mem0's extractor ($0.61 against $0.57 per thousand) and bought
 ten times the gain. The small model, tuned in ten minutes on the loop's
 corpus, beat the 30B model it was distilled from on every seed, at zero
-marginal cost. And a 3×5 prompt-structure grid on the same rules found
+marginal cost — and still beats it on receipts from shops it never saw, 71%
+to 55%, though about half of the headline gap is vendor familiarity. And a 3×5 prompt-structure grid on the same rules found
 format inert and position decisive: rules placed before the day-one
 instruction lose up to 298 of 720 trials.
 

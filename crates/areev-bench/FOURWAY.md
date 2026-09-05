@@ -145,14 +145,73 @@ Under the same prompt on the same receipts:
 | **tuned 1.5B** | **197** | **185** | **189** |
 
 The untuned small model sits well *below* the LLM — so this is not "small
-models happen to suit this format". Ten minutes of training on the rows the
-loop produced took it from 76 to 197 on seed 1, with zero noise on repeat, and
+models happen to suit this format". (Whether it is instead "the model
+memorised the shops" is the next section's question; the short answer is
+partly, and the win survives on shops it never saw.) Ten minutes of training
+on the rows the loop produced took it from 76 to 197 on seed 1, with zero noise on repeat, and
 past the LLM on every seed. Where the gain landed says why: on seed 1,
 **Vendor Address went 0 → 42 of 60**. That is the field that needs
 punctuation and spacing copied verbatim, which a prose rule describes badly —
 the 30B LLM, carrying *"copy the address exactly as printed"*, managed **0 of
 60** on that seed — and a filed example teaches directly. The date field moved
 too, 31 → 56, on a format the LLM had been told in words.
+
+### Did the tune overfit? Partly — and the split is clean
+
+**The question.** The held-out receipts are disjoint from the training
+corpus by construction. But SROIE is 612 receipts from **225 shops**, so
+roughly half of any held-out set comes from a *vendor* whose other receipts
+were in the corpus — 32, 28 and 30 of 60 on the three seeds. A model that
+had memorised *"B & BEST RESTAURANT, No.12 Jalan SS4C/5"* would ace that
+shop's next receipt without having learned anything about how this business
+files. Is the 234–45 win over the LLM that, or the conventions?
+
+**Same dataset, same pipeline, one more cut.** Nothing was re-run.
+`slm_overfit.py` takes the trials already published, marks each held-out
+receipt by whether its vendor appears in that seed's `train.jsonl`, and
+pairs the tuned model against the LLM on each half separately. Validation
+loss is reported alongside: it fell monotonically on every seed (0.63 → 0.16,
+0.54 → 0.03, 0.62 → 0.07) and never turned upward, so this is not overfitting
+in the loss sense — that check is necessary and, with four validation rows,
+nowhere near sufficient.
+
+| exact-match rate, three seeds | seen vendor (360) | **unseen vendor** (360) |
+|---|:---:|:---:|
+| no memory | 13% | 14% |
+| untuned 1.5B + rules | 23% | 25% |
+| 30B LLM + rules | 51% | 55% |
+| **tuned 1.5B** | **88%** | **71%** |
+| tuned over LLM, paired | 144 wins, 12 losses | **90 wins, 33 losses** |
+
+**On vendors it has never seen, the tuned model still beats the 30B LLM —
+71% to 55%, 90 wins to 33, p < 0.0001.** The edge shrinks from 37 points to
+16, so about half of the headline gap was vendor familiarity; the other half
+is general. Per field on the unseen half says exactly what it learned:
+
+| unseen vendors only | tuned | LLM | untuned |
+|---|:---:|:---:|:---:|
+| Invoice Date | **78**/90 | 48/90 | 39/90 |
+| Vendor Address | **42**/90 | 8/90 | 1/90 |
+| Amount | 79/90 | 78/90 | 15/90 |
+| Vendor Name | 56/90 | **64**/90 | 35/90 |
+
+It learned the **date convention** (78 against 48 on shops it never saw) and
+it learned to **transcribe an address verbatim** (42 against 8 — a skill,
+not a lookup, since these addresses were not in its corpus). Amount is a
+tie. And on **Vendor Name it is worse than the LLM on unseen shops**, 56
+against 64, having been 83 on seen ones: the names it memorised. That is
+the overfit, located to one field, and it is the field a filed-row corpus
+would be expected to teach as identity rather than as method.
+
+**Verdict.** The tune generalises the business's conventions and memorises
+its vendors. The publishable claim is the unseen-vendor one — a 1.5B model
+tuned on the governed corpus beats the 30B model it was distilled from on
+receipts from shops it has never seen, 71% to 55% — and the seen-vendor
+number is reported as what it is: a deployment's real advantage on repeat
+customers, and not evidence of learning. The corpus is 34 rows; a
+vendor-held-out split at corpus-building time, or five seeds, would tighten
+the general half. Evidence: `OVERFIT.json`, recomputed by
+`receipts/slm_overfit.py` from the published trials.
 
 ## Cost
 
