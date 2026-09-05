@@ -61,7 +61,11 @@ under Ollama) and cost nothing.
 experience document, the receipt the agent saw and the **row the accountant
 filed**, under the day-one instruction plus the approved rules as they stood
 at the end. `mlx_lm` trains a LoRA on `Qwen2.5-1.5B-Instruct` (4-bit) from
-it — 34, 30 and 35 rows; 200 steps; eight to twelve minutes on a laptop — and
+it — 34, 30 and 35 rows of 40 documents, because the corpus then held
+only documents the accountant had *corrected* (the learning-curve study,
+[`CURVE.md`](CURVE.md), widened it to every filed row after seeing what that
+selection does once the rules make most documents correct); 200 steps;
+eight to twelve minutes on a laptop — and
 `slm_serve.py` drops the result into the harness as the agent, under arm
 B's exact prompt. The **untuned** base is evaluated under the same prompt as
 the control that separates *a small model with rules* from *a small model
