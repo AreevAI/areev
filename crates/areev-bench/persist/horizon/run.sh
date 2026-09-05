@@ -19,7 +19,8 @@ AGENT="${AGENT:?set AGENT}"; OUT="${OUT:?set OUT}"
 SEED="${SEED:-1}"
 MODEL="${AGENT_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}"
 SCRIPTS="$REPO/crates/areev-bench/scripts"
-export AREEV_AGENT_PIN="${AGENT_PIN:-siliconflow/fp8}"
+# streamlake, not siliconflow/fp8 — see pastbench/evolve.sh for why
+export AREEV_AGENT_PIN="${AGENT_PIN:-streamlake}"
 export AREEV_LOOP_LLM_CMD="${AREEV_LOOP_LLM_CMD:-python3 $SCRIPTS/openrouter_loop.py $MODEL --provider $AREEV_AGENT_PIN --seed $SEED}"
 export AREEV_LOOP_GROUND_CMD="${AREEV_LOOP_GROUND_CMD:-python3 $SCRIPTS/openrouter_loop.py openai/gpt-4o-mini --provider openai --seed $SEED}"
 export AREEV_REVIEW_CMD="${AREEV_REVIEW_CMD:-python3 $SCRIPTS/openrouter_toolcall.py openai/gpt-4o --provider openai --seed $SEED}"
@@ -33,8 +34,8 @@ export OPENROUTER_MANAGEMENT_KEY="${OPENROUTER_MANAGEMENT_KEY:-${OPENROUTER_MANA
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$OUT"
 case "$AGENT" in
-  areev-governed) IMPORT="areev.agent:AreevGovernedAgent" ;;
-  areev-passive)  IMPORT="areev.agent:AreevPassiveAgent" ;;
+  areev-governed) IMPORT="areev_agent.agent:AreevGovernedAgent" ;;
+  areev-passive)  IMPORT="areev_agent.agent:AreevPassiveAgent" ;;
   trace_rag)      IMPORT="trace_rag.agent:TraceRagAgent" ;;
   trace_rlm)      IMPORT="trace_rlm.agent:TraceRlmAgent" ;;
   tools_only)     IMPORT="tools_only.agent:ToolsOnlyAgent" ;;

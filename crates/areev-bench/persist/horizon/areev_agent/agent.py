@@ -38,7 +38,7 @@ Run it with::
     export AREEV_LOOP_GROUND_CMD="python3 .../openrouter_loop.py openai/gpt-4o-mini --provider openai --seed 1"
     export AREEV_REVIEW_CMD="python3 .../openrouter_toolcall.py openai/gpt-4o --provider openai --seed 1"
     PYTHONPATH=agents harbor run -p evals/01-example-catering-vendor \\
-        --agent-import-path areev.agent:AreevGovernedAgent -m qwen/qwen3-30b-a3b-instruct-2507
+        --agent-import-path areev_agent.agent:AreevGovernedAgent -m qwen/qwen3-30b-a3b-instruct-2507
 """
 
 from __future__ import annotations
@@ -233,6 +233,13 @@ def ingest_trace(db_path: Path, trace_text: str) -> dict[str, int]:
                                         "role": role, "session_id": "day:" + day,
                                         "subject": "session:day:" + day}), ns=NS)
             n["events"] += 1
+            # A person's own words are the rarest evidence and the loop
+            # reserves a share of DISCOVER's bundle for human Observations;
+            # an Event with role=user never reaches it. Record them twice.
+            if etype == "message" and role == "user":
+                db.add("observation", json.dumps({"content": text[:MAX_GRAIN_TEXT], "observer_id": "user",
+                                                  "observer_type": "human", "subject": "assistant"}), ns=NS)
+                n["observations"] = n.get("observations", 0) + 1
         # calls that never got an output are still evidence of what was tried
         for cid, call in pending.items():
             db.record_tool_call(str(call["name"]), "(no output recorded)", False,
@@ -336,19 +343,30 @@ def session_search(db_path: Path, query: str, k: int) -> dict[str, Any]:
                 if len(out) >= 10:
                     break
             return {"recent_sessions": out}
-        payload = json.loads(db.search(query, k=k, ns=NS))
+        # Reasoning notes outnumber tool records and out-rank them on text
+        # similarity, so a plain top-k came back all narration and no data
+        # (the vendor's quote lives in an inbox_read output). Take a wider
+        # candidate set and interleave the two kinds so every answer shows
+        # both what was thought and what the tools actually returned.
+        payload = json.loads(db.search(query, k=max(k * 3, 24), ns=NS))
         grains = payload.get("grains", payload) if isinstance(payload, dict) else payload
-        hits = []
+        tools_hits, event_hits = [], []
         for g in grains or []:
             f = (g.get("fields") or {}) if isinstance(g, dict) else {}
             if f.get("tool_name"):
                 text = "tool %s(%s) -> %s%s" % (f.get("tool_name"), str(f.get("input") or "")[:300],
                                                  "ERROR " if f.get("is_error") else "",
-                                                 str(f.get("content") or f.get("error") or "")[:800])
+                                                 str(f.get("content") or f.get("error") or "")[:1200])
+                tools_hits.append({"session": f.get("thread") or f.get("session_id") or "", "text": text})
             else:
                 text = "%s: %s" % (f.get("role") or "note", str(f.get("content") or f.get("object") or "")[:900])
-            hits.append({"session": f.get("session_id") or f.get("thread") or "", "text": text,
-                         "score": g.get("score") if isinstance(g, dict) else None})
+                event_hits.append({"session": f.get("session_id") or "", "text": text})
+        hits: list[dict[str, Any]] = []
+        while len(hits) < k and (tools_hits or event_hits):
+            if tools_hits:
+                hits.append(tools_hits.pop(0))
+            if event_hits and len(hits) < k:
+                hits.append(event_hits.pop(0))
         return {"hits": hits}
     return _with_memory(db_path, ACTOR_AGENT, go)
 

@@ -32,14 +32,18 @@ from past_bench.runner import self_evolve as _self_evolve  # noqa: E402
 from past_bench.runtime import manager as _manager  # noqa: E402
 
 import areev_backend  # noqa: E402
+import mem0_backend  # noqa: E402
 
 _manager._ADAPTERS["areev"] = areev_backend.AreevAdapter
+_manager._ADAPTERS["mem0"] = mem0_backend.Mem0Adapter
 _upstream_make = _self_evolve.make_persistence_backend
 
 
 def _make_persistence_backend(agent_name: str):
     if agent_name.startswith("areev"):
         return areev_backend.make_backend(agent_name)
+    if agent_name.startswith("mem0"):
+        return mem0_backend.make_backend(agent_name)
     return _upstream_make(agent_name)
 
 

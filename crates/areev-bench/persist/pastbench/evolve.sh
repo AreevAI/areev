@@ -25,9 +25,14 @@ JUDGE="${JUDGE_MODEL:-minimax/minimax-m2.7}"
 SCRIPTS="$REPO/crates/areev-bench/scripts"
 # The receipts runs pinned coreweave/bf16; on 2026-09-06 OpenRouter listed no
 # CoreWeave endpoint for this model any more (StreamLake, SiliconFlow fp8,
-# Nebius fp8, Alibaba remained). siliconflow/fp8 is the pin here: a declared
-# quantization and the full 262K context. It is recorded per run.
-export AREEV_AGENT_PIN="${AGENT_PIN:-siliconflow/fp8}"
+# Nebius fp8, Alibaba remained). siliconflow/fp8 was tried first and REJECTED:
+# on the benchmark's opening request it returns finish=stop with empty content
+# and exactly the 28 output tokens of the tool call the other endpoints return
+# — its tool-call parsing swallows the call (replayed with pinprobe2.py:
+# StreamLake and Alibaba both return `notes_list`). streamlake is the pin:
+# cheapest, and the same price the cost table pinned for this model.
+# Quantization undeclared by the provider — recorded per run.
+export AREEV_AGENT_PIN="${AGENT_PIN:-streamlake}"
 export AREEV_LOOP_LLM_CMD="${AREEV_LOOP_LLM_CMD:-python3 $SCRIPTS/openrouter_loop.py $MODEL --provider $AREEV_AGENT_PIN --seed $SEED}"
 export AREEV_LOOP_GROUND_CMD="${AREEV_LOOP_GROUND_CMD:-python3 $SCRIPTS/openrouter_loop.py openai/gpt-4o-mini --provider openai --seed $SEED}"
 export AREEV_REVIEW_CMD="${AREEV_REVIEW_CMD:-python3 $SCRIPTS/openrouter_toolcall.py openai/gpt-4o --provider openai --seed $SEED}"
@@ -41,7 +46,7 @@ cd "$PB"
 . .venv/bin/activate
 REG=""; PROFILE=""
 case "$AGENT" in
-  areev*) REG="--registry $HERE/agents.yaml" ;;
+  areev*|mem0*) REG="--registry $HERE/agents.yaml" ;;
   *) PROFILE="--agent-profile openrouter" ;;
 esac
 # shellcheck disable=SC2086

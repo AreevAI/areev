@@ -17,9 +17,14 @@ root = Path(sys.argv[1])
 cli = root / "src" / "past_bench" / "cli.py"
 s = cli.read_text(encoding="utf-8")
 old = 'if args.agent.startswith("hermes") or args.agent in {"nanobot", "zeroclaw"}:'
-new = 'if args.agent.startswith("hermes") or args.agent.startswith("areev") or args.agent in {"nanobot", "zeroclaw"}:'
+mid = 'if args.agent.startswith("hermes") or args.agent.startswith("areev") or args.agent in {"nanobot", "zeroclaw"}:'
+new = ('if args.agent.startswith("hermes") or args.agent.startswith("areev") or args.agent.startswith("mem0") '
+       'or args.agent in {"nanobot", "zeroclaw"}:')
 if new in s:
     print("already patched:", cli)
+elif mid in s:
+    cli.write_text(s.replace(mid, new, 1), encoding="utf-8")
+    print("patched (mem0 added):", cli)
 elif old in s:
     cli.write_text(s.replace(old, new, 1), encoding="utf-8")
     print("patched:", cli)
