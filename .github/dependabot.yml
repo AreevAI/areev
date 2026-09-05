@@ -51,6 +51,12 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps
+    ignore:
+      # Same blocker as the rustcrypto group on "/": getrandom 0.3 reworked the
+      # API and 0.2 is what the tree still compiles against. This lockfile needs
+      # its own entry because it is a separate cargo ecosystem.
+      - dependency-name: "getrandom"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       areev-js-cargo:
         patterns:
