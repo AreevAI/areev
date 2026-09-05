@@ -36,7 +36,7 @@ def base_instruction(profile):
     return BASE_INSTRUCTION.format(noun=profile["document_noun"], day_one=profile["day_one"])
 
 
-def call_model(argv, messages, timeout=180):
+def call_model(argv, messages, timeout=600):
     req = json.dumps({"op": "chat", "messages": messages, "tools": [], "temperature": 0})
     p = subprocess.run(argv, input=req.encode(), capture_output=True, timeout=timeout)
     if p.returncode != 0:

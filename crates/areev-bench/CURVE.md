@@ -256,6 +256,15 @@ every checkpoint where they differ; if it does, the selector on a four-row
 set is reported as a method that hurt, and the scratch curve is read from
 both.
 
+Two runs share one laptop GPU here (seed 1's re-run beside the main
+queue), and a local read under a concurrent training stretched from about
+2 seconds a call to 15, once past the harness's 180-second cap (seed 2,
+checkpoint 80, one document scored as no output; the summary records
+`failed_calls`). `gpu_yield.sh` now stops training while any local server
+is up, and the cap is 600 seconds. **Local latencies from this study are
+not evidence for the speed claim** — [`FOURWAY.md`](FOURWAY.md) measured
+them uncontended, and that is the number the paper uses.
+
 Caught before it ran: the train-set read passed its sample size as the
 split's held-out size, and in `split_entity` that size decides which
 registrants are held out and therefore which documents form the stream — a
