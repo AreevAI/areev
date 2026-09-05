@@ -89,7 +89,7 @@ jobs:
           - { runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  ext: "", features: "postgres-tls,oidc", suffix: "-postgres-oidc" }
           - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: "postgres-tls,oidc", suffix: "-postgres-oidc" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # A backfill labels its assets with attach_to_tag's version and
           # uploads them to THAT release with --clobber, so they must be built
@@ -206,7 +206,7 @@ jobs:
           fi
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}${{ matrix.suffix }}
           path: |
@@ -234,7 +234,7 @@ jobs:
     # no longer waits on it either; both halves of that lesson matter.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup update stable
       - name: Install cargo-cyclonedx
@@ -258,7 +258,7 @@ jobs:
           mkdir -p dist
           cp crates/areev-cli/areev.cdx.json "dist/areev-${VERSION}-cargo.cdx.json"
           test -s "dist/areev-${VERSION}-cargo.cdx.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-sbom
           path: dist/*.cdx.json
@@ -302,7 +302,7 @@ jobs:
       # covers is worse than one with none at all, because the release notes
       # claim every asset is attested.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz
