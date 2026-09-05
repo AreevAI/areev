@@ -350,6 +350,85 @@ fn citation_resolves_by_hash_id_or_unambiguous_hex_prefix() {
     assert_eq!(resolve_citation("", &bundle, &ids), None);
 }
 
+/// A verdict compares against the state of the world at the APPLY, not at the
+/// proposal. A deployment that journals its evalset once, on day one, and
+/// then approves rule after rule would otherwise measure its twentieth rule
+/// against day one — and a rule that cost twenty points reads as `held`
+/// against a baseline the first nineteen rules had long since left behind.
+/// Found on a real corpus (`crates/areev-bench/CURVE.md`, seed 1: 86% → 66%,
+/// measured as held against 26%). With nothing journaled between the
+/// proposal and the apply, the baseline is the proposal's own run, so the
+/// test right below this one is unchanged.
+#[test]
+fn a_run_journaled_before_the_apply_is_the_lessons_baseline() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 100 - exact),
+            at,
+        );
+    };
+    // Day one: 26 of 100. Then the deployment's earlier rules take it to 86.
+    journal(&mut sub, "eval-day-one", 26, t - 3 * DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"dates are being standardised","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the file date exactly as printed, in its original format."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(
+        r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    assert_eq!(rec.metric.as_ref().unwrap().baseline, 26.0, "the proposal froze day one");
+    // Measured again before the apply: 86. THIS is what the rule is judged against.
+    journal(&mut sub, "eval-before-apply", 86, t + 1);
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reads fine", t + 2)
+        .unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply the lesson", false, t + 3)
+        .unwrap();
+    // After the apply: 66. Better than day one; twenty points worse than the apply.
+    // (The 1d checkpoint is due a day after the apply at t + 3.)
+    journal(&mut sub, "eval-after", 66, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    let verdicts: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.rec_hash == rec.hash)
+        .collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(
+        (verdicts[0].baseline, verdicts[0].current, verdicts[0].verdict.as_str()),
+        (86.0, 66.0, "regressed"),
+        "judged against the run before the apply, not the day-one snapshot"
+    );
+    assert!(
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.outcome_review")),
+        "and the revert is proposed"
+    );
+}
+
 /// An LLM-authored lesson carries no recurrence metric — nothing errors when
 /// a lesson is merely useless — so `Policy::outcome_evalset` gives every
 /// applicable authored proposal the host's evalset as its metric: baseline

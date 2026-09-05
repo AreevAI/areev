@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A lesson's outcome verdict compares against the newest evalset run
+  before its apply**, not the run the proposal froze, when one exists. A
+  deployment that journals its evalset on day one and then approves rule
+  after rule was measuring its twentieth rule against day one: on a real
+  corpus (`crates/areev-bench/CURVE.md`) a rule that contradicted an earlier
+  one took the agent from 86% to 66% on held-out documents and read as
+  `held` against day one's 26%. With nothing journaled between proposal and
+  apply the two runs are the same, so no verdict recorded before this
+  changes. The proposal-time snapshot, every later measurement and the
+  apply gate now read a run's fields through one function
+  (`areev_loop::eval::run_value`).
+
 ### Added
 
 - **The DISCOVER objective is host policy.** `discover_objective` in the loop

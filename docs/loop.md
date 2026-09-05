@@ -554,9 +554,14 @@ would report `held` forever, which is a fabricated receipt and worse than none.
 **Authored lessons are measured the same way.** With `outcome_evalset` in
 the host policy, an applied LLM-authored lesson is re-measured against the
 evalset at every checkpoint; a run after the apply that scores worse than
-the run before the proposal is `regressed`, `outcome_review` proposes the
-revert, and applying it retracts the lesson and puts it on the rejection
-cooldown so the next pass does not re-propose what the gate just removed.
+the newest run **before the apply** is `regressed`, `outcome_review`
+proposes the revert, and applying it retracts the lesson and puts it on the
+rejection cooldown so the next pass does not re-propose what the gate just
+removed. The proposal freezes the newest run of its day as the snapshot;
+the verdict reads the newest run before the apply when one exists, so a
+deployment that measures before each apply judges each rule against the
+state it changed, and one that measured only on day one judges every rule
+against day one (below).
 That is the whole "verify the change improved, otherwise revert" arc, on
 the one kind of change a human approves from prose alone.
 
@@ -579,13 +584,18 @@ reading the code. The evidence is
 [`crates/areev-bench/ADBUY.md`](../crates/areev-bench/ADBUY.md), seed 3.
 
 **Outcome measurement catches damage, not lost opportunity.** The comparison
-is against the baseline run journaled before the proposal. An agent that
+is against the newest run journaled before the apply. An agent that
 climbed to 238 of 280, then fell to 128 as later rules landed, is still four
-times better than the baseline of 35 — so the gate reports `held`, correctly
-by its own definition, and no revert is proposed. It has no way to see the
-238. Catching this needs a different comparison point: a high-water mark
-carried forward, or a per-rule marginal measurement. Neither is implemented.
-Until one is, a rising-then-falling agent looks identical to a rising one.
+times better than the day-one run of 35 — so when day one is the only run
+journaled before the apply, the gate reports `held`, correctly by its own
+definition, and no revert is proposed. It has no way to see the 238. The
+per-rule marginal measurement is now what the verdict does *when the host
+journals a run before each apply* (`crates/areev-bench/CURVE.md`, seed 1: a
+rule that contradicted an earlier one took the agent from 86% to 66% and
+measured as `held` against day one's 26% until the checkpoint reads were
+journaled onto the timeline). A high-water mark carried forward is not
+implemented; a deployment that does not measure between applies still sees
+a rising-then-falling agent as a rising one.
 
 **Dedup is by content, not by meaning.** `authored_dedup_key` fingerprints
 the proposal text, so it collapses a rule proposed twice verbatim. It cannot
@@ -693,9 +703,10 @@ as an ablation switch.
 `outcome_evalset` (optional, default none) gives every **applicable
 LLM-authored proposal** — a lesson, a fact, a query or plan revision — the
 host's evalset as its outcome metric: baseline from the newest
-`mg:eval_run` summary journaled before the proposal, current from summaries
-journaled after the apply, checkpoints at `horizons_ms` (default 1d / 7d /
-30d). It exists because an authored lesson carries no recurrence metric —
+`mg:eval_run` summary journaled before the **apply** (the proposal freezes
+the newest run of its day; a run journaled between proposal and apply
+replaces it at verdict time), current from summaries journaled after the
+apply, checkpoints at `horizons_ms` (default 1d / 7d / 30d). It exists because an authored lesson carries no recurrence metric —
 nothing errors when a lesson is merely useless or quietly harmful — so
 without it the Verify gate had nothing to re-measure for exactly the
 proposals a reviewer was least able to judge from the text. No run

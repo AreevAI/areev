@@ -815,16 +815,7 @@ impl Engine {
     ) -> Option<crate::recommendation::MetricSnapshot> {
         let e = self.policy.outcome_evalset.as_ref()?;
         let run = crate::eval::newest_eval_run(sub, &e.hash, None).ok().flatten()?;
-        let baseline = match e.field.as_str() {
-            "failed" => run.failed as f64,
-            "passed" => run.passed as f64,
-            "total" => run.total() as f64,
-            "error_rate" => match run.total() {
-                0 => return None,
-                t => run.failed as f64 / t as f64,
-            },
-            other => run.field(other)?,
-        };
+        let baseline = crate::eval::run_value(&run, &e.field)?;
         let horizons = if e.horizons_ms.is_empty() {
             vec![86_400_000]
         } else {
@@ -1922,8 +1913,9 @@ fn measure_outcomes<S: OmsSubstrate>(
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
         };
+        let baseline = baseline_at_apply(sub, metric, applied.applied_at_ms)?;
         let regressed = crate::recommendation::is_regression(
-            metric.baseline,
+            baseline,
             current,
             metric.higher_is_better,
         );
@@ -1931,7 +1923,7 @@ fn measure_outcomes<S: OmsSubstrate>(
             crate::recommendation::OutcomeResult {
                 rec_hash: rec_hash.clone(),
                 metric: metric.metric.clone(),
-                baseline: metric.baseline,
+                baseline,
                 current,
                 verdict: if regressed { "regressed" } else { "held" }.into(),
                 horizon_ms: horizon,
@@ -1944,7 +1936,7 @@ fn measure_outcomes<S: OmsSubstrate>(
                 rec_hash,
                 target_ref: applied.target_ref.clone(),
                 metric: metric.metric.clone(),
-                baseline: metric.baseline,
+                baseline,
                 current,
                 unit: metric.unit.clone(),
                 higher_is_better: metric.higher_is_better,
@@ -1952,6 +1944,32 @@ fn measure_outcomes<S: OmsSubstrate>(
         }
     }
     Ok(out)
+}
+
+/// The number a verdict compares against: for an evalset metric, the newest
+/// run journaled BEFORE the apply when there is one, else the snapshot the
+/// proposal froze. "Did applying it help" is a question about the state of
+/// the world at the apply, not at the proposal — and a deployment that
+/// measures once, at day one, and then approves its twentieth rule would
+/// otherwise read a rule that cost twenty points as `held` against a
+/// baseline the first nineteen had already left far behind. Found on a real
+/// corpus (`crates/areev-bench/CURVE.md`: a rule that contradicted an earlier
+/// one took the agent from 86% to 66% and measured as held against 26%).
+/// With nothing journaled between proposal and apply the two are the same
+/// run, so no verdict recorded before this changes.
+fn baseline_at_apply<S: SubstrateRead>(
+    sub: &S,
+    metric: &crate::recommendation::MetricSnapshot,
+    applied_at_ms: i64,
+) -> Result<f64> {
+    if let Some((evalset, field)) = crate::eval::parse_evalset_metric(&metric.metric) {
+        if let Some(run) = crate::eval::newest_eval_run_before(sub, evalset, applied_at_ms)? {
+            if let Some(v) = crate::eval::run_value(&run, field) {
+                return Ok(v);
+            }
+        }
+    }
+    Ok(metric.baseline)
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
@@ -2024,19 +2042,7 @@ pub(crate) fn measure_metric<S: SubstrateRead>(
             let Some(run) = crate::eval::newest_eval_run(sub, evalset, Some(since_ms))? else {
                 return Ok(None);
             };
-            // `failed`/`passed`/`total` are promoted so a metric can be written
-            // against any evalset without the host having to add fields;
-            // anything else is read from the summary the host did write.
-            Ok(match field {
-                "failed" => Some(run.failed as f64),
-                "passed" => Some(run.passed as f64),
-                "total" => Some(run.total() as f64),
-                "error_rate" => match run.total() {
-                    0 => None, // no cases ran: undefined, not zero
-                    t => Some(run.failed as f64 / t as f64),
-                },
-                other => run.field(other),
-            })
+            Ok(crate::eval::run_value(&run, field))
         }
         _ => Ok(None),
     }
