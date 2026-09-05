@@ -47,7 +47,20 @@ cd "$HZ"
 # The public set is run from the LOCAL evals/ copies, not `-d orinlabs/horizon-public`:
 # the hub copies carry the unpatched judges whose reward.json Harbor 0.22
 # cannot parse (the reward is still written; only Harbor's summary loses it).
-if [ -n "${TASK:-}" ]; then TARGET="-p $TASK"; else TARGET=$(ls -d evals/*/ | sed 's#/$##; s#^#-p #' | tr '\n' ' '); fi
-# shellcheck disable=SC2086
-exec env PYTHONPATH=agents harbor run $TARGET --agent-import-path "$IMPORT" -m "$MODEL" \
-  --ae OPENROUTER_API_KEY="$OPENROUTER_API_KEY" -o "$OUT" "$@"
+# One `harbor run` per task — `-p` is single-valued — each into its own
+# subdirectory of OUT.
+if [ -n "${TASK:-}" ]; then
+  # shellcheck disable=SC2086
+  exec env PYTHONPATH=agents harbor run -p "$TASK" --agent-import-path "$IMPORT" -m "$MODEL" \
+    --ae OPENROUTER_API_KEY="$OPENROUTER_API_KEY" -o "$OUT" "$@"
+fi
+rc=0
+for t in evals/*/; do
+  t=${t%/}
+  name=$(basename "$t")
+  echo "### $AGENT $name"
+  # shellcheck disable=SC2086
+  env PYTHONPATH=agents harbor run -p "$t" --agent-import-path "$IMPORT" -m "$MODEL" \
+    --ae OPENROUTER_API_KEY="$OPENROUTER_API_KEY" -o "$OUT/$name" "$@" || rc=$?
+done
+exit $rc

@@ -532,11 +532,28 @@ class AreevAgentBase(BaseAgent):
             extra_body: dict[str, Any] = {"usage": {"include": True}, "seed": seed}
             if pin:
                 extra_body["provider"] = {"order": [pin], "allow_fallbacks": False}
+            async def chat_with_retries():
+                # StreamLake answered 429 "temporarily rate-limited upstream"
+                # on one public trial; a provider's bad minute is not a
+                # result. Five attempts, exponential backoff, then the
+                # trial fails as it would have.
+                last: Exception | None = None
+                for attempt in range(5):
+                    try:
+                        return await client.chat.completions.create(
+                            model=chat_model, messages=messages, tools=tools_schema, temperature=0,
+                            extra_body=extra_body)
+                    except Exception as exc:  # 429 / 5xx / socket
+                        last = exc
+                        status = getattr(exc, "status_code", None)
+                        if status is not None and status < 500 and status != 429:
+                            raise
+                        await asyncio.sleep(min(2 ** attempt * 2, 30))
+                raise last if last else RuntimeError("chat failed")
+
             for turn_idx in range(MAX_STEPS):
                 async with timed_call(call_log, "chat", f"chat turn {turn_idx + 1}"):
-                    resp = await client.chat.completions.create(
-                        model=chat_model, messages=messages, tools=tools_schema, temperature=0,
-                        extra_body=extra_body)
+                    resp = await chat_with_retries()
                 if resp.usage:
                     total_prompt += resp.usage.prompt_tokens or 0
                     total_completion += resp.usage.completion_tokens or 0
