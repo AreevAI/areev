@@ -393,18 +393,32 @@ def session_search(db_path: Path, query: str, k: int) -> dict[str, Any]:
         # email that was then read). trace_rag gets this for free by
         # retrieving whole-day chunks; here the same day is reconstructed
         # from the grains, bounded.
+        # The whole day around the best hits — tool records AND the notes
+        # between them, in order — which is what trace_rag's per-day chunk
+        # gives its model and what a keyword hit alone does not: the record
+        # that names the topic sits next to the record that holds the detail.
         day_digest = None
-        if scored:
+        if scored or event_hits:
             day_score: dict[str, int] = defaultdict(int)
             for sc, _, f in scored:
                 day_score[f.get("session_id") or ""] += sc
+            for h in event_hits[:6]:
+                day_score[h.get("session") or ""] += 1
             best_day = max(day_score, key=day_score.get)
-            same_day = sorted((f for g in tools_all for f in [g.get("fields") or {}]
-                               if (f.get("session_id") or "") == best_day),
-                              key=lambda f: str(f.get("created_at") or ""))
-            budget, parts = 6000, []
-            for f in same_day:
-                t = render_tool(f, 700)
+            events_all = json.loads(db.cal('RECALL events WHERE namespace = "%s" AND session_id = "%s" LIMIT 500 FORMAT json'
+                                           % (NS, best_day))).get("grains", [])
+            records = []
+            for g in tools_all:
+                f = g.get("fields") or {}
+                if (f.get("session_id") or "") == best_day:
+                    records.append((str(f.get("created_at") or ""), render_tool(f, 700)))
+            for g in events_all:
+                f = g.get("fields") or {}
+                records.append((str(f.get("created_at") or ""),
+                                "%s: %s" % (f.get("role") or "note", str(f.get("content") or "")[:500])))
+            records.sort(key=lambda x: x[0])
+            budget, parts = 9000, []
+            for _, t in records:
                 if budget - len(t) < 0:
                     break
                 budget -= len(t)

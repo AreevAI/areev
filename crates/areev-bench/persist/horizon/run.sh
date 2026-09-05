@@ -44,7 +44,10 @@ case "$AGENT" in
   *) echo "unknown AGENT $AGENT" >&2; exit 2 ;;
 esac
 cd "$HZ"
-if [ -n "${TASK:-}" ]; then TARGET="-p $TASK"; else TARGET="-d orinlabs/horizon-public"; fi
+# The public set is run from the LOCAL evals/ copies, not `-d orinlabs/horizon-public`:
+# the hub copies carry the unpatched judges whose reward.json Harbor 0.22
+# cannot parse (the reward is still written; only Harbor's summary loses it).
+if [ -n "${TASK:-}" ]; then TARGET="-p $TASK"; else TARGET=$(ls -d evals/*/ | sed 's#/$##; s#^#-p #' | tr '\n' ' '); fi
 # shellcheck disable=SC2086
 exec env PYTHONPATH=agents harbor run $TARGET --agent-import-path "$IMPORT" -m "$MODEL" \
   --ae OPENROUTER_API_KEY="$OPENROUTER_API_KEY" -o "$OUT" "$@"
