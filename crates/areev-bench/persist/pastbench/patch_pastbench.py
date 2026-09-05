@@ -30,3 +30,30 @@ elif old in s:
     print("patched:", cli)
 else:
     raise SystemExit("allowlist line not found in %s — PAST-Bench changed shape; re-read cli.py" % cli)
+
+# Second edit, a crash guard in the benchmark's own reflection summarizer:
+# it reads `messages[-1].message.content[0].text`, and a reflection trace
+# whose last message is a tool result (the runner's turn budget ran out on a
+# tool call) raises AttributeError and kills the whole family-run — seen on
+# the passive arm's memory family in the pilot. Take the last TEXT block
+# instead; a trace with none summarizes as "".
+se = root / "src" / "past_bench" / "runner" / "self_evolve.py"
+t = se.read_text(encoding="utf-8")
+old_ref = """    final_text = ""
+    if messages and messages[-1].message.content:
+        final_text = messages[-1].message.content[0].text
+"""
+new_ref = """    final_text = ""
+    for m in reversed(messages):
+        texts = [b.text for b in (m.message.content or []) if getattr(b, "type", "") == "text" and getattr(b, "text", "")]
+        if texts:
+            final_text = texts[0]
+            break
+"""
+if new_ref in t:
+    print("already patched:", se)
+elif old_ref in t:
+    se.write_text(t.replace(old_ref, new_ref, 1), encoding="utf-8")
+    print("patched (reflection summarizer guard):", se)
+else:
+    raise SystemExit("reflection summarizer not found in %s — re-read self_evolve.py" % se)
