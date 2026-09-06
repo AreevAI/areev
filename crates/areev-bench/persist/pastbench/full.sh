@@ -5,7 +5,8 @@
 # need three of each).
 #
 #   AGENTS="areev-governed areev-passive hermes" RUN=1 ROOT=$HOME/mg/local/areev-runs/persist/full sh full.sh
-#   OFFSET_BASE=700 starts the port offsets there (a second run beside the first)
+#   OFFSET_BASE=30000 starts the port offsets there (a second run beside the first);
+#   streams are spaced 10,000 apart because families bind ports 3200–3300 and 9105–9210
 #
 # Each agent's pilot.sh loop lands in $ROOT/run$RUN/<agent>/<family>/ and
 # skips families already done, so a stopped run resumes with the same
@@ -27,5 +28,5 @@ for agent in $AGENTS; do
   tmux new -d -s "full-$RUN-$agent" \
     "FAMILIES=\"$FAMILIES\" AGENTS=\"$agent\" ROOT=\"$out\" PORT_OFFSET=$offset SEED=$RUN sh \"$HERE/pilot.sh\" > \"$out/$agent.log\" 2>&1"
   echo "started full-$RUN-$agent (port offset $offset) -> $out/$agent.log"
-  offset=$((offset + 100))
+  offset=$((offset + 10000))
 done
