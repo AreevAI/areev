@@ -39,6 +39,12 @@ if [ -f "$HOME/mg/local/dev-areev.env" ] && [ -z "${OPENROUTER_API_KEY:-}" ]; th
   . "$HOME/mg/local/dev-areev.env"
   set +a
 fi
+# the office key file carries OPENAI_API_KEY for the direct-OpenAI paths
+if [ -f "$HOME/mg/local/dev-office-areev-bench.env" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  set -a
+  . "$HOME/mg/local/dev-office-areev-bench.env"
+  set +a
+fi
 
 export AGENT_CMD="${AGENT_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $AGENT_MODEL --provider $AGENT_PIN --seed $SEED}"
 # Optional: a batch adapter for the fixed-prompt held-out reads (evaluate.py
