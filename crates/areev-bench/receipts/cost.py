@@ -70,7 +70,12 @@ def summarize(rows):
         b["completion_tokens"] += ct
         # a batch adapter's row carries the tier's discount off list price
         usd, priced = price(r.get("model", "?"), pt, ct)
-        b["usd"] += usd * (1.0 - float(r.get("discount") or 0.0))
+        if r.get("usd_reported") is not None:
+            # the provider's own figure for this reply (OpenRouter reports a batch's cost) beats any list price
+            usd, priced = float(r["usd_reported"]), True
+        else:
+            usd *= (1.0 - float(r.get("discount") or 0.0))
+        b["usd"] += usd
         b["priced"] = b["priced"] or priced
     out, total, unpriced = [], 0.0, []
     for (script, model), b in sorted(by.items()):

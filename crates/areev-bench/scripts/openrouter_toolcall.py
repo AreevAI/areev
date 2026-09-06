@@ -2,8 +2,9 @@
 """OpenRouter tool-calling adapter for the selfimprove_* benches.
 
     usage: openrouter_toolcall.py MODEL [--provider PROVIDER] [--seed N] [--selfcheck]
-    key:   $OPENROUTER_API_KEY
-    base:  $OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1)
+    key:   $OPENROUTER_API_KEY, or the variable named by --key-env
+    base:  $OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1), or --base-url
+           (an OpenAI model is cheaper called at api.openai.com directly)
 
 Reads ONE JSON request line on stdin (the SELFIMPROVE.md runner protocol):
     {"op":"chat","model":M,"messages":[...],"tools":[...],"temperature":0}
@@ -87,9 +88,26 @@ def die(msg: str, code: int = 2) -> None:
 
 def parse_args(argv):
     model, provider, selfcheck, seed = None, None, False, None
+    base_url, key_env = None, None
     i = 1
     while i < len(argv):
         a = argv[i]
+        if a in ("--base-url", "--key-env"):
+            # Any OpenAI-compatible chat endpoint, called directly: an OpenAI
+            # model goes to api.openai.com with $OPENAI_API_KEY rather than
+            # through OpenRouter, so a study's per-call and batch reads share
+            # one model on one provider. OpenRouter stays for the models it
+            # is the only route to. The provider pin is OpenRouter's and is
+            # dropped off it.
+            i += 1
+            if i >= len(argv):
+                die(f"{a} needs a value")
+            if a == "--base-url":
+                base_url = argv[i]
+            else:
+                key_env = argv[i]
+            i += 1
+            continue
         if a == "--seed":
             i += 1
             if i >= len(argv):
@@ -109,7 +127,7 @@ def parse_args(argv):
             selfcheck = True
         elif a.startswith("--"):
             die(f"unknown flag {a}; usage: openrouter_toolcall.py MODEL "
-                f"[--provider P] [--seed N] [--selfcheck]")
+                f"[--provider P] [--seed N] [--base-url URL] [--key-env VAR] [--selfcheck]")
         elif model is None:
             model = a
         else:
@@ -118,7 +136,7 @@ def parse_args(argv):
     if model is None:
         die("usage: openrouter_toolcall.py MODEL [--provider PROVIDER] "
             "[--seed N] [--selfcheck]")
-    return model, provider, selfcheck, seed
+    return model, provider, selfcheck, seed, base_url, key_env
 
 
 def read_request(line: str):
@@ -250,7 +268,10 @@ def post(body, key, base):
 
 
 def main() -> None:
-    model, provider, selfcheck, seed = parse_args(sys.argv)
+    model, provider, selfcheck, seed, base_url, key_env = parse_args(sys.argv)
+    base = base_url or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    if "openrouter.ai" not in base:
+        provider = None  # the provider pin is OpenRouter's routing hint; other endpoints reject unknown fields
     line = "" if (selfcheck and sys.stdin.isatty()) else sys.stdin.readline()
     if not line.strip():
         if not selfcheck:
@@ -269,14 +290,15 @@ def main() -> None:
     if selfcheck:
         out = normalize(CANNED_RESPONSE)
     else:
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        key_var = key_env or "OPENROUTER_API_KEY"
+        key = os.environ.get(key_var, "").strip()
         if not key:
-            die("OPENROUTER_API_KEY is not set")
-        base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            die(f"{key_var} is not set")
         resp = post(body, key, base)
         try:
             out = normalize(resp)
-            _meter(model, provider, out.get("usage"), "chat")
+            host = base.split("//", 1)[-1].split("/", 1)[0]
+            _meter(model, provider if "openrouter.ai" in base else host, out.get("usage"), "chat")
         except (KeyError, IndexError, TypeError) as e:
             sys.stderr.write(
                 f"openrouter_toolcall: unexpected response shape ({e}); "

@@ -42,9 +42,16 @@ fi
 
 export AGENT_CMD="${AGENT_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $AGENT_MODEL --provider $AGENT_PIN --seed $SEED}"
 # Optional: a batch adapter for the fixed-prompt held-out reads (evaluate.py
-# --batch). No default -- OpenRouter has no batch endpoint, so this names a
-# provider that has one AND serves the agent model, e.g.
-#   AGENT_BATCH_CMD="$PY $SCRIPTS/batch_toolcall.py --base-url https://api.together.xyz/v1 --model <the agent model> --key-env TOGETHER_API_KEY"
+# --batch). No default. OpenRouter's batch API (POST /api/beta/batches)
+# takes only models with a `:batch` variant, and the agent model of every
+# study so far has none -- so a batched study picks its agent model with
+# that in mind, e.g.
+#   AGENT_BATCH_CMD="$PY $SCRIPTS/batch_toolcall.py --base-url https://openrouter.ai/api/beta --model openai/gpt-oss-120b:batch --key-env OPENROUTER_API_KEY"
+# or names another provider's batch endpoint that serves the model. For an
+# OpenAI model, call OpenAI directly on BOTH paths (OpenRouter adds a margin,
+# and the two paths must share one provider to be comparable):
+#   AGENT_CMD="$PY $SCRIPTS/openrouter_toolcall.py gpt-5-mini --base-url https://api.openai.com/v1 --key-env OPENAI_API_KEY --seed $SEED"
+#   AGENT_BATCH_CMD="$PY $SCRIPTS/batch_toolcall.py --api openai --base-url https://api.openai.com/v1 --model gpt-5-mini --key-env OPENAI_API_KEY"
 # Validate a switch of provider the way the streamlake move was validated:
 # the same read, synchronous and batched, paired trial for trial.
 export AGENT_BATCH_CMD="${AGENT_BATCH_CMD:-}"

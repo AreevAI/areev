@@ -1015,12 +1015,16 @@ A held-out read's prompts never depend on an earlier answer, so a whole
 arm can go to a provider's batch endpoint as one job: half the list price
 on the usual tiers, and no rate-limit storm can cost the read a document.
 `evaluate.py --batch` submits each arm through `$AGENT_BATCH_CMD` (see
-`env.sh`; `scripts/batch_toolcall.py` speaks the OpenAI-compatible files +
-batches shape that OpenAI, Together and Groq share, and `--selfcheck` runs
-it against `scripts/mock_batch_server.py`). The governed stream and mem0's
-adds stay synchronous, because their next request carries the last answer.
-OpenRouter has no batch endpoint, so the adapter names a provider that
-serves the agent model; validate the switch the way the streamlake move
-was validated — the same read, synchronous and batched, paired trial for
-trial — before a study mixes the two. Batch usage rows carry the tier's
-discount and `cost.py` applies it.
+`env.sh`). `scripts/batch_toolcall.py` speaks two shapes — the OpenAI files
++ batches flow that OpenAI, Together and Groq share, and OpenRouter's
+inline `POST /api/beta/batches`, whose completed batch object carries the
+results and the actual cost — and `--selfcheck` runs either against
+`scripts/mock_batch_server.py`. The governed stream and mem0's adds stay
+synchronous, because their next request carries the last answer.
+OpenRouter batches only models with a `:batch` variant (69 of 430 on
+2026-09-06, priced at the batch tier), and the agent model of every study
+so far has none, so a batched study picks its agent model with that in
+mind — and validates the choice the way the streamlake move was validated,
+the same read synchronous and batched, paired trial for trial. Batch
+usage rows carry the tier's discount, or the provider's reported cost
+where it gives one, and `cost.py` uses them.
