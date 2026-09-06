@@ -30,5 +30,11 @@ until curl -s "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; do
   sleep 2
 done
 echo "vLLM up on :$PORT (adapter: $ADAPTER)"
+# Watchdog: the first attempt lost its server mid-family and the runner then
+# hung on a request that never returns — silent for hours. If the server
+# dies, kill this script's process group so the loss is loud and immediate.
+( while kill -0 $SERVER 2>/dev/null; do sleep 30; done
+  echo "vLLM exited during the run — aborting (see $ROOT/vllm.log)" >&2
+  kill -TERM -$$ 2>/dev/null ) &
 AGENT_MODEL=slm AGENT_PIN="" AGENT_BASE_URL="http://127.0.0.1:$PORT/v1" AGENT_API_KEY=local \
   FAMILIES="$FAMILIES" AGENTS="$AGENT" ROOT="$ROOT" sh "$HERE/../pastbench/pilot.sh"
