@@ -484,6 +484,42 @@ arm's own instruction header, word for word, reads 26% at every
 checkpoint. It is not the framing; retrieval returns the ledger's
 neighbours, and the governed loop distils the ledger's conventions.
 
+**Reviewed for measurement error, 6 September.** Asked whether a flat
+26% could be the harness rather than mem0, the chain was checked end to
+end. (1) The retrieved section reached every prompt: the final read's
+prompts average 2,726 tokens (framed control), 3,000 (as installed) and
+4,806 (domain-prompted) against 1,566 for the same documents with no
+section — the memories were there. (2) The agent's replies, all 100 of
+them in every mode and seed, carry exactly one key, `Registration Number`;
+nothing was mis-scored, and the day-one arm inside the mem0 runs reads
+25–26%, the governed runs' own day-one read. (3) One held-out read was
+reproduced by hand from a finished store: the ten memories nearest the
+form are paraphrases of its boilerplate ("…is an Amendment to Registration
+Statement under the Foreign Agents Registration Act of 1938 … must be filed
+with the U.S. Department of Justice"), and the reply is the one field.
+(4) The stores were re-probed with a stricter test — a *convention* names
+a field, directs how it is captured or written, and carries no particular
+value: as installed, 0 of 365–393 memories; domain-prompted, 4 to 105 of
+1,739–3,323; and every store is ADD events only, mem0's update/merge path
+never fired, which is why a 320-document run holds three thousand
+memories. (5) A task-phrased query — *which fields must be captured on
+every registration form, and in what format?* — does retrieve those
+conventions from the domain stores (8 of 10 on seed 1). So the final read
+was run again from the finished stores with that query: **25–26% on all
+three seeds**, and the same with half the retrieval by task and half by
+document. Reproduced by hand, the prompt now carries "For all registration
+forms, the File Date must be recorded in the format YYYY-MM-DD" under
+"RELEVANT MEMORIES" — and the agent, told on day one to capture exactly
+the fields it was instructed to, returns the one field. Under the governed
+arm's instruction header the same memories make it return every field:
+signer and date right, and the registrant name in upper case, because one
+of the stored conventions — extracted by mem0 from a single document's
+correction and never reviewed — says so. That combination, task query and
+instruction framing, is the last control (below). Nothing in the harness
+suppressed mem0; what suppressed it is that retrieval by document returns
+documents, memories presented as memories are read as background, and
+what it stores is never judged.
+
 It also costs more. mem0's own model calls came to $0.49 (as installed)
 and $0.62 (domain-prompted) for three seeds, on top of the agent's $0.38
 and $0.40 — $0.87 and $1.02 in all — against $0.66 for the whole governed

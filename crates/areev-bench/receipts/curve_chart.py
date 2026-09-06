@@ -23,6 +23,9 @@ SERIES = [("none", "no memory (day-one agent)", "none", ""),
           ("mem0-default", "mem0, as installed", "mem0/default", ""),
           ("mem0-domain", "mem0, domain-prompted", "mem0/domain", ""),
           ("mem0-domain-rules", "mem0, domain-prompted, framed as instructions", "mem0/raw", "6 4"),
+          ("mem0-domain-taskq", "mem0, domain-prompted, retrieved by task question (final read)", "mem0/domain", "2 3"),
+          ("mem0-domain-bothq", "mem0, domain-prompted, task question + document (final read, 1 seed)", "mem0/raw", "2 3"),
+          ("mem0-domain-taskq-rules", "mem0, domain-prompted, task question, framed as instructions (final read)", "mem0/default", "2 3"),
           ("llm", "Areev governed: LLM with the loop's rules", "areev", ""),
           ("scratch", "Areev tuned: 1.7B from scratch", "slm/tuned", ""),
           ("continual", "Areev tuned: 1.7B continually", "slm/tuned", "6 4"),
@@ -76,13 +79,14 @@ def chart(theme, res, hold):
         a(f'<text x="{PAD_L+4}" y="{y-5:.1f}" font-size="10.5" fill="{t["slm/base"]}">{esc("untuned 1.7B under the final rules, %.0f%%" % (100.0 * base["rate"]))}</text>')
     labels = []
     for key, (label, col, dash, pts) in series.items():
-        d = " ".join(("M" if i == 0 else "L") + f"{px(k):.1f} {py(v):.1f}" for i, (k, v, _ci) in enumerate(pts))
-        dasha = f' stroke-dasharray="{dash}"' if dash else ""
-        a(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="2.4" stroke-linejoin="round"{dasha}/>')
+        if len(pts) > 1:
+            d = " ".join(("M" if i == 0 else "L") + f"{px(k):.1f} {py(v):.1f}" for i, (k, v, _ci) in enumerate(pts))
+            dasha = f' stroke-dasharray="{dash}"' if dash else ""
+            a(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="2.4" stroke-linejoin="round"{dasha}/>')
         for k, v, ci in pts:
             if ci and ci[0] is not None:
                 a(f'<line x1="{px(k):.1f}" y1="{py(100*ci[0]):.1f}" x2="{px(k):.1f}" y2="{py(100*ci[1]):.1f}" stroke="{col}" stroke-width="1.2" opacity="0.7"/>')
-            a(f'<circle cx="{px(k):.1f}" cy="{py(v):.1f}" r="3.2" fill="{col}"/>')
+            a(f'<circle cx="{px(k):.1f}" cy="{py(v):.1f}" r="{5 if len(pts) == 1 else 3.2}" fill="{col}"/>')
         labels.append([label, col, px(pts[-1][0]) + 10, py(pts[-1][1]) + 4])
     labels.sort(key=lambda e: e[3])
     for i in range(1, len(labels)):
