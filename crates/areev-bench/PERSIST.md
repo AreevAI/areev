@@ -270,10 +270,14 @@ Read with the noise in mind (§10's last bullet; one run per arm): the three
 full arms sit within 0.01 of each other overall; Hermes leads on memory and
 information gathering, the Areev arms lead on update and on mechanism
 evidence, at roughly half of Hermes's prompt tokens. Governed and passive
-are the same substrate: the loop **proposed 75 times in run 1 and the
-reviewer refused every proposal** ("lacks evidence" in most), so the
-governed arm is the passive arm plus the loop's cost — §10's second bullet
-so far, pending the reviewer audit (§11 #14) and runs 2–3.
+are the same substrate in run 1 by construction: the loop **proposed 75
+times and the reviewer refused every proposal** — because it was never
+shown the cited evidence (§11 #18, found after run 1: the binding's
+recommendation listing carries no evidence field; the stored record does).
+Run 1's governed arm is therefore the **blind-gate** reading and is kept as
+such; run 2 is the first run with a sighted reviewer, and the
+governed-vs-passive contrast the design exists for is measured there and
+in run 3.
 
 **First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
 Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
