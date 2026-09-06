@@ -30,7 +30,15 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 # ~0.7 GB of the same card whenever it runs, and CUDA-graph capture at 0.85
 # OOMed on the first tuned evaluation while it did. A 1.7B model in bf16
 # needs 3.4 GB; 0.70 leaves the rest for its KV cache and the neighbour.
-COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.70 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
+# 16K, not 8K: at 8K six families (the information-gathering ones, whose
+# prompts carry the session list and whole-thread search results) hit
+# "maximum context length is 8192" mid-episode and the family-run died. The
+# cap has to be the MODEL's limit, not one the harness chose, or the tuned
+# arm is measured against an artificial ceiling. Qwen3-1.7B is native 32K;
+# 16K is what the 8 GB card's KV cache holds beside the weights, and it is
+# recorded as the tuned arm's context — one twentieth of the 262K the 30B
+# was served with, which is the point the tuning claim is about.
+COMMON="--dtype bfloat16 --max-model-len 16384 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
 if [ "$ADAPTER" = "none" ]; then
   # shellcheck disable=SC2086
   exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" $COMMON
