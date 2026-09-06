@@ -22,7 +22,22 @@ import dataset          # noqa: E402
 import ledger_profile   # noqa: E402
 from mem0_arm import USER, build_memory  # noqa: E402
 
-INSTRUCTION = re.compile(r"\b(must|required|format|every registration form|always|should be written|as YYYY)\b", re.I)
+# A CONVENTION is a memory that would tell the agent what to capture or how to
+# write it on any document: it names a field, says must/required/format/always,
+# and carries no particular value -- no registration number, no date, no
+# quoted name. "The form ... must be filed with the Department of Justice" is
+# boilerplate about forms, not a convention, and the first version of this
+# probe counted it as one.
+FIELD = re.compile(r"\b(registrant name|file date|signer name|registration number|date|name)\b", re.I)
+DIRECTIVE = re.compile(r"\b(must be (captured|recorded|written|entered|included|extracted)|required field|is required|always (capture|record|include)|format(ted)? as|in the format|should be (captured|recorded|written))\b", re.I)
+SPECIFIC = re.compile(r"\b(19|20)\d\d\b|\b\d{3,5}\b|'[^']{3,}'|\bfor (form|amendment|the amendment|this)\b", re.I)
+
+
+def is_convention(text):
+    return bool(FIELD.search(text) and DIRECTIVE.search(text) and not SPECIFIC.search(text))
+
+
+INSTRUCTION = re.compile(r"(?!)")  # kept for the CLI's older summaries; unused
 
 
 def main():
@@ -46,22 +61,32 @@ def main():
     # the store as a whole: instructions vs facts
     con = sqlite3.connect(os.path.join(args.workdir, "mem0_history.db"))
     rows = [r[0] or "" for r in con.execute("select new_memory from history where event='ADD'")]
-    instr = [r for r in rows if INSTRUCTION.search(r)]
-    print("store: %d memories added; %d read as instructions (%.0f%%), %d as per-document facts"
-          % (len(rows), len(instr), 100.0 * len(instr) / max(len(rows), 1), len(rows) - len(instr)))
+    instr = [r for r in rows if is_convention(r)]
+    events = dict(con.execute("select event, count(*) from history group by event").fetchall())
+    print("store: %d memories added; %d are conventions (%.1f%%), %d are about particular documents; events %s"
+          % (len(rows), len(instr), 100.0 * len(instr) / max(len(rows), 1), len(rows) - len(instr), events))
     for r in instr[:5]:
-        print("  instruction e.g.:", r[:120])
+        print("  convention e.g.:", r[:120])
 
     # what a held-out form retrieves
-    out = {"store_memories": len(rows), "store_instructions": len(instr), "retrievals": []}
+    out = {"store_memories": len(rows), "store_conventions": len(instr), "events": events, "retrievals": [],
+           "task_query": None}
+    # the fairness check: would a TASK-phrased query have found the conventions?
+    tq = "Which fields must be captured on every registration form, and in what format must each be written?"
+    res = m.search(tq, filters={"user_id": USER}, top_k=args.top_k)
+    tmems = [r.get("memory", "") for r in (res or {}).get("results", [])]
+    out["task_query"] = {"query": tq, "retrieved": len(tmems), "conventions": sum(1 for x in tmems if is_convention(x)), "memories": tmems}
+    print("\ntask-phrased query retrieves %d memories, %d of them conventions" % (len(tmems), out["task_query"]["conventions"]))
+    for x in tmems[:4]:
+        print("   %s %s" % ("RULE" if is_convention(x) else "doc ", x[:110]))
     for row in heldout[:args.docs]:
         q = (row["text"] or "").strip()[:1500]
         res = m.search(q, filters={"user_id": USER}, top_k=args.top_k)
         mems = [r.get("memory", "") for r in (res or {}).get("results", [])]
-        n_i = sum(1 for x in mems if INSTRUCTION.search(x))
+        n_i = sum(1 for x in mems if is_convention(x))
         print("\nheld-out %s (%s): %d memories retrieved, %d of them instructions" % (row["id"][:40], row["filed_at"], len(mems), n_i))
         for x in mems:
-            print("   %s %s" % ("RULE" if INSTRUCTION.search(x) else "fact", x[:110]))
+            print("   %s %s" % ("RULE" if is_convention(x) else "doc ", x[:110]))
         out["retrievals"].append({"id": row["id"], "retrieved": len(mems), "instructions": n_i, "memories": mems})
     json.dump(out, open(os.path.join(args.workdir, "peek.json"), "w"), indent=1)
     print("\nwrote", os.path.join(args.workdir, "peek.json"))

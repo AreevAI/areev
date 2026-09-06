@@ -143,6 +143,9 @@ def main():
     ap.add_argument("--arms", default="M,M2,A")
     ap.add_argument("--resume", action="store_true",
                     help="continue a run from its journal: documents already journaled are skipped and the store is reused")
+    ap.add_argument("--query", choices=("document", "task", "both"), default="document",
+                    help="what search() is asked: the document's text (mem0's README pattern), a fixed task question "
+                         "(which fields, what format), or half of each")
     ap.add_argument("--frame", choices=("plain", "rules"), default="plain",
                     help="how retrieved memories are presented: as memories, or under the governed arm's instruction header")
     args = ap.parse_args()
@@ -161,7 +164,7 @@ def main():
     experience, heldout = dataset.split_for(profile, rows, args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
     with open(os.path.join(args.workdir, "run.config.json"), "w") as fh:
-        json.dump({"arm": "mem0", "mode": args.mode, "frame": args.frame, "profile": args.profile,
+        json.dump({"arm": "mem0", "mode": args.mode, "frame": args.frame, "query": args.query, "profile": args.profile,
                    "seed": args.seed, "experience": args.experience, "eval": args.eval,
                    "evalset": evalset, "top_k": args.top_k, "mem0_llm": model,
                    "mem0_embedder": "ollama:mxbai-embed-large",
@@ -180,25 +183,43 @@ def main():
     except Exception:
         pass
 
-    def section_for(row):
-        q = (row["text"] or "").strip()[:1500]
+    TASK_QUERY = ("Which fields must be captured on every %s, and in what format must each be written?"
+                  % profile["document_noun"])
+
+    def search(q, k):
         # mem0 2.0 rejects a top-level user_id on reads ("use filters=") and
         # names the cap `top_k`; older releases took user_id= and `limit`. Try
         # the current shape first, and if retrieval fails say WHY — a silent
         # empty section would score this arm as no-memory and call it mem0.
         last = None
-        for kw in ({"filters": {"user_id": USER}, "top_k": args.top_k},
-                   {"user_id": USER, "limit": args.top_k}):
+        for kw in ({"filters": {"user_id": USER}, "top_k": k},
+                   {"user_id": USER, "limit": k}):
             try:
-                return render(m.search(q, **kw), args.frame)
+                return (m.search(q, **kw) or {}).get("results", [])
             except TypeError as e:
                 last = e
                 continue
             except Exception as e:
                 print("  search failed: %s: %s — empty section" % (type(e).__name__, str(e)[:160]))
-                return ""
+                return []
         print("  search failed: %s — empty section" % last)
-        return ""
+        return []
+
+    def section_for(row):
+        doc_q = (row["text"] or "").strip()[:1500]
+        if args.query == "document":
+            results = search(doc_q, args.top_k)
+        elif args.query == "task":
+            results = search(TASK_QUERY, args.top_k)
+        else:
+            half = max(args.top_k // 2, 1)
+            seen, results = set(), []
+            for r in search(TASK_QUERY, half) + search(doc_q, args.top_k - half):
+                key = (r.get("memory") or "").strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    results.append(r)
+        return render({"results": results}, args.frame)
 
     def checkpoint(n):
         d = os.path.join(args.workdir, "at_%03d" % n)
