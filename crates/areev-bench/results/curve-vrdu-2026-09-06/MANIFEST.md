@@ -3,7 +3,7 @@ fe281344753f358abb990d53f40f362d63409208f2fa264201a899e57a29a662  ./cost.curve.j
 ebcaa00b0e1559051c87080b64b16eb655086fbe45c6d0e62ecc3a3b1fbf2e47  ./cost.mem0-default.json
 170f082fd90b8fa0878de1a7024776e0543736ce4d0d18182fab4bde0ba87a7c  ./cost.mem0-domain-rules.json
 e60f9b4e0cafee065c2dbac85e7468e604c3b4e38be85d1da10634612003958a  ./cost.mem0-domain.json
-e64a06d3d7365bf4ac1eebe44c7233a4f9d7cba10c528f28617bd91b19fa0d46  ./CURVE-06b.json
+f969deb0be69b989b492b34205ad801a6fbea4030c0d12177dbc9210b0635a07  ./CURVE-06b.json
 eb21b3a7430598b62540a5aef634d80c20bd0f75dd67b7a39e3545bbd343af10  ./curve-06b.stdout
 6dddcde8684083ab0f68ab195ce6e8ad012cca271acbd7a044454467a367fcb1  ./curve-08b.seed1.a0.summary.json
 f7604ed7d5d121b48a2b860eb29d4b076d2817c6f3a80ce26ef5a47c913cbc51  ./curve-08b.seed1.ck_020.adapter_continual.manifest.json
@@ -24,7 +24,7 @@ d45a1061ecd2412e254249088d0c31fc13cb1944ab7db99961c7618f16a7bc5d  ./curve-08b.se
 94011480316545db4f939889e6d354bdd248e84cbbdafbb37e92ed69c52dd76f  ./curve-08b.seed1.experience.summary.json
 7434d45841e1b8f9c5136f5a2a7c18e798a1e0a6b5f568d1e6febef85e84dd64  ./curve-08b.seed1.run.config.json
 c2f23bee942b0ffb8b2379d31e1131cb9312c31c60b78d69d3d2ef27e36a3ed4  ./curve-08b.seed1.verify.summary.json
-3bc6c27969fe6ae950a7ddc0a294de8c875abfa2290844a5f5a1f761b75b4bdc  ./CURVE.json
+ff79c0855f0370a6b7a52914167559b16b483cd8cadede92b6a2d7034a631110  ./CURVE.json
 976218eecf52acef3f0b4b55d292b6deb7ba9f13eb7e9d6c15d0fa3554e1bf4b  ./curve.seed1.a0.summary.json
 cb75b51a6cdcc1281d5149f7248c9da1825a5aeddfa921fc2aa6ab62e53c9229  ./curve.seed1.ck_020.adapter_continual.manifest.json
 cb75b51a6cdcc1281d5149f7248c9da1825a5aeddfa921fc2aa6ab62e53c9229  ./curve.seed1.ck_020.adapter_scratch.manifest.json

@@ -556,6 +556,11 @@
     "n": 386,
     "rate": 0.689
    },
+   "none|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "paired": {
     "continual-latest_over_continual|unseen": {
      "losses": 24,
@@ -576,6 +581,16 @@
      "losses": 43,
      "p": 3e-06,
      "wins": 99
+    },
+    "continual_over_none|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 226
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 167
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 7,
@@ -611,6 +626,11 @@
      "losses": 19,
      "p": 0.0,
      "wins": 105
+    },
+    "scratch_over_none|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 254
     }
    },
    "scratch-latest|unseen": {
@@ -685,6 +705,11 @@
     "n": 386,
     "rate": 0.383
    },
+   "none|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 10,
@@ -700,6 +725,16 @@
      "losses": 21,
      "p": 0.0,
      "wins": 85
+    },
+    "continual_over_none|unseen": {
+     "losses": 15,
+     "p": 0.0,
+     "wins": 128
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 49
     },
     "scratch_over_continual|next": {
      "losses": 0,
@@ -730,6 +765,11 @@
      "losses": 21,
      "p": 0.0,
      "wins": 85
+    },
+    "scratch_over_none|unseen": {
+     "losses": 15,
+     "p": 0.0,
+     "wins": 128
     }
    },
    "scratch-train|train": {
@@ -789,6 +829,11 @@
     "n": 386,
     "rate": 0.689
    },
+   "none|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "paired": {
     "continual-latest_over_continual|unseen": {
      "losses": 5,
@@ -804,6 +849,16 @@
      "losses": 18,
      "p": 0.0,
      "wins": 103
+    },
+    "continual_over_none|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 253
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 167
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 37,
@@ -829,6 +884,11 @@
      "losses": 7,
      "p": 0.0,
      "wins": 108
+    },
+    "scratch_over_none|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 269
     }
    },
    "scratch-latest|unseen": {
@@ -903,6 +963,11 @@
     "n": 386,
     "rate": 0.378
    },
+   "none|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 9,
@@ -918,6 +983,16 @@
      "losses": 54,
      "p": 0.092947,
      "wins": 37
+    },
+    "continual_over_none|unseen": {
+     "losses": 30,
+     "p": 0.00206,
+     "wins": 60
+    },
+    "llm_over_none|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 48
     },
     "scratch_over_continual|next": {
      "losses": 4,
@@ -948,6 +1023,11 @@
      "losses": 18,
      "p": 0.0,
      "wins": 75
+    },
+    "scratch_over_none|unseen": {
+     "losses": 12,
+     "p": 0.0,
+     "wins": 116
     }
    },
    "scratch-old|train": {
@@ -1022,6 +1102,11 @@
     "n": 386,
     "rate": 0.692
    },
+   "none|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 5,
@@ -1037,6 +1122,16 @@
      "losses": 82,
      "p": 0.0,
      "wins": 3
+    },
+    "continual_over_none|unseen": {
+     "losses": 15,
+     "p": 0.0,
+     "wins": 104
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 168
     },
     "scratch_over_continual|next": {
      "losses": 3,
@@ -1067,6 +1162,11 @@
      "losses": 58,
      "p": 0.0,
      "wins": 3
+    },
+    "scratch_over_none|unseen": {
+     "losses": 4,
+     "p": 0.0,
+     "wins": 117
     }
    },
    "scratch-old|train": {

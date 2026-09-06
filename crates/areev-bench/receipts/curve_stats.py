@@ -289,6 +289,13 @@ def main():
                         pairs[(k, "scratch", key, "unseen")][0] += p["wins"]; pairs[(k, "scratch", key, "unseen")][1] += p["losses"]
                     out["mem0"].setdefault(mode, {}).setdefault(str(k), {})[s_] = {"exact": exact(tr), "n": len(tr)}
 
+    # the baselines were pooled after out["pooled"] was built: rebuild it so CURVE.json (and the chart) carry them
+    for k in cks_all:
+        out["pooled"][k] = {"%s|%s" % (m, h): {"exact": v[0], "n": v[1], "rate": round(v[0] / v[1], 3) if v[1] else None}
+                            for (kk, m, h), v in pooled.items() if kk == k and not m.endswith("-kept")}
+        out["pooled"][k]["paired"] = {"%s_over_%s|%s" % (a, b, h): {"wins": v[0], "losses": v[1], "p": round(mcnemar(*v), 6)}
+                                      for (kk, a, b, h), v in pairs.items() if kk == k}
+
     # the verify leg: the loop's verdicts on the deployment's own checkpoint reads
     out["verify"] = {}
     for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):

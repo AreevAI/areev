@@ -733,6 +733,26 @@
     "n": 1160,
     "rate": 0.785
    },
+   "mem0-default|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "mem0-domain-rules|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "none|unseen": {
+    "exact": 295,
+    "n": 1160,
+    "rate": 0.254
+   },
    "paired": {
     "continual-latest_over_continual|unseen": {
      "losses": 6,
@@ -753,6 +773,31 @@
      "losses": 104,
      "p": 0.0,
      "wins": 201
+    },
+    "continual_over_none|unseen": {
+     "losses": 9,
+     "p": 0.0,
+     "wins": 720
+    },
+    "llm_over_mem0-default|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 617
+    },
+    "llm_over_mem0-domain-rules|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 156
+    },
+    "llm_over_mem0-domain|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 616
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 614
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 23,
@@ -788,6 +833,26 @@
      "losses": 64,
      "p": 0.0,
      "wins": 195
+    },
+    "scratch_over_mem0-default|unseen": {
+     "losses": 11,
+     "p": 0.0,
+     "wins": 756
+    },
+    "scratch_over_mem0-domain-rules|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 262
+    },
+    "scratch_over_mem0-domain|unseen": {
+     "losses": 10,
+     "p": 0.0,
+     "wins": 755
+    },
+    "scratch_over_none|unseen": {
+     "losses": 10,
+     "p": 0.0,
+     "wins": 755
     }
    },
    "scratch-latest|unseen": {
@@ -862,6 +927,26 @@
     "n": 1160,
     "rate": 0.838
    },
+   "mem0-default|unseen": {
+    "exact": 298,
+    "n": 1160,
+    "rate": 0.257
+   },
+   "mem0-domain-rules|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain|unseen": {
+    "exact": 296,
+    "n": 1160,
+    "rate": 0.255
+   },
+   "none|unseen": {
+    "exact": 295,
+    "n": 1160,
+    "rate": 0.254
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 20,
@@ -877,6 +962,31 @@
      "losses": 378,
      "p": 0.0,
      "wins": 37
+    },
+    "continual_over_none|unseen": {
+     "losses": 42,
+     "p": 0.0,
+     "wins": 376
+    },
+    "llm_over_mem0-default|unseen": {
+     "losses": 4,
+     "p": 0.0,
+     "wins": 678
+    },
+    "llm_over_mem0-domain-rules|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 232
+    },
+    "llm_over_mem0-domain|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 679
+    },
+    "llm_over_none|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 677
     },
     "scratch_over_continual|next": {
      "losses": 0,
@@ -907,6 +1017,26 @@
      "losses": 376,
      "p": 0.0,
      "wins": 38
+    },
+    "scratch_over_mem0-default|unseen": {
+     "losses": 44,
+     "p": 0.0,
+     "wins": 380
+    },
+    "scratch_over_mem0-domain-rules|unseen": {
+     "losses": 24,
+     "p": 0.0,
+     "wins": 105
+    },
+    "scratch_over_mem0-domain|unseen": {
+     "losses": 42,
+     "p": 0.0,
+     "wins": 380
+    },
+    "scratch_over_none|unseen": {
+     "losses": 42,
+     "p": 0.0,
+     "wins": 379
     }
    },
    "scratch-train|train": {
@@ -966,6 +1096,26 @@
     "n": 1160,
     "rate": 0.792
    },
+   "mem0-default|unseen": {
+    "exact": 299,
+    "n": 1160,
+    "rate": 0.258
+   },
+   "mem0-domain-rules|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "none|unseen": {
+    "exact": 295,
+    "n": 1160,
+    "rate": 0.254
+   },
    "paired": {
     "continual-latest_over_continual|unseen": {
      "losses": 23,
@@ -981,6 +1131,31 @@
      "losses": 69,
      "p": 0.0,
      "wins": 201
+    },
+    "continual_over_none|unseen": {
+     "losses": 7,
+     "p": 0.0,
+     "wins": 761
+    },
+    "llm_over_mem0-default|unseen": {
+     "losses": 4,
+     "p": 0.0,
+     "wins": 624
+    },
+    "llm_over_mem0-domain-rules|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 161
+    },
+    "llm_over_mem0-domain|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 625
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 622
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 13,
@@ -1006,6 +1181,26 @@
      "losses": 47,
      "p": 0.0,
      "wins": 202
+    },
+    "scratch_over_mem0-default|unseen": {
+     "losses": 8,
+     "p": 0.0,
+     "wins": 783
+    },
+    "scratch_over_mem0-domain-rules|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 266
+    },
+    "scratch_over_mem0-domain|unseen": {
+     "losses": 7,
+     "p": 0.0,
+     "wins": 784
+    },
+    "scratch_over_none|unseen": {
+     "losses": 7,
+     "p": 0.0,
+     "wins": 784
     }
    },
    "scratch-latest|unseen": {
@@ -1080,6 +1275,26 @@
     "n": 1160,
     "rate": 0.85
    },
+   "mem0-default|unseen": {
+    "exact": 296,
+    "n": 1160,
+    "rate": 0.255
+   },
+   "mem0-domain-rules|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain|unseen": {
+    "exact": 298,
+    "n": 1160,
+    "rate": 0.257
+   },
+   "none|unseen": {
+    "exact": 295,
+    "n": 1160,
+    "rate": 0.254
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 22,
@@ -1095,6 +1310,31 @@
      "losses": 368,
      "p": 0.0,
      "wins": 35
+    },
+    "continual_over_none|unseen": {
+     "losses": 29,
+     "p": 0.0,
+     "wins": 386
+    },
+    "llm_over_mem0-default|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 692
+    },
+    "llm_over_mem0-domain-rules|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 232
+    },
+    "llm_over_mem0-domain|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 690
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 690
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 24,
@@ -1130,6 +1370,26 @@
      "losses": 353,
      "p": 0.0,
      "wins": 41
+    },
+    "scratch_over_mem0-default|unseen": {
+     "losses": 33,
+     "p": 0.0,
+     "wins": 411
+    },
+    "scratch_over_mem0-domain-rules|unseen": {
+     "losses": 26,
+     "p": 0.0,
+     "wins": 100
+    },
+    "scratch_over_mem0-domain|unseen": {
+     "losses": 35,
+     "p": 0.0,
+     "wins": 411
+    },
+    "scratch_over_none|unseen": {
+     "losses": 33,
+     "p": 0.0,
+     "wins": 410
     }
    },
    "scratch-latest|unseen": {
@@ -1209,6 +1469,26 @@
     "n": 1160,
     "rate": 0.84
    },
+   "mem0-default|unseen": {
+    "exact": 296,
+    "n": 1160,
+    "rate": 0.255
+   },
+   "mem0-domain-rules|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "none|unseen": {
+    "exact": 295,
+    "n": 1160,
+    "rate": 0.254
+   },
    "paired": {
     "continual_over_llm|next": {
      "losses": 35,
@@ -1224,6 +1504,31 @@
      "losses": 319,
      "p": 0.0,
      "wins": 50
+    },
+    "continual_over_none|unseen": {
+     "losses": 19,
+     "p": 0.0,
+     "wins": 428
+    },
+    "llm_over_mem0-default|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 680
+    },
+    "llm_over_mem0-domain-rules|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 231
+    },
+    "llm_over_mem0-domain|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 679
+    },
+    "llm_over_none|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 678
     },
     "scratch-latest_over_scratch|unseen": {
      "losses": 43,
@@ -1259,6 +1564,26 @@
      "losses": 212,
      "p": 0.0,
      "wins": 54
+    },
+    "scratch_over_mem0-default|unseen": {
+     "losses": 12,
+     "p": 0.0,
+     "wins": 532
+    },
+    "scratch_over_mem0-domain-rules|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 180
+    },
+    "scratch_over_mem0-domain|unseen": {
+     "losses": 13,
+     "p": 0.0,
+     "wins": 532
+    },
+    "scratch_over_none|unseen": {
+     "losses": 13,
+     "p": 0.0,
+     "wins": 532
     }
    },
    "scratch-latest|unseen": {
