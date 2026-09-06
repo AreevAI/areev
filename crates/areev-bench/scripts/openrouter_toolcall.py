@@ -197,7 +197,20 @@ def post(body, key, base):
         )
         try:
             with urllib.request.urlopen(req, timeout=110) as r:
-                return json.load(r)
+                body = json.load(r)
+            # OpenRouter can answer 200 with {"error": {"code": 429, ...}} and no
+            # choices -- a provider error wearing a success status. Until
+            # 2026-09-06 that escaped as "unexpected response shape" and killed
+            # the caller; it is retried like the status it names.
+            err = body.get("error") if isinstance(body, dict) else None
+            if err:
+                code = err.get("code") if isinstance(err, dict) else None
+                last = f"error body: {str(err)[:200]}"
+                if (code == 429 or (isinstance(code, int) and 500 <= code < 600)) and attempt < len(RETRY_DELAYS):
+                    time.sleep(RETRY_DELAYS[attempt])
+                    continue
+                break
+            return body
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read()[:300].decode("utf-8", "replace")

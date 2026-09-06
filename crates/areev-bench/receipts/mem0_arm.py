@@ -141,6 +141,8 @@ def main():
     ap.add_argument("--snapshot-every", type=int, default=10)
     ap.add_argument("--snapshot-at", default="", help="comma-separated document counts to read the held-out set at (the learning-curve checkpoints)")
     ap.add_argument("--arms", default="M,M2,A")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue a run from its journal: documents already journaled are skipped and the store is reused")
     ap.add_argument("--frame", choices=("plain", "rules"), default="plain",
                     help="how retrieved memories are presented: as memories, or under the governed arm's instruction header")
     args = ap.parse_args()
@@ -208,18 +210,32 @@ def main():
                    "evalset": evalset, "as_of": None},
                   open(os.path.join(d, "eval.summary.json"), "w"), indent=1)
 
-    journal = open(os.path.join(args.workdir, "journal.jsonl"), "a", encoding="utf-8")
+    jpath = os.path.join(args.workdir, "journal.jsonl")
+    done = set()
+    if args.resume and os.path.exists(jpath):
+        done = {json.loads(l)["seq"] for l in open(jpath, encoding="utf-8") if l.strip()}
+        print("######## resuming: %d document(s) already journaled, store reused" % len(done))
+    journal = open(jpath, "a", encoding="utf-8")
     totals = {"exact": 0, "semantic": 0, "scored": 0, "parked": 0, "documents": 0,
-              "adds": 0, "memories_seen": 0}
+              "adds": 0, "memories_seen": 0, "model_call_failures": 0, "resumed_after": max(done) if done else 0}
     print("######## experience: %d documents, mode=%s, top_k=%d" % (len(experience), args.mode, args.top_k))
     for r in experience:
         seq = r["seq"]
+        if seq in done:
+            continue
         at = ledger_profile.as_of(profile, seq)
         truth_at = {k: ledger_profile.refile(at, k, v) for k, v in r["truth"].items()}
         req = ledger_profile.required_fields(profile, seq)
         section = section_for(r)
         totals["memories_seen"] += section.count("\n- ")
-        out, usage = propose(agent_argv, at, r["text"], section)
+        try:
+            out, usage = propose(agent_argv, at, r["text"], section)
+        except RuntimeError as e:
+            # the same park-on-failure the governed run has: a provider that
+            # cannot be reached parks the document and is counted, not fatal
+            totals["model_call_failures"] += 1
+            print("seq %3d  MODEL CALL FAILED (%s) -- treated as a park" % (seq, str(e)[:80].replace("\n", " ")))
+            out, usage = {"fields": {}, "park": True, "reason": "model call failed"}, {}
         approved, message, corrections = acct.review(at, seq, out, truth_at)
 
         ex = sem = scored = 0

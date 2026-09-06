@@ -84,7 +84,18 @@ def post(body, key, raise_http=False):
     for attempt in range(RETRIES):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
-                return json.loads(r.read())
+                body = json.loads(r.read())
+            # a 200 carrying {"error": {"code": 429}} is a provider error wearing
+            # a success status; retried like the status it names
+            err = body.get("error") if isinstance(body, dict) else None
+            if err:
+                code = err.get("code") if isinstance(err, dict) else None
+                if (code == 429 or (isinstance(code, int) and 500 <= code < 600)) and attempt < RETRIES - 1:
+                    time.sleep(min(delay, 60.0))
+                    delay *= 2
+                    continue
+                fail(f"error body: {str(err)[:200]}", 1)
+            return body
         except urllib.error.HTTPError as e:
             if e.code not in (429, 500, 502, 503, 504) or attempt == RETRIES - 1:
                 detail = f"HTTP {e.code}: {e.read()[:200]!r}"
