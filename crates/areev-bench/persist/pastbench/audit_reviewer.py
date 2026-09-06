@@ -42,16 +42,38 @@ AUDIT_PROMPT = (
     "Answer with exactly one line: VALID: <one sentence> or INVALID: <one sentence>.")
 
 
+def _env_with_key():
+    """The judge command needs a key. Every driver here sources
+    `dev-areev.env` itself; this tool used to inherit it and silently
+    recorded 91 `ERROR: OPENROUTER_API_KEY is not set` verdicts when run
+    under tmux, whose sessions take the SERVER's environment, not the
+    caller's. Load it the same way the drivers do."""
+    env = dict(os.environ)
+    if env.get("OPENROUTER_API_KEY"):
+        return env
+    p = Path.home() / "mg" / "local" / "dev-areev.env"
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    if not env.get("OPENROUTER_API_KEY"):
+        raise SystemExit("no OPENROUTER_API_KEY in the environment or %s" % p)
+    return env
+
+
 def judge_factory(cmd):
     if not cmd:
         return None
     argv = cmd.split()
+    env = _env_with_key()
 
     def judge(entry, evidence):
         req = json.dumps({"op": "chat", "temperature": 0, "tools": [],
                           "messages": [{"role": "system", "content": AUDIT_PROMPT},
                                        {"role": "user", "content": "Proposed entry:\n%s\n\nEvidence:\n%s" % (entry, evidence or "(none)")}]})
-        p = subprocess.run(argv, input=req.encode("utf-8"), capture_output=True, timeout=180)
+        p = subprocess.run(argv, input=req.encode("utf-8"), capture_output=True, timeout=180, env=env)
         if p.returncode != 0:
             return "ERROR: " + p.stderr.decode("utf-8", "replace")[:120]
         return ((json.loads(p.stdout.decode("utf-8")).get("message") or {}).get("content") or "").strip()
