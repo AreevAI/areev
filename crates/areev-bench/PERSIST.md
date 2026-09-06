@@ -312,6 +312,38 @@ passive arm; p = 0.076 for the governed arm, which pays for its loop
 passes). Mechanism evidence favours Areev (0.21–0.22 against 0.16) but not
 significantly (p = 0.17–0.42).
 
+### The gate, audited by a second judge
+
+`persist/pastbench/audit_reviewer.py` re-judges every decision of run 2's
+governed arm against the evidence the reviewer was shown, using a
+**different model** (MiniMax-M2.7, the benchmark's judge; the reviewer is
+gpt-4o) and a narrower question: *from this evidence alone, is the entry a
+durable general rule the evidence states or implies?* 88 decisions with
+their evidence:
+
+| the reviewer | auditor VALID | auditor INVALID |
+|---|---:|---:|
+| approved (28) | 13 | **15** |
+| refused as a duplicate of a live entry (44) | 28 | 16 |
+| refused as unsupported (5) | 0 | 5 |
+| refused, other reasons (11) | 1 | 10 |
+
+**Raw agreement is 50%.** Counting the dedup refusals as correct — the
+auditor sees only one proposal and its evidence, never what the memory
+already holds, so it cannot judge a duplicate — agreement is **82%**, and
+the 5 "unsupported" refusals are unanimous.
+
+The finding that matters is the other diagonal: **15 of 28 approvals are
+over-generalisations the auditor rejects**, and the shape repeats — the
+evidence records one instance ("log this vendor's decision", "check the
+prior decision for Vendor X") and the approved rule quantifies it over all
+future cases. That is a plausible mechanism for the null in the row below:
+the gate is admitting rules that are true of one episode and inert in the
+next. A rubric clause about quantifying beyond the evidence is the obvious
+next change, and it is **not** being made mid-programme — the rubric was
+frozen before the runs and stays frozen; this is recorded as the finding
+and as the first candidate for a follow-up round.
+
 **The governed loop still adds nothing measurable over the plain store**
 (−0.004, p = 0.879), now with a *sighted* reviewer that approves 22–28
 proposals per run and refuses 52–61 with reasons. That is §10's second
