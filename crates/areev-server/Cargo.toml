@@ -34,9 +34,9 @@ ureq = { version = "3", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 # All three are already in the lockfile (areev-core / areev-store); optional
 # here only so a default build links none of the OIDC path.
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 hex = { version = "0.4", optional = true }
-getrandom = { version = "0.2", optional = true }
+getrandom = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
