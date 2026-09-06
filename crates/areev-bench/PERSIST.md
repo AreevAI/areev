@@ -182,6 +182,24 @@ control that separates "a small model with the memory in its prompt" from
 "a small model tuned on it". PAST-Bench's control episodes are scored for
 the tuned model as for every arm.
 
+**As run (2026-09-07, from run 1's governed memories):** the seen corpus
+holds the learn and cold episodes of all 26 families that scored ≥ 0.6 —
+38 rows, 32 kept after the 2K-token window (the rest were trajectories too
+long to keep an assistant turn inside it); the unseen corpus holds 20
+families' rows (26 kept) with six families held out by `random.Random(1)`
+over the sorted names: `EP03_recall_then_modify`, `PC01_sop_bootstrap_01`,
+`PC01_sop_bootstrap_02`, `PC01_sop_bootstrap_06`,
+`PG03_oncall_handoff_lookup`, `PG06_kappa_integration_review`. Adapters:
+seen 76 steps / 187 s / best val 0.037; unseen 64 steps / 169 s / best val
+0.090; both nf4 QLoRA at 7.1 GB peak. The evaluation runs the
+**`areev-passive`** scaffold (no loop) against the locally served model
+under the same paired `--compare-no-persistence` protocol, so each family
+yields the tuned model **with** the memory in its prompt and **with none**
+in one run: tuned-seen on all 26 families, the untuned base on all 26 (the
+control), tuned-unseen on the 6 held-out. The 1K-assembly condition is
+deferred to after the sighted runs; the corpus-size caveat (§10, next-to-
+last bullet) applies to everything here.
+
 **SLM base: `Qwen/Qwen3-1.7B` in bf16** on the RTX 4060 — the same model
 family the laptop's CURVE run tunes as an MLX 4-bit build, so the combined
 table compares like with like and discloses the precision difference in one
