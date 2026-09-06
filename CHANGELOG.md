@@ -30,8 +30,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whole held-out arm as one job to a batch endpoint — the OpenAI files
   shape or OpenRouter's inline `/api/beta/batches` (`scripts/batch_toolcall.py`,
   self-checked against a local mock of both and validated live on
-  OpenRouter); usage rows carry the tier's discount or the provider's
-  reported cost and `cost.py` uses them. The governed stream stays
+  OpenRouter and on OpenAI directly); usage rows carry the tier's discount
+  or the provider's reported cost and `cost.py` uses them. The per-call
+  adapter takes `--base-url`/`--key-env`, so an OpenAI model is called at
+  `api.openai.com` on both paths. The governed stream stays
   synchronous by construction.
 - **`crates/areev-bench/CURVE.md` — the tuning learning curve.** Three
   seeds of a governed deployment over 320 real FARA registration forms
