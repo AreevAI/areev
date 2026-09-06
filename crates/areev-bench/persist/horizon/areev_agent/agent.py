@@ -292,11 +292,25 @@ def govern(db_path: Path, seed: int) -> dict[str, Any]:
         by_hash = {}
         for noun in ("observations", "facts", "tools", "events"):
             try:
-                for g in json.loads(db.cal('RECALL %s WHERE namespace = "%s" LIMIT 500 FORMAT json' % (noun, NS))).get("grains", []):
+                for g in json.loads(db.cal('RECALL %s WHERE namespace = "%s" LIMIT 1000 FORMAT json' % (noun, NS))).get("grains", []):
                     by_hash[g.get("hash")] = g.get("fields") or {}
             except Exception:
                 continue
+        # `recommendations()` carries no evidence list; the stored record
+        # (a Fact in the `areev-loop` namespace) does — see PERSIST.md #18
+        cited = {}
+        try:
+            for g in json.loads(db.cal('RECALL facts WHERE namespace = "areev-loop" AND relation = "loop_recommendation" '
+                                       'LIMIT 1000 FORMAT json')).get("grains", []):
+                try:
+                    o = json.loads((g.get("fields") or {}).get("object") or "{}")
+                except json.JSONDecodeError:
+                    continue
+                cited[g.get("hash")] = o.get("evidence") or []
+        except Exception:
+            pass
         for rec in pend:
+            rec_evidence = rec.get("evidence") or cited.get(rec.get("hash")) or []
             summary = str(rec.get("summary") or "")
             m = re.search(r'record lesson:\s*"(.*)"\s*$', summary, re.S)
             m2 = re.search(r"record fact:\s*(.*)$", summary, re.S)
@@ -307,7 +321,7 @@ def govern(db_path: Path, seed: int) -> dict[str, Any]:
             else:
                 kind, text = "advisory", summary.strip()
             evidence = []
-            for h in (rec.get("evidence") or [])[:6]:
+            for h in rec_evidence[:6]:
                 f = by_hash.get(h)
                 if f:
                     evidence.append(json.dumps({k: v for k, v in f.items()

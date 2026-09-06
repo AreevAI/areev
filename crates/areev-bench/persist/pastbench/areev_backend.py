@@ -957,13 +957,32 @@ def govern(db_path, family_id, seed):
            "llm": bool(llm_cmd), "reviewer": bool(review_cmd)}
     judge = rv.make_judge(review_cmd)
 
-    def evidence_text(db, rec):
-        # The first version looked the cited hashes up with `RECALL grains
-        # WHERE hash = …`, which is not a CAL noun; every lookup failed
-        # silently, the reviewer was handed "(none)" and refused every
-        # proposal as unsupported — including three correct SOP lessons on
-        # PC01. Index what the loop can cite (observations, facts, tools,
-        # events in this namespace) by hash instead.
+    def cited_hashes(db):
+        """rec hash -> the grain hashes it cited. `recommendations()` does not
+        expose the evidence list at all (its JSON is analyzer / summary /
+        target_ref / status / …), which is why two earlier fixes to the
+        LOOKUP changed nothing: there was never anything to look up. The
+        stored recommendation Fact — relation `loop_recommendation` in the
+        `areev-loop` namespace, its object the full record — has it."""
+        out = {}
+        try:
+            rows = json.loads(db.cal('RECALL facts WHERE namespace = "areev-loop" AND relation = "loop_recommendation" '
+                                     'LIMIT 1000 FORMAT json')).get("grains", [])
+        except Exception:
+            return out
+        for g in rows:
+            f = _fields(g)
+            try:
+                o = json.loads(f.get("object") or "{}")
+            except json.JSONDecodeError:
+                continue
+            ev = o.get("evidence") or []
+            for h in (o.get("hash"), g.get("hash")):
+                if h:
+                    out[h] = ev
+        return out
+
+    def evidence_text(db, rec, cited):
         by_hash = {}
         for noun in ("observations", "facts", "tools", "events"):
             try:
@@ -972,7 +991,7 @@ def govern(db_path, family_id, seed):
             except Exception:
                 continue
         parts = []
-        for h in (rec.get("evidence") or [])[:6]:
+        for h in (rec.get("evidence") or cited.get(rec.get("hash")) or [])[:6]:
             f = by_hash.get(h)
             if f:
                 parts.append(json.dumps({k: v for k, v in f.items()
@@ -985,6 +1004,7 @@ def govern(db_path, family_id, seed):
         in_force = [t for _, t in live_notes(db)] + [t for _, t in live_profile(db)]
         pend = json.loads(db.recommendations('{"status":"pending"}'))
         out["pending"] = len(pend)
+        cited = cited_hashes(db) if pend else {}
         for rec in pend:
             kind, text = parse_proposal(str(rec.get("summary") or ""))
             analyzer = str(rec.get("analyzer") or "")
@@ -993,7 +1013,7 @@ def govern(db_path, family_id, seed):
             if analyzer == "outcome_review":
                 ok, because = True, "the gate measured a regression on this family's graded episodes"
             elif kind in ("lesson", "fact", "plan_revision", "query_revision"):
-                evidence = evidence_text(db, rec)
+                evidence = evidence_text(db, rec, cited)
                 ok, because = rv.review(text, evidence, in_force, judge)
             else:
                 ok, because = False, "advisory only — asks for no change"

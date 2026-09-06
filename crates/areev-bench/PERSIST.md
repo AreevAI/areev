@@ -255,6 +255,26 @@ the 5 h first estimated; the mem0 arm is queued behind the Areev arms
 rather than added as a fifth stream, because a rate-limited key gains
 nothing from more streams.
 
+**Run 1, all 26 families, after defects 12–17 (2026-09-07; the benchmark's
+Δ on evaluation episodes, macro-averaged; its mechanism score; the agent's
+mean prompt tokens per episode with memory; one run, no noise floor yet):**
+
+| arm | Δ all (26) | memory (5) | procedural (8) | info-gathering (6) | update (7) | mechanism | prompt tok / ep |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| areev-governed | **+0.236** | +0.212 | +0.180 | +0.389 | +0.186 | 0.216 | 18.6K |
+| areev-passive | **+0.237** | +0.122 | +0.191 | +0.363 | +0.262 | 0.219 | 19.0K |
+| hermes 0.4.0 | **+0.244** | +0.252 | +0.194 | +0.418 | +0.145 | 0.161 | 34.0K |
+| mem0 (12 of 26 so far) | +0.138 | +0.307 | — | +0.017 | — | 0.082 | 15.2K |
+
+Read with the noise in mind (§10's last bullet; one run per arm): the three
+full arms sit within 0.01 of each other overall; Hermes leads on memory and
+information gathering, the Areev arms lead on update and on mechanism
+evidence, at roughly half of Hermes's prompt tokens. Governed and passive
+are the same substrate: the loop **proposed 75 times in run 1 and the
+reviewer refused every proposal** ("lacks evidence" in most), so the
+governed arm is the passive arm plus the loop's cost — §10's second bullet
+so far, pending the reviewer audit (§11 #14) and runs 2–3.
+
 **First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
 Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
 without), mechanism 0.3, memory injected in both evaluation episodes; the
@@ -511,3 +531,4 @@ changed a number before it was caught.
 | 15 | 2026-09-07, run 1 | benchmark | `PC01_sop_bootstrap_06`'s `x_mock` service ignores `--port-offset`: on any non-zero offset it either never becomes ready (the health check probes the shifted port) or exits at once (the base port is another stream's) — the family failed for every arm not running at offset 0 | `fixup.sh`: after each run, an arm's missing families rerun one arm at a time at offset 0 |
 | 16 | 2026-09-07, seeded rerun | harness | with the sessions imported (#13) the three `session_search` families still scored Δ ≈ 0: the agent never called `session_search` in any evaluation episode. The prompt said only that earlier sessions were "searchable"; Hermes's tool description says when to use it and a no-query call lists recent sessions' titles for free | the injected section lists the earlier sessions' titles (most recent first, up to 30) and the tool description says when to search — parity with what Hermes exposes, not a task hint; the six families rerun once more inside run 1, the unseeded and the untitled readings both kept |
 | 17 | 2026-09-07, titled rerun | harness | `PG01_release_decision_followup`'s seeded sessions plus the family's own turns passed the 500-grain scan cap the harness inherited from the receipts rule ("a truncated prompt is a wrong prompt"), the scan raised, the exception's traceback kept the file handle alive, and the next open failed with STO-E002 for both Areev arms | event scans are bounded at CAL's 1000 and never raise (a truncated title list is a bounded answer, not a wrong one); `with_memory` drops the traceback before releasing the handle; PG01 rerun |
+| 18 | 2026-09-07, run 1 audit | harness | the ROOT CAUSE of #7 and #14: the binding's `recommendations()` JSON has no `evidence` field at all (analyzer, summary, target_ref, status, hash, severity, …), so every reviewer call since the pilot was handed "(none)" and the gate refused 75 of 75 proposals in run 1 as unsupported — the governed arm was the passive arm plus the loop's cost, by construction. The cited hashes live in the stored recommendation Fact (`areev-loop` namespace, relation `loop_recommendation`, the record in `object`) | the reviewer reads the evidence from the stored record; run 1's governed arm is the *blind-gate* reading and stays; run 2 is the first sighted run and is labelled so |
