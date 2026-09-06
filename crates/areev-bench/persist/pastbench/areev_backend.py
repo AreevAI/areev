@@ -150,6 +150,24 @@ def live_skills(db):
     return out
 
 
+def session_titles(db):
+    """One line per prior session, most recent first: its title (the first
+    Event's bracketed title when the session was seeded) or its first words."""
+    rows = _grains(db, "events")
+    first: dict[str, str] = {}
+    order: list[str] = []
+    for g in rows:
+        f = _fields(g)
+        sid = f.get("session_id") or ""
+        if not sid or sid in first:
+            continue
+        text = (f.get("content") or "").strip()
+        m = re.match(r"^\[(.{3,120}?)\]\s", text)
+        first[sid] = m.group(1) if m else text[:90].replace("\n", " ")
+        order.append(sid)
+    return [first[s] for s in reversed(order)]
+
+
 def render_home(db_path, out_dir):
     """Render the live memory into the Hermes-shaped tree the benchmark
     snapshots. Empty stores render no file — the benchmark reads "a memory
@@ -394,9 +412,12 @@ def persistence_tools(tool_config):
     if tool_config.get("session_search_enabled"):
         tools.append(ToolSpec(
             name="session_search",
-            description=("Search what happened in earlier sessions (your only access to them). Call it "
-                         "with a query before assuming any prior detail; without a query it lists the "
-                         "most recent sessions."),
+            description=("Search your record of earlier sessions — handoffs, decisions, exceptions, "
+                         "waivers, lookups you did before. This is your only access to them. USE IT "
+                         "PROACTIVELY, before acting, whenever the task mentions a prior handoff, an "
+                         "earlier decision, a policy note, 'as before', 'last time', or an identifier you "
+                         "do not have in front of you. With a query it returns the matching records; "
+                         "with no query it lists the most recent sessions."),
             input_schema={"type": "object", "properties": {"query": {"type": "string"}}}))
     return tools
 
@@ -468,8 +489,18 @@ class AreevAdapter(RuntimeAdapter):
             lines.append("### Skills (call skill_view for the steps)")
             lines += ["- %s — %s" % (n, f.get("description", "")) for n, (_, f) in skills.items()] or ["- (none yet)"]
         if self.tool_config.get("session_search_enabled"):
-            lines.append("### Earlier sessions")
-            lines.append("- searchable with session_search; nothing from them is in this prompt")
+            # What Hermes gets from a zero-cost `session_search` with no
+            # query — the recent sessions' titles — and what the first full
+            # run showed the model needs: told only that sessions were
+            # "searchable", it never searched once in the three families
+            # whose answer lived in one (defect #16). The memory knows its
+            # sessions; list them, most recent first.
+            titles = with_memory(self.db_path, ACTOR_AGENT, session_titles) if self.db_path.exists() else []
+            lines.append("### Earlier sessions (%d) — records this task may depend on; call session_search "
+                         "BEFORE acting when the task refers to anything from before" % len(titles))
+            lines += ["- " + t for t in titles[:30]] or ["- (none yet)"]
+            if len(titles) > 30:
+                lines.append("- … and %d more; session_search finds them by topic" % (len(titles) - 30))
         section = "\n".join(lines)
         if len(section) > MAX_INJECT_CHARS:
             section = section[:MAX_INJECT_CHARS] + "\n- (memory truncated to budget)"
