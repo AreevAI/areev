@@ -214,6 +214,28 @@ def import_hermes_home(db_path, src_dir):
                 sessions.append((p.stem, json.loads(_read(p))))
             except json.JSONDecodeError:
                 continue
+    # The benchmark pre-seeds prior sessions as ONE file, `session_seed.json`
+    # ({"sessions": [{"id", "title", "messages": [...]}, …]}), which the
+    # first version never read: the six information-gathering families
+    # whose expected signal is `session_search` ran with no prior session
+    # to search (run 1, defect #13). Each seeded session becomes its own
+    # thread of Events, its title on the first one.
+    seed = src_dir / "session_seed.json"
+    if seed.exists():
+        try:
+            payload = json.loads(_read(seed)) or {}
+        except json.JSONDecodeError:
+            payload = {}
+        for i, s in enumerate(payload.get("sessions") or [], start=1):
+            if not isinstance(s, dict):
+                continue
+            sid = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(s.get("id") or "seed_%03d" % i)).strip("_")
+            msgs = list(s.get("messages") or [])
+            if s.get("title") and msgs:
+                first = dict(msgs[0])
+                first["content"] = "[%s] %s" % (s["title"], first.get("content") or "")
+                msgs[0] = first
+            sessions.append((sid, {"messages": msgs}))
     if not (mem_text or user_text or skills or sessions):
         return {"notes": 0, "profile": 0, "skills": 0, "events": 0}
 
@@ -908,10 +930,12 @@ def govern(db_path, family_id, seed):
             kind, text = parse_proposal(str(rec.get("summary") or ""))
             analyzer = str(rec.get("analyzer") or "")
             because = ""
+            evidence = ""
             if analyzer == "outcome_review":
                 ok, because = True, "the gate measured a regression on this family's graded episodes"
             elif kind in ("lesson", "fact", "plan_revision", "query_revision"):
-                ok, because = rv.review(text, evidence_text(db, rec), in_force, judge)
+                evidence = evidence_text(db, rec)
+                ok, because = rv.review(text, evidence, in_force, judge)
             else:
                 ok, because = False, "advisory only — asks for no change"
             try:
@@ -925,8 +949,12 @@ def govern(db_path, family_id, seed):
                 else:
                     db.dismiss_recommendation(rec["hash"], because)
                     out["rejected"] += 1
+                # the evidence the reviewer was shown travels with the
+                # decision, so a refusal can be audited without reopening
+                # the memory (67 refusals in run 1 could not be)
                 out["decisions"].append({"hash": rec["hash"], "analyzer": analyzer, "kind": kind,
-                                         "text": text[:300], "approved": bool(ok), "because": because[:300]})
+                                         "text": text[:300], "approved": bool(ok), "because": because[:300],
+                                         "evidence": evidence[:1500]})
             except Exception as exc:
                 out["errors"].append("%s: %s" % (rec.get("hash", "")[:12], str(exc)[:160]))
 
