@@ -61,6 +61,22 @@ def trials(path):
     return out
 
 
+def trials_arm(path, arm):
+    """Like trials(), for an arm other than B (the day-one A0 read, mem0's M)."""
+    if not os.path.exists(path):
+        return None
+    out, seen = {}, collections.Counter()
+    for t in json.load(open(path)):
+        if t["arm"] != arm:
+            continue
+        key = "%s|%s" % (t["id"], t["field"])
+        seen[key] += 1
+        if seen[key] > 1:
+            key = "%s#%d" % (key, seen[key])
+        out[key] = t
+    return out or None
+
+
 def exact(tr):
     return sum(1 for t in tr.values() if t["exact"])
 
@@ -76,6 +92,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--mem0", default=None, help="root of the mem0 baseline runs: <root>/<mode>/seedN/{at_NNN,eval}/trials.json")
     args = ap.parse_args()
 
     out = {"seeds": {}, "pooled": {}}
@@ -219,6 +236,59 @@ def main():
             rec_k[mode] = e
         out["overfitting"][k] = rec_k
 
+    # the baselines on the same unseen sets: the day-one agent (no memory), read
+    # once per seed at the start of the run and paired against every checkpoint,
+    # and mem0 in each mode, read at the same checkpoints
+    cks_all = sorted({k for (k, _m, _h) in pooled if k != "base"})
+    for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
+        if not os.path.isdir(sd):
+            continue
+        a0 = trials_arm(os.path.join(sd, "a0.trials.json"), "A0")
+        if not a0:
+            continue
+        for k in cks_all:
+            pooled[(k, "none", "unseen")][0] += exact(a0); pooled[(k, "none", "unseen")][1] += len(a0)
+            s_ = int(re.search(r"seed(\d+)", sd).group(1))
+            llm = trials(os.path.join(sd, "ck_%03d" % k, "eval_llm_unseen", "trials.json"))
+            if llm:
+                p = paired(llm, a0)
+                pairs[(k, "llm", "none", "unseen")][0] += p["wins"]; pairs[(k, "llm", "none", "unseen")][1] += p["losses"]
+            for mode in ("scratch", "continual"):
+                tr = trials(os.path.join(sd, "ck_%03d" % k, "eval_%s_unseen" % mode, "trials.json"))
+                if tr:
+                    p = paired(tr, a0)
+                    pairs[(k, mode, "none", "unseen")][0] += p["wins"]; pairs[(k, mode, "none", "unseen")][1] += p["losses"]
+    out["mem0"] = {}
+    if args.mem0:
+        for md in sorted(glob.glob(os.path.join(args.mem0, "*"))):
+            if not os.path.isdir(md):
+                continue
+            mode = os.path.basename(md)
+            for sd in sorted(glob.glob(os.path.join(md, "seed*"))):
+                if not os.path.isdir(sd):
+                    continue
+                s_ = int(re.search(r"seed(\d+)", sd).group(1))
+                reads = {}
+                for d in glob.glob(os.path.join(sd, "at_*")):
+                    tr = trials_arm(os.path.join(d, "trials.json"), "M")
+                    if tr:
+                        reads[int(os.path.basename(d)[3:])] = tr
+                fin = trials_arm(os.path.join(sd, "eval", "trials.json"), "M")
+                if fin:
+                    reads[max(cks_all) if cks_all else 320] = fin
+                for k, tr in reads.items():
+                    key = "mem0-%s" % mode
+                    pooled[(k, key, "unseen")][0] += exact(tr); pooled[(k, key, "unseen")][1] += len(tr)
+                    llm = trials(os.path.join(args.root, "seed%d" % s_, "ck_%03d" % k, "eval_llm_unseen", "trials.json"))
+                    if llm:
+                        p = paired(llm, tr)
+                        pairs[(k, "llm", key, "unseen")][0] += p["wins"]; pairs[(k, "llm", key, "unseen")][1] += p["losses"]
+                    sc = trials(os.path.join(args.root, "seed%d" % s_, "ck_%03d" % k, "eval_scratch_unseen", "trials.json"))
+                    if sc:
+                        p = paired(sc, tr)
+                        pairs[(k, "scratch", key, "unseen")][0] += p["wins"]; pairs[(k, "scratch", key, "unseen")][1] += p["losses"]
+                    out["mem0"].setdefault(mode, {}).setdefault(str(k), {})[s_] = {"exact": exact(tr), "n": len(tr)}
+
     # the verify leg: the loop's verdicts on the deployment's own checkpoint reads
     out["verify"] = {}
     for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
@@ -262,6 +332,24 @@ def main():
         b = out["pooled"]["base"].get(h)
         if b and b["n"]:
             print("| untuned base, final rules | %.0f%% | | | |" % (100 * b["rate"]))
+        print()
+    base_keys = [m for m in sorted({m for (k, m, h) in pooled if h == "unseen" and (m == "none" or m.startswith("mem0-"))})]
+    if base_keys:
+        print("### baselines on the same unseen sets: the day-one agent (no memory) and mem0\n")
+        print("| documents learned from | " + " | ".join(base_keys) + " | LLM + rules | tuned from scratch |")
+        print("|---|" + "---:|" * (len(base_keys) + 2))
+        for k in cks:
+            cells = []
+            for m in base_keys:
+                c = pooled.get((k, m, "unseen"))
+                cells.append("%.0f%%" % (100 * round(c[0] / c[1], 3)) if c and c[1] else "—")
+            llm = pooled.get((k, "llm", "unseen")); sc = pooled.get((k, "scratch", "unseen"))
+            def vs(a, b):
+                q = pairs.get((k, a, b, "unseen"))
+                return " (%d/%d vs %s)" % (q[0], q[1], b) if q else ""
+            print("| %d | %s | %s | %s |" % (k, " | ".join(cells),
+                  ("%.0f%%" % (100 * round(llm[0] / llm[1], 3)) + "".join(vs("llm", m) for m in base_keys)) if llm and llm[1] else "—",
+                  ("%.0f%%" % (100 * round(sc[0] / sc[1], 3)) + "".join(vs("scratch", m) for m in base_keys)) if sc and sc[1] else "—"))
         print()
     print("### overfitting receipt (per seed, per checkpoint): kept = lowest-validation checkpoint; last = final iteration\n")
     print("| seed | documents | mode | rows | iters | best val (iter) | last val | kept |")

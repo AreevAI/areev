@@ -19,9 +19,12 @@ from fourway import THEMES, esc  # noqa: E402
 
 W, H = 920, 420
 PAD_L, PAD_T, PLOT_H, CURVE_W = 58, 34, 300, 660
-SERIES = [("llm", "LLM with the checkpoint's rules", "areev", ""),
-          ("scratch", "1.7B tuned from scratch", "slm/tuned", ""),
-          ("continual", "1.7B tuned continually", "slm/tuned", "6 4"),
+SERIES = [("none", "no memory (day-one agent)", "none", ""),
+          ("mem0-default", "mem0, as installed", "mem0/default", ""),
+          ("mem0-domain", "mem0, domain-prompted", "mem0/domain", ""),
+          ("llm", "Areev governed: LLM with the loop's rules", "areev", ""),
+          ("scratch", "Areev tuned: 1.7B from scratch", "slm/tuned", ""),
+          ("continual", "Areev tuned: 1.7B continually", "slm/tuned", "6 4"),
           ("live", "governed agent as it ran", "areev_rep", "2 4")]
 TITLE = {"unseen": "registrants the agent never learned from",
          "seen": "the stream's own registrants, other filings",
@@ -57,7 +60,7 @@ def chart(theme, res, hold):
     a = o.append
     ends = "; ".join("%s %.0f%% at %d" % (lab, pts[-1][1], pts[-1][0]) for lab, _c, _d, pts in series.values())
     a(f'<title>{esc("Exact-match rate on %s as the deployment grows: %s." % (TITLE[hold], ends))}</title>')
-    a(f'<desc>{esc("Documents learned from on a log axis. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over %d seed(s); bars are 95%% Wilson intervals where recorded." % n_seeds)}</desc>')
+    a(f'<desc>{esc("Documents learned from on a log axis. No memory is the day-one agent, read once per seed. mem0 stores each accountant exchange and retrieves into the prompt. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over %d seed(s); bars are 95%% Wilson intervals where recorded." % n_seeds)}</desc>')
     for i in range(5):
         v = 25 * i
         a(f'<line x1="{PAD_L}" y1="{py(v):.1f}" x2="{PAD_L+CURVE_W}" y2="{py(v):.1f}" stroke="{t["grid"]}"/>')

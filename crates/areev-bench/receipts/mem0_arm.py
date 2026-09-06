@@ -3,6 +3,7 @@
 
     mem0_arm.py --dataset D --workdir W --seed S [--experience 40] [--eval 60]
                 [--mode default|domain|raw] [--top-k 10] [--snapshot-every 10]
+                [--snapshot-at 20,40,80,160]
                 [--arms M,M2,A]
 
 Same receipts, same order, same agent, same accountant, same held-out set as
@@ -123,6 +124,7 @@ def main():
     ap.add_argument("--mode", choices=("default", "domain", "raw"), default="default")
     ap.add_argument("--top-k", type=int, default=10)
     ap.add_argument("--snapshot-every", type=int, default=10)
+    ap.add_argument("--snapshot-at", default="", help="comma-separated document counts to read the held-out set at (the learning-curve checkpoints)")
     ap.add_argument("--arms", default="M,M2,A")
     args = ap.parse_args()
 
@@ -235,7 +237,8 @@ def main():
         print("seq %3d  exact %d/%d   semantic %d/%d   %s  mem=%d"
               % (seq, ex, scored, sem, scored, "ok" if approved else "corrected",
                  section.count("\n- ")))
-        if args.snapshot_every and seq % args.snapshot_every == 0 and seq < len(experience):
+        at_set = {int(x) for x in args.snapshot_at.split(",") if x.strip()}
+        if ((args.snapshot_every and seq % args.snapshot_every == 0) or seq in at_set) and seq < len(experience):
             checkpoint(seq)
 
     json.dump({**totals, "mode": args.mode, "embed_calls": embed_calls["n"], "evalset": evalset},

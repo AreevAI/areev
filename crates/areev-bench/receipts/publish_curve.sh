@@ -5,13 +5,14 @@
 # trials, corpora and memories stay local (they embed corpus text); only
 # counts, configuration and the loop's own authored rules travel.
 #
-#   publish_curve.sh <curve-root (1.7B)> <curve-08b-root (0.6B)> <results-dir>
+#   publish_curve.sh <curve-root (1.7B)> <curve-08b-root (0.6B)> <results-dir> [mem0-root]
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-CURVE="$1"; SMALL="$2"; OUT="$3"
+CURVE="$1"; SMALL="$2"; OUT="$3"; MEM0="${4:-}"
 mkdir -p "$OUT" "$REPO/docs/assets"
-python3 "$HERE/curve_stats.py" "$CURVE" --write | tee "$OUT/curve.stdout"
+MEM0_ARG=""; [ -n "$MEM0" ] && [ -d "$MEM0" ] && MEM0_ARG="--mem0 $MEM0"
+python3 "$HERE/curve_stats.py" "$CURVE" --write $MEM0_ARG | tee "$OUT/curve.stdout"
 cp "$CURVE/CURVE.json" "$OUT/CURVE.json"
 python3 "$HERE/curve_chart.py" "$CURVE" --out "$REPO/docs/assets/curve"
 if [ -d "$SMALL" ]; then
@@ -40,5 +41,19 @@ for root in "$CURVE" "$SMALL"; do
   done
   python3 "$HERE/cost.py" "$root" --json "$OUT/cost.$tag.json" > /dev/null 2>&1 || true
 done
+if [ -n "$MEM0" ] && [ -d "$MEM0" ]; then
+  for md in "$MEM0"/*; do
+    [ -d "$md" ] || continue
+    mode=$(basename "$md")
+    for sd in "$md"/seed*; do
+      [ -d "$sd" ] || continue
+      s=$(basename "$sd")
+      for f in run.config.json experience.summary.json; do
+        [ -f "$sd/$f" ] && cp "$sd/$f" "$OUT/mem0-$mode.$s.$f"
+      done
+    done
+    python3 "$HERE/cost.py" "$md" --json "$OUT/cost.mem0-$mode.json" > /dev/null 2>&1 || true
+  done
+fi
 ( cd "$OUT" && find . -type f ! -name MANIFEST.md | sort | xargs shasum -a 256 ) > "$OUT/MANIFEST.md"
 echo "published -> $OUT"

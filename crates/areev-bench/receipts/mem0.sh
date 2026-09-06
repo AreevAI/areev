@@ -10,4 +10,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env.sh"
 WORKDIR="$1"; shift
 export MEM0_LLM_MODEL="${MEM0_LLM_MODEL:-$LEARNER_MODEL}"
+# mem0's telemetry opens a SECOND local Qdrant at a path shared by every
+# process on the machine (~/.mem0/migrations_qdrant), so two seeds in
+# parallel fight over its file lock and one dies at start. Off by default.
+export MEM0_TELEMETRY="${MEM0_TELEMETRY:-false}"
 exec "$PY" "$HERE/mem0_arm.py" --profile "$PROFILE" --dataset "$DATASET" --workdir "$WORKDIR" --seed "$SEED" "$@"

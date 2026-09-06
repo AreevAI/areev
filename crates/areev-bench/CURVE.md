@@ -353,6 +353,26 @@ registrants are held out and therefore which documents form the stream — a
 documents. The sample size is now a separate parameter (`--rows`), and the
 split is byte-identical for every published call.
 
+### Added after the results: the baselines the four-way chart had
+
+Read against the published curve, the chart lacked the two lines every
+earlier study drew — an agent with **no memory** and one with **mem0** —
+so both are added, on the same unseen sets, and the expectation is
+written down before the mem0 numbers exist. *No memory* is the day-one
+agent (the one-field instruction, no rules): it was read once per seed at
+the start of the run and pairs with every checkpoint; it is flat by
+construction, at 25%. *mem0* is the [`FOURWAY.md`](FOURWAY.md) arm on
+this corpus: the same agent, the same accountant, `add()` after every
+corrected document and `search()` before the next, in its domain-prompted
+and as-installed modes, read at the same five checkpoints. *Stated in
+advance:* on receipts mem0 never got the agent to attempt a second field
+and stayed within ten points of no memory; here the accountant's messages
+name the missing fields explicitly, so mem0 should lift the agent above
+25% — and stay well below the governed LLM's 84% at every checkpoint and
+below every tuned reading from 160 on, because retrieval puts a handful
+of past corrections in the prompt while a rule states the convention once
+for every document.
+
 ## The trial, and what it caught
 
 Forty documents, one checkpoint at 20, held-out sets of 20, seed 1. Its
