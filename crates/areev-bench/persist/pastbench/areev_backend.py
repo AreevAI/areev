@@ -153,19 +153,28 @@ def live_skills(db):
 def session_titles(db):
     """One line per prior session, most recent first: its title (the first
     Event's bracketed title when the session was seeded) or its first words."""
-    rows = _grains(db, "events")
-    first: dict[str, str] = {}
-    order: list[str] = []
-    for g in rows:
+    # RECALL returns newest first; a session's LAST event is its answer,
+    # and listing answers in the prompt would be a shortcut the benchmark's
+    # controls exist to catch. Take the bracketed title the importer put on
+    # the first message, else the earliest event's opening words.
+    per: dict[str, list[tuple[str, str]]] = {}
+    for g in _grains(db, "events"):
         f = _fields(g)
         sid = f.get("session_id") or ""
-        if not sid or sid in first:
-            continue
-        text = (f.get("content") or "").strip()
-        m = re.match(r"^\[(.{3,120}?)\]\s", text)
-        first[sid] = m.group(1) if m else text[:90].replace("\n", " ")
-        order.append(sid)
-    return [first[s] for s in reversed(order)]
+        if sid:
+            per.setdefault(sid, []).append((str(f.get("created_at") or ""), (f.get("content") or "").strip()))
+    out = []
+    for sid, evs in per.items():
+        evs.sort(key=lambda x: x[0])
+        title = None
+        for _, text in evs:
+            m = re.match(r"^\[(.{3,120}?)\]\s", text)
+            if m:
+                title = m.group(1)
+                break
+        out.append((evs[-1][0], title or evs[0][1][:90].replace("\n", " ")))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in out]
 
 
 def render_home(db_path, out_dir):
