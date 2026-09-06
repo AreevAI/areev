@@ -26,7 +26,11 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 # enable_thinking=false by default, as the trainer rendered every row: the
 # benchmark's runner cannot pass chat_template_kwargs, and a thinking
 # preamble in `content` is what the judge would read.
-COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
+# 0.70, not 0.85: the mem0 arm's embedder (ollama, mxbai-embed-large) takes
+# ~0.7 GB of the same card whenever it runs, and CUDA-graph capture at 0.85
+# OOMed on the first tuned evaluation while it did. A 1.7B model in bf16
+# needs 3.4 GB; 0.70 leaves the rest for its KV cache and the neighbour.
+COMMON="--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.70 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
 if [ "$ADAPTER" = "none" ]; then
   # shellcheck disable=SC2086
   exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" $COMMON
