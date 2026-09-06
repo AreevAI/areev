@@ -724,7 +724,12 @@ mem0 is the no-memory line on every seed in every mode, including a
 control that frames what it retrieves under the governed arm's own
 instruction header: its stores hold the conventions (four of 2,692
 memories on one seed) but a top-ten drawn by similarity to a form returns
-other forms. At 320 the tuned model beats it 783 trials to 8, and the
+other forms. Given both of the things the governed loop does by
+construction — retrieval by the task question and instruction framing —
+mem0 reaches 64% on the final read (69 / 51 / 72 by seed), and what holds
+it there is the third thing it lacks, review: it files names in upper
+case and dates as printed because single unreviewed corrections said so.
+At 320 the tuned model beats documented-use mem0 783 trials to 8, and the
 three-seed mem0 runs cost more than the whole governed curve.
 
 The curve is era coverage: the stream is chronological, the first 80

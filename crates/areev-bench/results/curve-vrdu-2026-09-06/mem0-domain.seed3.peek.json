@@ -1,6 +1,9 @@
 {
  "store_memories": 3323,
- "store_instructions": 2507,
+ "store_conventions": 105,
+ "events": {
+  "ADD": 3323
+ },
  "retrievals": [
   {
    "id": "20170731_Alston _ Bird, LLP_Amendment_Am",
@@ -53,5 +56,22 @@
     "User provided a Short-Form Registration Statement filed under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0005, issued by the U.S. Department of Justice, Washington, DC 20530, and this document was received by the NSD/FARA Registration Unit on July 5, 2018, at 4:17:34 PM, with an expiration date of April 30, 2017, and the registration number is 6568"
    ]
   }
- ]
+ ],
+ "task_query": {
+  "query": "Which fields must be captured on every registration form, and in what format must each be written?",
+  "retrieved": 10,
+  "conventions": 3,
+  "memories": [
+   "Every registration form must include the registrant name and file date, as these are required fields that must be captured accurately.",
+   "Every registration form must include the registrant name and file date, as these are required fields that must be captured accurately, as emphasized by the user in Form FA-11, Form DJ-307, and Form OBD-68.",
+   "User confirmed that the registrant name, file date, and signer name are all required fields and must be captured for every registration statement",
+   "Every registration form must include the registrant name and file date, as these are required fields that must be captured accurately, as emphasized by the user in both Form FA-11 and Form DJ-307.",
+   "Every registration form must include the registrant name and file date, as these are required fields that must be captured accurately, as emphasized by the user in Form FA-11, Form DJ-307, Form OBD-68, and Form OBD-68 (registration number 1699).",
+   "Every registration form must include the registrant name and file date, as these are required fields that must be captured accurately, as emphasized by the user in Form FA-11, Form DJ-307, Form OBD-68 (registration number 2415), and Form OBD-68 (registration number 1699).",
+   "Every registration form must include the registrant name and file date as required fields, and these must be captured accurately with exact capitalization and correct date formatting, as emphasized by the user in multiple forms including Form OBD-68 (registration number 2110).",
+   "For all forms, the registration number must be captured exactly as displayed, including leading zeros if present, and must be recorded in the correct field regardless of form type.",
+   "Every registration form must include the registrant name and file date as required fields, and these must be captured accurately with exact capitalization and correct date formatting, as emphasized by the user in multiple forms including Form OBD-68 (registration number 2987).",
+   "Every registration form must include the registration number, as this is a required field that must be captured accurately, as emphasized by the user in Form FA-11, Form DJ-307, Form OBD-68, and Form OBD-68 (registration number 1699)."
+  ]
+ }
 }

@@ -458,6 +458,7 @@ Registrant Name 190 → 282, Registration Number 254 → 291, Signer Name 128
 | 80 | 25% | 26% | 26% | 26% | 84% | 70% |
 | 160 | 25% | 26% | 26% | 26% | 78% | 90% |
 | 320 | 25% | 26% | 26% | 26% | 79% | 93% |
+| 320, mem0 retrieved by task question, framed as instructions (final read only) | | | **64%** (69 / 51 / 72 by seed) | | | |
 
 mem0 is the no-memory line at every checkpoint, in every mode, on every
 seed: the day-one field and **zero** exact matches on the other three,
@@ -515,10 +516,23 @@ arm's instruction header the same memories make it return every field:
 signer and date right, and the registrant name in upper case, because one
 of the stored conventions — extracted by mem0 from a single document's
 correction and never reviewed — says so. That combination, task query and
-instruction framing, is the last control (below). Nothing in the harness
-suppressed mem0; what suppressed it is that retrieval by document returns
-documents, memories presented as memories are read as background, and
-what it stores is never judged.
+instruction framing, was run as the last control — the final read from
+the three finished domain-prompted stores: **69%, 51% and 72%** exact,
+**64% pooled** (742 of 1,160), against 79% for the governed LLM and 93%
+for the tuned model on the same forms. Given the two things the governed
+loop does by construction — ask for the conventions rather than the
+neighbours, and present them as instructions — mem0's agent finally
+produces the fields. What it still lacks is the third thing, review: seed
+1 files every registrant name in upper case (1 of 100 exact, 98 semantic)
+because one stored convention, extracted from a single correction and
+never judged, says to; seed 3 writes dates as `07/31/2017` (12 exact, 64
+semantic); seed 2's store never held a convention naming the file date or
+the signer, so it produces neither (0 of 100, 0 of 87). The governed loop's
+reviewer rejected 46, 45 and 17 proposals on the three seeds; nothing
+rejected mem0's. Nothing in the harness suppressed mem0. What holds it at
+26% in its documented use is that retrieval by document returns documents
+and memories presented as memories are read as background; what holds it
+at 64% when both are fixed is that nobody reviews what it stored.
 
 It also costs more. mem0's own model calls came to $0.49 (as installed)
 and $0.62 (domain-prompted) for three seeds, on top of the agent's $0.38

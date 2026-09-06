@@ -1,6 +1,9 @@
 {
  "store_memories": 365,
- "store_instructions": 5,
+ "store_conventions": 0,
+ "events": {
+  "ADD": 365
+ },
  "retrievals": [
   {
    "id": "20170731_Alston _ Bird, LLP_Amendment_Am",
@@ -53,5 +56,22 @@
     "User submitted a Short-Form Registration Statement for Quinn PR with Registration Number 6433 on October 10, 2017, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on October 11, 2017, at 5:36:20 PM, signed by Chiou."
    ]
   }
- ]
+ ],
+ "task_query": {
+  "query": "Which fields must be captured on every registration form, and in what format must each be written?",
+  "retrieved": 10,
+  "conventions": 0,
+  "memories": [
+   "User submitted a Short-Form Registration Statement for Luque PLLC with Registration Number 6568 on July 3, 2018, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on July 5, 2018, at 4:17:34 PM, signed by Anibal Luque.",
+   "User submitted a Short-Form Registration Statement for Quinn PR with Registration Number 6433 on October 10, 2017, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on October 11, 2017, at 5:36:20 PM, signed by Chiou.",
+   "User submitted a Short-Form Registration Statement for Mercury with Registration Number 6170 on July 22, 2016, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on July 22, 2016, at 4:45:45 PM, signed by Mark Braden.",
+   "User submitted a Short-Form Registration Statement for Roberti White LLC with Registration Number 6065 on July 3, 2014, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on July 3, 2014, at 3:09:56 PM, signed by Vladimir Petrovic.",
+   "User submitted a Short-Form Registration Statement for Ballard Partners with Registration Number 6415 on May 19, 2017, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on May 19, 2017, at 11:27:39 AM, signed by Robert Wexler.",
+   "User submitted a Short-Form Registration Statement for JETRO New York with Registration Number 1643 on July 5, 2018, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on July 5, 2018, at 1:25:48 PM, signed by Victoria Taylor.",
+   "User submitted a Short-Form Registration Statement for West Front Strategies LLC with Registration Number 6436 on May 30, 2017, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on May 31, 2017, at 11:42:46 AM.",
+   "User submitted a Short-Form Registration Statement for URENCO, Inc. with Registration Number 5137 on July 7, 2015, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on July 8, 2015, at 1:10:30 PM.",
+   "User submitted a Short-Form Registration Statement for Mercury with Registration Number 6170 on February 12, 2015, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on February 12, 2015, at 10:39:15 AM, signed by Katherine Lewis.",
+   "User submitted a Short-Form Registration Statement for Mercury with Registration Number 6170 on April 29, 2015, filed pursuant to the Foreign Agents Registration Act of 1938, as amended, to the U.S. Department of Justice in Washington, D.C. 20530, with OMB No. 1124-0005, and received by the NSD/FARA Registration Unit on April 29, 2015, at 3:12:28 PM, signed by Adam Ereli."
+  ]
+ }
 }

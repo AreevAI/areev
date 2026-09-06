@@ -1,6 +1,9 @@
 {
  "store_memories": 393,
- "store_instructions": 138,
+ "store_conventions": 0,
+ "events": {
+  "ADD": 393
+ },
  "retrievals": [
   {
    "id": "20101208_Ketchum Inc. NY_Austria, Kristi",
@@ -22,7 +25,7 @@
   {
    "id": "20100113_FCB New York_Amendment_Amendmen",
    "retrieved": 10,
-   "instructions": 1,
+   "instructions": 0,
    "memories": [
     "User is submitting an Amendment to Registration Statement under Form OMB No. 1124-0003 for Ezra Friedlander, with Registration Number 6097, filed on November 25, 2014, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report changes to a registration, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
     "User is submitting an Amendment to Registration Statement under Form OMB No. 1124-0003 for Mercurcy Public Affairs, with Registration Number 6170, filed on June 26, 2017, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report changes to a prior registration, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C., and signed by Michael McKeon",
@@ -53,5 +56,22 @@
     "User is submitting a Short-Form Registration Statement under Form OMB No. 1105-0013 for H. Stewart Van Scoyoc, with Registration Number 5401, filed on July 25, 2008, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C."
    ]
   }
- ]
+ ],
+ "task_query": {
+  "query": "Which fields must be captured on every registration form, and in what format must each be written?",
+  "retrieved": 10,
+  "conventions": 0,
+  "memories": [
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for URENCO, Inc., with Registration Number 5137, filed on July 7, 2015, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for JETRO, New York, with Registration Number 1643, filed on August 18, 2011, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for South African Tourism, with Registration Number 603, filed on August 12, 2010, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for Roberti+White, LLC, with Registration Number 6065, filed on September 21, 2011, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for EDB, with Registration Number 2003, filed on March 26, 2018, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for Qorvis Communications, LLC, with Registration Number 5483, filed on June 24, 2009, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1105-0013 for Korea Business Center, with Registration Number 1619, filed on November 24, 2007, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for VisitBritain, with Registration Number 579, filed on March 30, 2016, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting a Short-Form Registration Statement under Form OMB No. 1124-0005 for The Glover Park Group LLC, with Registration Number 5666, filed on March 14, 2011, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report activities in furtherance of the interests of the registrant's foreign principal, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C.",
+   "User is submitting an Amendment to Registration Statement under Form OMB No. 1124-0003 for LB Interntaional Solutions LLC, with Registration Number 6210, filed on February 21, 2018, pursuant to the Foreign Agents Registration Act of 1938 as amended, to report changes to a prior registration, with the document being a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit in Washington, D.C., and signed by Lydia BORLAND."
+  ]
+ }
 }

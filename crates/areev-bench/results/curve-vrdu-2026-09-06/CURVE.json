@@ -144,6 +144,38 @@
     }
    }
   },
+  "domain-bothq": {
+   "160": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    }
+   },
+   "20": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    }
+   },
+   "320": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    }
+   },
+   "40": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    }
+   },
+   "80": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    }
+   }
+  },
   "domain-rules": {
    "160": {
     "1": {
@@ -173,6 +205,150 @@
     "1": {
      "exact": 99,
      "n": 386
+    }
+   }
+  },
+  "domain-taskq": {
+   "160": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 98,
+     "n": 387
+    },
+    "3": {
+     "exact": 100,
+     "n": 387
+    }
+   },
+   "20": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 98,
+     "n": 387
+    },
+    "3": {
+     "exact": 99,
+     "n": 387
+    }
+   },
+   "320": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 100,
+     "n": 387
+    },
+    "3": {
+     "exact": 98,
+     "n": 387
+    }
+   },
+   "40": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 99,
+     "n": 387
+    },
+    "3": {
+     "exact": 100,
+     "n": 387
+    }
+   },
+   "80": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 99,
+     "n": 387
+    },
+    "3": {
+     "exact": 99,
+     "n": 387
+    }
+   }
+  },
+  "domain-taskq-rules": {
+   "160": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 98,
+     "n": 387
+    },
+    "3": {
+     "exact": 100,
+     "n": 387
+    }
+   },
+   "20": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 98,
+     "n": 387
+    },
+    "3": {
+     "exact": 99,
+     "n": 387
+    }
+   },
+   "320": {
+    "1": {
+     "exact": 267,
+     "n": 386
+    },
+    "2": {
+     "exact": 198,
+     "n": 387
+    },
+    "3": {
+     "exact": 277,
+     "n": 387
+    }
+   },
+   "40": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 99,
+     "n": 387
+    },
+    "3": {
+     "exact": 100,
+     "n": 387
+    }
+   },
+   "80": {
+    "1": {
+     "exact": 99,
+     "n": 386
+    },
+    "2": {
+     "exact": 99,
+     "n": 387
+    },
+    "3": {
+     "exact": 99,
+     "n": 387
     }
    }
   }
@@ -738,9 +914,24 @@
     "n": 1160,
     "rate": 0.256
    },
+   "mem0-domain-bothq|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "mem0-domain-rules|unseen": {
     "exact": 99,
     "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain-taskq-rules|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "mem0-domain-taskq|unseen": {
+    "exact": 297,
+    "n": 1160,
     "rate": 0.256
    },
    "mem0-domain|unseen": {
@@ -784,10 +975,25 @@
      "p": 0.0,
      "wins": 617
     },
+    "llm_over_mem0-domain-bothq|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 156
+    },
     "llm_over_mem0-domain-rules|unseen": {
      "losses": 0,
      "p": 0.0,
      "wins": 156
+    },
+    "llm_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 616
+    },
+    "llm_over_mem0-domain-taskq|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 616
     },
     "llm_over_mem0-domain|unseen": {
      "losses": 2,
@@ -839,10 +1045,25 @@
      "p": 0.0,
      "wins": 756
     },
+    "scratch_over_mem0-domain-bothq|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 262
+    },
     "scratch_over_mem0-domain-rules|unseen": {
      "losses": 3,
      "p": 0.0,
      "wins": 262
+    },
+    "scratch_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 10,
+     "p": 0.0,
+     "wins": 755
+    },
+    "scratch_over_mem0-domain-taskq|unseen": {
+     "losses": 10,
+     "p": 0.0,
+     "wins": 755
     },
     "scratch_over_mem0-domain|unseen": {
      "losses": 10,
@@ -932,10 +1153,25 @@
     "n": 1160,
     "rate": 0.257
    },
+   "mem0-domain-bothq|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "mem0-domain-rules|unseen": {
     "exact": 99,
     "n": 386,
     "rate": 0.256
+   },
+   "mem0-domain-taskq-rules|unseen": {
+    "exact": 296,
+    "n": 1160,
+    "rate": 0.255
+   },
+   "mem0-domain-taskq|unseen": {
+    "exact": 296,
+    "n": 1160,
+    "rate": 0.255
    },
    "mem0-domain|unseen": {
     "exact": 296,
@@ -973,10 +1209,25 @@
      "p": 0.0,
      "wins": 678
     },
+    "llm_over_mem0-domain-bothq|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 232
+    },
     "llm_over_mem0-domain-rules|unseen": {
      "losses": 0,
      "p": 0.0,
      "wins": 232
+    },
+    "llm_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 679
+    },
+    "llm_over_mem0-domain-taskq|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 679
     },
     "llm_over_mem0-domain|unseen": {
      "losses": 3,
@@ -1023,10 +1274,25 @@
      "p": 0.0,
      "wins": 380
     },
+    "scratch_over_mem0-domain-bothq|unseen": {
+     "losses": 24,
+     "p": 0.0,
+     "wins": 105
+    },
     "scratch_over_mem0-domain-rules|unseen": {
      "losses": 24,
      "p": 0.0,
      "wins": 105
+    },
+    "scratch_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 42,
+     "p": 0.0,
+     "wins": 380
+    },
+    "scratch_over_mem0-domain-taskq|unseen": {
+     "losses": 42,
+     "p": 0.0,
+     "wins": 380
     },
     "scratch_over_mem0-domain|unseen": {
      "losses": 42,
@@ -1101,9 +1367,24 @@
     "n": 1160,
     "rate": 0.258
    },
+   "mem0-domain-bothq|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "mem0-domain-rules|unseen": {
     "exact": 99,
     "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain-taskq-rules|unseen": {
+    "exact": 742,
+    "n": 1160,
+    "rate": 0.64
+   },
+   "mem0-domain-taskq|unseen": {
+    "exact": 297,
+    "n": 1160,
     "rate": 0.256
    },
    "mem0-domain|unseen": {
@@ -1142,10 +1423,25 @@
      "p": 0.0,
      "wins": 624
     },
+    "llm_over_mem0-domain-bothq|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 161
+    },
     "llm_over_mem0-domain-rules|unseen": {
      "losses": 0,
      "p": 0.0,
      "wins": 161
+    },
+    "llm_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 104,
+     "p": 0.0,
+     "wins": 281
+    },
+    "llm_over_mem0-domain-taskq|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 624
     },
     "llm_over_mem0-domain|unseen": {
      "losses": 3,
@@ -1187,10 +1483,25 @@
      "p": 0.0,
      "wins": 783
     },
+    "scratch_over_mem0-domain-bothq|unseen": {
+     "losses": 3,
+     "p": 0.0,
+     "wins": 266
+    },
     "scratch_over_mem0-domain-rules|unseen": {
      "losses": 3,
      "p": 0.0,
      "wins": 266
+    },
+    "scratch_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 33,
+     "p": 0.0,
+     "wins": 365
+    },
+    "scratch_over_mem0-domain-taskq|unseen": {
+     "losses": 7,
+     "p": 0.0,
+     "wins": 784
     },
     "scratch_over_mem0-domain|unseen": {
      "losses": 7,
@@ -1280,10 +1591,25 @@
     "n": 1160,
     "rate": 0.255
    },
+   "mem0-domain-bothq|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "mem0-domain-rules|unseen": {
     "exact": 99,
     "n": 386,
     "rate": 0.256
+   },
+   "mem0-domain-taskq-rules|unseen": {
+    "exact": 298,
+    "n": 1160,
+    "rate": 0.257
+   },
+   "mem0-domain-taskq|unseen": {
+    "exact": 298,
+    "n": 1160,
+    "rate": 0.257
    },
    "mem0-domain|unseen": {
     "exact": 298,
@@ -1321,10 +1647,25 @@
      "p": 0.0,
      "wins": 692
     },
+    "llm_over_mem0-domain-bothq|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 232
+    },
     "llm_over_mem0-domain-rules|unseen": {
      "losses": 0,
      "p": 0.0,
      "wins": 232
+    },
+    "llm_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 690
+    },
+    "llm_over_mem0-domain-taskq|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 690
     },
     "llm_over_mem0-domain|unseen": {
      "losses": 2,
@@ -1376,10 +1717,25 @@
      "p": 0.0,
      "wins": 411
     },
+    "scratch_over_mem0-domain-bothq|unseen": {
+     "losses": 26,
+     "p": 0.0,
+     "wins": 100
+    },
     "scratch_over_mem0-domain-rules|unseen": {
      "losses": 26,
      "p": 0.0,
      "wins": 100
+    },
+    "scratch_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 35,
+     "p": 0.0,
+     "wins": 411
+    },
+    "scratch_over_mem0-domain-taskq|unseen": {
+     "losses": 35,
+     "p": 0.0,
+     "wins": 411
     },
     "scratch_over_mem0-domain|unseen": {
      "losses": 35,
@@ -1474,9 +1830,24 @@
     "n": 1160,
     "rate": 0.255
    },
+   "mem0-domain-bothq|unseen": {
+    "exact": 99,
+    "n": 386,
+    "rate": 0.256
+   },
    "mem0-domain-rules|unseen": {
     "exact": 99,
     "n": 386,
+    "rate": 0.256
+   },
+   "mem0-domain-taskq-rules|unseen": {
+    "exact": 297,
+    "n": 1160,
+    "rate": 0.256
+   },
+   "mem0-domain-taskq|unseen": {
+    "exact": 297,
+    "n": 1160,
     "rate": 0.256
    },
    "mem0-domain|unseen": {
@@ -1515,10 +1886,25 @@
      "p": 0.0,
      "wins": 680
     },
+    "llm_over_mem0-domain-bothq|unseen": {
+     "losses": 0,
+     "p": 0.0,
+     "wins": 231
+    },
     "llm_over_mem0-domain-rules|unseen": {
      "losses": 0,
      "p": 0.0,
      "wins": 231
+    },
+    "llm_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 679
+    },
+    "llm_over_mem0-domain-taskq|unseen": {
+     "losses": 2,
+     "p": 0.0,
+     "wins": 679
     },
     "llm_over_mem0-domain|unseen": {
      "losses": 2,
@@ -1570,10 +1956,25 @@
      "p": 0.0,
      "wins": 532
     },
+    "scratch_over_mem0-domain-bothq|unseen": {
+     "losses": 1,
+     "p": 0.0,
+     "wins": 180
+    },
     "scratch_over_mem0-domain-rules|unseen": {
      "losses": 1,
      "p": 0.0,
      "wins": 180
+    },
+    "scratch_over_mem0-domain-taskq-rules|unseen": {
+     "losses": 13,
+     "p": 0.0,
+     "wins": 532
+    },
+    "scratch_over_mem0-domain-taskq|unseen": {
+     "losses": 13,
+     "p": 0.0,
+     "wins": 532
     },
     "scratch_over_mem0-domain|unseen": {
      "losses": 13,

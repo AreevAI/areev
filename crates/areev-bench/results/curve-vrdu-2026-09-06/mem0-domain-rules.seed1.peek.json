@@ -1,11 +1,14 @@
 {
  "store_memories": 2141,
- "store_instructions": 1795,
+ "store_conventions": 26,
+ "events": {
+  "ADD": 2141
+ },
  "retrievals": [
   {
    "id": "20150910_Squire Patton Boggs, LLP_Amendm",
    "retrieved": 10,
-   "instructions": 10,
+   "instructions": 0,
    "memories": [
     "User has specified that the registration form is a Short Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, and must be filed with the U.S. Department of Justice, Washington, DC 20530.",
     "The registration form is an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, and must be filed with the U.S. Department of Justice, Washington, DC 20530.",
@@ -22,7 +25,7 @@
   {
    "id": "20180703_BerlinRosen Ltd._Blenner, Micha",
    "retrieved": 10,
-   "instructions": 10,
+   "instructions": 0,
    "memories": [
     "User has specified that the registration form is a Short Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, and must be filed with the U.S. Department of Justice, Washington, DC 20530.",
     "User has specified that the form is a Short Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, and must be filed with the U.S. Department of Justice, Washington, DC 20530.",
@@ -39,7 +42,7 @@
   {
    "id": "20081001_Garvey, Schubert _ Barer_Amendm",
    "retrieved": 10,
-   "instructions": 10,
+   "instructions": 0,
    "memories": [
     "The Privacy Act Statement in an Amendment to Registration Statement (OMB No. 1124-0003) must include the full text: 'The filing of this document is required by the Foreign Agents Registration Act of 1938, as amended, 22 U.S.C. \u00a7 611 et seq., for the purposes of registration under the Act and public disclosure. Provision of the information requested is mandatory, and failure to provide this information is subject to the penalty and enforcement provisions established in Section 8 of the Act. Every registration statement,'.",
     "User has confirmed that the Privacy Act Statement in an Amendment to Registration Statement (OMB No. 1124-0003) must include the full text: 'The filing of this document is required by the Foreign Agents Registration Act of 1938, as amended, 22 U.S.C. \u00a7 611 et seq., for the purposes of registration under the Act and public disclosure. Provision of the information requested is mandatory, and failure to provide this information is subject to the penalty and enforcement provisions established in Section 8 of the Act. Every registration statement,'.",
@@ -53,5 +56,22 @@
     "The registration form is a Short Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, and must be filed with the U.S. Department of Justice, Washington, DC 20530."
    ]
   }
- ]
+ ],
+ "task_query": {
+  "query": "Which fields must be captured on every registration form, and in what format must each be written?",
+  "retrieved": 10,
+  "conventions": 1,
+  "memories": [
+   "User has specified that the form type (e.g., 'Amendment to Registration Statement' or 'Short Form Registration Statement') must be captured verbatim and must be included in the output.",
+   "User has specified that the Registration Number field must be captured exactly as provided (e.g., '2244', '5666', '6170', '6212') and must be included in all registration forms.",
+   "User has specified that the form type (e.g., Amendment to Registration Statement) must be explicitly recorded and preserved in all entries.",
+   "User has specified that the form type (e.g., 'Amendment to Registration Statement', 'Short Form Registration Statement') must be correctly identified and recorded.",
+   "For all registration forms, the original document must be signed by or on behalf of the registrant, as explicitly required by the form instructions and confirmed by the user",
+   "User has specified that the Registration Number field must be captured exactly as provided (e.g., '5934') and must be included in the output regardless of the form type.",
+   "User has specified that the Registration Number must be recorded exactly as provided (e.g., '6568') and must be included in the output for every form.",
+   "For all future document captures, the Registration Number field must be formatted as a continuous numeric string without separators such as slashes or spaces, and must be verified against user corrections",
+   "User has specified that the form type (Short Form Registration Statement or Amendment to Registration Statement) must be correctly identified and recorded based on the document header.",
+   "User has specified that the field 'Each partner, officer, director, associate, employee, and agent of a registrant is required to file a short form registration statement' must be included verbatim and is a required field."
+  ]
+ }
 }

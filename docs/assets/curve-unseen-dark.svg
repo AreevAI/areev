@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
-<title>Exact-match rate on registrants the agent never learned from as the deployment grows: no memory (day-one agent) 25% at 320; mem0, as installed 26% at 320; mem0, domain-prompted 26% at 320; mem0, domain-prompted, framed as instructions 26% at 320; Areev governed: LLM with the loop's rules 79% at 320; Areev tuned: 1.7B from scratch 93% at 320; Areev tuned: 1.7B continually 91% at 320.</title>
+<title>Exact-match rate on registrants the agent never learned from as the deployment grows: no memory (day-one agent) 25% at 320; mem0, as installed 26% at 320; mem0, domain-prompted 26% at 320; mem0, domain-prompted, framed as instructions 26% at 320; mem0, domain-prompted, retrieved by task question (final read) 26% at 320; mem0, domain-prompted, task question + document (final read, 1 seed) 26% at 320; mem0, domain-prompted, task question, framed as instructions (final read) 64% at 320; Areev governed: LLM with the loop's rules 79% at 320; Areev tuned: 1.7B from scratch 93% at 320; Areev tuned: 1.7B continually 91% at 320.</title>
 <desc>Documents learned from on a log axis. No memory is the day-one agent, read once per seed. mem0 stores each accountant exchange and retrieves into the prompt. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over 3 seed(s); bars are 95% Wilson intervals where recorded.</desc>
 <line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#2a2e35"/>
 <text x="49" y="338.0" text-anchor="end" font-size="11" fill="#9aa1ad">0%</text>
@@ -44,6 +44,24 @@
 <circle cx="388.0" cy="257.2" r="3.2" fill="#e8b98a"/>
 <circle cx="553.0" cy="257.2" r="3.2" fill="#e8b98a"/>
 <circle cx="718.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<path d="M58.0 257.5 L223.0 256.9 L388.0 257.2 L553.0 257.2 L718.0 257.2" fill="none" stroke="#d3b04a" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="2 3"/>
+<circle cx="58.0" cy="257.5" r="3.2" fill="#d3b04a"/>
+<circle cx="223.0" cy="256.9" r="3.2" fill="#d3b04a"/>
+<circle cx="388.0" cy="257.2" r="3.2" fill="#d3b04a"/>
+<circle cx="553.0" cy="257.2" r="3.2" fill="#d3b04a"/>
+<circle cx="718.0" cy="257.2" r="3.2" fill="#d3b04a"/>
+<path d="M58.0 257.2 L223.0 257.2 L388.0 257.2 L553.0 257.2 L718.0 257.2" fill="none" stroke="#e8b98a" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="2 3"/>
+<circle cx="58.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<circle cx="223.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<circle cx="388.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<circle cx="553.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<circle cx="718.0" cy="257.2" r="3.2" fill="#e8b98a"/>
+<path d="M58.0 257.5 L223.0 256.9 L388.0 257.2 L553.0 257.2 L718.0 142.0" fill="none" stroke="#d99a5c" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="2 3"/>
+<circle cx="58.0" cy="257.5" r="3.2" fill="#d99a5c"/>
+<circle cx="223.0" cy="256.9" r="3.2" fill="#d99a5c"/>
+<circle cx="388.0" cy="257.2" r="3.2" fill="#d99a5c"/>
+<circle cx="553.0" cy="257.2" r="3.2" fill="#d99a5c"/>
+<circle cx="718.0" cy="142.0" r="3.2" fill="#d99a5c"/>
 <path d="M58.0 82.6 L223.0 79.0 L388.0 82.0 L553.0 98.5 L718.0 96.4" fill="none" stroke="#5fcd9b" stroke-width="2.4" stroke-linejoin="round"/>
 <circle cx="58.0" cy="82.6" r="3.2" fill="#5fcd9b"/>
 <circle cx="223.0" cy="79.0" r="3.2" fill="#5fcd9b"/>
@@ -75,9 +93,12 @@
 <text x="728.0" y="60.2" font-size="12" font-weight="600" fill="#7aa8e0">Areev tuned: 1.7B from scratch</text>
 <text x="728.0" y="75.2" font-size="12" font-weight="600" fill="#7aa8e0">Areev tuned: 1.7B continually</text>
 <text x="728.0" y="100.4" font-size="12" font-weight="600" fill="#5fcd9b">Areev governed: LLM with the loop's rules</text>
+<text x="728.0" y="146.0" font-size="12" font-weight="600" fill="#d99a5c">mem0, domain-prompted, task question, framed as instructions (final read)</text>
 <text x="728.0" y="260.6" font-size="12" font-weight="600" fill="#d99a5c">mem0, as installed</text>
 <text x="728.0" y="275.6" font-size="12" font-weight="600" fill="#d3b04a">mem0, domain-prompted</text>
 <text x="728.0" y="290.6" font-size="12" font-weight="600" fill="#e8b98a">mem0, domain-prompted, framed as instructions</text>
-<text x="728.0" y="305.6" font-size="12" font-weight="600" fill="#767d8a">no memory (day-one agent)</text>
+<text x="728.0" y="305.6" font-size="12" font-weight="600" fill="#d3b04a">mem0, domain-prompted, retrieved by task question (final read)</text>
+<text x="728.0" y="320.6" font-size="12" font-weight="600" fill="#e8b98a">mem0, domain-prompted, task question + document (final read, 1 seed)</text>
+<text x="728.0" y="335.6" font-size="12" font-weight="600" fill="#767d8a">no memory (day-one agent)</text>
 <line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#4a505a"/>
 </svg>

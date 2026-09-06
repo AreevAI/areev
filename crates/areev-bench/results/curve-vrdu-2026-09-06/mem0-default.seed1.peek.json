@@ -1,11 +1,14 @@
 {
  "store_memories": 388,
- "store_instructions": 14,
+ "store_conventions": 0,
+ "events": {
+  "ADD": 388
+ },
  "retrievals": [
   {
    "id": "20150910_Squire Patton Boggs, LLP_Amendm",
    "retrieved": 10,
-   "instructions": 2,
+   "instructions": 0,
    "memories": [
     "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0003, submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document was received by the NSD/FARA Registration Unit on April 17, 2018, at 4:25:49 PM, and expires May 31, 2020. The registrant is Alignment Government Strategies, registered under Registration Number 6317, filed on April 17, 2018, and signed by Bertram Carp.",
     "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0003, submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document was received by the NSD/FARA Registration Unit on December 5, 2017, at 12:00:00 AM, and expires May 31, 2020. The registrant is Jim Arnold, registered under Registration Number 6349, filed on December 5, 2017, and signed by Jim Arnold.",
@@ -39,7 +42,7 @@
   {
    "id": "20081001_Garvey, Schubert _ Barer_Amendm",
    "retrieved": 10,
-   "instructions": 2,
+   "instructions": 0,
    "memories": [
     "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1105-0004, which must be submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document is a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit. The original must be signed by or on behalf of the registrant.",
     "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1105-0004, which must be submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document is a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit.",
@@ -53,5 +56,22 @@
     "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0003, submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document was received by the NSD/FARA Registration Unit on April 17, 2018, at 4:25:49 PM, and expires May 31, 2020. The registrant is Alignment Government Strategies, registered under Registration Number 6317, filed on April 17, 2018, and signed by Bertram Carp."
    ]
   }
- ]
+ ],
+ "task_query": {
+  "query": "Which fields must be captured on every registration form, and in what format must each be written?",
+  "retrieved": 10,
+  "conventions": 0,
+  "memories": [
+   "User specified that the filing date for the FARA form FA-11 is July 27, 1964, and emphasized the need to record the registrant name and file date on every form.",
+   "User specified that the filing date for the FARA form FA-11 is March 31, 1965, and emphasized the need to record the registrant name and file date on every form.",
+   "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1105-0004, which must be submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document is a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit. The original must be signed by or on behalf of the registrant.",
+   "User specified that the filing date for the FARA form OBD-68 is February 23, 1979, and emphasized the need to record the registrant name and file date on every form.",
+   "User specified that the filing date for the FARA form DJ-307 is March 28, 1973, and emphasized the need to record the registrant name and file date on every form.",
+   "User specified that the filing date for the FARA form OBD-68 is June 1, 1979, and emphasized the need to record the registrant name and file date on every form.",
+   "User specified that the filing date for the FARA form DJ-307 is December 28, 1976, and emphasized the need to record the registrant name and file date on every form.",
+   "User is reviewing an Amendment to Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1105-0004, which must be submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document is a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit.",
+   "User is reviewing a Short-Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0005, submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document is a public record open to public examination, inspection, and copying during posted business hours at the Registration Unit. The registrant is Qorvis Communications LLC, registered under Registration Number 5483, filed on June 23, 2009.",
+   "User is reviewing a Short-Form Registration Statement under the Foreign Agents Registration Act of 1938, as amended, with OMB No. 1124-0005, submitted to the U.S. Department of Justice in Washington, D.C. 20530. The document was received by the NSD/FARA Registration Unit on March 29, 2018, at 6:11:25 PM, and expires May 31, 2020. The registrant is International Registries, Inc., registered under Registration Number 4533, filed on March 29, 2018, and signed by Meredith Ann Kirby."
+  ]
+ }
 }
