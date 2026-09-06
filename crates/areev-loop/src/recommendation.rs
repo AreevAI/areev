@@ -364,6 +364,21 @@ pub fn authored_dedup_key(
     )
 }
 
+/// The dedup key of a REVERT: [`dedup_key`] plus the hash of the applied
+/// recommendation it retracts. An analyzer finding is "this target has this
+/// kind of problem", so two findings on one target rightly collapse — but a
+/// revert is about one specific applied recommendation, and two lessons on
+/// the same entity that both regressed need two reverts. Until 2026-09-06
+/// they shared a key and the second was dropped as a duplicate of the first
+/// (`crates/areev-bench/CURVE.md`, seed 3: two regressed, one revert).
+pub fn revert_dedup_key(family: &str, target_ref: &str, revert_of: &str) -> String {
+    format!(
+        "{}\u{1f}{}",
+        dedup_key(family, target_ref, ActionKind::Revert),
+        normalize_ident(revert_of)
+    )
+}
+
 /// Sixteen hex chars of FNV-1a (64-bit) over the normalized content. A dedup
 /// key needs stability and spread, not cryptographic strength — a collision
 /// here would merge two findings in a review queue, never grant anything —
@@ -720,6 +735,16 @@ mod tests {
         assert!(a.starts_with(&dedup_key("llm", "entity:ns/x", ActionKind::Record)));
         assert_eq!(content_fingerprint("A b"), content_fingerprint("a-b"));
         assert_ne!(content_fingerprint("ab"), content_fingerprint("a b"));
+    }
+
+    #[test]
+    fn a_revert_is_keyed_by_what_it_reverts() {
+        let a = revert_dedup_key("loop.outcome_review", "entity:ns/capture", "aaaa");
+        let b = revert_dedup_key("loop.outcome_review", "entity:ns/capture", "bbbb");
+        let a2 = revert_dedup_key("loop.outcome_review", "entity:NS/Capture", "AAAA");
+        assert_ne!(a, b, "two reverts on one target are two findings");
+        assert_eq!(a, a2, "the same revert, case-folded, is one");
+        assert!(a.starts_with(&dedup_key("loop.outcome_review", "entity:ns/capture", ActionKind::Revert)));
     }
 
     #[test]

@@ -350,6 +350,75 @@ fn citation_resolves_by_hash_id_or_unambiguous_hex_prefix() {
     assert_eq!(resolve_citation("", &bundle, &ids), None);
 }
 
+/// Two lessons on one entity that both regress get TWO reverts. A revert's
+/// dedup key includes the hash of what it reverts; keyed by target alone,
+/// the second was dropped as a duplicate of the first (the learning-curve
+/// study's seed 3: two regressed, one revert proposed).
+#[test]
+fn two_regressed_lessons_on_one_target_get_two_reverts() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 100 - exact),
+            at,
+        );
+    };
+    journal(&mut sub, "eval-before", 90, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"dates as printed","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the file date exactly as printed."}}}},{{"summary":"names as printed","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the signer name exactly as printed."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"},{"id":1,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"},{"id":1,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(
+        r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let lessons: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+        .collect();
+    assert_eq!(lessons.len(), 2, "two different lessons on one entity both reach the queue");
+    for (i, r) in lessons.iter().enumerate() {
+        e.review(&mut sub.inner, &r.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1 + i as i64)
+            .unwrap();
+        e.apply(&mut sub.inner, &r.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 10 + i as i64)
+            .unwrap();
+    }
+    journal(&mut sub, "eval-after", 60, t + DAY + 100);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 200).unwrap();
+    let regressed: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.verdict == "regressed")
+        .collect();
+    assert_eq!(regressed.len(), 2, "both lessons measured regressed");
+    let reverts: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .collect();
+    assert_eq!(reverts.len(), 2, "one revert per regressed lesson, not one per target");
+    let mut keys: Vec<_> = reverts.iter().map(|r| r.dedup_key.clone()).collect();
+    keys.dedup();
+    assert_eq!(keys.len(), 2, "distinct dedup keys");
+}
+
 /// A verdict compares against the state of the world at the APPLY, not at the
 /// proposal. A deployment that journals its evalset once, on day one, and
 /// then approves rule after rule would otherwise measure its twentieth rule

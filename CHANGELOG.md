@@ -19,6 +19,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   changes. The proposal-time snapshot, every later measurement and the
   apply gate now read a run's fields through one function
   (`areev_loop::eval::run_value`).
+- **A revert is keyed by what it reverts.** Two lessons on one entity that
+  both regressed produced one revert: the deterministic dedup key is
+  analyzer + target + action, so the second draft was dropped as a
+  duplicate. `revert_dedup_key` adds the reverted recommendation's hash.
 
 ### Added
 

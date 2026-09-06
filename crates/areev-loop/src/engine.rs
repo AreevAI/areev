@@ -2988,7 +2988,18 @@ fn stamp(
         target.target_class(),
         d.evalset_hash.as_deref(),
     )?;
-    let dedup = dedup_key(m.family(), &d.target_ref, d.action_kind);
+    // A revert's identity is the recommendation it retracts, not just its
+    // target: two regressed lessons on one entity are two reverts.
+    let revert_of = match (&d.action_kind, &d.proposal) {
+        (ActionKind::Revert, Proposal::Data { data }) => {
+            data.get("revert_of").and_then(|v| v.as_str()).map(str::to_string)
+        }
+        _ => None,
+    };
+    let dedup = match revert_of.as_deref() {
+        Some(h) => crate::recommendation::revert_dedup_key(m.family(), &d.target_ref, h),
+        None => dedup_key(m.family(), &d.target_ref, d.action_kind),
+    };
     let destructive = match &d.proposal {
         Proposal::Cal { cal } => cal::contains_destructive(cal),
         _ => false,

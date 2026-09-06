@@ -565,6 +565,15 @@ against day one (below).
 That is the whole "verify the change improved, otherwise revert" arc, on
 the one kind of change a human approves from prose alone.
 
+A revert's identity is the recommendation it retracts: two lessons on one
+entity that both regress get two reverts (a deterministic finding's dedup
+key is analyzer + target + action, and keyed that way the second revert was
+dropped as a duplicate of the first until 2026-09-06). And the verdict has
+**no noise floor**: any drop past `1e-9` is a regression, so a 359 → 355
+dip on 387 trials — within what one adapter read twice can differ by —
+proposes a revert. That is a limit, stated here; a policy-level minimum
+effect size is not implemented.
+
 No scheduler is implied: run `areev eval run` from cron or CI exactly as you run
 `areev loop run`; outcomes only ever **read** what it journaled. The apply gate
 (`areev loop apply --gating-run <id>`) and the outcome edge deliberately read
