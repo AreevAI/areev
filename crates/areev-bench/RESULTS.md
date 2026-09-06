@@ -1197,8 +1197,11 @@ it, so its numbers never rank one approach against another.
 **More benchmarks are coming.** Next: DocILE (~6,700 annotated invoices,
 55 field types) at checkpoints to 1,280 documents, to ask whether the
 tuned model's unseen-supplier curve keeps rising past a few hundred
-documents or the plateau found on 320 registration forms is the plateau;
-the plan is in [`CURVE.md`](CURVE.md).
+documents or the plateau found on 320 registration forms is the plateau
+(the plan is in [`CURVE.md`](CURVE.md)); an adversarial-experience arm
+(does governance hold when the history is misleading?); and a run on a
+public agent-trajectory benchmark rather than a synthetic one. Roadmap in
+[`SELFIMPROVE.md`](SELFIMPROVE.md).
 
 ## Areev Loop analyzer precision (fixture floor)
 
