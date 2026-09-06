@@ -545,7 +545,7 @@ class AreevAgentBase(BaseAgent):
             tools_schema = [SESSION_SEARCH_TOOL, *tool_registry.openrouter_tools]
             extra_body: dict[str, Any] = {"usage": {"include": True}, "seed": seed}
             if pin:
-                extra_body["provider"] = {"order": [pin], "allow_fallbacks": False}
+                extra_body["provider"] = {"order": [x for x in pin.split(",") if x], "allow_fallbacks": False}
             async def chat_with_retries():
                 # StreamLake answered 429 "temporarily rate-limited upstream"
                 # on one public trial; a provider's bad minute is not a

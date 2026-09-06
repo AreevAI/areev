@@ -480,7 +480,7 @@ class AreevAdapter(RuntimeAdapter):
         body: dict[str, Any] = {"seed": self.seed}
         pin = cfg.get("provider_pin") or os.environ.get("AREEV_AGENT_PIN") or ""
         if pin:
-            body["provider"] = {"order": [pin], "allow_fallbacks": False}
+            body["provider"] = {"order": [x for x in pin.split(",") if x], "allow_fallbacks": False}
         self._provider = OpenAICompatProvider(
             model_id=request.model.model_id,
             api_key=request.model.api_key,
@@ -859,21 +859,42 @@ class AreevAdapter(RuntimeAdapter):
                 if len(out) >= 10:
                     break
             return "\n".join(out) or "(no earlier sessions)"
-        payload = json.loads(db.search(query, k=12, ns=NS))
+        # Hits rank sessions; the answer is the SESSION. Hermes's
+        # session_search returns a summary of each matching session; a
+        # single matching turn out of context ("Latest handoff for
+        # CacheEdge…") told the model which session mattered and not what
+        # it said. Return the whole thread of the top matching sessions, in
+        # order, bounded — lossless where Hermes summarises.
+        payload = json.loads(db.search(query, k=16, ns=NS))
         grains = payload.get("grains", payload) if isinstance(payload, dict) else payload
-        out = []
+        ranked: list[str] = []
         for g in grains or []:
             f = _fields(g) if isinstance(g, dict) else {}
             sid = f.get("session_id") or f.get("thread") or ""
-            if sid == self.session_id:
-                continue
-            text = f.get("content") or f.get("object") or f.get("tool_content") or f.get("result") or ""
-            if text:
-                out.append("- [%s %s] %s" % (sid or "memory", f.get("role") or g.get("type") or "",
-                                             text[:400].replace("\n", " ")))
-            if len(out) >= 8:
+            if sid and sid != self.session_id and sid not in ranked:
+                ranked.append(sid)
+            if len(ranked) >= 4:
                 break
-        return "\n".join(out) or "(nothing in earlier sessions matches)"
+        if not ranked:
+            return "(nothing in earlier sessions matches)"
+        by_session: dict[str, list[tuple[str, str]]] = {}
+        for g in _grains(db, "events", cap=EVENT_CAP, strict=False):
+            f = _fields(g)
+            sid = f.get("session_id") or ""
+            if sid in ranked:
+                by_session.setdefault(sid, []).append((str(f.get("created_at") or ""),
+                                                        "%s: %s" % (f.get("role") or "note", (f.get("content") or "").strip())))
+        out, budget = [], 6000
+        for sid in ranked:
+            turns = sorted(by_session.get(sid, []))
+            block = "### session %s\n" % sid + "\n".join(t for _, t in turns)
+            if len(block) > 1800:
+                block = block[:1800] + "\n[… truncated …]"
+            if budget - len(block) < 0:
+                break
+            budget -= len(block)
+            out.append(block)
+        return "\n\n".join(out) or "(nothing in earlier sessions matches)"
 
     # -- episode close --------------------------------------------------------
 

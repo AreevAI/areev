@@ -20,7 +20,7 @@ SEED="${SEED:-1}"
 MODEL="${AGENT_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}"
 SCRIPTS="$REPO/crates/areev-bench/scripts"
 # streamlake, not siliconflow/fp8 — see pastbench/evolve.sh for why
-export AREEV_AGENT_PIN="${AGENT_PIN:-streamlake}"
+export AREEV_AGENT_PIN="${AGENT_PIN:-streamlake,alibaba}"
 export AREEV_LOOP_LLM_CMD="${AREEV_LOOP_LLM_CMD:-python3 $SCRIPTS/openrouter_loop.py $MODEL --provider $AREEV_AGENT_PIN --seed $SEED}"
 export AREEV_LOOP_GROUND_CMD="${AREEV_LOOP_GROUND_CMD:-python3 $SCRIPTS/openrouter_loop.py openai/gpt-4o-mini --provider openai --seed $SEED}"
 export AREEV_REVIEW_CMD="${AREEV_REVIEW_CMD:-python3 $SCRIPTS/openrouter_toolcall.py openai/gpt-4o --provider openai --seed $SEED}"

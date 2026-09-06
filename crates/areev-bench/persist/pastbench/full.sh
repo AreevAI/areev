@@ -5,6 +5,7 @@
 # need three of each).
 #
 #   AGENTS="areev-governed areev-passive hermes" RUN=1 ROOT=$HOME/mg/local/areev-runs/persist/full sh full.sh
+#   OFFSET_BASE=700 starts the port offsets there (a second run beside the first)
 #
 # Each agent's pilot.sh loop lands in $ROOT/run$RUN/<agent>/<family>/ and
 # skips families already done, so a stopped run resumes with the same
@@ -18,7 +19,7 @@ AGENTS="${AGENTS:?set AGENTS}"; RUN="${RUN:-1}"; ROOT="${ROOT:?set ROOT}"
 FAMILIES=$(cd "$PB/self-evolve-tasks-v2" && ls */*/family.yaml | sed 's#/family.yaml$##' | tr '\n' ' ')
 n=$(echo "$FAMILIES" | wc -w | tr -d ' ')
 echo "$n families: $FAMILIES"
-offset=0
+offset=${OFFSET_BASE:-0}
 for agent in $AGENTS; do
   out="$ROOT/run$RUN"
   mkdir -p "$out"

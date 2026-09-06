@@ -297,6 +297,20 @@ such; run 2 is the first run with a sighted reviewer, and the
 governed-vs-passive contrast the design exists for is measured there and
 in run 3.
 
+**Amendment, 2026-09-06 (after run 1; the user's decisions):** the cap
+rises from **$30 to $50**; runs are parallelised — run 2 and run 3 of the
+three main arms start together on six port-offset streams, plus a
+**sighted rerun of run 1's governed arm** (the blind-gate reading stays
+archived), plus mem0's remaining families and the tuned evaluations; every
+model leg now pins an OpenRouter provider **order**, `streamlake,alibaba`
+(StreamLake first, Alibaba only when it throttles; the Hugging Face router
+lists no enabled provider for this model on the available token), which is
+disclosed as the pin; Hermes gets its third run. One quality change to the
+Areev substrate goes in before these runs, with evidence from run 1 (§11
+#19): `session_search` returns the whole thread of each matching session
+instead of single matching turns. No arm's scoring, judge, families or
+reviewer rubric change.
+
 **First valid family-run (SM01, governed, StreamLake, 2026-09-06):**
 Δ on the evaluation episodes **+0.304** (0.704 with persistence, 0.400
 without), mechanism 0.3, memory injected in both evaluation episodes; the
@@ -554,3 +568,4 @@ changed a number before it was caught.
 | 16 | 2026-09-07, seeded rerun | harness | with the sessions imported (#13) the three `session_search` families still scored Δ ≈ 0: the agent never called `session_search` in any evaluation episode. The prompt said only that earlier sessions were "searchable"; Hermes's tool description says when to use it and a no-query call lists recent sessions' titles for free | the injected section lists the earlier sessions' titles (most recent first, up to 30) and the tool description says when to search — parity with what Hermes exposes, not a task hint; the six families rerun once more inside run 1, the unseeded and the untitled readings both kept |
 | 17 | 2026-09-07, titled rerun | harness | `PG01_release_decision_followup`'s seeded sessions plus the family's own turns passed the 500-grain scan cap the harness inherited from the receipts rule ("a truncated prompt is a wrong prompt"), the scan raised, the exception's traceback kept the file handle alive, and the next open failed with STO-E002 for both Areev arms | event scans are bounded at CAL's 1000 and never raise (a truncated title list is a bounded answer, not a wrong one); `with_memory` drops the traceback before releasing the handle; PG01 rerun |
 | 18 | 2026-09-07, run 1 audit | harness | the ROOT CAUSE of #7 and #14: the binding's `recommendations()` JSON has no `evidence` field at all (analyzer, summary, target_ref, status, hash, severity, …), so every reviewer call since the pilot was handed "(none)" and the gate refused 75 of 75 proposals in run 1 as unsupported — the governed arm was the passive arm plus the loop's cost, by construction. The cited hashes live in the stored recommendation Fact (`areev-loop` namespace, relation `loop_recommendation`, the record in `object`) | the reviewer reads the evidence from the stored record; run 1's governed arm is the *blind-gate* reading and stays; run 2 is the first sighted run and is labelled so |
+| 19 | 2026-09-07, run 1 audit | harness | `session_search` returned single matching Events out of context: on the three session-search families Hermes (session summaries) beat the Areev arms by 0.13–0.15 even after the titles fix, and the returned turns named the session that mattered without carrying what it said | the top matching sessions are returned as whole threads, in order, bounded — lossless where Hermes summarises |

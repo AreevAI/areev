@@ -180,7 +180,7 @@ class Mem0Adapter(RuntimeAdapter):
         body: dict[str, Any] = {"seed": self.seed}
         pin = cfg.get("provider_pin") or os.environ.get("AREEV_AGENT_PIN") or ""
         if pin:
-            body["provider"] = {"order": [pin], "allow_fallbacks": False}
+            body["provider"] = {"order": [x for x in pin.split(",") if x], "allow_fallbacks": False}
         self._provider = OpenAICompatProvider(
             model_id=request.model.model_id, api_key=request.model.api_key, base_url=request.model.base_url,
             extra_body=body, temperature=request.runtime_config.temperature)
