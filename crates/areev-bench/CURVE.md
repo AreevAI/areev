@@ -385,7 +385,153 @@ the full run measures it.
 
 ## Results
 
-*Pending the full run.*
+Three seeds of the 1.7B, one of the 0.6B, every leg complete;
+`results/curve-vrdu-2026-09-06/` holds the recomputed numbers
+(`CURVE.json`, `CURVE-06b.json`), every adapter's training receipt, the
+verify verdicts and the metered cost. Exact-match rate on 100-document
+sets, 300 documents per checkpoint pooled over three seeds; wins/losses
+are McNemar pairs against the LLM carrying the same checkpoint's rules.
+
+![The learning curve on registrants the agent never learned from](../../docs/assets/curve-unseen-light.svg#gh-light-mode-only)
+![The learning curve on registrants the agent never learned from](../../docs/assets/curve-unseen-dark.svg#gh-dark-mode-only)
+
+### Unseen registrants — the number that may claim learning
+
+| documents learned from | LLM + rules | 1.7B tuned from scratch | 1.7B tuned continually |
+|---:|---:|---:|---:|
+| 20 | 84% | 55% (38/376) | 54% (37/378) |
+| 40 | 85% | 58% (41/353) | 56% (35/368) |
+| 80 | 84% | 70% (54/212) | 61% (50/319) |
+| 160 | 78% | **90%** (195/64) | 87% (201/104) |
+| 320 | 79% | **93%** (202/47) | 91% (201/69) |
+| untuned 1.7B, final rules | | 17% | |
+
+Per field, from scratch, 20 → 320 documents: File Date 62 → 285 of 300,
+Registrant Name 190 → 282, Registration Number 254 → 291, Signer Name 128
+→ 216 of 260. The seen set runs 5–14 points above the unseen set until
+160 and 2 points above at 320 (`curve.stdout`).
+
+### Against what was stated in advance
+
+- **Shape — partly wrong, and the mechanism was found before the numbers
+  landed.** Predicted: a steep rise to 40–80 documents, then flat.
+  Observed: flat to 40 (55 → 58), the rise between 80 and 160 (70 → 90),
+  then a plateau (90 → 93). The stream is chronological and the held-out
+  sets are drawn across the corpus's whole span, so the curve is the
+  deployment's *era coverage* arriving — the first 80 documents are filed
+  before 1995 and the tuned model reads a two-digit year as 19xx (File
+  Date 62 of 300 at 20 documents) until the corpus reaches the era the
+  held-out forms come from. The prequential read settles what the fixed
+  sets could not: on the next 20 documents of its own stream the tuned
+  model matches the LLM from the first checkpoint (89% against 89%, 84–88%
+  against 87%, 79–80% against 84%) and beats it at 160 (92% against 78%,
+  41 wins to 10). It was competent on its present all along; the fixed
+  sets measured how far its past was from its future.
+- **Scratch vs continual — as predicted.** Continual trails scratch at
+  every checkpoint after the first: 56 vs 58, 61 vs 70, 87 vs 90, 91 vs
+  93, significant from 80 on (145/34, 74/40, 49/26). The accumulating
+  corpus is the better path here; the continual path's own training rows
+  from earlier checkpoints read 82% at 320 against 95% for scratch, which
+  is forgetting, and it arrived at the last checkpoint rather than the
+  third.
+- **The 0.6B — falsified.** Predicted below the 1.7B at every checkpoint
+  and an earlier plateau. Observed (one seed): level with it to 80 (55 /
+  53 / 55), **91% at 160 and 95% at 320** on unseen registrants — above
+  the 1.7B's 93% pooled — from adapters that trained in a third of the
+  time (30 minutes against 95 for the final one). Its untuned control
+  reads 8%. One seed, and the run's own governed phase approved weaker
+  rules (its LLM reads 38 → 69%), so the tuned model's lead over its LLM
+  is larger than the 1.7B's; the tuned rates themselves are what was
+  predicted wrong.
+- **The LLM with rules — as predicted, and then some.** It never improves
+  past 40 documents (84 / 85 / 84) and *falls* to 78–79% at 160 and 320,
+  because seed 1 approved a rule that contradicted an earlier one (below).
+  Seeds 2 and 3 alone are flat at 77 → 79% and 89 → 92%.
+
+### The overfitting record
+
+| documents | mode | unseen [95% CI] | seen | familiarity gap | train-set | memorisation gap | old rows (forgetting) | loss gap at kept | eff. epochs |
+|---:|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 20 | scratch | 55% [52–57] | 64% | +10 | 97% | +42 | — | 0.056 | 5.0 |
+| 40 | scratch | 58% [55–61] | 69% | +10 | 95% | +36 | 94% | 0.025 | 4.0 |
+| 80 | scratch | 70% [68–73] | 78% | +8 | 98% | +28 | 99% | 0.113 | 4.0 |
+| 160 | scratch | 90% [88–91] | 93% | +3 | 96% | +6 | 97% | 0.052 | 4.0 |
+| 320 | scratch | 93% [91–94] | 95% | +2 | 96% | +3 | 95% | 0.001 | 2.5 |
+| 320 | continual | 91% [89–92] | 90% | −1 | 90% | −0 | 82% | 0.010 | 4.0 |
+
+The question stated in advance was whether the memorisation gap shrinks
+as the corpus grows. It does: **+42 points at 20 documents, +3 at 320**,
+with the familiarity gap going +10 → +2 alongside it — recall replaced by
+generalisation, not a model that learned its rows. The loss gap at the
+kept step stays small and does not widen with corpus size. The noise
+floor is zero: each final scratch adapter read the unseen set twice and
+the two reads differed on **0 of 386** outputs on every seed. And the
+validation selector on a four-row set is a coin flip, as suspected once
+seed 1's checkpoint 40 was read: latest-vs-kept helped once (80: 70% kept
+against 69% latest, 22/43), hurt twice (40: 45 → 55%, 62/24; 160
+continual: 83 → 86%, 29/6), and tied at 320. Both readings are published;
+the curve above is the kept one.
+
+### The verify leg — what the gate did with its own reads
+
+| seed | rules applied | verdicts | reverts | rules after | LLM before → after the reverts |
+|---:|---:|---|---:|---:|---|
+| 1 | 6 | 5 held, **1 regressed** (330 → 260 against checkpoint 80) | 1 | 5 | 260 → **332** of 386 |
+| 2 | 9 | 9 held | 0 | 9 | — |
+| 3 | 10 | 8 held, 2 regressed (359 → 355) | 2 | 8 | 355 → 350 of 387 |
+
+Seed 1 is the case the study was built to find: a rule approved from its
+text that contradicted an earlier one, cost twenty points, and was
+invisible to a gate that measured against day one. Fed the deployment's
+own checkpoint reads on its own timeline, the fixed engine records
+`regressed`, proposes the revert, and the LLM re-read under the remaining
+five rules recovers to 86% — the checkpoint-80 level. Seed 3 is the limit
+on the other side: two rules "regressed" by four trials of 387, both were
+reverted, and the re-read moved nothing (one document of it lost to a
+provider error). The verdict has no noise floor, and this run measures
+what that costs: two unnecessary reverts on a dip smaller than one
+adapter's read-to-read variance elsewhere in this study. Two engine
+changes came out of this leg and are in the CHANGELOG: the baseline for a
+verdict is the newest run before the *apply* (`197a665`), and a revert is
+keyed by the recommendation it reverts, so two regressed lessons on one
+entity get two reverts instead of one (`f8df2d2`, found on seed 3).
+
+### The governed phases themselves
+
+| run | live exact | rules applied | rejected | LLM on unseen, first → last checkpoint |
+|---|---:|---:|---:|---|
+| seed 1 | 889 / 1221 (73%) | 6 | 46 | 86% → 67% |
+| seed 2 | 998 / 1220 (82%) | 9 | 45 | 77% → 79% |
+| seed 3 | 1065 / 1223 (87%) | 10 | 17 | 89% → 92% |
+| 0.6B run (seed 1 again) | 771 / 1221 (63%) | 4 | 26 | 38% → 69% |
+
+The same seed, split and models, run twice (seed 1 and the 0.6B run's
+governed phase), approved six rules once and four the other time and
+ended twenty points apart on the LLM; the provider's routing is not
+deterministic under a seed, and the loop amplifies that into different
+rule sets. The tuned models did not care: 94% and 95% at 320 on the same
+unseen set, from filed rows that do not depend on which rules were
+approved.
+
+### Cost
+
+All API calls for the three 1.7B seeds — governed phases, every LLM
+held-out read at every checkpoint, the prequential and verify reads —
+metered from journaled tokens: **$0.66** (15,700 calls, 4,797 of them the
+agent's). The 0.6B run: $0.23. Tuning and every small-model read were
+local; the 1.7B's final adapter trained in 95 minutes uncontended, the
+0.6B's in 30. The pre-registered estimate was $9; the agent model's list
+price is a fifth of what that assumed.
+
+### What this study does not show
+
+Local latency (two runs shared the GPU; `FOURWAY.md` measured it
+uncontended). Whether the plateau at 320 is capacity or the corpus's
+last era — the held-out set's median filing year is 2015 and the stream
+reaches 2018, so what remains is the question DocILE was planned for.
+The 0.6B result is one seed. And the LLM's decline is one seed's loop
+approving one bad rule: seeds 2 and 3 show the same LLM flat, not
+falling.
 
 ## Reproduce
 
@@ -393,7 +539,23 @@ the full run measures it.
 cd crates/areev-bench/receipts
 python3 build_vrdu_reg.py                                   # 1,321 kept of 1,915
 export OPENROUTER_API_KEY=…
+nohup sh gpu_yield.sh > gpu_yield.log 2>&1 &                # if two runs may share the GPU
 PROFILE=vrdu_reg SEED=1 EXP=40  EVAL=20  CKPTS=20           sh curve_tune.sh runs/trial   # the trial
-for S in 1 2 3; do PROFILE=vrdu_reg SEED=$S EXP=320 EVAL=100 CKPTS=20,40,80,160 sh curve_tune.sh runs/curve; done
-python3 curve_stats.py runs/curve --write
+for S in 1 2 3; do
+  PROFILE=vrdu_reg SEED=$S EXP=320 EVAL=100 CKPTS=20,40,80,160 sh curve_tune.sh runs/curve
+  for leg in "curve_extra.sh runs/curve/seed$S 40" "curve_next.sh runs/curve/seed$S 20" \
+             "curve_kept.sh runs/curve/seed$S" "curve_verify.sh runs/curve/seed$S"; do
+    PROFILE=vrdu_reg SEED=$S EXP=320 EVAL=100 sh $leg     # the post-hoc legs, in this order
+  done
+done
+PROFILE=vrdu_reg SEED=1 EXP=320 EVAL=100 CKPTS=20,40,80,160 SLM_BASE=mlx-community/Qwen3-0.6B-4bit sh curve_tune.sh runs/curve-08b
+sh publish_curve.sh runs/curve runs/curve-08b ../results/curve-vrdu-$(date +%F)
 ```
+
+`curve_resume.sh` picks a seed up from its persisted checkpoints after a
+crash (it skips every adapter and read that exists). `curve_verify.sh`
+runs under a separate build of the binding (`VERIFY_PY`) so an engine
+change is never swapped under a live seed. Never edit a driver or
+`slm_eval.sh` while an invocation may be running: `sh` reads a script
+incrementally, and an edit mid-run cost this study one seed's checkpoint
+(`curve_resume.sh` records the incident).

@@ -26,6 +26,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`crates/areev-bench/CURVE.md` — the tuning learning curve.** Three
+  seeds of a governed deployment over 320 real FARA registration forms
+  (VRDU), the memory snapshotted at 20/40/80/160/320 documents and a
+  Qwen3-1.7B tuned at each checkpoint from scratch and continually, read
+  against registrants it never learned from. The tuned model goes from 55%
+  to 93% exact and passes the LLM carrying the loop's rules (79%) between
+  80 and 160 documents; the memorisation gap shrinks from +42 to +3 points;
+  a Qwen3-0.6B reaches 95%. The verify leg fed the loop its own checkpoint
+  reads and it reverted the one rule that had cost twenty points; two
+  engine defects that leg exposed are fixed under *Changed*. All API cost
+  for three seeds: $0.66. `results/curve-vrdu-2026-09-06/` holds the
+  numbers and receipts; `publish_curve.sh` regenerates them.
 - **The DISCOVER objective is host policy.** `discover_objective` in the loop
   policy file selects what the LLM proposer optimizes for: `review_queue`
   (the default, byte-for-byte the previous instruction apart from the cite

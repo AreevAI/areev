@@ -1,0 +1,12 @@
+{
+ "learned_db": "/Users/sathish/mg/local/areev-runs/curve-08b/seed1/snap_080.db",
+ "seed": 1,
+ "experience": 320,
+ "eval": 100,
+ "train": 76,
+ "valid": 4,
+ "rules_in_system_prompt": 4,
+ "since_seq": 0,
+ "upto_seq": 80,
+ "held_out_excluded": 100
+}

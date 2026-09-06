@@ -607,7 +607,7 @@ documents and tasks nobody wrote for this repo:
 
 | harness | corpus | what it found | write-up |
 |---|---|---|---|
-| `receipts/` (`--profile vrdu`) | VRDU ad-buy forms — 641 real US FCC advertising invoices | *pre-registered, running* — the second corpus, chosen to differ on document type, length, day-one field and filing convention | [`ADBUY.md`](ADBUY.md) |
+| `receipts/` (`--profile vrdu`) | VRDU ad-buy forms — 641 real US FCC advertising invoices | **replicated: 122 → 590 of 840 pooled, 468 wins, 0 losses.** Seed 3 reached 238 of 280 and its own later rules took it to 133 — the gate said `held`, correctly against day one | [`ADBUY.md`](ADBUY.md) |
 | `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | **both halves, in two runs.** Run 2: an LLM-authored, human-approved rule took the agent from 97/720 to 382/720 exact — 286 wins, 1 loss. Run 1: the same machinery, one engine defect earlier, made it *worse* — and only outcome measurement caught the rule that did it | [`RECEIPTS.md`](RECEIPTS.md) |
 | `tau2/` | τ²-bench retail — 114 tool-using customer tasks | **no learning number, on purpose.** A ceiling probe found the domain reachable (7/25) but the withheld clauses costing nothing the reward can see (p=0.69), so a full run would have measured noise. Behaviour moved though: 42 tool errors against 23 | [`tau2/README.md`](tau2/README.md) |
 
@@ -705,17 +705,34 @@ reported `held`, correctly: 133 still beats the deployed baseline of 35.
 engine gaps this run argues for are semantic near-duplicate suppression and
 a high-water mark to measure against.
 
-### The tuning learning curve — pre-registered, running
+### The tuning learning curve — does the small model keep improving as the deployment grows?
 
-[`CURVE.md`](CURVE.md). Does the tuned small model keep improving as the
-governed deployment grows, or level off — and does it matter whether each
-checkpoint starts from the plain base or from the last one? VRDU
-registration forms (1,321 real FARA filings, 478 registrants, 1948–2023),
-three seeds of 320 documents in filing-date order, adapters trained from
-scratch and continually at 20/40/80/160/320, read against held-out sets
-drawn from organisations the agent never saw and from ones it did.
-Predictions and overfitting controls are stated in the document before the
-run; results land there when it finishes. DocILE is planned after it.
+Full design, pre-registration and result: [`CURVE.md`](CURVE.md). VRDU
+registration forms (1,321 real FARA filings, 478 registrants), three seeds
+of 320 documents in filing-date order, a Qwen3-1.7B tuned at 20/40/80/160/
+320 documents from scratch and continually, read against 100 registrants
+the agent never learned from. Exact-match, 300 documents per checkpoint:
+
+| documents learned from | LLM + the loop's rules | 1.7B from scratch | 1.7B continual |
+|---:|:---:|:---:|:---:|
+| 20 | 84% | 55% | 54% |
+| 80 | 84% | 70% | 61% |
+| 160 | 78% | **90%** | 87% |
+| 320 | 79% | **93%** | 91% |
+
+The curve is era coverage: the stream is chronological, the first 80
+documents are filed before 1995, and the tuned model reads a two-digit
+year as 19xx until the corpus reaches the held-out forms' era — on the
+next 20 documents of its own stream it matches the LLM from the first
+checkpoint and beats it by 14 points at 160. The memorisation gap shrinks
+from +42 to +3 points, the accumulating corpus beats the continual path at
+every checkpoint after the first, and a Qwen3-0.6B reaches 95% at 320
+from a 30-minute training. The verify leg fed the loop its own checkpoint
+reads: seed 1's sixth rule contradicted its fourth and cost the LLM twenty
+points, the fixed engine measured it `regressed` and the revert recovered
+the LLM to 86% — and two seed-3 rules that "regressed" by four trials of
+387 were reverted for nothing, because the verdict has no noise floor.
+All API cost, three seeds: $0.66. DocILE is next.
 
 ### Four ways to remember — no memory, mem0, the governed loop, a tuned small model
 
@@ -1177,11 +1194,11 @@ it, so its numbers never rank one approach against another.
   every pass and produced no findings that reached the queue; the entire gain
   is from the deterministic analyzers.
 
-**More benchmarks are coming.** Next: the learning curve (does accuracy keep
-climbing as experience accumulates?), an adversarial-experience arm (does
-governance hold when the history is misleading?), and a run on a public
-agent-trajectory benchmark rather than a synthetic one. Roadmap in
-[`SELFIMPROVE.md`](SELFIMPROVE.md).
+**More benchmarks are coming.** Next: DocILE (~6,700 annotated invoices,
+55 field types) at checkpoints to 1,280 documents, to ask whether the
+tuned model's unseen-supplier curve keeps rising past a few hundred
+documents or the plateau found on 320 registration forms is the plateau;
+the plan is in [`CURVE.md`](CURVE.md).
 
 ## Areev Loop analyzer precision (fixture floor)
 

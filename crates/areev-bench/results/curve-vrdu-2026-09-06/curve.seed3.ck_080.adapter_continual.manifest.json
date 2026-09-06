@@ -1,0 +1,90 @@
+{
+ "base_model": "mlx-community/Qwen3-1.7B-4bit",
+ "adapter_path": "/Users/sathish/mg/local/areev-runs/curve/seed3/ck_080/adapter_continual",
+ "iters": 72,
+ "epochs": 4,
+ "train_seconds": 1111,
+ "resumed_from": "/Users/sathish/mg/local/areev-runs/curve/seed3/ck_040/adapter_continual",
+ "corpus": {
+  "learned_db": "/Users/sathish/mg/local/areev-runs/curve/seed3/snap_080.db",
+  "seed": 3,
+  "experience": 320,
+  "eval": 100,
+  "train": 36,
+  "valid": 4,
+  "rules_in_system_prompt": 6,
+  "since_seq": 40,
+  "upto_seq": 80,
+  "held_out_excluded": 96
+ },
+ "val_loss": [
+  [
+   1,
+   0.013
+  ],
+  [
+   25,
+   0.058
+  ],
+  [
+   50,
+   0.033
+  ],
+  [
+   72,
+   0.064
+  ]
+ ],
+ "train_loss": [
+  [
+   10,
+   0.084
+  ],
+  [
+   20,
+   0.03
+  ],
+  [
+   30,
+   0.026
+  ],
+  [
+   40,
+   0.036
+  ],
+  [
+   50,
+   0.016
+  ],
+  [
+   60,
+   0.025
+  ],
+  [
+   70,
+   0.038
+  ],
+  [
+   72,
+   0.006
+  ]
+ ],
+ "best_val_iter": 1,
+ "best_val_loss": 0.013,
+ "train_loss_at_best": null,
+ "loss_gap_at_best": null,
+ "effective_epochs": 4.0,
+ "trainable": {
+  "percent": 0.145,
+  "millions": 2.49,
+  "of_millions": 1720.575
+ },
+ "kept_checkpoint": "adapters.safetensors",
+ "fine_tune": {
+  "type": "lora",
+  "num_layers": 8,
+  "batch_size": 2,
+  "lr": 0.0001,
+  "mask_prompt": true
+ }
+}

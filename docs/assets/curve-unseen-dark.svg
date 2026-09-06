@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Exact-match rate on registrants the agent never learned from as the deployment grows: LLM with the checkpoint's rules 79% at 320; 1.7B tuned from scratch 93% at 320; 1.7B tuned continually 91% at 320.</title>
+<desc>Documents learned from on a log axis. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over 3 seed(s); bars are 95% Wilson intervals where recorded.</desc>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#2a2e35"/>
+<text x="49" y="338.0" text-anchor="end" font-size="11" fill="#9aa1ad">0%</text>
+<line x1="58" y1="259.0" x2="718" y2="259.0" stroke="#2a2e35"/>
+<text x="49" y="263.0" text-anchor="end" font-size="11" fill="#9aa1ad">25%</text>
+<line x1="58" y1="184.0" x2="718" y2="184.0" stroke="#2a2e35"/>
+<text x="49" y="188.0" text-anchor="end" font-size="11" fill="#9aa1ad">50%</text>
+<line x1="58" y1="109.0" x2="718" y2="109.0" stroke="#2a2e35"/>
+<text x="49" y="113.0" text-anchor="end" font-size="11" fill="#9aa1ad">75%</text>
+<line x1="58" y1="34.0" x2="718" y2="34.0" stroke="#2a2e35"/>
+<text x="49" y="38.0" text-anchor="end" font-size="11" fill="#9aa1ad">100%</text>
+<text x="58.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">20</text>
+<text x="223.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">40</text>
+<text x="388.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">80</text>
+<text x="553.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">160</text>
+<text x="718.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">320</text>
+<text x="26" y="20" font-size="11" fill="#9aa1ad">exact-match rate on registrants the agent never learned from</text>
+<text x="388" y="374" text-anchor="middle" font-size="11.5" fill="#9aa1ad">documents learned from (log scale)</text>
+<line x1="58" y1="284.2" x2="718" y2="284.2" stroke="#a9c3e8" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="62" y="279.2" font-size="10.5" fill="#a9c3e8">untuned 1.7B under the final rules, 17%</text>
+<path d="M58.0 82.6 L223.0 79.0 L388.0 82.0 L553.0 98.5 L718.0 96.4" fill="none" stroke="#5fcd9b" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="58.0" cy="82.6" r="3.2" fill="#5fcd9b"/>
+<circle cx="223.0" cy="79.0" r="3.2" fill="#5fcd9b"/>
+<circle cx="388.0" cy="82.0" r="3.2" fill="#5fcd9b"/>
+<circle cx="553.0" cy="98.5" r="3.2" fill="#5fcd9b"/>
+<circle cx="718.0" cy="96.4" r="3.2" fill="#5fcd9b"/>
+<path d="M58.0 169.9 L223.0 159.7 L388.0 123.1 L553.0 64.6 L718.0 56.2" fill="none" stroke="#7aa8e0" stroke-width="2.4" stroke-linejoin="round"/>
+<line x1="58.0" y1="178.6" x2="58.0" y2="161.5" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="58.0" cy="169.9" r="3.2" fill="#7aa8e0"/>
+<line x1="223.0" y1="168.4" x2="223.0" y2="151.3" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="223.0" cy="159.7" r="3.2" fill="#7aa8e0"/>
+<line x1="388.0" y1="130.9" x2="388.0" y2="115.3" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="388.0" cy="123.1" r="3.2" fill="#7aa8e0"/>
+<line x1="553.0" y1="70.0" x2="553.0" y2="59.8" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="553.0" cy="64.6" r="3.2" fill="#7aa8e0"/>
+<line x1="718.0" y1="61.3" x2="718.0" y2="52.0" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="718.0" cy="56.2" r="3.2" fill="#7aa8e0"/>
+<path d="M58.0 170.8 L223.0 165.1 L388.0 151.6 L553.0 73.3 L718.0 62.2" fill="none" stroke="#7aa8e0" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<line x1="58.0" y1="179.5" x2="58.0" y2="162.4" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="58.0" cy="170.8" r="3.2" fill="#7aa8e0"/>
+<line x1="223.0" y1="173.8" x2="223.0" y2="156.7" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="223.0" cy="165.1" r="3.2" fill="#7aa8e0"/>
+<line x1="388.0" y1="160.3" x2="388.0" y2="143.5" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="388.0" cy="151.6" r="3.2" fill="#7aa8e0"/>
+<line x1="553.0" y1="79.6" x2="553.0" y2="67.9" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="553.0" cy="73.3" r="3.2" fill="#7aa8e0"/>
+<line x1="718.0" y1="67.6" x2="718.0" y2="57.4" stroke="#7aa8e0" stroke-width="1.2" opacity="0.7"/>
+<circle cx="718.0" cy="62.2" r="3.2" fill="#7aa8e0"/>
+<text x="728.0" y="60.2" font-size="12" font-weight="600" fill="#7aa8e0">1.7B tuned from scratch</text>
+<text x="728.0" y="75.2" font-size="12" font-weight="600" fill="#7aa8e0">1.7B tuned continually</text>
+<text x="728.0" y="100.4" font-size="12" font-weight="600" fill="#5fcd9b">LLM with the checkpoint's rules</text>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#4a505a"/>
+</svg>

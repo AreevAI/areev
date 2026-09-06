@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Exact-match rate on the next 20 documents of the stream (prequential) as the deployment grows: LLM with the checkpoint's rules 69% at 160; 1.7B tuned from scratch 87% at 160; 1.7B tuned continually 83% at 160; governed agent as it ran 69% at 160.</title>
+<desc>Documents learned from on a log axis. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over 1 seed(s); bars are 95% Wilson intervals where recorded.</desc>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#2a2e35"/>
+<text x="49" y="338.0" text-anchor="end" font-size="11" fill="#9aa1ad">0%</text>
+<line x1="58" y1="259.0" x2="718" y2="259.0" stroke="#2a2e35"/>
+<text x="49" y="263.0" text-anchor="end" font-size="11" fill="#9aa1ad">25%</text>
+<line x1="58" y1="184.0" x2="718" y2="184.0" stroke="#2a2e35"/>
+<text x="49" y="188.0" text-anchor="end" font-size="11" fill="#9aa1ad">50%</text>
+<line x1="58" y1="109.0" x2="718" y2="109.0" stroke="#2a2e35"/>
+<text x="49" y="113.0" text-anchor="end" font-size="11" fill="#9aa1ad">75%</text>
+<line x1="58" y1="34.0" x2="718" y2="34.0" stroke="#2a2e35"/>
+<text x="49" y="38.0" text-anchor="end" font-size="11" fill="#9aa1ad">100%</text>
+<text x="58.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">20</text>
+<text x="223.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">40</text>
+<text x="388.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">80</text>
+<text x="553.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">160</text>
+<text x="718.0" y="353" text-anchor="middle" font-size="11" fill="#9aa1ad">320</text>
+<text x="26" y="20" font-size="11" fill="#9aa1ad">exact-match rate on the next 20 documents of the stream (prequential)</text>
+<text x="388" y="374" text-anchor="middle" font-size="11.5" fill="#9aa1ad">documents learned from (log scale)</text>
+<path d="M58.0 184.0 L223.0 184.0 L388.0 139.0 L553.0 126.4" fill="none" stroke="#5fcd9b" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="58.0" cy="184.0" r="3.2" fill="#5fcd9b"/>
+<circle cx="223.0" cy="184.0" r="3.2" fill="#5fcd9b"/>
+<circle cx="388.0" cy="139.0" r="3.2" fill="#5fcd9b"/>
+<circle cx="553.0" cy="126.4" r="3.2" fill="#5fcd9b"/>
+<path d="M58.0 142.9 L223.0 75.1 L388.0 86.5 L553.0 72.4" fill="none" stroke="#7aa8e0" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="58.0" cy="142.9" r="3.2" fill="#7aa8e0"/>
+<circle cx="223.0" cy="75.1" r="3.2" fill="#7aa8e0"/>
+<circle cx="388.0" cy="86.5" r="3.2" fill="#7aa8e0"/>
+<circle cx="553.0" cy="72.4" r="3.2" fill="#7aa8e0"/>
+<path d="M58.0 142.9 L223.0 112.6 L388.0 90.4 L553.0 84.1" fill="none" stroke="#7aa8e0" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<circle cx="58.0" cy="142.9" r="3.2" fill="#7aa8e0"/>
+<circle cx="223.0" cy="112.6" r="3.2" fill="#7aa8e0"/>
+<circle cx="388.0" cy="90.4" r="3.2" fill="#7aa8e0"/>
+<circle cx="553.0" cy="84.1" r="3.2" fill="#7aa8e0"/>
+<path d="M58.0 184.0 L223.0 184.0 L388.0 146.5 L553.0 126.4" fill="none" stroke="#8fdbb8" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="2 4"/>
+<circle cx="58.0" cy="184.0" r="3.2" fill="#8fdbb8"/>
+<circle cx="223.0" cy="184.0" r="3.2" fill="#8fdbb8"/>
+<circle cx="388.0" cy="146.5" r="3.2" fill="#8fdbb8"/>
+<circle cx="553.0" cy="126.4" r="3.2" fill="#8fdbb8"/>
+<text x="563.0" y="76.4" font-size="12" font-weight="600" fill="#7aa8e0">1.7B tuned from scratch</text>
+<text x="563.0" y="91.4" font-size="12" font-weight="600" fill="#7aa8e0">1.7B tuned continually</text>
+<text x="563.0" y="130.4" font-size="12" font-weight="600" fill="#5fcd9b">LLM with the checkpoint's rules</text>
+<text x="563.0" y="145.4" font-size="12" font-weight="600" fill="#8fdbb8">governed agent as it ran</text>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#4a505a"/>
+</svg>

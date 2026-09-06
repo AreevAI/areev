@@ -1,0 +1,19 @@
+{
+ "profile": "vrdu_reg",
+ "seed": 3,
+ "experience": 320,
+ "learn_every": 2,
+ "exact": 1065,
+ "semantic": 1124,
+ "scored": 1223,
+ "parked": 1,
+ "approved": 184,
+ "documents": 320,
+ "prompt_tokens": 537261,
+ "completion_tokens": 20751,
+ "learn_passes": 68,
+ "learn_failures": 0,
+ "lessons_applied": 10,
+ "lessons_rejected": 17,
+ "model_call_failures": 1
+}
