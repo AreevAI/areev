@@ -18,9 +18,34 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import accountant as acct
 import ledger_profile
 import memory as mem
-from agent import propose
+from agent import build_messages, parse_reply, propose
 
-HARNESS_NS = "agent:harness"
+HARNESS_NS = "age, build_messagesnt:harness"
+
+
+def batch_replies(profile, at, rows, lessons, lessons_fn, batch_argv, journal):
+    """Build every request, run the batch adapter once, return {custom_id: reply}."""
+    import subprocess
+    import tempfile
+    where = os.path.dirname(journal.name) if journal is not None and hasattr(journal, "name") else tempfile.mkdtemp(prefix="areev-batch-")
+    req_path = os.path.join(where, "batch.requests.jsonl")
+    out_path = os.path.join(where, "batch.replies.jsonl")
+    with open(req_path, "w", encoding="utf-8") as fh:
+        for r in rows:
+            section = lessons_fn(r) if lessons_fn else lessons
+            fh.write(json.dumps({"custom_id": "seq-%d" % r["seq"], "op": "chat", "temperature": 0,
+                                 "messages": build_messages(at, r["text"], section)}, ensure_ascii=False) + "\n")
+    p = subprocess.run(list(batch_argv) + ["--in", req_path, "--out", out_path], capture_output=True)
+    sys.stdout.write(p.stdout.decode(errors="replace"))
+    if p.returncode != 0:
+        print("  batch adapter failed: %s" % p.stderr.decode(errors="replace")[:300])
+    out = {}
+    if os.path.exists(out_path):
+        for line in open(out_path, encoding="utf-8"):
+            if line.strip():
+                rep = json.loads(line)
+                out[rep["custom_id"]] = rep
+    return out
 
 
 def evalset_hash(rows):
@@ -33,7 +58,7 @@ def evalset_hash(rows):
 
 
 def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True,
-            at_seq=None, lessons_fn=None):
+            at_seq=None, lessons_fn=None, batch_argv=None):
     """Read every held-out receipt under `lessons` (the prompt section as
     assembled from some memory state — or "" for the day-one agent).
     Returns (trials, usage).
@@ -53,15 +78,26 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
     # memory puts in the prompt"; only the second is a constant.
     n_rules = lessons.count("\n- ")
     if verbose:
-        print("\n=== arm %s — %d rule(s) in the prompt" % (name, n_rules))
+        print("\n=== arm %s — %d rule(s) in the prompt%s" % (name, n_rules, "  [batch]" if batch_argv else ""))
     trials, usage_tot = [], {"prompt_tokens": 0, "completion_tokens": 0}
     errors = 0
+    # `batch_argv` (scripts/batch_toolcall.py ...) submits every document's
+    # request at once and collects the replies -- possible only because a
+    # held-out read's prompt never depends on an earlier answer -- and the
+    # scoring below is byte-for-byte the synchronous path's.
+    replies = batch_replies(profile, at, rows, lessons, lessons_fn, batch_argv, journal) if batch_argv else None
     for r in rows:
         seq = r["seq"]
         req = ledger_profile.required_fields(profile, seq)
         try:
-            section = lessons_fn(r) if lessons_fn else lessons
-            out, usage = propose(agent_argv, at, r["text"], section)
+            if replies is not None:
+                rep = replies.get("seq-%d" % seq)
+                if rep is None or rep.get("error"):
+                    raise RuntimeError("batch: %s" % ((rep or {}).get("error") or "no reply"))
+                out, usage = parse_reply((rep.get("message") or {}).get("content") or ""), rep.get("usage") or {}
+            else:
+                section = lessons_fn(r) if lessons_fn else lessons
+                out, usage = propose(agent_argv, at, r["text"], section)
         except Exception as e:
             # A provider having a bad minute is not a result, but losing the
             # whole arm to it is worse than scoring one document as a park:

@@ -63,13 +63,18 @@ def summarize(rows):
     by = {}
     for r in rows:
         k = (r.get("script", "?"), r.get("model", "?"))
-        b = by.setdefault(k, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+        b = by.setdefault(k, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "usd": 0.0, "priced": False})
         b["calls"] += 1
-        b["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
-        b["completion_tokens"] += int(r.get("completion_tokens") or 0)
+        pt, ct = int(r.get("prompt_tokens") or 0), int(r.get("completion_tokens") or 0)
+        b["prompt_tokens"] += pt
+        b["completion_tokens"] += ct
+        # a batch adapter's row carries the tier's discount off list price
+        usd, priced = price(r.get("model", "?"), pt, ct)
+        b["usd"] += usd * (1.0 - float(r.get("discount") or 0.0))
+        b["priced"] = b["priced"] or priced
     out, total, unpriced = [], 0.0, []
     for (script, model), b in sorted(by.items()):
-        usd, priced = price(model, b["prompt_tokens"], b["completion_tokens"])
+        usd, priced = b.pop("usd"), b.pop("priced")
         shadow = None
         if model.startswith("mlx-slm"):
             shadow = b["prompt_tokens"] / 1e6 * SLM_SHADOW[0] + b["completion_tokens"] / 1e6 * SLM_SHADOW[1]

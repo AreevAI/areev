@@ -26,6 +26,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Batch reads for the bench harness.** `evaluate.py --batch` submits a
+  whole held-out arm as one job to an OpenAI-compatible batch endpoint
+  (`scripts/batch_toolcall.py`, self-checked against a local mock of the
+  API); usage rows carry the tier's discount and `cost.py` applies it. The
+  governed stream stays synchronous by construction.
 - **`crates/areev-bench/CURVE.md` — the tuning learning curve.** Three
   seeds of a governed deployment over 320 real FARA registration forms
   (VRDU), the memory snapshotted at 20/40/80/160/320 documents and a

@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--upto-seq", type=int, default=0, help="with --holdout train: only documents up to this seq; with next: the window starts after it")
     ap.add_argument("--rows", type=int, default=int(os.environ.get("EVAL_ROWS", "0") or 0),
                     help="with --holdout train/next: how many documents (the split itself keeps --eval); env EVAL_ROWS")
+    ap.add_argument("--batch", action="store_true",
+                    help="submit each arm's read as one batch through $AGENT_BATCH_CMD (scripts/batch_toolcall.py ...) instead of one call per document")
     ap.add_argument("--holdout", choices=("unseen", "seen", "train", "next"), default="unseen",
                     help="for a profile with an entity split: evaluate on documents from "
                          "entities the agent never saw (unseen, the default) or from "
@@ -94,6 +96,9 @@ def main():
     rolled = mem.with_memory(db_a, mem.REVIEWER, mem.rollback_all)
     print("arm A: rolled back %d recommendation(s)" % len(rolled))
 
+    batch_argv = None
+    if args.batch:
+        batch_argv = os.environ.get("AGENT_BATCH_CMD", "").split() or sys.exit("--batch needs AGENT_BATCH_CMD (e.g. '$PY scripts/batch_toolcall.py --base-url ... --model ...')")
     journal = open(os.path.join(args.workdir, "eval.jsonl"), "w", encoding="utf-8")
     trials, usage, journaled = [], {}, {}
     for arm in [a.strip() for a in args.arms.split(",") if a.strip()]:
@@ -105,7 +110,7 @@ def main():
         render = mem.corrections_markdown if arm == "C" else (lambda _db: mem.lessons_markdown(_db, profile))
         lessons = mem.with_memory(db, mem.REVIEWER, render)
         t, u = evalrun.run_arm(arm, profile, lessons, rows, agent_argv, journal,
-                               at_seq=args.as_of)
+                               at_seq=args.as_of, batch_argv=batch_argv)
         trials += t
         usage[arm] = u
         if arm in journal_as:
@@ -118,6 +123,7 @@ def main():
     with open(os.path.join(args.workdir, "eval.summary.json"), "w") as fh:
         json.dump({"profile": args.profile, "seed": args.seed, "held_out": len(rows),
                    "evalset": evalset, "rolled_back": rolled, "usage": usage,
+                   "batch_cmd": " ".join(batch_argv) if batch_argv else None,
                    "as_of": args.as_of, "journaled": journaled,
                    "agent_cmd": os.environ.get("AGENT_CMD")}, fh, indent=1)
     print("\nwrote %s" % os.path.join(args.workdir, "trials.json"))

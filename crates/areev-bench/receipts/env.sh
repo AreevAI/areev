@@ -41,6 +41,13 @@ if [ -f "$HOME/mg/local/dev-areev.env" ] && [ -z "${OPENROUTER_API_KEY:-}" ]; th
 fi
 
 export AGENT_CMD="${AGENT_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $AGENT_MODEL --provider $AGENT_PIN --seed $SEED}"
+# Optional: a batch adapter for the fixed-prompt held-out reads (evaluate.py
+# --batch). No default -- OpenRouter has no batch endpoint, so this names a
+# provider that has one AND serves the agent model, e.g.
+#   AGENT_BATCH_CMD="$PY $SCRIPTS/batch_toolcall.py --base-url https://api.together.xyz/v1 --model <the agent model> --key-env TOGETHER_API_KEY"
+# Validate a switch of provider the way the streamlake move was validated:
+# the same read, synchronous and batched, paired trial for trial.
+export AGENT_BATCH_CMD="${AGENT_BATCH_CMD:-}"
 export LOOP_LLM_CMD="${LOOP_LLM_CMD:-$PY $SCRIPTS/openrouter_loop.py $LEARNER_MODEL --provider $LEARNER_PIN --seed $SEED}"
 export LOOP_GROUND_CMD="${LOOP_GROUND_CMD:-$PY $SCRIPTS/openrouter_loop.py $GROUND_MODEL --provider $GROUND_PIN --seed $SEED}"
 export REVIEW_CMD="${REVIEW_CMD:-$PY $SCRIPTS/openrouter_toolcall.py $REVIEW_MODEL --provider $REVIEW_PIN --seed $SEED}"

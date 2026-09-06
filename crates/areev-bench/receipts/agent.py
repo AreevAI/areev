@@ -84,6 +84,22 @@ def parse_reply(text):
     }
 
 
+def build_messages(profile, document_text, lessons_md):
+    """The agent's prompt for one document: the day-one instruction, the
+    memory's section (if any), and the document. One builder for the
+    synchronous call and the batch path, so the two can never differ."""
+    system = base_instruction(profile)
+    if lessons_md.strip():
+        system += "\n\n" + lessons_md
+    body = document_text.strip()
+    if not body:
+        body = "(no extractable text — this document is a scan or an image)"
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": profile["document_noun"].upper() + ":\n\n" + body[:12000]},
+    ]
+
+
 def propose(argv, profile, document_text, lessons_md):
     """One capture attempt. `lessons_md` is assembled live from memory.
 
@@ -92,15 +108,5 @@ def propose(argv, profile, document_text, lessons_md):
     the harness structurally cannot hand over the thing it is measuring.
     Returns (proposal, usage).
     """
-    system = base_instruction(profile)
-    if lessons_md.strip():
-        system += "\n\n" + lessons_md
-    body = document_text.strip()
-    if not body:
-        body = "(no extractable text — this document is a scan or an image)"
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": profile["document_noun"].upper() + ":\n\n" + body[:12000]},
-    ]
-    content, usage = call_model(argv, messages)
+    content, usage = call_model(argv, build_messages(profile, document_text, lessons_md))
     return parse_reply(content), usage
