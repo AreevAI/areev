@@ -92,20 +92,39 @@ def with_memory(path, actor, fn):
     outlives its frame makes the next open fail (STO-E002)."""
     import areev
     db = areev.Areev(str(path), ns=NS, actor=actor)
+    err = None
     try:
         return fn(db)
+    except Exception as exc:
+        # An exception's traceback keeps every frame alive, and `fn`'s
+        # frames hold `db` — so a failure inside one operation left the
+        # handle open and the NEXT open of the same file failed with
+        # STO-E002 "store busy" (PG01, both arms, run 1). Keep the message,
+        # drop the traceback, release the handle, then raise afresh.
+        err = "%s: %s" % (type(exc).__name__, str(exc)[:400])
     finally:
         del db
         gc.collect()
+    raise RuntimeError(err) from None
 
 
-def _grains(db, noun, where=""):
+def _grains(db, noun, where="", cap=CAP, strict=True):
+    """A scan capped at `cap`. `strict` raises when the cap is hit — right
+    for facts and skills, which render into the prompt and must not be
+    silently missing (the receipts rule). Events are different: a family
+    with a large seeded session set plus its own turns passed 500 events in
+    run 1 (PG01) and the raise took down both Areev arms; a title list or a
+    search over a truncated window is a bounded answer, not a wrong one, so
+    event scans pass `strict=False` with the CAL maximum of 1000."""
     payload = json.loads(db.cal(
-        'RECALL %s WHERE namespace = "%s"%s LIMIT %d FORMAT json' % (noun, NS, where, CAP)))
+        'RECALL %s WHERE namespace = "%s"%s LIMIT %d FORMAT json' % (noun, NS, where, cap)))
     grains = payload.get("grains", payload if isinstance(payload, list) else [])
-    if len(grains) >= CAP:
-        raise RuntimeError("memory scan hit the %d-grain cap; narrow the query" % CAP)
+    if strict and len(grains) >= cap:
+        raise RuntimeError("memory scan hit the %d-grain cap; narrow the query" % cap)
     return grains
+
+
+EVENT_CAP = 1000  # CAL's LIMIT maximum
 
 
 def _fields(g):
@@ -158,7 +177,7 @@ def session_titles(db):
     # controls exist to catch. Take the bracketed title the importer put on
     # the first message, else the earliest event's opening words.
     per: dict[str, list[tuple[str, str]]] = {}
-    for g in _grains(db, "events"):
+    for g in _grains(db, "events", cap=EVENT_CAP, strict=False):
         f = _fields(g)
         sid = f.get("session_id") or ""
         if sid:
@@ -828,7 +847,7 @@ class AreevAdapter(RuntimeAdapter):
 
     def _session_search(self, db, query):
         if not query:
-            rows = _grains(db, "events", ' AND role = "user"')
+            rows = _grains(db, "events", ' AND role = "user"', cap=EVENT_CAP, strict=False)
             seen, out = set(), []
             for g in reversed(rows):
                 f = _fields(g)
@@ -948,7 +967,7 @@ def govern(db_path, family_id, seed):
         by_hash = {}
         for noun in ("observations", "facts", "tools", "events"):
             try:
-                for g in _grains(db, noun):
+                for g in _grains(db, noun, cap=EVENT_CAP, strict=False):
                     by_hash[g.get("hash")] = _fields(g)
             except Exception:
                 continue
