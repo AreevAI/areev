@@ -48,7 +48,7 @@ if [ -n "$MEM0" ] && [ -d "$MEM0" ]; then
     for sd in "$md"/seed*; do
       [ -d "$sd" ] || continue
       s=$(basename "$sd")
-      for f in run.config.json experience.summary.json; do
+      for f in run.config.json experience.summary.json peek.json; do
         [ -f "$sd/$f" ] && cp "$sd/$f" "$OUT/mem0-$mode.$s.$f"
       done
     done

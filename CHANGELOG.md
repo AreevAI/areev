@@ -35,8 +35,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   80 and 160 documents; the memorisation gap shrinks from +42 to +3 points;
   a Qwen3-0.6B reaches 95%. The verify leg fed the loop its own checkpoint
   reads and it reverted the one rule that had cost twenty points; two
-  engine defects that leg exposed are fixed under *Changed*. All API cost
-  for three seeds: $0.66. `results/curve-vrdu-2026-09-06/` holds the
+  engine defects that leg exposed are fixed under *Changed*. The baselines
+  every earlier chart had are on the same sets: no memory is flat at 25%,
+  and mem0 — as installed, domain-prompted, and framed under the governed
+  arm's own instruction header — is 26% at every checkpoint on every seed,
+  with `mem0_peek.py` showing why (the stores hold the conventions; a
+  top-ten drawn by similarity to a form returns other forms). All API cost
+  for three seeds: $0.66; mem0's three-seed runs cost $0.87 and $1.02. `results/curve-vrdu-2026-09-06/` holds the
   numbers and receipts; `publish_curve.sh` regenerates them.
 - **The DISCOVER objective is host policy.** `discover_objective` in the loop
   policy file selects what the LLM proposer optimizes for: `review_queue`

@@ -1,0 +1,14 @@
+{
+ "exact": 89,
+ "semantic": 89,
+ "scored": 349,
+ "parked": 0,
+ "documents": 89,
+ "adds": 506,
+ "memories_seen": 890,
+ "model_call_failures": 0,
+ "resumed_after": 231,
+ "mode": "domain",
+ "embed_calls": 178,
+ "evalset": "3fdb2649cc01681c"
+}

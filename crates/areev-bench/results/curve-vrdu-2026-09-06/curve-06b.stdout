@@ -32,6 +32,16 @@ Tuning learning curve, 1 seed(s). Exact-match RATE; (wins/losses) paired against
 | 160 | 69% | 87% (17/3) | 83% (16/5) | 5/2 p=0.453 | governed agent as it ran: 69% |
 | 320 | — | — | — | — |
 
+### baselines on the same unseen sets: the day-one agent (no memory) and mem0
+
+| documents learned from | none | LLM + rules | tuned from scratch |
+|---|---:|---:|---:|
+| 20 | 26% | 38% (49/0 vs none) | 55% (128/15 vs none) |
+| 40 | 26% | 38% (48/1 vs none) | 53% (116/12 vs none) |
+| 80 | 26% | 69% (168/0 vs none) | 55% (117/4 vs none) |
+| 160 | 26% | 69% (167/0 vs none) | 91% (254/1 vs none) |
+| 320 | 26% | 69% (167/0 vs none) | 95% (269/1 vs none) |
+
 ### overfitting receipt (per seed, per checkpoint): kept = lowest-validation checkpoint; last = final iteration
 
 | seed | documents | mode | rows | iters | best val (iter) | last val | kept |

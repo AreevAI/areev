@@ -1,0 +1,14 @@
+{
+ "exact": 252,
+ "semantic": 252,
+ "scored": 960,
+ "parked": 0,
+ "documents": 252,
+ "adds": 1596,
+ "memories_seen": 2520,
+ "model_call_failures": 0,
+ "resumed_after": 68,
+ "mode": "domain",
+ "embed_calls": 704,
+ "evalset": "6881c1faedd58fcb"
+}

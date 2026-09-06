@@ -713,12 +713,19 @@ of 320 documents in filing-date order, a Qwen3-1.7B tuned at 20/40/80/160/
 320 documents from scratch and continually, read against 100 registrants
 the agent never learned from. Exact-match, 300 documents per checkpoint:
 
-| documents learned from | LLM + the loop's rules | 1.7B from scratch | 1.7B continual |
-|---:|:---:|:---:|:---:|
-| 20 | 84% | 55% | 54% |
-| 80 | 84% | 70% | 61% |
-| 160 | 78% | **90%** | 87% |
-| 320 | 79% | **93%** | 91% |
+| documents learned from | no memory | mem0 (as installed / domain-prompted) | Areev governed: LLM + rules | Areev tuned: 1.7B from scratch | 1.7B continual |
+|---:|:---:|:---:|:---:|:---:|:---:|
+| 20 | 25% | 26% / 26% | 84% | 55% | 54% |
+| 80 | 25% | 26% / 26% | 84% | 70% | 61% |
+| 160 | 25% | 26% / 26% | 78% | **90%** | 87% |
+| 320 | 25% | 26% / 26% | 79% | **93%** | 91% |
+
+mem0 is the no-memory line on every seed in every mode, including a
+control that frames what it retrieves under the governed arm's own
+instruction header: its stores hold the conventions (four of 2,692
+memories on one seed) but a top-ten drawn by similarity to a form returns
+other forms. At 320 the tuned model beats it 783 trials to 8, and the
+three-seed mem0 runs cost more than the whole governed curve.
 
 The curve is era coverage: the stream is chronological, the first 80
 documents are filed before 1995, and the tuned model reads a two-digit

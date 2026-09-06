@@ -449,6 +449,46 @@ Registrant Name 190 → 282, Registration Number 254 → 291, Signer Name 128
 → 216 of 260. The seen set runs 5–14 points above the unseen set until
 160 and 2 points above at 320 (`curve.stdout`).
 
+### The baselines: no memory and mem0, on the same sets
+
+| documents learned from | no memory | mem0, as installed | mem0, domain-prompted | mem0, domain-prompted, framed as instructions (1 seed) | Areev governed (LLM + rules) | Areev tuned (1.7B from scratch) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 20 | 25% | 26% | 26% | 26% | 84% | 55% |
+| 40 | 25% | 26% | 26% | 26% | 85% | 58% |
+| 80 | 25% | 26% | 26% | 26% | 84% | 70% |
+| 160 | 25% | 26% | 26% | 26% | 78% | 90% |
+| 320 | 25% | 26% | 26% | 26% | 79% | 93% |
+
+mem0 is the no-memory line at every checkpoint, in every mode, on every
+seed: the day-one field and **zero** exact matches on the other three,
+with ten retrieved memories in the prompt. Paired at 320 documents the
+governed LLM beats mem0 624 trials to 4 and the tuned 1.7B beats it 783
+to 8 (`curve.stdout`). The prediction above — that mem0 would lift the
+agent above 25% here because the accountant's messages name the fields —
+was wrong, and the stores say why (`mem0_peek.py`, receipts in
+`results/…/mem0-*.peek.json`). As installed, mem0's extractor kept 365–393
+memories per seed, all but a handful per-document facts ("User submitted
+an Amendment to Registration Statement for Prime Policy Group with
+Registration Number 6377 on …"); for a held-out form the ten retrieved
+are ten such facts about other filings, and none is an instruction.
+Domain-prompted, the extractor multiplied every exchange into 1,700–3,300
+memories per seed, phrased as told ("User is correcting a document-capture
+agent and has provided the registration details for … registration number
+5907, registrant name 'Vision Americas', file date '2016-11-21' …") — and
+the standing conventions it also stored, exactly four of them on seed 1
+("For all registration forms, the File Date must be recorded in the
+format YYYY-MM-DD"), never rank in a top-ten drawn by similarity to a
+form's text against thousands of memories that *are* forms. The framed
+control settles the last objection: the same retrieval under the governed
+arm's own instruction header, word for word, reads 26% at every
+checkpoint. It is not the framing; retrieval returns the ledger's
+neighbours, and the governed loop distils the ledger's conventions.
+
+It also costs more. mem0's own model calls came to $0.49 (as installed)
+and $0.62 (domain-prompted) for three seeds, on top of the agent's $0.38
+and $0.40 — $0.87 and $1.02 in all — against $0.66 for the whole governed
+curve, three seeds, governed phases *and* every held-out read included.
+
 ### Against what was stated in advance
 
 - **Shape — partly wrong, and the mechanism was found before the numbers

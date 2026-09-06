@@ -32,6 +32,16 @@ Tuning learning curve, 3 seed(s). Exact-match RATE; (wins/losses) paired against
 | 160 | 78% | 92% (41/10) | 86% (42/23) | 18/6 p=0.023 | governed agent as it ran: 80% |
 | 320 | — | — | — | — |
 
+### baselines on the same unseen sets: the day-one agent (no memory) and mem0
+
+| documents learned from | mem0-default | mem0-domain | mem0-domain-rules | none | LLM + rules | tuned from scratch |
+|---|---:|---:|---:|---:|---:|---:|
+| 20 | 26% | 26% | 26% | 25% | 84% (678/4 vs mem0-default) (679/3 vs mem0-domain) (232/0 vs mem0-domain-rules) (677/1 vs none) | 55% (380/44 vs mem0-default) (380/42 vs mem0-domain) (105/24 vs mem0-domain-rules) (379/42 vs none) |
+| 40 | 26% | 26% | 26% | 25% | 85% (692/2 vs mem0-default) (690/2 vs mem0-domain) (232/0 vs mem0-domain-rules) (690/0 vs none) | 58% (411/33 vs mem0-default) (411/35 vs mem0-domain) (100/26 vs mem0-domain-rules) (410/33 vs none) |
+| 80 | 26% | 26% | 26% | 25% | 84% (680/2 vs mem0-default) (679/2 vs mem0-domain) (231/0 vs mem0-domain-rules) (678/0 vs none) | 70% (532/12 vs mem0-default) (532/13 vs mem0-domain) (180/1 vs mem0-domain-rules) (532/13 vs none) |
+| 160 | 26% | 26% | 26% | 25% | 78% (617/3 vs mem0-default) (616/2 vs mem0-domain) (156/0 vs mem0-domain-rules) (614/0 vs none) | 90% (756/11 vs mem0-default) (755/10 vs mem0-domain) (262/3 vs mem0-domain-rules) (755/10 vs none) |
+| 320 | 26% | 26% | 26% | 25% | 79% (624/4 vs mem0-default) (625/3 vs mem0-domain) (161/0 vs mem0-domain-rules) (622/0 vs none) | 93% (783/8 vs mem0-default) (784/7 vs mem0-domain) (266/3 vs mem0-domain-rules) (784/7 vs none) |
+
 ### overfitting receipt (per seed, per checkpoint): kept = lowest-validation checkpoint; last = final iteration
 
 | seed | documents | mode | rows | iters | best val (iter) | last val | kept |
