@@ -45,10 +45,16 @@ train() {
     ${RESUME:+--resume-adapter-file "$RESUME/adapters.safetensors"} > "$OUT/train.log" 2>&1
 }
 if ! train "$BATCH" 3072 ""; then
-  echo "first attempt failed (see $OUT/train.log); retrying with batch 1, shorter sequences, gradient checkpointing" >&2
+  # Same sequence length on the retry: shortening it below a document's
+  # length leaves, with the prompt masked, no completion token to score, and
+  # the loss goes NaN (seed 1's final scratch adapter, 2026-09-05: NaN from
+  # iteration 40 of 400 at 2,048 tokens). Batch 1 and gradient checkpointing
+  # are what buy the memory back.
+  export SLM_RETRIED=1
+  echo "first attempt failed (see $OUT/train.log); retrying with batch 1 and gradient checkpointing at the same sequence length" >&2
   tr '\r' '\n' < "$OUT/train.log" | grep -iE "error|exception|failed" | tail -3 >&2
   BATCH=1
-  train 1 2048 "--grad-checkpoint" || { echo "training failed twice; no adapter produced" >&2; exit 1; }
+  train 1 3072 "--grad-checkpoint" || { echo "training failed twice; no adapter produced" >&2; exit 1; }
 fi
 [ -s "$OUT/adapters.safetensors" ] || { echo "training exited 0 but wrote no adapters.safetensors" >&2; exit 1; }
 tr '\r' '\n' < "$OUT/train.log" | grep -E "^Iter|Trainable|Starting"
@@ -81,6 +87,7 @@ json.dump({"base_model": base, "adapter_path": out, "iters": int(iters), "epochs
            "loss_gap_at_best": (round(best_val - train_at_best, 4) if (best_val is not None and train_at_best is not None) else None),
            "effective_epochs": effective_epochs, "trainable": trainable,
            "kept_checkpoint": chosen,
+           "retried": os.environ.get("SLM_RETRIED") == "1",
            "fine_tune": {"type": "lora", "num_layers": 8, "batch_size": 2, "lr": 1e-4, "mask_prompt": True}},
           open(os.path.join(out, "adapter.manifest.json"), "w"), indent=1)
 print("trained %s iters in %ss; best val %.3f at iter %s (kept %s) -> %s" % (iters, secs, best_val or -1, best_iter, chosen, out))

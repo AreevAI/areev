@@ -219,6 +219,25 @@ def main():
             rec_k[mode] = e
         out["overfitting"][k] = rec_k
 
+    # the verify leg: the loop's verdicts on the deployment's own checkpoint reads
+    out["verify"] = {}
+    for sd in sorted(glob.glob(os.path.join(args.root, "seed*"))):
+        vp = os.path.join(sd, "verify", "verify.summary.json")
+        if not os.path.isdir(sd) or not os.path.exists(vp):
+            continue
+        v = json.load(open(vp))
+        s = int(re.search(r"seed(\d+)", sd).group(1))
+        rec = {"checks_ok": v.get("all_ok")}
+        for st in v.get("steps", []):
+            if st["step"] == "verify":
+                rec["verdicts"] = [{"verdict": x["verdict"], "baseline": x["baseline"], "current": x["current"], "lesson": x["lesson"][:120]} for x in st["verdicts"]]
+                rec["reverts_proposed"] = len(st.get("reverts", []))
+            if st["step"] == "revert":
+                rec["rules_before"] = st["rules_before"]; rec["rules_after"] = st["rules_after"]
+            if st["step"] == "measure-R":
+                rec["final_exact"] = st["final_before_revert"]["exact"]; rec["r_exact"] = st["summary"]["exact"]; rec["n"] = st["summary"]["total"]
+        out["verify"][s] = rec
+
     n_seeds = len(out["seeds"])
     print("Tuning learning curve, %d seed(s). Exact-match RATE; (wins/losses) paired against the LLM carrying the same rules.\n" % n_seeds)
     for h in HOLD:
@@ -273,6 +292,15 @@ def main():
                 ("%+.0f" % (100 * e["memorisation_gap"])) if e.get("memorisation_gap") is not None else "—",
                 ("%.0f%%" % (100 * e["train_old_rows"]["rate"])) if e.get("train_old_rows") else "—",
                 ("%.3f" % (sum(lg) / len(lg))) if lg else "—", ("%.1f" % (sum(ep) / len(ep))) if ep else "—"))
+    if out["verify"]:
+        print("\n### the verify leg: the loop's verdicts on the checkpoint reads, per seed\n")
+        print("| seed | lessons | held | regressed | reverts proposed | rules before -> after | final read -> after the reverts |")
+        print("|---:|---:|---:|---:|---:|---|---|")
+        for s, v in sorted(out["verify"].items()):
+            vd = v.get("verdicts", [])
+            held = sum(1 for x in vd if x["verdict"] == "held"); reg = sum(1 for x in vd if x["verdict"] == "regressed")
+            r = ("%d -> %d of %d" % (v["final_exact"], v["r_exact"], v["n"])) if "r_exact" in v else "no revert, no read"
+            print("| %d | %d | %d | %d | %d | %s -> %s | %s |" % (s, len(vd), held, reg, v.get("reverts_proposed", 0), v.get("rules_before", "—"), v.get("rules_after", "—"), r))
     sel = [(k, m) for (k, m, h) in pooled if h == "unseen" and m.endswith("-latest")]
     if sel:
         print("\n### the validation selector: kept checkpoint vs the latest saved one, unseen (only where they differ)\n")
