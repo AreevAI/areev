@@ -4,8 +4,8 @@
 harness is built and smoke-tested on the office box; no scored run has
 been published. Every dollar figure below is either a meter reading from a
 smoke (labelled) or an estimate (labelled). The budget cap for this track
-is **$30** of OpenRouter credit, approved 2026-09-06; anything past it waits
-for approval.
+is **$50** of OpenRouter credit ($30 approved 2026-09-06, raised to $50 the
+same day after run 1); anything past it waits for approval.
 
 ## 1. The question, stated precisely
 
