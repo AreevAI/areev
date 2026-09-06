@@ -36,5 +36,10 @@ echo "vLLM up on :$PORT (adapter: $ADAPTER)"
 ( while kill -0 $SERVER 2>/dev/null; do sleep 30; done
   echo "vLLM exited during the run — aborting (see $ROOT/vllm.log)" >&2
   kill -TERM -$$ 2>/dev/null ) &
+WATCHDOG=$!
+# stop the watchdog before the trap stops the server, or a NORMAL finish
+# looks like a crash and the abort message lands on a completed run
+trap 'kill $WATCHDOG 2>/dev/null; kill $SERVER 2>/dev/null || true' EXIT INT TERM
 AGENT_MODEL=slm AGENT_PIN="" AGENT_BASE_URL="http://127.0.0.1:$PORT/v1" AGENT_API_KEY=local \
   FAMILIES="$FAMILIES" AGENTS="$AGENT" ROOT="$ROOT" sh "$HERE/../pastbench/pilot.sh"
+kill $WATCHDOG 2>/dev/null || true
