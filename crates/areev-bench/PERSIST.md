@@ -273,6 +273,54 @@ the 5 h first estimated; the mem0 arm is queued behind the Areev arms
 rather than added as a fifth stream, because a rate-limited key gains
 nothing from more streams.
 
+## Results so far — read against the noise floor
+
+**The two post-fix runs (seeds 2 and 3), all 26 families, all three arms,
+paired by family (`persist/pastbench/stats.py`; every Δ read from the
+benchmark's own `sequence_comparison.json`, nothing re-scored):**
+
+| arm | mean Δ | seed 2 | seed 3 | mechanism | prompt tokens / episode |
+|---|---:|---:|---:|---:|---:|
+| areev-governed | +0.280 | +0.286 | +0.273 | 0.208 | 18,474 |
+| areev-passive | +0.283 | +0.273 | +0.294 | 0.224 | 18,819 |
+| hermes 0.4.0 | +0.243 | +0.265 | +0.221 | 0.159 | 28,531 |
+
+**The noise floor makes the score difference unreadable.** The same arm on
+the same family, run under two seeds, differs by **0.098** on average —
+larger than any gap between the arms. The paired contrasts, 26 families,
+two-sided Wilcoxon signed-rank with a sign test beside it:
+
+| contrast | mean difference | wins/losses | Wilcoxon p | sign p |
+|---|---:|---|---:|---:|
+| governed − passive | −0.004 | 14/12 | 0.879 | 0.845 |
+| governed − hermes | +0.037 | 15/9 | 0.247 | 0.308 |
+| passive − hermes | +0.040 | 15/11 | 0.264 | 0.557 |
+
+So: **Areev and Hermes are statistically indistinguishable on the
+benchmark's own metric at 26 families** — Areev's point estimate is higher
+in both seeds and on three capabilities of four, and that is all the data
+supports. It is not "Areev beats Hermes". A third seed is running; with
+family-to-family variation dominating (the between-seed component is only
+~0.05 of the ~0.16 spread of family differences), it will sharpen the
+estimate, not the verdict. Detecting +0.04 at this variance needs roughly
+70 families; PAST-Bench has 26.
+
+**What IS significant is the cost of the answer.** Areev reaches the same
+score on **35% fewer prompt tokens per episode** — 18.5K against Hermes's
+28.5K, lower in 19 of 26 families (paired sign test, p = 0.029 for the
+passive arm; p = 0.076 for the governed arm, which pays for its loop
+passes). Mechanism evidence favours Areev (0.21–0.22 against 0.16) but not
+significantly (p = 0.17–0.42).
+
+**The governed loop still adds nothing measurable over the plain store**
+(−0.004, p = 0.879), now with a *sighted* reviewer that approves 22–28
+proposals per run and refuses 52–61 with reasons. That is §10's second
+bullet, stated in advance, and it is the finding this track most has to
+report honestly: the substrate carries the gain; the gate demonstrably
+refuses what it should and admits what it should, but on these 26 families
+the rules it admits do not move the score beyond what the agent saves for
+itself.
+
 **Run 1, all 26 families, after defects 12–17 (2026-09-07; the benchmark's
 Δ on evaluation episodes, macro-averaged; its mechanism score; the agent's
 mean prompt tokens per episode with memory; one run, no noise floor yet):**
