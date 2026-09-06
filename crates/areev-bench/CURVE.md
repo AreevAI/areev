@@ -373,6 +373,24 @@ below every tuned reading from 160 on, because retrieval puts a handful
 of past corrections in the prompt while a rule states the convention once
 for every document.
 
+The first checkpoint read 26% in both modes — the day-one field and
+nothing else, with ten retrieved memories in the prompt — and mem0's own
+store shows why that is not the whole story: the domain-prompted extractor
+*did* keep the instructions ("every registration form must include the
+registrant name and file date", "the correct format for the file date is
+YYYY-MM-DD") among per-document facts, and retrieval ranked by similarity
+to the form returns mostly the facts. But the harness also presents what
+it retrieves as *memories* ("what you have stored about this task"), and
+the governed arm presents its rules as *instructions that override the
+day-one prompt* — a framing the receipts study found decisive for the
+governed arm itself. So one control is added, one seed, disclosed before
+it runs: the same domain-prompted retrieval presented under the governed
+arm's instruction header, word for word (`--frame rules`). *Stated in
+advance:* it lifts mem0 above 26% by making the agent attempt the fields
+the retrieved instructions name, and still trails the governed line,
+because what retrieval returns for a given form is that form's nearest
+neighbours, not the ledger's conventions.
+
 ## The trial, and what it caught
 
 Forty documents, one checkpoint at 20, held-out sets of 20, seed 1. Its

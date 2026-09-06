@@ -22,6 +22,7 @@ PAD_L, PAD_T, PLOT_H, CURVE_W = 58, 34, 300, 660
 SERIES = [("none", "no memory (day-one agent)", "none", ""),
           ("mem0-default", "mem0, as installed", "mem0/default", ""),
           ("mem0-domain", "mem0, domain-prompted", "mem0/domain", ""),
+          ("mem0-domain-rules", "mem0, domain-prompted, framed as instructions", "mem0/raw", "6 4"),
           ("llm", "Areev governed: LLM with the loop's rules", "areev", ""),
           ("scratch", "Areev tuned: 1.7B from scratch", "slm/tuned", ""),
           ("continual", "Areev tuned: 1.7B continually", "slm/tuned", "6 4"),

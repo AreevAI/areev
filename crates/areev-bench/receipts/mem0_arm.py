@@ -104,11 +104,26 @@ def build_memory(workdir, mode, model, key):
     return Memory.from_config(cfg)
 
 
-def render(results):
+RULES_HEADER = ("## INSTRUCTIONS FROM THE ACCOUNTANT\n"
+                "These come from the person who files these documents and "
+                "they OVERRIDE the day-one instruction above. If a rule "
+                "names a field to capture, that field is REQUIRED: put it "
+                "in your JSON, in addition to the day-one field.\n")
+
+
+def render(results, frame="plain"):
+    """The retrieved memories as a prompt section. `plain` presents them as
+    what they are -- memories, most relevant first. `rules` presents them
+    under the governed arm's own instruction header, word for word: the
+    control that separates what retrieval RETURNS from how it is framed,
+    because an agent told to capture exactly the fields it was instructed
+    to reads a memory as background and an instruction as an order."""
     mems = [r.get("memory", "").strip() for r in (results or {}).get("results", [])]
     mems = [m for m in mems if m]
     if not mems:
         return ""
+    if frame == "rules":
+        return RULES_HEADER + "\n".join("- " + m for m in mems) + "\n"
     return ("## RELEVANT MEMORIES\nWhat you have stored about this task, most relevant "
             "first.\n" + "\n".join("- " + m for m in mems) + "\n")
 
@@ -126,6 +141,8 @@ def main():
     ap.add_argument("--snapshot-every", type=int, default=10)
     ap.add_argument("--snapshot-at", default="", help="comma-separated document counts to read the held-out set at (the learning-curve checkpoints)")
     ap.add_argument("--arms", default="M,M2,A")
+    ap.add_argument("--frame", choices=("plain", "rules"), default="plain",
+                    help="how retrieved memories are presented: as memories, or under the governed arm's instruction header")
     args = ap.parse_args()
 
     os.makedirs(args.workdir, exist_ok=True)
@@ -142,7 +159,7 @@ def main():
     experience, heldout = dataset.split_for(profile, rows, args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
     with open(os.path.join(args.workdir, "run.config.json"), "w") as fh:
-        json.dump({"arm": "mem0", "mode": args.mode, "profile": args.profile,
+        json.dump({"arm": "mem0", "mode": args.mode, "frame": args.frame, "profile": args.profile,
                    "seed": args.seed, "experience": args.experience, "eval": args.eval,
                    "evalset": evalset, "top_k": args.top_k, "mem0_llm": model,
                    "mem0_embedder": "ollama:mxbai-embed-large",
@@ -171,7 +188,7 @@ def main():
         for kw in ({"filters": {"user_id": USER}, "top_k": args.top_k},
                    {"user_id": USER, "limit": args.top_k}):
             try:
-                return render(m.search(q, **kw))
+                return render(m.search(q, **kw), args.frame)
             except TypeError as e:
                 last = e
                 continue
