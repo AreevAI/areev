@@ -1,11 +1,32 @@
 # Governed self-improvement across sessions — PAST-Bench and Horizon
 
-**Status: pre-registration draft, 2026-09-06.** Decisions taken; the
-harness is built and smoke-tested on the office box; no scored run has
-been published. Every dollar figure below is either a meter reading from a
-smoke (labelled) or an estimate (labelled). The budget cap for this track
-is **$50** of OpenRouter credit ($30 approved 2026-09-06, raised to $50 the
-same day after run 1); anything past it waits for approval.
+**Status: PAST-Bench complete, 2026-09-07.** Three seeds × three arms ×
+26 families, plus mem0 on one seed, plus the tuning leg and a gate audit.
+Evidence: [`results/persist-2026-09-07/`](results/persist-2026-09-07/).
+The Horizon track ran on its three public tasks only (§4). Budget: **$50**
+cap ($30 approved 2026-09-06, raised the same day after run 1); about $25
+of it spent.
+
+**The three findings, in the order they should be read:**
+
+1. **All three arms are statistically indistinguishable on the benchmark's
+   own metric.** Areev's passive arm has the highest point estimate
+   (+0.291 against Hermes's +0.246) and wins 16 of 26 families, at
+   p = 0.21. Not a win. The per-family noise floor (0.09–0.13 across
+   seeds) is larger than every between-arm gap.
+2. **Areev answers for less.** Fewer prompt tokens per episode in 18 of 26
+   families, Wilcoxon p = 0.005 — a fifth cheaper on the typical family, a
+   third across the workload, because Hermes has a tail (121K tokens per
+   episode on one family) and the budgeted assembly does not.
+3. **The governed loop, with a working gate, still adds nothing over the
+   plain store** (−0.025, p = 0.78). The gate itself is sound — 82%
+   agreement with an independent second judge — but 15 of its 28 approvals
+   are over-generalisations from a single instance, which is a plausible
+   and testable reason the rules it admits do not pay.
+
+The tuning leg is a **null with a scope**: 32 rows drawn from 26 unlike
+families did not move the memory into the weights, where 34 rows from one
+document type did in [`FOURWAY.md`](FOURWAY.md).
 
 ## 1. The question, stated precisely
 
