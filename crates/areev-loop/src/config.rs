@@ -50,10 +50,12 @@ pub struct LoopPersisted {
     /// Applied-recommendation records (inverse plan, metric, timing).
     #[serde(default)]
     pub applied: BTreeMap<String, AppliedRecord>,
-    /// Per-recommendation set of horizons (ms after apply) already measured, so
-    /// each checkpoint is measured exactly once.
+    /// Per-recommendation set of checkpoints already measured, so each is
+    /// measured exactly once. A time checkpoint serializes as its bare ms
+    /// value, which is what this field held before checkpoints had units —
+    /// so a state blob from then reads back as the same schedule.
     #[serde(default)]
-    pub measured: BTreeMap<String, Vec<i64>>,
+    pub measured: BTreeMap<String, Vec<crate::recommendation::Checkpoint>>,
     /// Measured outcome time series (the Verify gate's output), keyed by
     /// recommendation — one entry per horizon checkpoint.
     #[serde(default)]

@@ -5562,10 +5562,12 @@ fn run_loop(
                 );
             } else {
                 for o in &outcomes {
-                    let horizon = if o.horizon_ms % 86_400_000 == 0 {
-                        format!("{}d", o.horizon_ms / 86_400_000)
-                    } else {
-                        format!("{}h", o.horizon_ms / 3_600_000)
+                    // A time checkpoint renders as it always has; one counted
+                    // in runs or grains says so.
+                    let horizon = match o.checkpoint {
+                        Some(cp) => cp.label(),
+                        None if o.horizon_ms % 86_400_000 == 0 => format!("{}d", o.horizon_ms / 86_400_000),
+                        None => format!("{}h", o.horizon_ms / 3_600_000),
                     };
                     println!(
                         "{}  {:<22}  @{:<4}  baseline {} → current {}  [{}]",

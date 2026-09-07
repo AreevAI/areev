@@ -620,6 +620,38 @@ capture  (tool calls, facts, events)   — record_tool_call / add / import
 4. **Verify** — after a review window the stored metric re-runs and the outcome
    is recorded; regressions propose a revert (§8.4).
 
+**What the proposer optimizes for, and what an authored change is measured
+against, are both host policy** (`docs/loop.md`; added 2026-09-04). Two keys,
+both default-closed in the sense that omitting them keeps the previous
+behaviour exactly:
+
+- `discover_objective` selects the DISCOVER scoring rule. The default
+  (`review_queue`) makes abstention a zero-penalty answer and a wrong
+  finding cost twice a right one — correct for a queue a person triages, and
+  measured to cost a cheap model roughly half its lessons. `learner` makes
+  withholding a lesson over a recurring failure cost the same as a wrong
+  one, for a deployment where the agent has to improve from this pass. It
+  changes the scoring paragraph and nothing else: GROUND, VERIFY, the
+  confidence floor and human review are identical under both, so the
+  objective moves the proposer's recall and the gates keep the precision.
+- `outcome_evalset` names the evalset every *applicable LLM-authored*
+  proposal is re-measured against after apply. It exists because an authored
+  lesson carries no recurrence metric — nothing errors when a lesson is
+  merely useless — so without it the Verify gate had nothing to re-run for
+  exactly the proposals a reviewer approves from prose alone. Baseline comes
+  from the newest run journaled before the proposal, current from runs
+  journaled after the apply, and no baseline run means no metric rather than
+  a fabricated one.
+
+The rule that a **measured revert is a verdict on the finding** belongs with
+them: a rollback normally lets a finding re-propose ("the situation
+returned"), which is right when an operator retracts a lesson by hand and
+wrong when the Verify gate caused it — there the situation never left, so
+the next pass would re-propose what the reviewer just retracted. Applying an
+`outcome_review` revert therefore puts the reverted finding on the same
+doubling cooldown a rejection earns; a manual rollback still earns none,
+which is what keeps a deliberate retraction restorable.
+
 Auto-apply is **off by default** and, where a host policy file grants it, is
 restricted to structural, engine-verified, non-destructive curation on
 memory/query targets only — never prompts, never destruction, never LLM-drafted
@@ -917,6 +949,21 @@ expansion **fails closed** under a bound principal (every covered namespace
 must be granted, and the refusal names the pattern, never a discovered
 namespace); and one `RECALL`'s scope set cannot span mounts (that is
 ASSEMBLE's job).
+
+The write side carries one more rule, for a different reason. A namespace is
+brought into existence by the first grain written into it — there is no
+declaration step, and nothing downstream can tell a new name from a
+mistyped one. So a **locally authored write refuses an unspellable
+namespace**: whitespace, a control character, or an invisible formatting
+character (`VAL-E001`). Names stay opaque strings otherwise; what the rule
+excludes is names a human cannot read back off a diff or a command line.
+The failure it prevents is silent by construction — a harness whose
+`"agent:harness"` became `"age, build_messagesnt:harness"` kept writing
+successfully for twelve hours while every reader of the intended namespace
+saw an empty memory, and the governance loop that depended on those reads
+recorded no verdict and proposed no revert. Read surfaces do not enforce it,
+so a file written before the rule stays readable, erasable and disclosable
+under the name it used; replication replay is exempt for the same reason.
 
 ### Self-improvement is governed, not autonomous
 

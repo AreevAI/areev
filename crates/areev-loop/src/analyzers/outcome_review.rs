@@ -74,11 +74,19 @@ impl Analyzer for OutcomeReview {
             data.insert("revert_of".into(), json!(input.rec_hash));
             data.insert("metric".into(), json!(input.metric));
 
+            // The gate asks two questions of an applied recommendation: did
+            // its metric hold, and does its premise still stand. The engine
+            // feeds both here as inputs; the summary says which one failed.
+            let key = if input.metric == crate::engine::PREMISE_DRIFT_METRIC {
+                "outcome.premise_drift"
+            } else {
+                "outcome.regression"
+            };
             drafts.push(
                 RecDraft::new(
                     input.target_ref.clone(),
                     ActionKind::Revert,
-                    Summary::new("outcome.regression", args),
+                    Summary::new(key, args),
                     Proposal::Data { data },
                 )
                 .severity(Severity::High)

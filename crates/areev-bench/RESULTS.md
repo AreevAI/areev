@@ -183,7 +183,7 @@ AREEV_JUDGE_CMD='python3 crates/areev-bench/scripts/openai_chat.py gpt-4o' \
 
 Full run (gpt-4o-mini reader, gpt-4o judge, real embeddings, k=20, all 1,982 QAs,
 2026-07-07): **54.2%**. Every question / gold / answer / judge verdict committed in
-[`results/…k20….transcripts.jsonl`](results/locomo-gpt-4o-mini-k20-2026-07-07.transcripts.jsonl)
+[`results/…k20….transcripts.jsonl`](https://github.com/AreevAI/areev-benchmark/blob/main/results/locomo-gpt-4o-mini-k20-2026-07-07.transcripts.jsonl)
 for audit.
 
 | category | answer accuracy |
@@ -600,6 +600,199 @@ measuring the corpus or the embedder, not the index — and it should not be
 quoted either as a reason to adopt ANN or as a reason to avoid it. Re-run the
 two commands above against the model you will actually deploy.
 
+## Governed self-improvement on real, public data
+
+Two harnesses measure the same claim as the A/B/A/B bench below, on
+documents and tasks nobody wrote for this repo:
+
+| harness | corpus | what it found | write-up |
+|---|---|---|---|
+| `receipts/` (`--profile vrdu`) | VRDU ad-buy forms — 641 real US FCC advertising invoices | **replicated: 122 → 590 of 840 pooled, 468 wins, 0 losses.** Seed 3 reached 238 of 280 and its own later rules took it to 133 — the gate said `held`, correctly against day one | [`ADBUY.md`](ADBUY.md) |
+| `receipts/` | ICDAR 2019 SROIE — 626 real scanned receipts | **both halves, in two runs.** Run 2: an LLM-authored, human-approved rule took the agent from 97/720 to 382/720 exact — 286 wins, 1 loss. Run 1: the same machinery, one engine defect earlier, made it *worse* — and only outcome measurement caught the rule that did it | [`RECEIPTS.md`](RECEIPTS.md) |
+| `tau2/` | τ²-bench retail — 114 tool-using customer tasks | **no learning number, on purpose.** A ceiling probe found the domain reachable (7/25) but the withheld clauses costing nothing the reward can see (p=0.69), so a full run would have measured noise. Behaviour moved though: 42 tool errors against 23 | [`tau2/README.md`](tau2/README.md) |
+
+Both keep the rule the synthetic bench established: the prompt is assembled
+from live memory on every episode, so Areev's own apply/rollback is the only
+lever, and arm A is produced by a real rollback rather than by declining to
+render. Both additionally exercise the **Verify** gate on LLM-authored rules
+— the leg the A/B/A/B bench never measured — by naming the held-out set as
+the outcome evalset and, in the receipts harness, admitting a deliberately
+harmful rule to prove the revert path fires.
+
+The receipts harness is the one to read, and it ran twice on the same
+corpus, the same seeds and the same held-out receipts — with **arm A
+landing on 97/720 in both**, so nothing drifted between them.
+
+| | run 1 | run 2 |
+|---|:---:|:---:|
+| A — rules rolled back | 97/720 | 97/720 |
+| B — rules applied | 70/720 | **382/720** |
+| B vs A | 3 wins, 30 losses | **286 wins, 1 loss** |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/receipts-selfimprove-dark.svg">
+  <img src="../../docs/assets/receipts-selfimprove-light.svg" width="880"
+       alt="Left: learning curves over the same held-out SROIE receipts after 0, 10, 20, 30 and 40 experience receipts, all starting near 31 of 240. Run 2 (green) rises at the first checkpoint to 124, 141 and 125 and holds. Cell C (gold) splits: one seed rises to 132, two stay flat at 60. Cell D (blue) splits three ways: one seed rises to 151, one to 52, one never moves off 36. Run 1 (red) stays flat, swings to 86 and falls to 33, or drops to 0. Right: pooled arms per cell — arm A is 97 of 720 in all four, drawn with a rule across them, while arm B is 70 for run 1, 255 for cell C, 245 for cell D and 382 for run 2.">
+</picture>
+
+Run 2 is the claim this repo exists to make, measured on real public
+documents for $0.26: a model read a person's corrections, wrote the rule
+they implied, a reviewer approved it, and the agent got substantially
+better — then the Verify gate confirmed the improvement `held`, caught a
+later rule that hurt, and reverted it.
+
+Run 1 is why the governance half is not decoration. The same machinery,
+with one engine defect still in place, shipped a rule contradicting an
+instruction the accountant had written into that memory thirty-one times,
+and took the agent from 30 correct to 0. Grounding on a separate model,
+adversarial verification, and a human-rubric reviewer all passed it. Only
+re-measuring the held-out set caught it, proposed the revert, and restored
+the score. Neither run is revised by the other and both are published.
+
+The 2×2 that separates the two things run 2 changed at once is complete, and
+both changes are large main effects measured from run 1's baseline:
+
+| | evidence anonymous | evidence named |
+|---|:---:|:---:|
+| learner `gpt-oss-120b` | run 1 — **70** | cell D — **245** |
+| learner `qwen3-30b` | cell C — **255** | run 2 — **382** |
+
+Attribution alone is +175, the learner alone +185, both +312. Arm A is
+97/720 in all four cells. The sharpest single comparison is `gpt-oss-120b`
+on seed 3, where only the evidence rendering differs: anonymous it went
+30 → **0**, named it went 30 → **60**, and the rules show why — ISO 8601
+against the ledger's `DD/MM/YYYY` one way, the correct convention the other.
+**Attribution supplies the direction of a correction.** Cell D was
+pre-registered as an expected null; [`RECEIPTS.md`](RECEIPTS.md) records
+that it was not, and what that costs the diagnostic which predicted it.
+
+The private-corpus predecessor of the receipts harness is
+[`EXPENSE.md`](EXPENSE.md); the instrument that chose their learner
+configuration is [`SELFIMPROVE.md`](SELFIMPROVE.md), "The authoring-rate
+instrument" — a screening tool, not a predictor, as cell D demonstrates.
+
+### The second corpus — public ad-buy invoices
+
+Full design, pre-registration and result: [`ADBUY.md`](ADBUY.md). The same
+harness, the same models, the same pinning, on **VRDU ad-buy forms** — real
+US FCC political-advertising invoices, median ten times the length of a
+receipt, with a filing convention (`YYYY-MM-DD`) deliberately opposite to
+SROIE's.
+
+| seed | rules | A — rolled back | B — applied | B vs A | noise |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 1 | 4 | 45/285 | **224/285** | 179 wins, 0 losses | 5 |
+| 2 | 7 | 43/275 | **233/275** | 190 wins, 0 losses | 1 |
+| 3 | 10 | 34/280 | 133/280 | 99 wins, 0 losses | 1 |
+| **pooled** | | **122/840** | **590/840** | **468 wins, 0 losses** | 7 |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../docs/assets/adbuy-selfimprove-dark.svg">
+  <img src="../../docs/assets/adbuy-selfimprove-light.svg" width="880"
+       alt="Left: learning curves over the same held-out ad-buy invoices after 0, 10, 20, 30 and 40 experience invoices, all three seeds starting near 41 of about 285. Seed 2 jumps to 233 at the first checkpoint and holds. Seed 1 climbs to 224. Seed 3 peaks at 238, higher than either other seed, then falls to 128 and ends 133. Right: pooled arms, 122 of 840 rolled back against 590 applied.">
+</picture>
+
+It replicates, and it closes a gap the receipts corpus left open: **the
+day-one field improved** there (Gross Amount 43 → 60 of 60 on seed 2), where
+on SROIE every win fell on a field the baseline left blank.
+
+**Seed 3 is the result worth reading.** It reached 238 of 280 after twenty
+invoices — better than seed 1 ever managed — and its own next two approved
+rules took it to 128. Both were semantic restatements of rules already in
+memory, which the content-fingerprint dedup key cannot see. The Verify gate
+reported `held`, correctly: 133 still beats the deployed baseline of 35.
+**Outcome measurement catches damage, not lost opportunity** — the two
+engine gaps this run argues for are semantic near-duplicate suppression and
+a high-water mark to measure against.
+
+### The tuning learning curve — does the small model keep improving as the deployment grows?
+
+Full design, pre-registration and result: [`CURVE.md`](CURVE.md). VRDU
+registration forms (1,321 real FARA filings, 478 registrants), three seeds
+of 320 documents in filing-date order, a Qwen3-1.7B tuned at 20/40/80/160/
+320 documents from scratch and continually, read against 100 registrants
+the agent never learned from. Exact-match, 300 documents per checkpoint:
+
+| documents learned from | no memory | mem0 (as installed / domain-prompted) | Areev governed: LLM + rules | Areev tuned: 1.7B from scratch | 1.7B continual |
+|---:|:---:|:---:|:---:|:---:|:---:|
+| 20 | 25% | 26% / 26% | 84% | 55% | 54% |
+| 80 | 25% | 26% / 26% | 84% | 70% | 61% |
+| 160 | 25% | 26% / 26% | 78% | **90%** | 87% |
+| 320 | 25% | 26% / 26% | 79% | **93%** | 91% |
+
+mem0 is the no-memory line on every seed in every mode, including a
+control that frames what it retrieves under the governed arm's own
+instruction header: its stores hold the conventions (four of 2,692
+memories on one seed) but a top-ten drawn by similarity to a form returns
+other forms. Given both of the things the governed loop does by
+construction — retrieval by the task question and instruction framing —
+mem0 reaches 64% on the final read (69 / 51 / 72 by seed), and what holds
+it there is the third thing it lacks, review: it files names in upper
+case and dates as printed because single unreviewed corrections said so.
+At 320 the tuned model beats documented-use mem0 783 trials to 8, and the
+three-seed mem0 runs cost more than the whole governed curve.
+
+The curve is era coverage: the stream is chronological, the first 80
+documents are filed before 1995, and the tuned model reads a two-digit
+year as 19xx until the corpus reaches the held-out forms' era — on the
+next 20 documents of its own stream it matches the LLM from the first
+checkpoint and beats it by 14 points at 160. The memorisation gap shrinks
+from +42 to +3 points, the accumulating corpus beats the continual path at
+every checkpoint after the first, and a Qwen3-0.6B reaches 95% at 320
+from a 30-minute training. The verify leg fed the loop its own checkpoint
+reads: seed 1's sixth rule contradicted its fourth and cost the LLM twenty
+points, the fixed engine measured it `regressed` and the revert recovered
+the LLM to 86% — and two seed-3 rules that "regressed" by four trials of
+387 were reverted for nothing, because the verdict has no noise floor.
+All API cost, three seeds: $0.66. DocILE is next.
+
+### Four ways to remember — no memory, mem0, the governed loop, a tuned small model
+
+Full write-up: [`FOURWAY.md`](FOURWAY.md). The receipts protocol, three
+seeds, with three more arms beside the governed one: real `mem0ai` in three
+configurations, and a 1.5B model trained once on the governed memory.
+Exact of 720, paired against the governed arm:
+
+| arm | exact | paired |
+|---|:---:|---|
+| no memory | 97 | governed 286 wins, 1 loss |
+| mem0 (as installed / raw / domain hint) | 107 / 125 / 136 | governed 288/13, 286/29, 286/40 |
+| **Areev — governed** | **382** | — |
+| **Areev — tuned 1.5B** | **571** | tuned over governed, **234 wins, 45 losses** |
+
+Plain memory never got the agent to attempt a second field; the loop's rule
+did at the first checkpoint. Governance cost the same to learn from a
+document as mem0's extractor ($0.61 against $0.57 per thousand) and bought
+ten times the gain. The small model, tuned in ten minutes on the loop's
+corpus, beat the 30B model it was distilled from on every seed, at zero
+marginal cost — and still beats it on receipts from shops it never saw, 71%
+to 55%, though about half of the headline gap is vendor familiarity. And a 3×5 prompt-structure grid on the same rules found
+format inert and position decisive: rules placed before the day-one
+instruction lose up to 298 of 720 trials.
+
+### A ledger that changes its mind — the drift run
+
+Full design and result: [`DRIFT.md`](DRIFT.md). The same receipts against a
+business whose demands move on a declared timeline: a new requirement at
+document 41, and at document 81 the date convention *replaced* — said once,
+never repeated. Three arms, one seed, scored under the convention in force
+at each checkpoint:
+
+| checkpoint | frozen | ungoverned memory | **governed** |
+|---|:---:|:---:|:---:|
+| 80 — before the change | 30 | 60 | **173** |
+| 120 — after it | 0 | 59 | 114 |
+
+Before the change, governing beats remembering 114 wins to 1, and the gap is
+behavioural — the governed agent produces every field, the ungoverned one
+never gets past the first. After it, the two fail in opposite ways: plain
+memory tracks the new date format (59/60) and still produces one field; the
+governed loop learned the new rule, **kept the old one beside it**, and
+scored 0/60 on the field that changed. The Verify gate marked all five rules
+`held` — correctly, against a day-one baseline the agent still beats. A
+measured negative on the revert half, with the two missing mechanisms named:
+contradiction between authored lessons, and a baseline that is not day one.
+
 ## Areev Loop self-improvement — the A/B/A/B causal proof
 
 `cargo run --release -p areev-bench --bin selfimprove_aba` — design, dataset,
@@ -635,7 +828,7 @@ two of them into one stream; this run is three genuinely independent task
 sets, which the 2026-08-26 run was not. Same model pair, same 300/100 sizes,
 governed states only (no passive arms — those remain the earlier run's).
 Evidence:
-[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
 the `governed-*` runs; it is the control half of the loop+LLM comparison
 below, which is why both live in one directory.*
 
@@ -676,7 +869,7 @@ without rendering the bars.
 *The original publication. Its numbers stand and its arms are not superseded
 (the run above did not repeat them), but its replication breadth is **two**
 task streams, not three — see the defect note below. Evidence:
-[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](results/selfimprove-3seed-qwen3-30b-2026-08-26/).*
+[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-3seed-qwen3-30b-2026-08-26/).*
 
 | state | seed 1 | seed 2 | seed 3 | mean | avg prompt tokens |
 |---|---|---|---|---|---|
@@ -715,12 +908,19 @@ than a patch; it is pinned by `tests/reproducibility.rs` until then
 (SELFIMPROVE.md, "Known defect").
 
 Every number in the tables here recomputes from the raw transcripts that
-shipped with them — keylessly, offline, and on every CI push:
+shipped with them — keylessly and offline. The transcripts live in
+[AreevAI/areev-benchmark](https://github.com/AreevAI/areev-benchmark); the tool that re-derives them stays here,
+beside the harness that wrote them:
 
 ```bash
+git clone https://github.com/AreevAI/areev-benchmark
 python3 crates/areev-bench/scripts/verify_run.py \
-  crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
+  areev-benchmark/results/selfimprove-3seed-qwen3-30b-2026-08-26
 ```
+
+That repository's CI runs the same check over every run it holds, so a
+published file that is renamed or overwritten fails a build rather than
+review.
 
 ### It improves without regressing (2026-08-26 run)
 
@@ -791,7 +991,7 @@ and DISCOVER/VERIFY, `deepseek-chat` as GROUND, temperature 0. Two
 configurations at one git rev, differing in exactly one flag: the control
 applies only deterministic signature lessons; the arm additionally applies
 LLM-authored lessons that survived GROUND + VERIFY. Everything in
-[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
 with `paired-stats.txt` regenerable from the transcripts.*
 
 The loop's deterministic lessons state a **symptom** (`log_case` fails with
@@ -874,7 +1074,7 @@ would catch this regression in a live deployment rather than a benchmark.
 Four cells over one axis: which lesson ORIGINS the review gate admits. The
 analyzers run in every cell, so discovery is held constant and only
 application varies. Evidence, including the failed run's log:
-[`results/selfimprove-2x2-qwen3-30b-2026-08-30/`](results/selfimprove-2x2-qwen3-30b-2026-08-30/).*
+[`results/selfimprove-2x2-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-2x2-qwen3-30b-2026-08-30/).*
 
 The earlier arm compared *(deterministic)* against *(deterministic + LLM)*,
 which never isolated the LLM. This was the design that would: an **llm-only**
@@ -1013,10 +1213,13 @@ it, so its numbers never rank one approach against another.
   every pass and produced no findings that reached the queue; the entire gain
   is from the deterministic analyzers.
 
-**More benchmarks are coming.** Next: the learning curve (does accuracy keep
-climbing as experience accumulates?), an adversarial-experience arm (does
-governance hold when the history is misleading?), and a run on a public
-agent-trajectory benchmark rather than a synthetic one. Roadmap in
+**More benchmarks are coming.** Next: DocILE (~6,700 annotated invoices,
+55 field types) at checkpoints to 1,280 documents, to ask whether the
+tuned model's unseen-supplier curve keeps rising past a few hundred
+documents or the plateau found on 320 registration forms is the plateau
+(the plan is in [`CURVE.md`](CURVE.md)); an adversarial-experience arm
+(does governance hold when the history is misleading?); and a run on a
+public agent-trajectory benchmark rather than a synthetic one. Roadmap in
 [`SELFIMPROVE.md`](SELFIMPROVE.md).
 
 ## Areev Loop analyzer precision (fixture floor)

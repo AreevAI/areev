@@ -131,7 +131,7 @@ grains newest-first.
 |---|---|---|---|
 | `subject` | string | **yes** | Entity to recall about, e.g. `"caller:john"` |
 | `relation` | string | no | Optional relation filter, e.g. `"prefers"` |
-| `namespace` | string | no | Defaults to the session namespace. Accepts a prefix scope `"org.*"` — the namespace `org` plus every `.`-descendant (`org.sales`, `org.sales.emea`); `organization` never matches, and `org*`/bare `*` refuse (`VAL-E001`). Writes never accept patterns. |
+| `namespace` | string | no | Defaults to the session namespace. Accepts a prefix scope `"org.*"` — the namespace `org` plus every `.`-descendant (`org.sales`, `org.sales.emea`); `organization` never matches, and `org*`/bare `*` refuse (`VAL-E001`). Writes never accept patterns, nor an unspellable name — whitespace, control or invisible formatting characters (`VAL-E001`), because a write is what mints a namespace and a typo in one is found by nothing. |
 | `k` | integer | no | Max results (default 16) |
 | `run_id` | string | no | Ambient trajectory run id recorded on recall telemetry |
 

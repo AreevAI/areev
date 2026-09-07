@@ -6,6 +6,262 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A read-only open in the Python and Node bindings.** `--read-only` has
+  refused every write on the CLI since 1.7.0, but the binding constructors
+  had no equivalent, so a console, an evaluator or an analytics reader
+  embedding Areev had to hold owner-grade credentials to do nothing but read.
+  `Areev(path, read_only=True)` / `new Areev(path, …, readOnly)` opens the
+  same way: writes fail with `STO-E004`, an absent memory is never created,
+  no telemetry sidecar is attached (its flush is a write), and on the
+  Postgres backend the open issues no DDL at all — SELECT-only verification
+  instead, which is what makes a role holding only `USAGE` and `SELECT` a
+  workable identity. An explicit `index_text`/`indexText` is refused
+  alongside it, because that re-stamps the file's declaration
+  ([#183](https://github.com/AreevAI/areev/issues/183)).
+- **`--tool-env` names what a host tool's environment contains, instead of
+  what it must not.** Host tools spawn under `InheritExcept`: everything this
+  process holds minus the variables Areev was told hold secrets. A host whose
+  own environment carries secrets Areev never named therefore had to keep
+  them out of the process entirely. `--tool-env VAR,…` (env
+  `$AREEV_RUN_TOOL_ENV`, `tool_env=` in Python, `toolEnv` in Node) clears the
+  environment and passes only the named variables plus the minimal set a
+  command needs to start. It reaches `--tool-cmd`, a `trigger run` connector,
+  and a pinned **native** blob; the sandbox seam already cleared and is
+  unchanged. An allow list cannot re-admit a variable Areev was already told
+  holds a secret — the name is dropped and reported, so #100's invariant stays
+  unconditional; `--resolver-env` remains the one deliberate exception, for
+  credential resolvers ([#188](https://github.com/AreevAI/areev/issues/188)).
+- **A refused read-only open leaves nothing behind.** Deriving a passphrase key
+  writes a `<path>.kdf` sidecar when one is absent, which is right when
+  creating an encrypted memory and wrong on the way to a refusal: pointing
+  `--read-only --passphrase-env` at a path that does not exist failed correctly
+  with `STO-E005` but left a stray `.kdf` file. The precondition is now one
+  shared rule (`areev_store::read_only_requires_existing`) applied before the
+  derivation on all three surfaces — CLI, Python and Node.
+- **The loop's cadence and the Verify gate's schedule take the deployment's
+  own units, as policy.** `outcome_evalset.checkpoints` schedules a
+  re-measurement in `after_ms`, `after_runs` (evalset runs journaled since the
+  apply) or `after_grains` (grains written since it); a bare integer still
+  means milliseconds, so every policy, snapshot and state blob written before
+  reads unchanged, and the 1d / 7d / 30d default is untouched. It exists
+  because a schedule counted in days is inert on a deployment that finishes in
+  minutes: on PAST-Bench the default fired zero verdicts and zero reverts
+  across 78 governed runs — the half of governance the receipts harness had
+  just proved worked — because a family finishes in seven minutes and the
+  first checkpoint was a day away. `cadence` lifts the per-call run gate
+  (`--min-new`, `--if-stale`) into the policy file so CLI, MCP and console
+  share one rhythm, and adds `every_events` (turns) and `every_sessions`;
+  unset, a pass is due whenever it is called, as before. Flags override the
+  block; a sweep always runs. A skipped pass reports `cadence_not_due`.
+- **DISCOVER may author a Skill.** A `skill` proposal — description,
+  `when_to_use`, ordered steps — derived from a trajectory that succeeded,
+  named by its target, placed in the evidence's namespace, and superseding a
+  live skill of the same name rather than duplicating it. Governed like every
+  draft: GROUND, VERIFY, the confidence floor, a review with a BECAUSE, never
+  auto-applied. `skills: {enabled, min_steps}` in the policy, default on with
+  two steps. Measured need: on PAST-Bench the agent performed a procedure
+  correctly on every seed and then, asked whether to save it, said "nothing
+  to save"; the store was empty at evaluation and scored below having no
+  memory. Every skill had depended on the model volunteering one mid-task.
+- **DISCOVER may author a plan.** A `plan` proposal — steps bound to tools
+  the cited evidence shows were called, edges with conditions in the
+  runtime's frozen grammar — applies as a Workflow grain (validated by the
+  substrate's plan validator before it can be stamped applicable) beside a
+  Skill of the same name, in one batch; a live pair of that name is
+  superseded. `plans: {enabled, min_nodes}`, default on. A skill is what a
+  model reads; a plan is what the runtime can check, run, journal and patch.
+- **The Verify gate asks a second question: does the premise still stand?**
+  When a grain an applied recommendation cited is later superseded by a
+  different value or retracted, the gate records `drifted` and
+  `outcome_review` proposes the revert (`outcome.premise_drift`). A
+  value-identical supersession is not drift. `premise_drift: true` by
+  default. Measured need: a governed lesson encoding a superseded rule cost
+  0.32 on PAST-Bench's migration family.
+- **`min_evidence`** (default 1): the fewest distinct grains an LLM draft
+  must cite to be offered as a change. Under it the draft is stored and
+  reviewable but applies as nothing; the funnel counts the demotions as
+  `advisory_thin_evidence`. An audit of 88 governed decisions found 15 of 28
+  approvals had generalised one instance into standing policy — `2` is the
+  setting that audit argues for.
+
+- **Batch reads for the bench harness.** `evaluate.py --batch` submits a
+  whole held-out arm as one job to a batch endpoint — the OpenAI files
+  shape or OpenRouter's inline `/api/beta/batches` (`scripts/batch_toolcall.py`,
+  self-checked against a local mock of both and validated live on
+  OpenRouter and on OpenAI directly); usage rows carry the tier's discount
+  or the provider's reported cost and `cost.py` uses them. The per-call
+  adapter takes `--base-url`/`--key-env`, so an OpenAI model is called at
+  `api.openai.com` on both paths. The governed stream stays
+  synchronous by construction.
+- **`crates/areev-bench/CURVE.md` — the tuning learning curve.** Three
+  seeds of a governed deployment over 320 real FARA registration forms
+  (VRDU), the memory snapshotted at 20/40/80/160/320 documents and a
+  Qwen3-1.7B tuned at each checkpoint from scratch and continually, read
+  against registrants it never learned from. The tuned model goes from 55%
+  to 93% exact and passes the LLM carrying the loop's rules (79%) between
+  80 and 160 documents; the memorisation gap shrinks from +42 to +3 points;
+  a Qwen3-0.6B reaches 95%. The verify leg fed the loop its own checkpoint
+  reads and it reverted the one rule that had cost twenty points; two
+  engine defects that leg exposed are fixed under *Changed*. The baselines
+  every earlier chart had are on the same sets: no memory is flat at 25%,
+  and mem0 — as installed, domain-prompted, and framed under the governed
+  arm's own instruction header — is 26% at every checkpoint on every seed,
+  with `mem0_peek.py` showing why (the stores hold the conventions; a
+  top-ten drawn by similarity to a form returns other forms); given the
+  task question and instruction framing the governed loop provides by
+  construction, mem0 reaches 64% on the final read and is held there by
+  the conventions nobody reviewed. All API cost
+  for three seeds: $0.66; mem0's three-seed runs cost $0.87 and $1.02. `results/curve-vrdu-2026-09-06/` holds the
+  numbers and receipts; `publish_curve.sh` regenerates them.
+- **The DISCOVER objective is host policy.** `discover_objective` in the loop
+  policy file selects what the LLM proposer optimizes for: `review_queue`
+  (the default, byte-for-byte the previous instruction apart from the cite
+  sentence) makes abstention free and a wrong finding cost double — right for
+  a queue a person triages; `learner` makes withholding a lesson over a
+  recurring failure cost the same as a wrong one, for a deployment that has
+  to improve from this pass. It changes the scoring paragraph only: GROUND,
+  VERIFY, the confidence floor and human review are identical under both.
+- **An authored lesson can carry an outcome metric.** `outcome_evalset` names
+  the evalset every applicable LLM-authored proposal is re-measured against
+  after apply, so the Verify gate finally has something to re-run for the
+  proposals a reviewer approves from prose alone — nothing errors when a
+  lesson is merely useless. Baseline is the newest run journaled before the
+  proposal, current is a run journaled after the apply; no baseline run means
+  no metric rather than a fabricated one, and the direction is mandatory.
+
+- **The tuning learning curve.** `build_vrdu_reg.py` adds VRDU's FARA
+  registration forms — the first corpus with a real filing-date timeline
+  and an entity key — and `dataset.split_entity` holds out *organisations*
+  rather than documents, so a tuned model's unseen-set score can claim
+  generalisation by construction. `curve_tune.sh` snapshots the governed
+  memory at geometric checkpoints (`run.py --snapshot-at`) and trains two
+  adapters at each — from scratch on everything so far, and continually
+  from the previous adapter on only the documents since — reading both
+  against unseen and seen held-out sets beside the LLM carrying the same
+  rules. `slm_train.sh` scales epochs to the corpus and keeps the
+  lowest-validation-loss checkpoint, never the last; the base is Qwen3.5-2B
+  under `mlx_lm`. The prompt path no longer scans the whole namespace, so a
+  320-document deployment stays under CAL's grain cap. `CURVE.md` is the
+  pre-registration; DocILE is the planned scale run.
+
+- **Four ways to carry something forward, on cost and accuracy.** The
+  receipts harness gains three arms beside the governed loop and a cost
+  ledger under all of them. `mem0_arm.py` runs real `mem0ai` 2.0 as its
+  README says to — `add()` after each document, `search()` before the next —
+  in three modes (as installed, with its domain hint, and verbatim store),
+  against the same receipts, agent and held-out set as the governed run.
+  `slm_corpus.py` / `slm_train.sh` / `slm_eval.sh` turn a run's governed
+  memory into a LoRA on Qwen2.5-1.5B with `mlx_lm` and evaluate it — tuned
+  and untuned — under arm B's exact prompt through `scripts/slm_serve.py`,
+  which speaks the agent adapter's JSON-on-stdio contract to a local
+  `mlx_lm.server`. `structure.py` reads one fixed rule set under every
+  (position × format) cell, formats rendered by CAL's own renderers.
+  Every model call now meters into `$AREEV_USAGE_LOG` — both OpenRouter
+  adapters, mem0's SDK calls, and the local model — and `cost.py` prices it
+  from a pinned table, flagging anything unpriced. `fourway.py` assembles
+  the accuracy and cost charts; `FOURWAY.md` records the result.
+
+- **A ledger that changes its mind.** `receipts/ledger_profile.py` gains
+  `regimes`, letting a filing convention be *replaced* mid-deployment on
+  top of the `arc` that already lets requirements arrive, and `drift.sh`
+  drives three arms across it — the governed loop, the same memory rendered
+  ungoverned (every correction verbatim, nothing retracted), and the frozen
+  day-one agent — scored per checkpoint under the convention in force.
+  `DRIFT.md` records the one clean seed: governed 173 against ungoverned 60
+  before the change, and after it the loop learned the new rule and kept
+  the old one beside it, while the Verify gate marked every rule `held`
+  against a day-one baseline the agent still beats. A measured negative on
+  the revert half, with the two missing mechanisms named.
+
+- **The receipts ablation is complete — a 2×2, four cells.** `RECEIPTS.md`
+  separates the two things run 2 changed at once. Both are large main
+  effects from run 1's baseline: naming the observer in the evidence
+  projection is **+175**, swapping the learner is **+185**, both together
+  **+312**, with arm A at 97/720 in all four cells. Cell D was
+  pre-registered as an expected null and is not one; the correction, and
+  what it costs the authoring-rate diagnostic that predicted it, are
+  published beside the result.
+
+- **A second public corpus for the receipts experiment.** `ADBUY.md` repeats
+  it on VRDU ad-buy forms — real US FCC political-advertising invoices, ten
+  times a receipt's length, filed `YYYY-MM-DD` where SROIE files
+  `DD/MM/YYYY`. Three seeds, 468 paired wins and 0 losses in 840 trials, and
+  the day-one field improves (the claim `RECEIPTS.md` records as
+  unsupported). `receipts/build_vrdu.py` builds it, stdlib only; nothing from
+  the corpus is committed.
+
+### Changed
+
+- **Successful tool calls reach the evidence bundle when skill authoring is
+  on** — after the failures, inside the same reserved share, so a busy desk's
+  successes cannot bury the failure signal. With `skills.enabled: false` the
+  bundle is exactly what it was. The Tool brief now carries the call's
+  `input`: a procedure is not reconstructible from tool names and outputs.
+- `areev loop policy` prints the two new defaults (`skills`, `min_evidence`);
+  the goldens are re-blessed. `areev loop outcomes` labels a run- or
+  grain-counted checkpoint as `@1 run` / `@50 grains`; time checkpoints
+  render as before.
+
+- **A grain write refuses an unspellable namespace** (`VAL-E001`): one
+  carrying whitespace, a control character, or an invisible formatting
+  character (zero-width space, BOM, soft hyphen). Namespaces stay opaque
+  strings — `org.sales.emea`, `agent:authz` and `部門:営業` are all equally
+  fine — but a write is the operation that *mints* a namespace, and nothing
+  downstream can tell a new name from a mistyped one, so a typo there is
+  accepted by every surface and found by none. That is not hypothetical: a
+  bad substitution turned a harness's `"agent:harness"` into
+  `"age, build_messagesnt:harness"`, twelve hours of evaluations journaled
+  into it successfully, and the loop that reads that namespace recorded no
+  verdict and proposed no revert for a lesson that had cost the agent every
+  exact match it had. Read surfaces are deliberately unchanged and
+  replication replay is exempt, so a file written before this rule stays
+  readable, erasable and disclosable under the name it used.
+- **A lesson's outcome verdict compares against the newest evalset run
+  before its apply**, not the run the proposal froze, when one exists. A
+  deployment that journals its evalset on day one and then approves rule
+  after rule was measuring its twentieth rule against day one: on a real
+  corpus (`crates/areev-bench/CURVE.md`) a rule that contradicted an earlier
+  one took the agent from 86% to 66% on held-out documents and read as
+  `held` against day one's 26%. With nothing journaled between proposal and
+  apply the two runs are the same, so no verdict recorded before this
+  changes. The proposal-time snapshot, every later measurement and the
+  apply gate now read a run's fields through one function
+  (`areev_loop::eval::run_value`).
+- **A revert is keyed by what it reverts.** Two lessons on one entity that
+  both regressed produced one revert: the deterministic dedup key is
+  analyzer + target + action, so the second draft was dropped as a
+  duplicate. `revert_dedup_key` adds the reverted recommendation's hash.
+
+
+- **A revert the Verify gate caused puts the finding on cooldown.** A
+  rollback normally lets a finding re-propose ("the situation returned"),
+  which is right for an operator's own rollback and wrong after a measured
+  regression — there the situation never left, so the next pass re-proposed
+  the lesson the reviewer had just been asked to revert. Applying an
+  `outcome_review` revert now strikes the same doubling cooldown a rejection
+  earns; a manual `areev loop rollback` still earns none.
+- **A draft may cite evidence by bundle id.** Evidence items carry a short
+  `id` (`e1`, `e2`, …) beside the hash, and a DISCOVER draft may cite that,
+  the full hash, or an unambiguous ≥12-hex prefix. Measured, the 64-hex
+  transcription check was where most of a small model's drafts died — not
+  fabrication, just copying. An uncited draft is still dropped.
+- **An Observation reaches the model with its observer named.** The grain
+  records `observer_id`/`observer_type`; the evidence projection dropped
+  both, so a person's correction arrived as an anonymous sentence and read
+  identically to the agent having asked for something. Measured, a model
+  given a run of unattributed corrections proposed rules to stop the agent
+  asking. `Policy.evidence_attribution` selects `named` (new default) or
+  `anonymous` (the previous rendering), because an observer id can be a
+  person's name and whether it belongs in a prompt is the host's call.
+- **An authored proposal dedups on its content.** The dedup key excludes
+  proposal content, which is right for an analyzer finding and wrong for an
+  authored lesson, where the content *is* the finding: a second lesson on one
+  entity was silently dropped as a duplicate of the first. LLM-authored
+  executable proposals now key on a fingerprint of their normalized content
+  as well; advisory flags keep one open flag per target.
+
 ### Fixed
 
 - **The Postgres dictionary no longer bounds what a grain may say.** `terms`
@@ -65,41 +321,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `main` and uploaded it under the older tag's name — the fix #159 applied
   to `build` now covers `sbom` too
   ([#162](https://github.com/AreevAI/areev/issues/162)).
-
-### Added
-
-- **A read-only open in the Python and Node bindings.** `--read-only` has
-  refused every write on the CLI since 1.7.0, but the binding constructors
-  had no equivalent, so a console, an evaluator or an analytics reader
-  embedding Areev had to hold owner-grade credentials to do nothing but read.
-  `Areev(path, read_only=True)` / `new Areev(path, …, readOnly)` opens the
-  same way: writes fail with `STO-E004`, an absent memory is never created,
-  no telemetry sidecar is attached (its flush is a write), and on the
-  Postgres backend the open issues no DDL at all — SELECT-only verification
-  instead, which is what makes a role holding only `USAGE` and `SELECT` a
-  workable identity. An explicit `index_text`/`indexText` is refused
-  alongside it, because that re-stamps the file's declaration
-  ([#183](https://github.com/AreevAI/areev/issues/183)).
-- **`--tool-env` names what a host tool's environment contains, instead of
-  what it must not.** Host tools spawn under `InheritExcept`: everything this
-  process holds minus the variables Areev was told hold secrets. A host whose
-  own environment carries secrets Areev never named therefore had to keep
-  them out of the process entirely. `--tool-env VAR,…` (env
-  `$AREEV_RUN_TOOL_ENV`, `tool_env=` in Python, `toolEnv` in Node) clears the
-  environment and passes only the named variables plus the minimal set a
-  command needs to start. It reaches `--tool-cmd`, a `trigger run` connector,
-  and a pinned **native** blob; the sandbox seam already cleared and is
-  unchanged. An allow list cannot re-admit a variable Areev was already told
-  holds a secret — the name is dropped and reported, so #100's invariant stays
-  unconditional; `--resolver-env` remains the one deliberate exception, for
-  credential resolvers ([#188](https://github.com/AreevAI/areev/issues/188)).
-- **A refused read-only open leaves nothing behind.** Deriving a passphrase key
-  writes a `<path>.kdf` sidecar when one is absent, which is right when
-  creating an encrypted memory and wrong on the way to a refusal: pointing
-  `--read-only --passphrase-env` at a path that does not exist failed correctly
-  with `STO-E005` but left a stray `.kdf` file. The precondition is now one
-  shared rule (`areev_store::read_only_requires_existing`) applied before the
-  derivation on all three surfaces — CLI, Python and Node.
 
 ## [1.7.2] — 2026-09-02
 

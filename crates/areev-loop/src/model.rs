@@ -20,6 +20,7 @@ pub mod grain_type {
     /// OMS Skill grain (0x0B) — `proficiency` (aliases `confidence`) +
     /// `practice_count`; the chain is the learning history.
     pub const SKILL: &str = "skill";
+    pub const WORKFLOW: &str = "workflow";
     /// OMS Goal grain (0x07) — `goal_state` + `progress`.
     pub const GOAL: &str = "goal";
     pub const RECOMMENDATION: &str = "recommendation";

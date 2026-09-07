@@ -285,6 +285,622 @@ impl crate::llm::LlmBackend for MockLlm {
     }
 }
 
+/// A draft may cite bundled evidence by the short id the bundle labels it
+/// with, not only by the full hash — and a citation naming nothing in the
+/// bundle is still a fabrication that drops the draft.
+#[test]
+fn llm_drafts_may_cite_evidence_by_bundle_id() {
+    use crate::model::Origin;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    let h2 = sub.add_fact("acme", "deploy_target", "eu-west-1");
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"by id","target":"entity:test/acme","evidence":["e1"],"confidence":0.9}},
+          {{"summary":"by hash","target":"grain:{h2}","evidence":["{h2}"],"confidence":0.9}},
+          {{"summary":"fabricated","target":"entity:test/acme","evidence":["e99","not-a-hash"],"confidence":0.9}}
+        ]}}"#
+    );
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"},{"id":1,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"},{"id":1,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }));
+    let out = e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let funnel = out.llm_funnel.expect("an llm run reports its funnel");
+    assert_eq!(funnel.proposed, 3);
+    assert_eq!(funnel.dropped_uncited, 1, "the fabricated citation is the only drop");
+    let llm: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+        .collect();
+    // Distinct targets, so dedup (family ⟂ target ⟂ action) keeps both.
+    assert_eq!(llm.len(), 2, "id- and hash-cited drafts both survive");
+    for r in &llm {
+        assert!(
+            r.evidence.iter().all(|h| h == &h1 || h == &h2),
+            "stored evidence is the resolved grain hash, never the label: {:?}",
+            r.evidence
+        );
+    }
+    assert!(llm.iter().all(|r| r.summary.render() != "fabricated"));
+}
+
+/// The three citation shapes, pinned on the resolver itself (the reference
+/// substrate's hashes are not hex, so the prefix rule needs a direct test).
+#[test]
+fn citation_resolves_by_hash_id_or_unambiguous_hex_prefix() {
+    use crate::engine::resolve_citation;
+    use std::collections::{BTreeMap, BTreeSet};
+    let a = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90".to_string();
+    let b = "a1b2c3d4e5f6ffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+    let bundle: BTreeSet<String> = [a.clone(), b.clone()].into_iter().collect();
+    let ids: BTreeMap<&str, &str> = [("e1", a.as_str()), ("e2", b.as_str())].into_iter().collect();
+    assert_eq!(resolve_citation(&a, &bundle, &ids).as_deref(), Some(a.as_str()));
+    assert_eq!(resolve_citation("e2", &bundle, &ids).as_deref(), Some(b.as_str()));
+    assert_eq!(resolve_citation(" e1 ", &bundle, &ids).as_deref(), Some(a.as_str()), "whitespace-tolerant");
+    assert_eq!(resolve_citation(&a[..16], &bundle, &ids).as_deref(), Some(a.as_str()), "unambiguous prefix");
+    assert_eq!(resolve_citation(&a[..16].to_uppercase(), &bundle, &ids).as_deref(), Some(a.as_str()));
+    assert_eq!(resolve_citation(&a[..12], &bundle, &ids), None, "shared 12-char prefix is ambiguous");
+    assert_eq!(resolve_citation(&a[..8], &bundle, &ids), None, "too short to count as a citation");
+    assert_eq!(resolve_citation("e3", &bundle, &ids), None);
+    assert_eq!(resolve_citation("", &bundle, &ids), None);
+}
+
+/// Two lessons on one entity that both regress get TWO reverts. A revert's
+/// dedup key includes the hash of what it reverts; keyed by target alone,
+/// the second was dropped as a duplicate of the first (the learning-curve
+/// study's seed 3: two regressed, one revert proposed).
+#[test]
+fn two_regressed_lessons_on_one_target_get_two_reverts() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 100 - exact),
+            at,
+        );
+    };
+    journal(&mut sub, "eval-before", 90, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"dates as printed","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the file date exactly as printed."}}}},{{"summary":"names as printed","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the signer name exactly as printed."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"},{"id":1,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"},{"id":1,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(
+        r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let lessons: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+        .collect();
+    assert_eq!(lessons.len(), 2, "two different lessons on one entity both reach the queue");
+    for (i, r) in lessons.iter().enumerate() {
+        e.review(&mut sub.inner, &r.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1 + i as i64)
+            .unwrap();
+        e.apply(&mut sub.inner, &r.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 10 + i as i64)
+            .unwrap();
+    }
+    journal(&mut sub, "eval-after", 60, t + DAY + 100);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 200).unwrap();
+    let regressed: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.verdict == "regressed")
+        .collect();
+    assert_eq!(regressed.len(), 2, "both lessons measured regressed");
+    let reverts: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .collect();
+    assert_eq!(reverts.len(), 2, "one revert per regressed lesson, not one per target");
+    let mut keys: Vec<_> = reverts.iter().map(|r| r.dedup_key.clone()).collect();
+    keys.dedup();
+    assert_eq!(keys.len(), 2, "distinct dedup keys");
+}
+
+/// A verdict compares against the state of the world at the APPLY, not at the
+/// proposal. A deployment that journals its evalset once, on day one, and
+/// then approves rule after rule would otherwise measure its twentieth rule
+/// against day one — and a rule that cost twenty points reads as `held`
+/// against a baseline the first nineteen rules had long since left behind.
+/// Found on a real corpus (`crates/areev-bench/CURVE.md`, seed 1: 86% → 66%,
+/// measured as held against 26%). With nothing journaled between the
+/// proposal and the apply, the baseline is the proposal's own run, so the
+/// test right below this one is unchanged.
+#[test]
+fn a_run_journaled_before_the_apply_is_the_lessons_baseline() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 100 - exact),
+            at,
+        );
+    };
+    // Day one: 26 of 100. Then the deployment's earlier rules take it to 86.
+    journal(&mut sub, "eval-day-one", 26, t - 3 * DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"dates are being standardised","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the file date exactly as printed, in its original format."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(
+        r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    assert_eq!(rec.metric.as_ref().unwrap().baseline, 26.0, "the proposal froze day one");
+    // Measured again before the apply: 86. THIS is what the rule is judged against.
+    journal(&mut sub, "eval-before-apply", 86, t + 1);
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reads fine", t + 2)
+        .unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply the lesson", false, t + 3)
+        .unwrap();
+    // After the apply: 66. Better than day one; twenty points worse than the apply.
+    // (The 1d checkpoint is due a day after the apply at t + 3.)
+    journal(&mut sub, "eval-after", 66, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    let verdicts: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.rec_hash == rec.hash)
+        .collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(
+        (verdicts[0].baseline, verdicts[0].current, verdicts[0].verdict.as_str()),
+        (86.0, 66.0, "regressed"),
+        "judged against the run before the apply, not the day-one snapshot"
+    );
+    assert!(
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.outcome_review")),
+        "and the revert is proposed"
+    );
+}
+
+/// An LLM-authored lesson carries no recurrence metric — nothing errors when
+/// a lesson is merely useless — so `Policy::outcome_evalset` gives every
+/// applicable authored proposal the host's evalset as its metric: baseline
+/// from the newest run journaled before the proposal, current from runs
+/// journaled after the apply. A worse run after the apply is a regression,
+/// the gate proposes the revert, applying it retracts the lesson and puts it
+/// on cooldown. Without a baseline run there is no metric at all.
+#[test]
+fn an_authored_lesson_is_measured_against_the_policy_evalset_and_reverted_on_regression() {
+    use crate::model::Origin;
+    use crate::substrate::OmsSubstrate;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let lesson_llm = |h1: &str| MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"the agent keeps skipping the vendor","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Record the vendor name on every receipt."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = || {
+        Policy::from_json(
+            r#"{"outcome_evalset": {"hash": "heldout1", "field": "exact", "higher_is_better": true}}"#,
+        )
+        .unwrap()
+    };
+    let journal = |sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:heldout1",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 60 - exact),
+            at,
+        );
+    };
+    let llm_pending = |e: &Engine, sub: &TestSubstrate| -> Vec<Recommendation> {
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .into_iter()
+            .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+            .collect()
+    };
+
+    // No baseline run journaled → the lesson is stored without a metric.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_pending(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    assert!(recs[0].metric.is_none(), "no journaled run → honestly unmeasured");
+
+    // With a baseline run: the metric names the evalset and carries its value.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    journal(&mut sub, "eval-baseline", 20, t - 3_600_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_pending(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    let m = recs[0].metric.as_ref().expect("an applicable authored lesson carries the evalset metric");
+    assert_eq!(m.metric, "evalset:heldout1:exact");
+    assert_eq!(m.baseline, 20.0);
+    assert!(m.higher_is_better);
+    assert_eq!(m.horizons_ms, vec![DAY, 7 * DAY, 30 * DAY]);
+    let hash = recs[0].hash.clone();
+    let dk = recs[0].dedup_key.clone();
+
+    e.review(&mut sub.inner, &hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "try it", t + 1)
+        .unwrap();
+    e.apply(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "apply the lesson", false, t + 2)
+        .unwrap();
+
+    // A run journaled BEFORE the apply is not evidence: with none after it,
+    // the 1d checkpoint stays due and no verdict is recorded.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY).unwrap();
+    assert!(
+        e.outcomes(&sub.inner).unwrap().iter().all(|o| o.rec_hash != hash),
+        "no run since the apply → not yet measurable, never scored against the baseline"
+    );
+
+    // A worse run after the apply → regressed at the 1d checkpoint → revert.
+    journal(&mut sub, "eval-after", 12, t + 2 * DAY + 1);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY + 2).unwrap();
+    let verdicts: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.rec_hash == hash)
+        .collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!((verdicts[0].baseline, verdicts[0].current, verdicts[0].verdict.as_str()), (20.0, 12.0, "regressed"));
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("the regression proposed a revert");
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "it hurt", t + 2 * DAY + 3)
+        .unwrap();
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert", false, t + 2 * DAY + 4)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    let cooled = crate::config::LoopPersisted::from_value(sub.inner.load_state().unwrap())
+        .unwrap()
+        .cooldowns
+        .get(&dk)
+        .copied();
+    assert_eq!(cooled, Some(t + 2 * DAY + 4 + 7 * DAY), "the reverted lesson is on cooldown");
+
+    // The same evidence, the same model, the next pass: not re-proposed.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 * DAY + 5).unwrap();
+    assert!(
+        llm_pending(&e, &sub).iter().all(|r| r.dedup_key != dk),
+        "a lesson the gate just retracted is not re-proposed on the next pass"
+    );
+
+    // A better run after the apply → held.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    journal(&mut sub, "eval-baseline", 20, t - 3_600_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1))).with_policy(policy());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let hash = llm_pending(&e, &sub)[0].hash.clone();
+    e.review(&mut sub.inner, &hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "try it", t + 1)
+        .unwrap();
+    e.apply(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2)
+        .unwrap();
+    journal(&mut sub, "eval-after", 33, t + 3);
+    // The 1d checkpoint is due one day after the APPLY (t + 2), not after t.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 2 + DAY).unwrap();
+    let verdicts: Vec<_> = e.outcomes(&sub.inner).unwrap().into_iter().filter(|o| o.rec_hash == hash).collect();
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].verdict, "held");
+    assert!(
+        !e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.outcome_review")),
+        "an improvement proposes no revert"
+    );
+}
+
+/// Two different authored lessons on ONE entity are two findings — both
+/// reach the queue, and the second is not a duplicate of the first even
+/// while the first is applied. The same lesson re-authored (at a different
+/// confidence, with different spacing) IS a duplicate. An advisory flag
+/// keeps the analyzer-style key: one open flag per target.
+#[test]
+fn authored_lessons_dedup_on_content_not_only_on_target() {
+    use crate::model::Origin;
+    let scopes = ScopeSet::all();
+    let llm = |h1: &str, lessons: &[&str]| {
+        let recs: Vec<String> = lessons
+            .iter()
+            .map(|l| format!(
+                r#"{{"summary":"{l}","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"{l}"}}}}"#
+            ))
+            .collect();
+        let n = lessons.len();
+        MockLlm {
+            discover: format!(r#"{{"recommendations":[{}]}}"#, recs.join(",")),
+            ground: format!(
+                r#"{{"results":[{}]}}"#,
+                (0..n).map(|i| format!(r#"{{"id":{i},"supported":true,"reason":"ok"}}"#)).collect::<Vec<_>>().join(",")
+            ),
+            verify: format!(
+                r#"{{"results":[{}]}}"#,
+                (0..n).map(|i| format!(r#"{{"id":{i},"keep":true,"confidence":0.9,"reason":"ok"}}"#)).collect::<Vec<_>>().join(",")
+            ),
+            enrich: r#"{"notes":[]}"#.into(),
+        }
+    };
+    let llm_recs = |e: &Engine, sub: &TestSubstrate, status: Option<RecStatus>| -> Vec<Recommendation> {
+        e.recommendations(&sub.inner, status)
+            .unwrap()
+            .into_iter()
+            .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+            .collect()
+    };
+
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor and amount missing");
+    let e = Engine::with_builtins().with_llm(Box::new(llm(
+        &h1,
+        &["Record the vendor name on every receipt.", "Record the amount on every receipt."],
+    )));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let recs = llm_recs(&e, &sub, Some(RecStatus::Pending));
+    assert_eq!(recs.len(), 2, "two different lessons on one entity both reach the queue");
+    assert_ne!(recs[0].dedup_key, recs[1].dedup_key);
+    let vendor = recs.iter().find(|r| r.summary.render().contains("vendor")).unwrap().clone();
+    e.review(&mut sub.inner, &vendor.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "yes", 10_001)
+        .unwrap();
+    e.apply(&mut sub.inner, &vendor.hash, "user:a", ObserverType::Human, &scopes, "apply", false, 10_002)
+        .unwrap();
+
+    // The vendor lesson again (reworded only in spacing/case) plus a THIRD
+    // lesson: the repeat is deduped against the applied one, the new one is
+    // admitted.
+    let e = Engine::with_builtins().with_llm(Box::new(llm(
+        &h1,
+        &["record  the VENDOR name on every receipt", "Copy the address exactly as printed."],
+    )));
+    sub.add_fact("capture", "correction", "address missing");
+    // A full sweep, so the bundle holds the evidence the drafts cite
+    // regardless of the first pass's watermark.
+    let sweep = RunOptions { full_sweep: true, ..RunOptions::default() };
+    e.run(&mut sub.inner, &sweep, 20_000).unwrap();
+    let all = llm_recs(&e, &sub, None);
+    assert_eq!(all.len(), 3, "vendor (applied), amount (pending), address (pending) — the repeat was deduped");
+    let pending = llm_recs(&e, &sub, Some(RecStatus::Pending));
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().any(|r| r.summary.render().contains("address")));
+    assert!(
+        !pending.iter().any(|r| r.summary.render().to_lowercase().contains("vendor")),
+        "the applied lesson is not re-queued under a cosmetic rewording"
+    );
+
+    // Advisory drafts (no proposal) on one target still collapse to one.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "x");
+    let e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[
+              {{"summary":"look at this","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9}},
+              {{"summary":"and at this","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9}}
+            ]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true},{"id":1,"supported":true}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9},{"id":1,"keep":true,"confidence":0.9}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    assert_eq!(llm_recs(&e, &sub, Some(RecStatus::Pending)).len(), 1, "one open advisory flag per target");
+}
+
+/// An Observation reaches the model with its observer named. A bare
+/// sentence is ambiguous about direction in the way that matters: a
+/// person's correction reads identically to the agent being told something
+/// it asked for, and a model given unattributed corrections concluded the
+/// agent had been doing the asking. A Fact still renders as its triple, and
+/// an Observation with no recorded observer still renders as its bare text.
+#[test]
+fn an_observation_reaches_the_model_with_its_observer_named() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let mut sub = TestSubstrate::new();
+    sub.add_fact("acme", "deploy_target", "us-east-1");
+    sub.add_fact("acme", "deploy_target", "eu-west-1");
+    sub.add_human_note("test", "capture", "user:accountant", "Vendor Name is ACME LTD.");
+    sub.add_observation("test", "an unattributed note");
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    let reqs = seen.lock().unwrap();
+    let req = reqs
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("a discover call was made");
+    let v: serde_json::Value = serde_json::from_str(req).unwrap();
+    let texts: Vec<String> = v["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "user:accountant (a person) said of capture: Vendor Name is ACME LTD."),
+        "a human observation names its observer: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "an unattributed note"),
+        "an observation with no observer still renders as its bare text: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "acme deploy_target us-east-1"),
+        "a fact still renders as its triple: {texts:?}"
+    );
+}
+
+/// `evidence_attribution: anonymous` restores the pre-2026-09-04 projection
+/// exactly — the bare text, no observer. It is host policy because an
+/// observer id can be a person's name, and because it is the one variable
+/// the receipts ablation turns.
+#[test]
+fn attribution_can_be_turned_off_by_host_policy() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let texts_under = |policy: Option<Policy>| -> Vec<String> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut sub = TestSubstrate::new();
+        sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        sub.add_human_note("test", "capture", "user:accountant", "Vendor Name is ACME LTD.");
+        let mut e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+        if let Some(p) = policy {
+            e = e.with_policy(p);
+        }
+        e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+        let reqs = seen.lock().unwrap();
+        let req = reqs
+            .iter()
+            .find(|r| r.contains(r#""op":"discover""#))
+            .expect("a discover call");
+        serde_json::from_str::<serde_json::Value>(req).unwrap()["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    let named = texts_under(None);
+    let anon = texts_under(Some(
+        Policy::from_json(r#"{"evidence_attribution": "anonymous"}"#).unwrap(),
+    ));
+    assert!(named.iter().any(|t| t.contains("user:accountant (a person) said")), "{named:?}");
+    assert!(anon.iter().any(|t| t == "Vendor Name is ACME LTD."), "{anon:?}");
+    assert!(!anon.iter().any(|t| t.contains("(a person) said")),
+            "anonymous attributes nothing: {anon:?}");
+    // Only the observation's rendering changes; facts are untouched.
+    let facts = |v: &Vec<String>| -> Vec<String> {
+        v.iter().filter(|t| t.starts_with("acme ")).cloned().collect()
+    };
+    assert_eq!(facts(&named), facts(&anon));
+}
+
+/// The DISCOVER objective is host policy: the default keeps the review-queue
+/// rule byte-for-byte, and `learner` swaps exactly the scoring paragraph.
+#[test]
+fn discover_objective_is_selected_by_host_policy() {
+    use std::sync::{Arc, Mutex};
+    struct Capturing(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capturing {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let discover_instructions = |policy: Option<Policy>| -> String {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut sub = TestSubstrate::new();
+        sub.add_fact("acme", "deploy_target", "us-east-1");
+        sub.add_fact("acme", "deploy_target", "eu-west-1");
+        let mut e = Engine::with_builtins().with_llm(Box::new(Capturing(seen.clone())));
+        if let Some(p) = policy {
+            e = e.with_policy(p);
+        }
+        e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+        let reqs = seen.lock().unwrap();
+        let req = reqs
+            .iter()
+            .find(|r| r.contains("\"op\":\"discover\""))
+            .expect("a discover call was made");
+        serde_json::from_str::<serde_json::Value>(req).unwrap()["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let default = discover_instructions(None);
+    let learner = discover_instructions(Some(
+        Policy::from_json(r#"{"discover_objective": "learner"}"#).unwrap(),
+    ));
+    assert!(default.contains("returning nothing earns 0"), "review-queue rule by default");
+    assert!(!default.contains("learning stage"));
+    assert!(learner.contains("learning stage of a deployed agent"));
+    assert!(learner.contains("ALSO penalized"));
+    assert!(!learner.contains("returning nothing earns 0"));
+    // Everything but the scoring paragraph is shared verbatim.
+    for shared in [
+        "propose ADDITIONAL findings",
+        "Require at least two rejected outcomes",
+        "MUST cite one or more evidence items from the bundle by their 'id'",
+        "\"kind\":\"lesson\"",
+        "Propose nothing you cannot ground in the evidence.",
+    ] {
+        assert!(default.contains(shared) && learner.contains(shared), "{shared}");
+    }
+}
+
 #[test]
 fn llm_discover_verified_rec_is_stamped_with_confidence_and_enrich_adds_guidance() {
     use crate::model::Origin;
@@ -1245,22 +1861,44 @@ fn llm_sees_tool_failures_no_analyzer_flagged() {
         .iter()
         .filter(|i| i["grain_type"] == "tool")
         .collect();
-    assert_eq!(tools.len(), 2, "both unflagged failures reach the bundle");
-    for t in tools {
+    // Under the default policy the proposer may author skills, so successful
+    // calls share the tool reserve too — AFTER the failures, which keep first
+    // claim on it. Both failures are in the bundle regardless.
+    let failures: Vec<_> = tools.iter().filter(|t| t["text"].as_str().unwrap_or("").contains(" error:")).collect();
+    assert_eq!(failures.len(), 2, "both unflagged failures reach the bundle: {tools:?}");
+    assert!(tools.len() > 2, "and, with skill authoring on, so do successes");
+    for t in failures {
         let text = t["text"].as_str().unwrap_or("");
         assert!(
             text.contains("cancelled_before_refund"),
             "the failure body is what makes it actionable, got {text:?}"
         );
     }
-    // Successes are not seeded: at a 64-item budget they are noise, and the
-    // 20 here would otherwise crowd out everything else.
-    assert!(
-        v["evidence"].as_array().unwrap().iter().all(|i| {
-            i["grain_type"] != "tool" || i["text"].as_str().unwrap_or("").contains("error")
-        }),
-        "only error tool grains are seeded"
-    );
+    // With skill authoring off the bundle is exactly what it was before
+    // skills existed: the failures and nothing else from the tool share.
+    let seen2 = Arc::new(Mutex::new(Vec::new()));
+    let e2 = Engine::with_builtins()
+        .with_llm(Box::new(RecordingLlm {
+            inner: MockLlm {
+                discover: r#"{"recommendations":[]}"#.to_string(),
+                ground: r#"{"results":[]}"#.to_string(),
+                verify: r#"{"results":[]}"#.to_string(),
+                enrich: r#"{"notes":[]}"#.to_string(),
+            },
+            seen: Arc::clone(&seen2),
+        }))
+        .with_policy(Policy::from_json(r#"{"skills": {"enabled": false}, "plans": {"enabled": false}}"#).unwrap());
+    e2.run(&mut sub.inner, &RunOptions { full_sweep: true, ..Default::default() }, 10_001).unwrap();
+    let seen2 = seen2.lock().unwrap();
+    let d2: serde_json::Value =
+        serde_json::from_str(seen2.iter().find(|r| r.contains("\"op\":\"discover\"")).unwrap()).unwrap();
+    let tools2 = d2["evidence"].as_array().unwrap().iter().filter(|i| i["grain_type"] == "tool").count();
+    assert_eq!(tools2, 2, "skills and plans off: only the failures, as before");
+    for t in v["evidence"].as_array().unwrap().iter().filter(|i| i["grain_type"] == "tool").filter(|t| t["text"].as_str().unwrap_or("").contains(" error:")) {
+        let text = t["text"].as_str().unwrap_or("");
+        assert!(text.contains("cancelled_before_refund"));
+    }
+
 }
 
 #[cfg(unix)]
@@ -2195,6 +2833,102 @@ fn outcome_time_series_catches_a_late_regression() {
     );
 }
 
+/// A revert the Verify gate proposed is a verdict on the FINDING: once a
+/// reviewer applies it, the reverted lesson goes on the rejection cooldown
+/// and the next pass does not re-propose it — even though the failure
+/// cluster that produced it is still there. An operator's own rollback earns
+/// no cooldown, so the same cluster re-proposes the same lesson at once.
+/// Both arms share every input up to the rollback mechanism, which is what
+/// makes the difference attributable to it.
+#[test]
+fn a_measured_revert_cools_down_the_reverted_finding_but_a_manual_rollback_does_not() {
+    use crate::substrate::OmsSubstrate;
+    let t = 2_000_000;
+    let scopes = ScopeSet::all();
+    let cooldown_of = |sub: &TestSubstrate, dk: &str| -> Option<i64> {
+        crate::config::LoopPersisted::from_value(sub.inner.load_state().unwrap())
+            .unwrap()
+            .cooldowns
+            .get(dk)
+            .copied()
+    };
+    let pending_lesson = |e: &Engine, sub: &TestSubstrate, dk: &str| -> bool {
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.tool_failure") && r.dedup_key == dk)
+    };
+    // Shared prefix: apply the lesson, pass the early checkpoints, then the
+    // failure comes back in force — enough for the analyzer to fire again on
+    // its own, not only for the recurrence metric to regress.
+    let regress = |now: i64| -> (Engine, TestSubstrate, String, String) {
+        let (e, mut sub, hash) = apply_lesson(now);
+        let dk = load_dedup_key(&e, &sub, &hash);
+        e.run(&mut sub.inner, &RunOptions::default(), now + 2 * DAY).unwrap();
+        e.run(&mut sub.inner, &RunOptions::default(), now + 8 * DAY).unwrap();
+        for _ in 0..5 {
+            sub.add_tool_call_at("stripe_refund", true, "rate_limited 429", now + 30 * DAY);
+        }
+        sub.add_tool_call_at("stripe_refund", false, "ok", now + 30 * DAY + 1);
+        e.run(&mut sub.inner, &RunOptions::default(), now + 31 * DAY).unwrap();
+        (e, sub, hash, dk)
+    };
+
+    // Arm 1 — the Verify gate's revert, approved and applied.
+    let (e, mut sub, hash, dk) = regress(t);
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("the regression proposed a revert");
+    assert!(cooldown_of(&sub, &dk).is_none(), "no cooldown before the revert");
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "regression confirmed", t + 31 * DAY + 1)
+        .unwrap();
+    let applied_at = t + 31 * DAY + 2;
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert regressed lesson", false, applied_at)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    assert_eq!(
+        cooldown_of(&sub, &dk),
+        Some(applied_at + 7 * DAY),
+        "a measured revert earns the reverted finding a first-strike (7d) cooldown"
+    );
+    e.run(&mut sub.inner, &RunOptions::default(), applied_at + 1).unwrap();
+    assert!(
+        !pending_lesson(&e, &sub, &dk),
+        "the lesson the gate just retracted must not be re-proposed on the next pass"
+    );
+    // ...and once the cooldown lapses the situation is judged afresh.
+    e.run(&mut sub.inner, &RunOptions::default(), applied_at + 7 * DAY + 1).unwrap();
+    assert!(
+        pending_lesson(&e, &sub, &dk),
+        "after the cooldown the still-present cluster re-proposes the lesson"
+    );
+
+    // Arm 2 — the same state, rolled back by an operator instead.
+    let (e, mut sub, hash, dk) = regress(t);
+    let rolled_at = t + 31 * DAY + 2;
+    e.rollback(&mut sub.inner, &hash, "user:a", ObserverType::Human, &scopes, "retract it by hand", rolled_at)
+        .unwrap();
+    assert_eq!(status_of(&e, &sub, &hash), RecStatus::RolledBack);
+    assert!(cooldown_of(&sub, &dk).is_none(), "an operator rollback earns no cooldown");
+    e.run(&mut sub.inner, &RunOptions::default(), rolled_at + 1).unwrap();
+    assert!(
+        pending_lesson(&e, &sub, &dk),
+        "after a manual rollback the still-present cluster re-proposes the lesson at once"
+    );
+}
+
+fn load_dedup_key(e: &Engine, sub: &TestSubstrate, hash: &str) -> String {
+    e.recommendations(&sub.inner, None)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.hash == hash)
+        .expect("the applied recommendation is listed")
+        .dedup_key
+}
+
 /// No recurrence at any checkpoint → the fix held across the whole series, no
 /// revert ever proposed.
 #[test]
@@ -2827,6 +3561,7 @@ mod evalset_outcome {
             query: String::new(),
             review_after_ms: 86_400_000,
             horizons_ms: vec![],
+            checkpoints: Vec::new(),
             higher_is_better,
         }
     }
@@ -2951,4 +3686,651 @@ mod evalset_outcome {
         assert_eq!(newest.run_id, "eval-2");
         assert!(crate::eval::eval_run_by_id(&sub.inner, EVALSET, "eval-nope").unwrap().is_none());
     }
+}
+
+
+// ---- checkpoints in the deployment's unit ----------------------------------
+
+/// The MockLlm + policy scaffolding every checkpoint test shares: one lesson
+/// proposed over one cited fact, an evalset the policy names, and a journal
+/// helper. `checkpoints` is the policy's schedule.
+fn lesson_under_evalset(checkpoints: &str) -> (TestSubstrate, Engine, String) {
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"dates are being standardised","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the file date exactly as printed."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(&format!(
+        r#"{{"outcome_evalset": {{"hash": "heldout1", "field": "exact", "higher_is_better": true, "checkpoints": {checkpoints}}}}}"#
+    ))
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    (sub, e, h1)
+}
+
+fn journal_exact(sub: &mut TestSubstrate, run_id: &str, exact: u64, at: i64) {
+    sub.add_fact_at(
+        "agent:harness",
+        "evalset:heldout1",
+        "mg:eval_run",
+        &format!(r#"{{"run_id":"{run_id}","passed":{exact},"failed":{},"exact":{exact}}}"#, 100 - exact),
+        at,
+    );
+}
+
+/// A benchmark journals one graded run per episode and finishes a family in
+/// minutes; with `after_runs: 1` the verdict lands at the pass after the next
+/// run, with the clock barely moved — the schedule that was measured to fire
+/// zero verdicts across 78 governed runs under the day-long default.
+#[test]
+fn a_run_checkpoint_comes_due_at_the_next_graded_run_not_a_day_later() {
+    use crate::model::Origin;
+    use crate::recommendation::Checkpoint;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let (mut sub, e, _) = lesson_under_evalset(r#"[{"after_runs": 1}]"#);
+    journal_exact(&mut sub, "eval-0", 40, t - 1_000);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    let m = rec.metric.as_ref().expect("the policy attached a metric");
+    assert_eq!(m.schedule(), vec![Checkpoint::AfterRuns(1)], "the snapshot carries the host's unit");
+    assert!(m.horizons_ms.is_empty(), "no time schedule is invented beside it");
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+
+    // No run since the apply: not due, no matter how much time passes.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 3 * DAY).unwrap();
+    assert!(e.outcomes(&sub.inner).unwrap().is_empty(), "a run checkpoint never fires on the clock alone");
+
+    // One graded run after the apply, seconds later: due at the very next pass.
+    journal_exact(&mut sub, "eval-1", 20, t + 3 * DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 3 * DAY + 20).unwrap();
+    let v: Vec<_> = e.outcomes(&sub.inner).unwrap().into_iter().filter(|o| o.rec_hash == rec.hash).collect();
+    assert_eq!(v.len(), 1, "measured exactly once");
+    assert_eq!((v[0].baseline, v[0].current, v[0].verdict.as_str()), (40.0, 20.0, "regressed"));
+    assert_eq!(v[0].checkpoint, Some(Checkpoint::AfterRuns(1)), "the record says which unit fired");
+    assert_eq!(v[0].horizon_ms, 0, "and does not pretend to be a time checkpoint");
+    assert!(
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|r| r.analyzer.starts_with("loop.outcome_review")),
+        "the regression proposes the revert — the half of governance the default horizon had switched off"
+    );
+    // Another run does not re-measure a checkpoint already taken.
+    journal_exact(&mut sub, "eval-2", 10, t + 3 * DAY + 30);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 3 * DAY + 40).unwrap();
+    assert_eq!(e.outcomes(&sub.inner).unwrap().iter().filter(|o| o.rec_hash == rec.hash).count(), 1);
+}
+
+/// A chat deployment counts activity: `after_grains` fires once enough has
+/// been written since the apply, and the measurement still reads only runs
+/// journaled after it.
+#[test]
+fn a_grain_checkpoint_counts_activity_since_the_apply() {
+    use crate::model::Origin;
+    use crate::recommendation::Checkpoint;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let (mut sub, e, _) = lesson_under_evalset(r#"[{"after_grains": 3}]"#);
+    journal_exact(&mut sub, "eval-0", 40, t - 1_000);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    // Two grains since the apply (one of them the run): not yet.
+    journal_exact(&mut sub, "eval-1", 45, t + 10);
+    sub.add_fact_at("test", "x", "y", "z", t + 11);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 12).unwrap();
+    assert!(e.outcomes(&sub.inner).unwrap().is_empty());
+    // A third: due. Current is the newest run after the apply (45 ≥ 40: held).
+    sub.add_fact_at("test", "x", "y", "w", t + 13);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 14).unwrap();
+    let v = e.outcomes(&sub.inner).unwrap();
+    assert_eq!(v.len(), 1);
+    assert_eq!((v[0].verdict.as_str(), v[0].checkpoint), ("held", Some(Checkpoint::AfterGrains(3))));
+}
+
+/// The pre-checkpoint spelling still means what it meant: a state blob with
+/// `measured: [86400000]` and a policy with only `horizons_ms` read as time.
+#[test]
+fn checkpoint_serde_keeps_bare_integers_as_milliseconds() {
+    use crate::recommendation::Checkpoint;
+    let v: Vec<Checkpoint> = serde_json::from_str(r#"[86400000, {"after_runs": 2}, {"after_grains": 7}, {"after_ms": 5}]"#).unwrap();
+    assert_eq!(
+        v,
+        vec![Checkpoint::AfterMs(86_400_000), Checkpoint::AfterRuns(2), Checkpoint::AfterGrains(7), Checkpoint::AfterMs(5)]
+    );
+    // An all-time schedule serializes exactly as the old Vec<i64> did.
+    assert_eq!(serde_json::to_string(&vec![Checkpoint::AfterMs(1), Checkpoint::AfterMs(2)]).unwrap(), "[1,2]");
+    assert_eq!(serde_json::to_string(&Checkpoint::AfterRuns(3)).unwrap(), r#"{"after_runs":3}"#);
+    assert_eq!(Checkpoint::AfterMs(86_400_000).label(), "1d");
+    assert_eq!(Checkpoint::AfterMs(7_200_000).label(), "2h");
+    assert_eq!(Checkpoint::AfterRuns(1).label(), "1 run");
+    assert_eq!(Checkpoint::AfterGrains(50).label(), "50 grains");
+    for bad in [r#"-1"#, r#""1d""#, r#"{"after_turns":1}"#, r#"{"after_runs":1,"after_ms":1}"#, r#"{"after_runs":-1}"#] {
+        assert!(serde_json::from_str::<Checkpoint>(bad).is_err(), "{bad}");
+    }
+    // A legacy state blob decodes into the typed map.
+    let p = crate::config::LoopPersisted::from_value(serde_json::json!({"measured": {"h": [86400000]}})).unwrap();
+    assert_eq!(p.measured["h"], vec![Checkpoint::AfterMs(86_400_000)]);
+}
+
+// ---- cadence ----------------------------------------------------------------
+
+fn add_event(sub: &mut TestSubstrate, session: &str, at: i64) {
+    let mut fields = serde_json::Map::new();
+    fields.insert("content".into(), serde_json::json!("hello"));
+    fields.insert("role".into(), serde_json::json!("user"));
+    fields.insert("session_id".into(), serde_json::json!(session));
+    fields.insert("namespace".into(), serde_json::json!("test"));
+    sub.inner.insert(crate::model::GrainRecord {
+        hash: String::new(),
+        grain_type: "event".into(),
+        namespace: "test".into(),
+        created_at_ms: at,
+        valid_to_ms: None,
+        superseded_by: None,
+        fields,
+    });
+}
+
+#[test]
+fn cadence_counts_turns_and_sessions_and_yields_to_flags_and_sweeps() {
+    let t = 10_000;
+    // every_events: 3 — two turns is not a tick, three is.
+    let p = Policy::from_json(r#"{"cadence": {"every_events": 3}}"#).unwrap();
+    let e = Engine::with_builtins().with_policy(p);
+    let mut sub = TestSubstrate::new();
+    add_event(&mut sub, "s1", t + 1);
+    add_event(&mut sub, "s1", t + 2);
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 10).unwrap();
+    assert_eq!((r.outcome, r.skip_reason), (RunOutcome::Skipped, Some(SkipReason::CadenceNotDue)));
+    add_event(&mut sub, "s1", t + 3);
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 11).unwrap();
+    assert_eq!(r.outcome, RunOutcome::Ran, "the third turn makes the pass due");
+    // The watermark advanced: the same three turns do not fire it again.
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 12).unwrap();
+    assert_eq!(r.skip_reason, Some(SkipReason::CadenceNotDue));
+
+    // every_sessions: 1 — reflect once per conversation. Ten turns in one
+    // session is one session.
+    let p = Policy::from_json(r#"{"cadence": {"every_sessions": 2}}"#).unwrap();
+    let e = Engine::with_builtins().with_policy(p);
+    let mut sub = TestSubstrate::new();
+    for i in 0..10 {
+        add_event(&mut sub, "only", t + i);
+    }
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap().skip_reason, Some(SkipReason::CadenceNotDue));
+    add_event(&mut sub, "another", t + 15);
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t + 21).unwrap().outcome, RunOutcome::Ran);
+
+    // every_ms: time since the last run; OR with every_grains — whichever first.
+    let p = Policy::from_json(r#"{"cadence": {"every_ms": 3600000, "every_grains": 2}}"#).unwrap();
+    let e = Engine::with_builtins().with_policy(p);
+    let mut sub = TestSubstrate::new();
+    sub.add_fact_at("test", "a", "b", "c", t);
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t + 1).unwrap().outcome, RunOutcome::Ran, "never ran → due");
+    sub.add_fact_at("test", "a", "b", "d", t + 2);
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t + 3).unwrap().skip_reason, Some(SkipReason::CadenceNotDue));
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t + 3_600_005).unwrap().outcome, RunOutcome::Ran, "an hour later: time fires");
+
+    // Flags override the block (host CLI flags > policy file): --min-new 1 on a
+    // file the cadence would skip runs; and a sweep is a command, not a tick.
+    let p = Policy::from_json(r#"{"cadence": {"every_grains": 100}}"#).unwrap();
+    let e = Engine::with_builtins().with_policy(p);
+    let mut sub = TestSubstrate::new();
+    sub.add_fact("a", "b", "c");
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t).unwrap().skip_reason, Some(SkipReason::CadenceNotDue));
+    let flags = RunOptions { min_new: Some(1), ..Default::default() };
+    assert_eq!(e.run(&mut sub.inner, &flags, t + 1).unwrap().outcome, RunOutcome::Ran);
+    let sweep = RunOptions { full_sweep: true, ..Default::default() };
+    assert_eq!(e.run(&mut sub.inner, &sweep, t + 2).unwrap().outcome, RunOutcome::Ran);
+    // And an unset cadence changes nothing: always due.
+    let e = Engine::with_builtins();
+    let mut sub = TestSubstrate::new();
+    assert_eq!(e.run(&mut sub.inner, &RunOptions::default(), t).unwrap().outcome, RunOutcome::Ran);
+}
+
+// ---- the evidence floor -------------------------------------------------------
+
+/// Under `min_evidence: 2` a lesson citing one grain is stored as a finding a
+/// reviewer can read, but carries nothing they could apply; the funnel says
+/// why. Under the default it is applicable, as before.
+#[test]
+fn a_thin_draft_stays_advisory_under_the_evidence_floor() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let mk = |min: u32| {
+        let mut sub = TestSubstrate::new();
+        let h1 = sub.add_fact("capture", "correction", "vendor missing");
+        let llm = MockLlm {
+            discover: format!(
+                r#"{{"recommendations":[{{"summary":"a pattern","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Record the vendor on every invoice."}}}}]}}"#
+            ),
+            ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+            verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+            enrich: r#"{"notes":[]}"#.into(),
+        };
+        let policy = Policy::from_json(&format!(r#"{{"min_evidence": {min}}}"#)).unwrap();
+        (sub, Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy))
+    };
+    let (mut sub, e) = mk(2);
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.advisory_thin_evidence), Some(1));
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("stored — a person may still want to see it");
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Flag, "but nothing to apply");
+    let (mut sub, e) = mk(1);
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.advisory_thin_evidence), Some(0));
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    assert_eq!(rec.action_kind, crate::model::ActionKind::ClusterFailure, "the default: one instance may become a rule");
+}
+
+
+// ---- skill authoring ------------------------------------------------------------
+
+/// The proposer sees a successful trajectory — tool calls with their inputs —
+/// and authors a Skill: name from the target, ordered steps as instructions,
+/// `when_to_use` as the routing cue. Applied, it is a live Skill grain in the
+/// evidence's namespace; proposed again under the same name, it supersedes
+/// rather than duplicating.
+#[test]
+fn the_proposer_authors_a_skill_from_a_successful_trajectory_and_patches_it_by_name() {
+    use crate::model::Origin;
+    use crate::substrate::{ReadOpts, SubstrateRead};
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_tool_call("helpdesk_list_tickets", false, "TK-1 open, TK-2 open");
+    let h2 = sub.add_tool_call("helpdesk_update_ticket", false, "TK-2 updated: priority=high tags=[deploy-child]");
+    let draft_citing = |cites: &str, steps: &str| {
+        format!(
+            r#"{{"recommendations":[{{"summary":"a repeatable triage","target":"entity:test/group-deploy-children","evidence":[{cites}],"confidence":0.9,"proposal":{{"kind":"skill","description":"Group child failures under their deploy event","when_to_use":"open tickets share a release_hash with a deploy-event ticket","steps":{steps}}}}}]}}"#
+        )
+    };
+    let draft = |steps: &str| draft_citing(&format!(r#""{h1}","{h2}""#), steps);
+    let mk = |discover: String| MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let e = Engine::with_builtins().with_llm(Box::new(mk(draft(
+        r#"["List open tickets with helpdesk_list_tickets","For each child-failure sharing the deploy event's release_hash, set priority=high and tags=[deploy-child, <release_hash>]","Do not update the root deploy-event ticket"]"#,
+    ))));
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.stored), Some(1), "the skill reached the queue");
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    let text = rec.summary.render();
+    assert!(text.contains("record skill: \"group-deploy-children\" (3 steps)"), "{text}");
+    assert!(rec.rollbackable);
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reusable", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    let skills = sub
+        .inner
+        .grains_of_type(crate::model::grain_type::SKILL, None, ReadOpts { live_only: true, since_ms: None })
+        .unwrap();
+    assert_eq!(skills.len(), 1);
+    let sk = &skills[0];
+    assert_eq!(sk.skill_name(), Some("group-deploy-children"));
+    assert_eq!(sk.namespace, "test", "the evidence's namespace, never the model's");
+    let instr = sk.str_field("instructions").unwrap();
+    assert!(instr.starts_with("1. List open tickets"), "{instr}");
+    assert!(instr.contains("\n3. Do not update"), "ordered, numbered: {instr}");
+    assert!(sk.str_field("when_to_use").unwrap().contains("release_hash"));
+    let first_hash = sk.hash.clone();
+
+    // The same name again, with a changed procedure: a SUPERSEDE of the live
+    // skill, so the memory holds one skill of that name, not two.
+    let e2 = Engine::with_builtins().with_llm(Box::new(mk(draft(
+        r#"["List open tickets with helpdesk_list_tickets","Set priority=critical on a 503 child failure, else high"]"#,
+    ))));
+    e2.run(&mut sub.inner, &RunOptions { full_sweep: true, ..Default::default() }, t + DAY).unwrap();
+    let rec2 = e2
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.hash != rec.hash)
+        .expect("a second, different skill proposal");
+    match &rec2.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.starts_with(&format!("SUPERSEDE {first_hash} WITH skill ")), "patched by name: {cal}")
+        }
+        other => panic!("{other:?}"),
+    }
+    e2.review(&mut sub.inner, &rec2.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "changed", t + DAY + 1).unwrap();
+    e2.apply(&mut sub.inner, &rec2.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + DAY + 2).unwrap();
+    let live = sub
+        .inner
+        .grains_of_type(crate::model::grain_type::SKILL, None, ReadOpts { live_only: true, since_ms: None })
+        .unwrap();
+    assert_eq!(live.len(), 1, "one live skill of that name");
+    assert!(live[0].str_field("instructions").unwrap().contains("critical"));
+
+    // Too thin to be a procedure, or disabled by policy: advisory, not a change.
+    let mut sub3 = TestSubstrate::new();
+    let a = sub3.add_tool_call("x", false, "ok");
+    let thin = Engine::with_builtins().with_llm(Box::new(mk(draft_citing(&format!(r#""{a}""#), r#"["Just one step"]"#))));
+    let r = thin.run(&mut sub3.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.evidence), Some(1), "a lone successful call is evidence under skill authoring: {:?}", r.llm_funnel);
+    let only = thin.recommendations(&sub3.inner, Some(RecStatus::Pending)).unwrap().into_iter().find(|r| matches!(r.origin, Origin::Llm { .. })).unwrap();
+    assert_eq!(only.action_kind, crate::model::ActionKind::Flag, "one step is not a procedure: stored as a finding, applies as nothing");
+    // Skills off: a lone success is not evidence (the pre-skill bundle), and
+    // even a skill the model returns anyway, over a cited failure, applies
+    // as nothing.
+    let mut sub4 = TestSubstrate::new();
+    let b = sub4.add_tool_call("x", true, "boom");
+    let off = Engine::with_builtins()
+        .with_llm(Box::new(mk(draft_citing(&format!(r#""{b}""#), r#"["a","b","c"]"#))))
+        .with_policy(Policy::from_json(r#"{"skills": {"enabled": false}}"#).unwrap());
+    off.run(&mut sub4.inner, &RunOptions::default(), t).unwrap();
+    let only = off.recommendations(&sub4.inner, Some(RecStatus::Pending)).unwrap().into_iter().find(|r| matches!(r.origin, Origin::Llm { .. })).unwrap();
+    assert_eq!(only.action_kind, crate::model::ActionKind::Flag, "not offered by policy: even a returned skill applies as nothing");
+}
+
+/// The skill paragraph is in the instructions only when the host allows it,
+/// so the vocabulary the model sees is the vocabulary that can apply.
+#[test]
+fn the_skill_kind_is_offered_only_under_policy() {
+    use std::sync::{Arc, Mutex};
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    impl crate::llm::LlmBackend for Capture {
+        fn model(&self) -> &str {
+            "capture"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.0.lock().unwrap().push(request.to_string());
+            Ok(r#"{"recommendations":[]}"#.into())
+        }
+    }
+    let run = |policy: &str| -> bool {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut sub = TestSubstrate::new();
+        // A FAILURE, so the model is reached under either policy — with
+        // skills off a lone success is not evidence at all, which the
+        // tool-failure evidence test pins separately.
+        sub.add_tool_call("x", true, "boom");
+        let e = Engine::with_builtins()
+            .with_llm(Box::new(Capture(seen.clone())))
+            .with_policy(Policy::from_json(policy).unwrap());
+        let r = e.run(&mut sub.inner, &RunOptions::default(), 5_000_000).unwrap();
+        let reqs = seen.lock().unwrap();
+        let discover = reqs
+            .iter()
+            .find(|r| r.contains("\"op\":\"discover\""))
+            .unwrap_or_else(|| panic!("discover was called; outcome {:?} funnel {:?}", r.outcome, r.llm_funnel));
+        // `<skill-name>` occurs in the skill paragraph and nowhere else.
+        discover.contains("<skill-name>")
+    };
+    assert!(run("{}"), "default: offered");
+    assert!(!run(r#"{"skills": {"enabled": false}}"#), "disabled: not offered");
+}
+
+
+// ---- plan authoring -----------------------------------------------------------
+
+/// A procedure with a branch is authored as a PLAN: a Workflow the runtime
+/// validated (steps bound to tools the evidence shows were called, an edge
+/// with a condition in the frozen grammar) and a Skill of the same name that
+/// carries the prose. One batch, one review. The same name again supersedes
+/// both — the patch `PC02_sop_patch` is about.
+#[test]
+fn the_proposer_authors_a_plan_as_a_validated_workflow_beside_its_skill() {
+    use crate::model::Origin;
+    use crate::substrate::{ReadOpts, SubstrateRead};
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_tool_call("helpdesk_list_tickets", false, "TK-1 open, TK-2 open, TK-3 open");
+    let h2 = sub.add_tool_call("helpdesk_update_ticket", false, "TK-2 tagged shared-incident");
+    let draft = |nodes: &str, edges: &str| {
+        format!(
+            r#"{{"recommendations":[{{"summary":"a repeatable triage with a branch","target":"entity:test/shared-incident-triage","evidence":["{h1}","{h2}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"Triage a batch for a shared incident","when_to_use":"several open tickets mention one component","nodes":{nodes},"edges":{edges}}}}}]}}"#
+        )
+    };
+    let mk = |discover: String| MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let nodes = r#"[{"id":"list_open","tool":"helpdesk_list_tickets","step":"List every open ticket"},{"id":"tag_shared","tool":"helpdesk_update_ticket","step":"Tag each ticket sharing the component with shared-incident, priority high"},{"id":"leave","tool":"helpdesk_update_ticket","step":"Leave resolution to on-call: do not close"}]"#;
+    let edges = r#"[{"src":"list_open","dst":"tag_shared","cond":"shared_component == true"},{"src":"tag_shared","dst":"leave"}]"#;
+    let e = Engine::with_builtins().with_llm(Box::new(mk(draft(nodes, edges))));
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.stored), Some(1));
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    let text = rec.summary.render();
+    assert!(text.contains("record plan: \"shared-incident-triage\" (3 steps, 2 edges)"), "{text}");
+    match &rec.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.starts_with("ADD skill "), "{cal}");
+            assert!(cal.contains("\nADD workflow "), "one batch, two grains: {cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reusable", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    let live = |s: &TestSubstrate, gt: &str| s.inner.grains_of_type(gt, None, ReadOpts { live_only: true, since_ms: None }).unwrap();
+    let skills = live(&sub, crate::model::grain_type::SKILL);
+    let plans = live(&sub, crate::model::grain_type::WORKFLOW);
+    assert_eq!((skills.len(), plans.len()), (1, 1));
+    let sk = &skills[0];
+    assert_eq!(sk.skill_name(), Some("shared-incident-triage"));
+    let instr = sk.str_field("instructions").unwrap();
+    assert!(instr.starts_with("1. list_open [helpdesk_list_tickets]: List every open ticket"), "{instr}");
+    assert!(instr.contains("Flow:\n- list_open → tag_shared if shared_component == true\n- tag_shared → leave"), "{instr}");
+    let wf = &plans[0];
+    assert_eq!(wf.str_field("name"), Some("shared-incident-triage"));
+    assert_eq!(wf.namespace, "test");
+    assert_eq!(wf.fields["nodes"], serde_json::json!(["list_open", "tag_shared", "leave"]));
+    assert_eq!(wf.fields["edges"][0]["cond"], serde_json::json!("shared_component == true"));
+    let (skill_hash, plan_hash) = (sk.hash.clone(), wf.hash.clone());
+
+    // Patched by name: a second plan of the same name supersedes both grains.
+    let e2 = Engine::with_builtins().with_llm(Box::new(mk(draft(
+        r#"[{"id":"list_open","tool":"helpdesk_list_tickets","step":"List open tickets"},{"id":"tag_shared","tool":"helpdesk_update_ticket","step":"Tag with shared-incident AND zone-correlated"}]"#,
+        r#"[{"src":"list_open","dst":"tag_shared"}]"#,
+    ))));
+    e2.run(&mut sub.inner, &RunOptions { full_sweep: true, ..Default::default() }, t + DAY).unwrap();
+    let rec2 = e2
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.hash != rec.hash)
+        .unwrap();
+    assert_eq!(rec2.action_kind, crate::model::ActionKind::Revise);
+    match &rec2.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.contains(&format!("SUPERSEDE {skill_hash} WITH skill ")), "{cal}");
+            assert!(cal.contains(&format!("SUPERSEDE {plan_hash} WITH workflow ")), "{cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    e2.review(&mut sub.inner, &rec2.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "v2", t + DAY + 1).unwrap();
+    e2.apply(&mut sub.inner, &rec2.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + DAY + 2).unwrap();
+    assert_eq!((live(&sub, crate::model::grain_type::SKILL).len(), live(&sub, crate::model::grain_type::WORKFLOW).len()), (1, 1), "one live pair");
+    assert!(live(&sub, crate::model::grain_type::SKILL)[0].str_field("instructions").unwrap().contains("zone-correlated"));
+
+    // Not grounded, not runnable, or not allowed: advisory, never a change.
+    let advisory = |sub: &mut TestSubstrate, e: &Engine| {
+        e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .into_iter()
+            .find(|r| matches!(r.origin, Origin::Llm { .. }))
+            .map(|r| r.action_kind)
+    };
+    // a tool the evidence never shows
+    let mut s3 = TestSubstrate::new();
+    let a = s3.add_tool_call("helpdesk_list_tickets", false, "ok");
+    let bad_tool = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"delete_everything","step":"s"}}],"edges":[]}}}}]}}"#
+    );
+    assert_eq!(advisory(&mut s3, &Engine::with_builtins().with_llm(Box::new(mk(bad_tool)))), Some(crate::model::ActionKind::Flag));
+    // an edge to a step that does not exist
+    let mut s4 = TestSubstrate::new();
+    let a = s4.add_tool_call("helpdesk_list_tickets", false, "ok");
+    let bad_edge = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"helpdesk_list_tickets","step":"s"}}],"edges":[{{"src":"x","dst":"nowhere"}}]}}}}]}}"#
+    );
+    assert_eq!(advisory(&mut s4, &Engine::with_builtins().with_llm(Box::new(mk(bad_edge)))), Some(crate::model::ActionKind::Flag));
+    // plans off by policy
+    let mut s5 = TestSubstrate::new();
+    let a = s5.add_tool_call("helpdesk_list_tickets", true, "boom");
+    let fine = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"helpdesk_list_tickets","step":"s"}}],"edges":[{{"src":"x","dst":"y"}}]}}}}]}}"#
+    );
+    let off = Engine::with_builtins()
+        .with_llm(Box::new(mk(fine)))
+        .with_policy(Policy::from_json(r#"{"plans": {"enabled": false}}"#).unwrap());
+    assert_eq!(advisory(&mut s5, &off), Some(crate::model::ActionKind::Flag));
+}
+
+// ---- the Verify gate's second question: premise drift ---------------------------
+
+fn applied_lesson_over(sub: &mut TestSubstrate, e: &Engine, t: i64) -> Recommendation {
+    use crate::model::Origin;
+    let scopes = ScopeSet::all();
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    rec
+}
+
+fn lesson_llm(h1: &str) -> MockLlm {
+    MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"the readiness rule is flagged stale","target":"entity:test/release","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Skip the Release readiness review when it is flagged as a stale target."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }
+}
+
+/// A lesson learned from a rule that is later REPLACED has lost its premise:
+/// the gate records `drifted` and proposes the revert; applying it rolls the
+/// lesson back. A value-identical supersession (consolidation) is not drift,
+/// and the check is a policy switch.
+#[test]
+fn a_lesson_whose_cited_evidence_was_superseded_by_a_different_value_is_reverted() {
+    use crate::substrate::OmsSubstrate;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    let rec = applied_lesson_over(&mut sub, &e, t);
+    // Nothing moved yet: no drift, no revert.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 10).unwrap();
+    assert!(e.outcomes(&sub.inner).unwrap().is_empty());
+
+    // The rule the lesson was learned from is replaced by a DIFFERENT one.
+    sub.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h1} WITH fact {{"subject":"release","relation":"readiness_rule","object":"REL-GAMMA: review before every deploy","namespace":"test"}}"#
+        ))
+        .unwrap();
+    e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    let v: Vec<_> = e.outcomes(&sub.inner).unwrap().into_iter().filter(|o| o.rec_hash == rec.hash).collect();
+    assert_eq!(v.len(), 1);
+    assert_eq!((v[0].metric.as_str(), v[0].verdict.as_str(), v[0].current), ("premise_drift", "drifted", 1.0));
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("a revert is proposed");
+    assert!(revert.summary.render().contains("premise moved"), "{}", revert.summary.render());
+    // A further pass does not re-record the same drift.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 30).unwrap();
+    assert_eq!(e.outcomes(&sub.inner).unwrap().iter().filter(|o| o.rec_hash == rec.hash).count(), 1);
+    // Applying the revert rolls the lesson back.
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "its premise changed", t + 31).unwrap();
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert", false, t + 32).unwrap();
+    let statuses: std::collections::BTreeMap<_, _> = e
+        .recommendations(&sub.inner, None)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.hash, r.status))
+        .collect();
+    assert_eq!(statuses[&rec.hash], RecStatus::RolledBack);
+
+    // Value-identical supersession is not drift.
+    let mut sub2 = TestSubstrate::new();
+    let h = sub2.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e2 = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h)));
+    let rec2 = applied_lesson_over(&mut sub2, &e2, t);
+    sub2.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h} WITH fact {{"subject":"release","relation":"readiness_rule","object":"Flagged: stale target for migration ","namespace":"test","confidence":0.99}}"#
+        ))
+        .unwrap();
+    e2.run(&mut sub2.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e2.outcomes(&sub2.inner).unwrap().iter().all(|o| o.rec_hash != rec2.hash), "same value, different confidence: the premise stands");
+
+    // A retracted premise IS drift.
+    let mut sub3 = TestSubstrate::new();
+    let h = sub3.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e3 = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h)));
+    let rec3 = applied_lesson_over(&mut sub3, &e3, t);
+    sub3.inner.execute_cal(&format!("FORGET {h}")).unwrap();
+    e3.run(&mut sub3.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e3.outcomes(&sub3.inner).unwrap().iter().any(|o| o.rec_hash == rec3.hash && o.verdict == "drifted"));
+
+    // Switched off by policy: nothing.
+    let mut sub4 = TestSubstrate::new();
+    let h = sub4.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e4 = Engine::with_builtins()
+        .with_llm(Box::new(lesson_llm(&h)))
+        .with_policy(Policy::from_json(r#"{"premise_drift": false}"#).unwrap());
+    let rec4 = applied_lesson_over(&mut sub4, &e4, t);
+    sub4.inner
+        .execute_cal(&format!(r#"SUPERSEDE {h} WITH fact {{"subject":"release","relation":"readiness_rule","object":"something else","namespace":"test"}}"#))
+        .unwrap();
+    e4.run(&mut sub4.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e4.outcomes(&sub4.inner).unwrap().iter().all(|o| o.rec_hash != rec4.hash));
 }

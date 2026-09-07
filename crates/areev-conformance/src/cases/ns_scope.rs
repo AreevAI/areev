@@ -165,6 +165,39 @@ pub fn ns_scope_guards_hold(b: &dyn Backend) {
     assert_eq!(m.recall("org.*", "john", None, 16).unwrap().len(), 4, "[{}]", b.name());
 }
 
+/// The other write-side rule: a namespace that cannot be spelled back is
+/// refused when it is MINTED, on every backend. A local write is the only
+/// operation that brings a namespace into existence, so it is the only one
+/// that can catch a typo in one — everything downstream would accept the name
+/// and simply find nothing under it.
+pub fn ns_unspellable_names_refuse_on_write(b: &dyn Backend) {
+    let mut m = b.open();
+
+    for bad in [
+        "age, build_messagesnt:harness", // the splice that shipped
+        "agent harness",
+        " caller",
+        "caller ",
+        "agent\u{200b}harness", // zero width space: identical on screen
+        "agent\u{feff}harness", // BOM
+    ] {
+        let err = m.add(&fact(bad, "s", "r", "o")).unwrap_err().to_string();
+        assert!(err.starts_with("VAL-E001"), "[{}] {bad:?}: {err}", b.name());
+        assert!(err.contains("spellable"), "[{}] {bad:?}: {err}", b.name());
+    }
+
+    // Every shape a host actually uses stays writable — the rule refuses what
+    // is unspellable, not what is unfamiliar.
+    for ok in ["caller", "agent:harness", "org.sales.emea", "claude-code", "部門:営業"] {
+        m.add(&fact(ok, "s", "r", "o"))
+            .unwrap_or_else(|e| panic!("[{}] {ok:?} must be writable: {e}", b.name()));
+    }
+
+    // A refused write leaves nothing behind: the registry names the five that
+    // landed and none of the six that did not.
+    assert_eq!(m.namespaces().unwrap().len(), 5, "[{}]", b.name());
+}
+
 /// Heads-only vs `include_superseded` across a scoped set: the default keeps
 /// stale values out of context; the widened scan returns the chain — with
 /// each namespace's own chain intact.
