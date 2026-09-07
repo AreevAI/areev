@@ -965,8 +965,22 @@ def govern(db_path, family_id, seed):
     llm_cmd = os.environ.get("AREEV_LOOP_LLM_CMD") or None
     ground_cmd = os.environ.get("AREEV_LOOP_GROUND_CMD") or None
     review_cmd = os.environ.get("AREEV_REVIEW_CMD") or None
+    # The Verify gate's schedule in THIS deployment's unit. A family finishes
+    # in minutes and journals one graded run per episode, so a lesson is
+    # measured at the next episode after its apply -- not at the loop's
+    # day-long default, which across runs 1-3 came due exactly never
+    # (PERSIST.md: 81 applied, 0 verdicts, 0 reverts).
     policy = {"discover_objective": "learner",
-              "outcome_evalset": {"hash": family_id or "family", "field": "task_score", "higher_is_better": True}}
+              "outcome_evalset": {"hash": family_id or "family", "field": "task_score",
+                                  "higher_is_better": True,
+                                  "checkpoints": [{"after_runs": 1}]}}
+    # Experiments flip the rest without editing code: AREEV_LOOP_POLICY_EXTRA
+    # is a JSON object merged over the policy above (e.g. {"min_evidence": 2}
+    # or {"skills": {"enabled": false}}). The value used is written beside the
+    # ledger as loop-policy.json, so a run's configuration is on its record.
+    extra = os.environ.get("AREEV_LOOP_POLICY_EXTRA")
+    if extra:
+        policy.update(json.loads(extra))
     policy_path = Path(db_path).parent / "loop-policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
 
