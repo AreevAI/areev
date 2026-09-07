@@ -221,6 +221,124 @@ pub(crate) const PG_SEED: &[&str] = &[
      END $$",
 ];
 
+/// The version of [`PG_SCHEMA`] + [`PG_SEED`] that a schema was bootstrapped
+/// with, stamped into the memory's own `meta` table as `pg_schema` at the end
+/// of a successful bootstrap and read back — before any lock and any DDL — on
+/// the next open. A match means "this schema is already at this build's
+/// shape", which is what lets a steady-state open issue no DDL at all.
+///
+/// ⚠️ **BUMP THIS WHENEVER `PG_SCHEMA` OR `PG_SEED` CHANGES — IN THE SAME
+/// COMMIT.** ⚠️ The stamp is the *only* thing standing between a schema and a
+/// migration it needs: a version left behind after a statement was added makes
+/// every already-stamped schema skip that statement forever, and the #160
+/// failure mode is what that looks like from outside — the dictionary column a
+/// read keys on is simply absent, so every recall answers empty, with no error
+/// anywhere. `pg_schema_version_tracks_the_schema` (below) hashes both arrays
+/// and fails the build if the digest moves without this constant moving, so
+/// forgetting is a red test rather than a silent data bug.
+pub(crate) const PG_SCHEMA_VERSION: &str = "1";
+
+/// Where a bootstrap records that it ran, so the next open can skip it.
+///
+/// Generic over the table/key because two independent bootstraps share one
+/// memory schema: the store's own (`meta.pg_schema`) and the telemetry
+/// sidecar's (`telem_meta.schema_version`). They must not read each other's
+/// stamp — a store stamp is no evidence that `telem_*` exists.
+#[derive(Clone, Copy)]
+pub(crate) struct PgStamp {
+    /// Unqualified table name inside the memory's schema.
+    pub(crate) table: &'static str,
+    pub(crate) key: &'static str,
+    pub(crate) version: &'static str,
+}
+
+/// The store's own bootstrap marker.
+pub(crate) const STORE_STAMP: PgStamp = PgStamp {
+    table: "meta",
+    key: "pg_schema",
+    version: PG_SCHEMA_VERSION,
+};
+
+/// May an open bootstrap the schema it was pointed at?
+///
+/// Carried on the DSN (`?provision=auto|never`) rather than in
+/// `AreevOptions`, so every host that already passes a DSN string — the CLI,
+/// the console, both bindings — reaches it without a new parameter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ProvisionMode {
+    /// Bootstrap when the schema is absent or its stamp is stale (the
+    /// historical behaviour, and the default).
+    #[default]
+    Auto,
+    /// Never issue DDL on the request path: an absent or stale schema is a
+    /// hard refusal (`STO-E008`) with no advisory lock and no DDL attempted.
+    /// For deployments whose runtime role holds no `CREATE` — provision with
+    /// `areev provision` (or a migration job) instead.
+    Never,
+}
+
+impl ProvisionMode {
+    fn parse(v: &str) -> Result<Self> {
+        match v {
+            "auto" => Ok(Self::Auto),
+            "never" => Ok(Self::Never),
+            other => Err(AreevError::Validation(format!(
+                "postgres URL: provision={other:?} is not a mode (auto|never)"
+            ))),
+        }
+    }
+}
+
+/// Read `?provision=` off a DSN. The parameter is ours, not the driver's;
+/// [`crate::pgtls::SslRequest::split`] is what removes it before the DSN
+/// reaches `tokio_postgres`, exactly as it does for `sslmode`/`sslrootcert`,
+/// so every connect path (open, reconnect, `drop_postgres_schema`, the
+/// conformance escape hatches) tolerates it without knowing about it.
+pub fn provision_mode(url: &str) -> Result<ProvisionMode> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(ProvisionMode::Auto);
+    };
+    let mut mode = ProvisionMode::Auto;
+    for pair in query.split('&') {
+        if let Some(("provision", v)) = pair.split_once('=') {
+            mode = ProvisionMode::parse(v)?;
+        }
+    }
+    Ok(mode)
+}
+
+/// Drop one of OUR query parameters from a DSN, leaving every other pair
+/// (and the driver's own) untouched.
+fn strip_param(url: &str, name: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let rest: Vec<&str> = query
+        .split('&')
+        .filter(|p| !matches!(p.split_once('='), Some((k, _)) if k == name))
+        .collect();
+    if rest.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", rest.join("&"))
+    }
+}
+
+/// Strip `?provision=` from a DSN, for the one caller that must ignore it:
+/// `areev provision` itself, whose whole job is to bootstrap. Everything else
+/// leaves it in place so it rides through to [`provision_mode`].
+pub fn strip_provision(url: &str) -> String {
+    strip_param(url, "provision")
+}
+
+/// Strip `?schema=` from a DSN, for a caller that names the schema another
+/// way (`areev provision --schema`). Unlike [`split_schema_url`] it does not
+/// require the parameter to be there — the point is to accept a DSN with or
+/// without it and let the explicit name win.
+pub fn strip_schema(url: &str) -> String {
+    strip_param(url, "schema")
+}
+
 pub(crate) struct PgDb {
     rt: tokio::runtime::Runtime,
     /// Kept so a dead session can be replaced in place. A managed Postgres
@@ -257,16 +375,39 @@ pub(crate) struct PgDb {
     /// invisible until then, which BM25 tolerates (N/avgdl drift is
     /// explicitly immaterial to ranking — see search_text_inner).
     stats: RefCell<Option<(i64, i64)>>,
+    /// True when this open found the schema already stamped current and ran
+    /// NO bootstrap — no advisory lock, no DDL, no seeding. Read by callers
+    /// that would otherwise re-do post-bootstrap work of their own (the
+    /// telemetry sidecar's v2 migration), so "the schema is current" is
+    /// decided once, here, rather than re-derived by each of them.
+    bootstrap_skipped: bool,
 }
 
 impl PgDb {
     /// Connect, create-or-attach the schema, pin `search_path`, and run the
-    /// caller's `bootstrap` statements (DDL + seeding). The whole bootstrap
-    /// runs under a database-wide advisory lock keyed on the schema name:
-    /// this backend admits concurrent openers, and Postgres's
-    /// `IF NOT EXISTS` DDL is racy without one (the loser gets a spurious
-    /// 23505 on pg_namespace/pg_type). The lock is transaction-free and
-    /// explicitly released, so it never outlives the bootstrap.
+    /// caller's `bootstrap` statements (DDL + seeding).
+    ///
+    /// **The bootstrap is the exception, not the rule.** When `stamp` names a
+    /// marker row and that row already holds the caller's version, this open
+    /// takes the fast path: `SET search_path` and nothing else — no advisory
+    /// lock, no `CREATE SCHEMA`, no DDL, no seeding. The probe itself is two
+    /// SELECTs needing nothing beyond `USAGE` on the schema and `SELECT` on
+    /// the stamp table, and it uses `to_regclass` rather than naming the table
+    /// in a `FROM` clause, so an absent schema (or absent table) answers NULL
+    /// instead of raising `42P01` — a first open costs one query, not one
+    /// error. (Sibling probe: [`Self::verify_read_only`] asks the same
+    /// question — "is this schema usable?" — for a read-only open, and the two
+    /// must stay in step; see the note on each.)
+    ///
+    /// Only a missing or stale stamp reaches the bootstrap, which then runs
+    /// inside ONE explicit transaction holding `pg_advisory_xact_lock`: this
+    /// backend admits concurrent openers, and Postgres's `IF NOT EXISTS` DDL
+    /// is racy without a lock (the loser gets a spurious 23505 on
+    /// pg_namespace/pg_type). Transaction-scoped rather than session-scoped
+    /// because Postgres DDL is transactional: the statements become atomic
+    /// (a half-applied schema is no longer reachable) and the lock is released
+    /// by COMMIT/ROLLBACK, which deletes the "must release even on failure"
+    /// hazard the explicit `pg_advisory_unlock` existed to cover.
     ///
     /// `read_only` skips ALL of that — no advisory lock, no `CREATE SCHEMA`,
     /// no `bootstrap` statements (`PG_SCHEMA`'s DDL + `PG_SEED`'s upserts) —
@@ -278,7 +419,13 @@ impl PgDb {
     /// schema that is already there (issue #127). Instead it pins
     /// `search_path` (a session command any role may issue) and VERIFIES
     /// with SELECT-only probes — see [`Self::verify_read_only`].
-    pub(crate) fn open(url: &str, schema: &str, bootstrap: &[&str], read_only: bool) -> Result<Self> {
+    pub(crate) fn open(
+        url: &str,
+        schema: &str,
+        bootstrap: &[&str],
+        read_only: bool,
+        stamp: Option<PgStamp>,
+    ) -> Result<Self> {
         if schema.is_empty()
             || schema.len() > 63
             || !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -298,47 +445,87 @@ impl PgDb {
         // every block_on below), and REFUSES a DSN that asks for encryption a
         // build without `postgres-tls` cannot give it.
         let client = crate::pgtls::connect(&rt, url)?;
+        let mut bootstrap_skipped = false;
         if read_only {
             rt.block_on(Self::verify_read_only(&client, schema))?;
         } else {
-            rt.block_on(async {
-                client
-                    .query_one(
-                        "SELECT pg_advisory_lock(hashtext('areev_bootstrap'), hashtext($1))",
-                        &[&schema],
-                    )
-                    .await
-                    .map_err(pg_err)?;
-                let boot = async {
-                    client
-                        .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
-                        .await
-                        .map_err(pg_err)?;
-                    client
-                        .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
-                        .await
-                        .map_err(pg_err)?;
-                    for sql in bootstrap {
-                        client.batch_execute(sql).await.map_err(|e| {
-                            AreevError::Storage(format!(
-                                "bootstrap failed: {} — in: {sql}",
-                                pg_err(e)
-                            ))
-                        })?;
+            // The fast path (issue #180). Ask the schema what shape it is in
+            // BEFORE anything that needs a lock or an ownership grant; a
+            // steady-state open ends here, having issued `SET search_path` and
+            // two SELECTs.
+            if let Some(st) = stamp {
+                bootstrap_skipped = rt
+                    .block_on(Self::schema_stamp(&client, schema, st))?
+                    .as_deref()
+                    == Some(st.version);
+            }
+            if !bootstrap_skipped && provision_mode(url)? == ProvisionMode::Never {
+                // `?provision=never`: refuse without touching anything. No
+                // advisory lock, no DDL, not even the CREATE SCHEMA — the
+                // whole point is a runtime role that holds no CREATE.
+                return Err(Self::not_provisioned(&client, &rt, schema, stamp));
+            }
+            if !bootstrap_skipped {
+                rt.block_on(async {
+                    // ONE transaction around the whole bootstrap. Postgres DDL
+                    // is transactional, so the statements are atomic, and
+                    // `pg_advisory_xact_lock` is released by COMMIT/ROLLBACK —
+                    // there is no unlock to forget on a failure path.
+                    client.batch_execute("BEGIN").await.map_err(pg_err)?;
+                    let boot = async {
+                        client
+                            .query_one(
+                                "SELECT pg_advisory_xact_lock(hashtext('areev_bootstrap'), hashtext($1))",
+                                &[&schema],
+                            )
+                            .await
+                            .map_err(pg_err)?;
+                        client
+                            .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                            .await
+                            .map_err(pg_err)?;
+                        // A plain SET inside a transaction is transactional: it
+                        // survives the COMMIT below and is undone by a ROLLBACK,
+                        // which is exactly what a failed bootstrap wants.
+                        client
+                            .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
+                            .await
+                            .map_err(pg_err)?;
+                        for sql in bootstrap {
+                            client.batch_execute(sql).await.map_err(|e| {
+                                AreevError::Storage(format!(
+                                    "bootstrap failed: {} — in: {sql}",
+                                    pg_err(e)
+                                ))
+                            })?;
+                        }
+                        // LAST, inside the same transaction: the stamp is only
+                        // true if every statement above committed with it.
+                        if let Some(st) = stamp {
+                            client
+                                .execute(
+                                    &format!(
+                                        "INSERT INTO \"{schema}\".{}(k, v) VALUES ($1, $2) \
+                                         ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
+                                        st.table
+                                    ),
+                                    &[&st.key, &st.version],
+                                )
+                                .await
+                                .map_err(pg_err)?;
+                        }
+                        Ok::<_, AreevError>(())
                     }
-                    Ok::<_, AreevError>(())
-                }
-                .await;
-                // Release even on failure — the session (and any pooler behind
-                // it) may outlive this open attempt.
-                let _ = client
-                    .query_one(
-                        "SELECT pg_advisory_unlock(hashtext('areev_bootstrap'), hashtext($1))",
-                        &[&schema],
-                    )
                     .await;
-                boot
-            })?;
+                    match boot {
+                        Ok(()) => client.batch_execute("COMMIT").await.map_err(pg_err),
+                        Err(e) => {
+                            let _ = client.batch_execute("ROLLBACK").await;
+                            Err(e)
+                        }
+                    }
+                })?;
+            }
         }
         Ok(Self {
             rt,
@@ -348,6 +535,98 @@ impl PgDb {
             cache: RefCell::new(HashMap::new()),
             in_txn: std::cell::Cell::new(false),
             stats: RefCell::new(None),
+            bootstrap_skipped,
+        })
+    }
+
+    /// True when this open found the schema already at the caller's stamped
+    /// version and therefore ran no bootstrap at all.
+    pub(crate) fn bootstrap_skipped(&self) -> bool {
+        self.bootstrap_skipped
+    }
+
+    /// Read the bootstrap marker without naming the stamp table in a `FROM`
+    /// clause until it is known to exist.
+    ///
+    /// `to_regclass` takes the relation name as *text*, so a schema (or table)
+    /// that is not there answers NULL rather than aborting the statement with
+    /// `42P01`/`3F000` — which matters because the absent case is the FIRST
+    /// open of every new memory, and an error there would be a permanent line
+    /// of noise in the server log for a wholly expected condition. Needs no
+    /// privilege beyond `USAGE` on the schema and `SELECT` on the table.
+    ///
+    /// `SET search_path` rides along because the fast path owes it either way,
+    /// and the simple-query protocol sends both in one round trip.
+    ///
+    /// Kept deliberately adjacent to [`Self::verify_read_only`], which asks
+    /// the same question for a read-only open and by a different method (it
+    /// probes the five tables `finish_open` reads, because a read-only open
+    /// must also work against a schema stamped by an OLDER build, which has no
+    /// `pg_schema` row at all). Change one and re-read the other.
+    async fn schema_stamp(
+        client: &tokio_postgres::Client,
+        schema: &str,
+        stamp: PgStamp,
+    ) -> Result<Option<String>> {
+        let probe = client
+            .simple_query(&format!(
+                "SET search_path TO \"{schema}\", public, ext; \
+                 SELECT to_regclass('\"{schema}\".{}') IS NOT NULL AS present",
+                stamp.table
+            ))
+            .await
+            .map_err(pg_err)?;
+        let present = probe.iter().any(|m| match m {
+            tokio_postgres::SimpleQueryMessage::Row(r) => r.get("present") == Some("t"),
+            _ => false,
+        });
+        if !present {
+            return Ok(None);
+        }
+        let row = client
+            .query_opt(
+                &format!("SELECT v FROM \"{schema}\".{} WHERE k = $1", stamp.table),
+                &[&stamp.key],
+            )
+            .await
+            .map_err(pg_err)?;
+        Ok(row.and_then(|r| r.get::<_, Option<String>>(0)))
+    }
+
+    /// The `?provision=never` refusal. Names which of the two operator
+    /// actions is needed — create the memory, or migrate it — the same way
+    /// [`Self::verify_read_only`] does, because they are different jobs and a
+    /// single "not provisioned" would send an operator hunting for the wrong
+    /// one.
+    fn not_provisioned(
+        client: &tokio_postgres::Client,
+        rt: &tokio::runtime::Runtime,
+        schema: &str,
+        stamp: Option<PgStamp>,
+    ) -> AreevError {
+        let version = stamp.map(|s| s.version).unwrap_or(PG_SCHEMA_VERSION);
+        let exists = rt
+            .block_on(client.query_one(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+                &[&schema],
+            ))
+            .map(|r| r.get::<_, bool>(0))
+            .unwrap_or(false);
+        AreevError::SchemaNotProvisioned(if exists {
+            format!(
+                "postgres schema {schema:?} exists but is not stamped at schema version \
+                 {version}, and this DSN says provision=never — so no bootstrap DDL was \
+                 attempted. It was created by an older build, or a migration did not finish: \
+                 run `areev provision --db <dsn> --schema {schema}` (or your migration job) \
+                 with a role that owns the schema, then retry"
+            )
+        } else {
+            format!(
+                "postgres schema {schema:?} does not exist, and this DSN says provision=never \
+                 — so no CREATE SCHEMA was attempted. Either the schema name is wrong, or the \
+                 memory has never been created: run `areev provision --db <dsn> --schema \
+                 {schema}` with a role that may create it, then retry"
+            )
         })
     }
 
@@ -366,6 +645,17 @@ impl PgDb {
     /// `grains`, `oplog`, `fts_doc`) — not the full `PG_SCHEMA` list — so a
     /// pass here is precisely "the read path this crate always takes on
     /// open will not immediately fail with `undefined table`".
+    ///
+    /// **Sibling of [`Self::schema_stamp`]** — the two are the only places
+    /// that answer "is this schema usable?", and they answer it differently
+    /// ON PURPOSE. The stamp is an equality test against THIS build's
+    /// `PG_SCHEMA_VERSION` and gates whether to run the bootstrap; this one is
+    /// a capability test ("are the tables a read needs present?") and gates
+    /// whether to refuse the open. A read-only open must keep working against
+    /// a schema bootstrapped by an older build — which carries no `pg_schema`
+    /// row at all — so it deliberately does NOT consult the stamp. If you add
+    /// a table to `PG_SCHEMA` that `finish_open` reads unconditionally, both
+    /// need editing: the list below, and `PG_SCHEMA_VERSION`.
     async fn verify_read_only(
         client: &tokio_postgres::Client,
         schema: &str,
@@ -775,6 +1065,46 @@ impl Db for PgDb {
 
     fn for_update(&self) -> &'static str {
         " FOR UPDATE"
+    }
+
+    fn terms_with_prefix(&self, prefix: &str) -> Result<Option<Vec<(i64, String)>>> {
+        // `LIKE 'prefix%'`, with the pattern metacharacters in the caller's
+        // prefix escaped — the step-action relation prefix carries none today,
+        // but a dictionary prefix is caller data and a stray `_` would quietly
+        // widen the scan.
+        let mut pat = String::with_capacity(prefix.len() + 1);
+        for c in prefix.chars() {
+            if matches!(c, '%' | '_' | '\\') {
+                pat.push('\\');
+            }
+            pat.push(c);
+        }
+        pat.push('%');
+        let rows = self.run_query(
+            "SELECT id, term FROM terms WHERE term LIKE ?1 ESCAPE '\\'",
+            vec![pt(&pat)],
+            true,
+        )?;
+        Ok(Some(
+            rows.iter()
+                .filter_map(|r| Some((r.i64(0)?, r.text(1)?.to_string())))
+                .collect(),
+        ))
+    }
+
+    fn seeds_state_at_open(&self) -> bool {
+        // Everything `finish_open` would seed is already DB-authoritative
+        // here: `reserve_write` owns seq/op/HLC, `intern_term`/`lookup_term*`/
+        // `terms_with_prefix` own the dictionary, `collection_stats` owns the
+        // BM25 counters. Seeding them would be a full dictionary transfer plus
+        // four `COUNT(*)`/`MAX()` scans per open, over the network, for values
+        // this handle never reads.
+        false
+    }
+
+    fn may_have_legacy_fts_index(&self) -> bool {
+        // `idx_fts` is a Turso-era artifact. This backend never created it.
+        false
     }
 
     fn ensure_embeddings(&self, dim: usize) -> Result<()> {
@@ -1214,6 +1544,13 @@ fn split_two_args(s: &str) -> Option<(&str, &str, usize)> {
 /// The `schema` query parameter is ours, not the driver's, so it is removed
 /// from the URL handed to the connector. Hosts use this to accept one DSN
 /// string wherever a file path is accepted today.
+///
+/// Everything else rides through untouched — including `sslmode`/`sslrootcert`
+/// and `provision`, which are read further down the stack
+/// ([`crate::pgtls::SslRequest::split`], [`provision_mode`]) off the URL this
+/// returns. That is deliberate: every host that already calls this — the CLI,
+/// the console, both bindings — then gets those parameters for free, without
+/// this function's signature having to grow one member per option.
 pub fn split_schema_url(url: &str) -> Result<(String, String)> {
     let Some((base, query)) = url.split_once('?') else {
         return Err(AreevError::Validation(
@@ -1435,9 +1772,78 @@ mod tests {
     fn schema_name_validation() {
         for bad in ["", "has space", "semi;colon", "quote\"", "9leading", &"x".repeat(64)] {
             assert!(
-                PgDb::open("postgres://ignored", bad, &[], false).is_err(),
+                PgDb::open("postgres://ignored", bad, &[], false, None).is_err(),
                 "{bad:?} must be rejected"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod schema_version_tests {
+    use super::*;
+
+    /// The digest the current [`PG_SCHEMA`] + [`PG_SEED`] hash to.
+    ///
+    /// If this test fails you changed the schema. That is fine — but the
+    /// change is only half done: **bump [`PG_SCHEMA_VERSION`] and then paste
+    /// the new digest here, in the same commit.**
+    ///
+    /// Why a test and not a code review: the stamp is what tells the next open
+    /// "this schema is already the right shape, skip the bootstrap". Add a
+    /// statement without bumping the version and every schema already stamped
+    /// skips it *forever*, with no error at any layer — which is precisely the
+    /// #160 shape (a dictionary keyed on a column that was never added, so
+    /// every recall answers empty). A stale stamp is worse than a missing one.
+    const EXPECTED_DIGEST: &str =
+        "3c4625610533e1882f956dc6f40ae85bfc4515f3ead701687bf05173b5b36034";
+
+    fn digest() -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for sql in PG_SCHEMA.iter().chain(PG_SEED.iter()) {
+            h.update(sql.as_bytes());
+            // Length-delimited, so splitting one statement into two (or
+            // merging two into one) cannot hash to the same value.
+            h.update([0u8]);
+        }
+        hex::encode(h.finalize())
+    }
+
+    #[test]
+    fn pg_schema_version_tracks_the_schema() {
+        assert_eq!(
+            digest(),
+            EXPECTED_DIGEST,
+            "PG_SCHEMA/PG_SEED changed. Bump PG_SCHEMA_VERSION (currently {PG_SCHEMA_VERSION:?}) \
+             and update EXPECTED_DIGEST to the value above — a schema stamped with an unbumped \
+             version silently skips the migration it needs"
+        );
+    }
+
+    #[test]
+    fn provision_mode_reads_the_dsn() {
+        assert_eq!(provision_mode("postgres://h/db").unwrap(), ProvisionMode::Auto);
+        assert_eq!(
+            provision_mode("postgres://h/db?sslmode=require").unwrap(),
+            ProvisionMode::Auto
+        );
+        assert_eq!(provision_mode("postgres://h/db?provision=auto").unwrap(), ProvisionMode::Auto);
+        assert_eq!(
+            provision_mode("postgres://h/db?schema=s&provision=never").unwrap(),
+            ProvisionMode::Never
+        );
+        let e = provision_mode("postgres://h/db?provision=maybe").unwrap_err();
+        assert!(e.to_string().contains("auto|never"), "{e}");
+    }
+
+    #[test]
+    fn strip_provision_leaves_every_other_parameter() {
+        assert_eq!(
+            strip_provision("postgres://h/db?schema=s&provision=never&sslmode=require"),
+            "postgres://h/db?schema=s&sslmode=require"
+        );
+        assert_eq!(strip_provision("postgres://h/db?provision=never"), "postgres://h/db");
+        assert_eq!(strip_provision("postgres://h/db"), "postgres://h/db");
     }
 }

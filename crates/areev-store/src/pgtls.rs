@@ -102,11 +102,20 @@ pub(crate) struct SslRequest {
 }
 
 impl SslRequest {
-    /// Split `sslmode`/`sslrootcert` out of a `postgres://…` URL.
+    /// Split `sslmode`/`sslrootcert` (and `provision`) out of a
+    /// `postgres://…` URL.
     ///
     /// Mirrors [`crate::pg::split_schema_url`]'s treatment of `?schema=`:
     /// query form only (which is the only form that function admits anyway),
     /// unrecognized pairs passed through untouched.
+    ///
+    /// `provision` is dropped here rather than parsed: it is read by
+    /// [`crate::pg::provision_mode`] off the ORIGINAL DSN, and this is simply
+    /// the one place every connect path funnels through, so removing it here
+    /// is what keeps `tokio_postgres` — which rejects unknown options — from
+    /// seeing a parameter that is ours. `open`, `reconnect`,
+    /// `drop_postgres_schema` and the conformance escape hatches all tolerate
+    /// it for free as a result.
     pub(crate) fn split(url: &str) -> Result<Self> {
         let Some((base, query)) = url.split_once('?') else {
             return Ok(Self { dsn: url.to_string(), mode: SslMode::Prefer, root_cert: None });
@@ -118,6 +127,7 @@ impl SslRequest {
             match pair.split_once('=') {
                 Some(("sslmode", v)) => mode = SslMode::parse(v)?,
                 Some(("sslrootcert", v)) if !v.is_empty() => root_cert = Some(v.to_string()),
+                Some(("provision", _)) => {}
                 _ => rest.push(pair),
             }
         }
@@ -139,7 +149,8 @@ fn compiled_out(mode: SslMode) -> AreevError {
         "the DSN asks for sslmode={} but Postgres TLS was not compiled into this build \
          (cargo feature \"postgres-tls\"). Refusing rather than connecting in plaintext. \
          Rebuild with the feature, or terminate TLS in a local proxy (Cloud SQL Auth Proxy, \
-         PgBouncer with a TLS upstream) and point the DSN at it with sslmode=disable",
+         PgBouncer with a TLS upstream, session mode) and point the DSN at it with \
+         sslmode=disable",
         mode.as_str()
     ))
 }
@@ -425,6 +436,17 @@ mod tests {
         assert_eq!(r.dsn, "postgres://u:p@h:5432/db?application_name=areev");
         assert_eq!(r.mode, SslMode::VerifyFull);
         assert_eq!(r.root_cert.as_deref(), Some("/etc/ssl/azure.pem"));
+    }
+
+    /// `provision` is ours too (read by `pg::provision_mode`), so it must
+    /// never reach the driver — `tokio_postgres` rejects unknown options, and
+    /// every connect path in the crate funnels through here.
+    #[test]
+    fn provision_is_stripped_before_the_driver_sees_it() {
+        let r = SslRequest::split("postgres://h/db?provision=never&application_name=x").unwrap();
+        assert_eq!(r.dsn, "postgres://h/db?application_name=x");
+        let r = SslRequest::split("postgres://h/db?provision=auto").unwrap();
+        assert_eq!(r.dsn, "postgres://h/db");
     }
 
     #[test]

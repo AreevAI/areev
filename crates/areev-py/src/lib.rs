@@ -335,6 +335,49 @@ impl EmbedBackend for PyEmbed {
     }
 }
 
+/// [`areev_run::RunObserver`] over a Python callable `on_event(json: str)` —
+/// the binding form of the CLI's `--events`, which is literally
+/// `eprintln!("{}", serde_json::to_string(ev)?)`. So the payload IS that same
+/// line: one §6.10 `RunEvent` as a JSON object with an `"event"` tag, which
+/// the caller parses. No per-language event class, and no `Deserialize` on
+/// `RunEvent` — the enum is append-only and a subscriber matches on the tag,
+/// so a field added upstream reaches Python without a change here.
+///
+/// Called on the EVENT BUS's own thread while the caller sits in `py.detach`,
+/// so it re-attaches to the interpreter exactly as [`PyEmbed`] does.
+///
+/// **A raising callback never fails the run.** Events are observational by
+/// construction (§6.10: the journal is byte-identical with no subscriber, a
+/// subscriber, and a deliberately slow one), so an exception here is reported
+/// unraisable — the same treatment CPython gives an exception in `__del__` —
+/// rather than turned into a run failure the plan did not have.
+struct PyEvents {
+    f: Py<PyAny>,
+}
+
+impl areev_run::RunObserver for PyEvents {
+    fn event(&self, ev: &areev_run::RunEvent) {
+        let Ok(line) = serde_json::to_string(ev) else { return };
+        Python::attach(|py| {
+            if let Err(e) = self.f.call1(py, (line,)) {
+                e.write_unraisable(py, None);
+            }
+        });
+    }
+}
+
+/// Wrap an optional Python callable as the run's §6.10 observer.
+///
+/// Attaching one also turns on `TokenChunk` deltas for abstract nodes: the
+/// driver only builds a token sink when a bus exists, so model text streams
+/// through the same callback with no further plumbing. Those are
+/// observational too — the journaled result is the model's final message, not
+/// the concatenated deltas.
+fn py_observer(on_event: Option<Py<PyAny>>) -> Option<std::sync::Arc<dyn areev_run::RunObserver>> {
+    on_event
+        .map(|f| std::sync::Arc::new(PyEvents { f }) as std::sync::Arc<dyn areev_run::RunObserver>)
+}
+
 /// One memory = one file. Open with `areev.Areev("caller.db", ns="caller")`.
 ///
 /// **One handle per file per process — share it across threads.** The embedded
@@ -1513,11 +1556,24 @@ impl Areev {
     /// plan refuses at load with `RUN-E006`; bound and named plans run either
     /// way. `base_url`/`key_env` override the endpoint and the environment
     /// variable the key is read from, exactly as on the CLI.
+    ///
+    /// `on_event` is a callable taking ONE argument: a §6.10 run event as a
+    /// JSON string, exactly the line the CLI's `--events` prints. It is
+    /// observational — the journal is byte-identical with or without it, a
+    /// slow callback delays events rather than the run, and an exception it
+    /// raises is reported unraisable instead of failing the run. Attaching one
+    /// also turns on `TokenChunk` deltas from abstract nodes' model turns,
+    /// which are observational in the same sense (the journaled result is the
+    /// final message, not the concatenated deltas).
+    ///
+    /// Note `RunFinished` is emitted at a TERMINAL outcome: a run that parks
+    /// on a human gate ends this leg at `AskRaised`, and the `run_resume` leg
+    /// carries `RunResumed` … `RunFinished`.
     #[pyo3(signature = (workflow, run_id, input_json = None, tool_cmd = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
                         llm_max_tokens = None, allow_executor = None, executor_cache = None,
-                        sandbox_cmd = None, executor_timeout_secs = None))]
+                        sandbox_cmd = None, executor_timeout_secs = None, on_event = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1538,6 +1594,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        on_event: Option<Py<PyAny>>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1549,6 +1606,7 @@ impl Areev {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
         let runner = self.runner_pinned(
             tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+            py_observer(on_event),
         );
         let opts =
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
@@ -1562,10 +1620,14 @@ impl Areev {
     ///
     /// Takes `model` for the same reason [`run_start`] does: resuming a plan
     /// with abstract nodes still has to execute them, and the backend is host
-    /// config that is deliberately not journaled with the run.
+    /// config that is deliberately not journaled with the run. Same reasoning
+    /// for `on_event`: a resume emits `RunResumed` and the rest of the stream
+    /// — including the `RunFinished` a parked start leg never reached — so a
+    /// host that watched the start must be able to watch the rest.
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
                         key_env = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
+                        on_event = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1580,10 +1642,12 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        on_event: Option<Py<PyAny>>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
         let runner = self.runner_pinned(
             tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+            py_observer(on_event),
         );
         let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
@@ -2674,6 +2738,10 @@ impl Areev {
                         pin.executor_cache,
                         pin.sandbox_cmd,
                         pin.executor_timeout_secs,
+                        // The trigger surface takes no `on_event` (#182): a
+                        // firing starts a real run, so this is a knowable
+                        // asymmetry with `run_start`, not an oversight.
+                        None,
                     ),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -2765,7 +2833,7 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        self.runner_pinned(tool_cmd, llm, None, None, None, None)
+        self.runner_pinned(tool_cmd, llm, None, None, None, None, None)
     }
 
     /// The pin-aware factory (#87): `allow_executor` is the same comma list
@@ -2774,6 +2842,8 @@ impl Areev {
     /// authorization to execute code must come from the host, never the file.
     /// `executor_timeout_secs` (#133) overrides the fixed 300s ceiling either
     /// executor otherwise runs a tool under — `0` waits forever.
+    /// `observer` is the §6.10 event sink (#182) — `None` for the verbs that
+    /// do not advance a run, since they emit nothing to watch.
     #[allow(clippy::too_many_arguments)]
     fn runner_pinned(
         &self,
@@ -2783,6 +2853,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
     ) -> areev_run::Runner {
         let timeout = executor_timeout_secs
             .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
@@ -2839,7 +2910,7 @@ impl Areev {
             clock: std::sync::Arc::new(areev_run::SystemClock),
             executor,
             llm,
-            observer: None,
+            observer,
             ns: self.ns.clone(),
             principal: self.actor.clone(),
         }

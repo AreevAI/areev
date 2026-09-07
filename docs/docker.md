@@ -163,7 +163,14 @@ Three honest caveats before you wire production:
   name (`STO-E003`) rather than connecting in the clear. The local-proxy
   pattern (Cloud SQL Auth Proxy, PgBouncer with a TLS upstream) still works
   and is still right where the proxy is doing something else too — point the
-  DSN at it with `sslmode=disable`.
+  DSN at it with `sslmode=disable`. **If that proxy pools, it must pool in
+  session mode** (PgBouncer `pool_mode = session`): the store keeps
+  session-scoped state — `search_path`, the bootstrap advisory lock,
+  server-side prepared statements, and the `hnsw.ef_search` GUC — that
+  transaction- and statement-mode pooling destroy, the last one with no error
+  at all. The Cloud SQL Auth Proxy is a TLS/IAM tunnel rather than a pooler
+  and is unaffected. Details:
+  [deployment-profile.md](deployment-profile.md#pooling-direct-or-session-mode).
 - **There is no official published image yet.** `docker build` from a
   release tag and push to the registry your platform pulls from (ECR /
   Artifact Registry / ACR). Multi-arch: `docker buildx build --platform

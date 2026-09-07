@@ -109,7 +109,7 @@ PgOptions {
   `areev bundle` (oplog is a table, so bundle export works from any backend).
 - Mounts = a second `PgStore` handle on another schema, ideally under a
   read-only role. Read-only-by-construction becomes read-only-by-role — the
-  trait grows `capabilities()` (§4, X-8) and `mount()` asserts it.
+  trait grows `capabilities()` (§3.2, X-9) and `mount()` asserts it.
 - Tenancy for Atmatic: schema resolution composes with their existing
   `resolveOrgSchema(oid)`; a single table set with a tenant column is
   explicitly ruled out.
@@ -262,21 +262,21 @@ diagnostic"; the portable, conformance-tested half is `hash_mismatches`/`undecod
 
 ### 3.2 Special cases (the X-list) — resolutions
 
-| Case | Resolution |
-|---|---|
-| `set_embedder`/`set_reranker` (trait objects, `&mut`) | Move `EmbedBackend`/`RerankBackend` traits to `areev-core`; add `fn set_embedder(&self, Box<dyn EmbedBackend>)` on the facade trait (interior mutability — the Mutex is already there). On Pg, first install creates the `vector(dim)` table + stamps meta; later mismatch = hard `VAL` error (an upgrade over Turso's warning). |
-| Bundle file paths | Add `bundle_since_bytes` / `import_bundle_bytes` variants; path variants default-delegate. Also fixes the server's write-body-to-disk-then-import dance and its silent 1 MiB truncation. |
-| areev-loop `store_state` (read-then-write in one lock) | Dedicated atomic method `put_state(ns, subject, relation, json) -> Hash` — splitting it would introduce a lost-update race. **Highest-priority hazard of the promotion.** |
-| areev-loop `all_grains` (changes_since + get per op, MAX_SCAN=1M) | `get_many`, or better `grains_of_type(gt, ns, live_only)` pushed into the backend. Worst Pg path in the codebase if left N+1. |
-| `MemoryTool` (borrows `&mut Areev`) | Refactor to take `&dyn CalStoreFacade` (it uses exactly 6 primitives, 5 already on the trait + `subjects_with_relation`). No `memory_tool` trait method needed. |
-| `migrate_payload` (free fn over `&mut Areev`) | Pragmatic first cut: opaque per-backend trait method (G2). Genericize the ~500-line module later. |
-| Typed-grain writes (areev-loop `add(&Fact)`, CLI seeds) | Convert to `cal_add` field maps; **verify `created_at` survives the JSON round trip** (the loop stamps it deliberately for deterministic content addressing — the loop goldens will catch drift). |
-| `into_inner() -> Areev` | Stays inherent on `AreevFacade` only; delete `AreevSubstrate::into_store`. |
-| `mount(alias, Areev)` | Becomes `mount(alias, Box<dyn CalStoreFacade>)`; assert `capabilities().read_only` intent at mount time. |
-| Host constructors (`Server::new(AreevFacade)` etc.) | Become `Box<dyn CalStoreFacade>`/`Arc<dyn …>` — **breaking API change for areev-server and areev-mcp** → minor version bump, changelog entry. |
-| `SearchHit` cfg'd fields (`rerank`/`llm-rerank` features) | Add `SearchHit::new(grain)` constructor so no impl enumerates 13 fields under two cfgs. |
-| `cal_forget_user`/`cal_forget_scope` (stubs on both sides) | **Do not implement as a side effect.** They stay stubs until the Phase 4 erasure design + OMS decision. |
-| py `recall`/`search`, js `recall` bypass `recall(&RecallParams)` | Rewrite through the trait, but golden-test binding output first — the facade path adds overfetch/multi-hop/clamping the raw calls don't have. |
+| # | Case | Resolution |
+|---|---|---|
+| **X-1** | `set_embedder`/`set_reranker` (trait objects, `&mut`) | Move `EmbedBackend`/`RerankBackend` traits to `areev-core`; add `fn set_embedder(&self, Box<dyn EmbedBackend>)` on the facade trait (interior mutability — the Mutex is already there). On Pg, first install creates the `vector(dim)` table + stamps meta; later mismatch = hard `VAL` error (an upgrade over Turso's warning). |
+| **X-2** | Bundle file paths | Add `bundle_since_bytes` / `import_bundle_bytes` variants; path variants default-delegate. Also fixes the server's write-body-to-disk-then-import dance and its silent 1 MiB truncation. |
+| **X-3** | areev-loop `store_state` (read-then-write in one lock) | Dedicated atomic method `put_state(ns, subject, relation, json) -> Hash` — splitting it would introduce a lost-update race. **Highest-priority hazard of the promotion.** |
+| **X-4** | areev-loop `all_grains` (changes_since + get per op, MAX_SCAN=1M) | `get_many`, or better `grains_of_type(gt, ns, live_only)` pushed into the backend. Worst Pg path in the codebase if left N+1. |
+| **X-5** | `MemoryTool` (borrows `&mut Areev`) | Refactor to take `&dyn CalStoreFacade` (it uses exactly 6 primitives, 5 already on the trait + `subjects_with_relation`). No `memory_tool` trait method needed. |
+| **X-6** | `migrate_payload` (free fn over `&mut Areev`) | Pragmatic first cut: opaque per-backend trait method (G2). Genericize the ~500-line module later. |
+| **X-7** | Typed-grain writes (areev-loop `add(&Fact)`, CLI seeds) | Convert to `cal_add` field maps; **verify `created_at` survives the JSON round trip** (the loop stamps it deliberately for deterministic content addressing — the loop goldens will catch drift). |
+| **X-8** | `into_inner() -> Areev` | Stays inherent on `AreevFacade` only; delete `AreevSubstrate::into_store`. |
+| **X-9** | `mount(alias, Areev)` | Becomes `mount(alias, Box<dyn CalStoreFacade>)`; assert `capabilities().read_only` intent at mount time. |
+| **X-10** | Host constructors (`Server::new(AreevFacade)` etc.) | Become `Box<dyn CalStoreFacade>`/`Arc<dyn …>` — **breaking API change for areev-server and areev-mcp** → minor version bump, changelog entry. |
+| **X-11** | `SearchHit` cfg'd fields (`rerank`/`llm-rerank` features) | Add `SearchHit::new(grain)` constructor so no impl enumerates 13 fields under two cfgs. |
+| **X-12** | `cal_forget_user`/`cal_forget_scope` (stubs on both sides) | **Do not implement as a side effect.** They stay stubs until the Phase 4 erasure design + OMS decision. |
+| **X-13** | py `recall`/`search`, js `recall` bypass `recall(&RecallParams)` | Rewrite through the trait, but golden-test binding output first — the facade path adds overfetch/multi-hop/clamping the raw calls don't have. |
 
 ### 3.3 Host migration order
 

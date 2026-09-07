@@ -12,22 +12,46 @@ areev serve --mcp --db <memory.db> [--ns <namespace>]
 ```
 
 `--db` is optional (falls back to `$AREEV_DB`, then `~/.areev/default.db`).
-One server serves exactly **one writable memory file**. To read across files in
+One server serves exactly **one writable memory**. To read across memories in
 a single `areev_cal` `ASSEMBLE`, add read-only mounts:
 
 ```bash
 areev serve --mcp --db user.db --mount org=~/.areev/org.db,team=~/.areev/team.db
 ```
 
-Each mount is exposed under a namespace prefix (`org.<inner>`), is **read-only**
-(writes always land on the primary `--db`), and lets one statement pull the
-user's memory plus shared org/team knowledge:
+A mount target is a memory **file or a Postgres DSN** — either backend, and
+they can be mixed in one flag:
+
+```bash
+areev serve --mcp --db user.db \
+  --mount org=~/.areev/org.db,policy='postgres://ro:***@pg:5432/areev?schema=org_policy'
+```
+
+Each mount is exposed under a namespace prefix (`org.<inner>`) and lets one
+statement pull the user's memory plus shared org/team knowledge:
 
 ```
 ASSEMBLE "prompt" FROM
   policy:  (RECALL facts WHERE namespace = "org.policies"),
   profile: (RECALL facts WHERE subject = "john")
 ```
+
+Three rules govern mounts:
+
+- **Read-only, on both backends.** Writes always land on the primary `--db`
+  (CAL routes them there by construction), and the mount's *open* is read-only
+  too: a Postgres mount works from a `SELECT`-only role, and a file path that
+  does not exist is refused with `STO-E005` rather than created as an empty
+  memory that then answers every cross-memory question with silence.
+- **Commas separate mounts only before another `alias=`.** A libpq multi-host
+  DSN (`postgres://h1:5432,h2:5432/db`) or an `options=` list therefore
+  survives; an alias is `[A-Za-z0-9_-]+`.
+- **The vector leg does not cross a mount.** `--embed-cmd` installs an embedder
+  on the primary memory only, so `ABOUT "…"` inside a mounted namespace runs
+  with no vector leg (the structural and BM25 legs are unaffected), and
+  `NOVELTY "…"` never crosses a mount at all — it always answers from the
+  session memory. See
+  [`cal-reference.md`](cal-reference.md#mounts-and-the-vector-leg).
 
 For where the MCP server sits in the system, see
 [ARCHITECTURE.md](../ARCHITECTURE.md#8-crate-layout). For trust boundaries, see

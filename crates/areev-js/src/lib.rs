@@ -239,6 +239,10 @@ fn js_evaluator(
                 pin.executor_cache,
                 pin.sandbox_cmd,
                 pin.executor_timeout_secs,
+                // The trigger surface takes no `onEvent` (#182): a firing
+                // starts a real run, so this is a knowable asymmetry with
+                // `runStart`, not an oversight.
+                None,
             ),
             opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -435,6 +439,68 @@ impl areev_store::EmbedBackend for JsEmbed {
     }
     fn model(&self) -> &str {
         &self.model
+    }
+}
+
+/// [`areev_run::RunObserver`] over a JS callback `(event: string) => void` —
+/// the binding form of the CLI's `--events`, which is literally
+/// `eprintln!("{}", serde_json::to_string(ev)?)`. So the payload IS that same
+/// line: one §6.10 `RunEvent` as a JSON object with an `"event"` tag, which
+/// the caller `JSON.parse`s. No per-language event class, and no
+/// `Deserialize` on `RunEvent` — the enum is append-only and every added
+/// field is `Option` + `skip_serializing_if`, so a subscriber matches on the
+/// tag and a run with no model emits the lines it always did.
+///
+/// **Why this has to be a threadsafe function.** Three threads are involved:
+/// the JS thread the method is called on, the libuv worker the `AsyncTask`
+/// body runs on, and the EventBus's OWN delivery thread, which is where
+/// `RunObserver::event` fires. A plain `Function` is neither `Send` nor
+/// callable off the JS thread, so it could never reach the third one. The
+/// TSFN is built synchronously in the method body (which needs the JS
+/// thread) and then moved into the job — which is why `runStart` and
+/// `runResume` return `napi::Result<AsyncTask<…>>`: building it can fail.
+///
+/// It is released when this observer drops, and that happens inside the job:
+/// `EventBus::drop` drains the queue and joins its worker before
+/// `Runner::start` returns.
+struct JsEvents {
+    tsfn: napi::threadsafe_function::ThreadsafeFunction<String, (), String, napi::Status, false>,
+}
+
+impl areev_run::RunObserver for JsEvents {
+    fn event(&self, ev: &areev_run::RunEvent) {
+        let Ok(line) = serde_json::to_string(ev) else { return };
+        // NonBlocking on purpose: events are observational (§6.10 — the
+        // journal is byte-identical with no subscriber, a subscriber, and a
+        // deliberately slow one), and the bus above already drops the oldest
+        // and counts it rather than backpressuring the run.
+        let _ = self.tsfn.call(
+            line,
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    }
+}
+
+/// Turn an optional JS callback into the run's §6.10 observer.
+///
+/// **Call this on the JS thread, before spawning the job** — building the
+/// threadsafe function is the part that needs it.
+///
+/// Attaching one also turns on `TokenChunk` deltas for abstract nodes: the
+/// driver only builds a token sink when a bus exists, so model text streams
+/// through the same callback with no further plumbing. Those are
+/// observational too — the journaled result is the model's final message, not
+/// the concatenated deltas.
+fn js_observer(
+    on_event: Option<napi::bindgen_prelude::Function<String, ()>>,
+) -> napi::Result<Option<std::sync::Arc<dyn areev_run::RunObserver>>> {
+    match on_event {
+        None => Ok(None),
+        Some(f) => {
+            let tsfn = f.build_threadsafe_function().build()?;
+            Ok(Some(std::sync::Arc::new(JsEvents { tsfn })
+                as std::sync::Arc<dyn areev_run::RunObserver>))
+        }
     }
 }
 
@@ -2486,8 +2552,19 @@ impl Areev {
 
     /// Start a governed run. Returns the session JSON:
     /// `{"finished": …}` or `{"parked": envelope}`.
+    ///
+    /// `onEvent` is a callback taking ONE argument: a §6.10 run event as a
+    /// JSON string, exactly the line the CLI's `--events` prints. It is
+    /// observational — the journal is byte-identical with or without it, and a
+    /// slow callback delays events rather than the run. Attaching one also
+    /// turns on `TokenChunk` deltas from abstract nodes' model turns, which
+    /// are observational in the same sense (the journaled result is the final
+    /// message, not the concatenated deltas).
+    ///
+    /// Note `RunFinished` is emitted at a TERMINAL outcome: a run that parks
+    /// on a human gate ends this leg at `AskRaised`, and the `runResume` leg
+    /// carries `RunResumed` … `RunFinished`.
     #[napi(ts_return_type = "Promise<string>")]
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn run_start(
         &self,
@@ -2507,11 +2584,15 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
-    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        on_event: Option<napi::bindgen_prelude::Function<String, ()>>,
+    ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
+        // Built HERE, on the JS thread, before the job is queued — see
+        // [`JsEvents`] for why a plain function cannot reach the event bus.
+        let observer = js_observer(on_event)?;
         let slot = self.facade.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
-        StringJob::spawn(move || {
+        Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let input: serde_json::Value = match input_json {
                 Some(raw) => serde_json::from_str(&raw)
@@ -2524,7 +2605,7 @@ impl Areev {
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
                 facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
-                executor_timeout_secs,
+                executor_timeout_secs, observer,
             );
             let opts = js_run_options_full(
                 max_tokens,
@@ -2535,14 +2616,17 @@ impl Areev {
             )?;
             let session = runner.start(&h, &run_id, input, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
-        })
+        }))
     }
 
     /// Resume a parked/interrupted run from its latest checkpoint.
     ///
     /// Takes `model` for the same reason `runStart` does: resuming a plan with
     /// abstract nodes still has to execute them, and the backend is host config
-    /// that is deliberately not journaled with the run.
+    /// that is deliberately not journaled with the run. Same reasoning for
+    /// `onEvent`: a resume emits `RunResumed` and the rest of the stream —
+    /// including the `RunFinished` a parked start leg never reached — so a
+    /// host that watched the start must be able to watch the rest.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn run_resume(
@@ -2557,21 +2641,23 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
-    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        on_event: Option<napi::bindgen_prelude::Function<String, ()>>,
+    ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
+        let observer = js_observer(on_event)?;
         let slot = self.facade.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
-        StringJob::spawn(move || {
+        Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
                 facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
-                executor_timeout_secs,
+                executor_timeout_secs, observer,
             );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
-        })
+        }))
     }
 
     /// Answer a pending Client ask. `responder` is REQUIRED — approval
@@ -3148,7 +3234,7 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None, None)
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None, None, None)
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
@@ -3168,6 +3254,8 @@ struct JsExecutorPin {
 /// execute code must come from the host, never the file.
 /// `executorTimeoutSecs` (#133) overrides the fixed 300s ceiling either
 /// executor otherwise runs a tool under — `0` waits forever.
+/// `observer` is the §6.10 event sink (#182) — `None` for the verbs that do
+/// not advance a run, since they emit nothing to watch.
 #[allow(clippy::too_many_arguments)]
 fn js_runner_pinned(
     facade: std::sync::Arc<AreevFacade>,
@@ -3179,6 +3267,7 @@ fn js_runner_pinned(
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
     executor_timeout_secs: Option<i64>,
+    observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
 ) -> areev_run::Runner {
     let timeout = executor_timeout_secs.map(|secs| {
         if secs <= 0 { None } else { Some(std::time::Duration::from_secs(secs as u64)) }
@@ -3234,7 +3323,7 @@ fn js_runner_pinned(
         clock: std::sync::Arc::new(areev_run::SystemClock),
         executor,
         llm,
-        observer: None,
+        observer,
         ns,
         principal,
     }

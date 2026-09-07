@@ -110,6 +110,18 @@ pub enum AreevError {
     /// grant — so the message says which one it is rather than surfacing the
     /// raw permission-denied Postgres gives for `CREATE SCHEMA`/DDL.
     ReadOnlyOpenFailed(String),
+    /// A postgres open found the schema absent or stamped at an older schema
+    /// version, and the DSN said `provision=never` — so no advisory lock and
+    /// no DDL were attempted, not even `CREATE SCHEMA`. Distinct from
+    /// [`ReadOnlyOpenFailed`](Self::ReadOnlyOpenFailed): that one is a
+    /// read-only handle discovering it has nothing to read; this is a
+    /// read-WRITE handle that was told never to bootstrap on the request path,
+    /// which is how a deployment guarantees its runtime role holds no `CREATE`
+    /// and its schema changes go through a migration step. Like its sibling,
+    /// the message names WHICH of the two operator actions is needed —
+    /// create the memory, or migrate it forward — because they are different
+    /// jobs.
+    SchemaNotProvisioned(String),
     SupersessionConflict(Hash),
     /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
     /// a root within the bounded hop count. Real edit histories terminate in
@@ -160,6 +172,7 @@ impl AreevError {
             Self::TlsUnavailable(_) => "STO-E003",
             Self::ReadOnly(_) => "STO-E004",
             Self::ReadOnlyOpenFailed(_) => "STO-E005",
+            Self::SchemaNotProvisioned(_) => "STO-E008",
             Self::CryptoError(_) => "CRY-E001",
             // These originate in CAL ACCUMULATE semantics and bubble up
             // through the store, so they keep their CAL-domain codes.
@@ -199,6 +212,7 @@ impl std::fmt::Display for AreevError {
             Self::TlsUnavailable(m) => write!(f, "STO-E003: {m}"),
             Self::ReadOnly(m) => write!(f, "STO-E004: refusing write on a read-only memory: {m}"),
             Self::ReadOnlyOpenFailed(m) => write!(f, "STO-E005: {m}"),
+            Self::SchemaNotProvisioned(m) => write!(f, "STO-E008: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AccumulateRetryExhausted => write!(f, "CAL-E083: ACCUMULATE retry budget exhausted"),
             Self::AccumulateInternal(m) => write!(f, "CAL-E084: ACCUMULATE internal failure: {m}"),
@@ -237,6 +251,7 @@ mod error_code_tests {
             AreevError::TlsUnavailable("x".into()),
             AreevError::ReadOnly("x".into()),
             AreevError::ReadOnlyOpenFailed("x".into()),
+            AreevError::SchemaNotProvisioned("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),

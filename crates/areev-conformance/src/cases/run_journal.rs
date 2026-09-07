@@ -124,6 +124,18 @@ pub fn step_action_survives_supersession_only_by_restatement(b: &dyn Backend) {
         "[{}] the re-stating result is the sole current execution record",
         b.name()
     );
+    // Unnamed node: the predicate set comes from a dictionary PREFIX scan
+    // rather than one lookup. A prefix scan has no miss to fall through on, so
+    // a backend whose handle does not hold the whole dictionary must answer
+    // from the database — otherwise this reads as "no step actions", which is
+    // indistinguishable from a run that recorded none.
+    let all = m.step_actions("ops", &wf, None, 10).unwrap();
+    assert_eq!(
+        all,
+        vec![("fetch".to_string(), rh)],
+        "[{}] every step action of a plan is found without naming the node",
+        b.name()
+    );
     let journal = m.run_grains("ops", "run-s", 0, 10).unwrap();
     assert_eq!(
         journal.len(),

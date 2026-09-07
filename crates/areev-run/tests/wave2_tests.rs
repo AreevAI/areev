@@ -81,6 +81,12 @@ impl ToolCallLlm for ScriptedLlm {
     fn model(&self) -> &str {
         "scripted"
     }
+    /// The scripted seam stands in for an OpenAI-compatible endpoint, so the
+    /// telemetry gates below assert a REAL `gen_ai.provider.name` rather than
+    /// the trait's `_OTHER` default.
+    fn provider(&self) -> &'static str {
+        "openai"
+    }
     fn call(&self, _req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
         *self.calls.lock().unwrap() += 1;
         self.responses.lock().unwrap().pop_front().ok_or(ToolCallError {
@@ -519,6 +525,115 @@ fn observed_abstract_node_emits_token_chunks() {
     assert_eq!(chunks.join(""), r#"{"idea": "streamed"}"#);
     drop(events);
     assert!(runner.verify("tok-1").unwrap().verified);
+}
+
+/// End-to-end OpenTelemetry GenAI semconv: a REAL abstract-node run (model
+/// turn → tool call → closing turn) exported as OTLP spans.
+///
+/// The point is that the exporter never reads the journal — it runs on the
+/// bus's own thread while the driver holds the memory's single writer — so
+/// every `gen_ai.*` attribute below is proof that the driver put it in the
+/// event. `build_otlp` is exercised directly rather than through a socket:
+/// the payload IS the contract, and a collector adds nothing to assert.
+#[test]
+fn an_abstract_run_exports_genai_semconv_spans() {
+    struct Collect(Mutex<Vec<(areev_run::RunEvent, u128)>>);
+    impl areev_run::RunObserver for Collect {
+        fn event(&self, ev: &areev_run::RunEvent) {
+            // Monotone synthetic stamps: the exporter's own wall clock is not
+            // what this test is about, and a real one makes it flaky.
+            let mut v = self.0.lock().unwrap();
+            let t = v.len() as u128 + 1;
+            v.push((ev.clone(), t));
+        }
+    }
+    let rig = Rig::new();
+    let plan = rig.plan(&["fetch", "summarize"], &[("fetch", "summarize")], &["summarize"]);
+    rig.exec.on("fetch", |_, _| ExecResult::Ok(json!({"fetched": 7})));
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("call_abc", "fetch", json!({"q": "x"}))]),
+        turn_final(r#"{"summary": "seven"}"#),
+    ]));
+    let obs = Arc::new(Collect(Mutex::new(vec![])));
+    let runner = rig.runner_observed(Some(llm), Some(Arc::clone(&obs) as _));
+
+    let session = runner.start(&plan, "otel-1", json!({"q": 1}), &opts()).unwrap();
+    assert!(matches!(session, RunSession::Finished { outcome: RunOutcome::Completed, .. }));
+
+    let events = obs.0.lock().unwrap().clone();
+    let payload = areev_run::otel::build_otlp("otel-1", "Completed", &events);
+    let spans = payload["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap();
+    let names: Vec<&str> = spans.iter().filter_map(|s| s["name"].as_str()).collect();
+    let named = |n: &str| {
+        spans
+            .iter()
+            .find(|s| s["name"] == n)
+            .unwrap_or_else(|| panic!("no span named {n} in {names:?}"))
+    };
+    let attr = |s: &Value, k: &str| -> Option<String> {
+        s["attributes"].as_array()?.iter().find(|a| a["key"] == k).map(|a| {
+            let v = &a["value"];
+            v.get("stringValue")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .or_else(|| v.get("intValue").and_then(|x| x.as_str()).map(str::to_string))
+                .unwrap_or_else(|| v.to_string())
+        })
+    };
+
+    // The two model turns are CLIENT `chat {model}` spans carrying the
+    // provider, the request ceiling and the journaled usage.
+    let chats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "chat scripted").collect();
+    assert_eq!(chats.len(), 2, "one span per model turn, got {names:?}");
+    for c in &chats {
+        assert_eq!(c["kind"], 3);
+        assert_eq!(attr(c, "gen_ai.operation.name").as_deref(), Some("chat"));
+        assert_eq!(attr(c, "gen_ai.provider.name").as_deref(), Some("openai"));
+        assert_eq!(attr(c, "gen_ai.request.model").as_deref(), Some("scripted"));
+        assert_eq!(attr(c, "gen_ai.request.max_tokens").as_deref(), Some("1024"));
+        assert_eq!(attr(c, "gen_ai.agent.name").as_deref(), Some("summarize"));
+        assert_eq!(attr(c, "gen_ai.conversation.id").as_deref(), Some("otel-1"));
+        // The run-provenance join is still on the span.
+        assert!(attr(c, "areev.effect_seq").is_some());
+    }
+    // Usage came off the journal, not off a guess: 10/5 then 20/7.
+    let mut usage: Vec<(String, String)> = chats
+        .iter()
+        .map(|c| {
+            (
+                attr(c, "gen_ai.usage.input_tokens").unwrap(),
+                attr(c, "gen_ai.usage.output_tokens").unwrap(),
+            )
+        })
+        .collect();
+    usage.sort();
+    assert_eq!(usage, vec![("10".into(), "5".into()), ("20".into(), "7".into())]);
+
+    // The tool the MODEL called is an `execute_tool` span under the agent,
+    // addressed by the model's own call id.
+    let tool = named("execute_tool fetch");
+    assert_eq!(attr(tool, "gen_ai.tool.call.id").as_deref(), Some("call_abc"));
+    assert_eq!(attr(tool, "gen_ai.tool.type").as_deref(), Some("function"));
+
+    // The bound "fetch" NODE is not a GenAI operation and keeps its own name.
+    let bound = named("fetch");
+    assert_eq!(bound["kind"], 1);
+    assert_eq!(attr(bound, "gen_ai.operation.name"), None);
+
+    // One agent invocation parents the abstract node's turns and its tools.
+    let agent = named("invoke_agent summarize");
+    assert_eq!(attr(agent, "gen_ai.agent.id").as_deref(), Some("agent:otel-1//summarize/1"));
+    for child in [chats[0], tool] {
+        assert_eq!(child["parentSpanId"], agent["spanId"]);
+    }
+    let root = named("areev.run");
+    assert_eq!(agent["parentSpanId"], root["spanId"]);
+    assert_eq!(bound["parentSpanId"], root["spanId"]);
+    assert_eq!(root["status"]["code"], 1);
+    // One trace for the whole run.
+    for s in spans {
+        assert_eq!(s["traceId"], root["traceId"]);
+    }
 }
 
 // ---- forks (§5.4) ----------------------------------------------------------

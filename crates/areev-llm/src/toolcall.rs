@@ -156,6 +156,15 @@ pub struct ToolCallResponse {
 /// owns the journal.
 pub trait ToolCallLlm: Send + Sync {
     fn model(&self) -> &str;
+    /// The provider this transport talks to, in OpenTelemetry's
+    /// `gen_ai.provider.name` vocabulary (`anthropic`, `openai`,
+    /// `gcp.vertex_ai`, …). Defaulted to semconv's `_OTHER` sentinel so a
+    /// host's own implementation of this trait keeps compiling and still
+    /// exports a *valid* attribute value rather than a guessed one — the
+    /// runtime puts this on every `chat` span.
+    fn provider(&self) -> &'static str {
+        "_OTHER"
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse>;
     /// Streaming variant: `on_token` receives text deltas as they arrive.
     /// Default: the non-streaming call, delivered as one final chunk —
@@ -362,6 +371,13 @@ impl ToolCallLlm for crate::OpenAiCompat {
     fn model(&self) -> &str {
         &self.model
     }
+    /// Carried on the adapter, not derived from `base_url`: Vertex and
+    /// OpenRouter are BOTH reached through this one OpenAI-compatible
+    /// transport, and sniffing a hostname to tell them apart would silently
+    /// mislabel every self-hosted gateway.
+    fn provider(&self) -> &'static str {
+        self.provider_name
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = openai_body(req, &self.model)?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -512,6 +528,9 @@ impl ToolCallLlm for crate::Anthropic {
     fn model(&self) -> &str {
         &self.model
     }
+    fn provider(&self) -> &'static str {
+        "anthropic"
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = anthropic_body(req, &self.model)?;
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
@@ -613,6 +632,12 @@ fn ollama_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Value> 
 impl ToolCallLlm for crate::Ollama {
     fn model(&self) -> &str {
         &self.model
+    }
+    /// Not one of semconv's enumerated values; the registry's rule for an
+    /// OpenAI-compatible provider it does not list is to use the provider's
+    /// own name, which is more useful to an operator than `_OTHER`.
+    fn provider(&self) -> &'static str {
+        "ollama"
     }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = ollama_body(req, &self.model)?;

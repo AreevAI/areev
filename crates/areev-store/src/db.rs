@@ -196,6 +196,48 @@ pub(crate) trait Db: Send {
     fn for_update(&self) -> &'static str {
         ""
     }
+
+    /// Dictionary rows whose term starts with `prefix`, when the backend —
+    /// not this process — is the authority on the dictionary.
+    ///
+    /// `None` (the default) means "ask the process-local map", which is
+    /// correct exactly where that map is complete: the embedded backend
+    /// slurps the whole dictionary at open and is the only writer. A
+    /// multi-writer backend answers `Some`, because its handle neither loads
+    /// the dictionary at open nor sees what another instance interned after
+    /// it — and a prefix scan (unlike a point lookup) has no miss to fall
+    /// through on, so a stale local map answers "no such predicates" rather
+    /// than erroring.
+    fn terms_with_prefix(&self, _prefix: &str) -> Result<Option<Vec<(i64, String)>>> {
+        Ok(None)
+    }
+
+    /// Whether `open` should seed this handle's process-local state — the
+    /// whole term dictionary plus the seq/op/HLC allocators and the BM25
+    /// collection counters — from the database.
+    ///
+    /// True where that state IS the authority (the embedded, single-writer
+    /// backend). A backend that overrides `reserve_write`, `intern_term`,
+    /// `lookup_term*`, `terms_with_prefix` and `collection_stats` has already
+    /// made every one of those DB-authoritative, so seeding them is pure
+    /// open-time cost — and on a networked backend it is the expensive part
+    /// of an open: a full `SELECT id, term FROM terms` plus several `COUNT(*)`
+    /// scans, all proportional to corpus size, on a connection where each is
+    /// also a round trip.
+    fn seeds_state_at_open(&self) -> bool {
+        true
+    }
+
+    /// Whether a legacy `idx_fts` index could exist and want dropping at open.
+    ///
+    /// True on the file backend, where the index is a real artifact of builds
+    /// whose BM25 leg was Turso's experimental FTS. The Postgres schema is
+    /// newer than that move and never created it, so attempting the DROP there
+    /// buys nothing and costs a DDL statement — which a least-privilege role
+    /// may not even issue — on every single open.
+    fn may_have_legacy_fts_index(&self) -> bool {
+        true
+    }
 }
 
 /// A reserved contiguous id block: the FIRST seq / op_seq / HLC of the

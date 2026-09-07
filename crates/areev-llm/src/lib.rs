@@ -186,6 +186,11 @@ pub struct OpenAiCompat {
     /// a static key — see [`crate::cred`].
     pub(crate) cred: Box<dyn crate::cred::Credential>,
     pub(crate) model: String,
+    /// What this endpoint IS, in OpenTelemetry's `gen_ai.provider.name`
+    /// vocabulary. Recorded rather than inferred: Vertex and OpenRouter both
+    /// ride this one OpenAI-compatible transport, and only the code that
+    /// chose the endpoint knows which is which.
+    pub(crate) provider_name: &'static str,
 }
 
 impl OpenAiCompat {
@@ -205,7 +210,19 @@ impl OpenAiCompat {
         cred: Box<dyn crate::cred::Credential>,
         model: impl Into<String>,
     ) -> Self {
-        OpenAiCompat { base_url: base_url.into(), cred, model: model.into() }
+        OpenAiCompat {
+            base_url: base_url.into(),
+            cred,
+            model: model.into(),
+            provider_name: "openai",
+        }
+    }
+
+    /// Label this endpoint as a specific provider for telemetry
+    /// (`gen_ai.provider.name`). Transport behavior is untouched.
+    pub fn with_provider_name(mut self, name: &'static str) -> Self {
+        self.provider_name = name;
+        self
     }
 
     fn build_body(&self, system: &str, user: &str, op: &str, use_schema: bool) -> Value {
@@ -528,11 +545,14 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
                  locations/{location}/endpoints/openapi"
             )
             .replace(char::is_whitespace, "");
-            Ok(Provider::OpenAi(OpenAiCompat::with_credential(
-                base,
-                Box::new(cred::GoogleAdc::new()),
-                format!("google/{}", model.trim_start_matches("google/")),
-            )))
+            Ok(Provider::OpenAi(
+                OpenAiCompat::with_credential(
+                    base,
+                    Box::new(cred::GoogleAdc::new()),
+                    format!("google/{}", model.trim_start_matches("google/")),
+                )
+                .with_provider_name("gcp.vertex_ai"),
+            ))
         }
         // OpenRouter is OpenAI-compatible (one key → hundreds of models,
         // named `vendor/model`, e.g. `openrouter:openai/gpt-4o-mini`).
@@ -550,7 +570,9 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
                 .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
                 .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
             let key = read_key(key_env.or(Some("OPENROUTER_API_KEY")), "openai")?;
-            Ok(Provider::OpenAi(OpenAiCompat::new(base, key, model)))
+            Ok(Provider::OpenAi(
+                OpenAiCompat::new(base, key, model).with_provider_name("openrouter"),
+            ))
         }
         // A provider that exists in the source but was compiled out says so,
         // rather than reading as a typo.

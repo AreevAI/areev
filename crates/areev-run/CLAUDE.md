@@ -116,6 +116,42 @@ evidence. Responding and resuming are separate acts.
   plain call). The §6.10 check: journals identical with no/normal/slow
   subscriber.
 
+## Telemetry (`stream.rs` + `otel.rs`)
+
+**The event is the only channel.** The §6.10 observer runs on the bus's own
+thread with NO store handle, while the driver holds the memory's single
+writer — so an exporter cannot read the journal back to enrich what it saw.
+Everything a span can say must arrive inside a `RunEvent`. That is why
+`NodeDispatched` carries `effect_kind`/`executor_kind`/`agent_name`/
+`tool_name`/`tool_call_id`/`model`/`provider`/`max_tokens`/`temperature` and
+`EffectSettled` carries `input_tokens`/`output_tokens`/`finish_reason`/
+`error_type`. All optional, all `skip_serializing_if` — `RunEvent` is also the
+CLI's `--events` JSON-lines payload, so the contract stays additive.
+
+- **`tool_call_id` is the MODEL's id** (`PendingToolCall::model_call_id`),
+  which is what semconv's `gen_ai.tool.call.id` means.
+  `JournalKey::tool_call_id()` is Areev's journal-key digest — a different
+  identifier for a different join, and conflating them silently breaks a
+  transcript correlation nobody will look for.
+- **It is readable at WriteIntent time** because `step.rs` books
+  `pending_tools[effect_seq]` in the same pass that pushes the command; the
+  driver reads it off `st.abstract_flows` before dispatching.
+- **`otel.rs` emits the OpenTelemetry GenAI semantic conventions** —
+  `chat` (CLIENT span, `chat {model}`), `execute_tool`, and a *synthesized*
+  `invoke_agent` span per abstract-node attempt that parents the node's turns
+  and the tools they called. A plain bound Host node is NOT relabeled
+  `execute_tool`: it is not a GenAI operation. Full attribute table:
+  `docs/run.md` § "Watching a run".
+- **Every `areev.*` attribute stays.** superstep/task_path/attempt/effect_seq
+  is the run-provenance join back into the journal, and no `gen_ai.*`
+  attribute expresses it.
+- **Nothing is priced.** `usd_micros` is always 0, so there is no
+  `gen_ai.usage.cost` — an always-zero cost reads as "free", not "unpriced".
+- `ToolCallLlm::provider()` (areev-llm) defaults to semconv's `_OTHER` so a
+  host's own backend keeps compiling and still exports a valid value.
+  `OpenAiCompat` carries its provider name as a field rather than sniffing
+  `base_url`: Vertex and OpenRouter both ride that one transport.
+
 ## Brokered egress (`broker.rs`, `egress.rs`) and capability tools
 
 **How one tool call reaches the network, in order.** Every gate below is in

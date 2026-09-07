@@ -843,9 +843,132 @@ nodes in v1.
   stdout stays the machine surface.
 - `--otel-endpoint http://collector:4318` exports one OTLP/HTTP trace batch
   per run at completion; resumes join the same trace (the trace id derives
-  from the run id).
+  from the run id). `http://` only — TLS is the collector's job in this
+  profile, so point it at a local agent or sidecar.
 - Streaming is **observational only**: journals are byte-identical with no
   subscriber, a normal one, or a slow one — pinned by test.
+
+### The span shape
+
+Three levels, and the middle one is synthesized rather than journaled:
+
+| Span | When | Name | Kind |
+|---|---|---|---|
+| `areev.run` | every run | `areev.run` | INTERNAL |
+| `invoke_agent` | one per **abstract node activation** (per attempt) | `invoke_agent {node}` | INTERNAL |
+| `chat` | one per model turn | `chat {model}` | **CLIENT** |
+| `execute_tool` | one per tool the model called | `execute_tool {tool}` | INTERNAL |
+| *(unnamed)* | any other journaled effect — a bound Host node, a Client ask, a subgraph | the node id | INTERNAL |
+
+A plain bound workflow node is deliberately **not** dressed up as
+`execute_tool`: it is not a GenAI operation, and labelling it one would put
+tools nobody's model chose into a model-spend view.
+
+### The GenAI attribute contract
+
+Spans carry the current OpenTelemetry
+[GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
+so a GenAI-aware backend (Grafana, Langfuse, Arize, Datadog LLM
+Observability, …) classifies model spend, tool calls and finish reasons
+**with no Areev-specific code**. The internal argument for aligning with
+semconv rather than inventing a vocabulary is in
+[`areev-adaptive-agents-proposal.md`](areev-adaptive-agents-proposal.md)
+("a cheap standards-alignment move worth taking now" — note also that
+OTel's own direction of travel is to model *memory* as a thing that emits
+telemetry).
+
+| Attribute | On | Source |
+|---|---|---|
+| `gen_ai.operation.name` | chat / execute_tool / invoke_agent | the effect's `EffectKind` + whether an abstract node owns it |
+| `gen_ai.provider.name` | all three | `ToolCallLlm::provider()` — `anthropic`, `openai`, `ollama`, `gcp.vertex_ai`, `openrouter`; `_OTHER` for a host's own backend |
+| `gen_ai.request.model` | chat, invoke_agent | `ToolCallLlm::model()` |
+| `gen_ai.response.model` | chat | the request model — see the caveat below |
+| `gen_ai.request.max_tokens` | chat | the manifest's `llm_max_tokens` (§6.7's per-dispatch reservation), default 1024 |
+| `gen_ai.request.temperature` | chat | 0.0, the fixed temperature abstract-node turns are issued at |
+| `gen_ai.usage.input_tokens` / `.output_tokens` | chat | the journaled `EffectOutcome::Completed` figures — the same numbers budgets spend |
+| `gen_ai.response.finish_reasons` | chat | the result's `stop_reason` (`end_turn` / `tool_use` / `max_tokens` / `other`), always an **array** |
+| `gen_ai.tool.name` | execute_tool | the pinned Tool Definition's name |
+| `gen_ai.tool.call.id` | execute_tool | the **model's** call id, the one the transcript's `tool_result` addresses — *not* `JournalKey::tool_call_id()`, which is Areev's journal digest |
+| `gen_ai.tool.type` | execute_tool | `function` |
+| `gen_ai.agent.name` | all three | the abstract node's id |
+| `gen_ai.agent.id` | all three | `agent:{run}/{task_path}/{node}/{attempt}` — per **attempt**, because a retried node is a second invocation |
+| `gen_ai.conversation.id` | chat, invoke_agent, root | the run id: one journal, one transcript, and a resume continues both |
+| `error.type` | any failed effect | the `FailCause`, snake_cased (`timeout`, `executor_error`, `schema_validation_failed`, `user_aborted`, `unknown`) |
+
+Two deliberate absences:
+
+- **No `gen_ai.usage.cost`.** `usd_micros` is always 0 — Core prices nothing —
+  and an always-zero cost attribute reads as "this run was free" rather than
+  "nobody priced it".
+- **`gen_ai.response.model` echoes the request model.** The provider does
+  return the model it served, but that reply is parsed in the executor pool
+  and only its text / tool calls / stop reason reach the journal. Where a
+  provider aliases (`gpt-4o` → a dated build) the two genuinely differ, and
+  this attribute will say so once the pool carries it through.
+
+Every `areev.*` attribute stays on the span beside these — `areev.superstep`,
+`areev.task_path`, `areev.attempt`, `areev.effect_seq` (plus
+`areev.effect_kind` / `areev.executor_kind`), and `areev.run_id` /
+`areev.outcome` on the root. They are the run-provenance join, and nothing in
+`gen_ai.*` expresses it: `gen_ai.*` says what the model did, `areev.*` says
+which journaled effect it was — which is what makes a span addressable back
+into the journal with `areev run-trace`.
+
+**Why the attributes ride the event.** The exporter is a §6.10 observer: it
+runs on the bus's own thread, with no store handle, while the driver holds the
+memory's single writer. It cannot read the journal back to enrich a span, so
+everything a span says has to arrive inside the `RunEvent` — which is why
+`NodeDispatched` and `EffectSettled` carry model, usage and call-id fields.
+They are all optional and skipped when absent, so the `--events` JSON-lines
+contract stays additive: a run with no model in it emits the lines it always
+did.
+
+### The in-process callback (bindings)
+
+`--events` is a CLI affordance; a host embedding Areev gets the same stream as
+a **callback** (#182) — `on_event=` on Python's `run_start`/`run_resume`,
+`onEvent` on Node's. Each is handed **exactly the line `--events` prints**: one
+§6.10 `RunEvent` as a JSON object with an `"event"` tag.
+
+```python
+db.run_start(wf, "r1", tool_cmd=..., on_event=lambda line: print(json.loads(line)["event"]))
+```
+```js
+await m.runStart(wf, 'r1', null, toolCmd, ...Array(12).fill(null), (line) => console.log(JSON.parse(line).event))
+```
+
+There is no per-language event class and no deserializer, deliberately. The
+vocabulary is append-only and every field the OTel work added is `Option` +
+`skip_serializing_if`, so a subscriber matches on the tag, ignores what it does
+not know, and a run with no model in it sees the lines it always did.
+
+Three things a subscriber's author needs to know:
+
+- **`RunFinished` is emitted at a TERMINAL outcome.** A run that parks on a
+  human gate ends its `run_start` leg at `AskRaised`; `RunResumed` …
+  `RunFinished` arrive on the `run_resume` leg. Waiting for `RunFinished` from
+  a start that parks waits forever. `dropped_events` on that last line is the
+  honesty counter: how many events the bounded (1024, drop-oldest) buffer
+  discarded because the subscriber could not keep up.
+- **Attaching a callback turns on `TokenChunk` deltas** from an abstract node's
+  model turn — the driver only builds a token sink when there is a subscriber,
+  so model text streams through the same callback with no further plumbing.
+  Observational in the same sense as everything else here: the journaled result
+  is the model's final message, not the concatenated deltas.
+- **A callback that raises never fails the run.** Python reports it unraisable
+  (the treatment CPython gives an exception in `__del__`); Node's threadsafe
+  call is non-blocking and discards the result. The bindings' version of the
+  §6.10 invariance test runs one plan twice, observed and not, and asserts
+  `run_verify` passes both times and `run_inspect` matches.
+
+Node needs the callback converted to a threadsafe function on the JS thread
+before the work is queued — `RunObserver::event` fires on the event bus's own
+thread, a third thread from both the JS thread and the libuv worker — which is
+why `runStart`/`runResume` can throw synchronously as well as reject.
+
+The trigger surface (`trigger_run`/`trigger_deliver`) takes no callback in
+either binding, although a firing starts a real run and the CLI's `--events`
+does reach it. A knowable asymmetry, not an oversight.
 
 ## Surfaces
 
@@ -855,8 +978,8 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…)`, `run_resume`, `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out |
-| Node | `await m.runStart(…)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other

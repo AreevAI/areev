@@ -439,3 +439,59 @@ fn a_response_without_usage_fails_the_case() {
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["failed"], 1, "{out}");
 }
+
+// ---- `areev tool provenance` chains the blob (#179) -------------------------
+
+/// The forensic question is "what code actually ran", and a Tool grain answers
+/// it only by reference. Until now `tool provenance` stopped at the reference:
+/// it reported the recommendations and the runs, and left the reader to parse
+/// `executor_uri`, find the `.blobs` sidecar and check the digest by hand.
+///
+/// Seeded in-process because no CLI verb authors a Tool Definition (`ADD` is
+/// limited to fact/observation/goal/skill) — the handle is dropped before the
+/// binary runs, since one memory means one writer.
+#[test]
+fn tool_provenance_chains_the_executor_blob() {
+    use areev_core::types::{Grain, Tool, ToolKind};
+
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("p.db").to_str().unwrap().to_string();
+    const CODE: &[u8] = b"#!/bin/sh\necho '{\"ok\":true}'\n";
+
+    let (with_blob, no_blob) = {
+        let mut m = areev_store::Areev::open(&db).unwrap();
+        let uri = m.put_blob(CODE).unwrap();
+        let coded = Tool::new("validate_rows")
+            .kind(ToolKind::Definition)
+            .tool_description("a code-carrying tool")
+            .executor_uri(&uri)
+            .namespace("ops");
+        let plain = Tool::new("ask_human")
+            .kind(ToolKind::Definition)
+            .tool_description("no code behind it")
+            .namespace("ops");
+        (m.add(&coded).unwrap().to_hex(), m.add(&plain).unwrap().to_hex())
+    };
+
+    let (ok, out, err) = areev(&["tool", "provenance", &with_blob, "--db", &db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let ex = &report["executor"];
+    assert!(
+        ex["executor_uri"].as_str().unwrap_or_default().starts_with("cas://sha256:"),
+        "the chain starts at the content address: {out}"
+    );
+    assert_eq!(ex["blob_present"], true, "{out}");
+    assert_eq!(
+        ex["blob_bytes"].as_u64(),
+        Some(CODE.len() as u64),
+        "the bytes are the code that ran, not an estimate: {out}"
+    );
+
+    // A Definition with no executor_uri names no code, so it reports none —
+    // rather than an empty "executor" block that reads like a missing blob.
+    let (ok, out, err) = areev(&["tool", "provenance", &no_blob, "--db", &db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert!(report.get("executor").is_none(), "{out}");
+}
