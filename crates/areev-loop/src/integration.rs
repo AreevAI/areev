@@ -4188,6 +4188,41 @@ fn the_proposer_authors_a_plan_as_a_validated_workflow_beside_its_skill() {
     assert_eq!((live(&sub, crate::model::grain_type::SKILL).len(), live(&sub, crate::model::grain_type::WORKFLOW).len()), (1, 1), "one live pair");
     assert!(live(&sub, crate::model::grain_type::SKILL)[0].str_field("instructions").unwrap().contains("zone-correlated"));
 
+    // A graph the runtime would refuse is recorded as a SKILL, not discarded:
+    // the procedure is the thing worth keeping, and a 30B proposer writes
+    // conditions outside the frozen grammar often enough that dropping the
+    // draft for it would throw the capture away (PERSIST.md §11 #27).
+    let mut s6 = TestSubstrate::new();
+    let a = s6.add_tool_call("helpdesk_list_tickets", false, "TK-1, TK-2");
+    let b = s6.add_tool_call("helpdesk_update_ticket", false, "TK-1 tagged");
+    let ungrammatical = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/triage","evidence":["{a}","{b}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"Group and tag","when_to_use":"several open tickets share a component","nodes":[{{"id":"list_open","tool":"helpdesk_list_tickets","step":"List open tickets"}},{{"id":"tag","tool":"helpdesk_update_ticket","step":"Tag each"}}],"edges":[{{"src":"list_open","dst":"tag","cond":"tickets.length > 0"}},{{"src":"tag","dst":"end"}}]}}}}]}}"#
+    );
+    let e6 = Engine::with_builtins().with_llm(Box::new(mk(ungrammatical)));
+    e6.run(&mut s6.inner, &RunOptions::default(), t).unwrap();
+    let rec6 = e6
+        .recommendations(&s6.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("stored");
+    assert_eq!(rec6.action_kind, crate::model::ActionKind::Record, "still applicable");
+    let text6 = rec6.summary.render();
+    assert!(text6.contains("record skill: \"triage\""), "recorded as a skill, not a plan: {text6}");
+    match &rec6.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.starts_with("ADD skill "), "{cal}");
+            assert!(!cal.contains("ADD workflow"), "no unrunnable plan is minted: {cal}");
+            assert!(cal.contains("tickets.length > 0"), "the model's own guard survives as prose: {cal}");
+            assert!(cal.contains("tag → end"), "and so does the edge that named no step: {cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    e6.review(&mut s6.inner, &rec6.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "keep the procedure", t + 1).unwrap();
+    e6.apply(&mut s6.inner, &rec6.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    assert_eq!(live(&s6, crate::model::grain_type::SKILL).len(), 1);
+    assert_eq!(live(&s6, crate::model::grain_type::WORKFLOW).len(), 0, "and no workflow grain");
+
     // Not grounded, not runnable, or not allowed: advisory, never a change.
     let advisory = |sub: &mut TestSubstrate, e: &Engine| {
         e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
@@ -4197,20 +4232,39 @@ fn the_proposer_authors_a_plan_as_a_validated_workflow_beside_its_skill() {
             .find(|r| matches!(r.origin, Origin::Llm { .. }))
             .map(|r| r.action_kind)
     };
-    // a tool the evidence never shows
+    // A step whose tool the evidence never shows keeps its instruction and
+    // loses the attribution — a real procedure has steps that call nothing,
+    // and a model writes those with a placeholder tool.
     let mut s3 = TestSubstrate::new();
     let a = s3.add_tool_call("helpdesk_list_tickets", false, "ok");
-    let bad_tool = format!(
-        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"delete_everything","step":"s"}}],"edges":[]}}}}]}}"#
+    let mixed = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"List the open tickets"}},{{"id":"y","tool":"tool","step":"Group them by component"}}],"edges":[{{"src":"x","dst":"y"}}]}}}}]}}"#
     );
-    assert_eq!(advisory(&mut s3, &Engine::with_builtins().with_llm(Box::new(mk(bad_tool)))), Some(crate::model::ActionKind::Flag));
-    // an edge to a step that does not exist
-    let mut s4 = TestSubstrate::new();
-    let a = s4.add_tool_call("helpdesk_list_tickets", false, "ok");
-    let bad_edge = format!(
-        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"helpdesk_list_tickets","step":"s"}}],"edges":[{{"src":"x","dst":"nowhere"}}]}}}}]}}"#
+    let e3 = Engine::with_builtins().with_llm(Box::new(mk(mixed)));
+    e3.run(&mut s3.inner, &RunOptions::default(), t).unwrap();
+    let r3 = e3.recommendations(&s3.inner, Some(RecStatus::Pending)).unwrap().into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. })).expect("stored");
+    assert_eq!(r3.action_kind, crate::model::ActionKind::Record);
+    match &r3.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.contains("1. x [helpdesk_list_tickets]: List the open tickets"), "{cal}");
+            assert!(cal.contains("2. y: Group them by component"), "unattributed, not dropped: {cal}");
+            assert!(!cal.contains("[tool]"), "and never credited to a tool that does not exist: {cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // No step calls anything the evidence shows: not a procedure the agent
+    // carried out, and nothing a reviewer should be offered.
+    let mut s3b = TestSubstrate::new();
+    let a = s3b.add_tool_call("helpdesk_list_tickets", false, "ok");
+    let ungrounded = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"delete_everything","step":"s"}},{{"id":"y","tool":"nope","step":"s"}}],"edges":[]}}}}]}}"#
     );
-    assert_eq!(advisory(&mut s4, &Engine::with_builtins().with_llm(Box::new(mk(bad_edge)))), Some(crate::model::ActionKind::Flag));
+    assert_eq!(advisory(&mut s3b, &Engine::with_builtins().with_llm(Box::new(mk(ungrounded)))), Some(crate::model::ActionKind::Flag));
+    // An edge to a step that does not exist no longer costs the draft: the
+    // graph is refused, the procedure is kept as a skill (asserted above).
+    // What stays advisory is a step naming a tool the evidence never shows —
+    // a fabrication, and nothing a reviewer should be offered.
     // plans off by policy
     let mut s5 = TestSubstrate::new();
     let a = s5.add_tool_call("helpdesk_list_tickets", true, "boom");

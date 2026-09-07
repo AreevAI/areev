@@ -135,6 +135,38 @@ def live_facts(db):
     return [g for g in _grains(db, "facts") if _fields(g).get("relation") not in (RETIRED, "mg:eval_run")]
 
 
+def _latest_episode_below(variant_dir, mine):
+    """The highest-numbered episode directory under `variant_dir` before
+    `mine` — the episode graded immediately before this one."""
+    prev = None
+    if not variant_dir or not variant_dir.is_dir():
+        return None
+    for d in sorted(variant_dir.iterdir()):
+        try:
+            idx = int(d.name.split("_", 1)[0])
+        except ValueError:
+            continue
+        if idx < mine and d.is_dir() and (prev is None or idx > int(prev.name.split("_", 1)[0])):
+            prev = d
+    return prev
+
+
+def _episode_score(episode_dir):
+    """The graded summary in an episode directory's trace, or None when that
+    episode has not been graded yet. The score row is appended when the
+    benchmark grades the episode, so its absence is a timing fact, not a
+    malformed trace."""
+    for trace in sorted(episode_dir.glob("*.jsonl")):
+        for line in _read(trace).splitlines()[::-1]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and "task_score" in row:
+                return eval_run_summary(row, episode_dir.name)
+    return None
+
+
 def eval_run_summary(row, episode_name):
     """The benchmark's graded row as the evalset-run summary the loop reads.
 
@@ -672,39 +704,36 @@ class AreevAdapter(RuntimeAdapter):
     def _journal_previous_outcome(self):
         """The previous episode's graded score, as an evalset run under this
         family — the number `outcome_review` measures an applied change
-        against. Read from the sibling episode directory the benchmark
-        graded before starting this one; absent on the first episode."""
+        against. Absent on the very first episode of a family.
+
+        Two places are searched, because the benchmark writes the score into
+        an episode's trace when it GRADES that episode, and the cold baseline
+        is graded on a different schedule from the rest. It runs once per
+        family in a shared pre-pass under `shared_cold/`, and a copy of its
+        directory is back-filled into each variant BEFORE that grading lands
+        — so at the first learn episode's start the variant's `01_…` exists
+        but its trace carries no score, and the pre-pass directory is the one
+        that does. Looking only at the variant found a directory, read no
+        score, and journaled nothing: the first (and often only) applied
+        lesson of a family was proposed with no run journaled, no metric
+        attached, and the Verify gate had nothing to measure — the third
+        cause of the gate that never fired (PERSIST.md §11 #25)."""
         if not self.artifacts_dir:
             return
         episode_dir = self.artifacts_dir.parent
         variant_dir = episode_dir.parent
-        if not variant_dir.exists():
-            return
         try:
             mine = int(episode_dir.name.split("_", 1)[0])
         except ValueError:
             return
-        prev = None
-        for d in sorted(variant_dir.iterdir()):
-            try:
-                idx = int(d.name.split("_", 1)[0])
-            except ValueError:
+        score = source = None
+        for where in (variant_dir, variant_dir.parent / "shared_cold"):
+            prev = _latest_episode_below(where, mine)
+            if prev is None:
                 continue
-            if idx < mine and d.is_dir() and (prev is None or idx > int(prev.name.split("_", 1)[0])):
-                prev = d
-        if prev is None:
-            return
-        score = None
-        for trace in sorted(prev.glob("*.jsonl")):
-            for line in _read(trace).splitlines()[::-1]:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(row, dict) and "task_score" in row:
-                    score = eval_run_summary(row, prev.name)
-                    break
+            score = _episode_score(prev)
             if score:
+                source = prev.name
                 break
         if not score or not self.db_path.exists():
             return
@@ -714,6 +743,7 @@ class AreevAdapter(RuntimeAdapter):
                                        "relation": "mg:eval_run", "object": json.dumps(score)}), ns=HARNESS_NS)
         with_memory(self.db_path, ACTOR_RUNNER, go)
         self._ledger["journaled_outcome"] = score
+        self._ledger["journaled_from"] = source
 
     # -- the loop the benchmark drives ---------------------------------------
 
@@ -1108,6 +1138,7 @@ def govern(db_path, family_id, seed):
         lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=str(policy_path))))
     out = {"funnel": rep.get("llm_funnel"), "findings": len(rep.get("recommendations") or rep.get("findings") or []),
            "pending": 0, "applied": 0, "rejected": 0, "reverted": 0, "decisions": [], "errors": [],
+           "outcomes": [], "verdicts": {"total": 0, "held": 0, "regressed": 0, "drifted": 0},
            "llm": bool(llm_cmd), "reviewer": bool(review_cmd)}
     judge = rv.make_judge(review_cmd)
 
@@ -1155,6 +1186,22 @@ def govern(db_path, family_id, seed):
         return "\n".join(parts)
 
     def review(db):
+        # The Verify gate's own output — the verdict series — BEFORE any
+        # review decision. Only the post-learn anchor memory is archived, so
+        # a verdict recorded in an evaluation episode's working memory would
+        # otherwise leave no trace at all: the ledger is the only place it
+        # survives, and "did the gate fire" is the question the run exists to
+        # answer. A `held` verdict proposes nothing, so counting reverts alone
+        # cannot see it (PERSIST.md §11 #26).
+        try:
+            series = json.loads(db.loop_outcomes())
+            out["outcomes"] = series[-20:]
+            out["verdicts"] = {"total": len(series),
+                               "held": sum(1 for o in series if o.get("verdict") == "held"),
+                               "regressed": sum(1 for o in series if o.get("verdict") == "regressed"),
+                               "drifted": sum(1 for o in series if o.get("verdict") == "drifted")}
+        except Exception as exc:
+            out["errors"].append("outcomes: %s" % str(exc)[:120])
         in_force = [t for _, t in live_notes(db)] + [t for _, t in live_profile(db)]
         pend = json.loads(db.recommendations('{"status":"pending"}'))
         out["pending"] = len(pend)
