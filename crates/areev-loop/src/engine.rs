@@ -2327,10 +2327,12 @@ const DISCOVER_LEARNER_INSTRUCTIONS: &str = discover_instructions!(
 propose now is what it will do differently next time — a lesson you withhold \
 is a mistake it repeats. A correct, actionable proposal earns 1; a wrong or \
 trivial one is penalized 1; returning nothing while the evidence holds a \
-recurring failure, two or more rejected outcomes, or an instruction from a \
-person is ALSO penalized 1. Abstain only when the evidence shows none of \
-those. Prefer the one proposal that addresses the most frequent or most costly \
-failure over several speculative ones, and report your confidence honestly — \
+recurring failure, two or more rejected outcomes, an instruction from a \
+person, or a multi-step procedure the agent completed successfully that no \
+saved skill or plan covers, is ALSO penalized 1. Abstain only when the \
+evidence shows none of those. Prefer the one proposal that addresses the most \
+frequent or most costly failure — or, when nothing failed, the procedure that \
+worked — over several speculative ones, and report your confidence honestly — \
 an independent verifier, not you, decides what survives."
 );
 
@@ -3111,7 +3113,11 @@ exact format produced), a one-line description, and 'when_to_use' — the situat
 that should trigger it. The skill-name is a short identifier (letters, digits, \
 _ -). If a saved skill already covers this procedure, use ITS name so it is \
 patched rather than duplicated. Do not propose a skill for a procedure that \
-failed, or for one already saved and unchanged.",
+failed, or for one already saved and unchanged. A finding that itself describes \
+two or more steps the agent should carry out in order ('after listing the \
+tickets, fetch each, then …') IS a procedure: propose it as a skill or a plan, \
+never as a lesson — a lesson is one rule, and a procedure written as one is a \
+procedure nobody can open.",
         crate::llm::MAX_SKILL_STEPS
     )
 }

@@ -541,7 +541,13 @@ metric = "evalset:<EVALSET_HASH>:<field>"
 `<field>` is read from the summary `areev eval run` journals. Four names are
 promoted and work against any evalset — `passed`, `failed`, `total`,
 `error_rate` (`failed/total`) — and anything else is read from the summary your
-harness wrote, e.g. `evalset:abc123:category_accuracy`.
+harness wrote, e.g. `evalset:abc123:category_accuracy`. **A harness that
+journals its own runs must write `passed` and `failed` as integer counts**
+(`1`/`0` for a single graded task): the reader is fail-closed and drops a
+summary whose counts are missing or non-integer — a boolean `passed` is not a
+count — so a run journaled that way is invisible to the gate and no metric
+ever attaches. Measured: one benchmark harness did exactly this for three
+runs and recorded zero verdicts (`crates/areev-bench/PERSIST.md` §11 #24).
 
 **State the direction.** The built-in metrics are recurrence counts where lower
 is better; an accuracy is the opposite. `MetricSnapshot.higher_is_better` says

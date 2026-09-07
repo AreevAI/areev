@@ -126,6 +126,16 @@ def run(root):
     check("Paula Reed" in after["skill_docs"]["weekly_export"]["content"], "skill patch landed")
     it = after["internal_tools"]
     check(it["memory_write_count"] == 3 and it["memory_read_count"] == 1, "memory writes=%d reads=%d counted" % (it["memory_write_count"], it["memory_read_count"]))
+    # The evalset-run summary the governed arm journals must be the shape the
+    # loop's fail-closed reader accepts: a run_id and INTEGER counts. Three
+    # full runs recorded no verdict because this was a boolean (PERSIST.md
+    # §11 #24); the contract is pinned here so it cannot regress silently.
+    s = ab.eval_run_summary({"task_score": 0.234, "passed": False}, "02_x_learn_a")
+    check(s["run_id"] == "02_x_learn_a" and s["passed"] == 0 and s["failed"] == 1
+          and type(s["passed"]) is int and type(s["failed"]) is int and s["task_score"] == 0.234,
+          "journaled eval run is loop-readable: run_id + integer counts (%r)" % (s,))
+    s = ab.eval_run_summary({"task_score": 1.0, "passed": True}, "05_x_eval_far")
+    check(s["passed"] == 1 and s["failed"] == 0, "a passed episode counts as 1/0")
     check(it["skill_create_count"] == 1 and it["skill_update_count"] == 1, "skill create/update counted")
     check(it["session_search_calls"] == 1 and it["skill_read_count"] == 1, "session_search and skill_view counted")
 

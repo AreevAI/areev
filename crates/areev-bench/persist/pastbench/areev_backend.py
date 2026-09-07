@@ -135,6 +135,21 @@ def live_facts(db):
     return [g for g in _grains(db, "facts") if _fields(g).get("relation") not in (RETIRED, "mg:eval_run")]
 
 
+def eval_run_summary(row, episode_name):
+    """The benchmark's graded row as the evalset-run summary the loop reads.
+
+    The loop's reader is fail-closed: it requires `run_id` and INTEGER
+    `passed` and `failed` counts, and drops a summary missing any of them
+    rather than defaulting (an absent `failed` must never read as "zero
+    failures"). Until run 4's smoke this wrote a boolean `passed`, no
+    `failed` and no `run_id` — every run ever journaled here was invisible
+    to the Verify gate, and no verdict was recorded in three full runs
+    (PERSIST.md §11 #24). One graded episode is one task: passed 1/0."""
+    passed = 1 if bool(row.get("passed")) else 0
+    return {"run_id": episode_name, "passed": passed, "failed": 1 - passed,
+            "task_score": float(row["task_score"]), "episode": episode_name, "n": 1}
+
+
 def _now_ms():
     """Epoch milliseconds — the grain's `valid_to` unit. `_now()` below is the
     ISO string the trace log wants; the two are not interchangeable."""
@@ -687,8 +702,7 @@ class AreevAdapter(RuntimeAdapter):
                 except json.JSONDecodeError:
                     continue
                 if isinstance(row, dict) and "task_score" in row:
-                    score = {"task_score": float(row["task_score"]), "passed": bool(row.get("passed")),
-                             "episode": prev.name, "n": 1}
+                    score = eval_run_summary(row, prev.name)
                     break
             if score:
                 break
