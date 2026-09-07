@@ -388,7 +388,7 @@ fn main() {
 
     if a.drop_ann {
         match m.drop_vector_index() {
-            Ok(()) => println!("ANN index dropped — vector recall is exact again"),
+            Ok(()) => println!("no ANN index in place — vector recall is exact"),
             Err(e) => println!("drop_vector_index: {e}"),
         }
     }

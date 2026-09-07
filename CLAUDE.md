@@ -336,7 +336,7 @@ grain selection, dynamic planning, do/don't) is
   queue: **`run.respond` refuses shared-token and anonymous callers** — only
   a per-principal credential (`areev ui --auth`) may approve, because the
   approver's identity IS the audit record; cancel keeps the low bar.
-- **areev**: ~29 verbs (incl. `migrate` from other memory systems,
+- **areev**: ~30 verbs (incl. `migrate` from other memory systems,
   `reindex`, the graph/time reads `related`/`entity-at`/`step-actions`, the
   join `run-trace`/`runs-touching`, the DSAR read `subject-report`, the
   credential lifecycle `auth mint|list|revoke`, and `provision` — the last two

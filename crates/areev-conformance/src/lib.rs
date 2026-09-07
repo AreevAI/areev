@@ -243,6 +243,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(vector_leg_roundtrip);
         $per_case!(external_vectors_need_no_embedder);
         $per_case!(a_refused_vector_declares_nothing);
+        $per_case!(bulk_embeddings_land_atomically);
         // bulk erasure (right-to-erasure + retention)
         $per_case!(subject_erasure_is_complete);
         $per_case!(partition_keys_and_text_mentions_erase);

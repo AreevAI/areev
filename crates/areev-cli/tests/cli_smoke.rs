@@ -1526,3 +1526,51 @@ fn trigger_context_query_is_validated_at_declaration() {
     assert!(!ok, "a pointer without '/' must be refused");
     assert!(err.contains("JSON pointer"), "{err}");
 }
+
+/// #141: the ANN index is reachable from the shell. On a file memory the
+/// status is honest (no index, exact reads), a build is refused by code, and
+/// `check` insists on the caller's own query vectors.
+#[test]
+fn vector_index_verb_reports_refuses_and_grades() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("v.db");
+    let db = db.to_str().unwrap();
+    let (ok, _, err) = areev(&[
+        "add", "--db", db, "--ns", "caller", "--subject", "a", "--relation", "r", "--object", "o",
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, out, err) = areev(&["vector-index", "status", "--db", db]);
+    assert!(ok, "{err}");
+    assert!(out.contains("\"index\":null"), "{out}");
+
+    let (ok, _, err) = areev(&["vector-index", "build", "--db", db]);
+    assert!(!ok);
+    assert!(err.contains("STO-E007"), "{err}");
+
+    let (ok, _, err) = areev(&["vector-index", "check", "--db", db]);
+    assert!(!ok);
+    assert!(err.contains("--queries"), "{err}");
+
+    let q = dir.path().join("q.json");
+    std::fs::write(&q, "[[1.0, 0.0, 0.0]]").unwrap();
+    // The scope must be explicit: the global default is a narrow one.
+    let (ok, _, err) = areev(&["vector-index", "check", "--db", db, "--queries", q.to_str().unwrap()]);
+    assert!(!ok);
+    assert!(err.contains("--ns"), "{err}");
+    let (ok, out, err) = areev(&[
+        "vector-index", "check", "--db", db, "--ns", "caller", "--queries", q.to_str().unwrap(), "--k", "3",
+    ]);
+    assert!(ok, "{err}");
+    assert!(out.contains("\"index\": null") && out.contains("\"recall\": 1.0"), "{out}");
+    // Retuning needs an index to tune.
+    let (ok, _, err) = areev(&[
+        "vector-index", "check", "--db", db, "--ns", "caller", "--queries", q.to_str().unwrap(), "--ef-search", "100",
+    ]);
+    assert!(!ok);
+    assert!(err.contains("STO-E007"), "{err}");
+
+    let (ok, _, err) = areev(&["vector-index", "bogus", "--db", db]);
+    assert!(!ok);
+    assert!(err.contains("usage: areev vector-index"), "{err}");
+}

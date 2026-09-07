@@ -1459,3 +1459,42 @@ def test_adapter_promotion_is_gated_end_to_end(tmp_path):
         'RECALL facts WHERE relation = "mg:adapter_promotion" AND namespace = "areev-loop"'
     ))["grains"]
     assert promos == []
+
+
+# --------------------------------------------------------------------------
+# the vector-at-scale surface (#141): bulk embeddings, the ANN index, recall@k
+# --------------------------------------------------------------------------
+
+def test_bulk_embeddings_and_the_vector_index_surface(tmp_path):
+    m = make_db(tmp_path)
+    hs = [m.add_fact(f"s{i}", "has", "vector", ns="caller") for i in range(3)]
+    items = [{"hash": h, "vector": [1.0 if j == i else 0.0 for j in range(3)]}
+             for i, h in enumerate(hs)]
+    assert json.loads(m.add_embeddings(json.dumps(items)))["written"] == 3
+    near = json.loads(m.nearest_vector([0.0, 1.0, 0.0], k=1))
+    assert near[0]["hash"] == hs[1]
+
+    # all-or-nothing, and malformed input is named, not swallowed
+    with pytest.raises(ValueError, match="dimensions"):
+        m.add_embeddings(json.dumps([{"hash": hs[0], "vector": [1.0, 0.0, 0.0]},
+                                     {"hash": hs[1], "vector": [1.0, 0.0]}]))
+    with pytest.raises(ValueError, match="item 0"):
+        m.add_embeddings(json.dumps([{"hash": "nope", "vector": [1.0]}]))
+    with pytest.raises(ValueError):
+        m.add_embeddings("not json")
+    assert json.loads(m.add_embeddings("[]"))["written"] == 0
+
+    # a file memory scans exactly: no index, build refused by code, the
+    # recall check says so rather than pretending to grade anything
+    assert json.loads(m.vector_index())["index"] is None
+    with pytest.raises(ValueError, match="STO-E007"):
+        m.ensure_vector_index()
+    rep = json.loads(m.vector_recall_check(json.dumps([[1.0, 0.0, 0.0]]), k=2))
+    assert rep == {"index": None, "ef_search": None, "k": 2, "queries": 0, "recall": 1.0}
+    with pytest.raises(ValueError, match="k >= 1"):
+        m.vector_recall_check("[[1.0, 0.0, 0.0]]", k=0)
+    with pytest.raises(ValueError, match="at least one"):
+        m.vector_recall_check("[]", k=2)
+    with pytest.raises(ValueError, match="STO-E007"):
+        m.vector_recall_check("[[1.0, 0.0, 0.0]]", k=2, ef_search=100)
+    assert json.loads(m.drop_vector_index())["index"] is None

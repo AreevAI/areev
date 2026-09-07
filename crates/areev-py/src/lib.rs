@@ -140,6 +140,7 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+
 /// Verb check for the binding methods that reach the store directly instead
 /// of through a gated `cal_*` facade method. `principal=` is documented to
 /// fail closed (CAL 1.3 §9), so a sandboxed handle must not be able to erase
@@ -1573,6 +1574,90 @@ impl Areev {
             Some((model, dim)) => json!({"model": model, "dim": dim}).to_string(),
             None => "null".to_string(),
         })
+    }
+
+    /// The bulk form of `add_embedding`: one transaction for
+    /// `items_json = [{"hash": "<64-hex>", "vector": [..]}, ...]`. An unknown
+    /// hash or a dimension mismatch refuses the whole batch before anything
+    /// is written. Returns `{"written": n}`.
+    fn add_embeddings(&self, py: Python<'_>, items_json: String) -> PyResult<String> {
+        let n = py
+            .detach(|| {
+                let items = areev_store::parse_embedding_items(&items_json)?;
+                self.facade.with_store(|m| m.set_grain_embeddings(&items))
+            })
+            .map_err(err)?;
+        Ok(json!({"written": n}).to_string())
+    }
+
+    /// Build the ANN (pgvector HNSW) index over the stored vectors, trading
+    /// exact recall for sublinear whole-corpus k-NN. Postgres only — the
+    /// embedded engine raises `STO-E007`. `ef_search` is session-scoped.
+    /// Returns `{"index": name}`. Grade it with `vector_recall_check` before
+    /// relying on it: the accuracy cost belongs to your model's geometry.
+    #[pyo3(signature = (m = 16, ef_construction = 64, ef_search = 40))]
+    fn ensure_vector_index(
+        &self,
+        py: Python<'_>,
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+    ) -> PyResult<String> {
+        let name = py
+            .detach(|| {
+                self.facade.with_store(|s| {
+                    s.ensure_vector_index(m, ef_construction, ef_search)?;
+                    s.vector_index()
+                })
+            })
+            .map_err(err)?;
+        Ok(json!({"index": name}).to_string())
+    }
+
+    /// Drop the ANN index, returning vector recall to an exact scan. Returns
+    /// `{"index": null}`.
+    fn drop_vector_index(&self, py: Python<'_>) -> PyResult<String> {
+        py.detach(|| self.facade.with_store(|s| s.drop_vector_index())).map_err(err)?;
+        Ok(json!({"index": serde_json::Value::Null}).to_string())
+    }
+
+    /// `{"index": name}` if an ANN index is built, `{"index": null}` if not —
+    /// the honest answer to "are my vector results exact right now?".
+    fn vector_index(&self, py: Python<'_>) -> PyResult<String> {
+        let name = py.detach(|| self.facade.with_store(|s| s.vector_index())).map_err(err)?;
+        Ok(json!({"index": name}).to_string())
+    }
+
+    /// Grade the ANN index against the exact scan with YOUR query vectors:
+    /// `queries_json` is a JSON array of vectors, `k` the cutoff, `ns` the
+    /// scope you really query with (a narrow one is exact anyway), and
+    /// `ef_search` optionally retunes the index for this session first.
+    /// Returns `{"index", "ef_search", "k", "queries", "recall"}`; with no
+    /// index built the read path is exact and the report says so.
+    #[pyo3(signature = (queries_json, k = 10, ns = None, ef_search = None))]
+    fn vector_recall_check(
+        &self,
+        py: Python<'_>,
+        queries_json: String,
+        k: usize,
+        ns: Option<String>,
+        ef_search: Option<usize>,
+    ) -> PyResult<String> {
+        let queries: Vec<Vec<f32>> = serde_json::from_str(&queries_json).map_err(|e| {
+            PyValueError::new_err(format!("queries must be a JSON array of number arrays: {e}"))
+        })?;
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
+        let report = py
+            .detach(|| {
+                self.facade.with_store(|s| {
+                    if let Some(ef) = ef_search {
+                        s.set_vector_ef_search(ef)?;
+                    }
+                    s.vector_recall_check(&ns, &queries, k)
+                })
+            })
+            .map_err(err)?;
+        serde_json::to_string(&report).map_err(err)
     }
 
     // ---- the `areev run` runtime (Wave 5 parity) ---------------------------

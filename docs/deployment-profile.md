@@ -151,6 +151,17 @@ milliseconds, fine as a provisioning step and unacceptable inside a request.
 Steady-state open of an existing, populated schema is tens of milliseconds.
 Create the tenant's schema when the tenant is created, not on their first turn.
 
+**Open handles before bulk operations.** A bootstrapping open — the first
+open of a schema, or the first open of a build that carries a migration —
+runs DDL that takes a `ShareLock` on the tables it touches, and that lock
+waits behind any long transaction already in flight: a second `open()` on a
+schema mid-way through a bulk `add_embeddings` or a reindex blocks until that
+transaction commits, and looks like a hang. Steady-state opens issue no DDL
+(#180) and are unaffected, and so is `--read-only`, which never issues DDL at
+all. So: provision the schema (`areev provision`) and open every handle you
+will need *before* starting a bulk load, rather than opening a fresh one in
+the middle of it.
+
 **Outage recovery: automatic for reads, explicit for writes.** A managed
 Postgres restarts, fails over, and drops connections as routine maintenance.
 The handle now replaces a dead session in place — clearing the

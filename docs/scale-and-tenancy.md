@@ -110,10 +110,13 @@ Three levers, in the order to reach for them:
    by into the namespace at ingest** — it is not addable later without
    rewriting the corpus, for the same reason §1's partition map is not.
 3. **Then, and only for the genuinely corpus-wide query, an ANN index.**
-   `Areev::ensure_vector_index` builds a pgvector HNSW index (Postgres only;
-   the embedded backend answers `STO-E007`), taking the unfiltered query from
+   `ensure_vector_index` builds a pgvector HNSW index (Postgres only; the
+   embedded backend answers `STO-E007`), taking the unfiltered query from
    24 ms to 1.0 ms at 100k grains. It is opt-in because it makes recall
-   approximate.
+   approximate. It is reachable from every surface that manages a memory —
+   Rust, Python and Node (`ensure_vector_index` / `ensureVectorIndex`), and
+   the shell (`areev vector-index build`) — and `vector_index()` /
+   `areev vector-index status` answers whether reads are exact right now.
 
 **Measure recall with your own model before trusting an ANN index.** The
 latency win is unconditional. The accuracy cost is a property of your embedding
@@ -125,9 +128,20 @@ build parameters, 1.00 at `m=32, ef_construction=200`, for a 12× speedup. The
 recall number is measuring the embedder rather than the index is that it does
 not move when `ef_search` does (RESULTS.md §8e).
 
-Two commands settle it for your corpus: `pe_scale --dump-topk` against the
-exact scan, then `--compare-topk` with `--ann`. Do it before an ANN index
-reaches a corpus anyone relies on.
+Measure it with your own query vectors: `vector_recall_check(queries, k, ns)`
+in either binding, or `areev vector-index check --queries FILE.json --ns
+'org.*'`, grades the index against the exact scan over the scope you name and
+reports recall@k at the `ef_search` it ran with (pass `ef_search` to retune
+the session first, no rebuild). (`pe_scale --dump-topk` / `--compare-topk` is the same measurement
+as a benchmark harness.) Do it before an ANN index reaches a corpus anyone
+relies on, and do it over the *wide* scope you actually query — a k-NN
+narrowed to one namespace is served exactly from the structural index and
+will report 1.0 without telling you anything about the graph.
+
+Bulk vectors go in through `add_embeddings` (one transaction, chunked), not
+one `add_embedding` call per grain — the per-vector path is a transaction and
+three round trips each, and on the Postgres tier that made a re-ingest
+round-trip-bound at ~545 vectors/s against ~911 grains/s for `add_batch`.
 
 A note on tiers: the PostgreSQL backend is **faster** at the vector scan than
 the embedded one (24 ms vs 121 ms at 100k), because `pgvector`'s `<=>` is SIMD

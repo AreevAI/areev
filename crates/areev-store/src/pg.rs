@@ -369,6 +369,11 @@ pub(crate) struct PgDb {
     /// it is: the transaction died with the connection, so silently re-running
     /// one statement would apply it outside the atomic unit it was written for.
     in_txn: std::cell::Cell<bool>,
+    /// Session settings that must SURVIVE a reconnect: `reconnect` builds a
+    /// fresh session with Postgres defaults, and a replayed read on it would
+    /// silently grade the HNSW answer against itself.
+    ann_ef_search: std::cell::Cell<Option<usize>>,
+    exact_scan: std::cell::Cell<bool>,
     /// Cached BM25 collection stats — a COUNT/SUM over fts_doc is O(corpus)
     /// and would otherwise run on EVERY text query. Invalidated on this
     /// handle's own writes (reserve_write); other writers' documents stay
@@ -534,6 +539,8 @@ impl PgDb {
             client: RefCell::new(std::sync::Arc::new(client)),
             cache: RefCell::new(HashMap::new()),
             in_txn: std::cell::Cell::new(false),
+            ann_ef_search: std::cell::Cell::new(None),
+            exact_scan: std::cell::Cell::new(false),
             stats: RefCell::new(None),
             bootstrap_skipped,
         })
@@ -753,11 +760,17 @@ impl PgDb {
     /// caches that belonged to the old session have to go.
     fn reconnect(&self) -> Result<()> {
         let client = crate::pgtls::connect(&self.rt, &self.url)?;
-        self.rt.block_on(client.batch_execute(&format!(
-            "SET search_path TO \"{}\", public, ext",
-            self.schema
-        )))
-        .map_err(pg_err)?;
+        let mut session = format!("SET search_path TO \"{}\", public, ext", self.schema);
+        // Re-apply what the dead session carried, or a replayed read lands
+        // on Postgres defaults: an `ef_search` a host tuned, and the exact-scan
+        // bypass mid `vector_recall_check`.
+        if let Some(ef) = self.ann_ef_search.get() {
+            session.push_str(&format!("; SET hnsw.ef_search = {ef}"));
+        }
+        if self.exact_scan.get() {
+            session.push_str("; SET enable_indexscan = off; SET enable_bitmapscan = off");
+        }
+        self.rt.block_on(client.batch_execute(&session)).map_err(pg_err)?;
         // Order matters only in that both must happen before the next call:
         // a Statement from the old session is invalid, and the BM25 collection
         // stats were cached against a connection that can no longer confirm them.
@@ -1232,7 +1245,38 @@ impl Db for PgDb {
                 .batch_execute(&format!("SET hnsw.ef_search = {ef_search}"))
                 .await
                 .map_err(pg_err)?;
+            self.ann_ef_search.set(Some(ef_search));
             Ok(())
+        })
+    }
+
+    fn set_ann_ef_search(&self, ef_search: usize) -> Result<()> {
+        if !(1..=1000).contains(&ef_search) {
+            return Err(AreevError::Validation(format!(
+                "hnsw ef_search must be 1..=1000, got {ef_search}"
+            )));
+        }
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            client
+                .batch_execute(&format!("SET hnsw.ef_search = {ef_search}"))
+                .await
+                .map_err(pg_err)
+        })?;
+        self.ann_ef_search.set(Some(ef_search));
+        Ok(())
+    }
+
+    fn ann_ef_search(&self) -> Result<Option<usize>> {
+        // `current_setting(_, true)` is NULL rather than an error when the
+        // extension has never been loaded in this session.
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            let row = client
+                .query_one("SELECT current_setting('hnsw.ef_search', true)", &[])
+                .await
+                .map_err(pg_err)?;
+            Ok(row.get::<_, Option<String>>(0).and_then(|v| v.parse().ok()))
         })
     }
 
@@ -1245,6 +1289,26 @@ impl Db for PgDb {
                 .map_err(pg_err)?;
             Ok(())
         })
+    }
+
+    fn set_exact_vector_scan(&self, on: bool) -> Result<()> {
+        // pgvector serves an approximate k-NN through an index scan over the
+        // HNSW graph; with index scans disabled the planner falls back to the
+        // sequential scan that computes every distance, which is the exact
+        // answer. Session-scoped like `hnsw.ef_search`, and this backend
+        // holds one connection per handle, so it affects only this handle —
+        // and only until it is switched back.
+        let sql = if on {
+            "SET enable_indexscan = off; SET enable_bitmapscan = off"
+        } else {
+            "RESET enable_indexscan; RESET enable_bitmapscan"
+        };
+        self.rt.block_on(async {
+            let client = self.client.borrow().clone();
+            client.batch_execute(sql).await.map_err(pg_err)
+        })?;
+        self.exact_scan.set(on);
+        Ok(())
     }
 
     fn ann_index_name(&self) -> Result<Option<String>> {

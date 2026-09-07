@@ -10,6 +10,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The vector-at-scale surface reaches the bindings and the CLI** (#141).
+  A host that manages memories through Python or Node alone could not build
+  the ANN index, could only write embeddings one transaction at a time, and
+  had no way to check what the index cost it. Now, in both bindings and as
+  `areev vector-index <status|build|drop|check>`:
+  - `add_embeddings([{hash, vector}, …])` writes a batch in **one
+    transaction**, chunked two hundred rows per statement — the per-vector
+    path was a transaction and three round trips each, which is why a bulk
+    re-ingest measured round-trip-bound (~545 vectors/s) rather than
+    embedding-bound. All-or-nothing: one unknown hash or wrong dimension
+    refuses the batch before anything is written, and the error names the row.
+  - `ensure_vector_index(m, ef_construction, ef_search)`, `drop_vector_index()`
+    and `vector_index()` expose the pgvector HNSW index that was Rust-only.
+    The embedded engine still refuses to build one (`STO-E007`) and reports
+    `index: null`, because its reads are exact.
+  - `vector_recall_check(queries, k, ns, ef_search)` grades the index against
+    the exact scan **with the caller's own query vectors** — recall is a
+    property of the embedding model's geometry, so nobody else's number
+    transfers — over the scope named (the CLI insists on `--ns`, because the
+    default scope is a narrow one the structural index serves exactly). The
+    report carries the `ef_search` it graded at, and `ef_search` retunes the
+    session first without a rebuild. With no index built it reports
+    `recall: 1.0, index: null` and runs nothing; a scope with no exact
+    neighbours reports `recall: null` rather than a 1.0 that reads as a pass.
+    The exact side and a tuned `ef_search` both survive a Postgres reconnect,
+    which a replayed read would otherwise land on default settings.
+  Pinned on both backends by the conformance case
+  `bulk_embeddings_land_atomically`. Not added as an MCP tool: building an
+  index is an operator action, not something an agent should reach for
+  mid-conversation.
+- **Recorded late:** 1.7.0 made `nearest_vector` / `nearest_semantic` accept
+  an `"org.*"` prefix scope like every other plural read, and added the
+  `(ns, s, p)` index that turns a filtered vector scan from a full scan into a
+  seek (`46e6a79`). The change shipped without a changelog line; this is it.
 - **Postgres: a steady-state open issues no DDL at all** (#180). A bootstrapped
   schema is stamped with its schema version in `meta.pg_schema`; the next open
   reads that stamp before taking any lock and skips the 43 DDL statements, the
@@ -255,6 +289,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`drop_vector_index` on the embedded backend is a no-op, not `STO-E007`.**
+  What a drop promises is exact reads, and a file memory's reads are exact
+  already; Postgres answers the same way (`DROP INDEX IF EXISTS`) when none
+  is built. A caller branching on the old refusal sees `Ok` now. Building one
+  there still refuses, because that would promise an index that cannot exist.
+- **`set_grain_embedding` is the one-row form of `set_grain_embeddings`** and
+  so now honours `--read-only` (`STO-E004` instead of a raw permission error,
+  and no DDL), and re-checks the grain under the row lock before writing —
+  on the multi-writer backend a forget landing between resolve and insert no
+  longer leaves a vector behind for erased content.
 - **Successful tool calls reach the evidence bundle when skill authoring is
   on** — after the failures, inside the same reserved share, so a busy desk's
   successes cannot bury the failure signal. With `skills.enabled: false` the

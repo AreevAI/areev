@@ -83,3 +83,39 @@ def test_subject_erasure_and_retention():
         assert json.loads(m.stats())["grains"] == 0
     finally:
         areev.drop_postgres_schema(URL, schema)
+
+
+def test_vector_index_lifecycle_and_recall_check():
+    """#141: the ANN index and its grade, from the binding alone. Needs the
+    pgvector extension on the server (the recommended image has it)."""
+    import math
+
+    schema = f"py_vec_{os.getpid()}"
+    try:
+        m = areev.Areev(dsn_for(schema), ns="caller", telemetry="off")
+        hs = [m.add_fact(f"s{i}", "has", "vector") for i in range(60)]
+        items = [{"hash": h, "vector": [math.cos(i * 0.31), math.sin(i * 0.31), 0.05 * i, 1.0]}
+                 for i, h in enumerate(hs)]
+        assert json.loads(m.add_embeddings(json.dumps(items)))["written"] == 60
+        assert json.loads(m.vector_index())["index"] is None
+
+        built = json.loads(m.ensure_vector_index(m=16, ef_construction=64, ef_search=40))
+        assert built["index"] == "idx_embeddings_hnsw"
+        assert json.loads(m.vector_index())["index"] == "idx_embeddings_hnsw"
+
+        rep = json.loads(m.vector_recall_check(
+            json.dumps([it["vector"] for it in items[:8]]), k=5))
+        assert rep["index"] == "idx_embeddings_hnsw"
+        assert rep["queries"] == 8 and rep["k"] == 5 and rep["ef_search"] == 40
+        assert 0.0 <= rep["recall"] <= 1.0
+        retuned = json.loads(m.vector_recall_check(
+            json.dumps([it["vector"] for it in items[:8]]), k=5, ef_search=200))
+        assert retuned["ef_search"] == 200
+        # the exact-scan bypass was lifted: ordinary reads still work after
+        near = json.loads(m.nearest_vector(items[3]["vector"], k=1))
+        assert near[0]["hash"] == hs[3]
+
+        assert json.loads(m.drop_vector_index())["index"] is None
+        assert json.loads(m.vector_index())["index"] is None
+    finally:
+        areev.drop_postgres_schema(URL, schema)
