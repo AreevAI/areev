@@ -4,7 +4,7 @@
     aba_chart.py OUT_STEM RUN_DIR [--prefix P]
 
     aba_chart.py docs/assets/aba-selfimprove \
-      crates/areev-bench/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30 \
+      ../areev-benchmark/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30 \
       --prefix governed
 
 Writes OUT_STEM-light.svg and OUT_STEM-dark.svg. `--prefix` selects one

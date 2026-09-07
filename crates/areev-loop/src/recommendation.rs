@@ -5,7 +5,11 @@
 //! - Analyzers emit a `(template_id, args)` summary, never free prose.
 //! - `dedup_key`, `origin`, and the params snapshot are engine-stamped.
 //! - `dedup_key` excludes proposal content and the `/major` version, so a
-//!   growing cluster or an analyzer upgrade does not re-propose as novel.
+//!   growing cluster or an analyzer upgrade does not re-propose as novel —
+//!   for ANALYZER findings. An authored (`origin = llm`) executable proposal
+//!   keys on a fingerprint of its content as well, because there the content
+//!   IS the finding: two different lessons on one entity are two findings,
+//!   and the same lesson re-authored is one.
 //! - Lifecycle transitions are gated; `pending → applied` is policy-only.
 
 use crate::error::{Error, Result};
@@ -77,6 +81,9 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "outcome.regression" => {
             "Applied recommendation regressed: {metric} moved {baseline} → {current}"
         }
+        "outcome.premise_drift" => {
+            "{current} of the grains this recommendation cited have since been superseded by a different value or retracted — its premise moved; revert it"
+        }
         "run.failures" => {
             "Workflow {workflow} failed {failed}/{runs} recent runs ({rate}%): {last_error}"
         }
@@ -96,6 +103,8 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         // finding AND the exact change an apply would make, never one without
         // the other. A reviewer approving blind is the failure this prevents.
         "llm.fact" => "{text} — record fact: {relation} = \"{object}\"",
+        "llm.skill" => "{text} — record skill: \"{name}\" ({steps} steps)",
+        "llm.plan" => "{text} — record plan: \"{name}\" ({nodes} steps, {edges} edges)",
         "llm.query_revision" => "{text} — redefine \"{name}\" as: {body}",
         "llm.plan_revision" => "{text} — revise plan {plan}: {edits}",
         "llm.code_revision" => {
@@ -141,6 +150,112 @@ fn interpolate(template: &str, args: &Map<String, Value>, template_id: &str) -> 
     out
 }
 
+/// When an applied recommendation is re-measured — one checkpoint of the
+/// Verify gate's schedule, in the unit the deployment actually counts in.
+///
+/// Three units, because deployments count differently and a fixed one makes
+/// the gate inert everywhere else. A service evaluated nightly counts
+/// **time** (`after_ms`). A benchmark or a CI harness counts **graded runs**
+/// (`after_runs`): "measure at the next evaluation after the apply", however
+/// long that takes on the clock. A chat agent counts **turns** (`after_grains`):
+/// "after fifty more grains". The default schedule stayed ms-only for a year
+/// and was measured, on PAST-Bench, to fire exactly zero verdicts across 78
+/// governed runs — a family finishes in seven minutes and the first checkpoint
+/// was a day away (`crates/areev-bench/PERSIST.md`).
+///
+/// On the wire a bare integer is milliseconds, so every policy, metric
+/// snapshot and state blob written before this type existed reads back
+/// unchanged, and an all-ms schedule still serializes as `[86400000, …]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Checkpoint {
+    /// Elapsed time since the apply.
+    AfterMs(i64),
+    /// Evalset runs journaled since the apply. Only an `evalset:` metric can
+    /// count these; on any other metric the checkpoint never comes due.
+    AfterRuns(u32),
+    /// Grains written since the apply — the loop's own notion of "activity".
+    AfterGrains(u32),
+}
+
+impl Checkpoint {
+    /// The label a person reads: `1d`, `12h`, `3 runs`, `50 grains`.
+    pub fn label(&self) -> String {
+        match self {
+            Checkpoint::AfterMs(ms) if ms % 86_400_000 == 0 => format!("{}d", ms / 86_400_000),
+            Checkpoint::AfterMs(ms) if ms % 3_600_000 == 0 => format!("{}h", ms / 3_600_000),
+            Checkpoint::AfterMs(ms) => format!("{ms}ms"),
+            Checkpoint::AfterRuns(n) => format!("{n} run{}", if *n == 1 { "" } else { "s" }),
+            Checkpoint::AfterGrains(n) => format!("{n} grain{}", if *n == 1 { "" } else { "s" }),
+        }
+    }
+
+    /// The ms value when this is a time checkpoint — what legacy consumers of
+    /// `OutcomeResult::horizon_ms` read.
+    pub fn as_ms(&self) -> Option<i64> {
+        match self {
+            Checkpoint::AfterMs(ms) => Some(*ms),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for Checkpoint {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            // Bare integer: byte-identical to the pre-Checkpoint `Vec<i64>`.
+            Checkpoint::AfterMs(ms) => ser.serialize_i64(*ms),
+            Checkpoint::AfterRuns(n) => {
+                let mut m = ser.serialize_map(Some(1))?;
+                m.serialize_entry("after_runs", n)?;
+                m.end()
+            }
+            Checkpoint::AfterGrains(n) => {
+                let mut m = ser.serialize_map(Some(1))?;
+                m.serialize_entry("after_grains", n)?;
+                m.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Checkpoint {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let v = Value::deserialize(de)?;
+        match &v {
+            Value::Number(n) => n
+                .as_i64()
+                .filter(|ms| *ms >= 0)
+                .map(Checkpoint::AfterMs)
+                .ok_or_else(|| D::Error::custom("checkpoint: a bare number is non-negative milliseconds")),
+            Value::Object(m) if m.len() == 1 => {
+                let (k, val) = m.iter().next().unwrap();
+                let n = val.as_u64().ok_or_else(|| {
+                    D::Error::custom(format!("checkpoint: {k} takes a non-negative integer"))
+                })?;
+                match k.as_str() {
+                    "after_ms" => i64::try_from(n)
+                        .map(Checkpoint::AfterMs)
+                        .map_err(|_| D::Error::custom("checkpoint: after_ms out of range")),
+                    "after_runs" => u32::try_from(n)
+                        .map(Checkpoint::AfterRuns)
+                        .map_err(|_| D::Error::custom("checkpoint: after_runs out of range")),
+                    "after_grains" => u32::try_from(n)
+                        .map(Checkpoint::AfterGrains)
+                        .map_err(|_| D::Error::custom("checkpoint: after_grains out of range")),
+                    other => Err(D::Error::custom(format!(
+                        "checkpoint: unknown unit {other:?} (expected after_ms, after_runs or after_grains)"
+                    ))),
+                }
+            }
+            _ => Err(D::Error::custom(
+                "checkpoint: expected milliseconds or {\"after_ms\"|\"after_runs\"|\"after_grains\": n}",
+            )),
+        }
+    }
+}
+
 /// A reproducible metric snapshot; powers outcome review.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricSnapshot {
@@ -176,6 +291,11 @@ pub struct MetricSnapshot {
     /// verdict is never final until the last horizon. Empty → `[review_after_ms]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub horizons_ms: Vec<i64>,
+    /// The schedule in the deployment's own unit ([`Checkpoint`]). When set it
+    /// is THE schedule and `horizons_ms`/`review_after_ms` are ignored; empty
+    /// (every snapshot written before it existed) falls back to them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<Checkpoint>,
     /// Which direction is an improvement. The built-in metrics are all
     /// recurrence counts, where lower is better — so this defaults to `false`
     /// and every existing snapshot deserializes unchanged. An evalset accuracy
@@ -203,16 +323,27 @@ pub fn is_regression(baseline: f64, current: f64, higher_is_better: bool) -> boo
 }
 
 impl MetricSnapshot {
-    /// The measurement schedule, sorted — `horizons_ms` if set, else the single
-    /// `review_after_ms`.
-    pub fn horizons(&self) -> Vec<i64> {
-        let mut h = if self.horizons_ms.is_empty() {
-            vec![self.review_after_ms]
+    /// The measurement schedule, sorted and deduplicated: `checkpoints` when
+    /// set, else `horizons_ms`, else the single `review_after_ms` — each older
+    /// spelling read as time, so a snapshot from before [`Checkpoint`] existed
+    /// measures exactly as it did.
+    pub fn schedule(&self) -> Vec<Checkpoint> {
+        let mut h: Vec<Checkpoint> = if !self.checkpoints.is_empty() {
+            self.checkpoints.clone()
+        } else if !self.horizons_ms.is_empty() {
+            self.horizons_ms.iter().map(|ms| Checkpoint::AfterMs(*ms)).collect()
         } else {
-            self.horizons_ms.clone()
+            vec![Checkpoint::AfterMs(self.review_after_ms)]
         };
         h.sort_unstable();
+        h.dedup();
         h
+    }
+
+    /// The time checkpoints of the schedule, in ms — the pre-[`Checkpoint`]
+    /// view, kept for callers that only understand time.
+    pub fn horizons(&self) -> Vec<i64> {
+        self.schedule().iter().filter_map(Checkpoint::as_ms).collect()
     }
 }
 
@@ -227,9 +358,15 @@ pub struct OutcomeResult {
     pub baseline: f64,
     pub current: f64,
     pub verdict: String,
-    /// Which checkpoint this measurement is for (ms after apply).
+    /// Which checkpoint this measurement is for (ms after apply). Zero for a
+    /// checkpoint counted in runs or grains — see `checkpoint`.
     #[serde(default)]
     pub horizon_ms: i64,
+    /// The checkpoint in its own unit, when that unit is not time. A time
+    /// checkpoint leaves this unset and speaks through `horizon_ms`, so every
+    /// consumer of the older shape reads an unchanged record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<Checkpoint>,
     pub measured_at_ms: i64,
 }
 
@@ -336,6 +473,69 @@ pub fn dedup_key(family: &str, target_ref: &str, action: ActionKind) -> String {
         normalize_ident(target_ref),
         action.as_str()
     )
+}
+
+/// The dedup key of an AUTHORED executable proposal: [`dedup_key`] plus a
+/// fingerprint of the proposal's content. An analyzer finding is "this
+/// target has this kind of problem", so content is rightly excluded; an
+/// authored lesson is "do this", and two different lessons on the same
+/// entity must both reach the queue while the same lesson re-authored must
+/// not. The fingerprint is over the normalized text — case-folded, non-
+/// alphanumerics dropped, whitespace collapsed — so a rewording that changes
+/// no word is the same lesson and one that changes a word is a new one (a
+/// semantic near-duplicate is the reviewer's call, not this key's).
+pub fn authored_dedup_key(
+    family: &str,
+    target_ref: &str,
+    action: ActionKind,
+    content: &str,
+) -> String {
+    format!(
+        "{}\u{1f}{}",
+        dedup_key(family, target_ref, action),
+        content_fingerprint(content)
+    )
+}
+
+/// The dedup key of a REVERT: [`dedup_key`] plus the hash of the applied
+/// recommendation it retracts. An analyzer finding is "this target has this
+/// kind of problem", so two findings on one target rightly collapse — but a
+/// revert is about one specific applied recommendation, and two lessons on
+/// the same entity that both regressed need two reverts. Until 2026-09-06
+/// they shared a key and the second was dropped as a duplicate of the first
+/// (`crates/areev-bench/CURVE.md`, seed 3: two regressed, one revert).
+pub fn revert_dedup_key(family: &str, target_ref: &str, revert_of: &str) -> String {
+    format!(
+        "{}\u{1f}{}",
+        dedup_key(family, target_ref, ActionKind::Revert),
+        normalize_ident(revert_of)
+    )
+}
+
+/// Sixteen hex chars of FNV-1a (64-bit) over the normalized content. A dedup
+/// key needs stability and spread, not cryptographic strength — a collision
+/// here would merge two findings in a review queue, never grant anything —
+/// so this stays dependency-free, as the crate is by policy.
+pub fn content_fingerprint(content: &str) -> String {
+    let mut normalized = String::with_capacity(content.len());
+    let mut pending_space = false;
+    for c in content.chars() {
+        if c.is_alphanumeric() {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            pending_space = false;
+            normalized.extend(c.to_lowercase());
+        } else if c.is_whitespace() || !c.is_alphanumeric() {
+            pending_space = true;
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in normalized.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// Lifecycle status — a rebuildable index-layer cache (the recommendation's
@@ -656,6 +856,28 @@ mod tests {
             ActionKind::Consolidate,
         );
         assert_eq!(a, b, "case-folded to one identity");
+    }
+
+    #[test]
+    fn authored_dedup_key_distinguishes_content_but_not_wording_noise() {
+        let a = authored_dedup_key("llm", "entity:ns/x", ActionKind::Record, "Record the vendor name.");
+        let same = authored_dedup_key("llm", "entity:NS/X", ActionKind::Record, "  record THE vendor  name ");
+        let other = authored_dedup_key("llm", "entity:ns/x", ActionKind::Record, "Record the amount.");
+        assert_eq!(a, same, "case, punctuation and spacing are not a new lesson");
+        assert_ne!(a, other, "a different lesson on the same entity is a different finding");
+        assert!(a.starts_with(&dedup_key("llm", "entity:ns/x", ActionKind::Record)));
+        assert_eq!(content_fingerprint("A b"), content_fingerprint("a-b"));
+        assert_ne!(content_fingerprint("ab"), content_fingerprint("a b"));
+    }
+
+    #[test]
+    fn a_revert_is_keyed_by_what_it_reverts() {
+        let a = revert_dedup_key("loop.outcome_review", "entity:ns/capture", "aaaa");
+        let b = revert_dedup_key("loop.outcome_review", "entity:ns/capture", "bbbb");
+        let a2 = revert_dedup_key("loop.outcome_review", "entity:NS/Capture", "AAAA");
+        assert_ne!(a, b, "two reverts on one target are two findings");
+        assert_eq!(a, a2, "the same revert, case-folded, is one");
+        assert!(a.starts_with(&dedup_key("loop.outcome_review", "entity:ns/capture", ActionKind::Revert)));
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    {
+      "summary": "dates should follow the American convention",
+      "target": "entity:ledger/receipt_capture",
+      "guidance": "a deliberately wrong rule, admitted on purpose to exercise the verify gate",
+      "confidence": 0.9,
+      "proposal": {"kind": "lesson", "lesson": "Write the Invoice Date as MM/DD/YYYY, month first, on every receipt."}
+    }
+  ]
+}

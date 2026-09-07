@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 384" width="920" height="384" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Governed self-improvement on public ad-buy invoices: ad-buy reaches 590 of 840 exact against a rolled-back baseline of 122.</title>
+<desc>Left panel: learning curves over the same held-out ad-buy invoices, scored after 0, 10, 20, 30 and 40 experience documents; every curve starts on the same shelf near 41 of about 285. ad-buy: seeds end at 224, 233, 133 of about 285, arm A pooled 122 of 840 and arm B 590, paired 468 wins to 0 losses. Right panel: pooled arms, rolled back against applied.</desc>
+<line x1="58" y1="326.0" x2="558" y2="326.0" stroke="#2c3038" stroke-width="1"/>
+<text x="49" y="330.0" text-anchor="end" font-size="11" fill="#9aa1ad">0</text>
+<line x1="58" y1="253.0" x2="558" y2="253.0" stroke="#2c3038" stroke-width="1"/>
+<text x="49" y="257.0" text-anchor="end" font-size="11" fill="#9aa1ad">70</text>
+<line x1="58" y1="180.0" x2="558" y2="180.0" stroke="#2c3038" stroke-width="1"/>
+<text x="49" y="184.0" text-anchor="end" font-size="11" fill="#9aa1ad">140</text>
+<line x1="58" y1="107.0" x2="558" y2="107.0" stroke="#2c3038" stroke-width="1"/>
+<text x="49" y="111.0" text-anchor="end" font-size="11" fill="#9aa1ad">210</text>
+<line x1="58" y1="34.0" x2="558" y2="34.0" stroke="#2c3038" stroke-width="1"/>
+<text x="49" y="38.0" text-anchor="end" font-size="11" fill="#9aa1ad">280</text>
+<text x="26" y="21" font-size="11" fill="#9aa1ad">exact, of ~285 per seed</text>
+<text x="58.0" y="345" text-anchor="middle" font-size="11" fill="#9aa1ad">0</text>
+<text x="183.0" y="345" text-anchor="middle" font-size="11" fill="#9aa1ad">10</text>
+<text x="308.0" y="345" text-anchor="middle" font-size="11" fill="#9aa1ad">20</text>
+<text x="433.0" y="345" text-anchor="middle" font-size="11" fill="#9aa1ad">30</text>
+<text x="558.0" y="345" text-anchor="middle" font-size="11" fill="#9aa1ad">40</text>
+<text x="308" y="364" text-anchor="middle" font-size="11.5" fill="#9aa1ad">experience documents seen</text>
+<path d="M58.0,279.1 L183.0,183.1 L308.0,90.3 L433.0,94.5 L558.0,92.4" fill="none" stroke="#5fcd9b" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"/>
+<circle cx="58.0" cy="279.1" r="2.8" fill="#5fcd9b" opacity="0.95"/>
+<circle cx="183.0" cy="183.1" r="2.8" fill="#5fcd9b" opacity="0.95"/>
+<circle cx="308.0" cy="90.3" r="2.8" fill="#5fcd9b" opacity="0.95"/>
+<circle cx="433.0" cy="94.5" r="2.8" fill="#5fcd9b" opacity="0.95"/>
+<circle cx="558.0" cy="92.4" r="2.8" fill="#5fcd9b" opacity="0.95"/>
+<path d="M58.0,281.2 L183.0,83.0 L308.0,88.2 L433.0,83.0 L558.0,83.0" fill="none" stroke="#5fcd9b" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.82"/>
+<circle cx="58.0" cy="281.2" r="2.8" fill="#5fcd9b" opacity="0.82"/>
+<circle cx="183.0" cy="83.0" r="2.8" fill="#5fcd9b" opacity="0.82"/>
+<circle cx="308.0" cy="88.2" r="2.8" fill="#5fcd9b" opacity="0.82"/>
+<circle cx="433.0" cy="83.0" r="2.8" fill="#5fcd9b" opacity="0.82"/>
+<circle cx="558.0" cy="83.0" r="2.8" fill="#5fcd9b" opacity="0.82"/>
+<path d="M58.0,289.5 L183.0,163.3 L308.0,77.8 L433.0,192.5 L558.0,187.3" fill="none" stroke="#5fcd9b" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.69"/>
+<circle cx="58.0" cy="289.5" r="2.8" fill="#5fcd9b" opacity="0.69"/>
+<circle cx="183.0" cy="163.3" r="2.8" fill="#5fcd9b" opacity="0.69"/>
+<circle cx="308.0" cy="77.8" r="2.8" fill="#5fcd9b" opacity="0.69"/>
+<circle cx="433.0" cy="192.5" r="2.8" fill="#5fcd9b" opacity="0.69"/>
+<circle cx="558.0" cy="187.3" r="2.8" fill="#5fcd9b" opacity="0.69"/>
+<text x="567.0" y="87.0" font-size="12" font-weight="600" fill="#5fcd9b">ad-buy</text>
+<text x="620" y="21" font-size="11" fill="#9aa1ad">exact, of 840 pooled trials</text>
+<rect x="620.0" y="275.1" width="84.3" height="50.9" rx="2.5" fill="#767d8a"/>
+<text x="662.2" y="268.1" text-anchor="middle" font-size="11.5" font-weight="600" fill="#e9eaee">122</text>
+<text x="662.2" y="345" text-anchor="middle" font-size="10.5" fill="#9aa1ad">A</text>
+<rect x="725.4" y="79.9" width="84.3" height="246.1" rx="2.5" fill="#5fcd9b"/>
+<text x="767.5" y="72.9" text-anchor="middle" font-size="11.5" font-weight="600" fill="#e9eaee">590</text>
+<text x="767.5" y="345" text-anchor="middle" font-size="10.5" fill="#9aa1ad">B</text>
+<text x="725.4" y="364" text-anchor="middle" font-size="11" fill="#9aa1ad">ad-buy</text>
+<line x1="616.0" y1="275.1" x2="809.7" y2="275.1" stroke="#464c57" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="58" y1="326" x2="558" y2="326" stroke="#464c57" stroke-width="1"/>
+<line x1="616.0" y1="326" x2="820.2" y2="326" stroke="#464c57" stroke-width="1"/>
+</svg>

@@ -13,7 +13,9 @@ rewrites it:
 
 - **DISCOVER** — propose *additional* draft recommendations. Every draft is
   stamped `origin = llm` (so it can **never auto-apply**) and must **cite
-  evidence hashes** present in the request bundle (uncited drafts are dropped).
+  evidence** present in the request bundle — by the item's bundle `id`
+  (`e1`, `e2`, …), its full `hash`, or an unambiguous hash prefix of at least
+  12 hex characters (uncited drafts are dropped).
   A draft with no `proposal` is an advisory flag for a human to read. A draft
   that carries one is asking for a specific change, from a closed vocabulary
   of five kinds:
@@ -56,7 +58,7 @@ never fails the run.
   "op": "probe" | "discover" | "ground" | "verify" | "enrich",
   "instructions": "<fixed engine instruction — treat as the system prompt>",
   "findings":  [{"analyzer": "...", "summary": "...", "target": "...", "severity": "..."}],
-  "evidence":  [{"hash": "...", "grain_type": "...", "text": "..."}],
+  "evidence":  [{"id": "e1", "hash": "...", "grain_type": "...", "text": "..."}],
   "claims":    [{"id": 0, "claim": "...", "evidence": [{"hash","text"}]}],
   "rejected":  ["<recent operator rejections>"],
   "approved":  ["<recent operator approvals>"]
@@ -71,7 +73,7 @@ attacker-influenced) `evidence` text — keep it that way in your prompt.
 | op         | response                                                                 |
 |------------|--------------------------------------------------------------------------|
 | `probe`    | `{"model": "<name>"}`                                                     |
-| `discover` | `{"recommendations": [{"summary","target","guidance","evidence":[hash],"confidence":0.0}]}`|
+| `discover` | `{"recommendations": [{"summary","target","guidance","evidence":[id or hash],"confidence":0.0}]}`|
 | `ground`   | `{"results": [{"id":0,"supported":true,"reason":"..."}]}`                 |
 | `verify`   | `{"results": [{"id":0,"keep":true,"confidence":0.0,"reason":"..."}]}`     |
 | `enrich`   | `{"notes": [{"target","guidance"}]}`                                      |
