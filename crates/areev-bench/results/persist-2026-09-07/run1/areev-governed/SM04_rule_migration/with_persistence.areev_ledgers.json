@@ -1,0 +1,353 @@
+{
+ "01_sm04_rule_migration_cold_rule_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2097f38e138c8f8c6e73ce07370e95d3a14aef4df53d956747267416555fcb85",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the current review rule from the policy registry, not the stale status flags, when processing any review note.",
+     "approved": false,
+     "because": "The proposed change lacks evidence and does not specify a clear, actionable procedure."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14798,
+   "output_tokens": 383,
+   "calls": 6
+  },
+  "injected_chars": 899
+ },
+ "02_sm04_rule_migration_update_new_review_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2d0e4d3c11568060e4a268ef74cdfd13440586148f52438403c51cb302e67ff8",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the current review rule from the policy registry, not the stale status flags, when processing any review note.",
+     "approved": false,
+     "because": "The proposed change lacks evidence and does not specify a clear, actionable rule."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.36,
+   "passed": false,
+   "episode": "01_sm04_rule_migration_cold_rule_baseline",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 15200,
+   "output_tokens": 379,
+   "calls": 6
+  },
+  "injected_chars": 899
+ },
+ "03_sm04_rule_migration_eval_near_apply_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "38010aa26825fb959dfc86fba6156da63759538e120f7335e448d74548bc5d8a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the current review rule from the policy registry, not the stale status flags, when processing any review note.",
+     "approved": false,
+     "because": "The proposed change lacks evidence and does not specify a concrete, actionable rule."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_sm04_rule_migration_update_new_review_rule",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14617,
+   "output_tokens": 263,
+   "calls": 6
+  },
+  "injected_chars": 1085
+ },
+ "04_sm04_rule_migration_eval_far_apply_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "433d77062337401a9bf14c80b87abd073bce9b9c0d467e3b59057e0708ef26d1",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the current review rule from the policy registry, not the stale status flags, when processing any review note.",
+     "approved": false,
+     "because": "The proposed change lacks evidence and does not specify a concrete, actionable rule."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.464,
+   "passed": false,
+   "episode": "03_sm04_rule_migration_eval_near_apply_migrated_rule",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14671,
+   "output_tokens": 271,
+   "calls": 6
+  },
+  "injected_chars": 1085
+ },
+ "05_sm04_rule_migration_control_no_persistence_rule": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 18583,
+   "output_tokens": 433,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "06_sm04_rule_migration_control_shortcut_visible_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "60a07275eb7bd1a2163c1a26130bf55eff679fb5c1356a7d82962c8b065fe69e",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Format each action item as <owner> | Borealis-4DQ | task | due_date and include the source note in the final output.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support its implementation as a general rule."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11155,
+   "output_tokens": 191,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm04_rule_migration_control_rule_migration_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10894,
+   "output_tokens": 119,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

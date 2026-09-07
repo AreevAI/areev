@@ -1,0 +1,366 @@
+{
+ "01_ep01_prior_case_recall_ep01_i01_recall_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3673,
+   "output_tokens": 36,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_ep01_prior_case_recall_ep01_i02_recall_seed": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "d5d2a98ce374ee5440178dc4846ef3c0d8a396a175878e240a77920350a81161",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "After processing a formal decision, record the decision type, key terms, and a unique reference ID in the session context for future use.",
+     "approved": false,
+     "because": "The proposed memory change is about recording specific task details rather than establishing a general rule or procedure.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nWe need to formally log a vendor-approval decision. Please read the\\n\\\"Vendor X Contract Decision\\\" note in full and confirm its key terms in\\nyour response. We may reference this decision in later sessions, so make\\nsure the context is preserved.\\nOutput: VENDOR_DECISION|status|expiry\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11214,
+   "output_tokens": 93,
+   "calls": 5
+  },
+  "injected_chars": 371
+ },
+ "03_ep01_prior_case_recall_ep01_i03_recall_noise": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "f7cd1698f1f4932f430030bf2449731813bf7e975f922e2e1dc0490fe9d2f069",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "After processing a formal decision, record the decision type, key terms, and a unique reference ID in the session context for future use.",
+     "approved": false,
+     "because": "The evidence does not support a general rule about recording decision types and key terms; it only shows a specific task outcome.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPlease read the Q3 Roadmap note and summarize the top three items. No\\nneed to revisit unrelated decisions.\\nOutput: ROADMAP|item_1|item_2|item_3\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.422,
+   "passed": false,
+   "episode": "02_ep01_prior_case_recall_ep01_i02_recall_seed",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7908,
+   "output_tokens": 77,
+   "calls": 4
+  },
+  "injected_chars": 451
+ },
+ "04_ep01_prior_case_recall_ep01_i04_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.592,
+   "passed": false,
+   "episode": "03_ep01_prior_case_recall_ep01_i03_recall_noise",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6047,
+   "output_tokens": 66,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "05_ep01_prior_case_recall_ep01_i05_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.488,
+   "passed": false,
+   "episode": "04_ep01_prior_case_recall_ep01_i04_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8405,
+   "output_tokens": 67,
+   "calls": 4
+  },
+  "injected_chars": 544
+ },
+ "06_ep01_prior_case_recall_ep01_i07_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.404,
+   "passed": false,
+   "episode": "05_ep01_prior_case_recall_ep01_i05_eval_far",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6205,
+   "output_tokens": 63,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "07_ep01_prior_case_recall_ep01_i08_control_wrong_mechanism": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.464,
+   "passed": false,
+   "episode": "06_ep01_prior_case_recall_ep01_i07_control_shortcut",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11137,
+   "output_tokens": 106,
+   "calls": 5
+  },
+  "injected_chars": 544
+ },
+ "08_ep01_prior_case_recall_ep01_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3703,
+   "output_tokens": 51,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}

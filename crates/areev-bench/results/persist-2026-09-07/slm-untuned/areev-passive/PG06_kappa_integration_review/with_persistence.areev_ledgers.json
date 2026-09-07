@@ -1,0 +1,215 @@
+{
+ "01_pg06_kappa_integration_review_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 8352,
+   "output_tokens": 83,
+   "calls": 3
+  },
+  "injected_chars": 1961
+ },
+ "02_pg06_kappa_integration_review_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3313,
+   "output_tokens": 69,
+   "calls": 2
+  },
+  "injected_chars": 310
+ },
+ "03_pg06_kappa_integration_review_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "edit",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3649,
+   "output_tokens": 116,
+   "calls": 2
+  },
+  "injected_chars": 310
+ },
+ "04_pg06_kappa_integration_review_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 1,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 28233,
+   "output_tokens": 441,
+   "calls": 8
+  },
+  "injected_chars": 2057
+ },
+ "05_pg06_kappa_integration_review_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 1,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 8591,
+   "output_tokens": 110,
+   "calls": 3
+  },
+  "injected_chars": 2261
+ },
+ "06_pg06_kappa_integration_review_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 2,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11969,
+   "output_tokens": 144,
+   "calls": 4
+  },
+  "injected_chars": 2261
+ },
+ "07_pg06_kappa_integration_review_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 2,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12066,
+   "output_tokens": 67,
+   "calls": 4
+  },
+  "injected_chars": 2412
+ },
+ "08_pg06_kappa_integration_review_control_boundary_scope_patch_mismatch": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 3,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 20749,
+   "output_tokens": 196,
+   "calls": 6
+  },
+  "injected_chars": 2476
+ }
+}

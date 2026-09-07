@@ -1,0 +1,130 @@
+{
+ "01_sm06_temporary_exception_pollution_cold_exception_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7408,
+   "output_tokens": 148,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm06_temporary_exception_pollution_update_or_stabilize_exception_expiry": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10082,
+   "output_tokens": 236,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "03_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_a": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7405,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "04_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7410,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "05_sm06_temporary_exception_pollution_eval_far_transfer_expired_exception": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7573,
+   "output_tokens": 148,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm06_temporary_exception_pollution_control_no_persistence_exception": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7580,
+   "output_tokens": 137,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm06_temporary_exception_pollution_control_shortcut_visible_exception_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9995,
+   "output_tokens": 234,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "08_sm06_temporary_exception_pollution_control_exception_pollution_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7712,
+   "output_tokens": 159,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

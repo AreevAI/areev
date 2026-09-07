@@ -1,0 +1,14 @@
+{"ts": 1788664196108, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "discover", "prompt_tokens": 1143, "completion_tokens": 138}
+{"ts": 1788664197791, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 388, "completion_tokens": 51}
+{"ts": 1788664201907, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "verify", "prompt_tokens": 526, "completion_tokens": 163}
+{"ts": 1788664205421, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "enrich", "prompt_tokens": 187, "completion_tokens": 52}
+{"ts": 1788664207022, "script": "openrouter_toolcall.py", "model": "openai/gpt-4o", "provider": "openai", "op": "chat", "prompt_tokens": 350, "completion_tokens": 14}
+{"ts": 1788664264643, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "discover", "prompt_tokens": 1224, "completion_tokens": 157}
+{"ts": 1788664266079, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 375, "completion_tokens": 55}
+{"ts": 1788664311290, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "discover", "prompt_tokens": 1223, "completion_tokens": 126}
+{"ts": 1788664312626, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 381, "completion_tokens": 49}
+{"ts": 1788664314482, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "verify", "prompt_tokens": 524, "completion_tokens": 156}
+{"ts": 1788664377420, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "discover", "prompt_tokens": 1221, "completion_tokens": 121}
+{"ts": 1788664378704, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 377, "completion_tokens": 60}
+{"ts": 1788664453468, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake", "op": "discover", "prompt_tokens": 1229, "completion_tokens": 144}
+{"ts": 1788664454911, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 392, "completion_tokens": 61}

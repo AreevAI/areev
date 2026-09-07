@@ -1,0 +1,388 @@
+{
+ "01_pc02_sop_patch_02_fc04_i01_errcorr_cold": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "94c1ec55219af7b4e9618ed376a983e9995ed64357eb3e40df836996f11d316d",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the validity of a saved skill's policy against the current knowledge base and deprecation SOP before applying it.",
+     "approved": true,
+     "because": "It ensures that saved skills are verified against current standards and deprecation SOP before use, which is durable, general, actionable, and supported by the evidence.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nSearch the knowledge base for API usage standards, then review the open code review tickets in the helpdesk.\\nThe KB only has a brief reference, so check your saved skill for the HTTP Client Migration Guide and apply the policy from that saved procedure.\\nRetrieve and read the saved skill contents; do not rely on a skill listing or memory summary alone.\\nDetermine whether each PR's library usage is compliant and update the tickets.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}\n{\"object\": \"HTTP client standards memory cache.\\n- Flawed old HTTP Client Migration Guide: requests is approved and urllib is deprecated. This is stale and should be patched when a corrected guide appears.\\n- Python networking style guide: examples mention requests and httpx for documentation only.\\n- General API deprecation SOP: deprecated libraries should be tagged deprecated-api.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 12,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 42458,
+   "output_tokens": 502,
+   "calls": 13
+  },
+  "injected_chars": 461
+ },
+ "02_pc02_sop_patch_02_fc04_i02b_errcorr_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7e95fd3a09785d64cc956c8c2ce4f703ae4b809b3286682d834f5cf234a5d311",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the validity of a saved skill's policy against the current knowledge base and deprecation SOP before applying it.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRevision memo: The HTTP Client Migration Guide has been revised after a standards review.\\n\\nSearch the knowledge base for the UPDATED \\\"HTTP Client Migration Guide\\\" and read the corrected rules.\\nThe previous guide incorrectly listed requests as the approved standard. The corrected guide reverses this:\\nrequests is NOW DEPRECATED, and httpx is the recommended replacement.\\n\\nIf your framework maintains a reusable HTTP client standard, make sure today's decisions reflect the revised guide rather than the earlier guide.\\nIf a reusable HTTP client standard skill already exists, retrieve/read it and update it to the corrected rules; do not rely on a skill listing or memory summary alone.\\n\\nThen review the open tickets using the CORRECTED rules and update them accordingly.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subjec\n{\"object\": \"Verify the validity of a saved skill's policy against the current knowledge base and deprecation SOP before applying it.\", \"relation\": \"lesson\", \"subject\": \"http_client_migration_guide\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 14,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.564,
+   "passed": false,
+   "episode": "01_pc02_sop_patch_02_fc04_i01_errcorr_cold",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 70003,
+   "output_tokens": 788,
+   "calls": 18
+  },
+  "injected_chars": 461
+ },
+ "03_pc02_sop_patch_02_fc04_i03_errcorr_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "fed8a8aef84808c1ce32a1acdfe422f152e611763f913d5a9206fa4013f1438a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the validity of a saved skill's policy against the current knowledge base and deprecation SOP before applying it.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview the open code review tickets in the helpdesk. You have previously saved a skill about HTTP client library standards \u2014 retrieve and apply it.\\nRead the saved skill contents; do not rely on a skill listing or memory summary alone.\\nUpdate each ticket's tags based on the correct deprecation rules.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.558,
+   "passed": false,
+   "episode": "02_pc02_sop_patch_02_fc04_i02b_errcorr_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 32465,
+   "output_tokens": 313,
+   "calls": 10
+  },
+  "injected_chars": 461
+ },
+ "04_pc02_sop_patch_02_fc04_i03b_errcorr_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "810781e28a504dec6cd55272e18a6213dfc6cd00e40c3c3fc0b1a438e94ae34a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the validity of a saved skill's policy against the current knowledge base and deprecation SOP before applying it.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview the open code review tickets in the helpdesk. You have previously saved a skill about HTTP client library standards \u2014 retrieve and apply it.\\nRead the saved skill contents; do not rely on a skill listing or memory summary alone.\\nThese tickets are from ML and data science teams; the same deprecation rules apply regardless of department.\\nUpdate each ticket's tags based on the correct deprecation rules.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.762,
+   "passed": false,
+   "episode": "03_pc02_sop_patch_02_fc04_i03_errcorr_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 16814,
+   "output_tokens": 640,
+   "calls": 5
+  },
+  "injected_chars": 461
+ },
+ "05_pc02_sop_patch_02_fc04_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 19558,
+   "output_tokens": 228,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "06_pc02_sop_patch_02_fc04_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "bb3d1b2bf952dcf90efd20d21d070d69a078bf2e9e9fe4cf90b6d32fe2f2850b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply newly stated policy rules immediately and consistently across all subsequent tasks in the same session.",
+     "approved": false,
+     "because": "The proposed memory change is specific to a single session and task, not a general rule for future sessions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nIMPORTANT \u2014 HTTP Client Deprecation Rule (CORRECTED, effective immediately):\\n- The requests library (import requests, requests.get/post/Session) is DEPRECATED.\\n  Any PR using it MUST be tagged deprecated-api and needs-migration, priority=medium, category=code-review.\\n- httpx (preferred) and aiohttp (async-only) are the recommended replacements.\\n  PRs using httpx or aiohttp should be tagged api-compliant.\\n- Migration deadline: June 30, 2026.\\n\\nReview the open code review tickets in the helpdesk. Apply the above rule and update each ticket's tags.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16482,
+   "output_tokens": 467,
+   "calls": 5
+  },
+  "injected_chars": 275
+ },
+ "07_pc02_sop_patch_02_fc04_c03_control_stale_procedure": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "09ff10db940819ab56fef2667044381e8f57bebcb4753de4b0b1399b2bf22e40",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check for and apply HTTP Client Standards Rule at the beginning of every new session.",
+     "approved": true,
+     "because": "The memory change is durable, general, actionable, and supported by the user's instruction to apply the HTTP Client Standards Rule at the beginning of every session.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nIMPORTANT \u2014 HTTP Client Standards Rule (apply this rule):\\n- The requests library is the APPROVED standard for HTTP operations.\\n  PRs using requests should be tagged api-compliant.\\n- urllib and urllib3 are DEPRECATED.\\n  Any PR using urllib/urllib3 must be tagged deprecated-api and needs-migration, priority=medium, category=code-review.\\n- httpx is experimental and NOT approved for production use.\\n\\nReview the open code review tickets in the helpdesk. Apply the above rule and update each ticket's tags.\\nOutput: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25599,
+   "output_tokens": 360,
+   "calls": 8
+  },
+  "injected_chars": 275
+ }
+}

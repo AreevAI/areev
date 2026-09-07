@@ -1,0 +1,130 @@
+{
+ "01_pc01_sop_bootstrap_01_f01_i01_skill_baseline_cold": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 34101,
+   "output_tokens": 428,
+   "calls": 11
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_01_f01_i02_skill_learn_a": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32060,
+   "output_tokens": 438,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "03_pc01_sop_bootstrap_01_f01_i03_skill_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24737,
+   "output_tokens": 558,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "04_pc01_sop_bootstrap_01_f01_i04_skill_eval_near": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2091,
+   "output_tokens": 2,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "05_pc01_sop_bootstrap_01_f01_i05_skill_eval_far": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24701,
+   "output_tokens": 545,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "06_pc01_sop_bootstrap_01_f01_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12476,
+   "output_tokens": 488,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_pc01_sop_bootstrap_01_f01_c03_control_surface_memorization": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32124,
+   "output_tokens": 388,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "08_pc01_sop_bootstrap_01_f01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2034,
+   "output_tokens": 6,
+   "calls": 1
+  },
+  "injected_chars": 0
+ }
+}

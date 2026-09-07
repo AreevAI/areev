@@ -1,0 +1,357 @@
+{
+ "01_pc04_failure_to_rule_01_f07_i01_failure_baseline": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26551,
+   "output_tokens": 500,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "02_pc04_failure_to_rule_01_f07_i02_failure_attempt": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "04c32ee3a74b19c83623bff28137125a8fe4618830f43ab1d9728ab2ac2ca4a4",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check for completeness of rollback grouping SOP before processing deployment incidents; if missing, escalate to knowledge team.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support the instruction."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 33155,
+   "output_tokens": 312,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc04_failure_to_rule_01_f07_i03_failure_reflection": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8187,
+   "passed": false,
+   "episode": "02_pc04_failure_to_rule_01_f07_i02_failure_attempt",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 34934,
+   "output_tokens": 790,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "04_pc04_failure_to_rule_01_f07_i03b_failure_confirmation": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "9cdcf00407798aba9ad8cd3227af5ae3e1ac4e1b6e605632be7b56d63b4871ea",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify full rollback grouping details are present in SOP before execution; if missing, escalate to knowledge team.",
+     "approved": false,
+     "because": "The proposed memory change lacks cited evidence to support its inclusion."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.498,
+   "passed": false,
+   "episode": "03_pc04_failure_to_rule_01_f07_i03_failure_reflection",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 46182,
+   "output_tokens": 381,
+   "calls": 12
+  },
+  "injected_chars": 405
+ },
+ "05_pc04_failure_to_rule_01_f07_i04_failure_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.68,
+   "passed": false,
+   "episode": "04_pc04_failure_to_rule_01_f07_i03b_failure_confirmation",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 46421,
+   "output_tokens": 381,
+   "calls": 12
+  },
+  "injected_chars": 405
+ },
+ "06_pc04_failure_to_rule_01_f07_i05_failure_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7004,
+   "passed": false,
+   "episode": "05_pc04_failure_to_rule_01_f07_i04_failure_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 42525,
+   "output_tokens": 525,
+   "calls": 11
+  },
+  "injected_chars": 405
+ },
+ "07_pc04_failure_to_rule_01_f07_c01_control_reflection_off": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26691,
+   "output_tokens": 581,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "08_pc04_failure_to_rule_01_f07_c02_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26907,
+   "output_tokens": 549,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "09_pc04_failure_to_rule_01_f07_c03_control_shortcut": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25133,
+   "output_tokens": 312,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

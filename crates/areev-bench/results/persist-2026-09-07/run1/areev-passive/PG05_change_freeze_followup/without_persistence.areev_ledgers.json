@@ -1,0 +1,130 @@
+{
+ "01_pg05_change_freeze_followup_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 19,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 51922,
+   "output_tokens": 885,
+   "calls": 20
+  },
+  "injected_chars": 0
+ },
+ "02_pg05_change_freeze_followup_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7540,
+   "output_tokens": 189,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "03_pg05_change_freeze_followup_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2849,
+   "output_tokens": 127,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_pg05_change_freeze_followup_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12235,
+   "output_tokens": 196,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "05_pg05_change_freeze_followup_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3792,
+   "output_tokens": 51,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "06_pg05_change_freeze_followup_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3785,
+   "output_tokens": 29,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "07_pg05_change_freeze_followup_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14557,
+   "output_tokens": 217,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "08_pg05_change_freeze_followup_control_boundary_latest_packet": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14598,
+   "output_tokens": 218,
+   "calls": 7
+  },
+  "injected_chars": 0
+ }
+}

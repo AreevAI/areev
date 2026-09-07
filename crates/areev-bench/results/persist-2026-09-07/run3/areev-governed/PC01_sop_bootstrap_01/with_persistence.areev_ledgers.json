@@ -1,0 +1,370 @@
+{
+ "01_pc01_sop_bootstrap_01_f01_i01_skill_baseline_cold": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 35190,
+   "output_tokens": 468,
+   "calls": 12
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_01_f01_i02_skill_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 22,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 86613,
+   "output_tokens": 915,
+   "calls": 25
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_01_f01_i03_skill_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "3e02b1de9638d86987ef30322ca7b353980d6864c53c4fe8f1276e1c707a9242",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "At session start, check for and activate the saved SOP skill before processing any ticket cluster.",
+     "approved": true,
+     "because": "The instruction to activate the saved SOP skill at session start is durable, general, actionable, and supported by the user's directive.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has the brief. If you have a saved SOP skill, use it to handle these new tickets.\\nApply the shared-incident SOP: group the cluster tickets, update them correctly, exclude\\ndistractors, do NOT close any.\\nOutput: TICKET_ID|priority|category|why\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.864,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_01_f01_i02_skill_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 34525,
+   "output_tokens": 762,
+   "calls": 10
+  },
+  "injected_chars": 315
+ },
+ "04_pc01_sop_bootstrap_01_f01_i04_skill_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "34ff6a0b228681e5801028eb8066f6df74f199427e6bf421555303eeb7476be7",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "At session start, check for and activate the saved SOP skill before processing any ticket cluster.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has a brief. If you have a saved SOP skill in your skill library, open its full\\ncontents before triaging. Apply it to this new batch of tickets. Do NOT use the brief alone\\nto invent the SOP rule. Update only real cluster incident tickets, do NOT close any.\\nOutput: TICKET_ID|priority|category|why\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"At session start, check for and activate the saved SOP skill before processing any ticket cluster.\", \"relation\": \"lesson\", \"subject\": \"shared_incident_sop\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.448,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_01_f01_i03_skill_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 39588,
+   "output_tokens": 604,
+   "calls": 11
+  },
+  "injected_chars": 343
+ },
+ "05_pc01_sop_bootstrap_01_f01_i05_skill_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.5104,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_01_f01_i04_skill_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 34425,
+   "output_tokens": 490,
+   "calls": 10
+  },
+  "injected_chars": 343
+ },
+ "06_pc01_sop_bootstrap_01_f01_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 28274,
+   "output_tokens": 754,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_01_f01_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32606,
+   "output_tokens": 623,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_01_f01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 20231,
+   "output_tokens": 315,
+   "calls": 7
+  },
+  "injected_chars": 0
+ }
+}

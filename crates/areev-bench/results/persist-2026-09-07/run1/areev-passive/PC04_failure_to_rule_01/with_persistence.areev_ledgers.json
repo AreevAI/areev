@@ -1,0 +1,205 @@
+{
+ "01_pc04_failure_to_rule_01_f07_i01_failure_baseline": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26551,
+   "output_tokens": 500,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "02_pc04_failure_to_rule_01_f07_i02_failure_attempt": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 33155,
+   "output_tokens": 312,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc04_failure_to_rule_01_f07_i03_failure_reflection": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 54469,
+   "output_tokens": 767,
+   "calls": 13
+  },
+  "injected_chars": 275
+ },
+ "04_pc04_failure_to_rule_01_f07_i03b_failure_confirmation": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 42316,
+   "output_tokens": 494,
+   "calls": 11
+  },
+  "injected_chars": 397
+ },
+ "05_pc04_failure_to_rule_01_f07_i04_failure_eval_near": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 46313,
+   "output_tokens": 377,
+   "calls": 12
+  },
+  "injected_chars": 397
+ },
+ "06_pc04_failure_to_rule_01_f07_i05_failure_eval_far": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 42384,
+   "output_tokens": 491,
+   "calls": 11
+  },
+  "injected_chars": 397
+ },
+ "07_pc04_failure_to_rule_01_f07_c01_control_reflection_off": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26667,
+   "output_tokens": 557,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "08_pc04_failure_to_rule_01_f07_c02_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26957,
+   "output_tokens": 599,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "09_pc04_failure_to_rule_01_f07_c03_control_shortcut": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25133,
+   "output_tokens": 312,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

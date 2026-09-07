@@ -1,0 +1,182 @@
+{
+ "01_sm06_temporary_exception_pollution_cold_exception_baseline": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 17386,
+   "output_tokens": 258,
+   "calls": 7
+  },
+  "injected_chars": 939
+ },
+ "02_sm06_temporary_exception_pollution_update_or_stabilize_exception_expiry": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "remove",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Durable default: output each action item as <owner> | RISK-CANON | task | due_da'"
+   },
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9608,
+   "output_tokens": 322,
+   "calls": 4
+  },
+  "injected_chars": 939
+ },
+ "03_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_a": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11021,
+   "output_tokens": 151,
+   "calls": 5
+  },
+  "injected_chars": 399
+ },
+ "04_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11050,
+   "output_tokens": 177,
+   "calls": 5
+  },
+  "injected_chars": 399
+ },
+ "05_sm06_temporary_exception_pollution_eval_far_transfer_expired_exception": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 10754,
+   "output_tokens": 121,
+   "calls": 5
+  },
+  "injected_chars": 399
+ },
+ "06_sm06_temporary_exception_pollution_control_no_persistence_exception": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7577,
+   "output_tokens": 145,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm06_temporary_exception_pollution_control_shortcut_visible_exception_rule": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10997,
+   "output_tokens": 154,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "08_sm06_temporary_exception_pollution_control_exception_pollution_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10867,
+   "output_tokens": 171,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

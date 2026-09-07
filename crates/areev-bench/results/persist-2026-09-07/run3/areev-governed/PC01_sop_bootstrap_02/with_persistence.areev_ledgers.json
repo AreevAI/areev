@@ -1,0 +1,330 @@
+{
+ "01_pc01_sop_bootstrap_02_fc02_i01_pipeline_cold": {
+  "governance": null,
+  "tool_calls": 12,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11904,
+   "output_tokens": 540,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_02_fc02_i02_pipeline_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "07a3e7eac5181d248f101aa1ddb952aab73b1f179d9c1357a106f8e6968aaf2a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "After applying a recurring SOP, store its core logic and decision points in the session context for future reuse.",
+     "approved": false,
+     "because": "The proposed memory change is about storing task-specific logic in the session context, which is not durable or general for future unrelated sessions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nSearch the knowledge base for the \\\"Data Quality Analysis SOP\\\" and read the full five-step pipeline standard.\\nApply the SOP to the open helpdesk tickets. This is a recurring team standard used across similar analysis tickets, so keep the reusable procedure in mind for future work.\\nOutput: TICKET_ID|priority|category|why\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 17843,
+   "output_tokens": 244,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_02_fc02_i02b_pipeline_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "8b2415cb8dfe4710c145905630bef99ce7bbe6045d5767191dc40eea42dbcd52",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "After applying a recurring SOP, store its core logic and decision points in the session context for future reuse.",
+     "approved": false,
+     "because": "The proposed memory change is about storing specific task logic in the session context, which is not durable or general for future unrelated sessions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nProcess the data analysis tickets in the helpdesk using the team's recurring data quality analysis standard.\\nThe KB only has a brief index for the standard in this episode; rely on the reusable procedure if your framework retained it.\\nUpdate the tickets accordingly and output: TICKET_ID|priority|category|why\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.252,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_02_fc02_i02_pipeline_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 35097,
+   "output_tokens": 337,
+   "calls": 12
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_02_fc02_i03_pipeline_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.268,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_02_fc02_i02b_pipeline_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32504,
+   "output_tokens": 363,
+   "calls": 10
+  },
+  "injected_chars": 275
+ },
+ "05_pc01_sop_bootstrap_02_fc02_i03b_pipeline_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.442,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_02_fc02_i03_pipeline_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25707,
+   "output_tokens": 477,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "06_pc01_sop_bootstrap_02_fc02_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 31056,
+   "output_tokens": 453,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_02_fc02_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25281,
+   "output_tokens": 441,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_02_fc02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25437,
+   "output_tokens": 371,
+   "calls": 9
+  },
+  "injected_chars": 0
+ }
+}

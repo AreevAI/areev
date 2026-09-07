@@ -1,0 +1,300 @@
+{
+ "01_pc03_latent_rule_induction_01_f05_i01_hidden_baseline_cold": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 30128,
+   "output_tokens": 679,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "02_pc03_latent_rule_induction_01_f05_i02_hidden_learn_case_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4ff73ddadf588458f6be6f7ed20f568f786e3d98d03c2c231c419fa860d8caf4",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Extract and preserve reusable migration-risk correlation procedures from incident tickets when inferred, even if a high-level overview exists in the KB.",
+     "approved": true,
+     "because": "The instruction is durable, general, actionable, and supported by a direct user instruction to extract and preserve reusable procedures.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB still has only a high-level DB migration incident overview, not the\\ncorrelation rule. Process this informative batch from the ticket details and\\nthe outcome clues in the tickets. If you infer a reusable migration-risk\\ncorrelation procedure from these cases, preserve it only if your framework\\nautonomously determines it is durable.\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets. Do NOT just output text.\\nAfter updating, output: TICKET_ID|priority|category|tags\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": "The pattern observed across the tickets indicates a durable correlation: **database schema migrations on clusters with an odd shard count are high-risk and require elevated priority and monitoring, wh"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32162,
+   "output_tokens": 791,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc03_latent_rule_induction_01_f05_i03_hidden_learn_case_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.51,
+   "passed": false,
+   "episode": "02_pc03_latent_rule_induction_01_f05_i02_hidden_learn_case_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32407,
+   "output_tokens": 599,
+   "calls": 9
+  },
+  "injected_chars": 383
+ },
+ "04_pc03_latent_rule_induction_01_f05_i04_hidden_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "ceece0bfb3839345f7b6dcadd49cc7c6d7f0d5a22262a649e0047bc7f17556d9",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Extract and preserve reusable migration-risk correlation procedures from incident tickets when inferred, even if a high-level overview exists in the KB.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has a brief. Check your skill library for the saved DB migration correlation\\nprocedure and apply it. Do not invent extra classifications; only update tickets that\\nmatch the saved critical-only procedure.\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets. Do NOT just output text.\\nAfter updating, output: TICKET_ID|priority|category|tags\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.524,
+   "passed": false,
+   "episode": "03_pc03_latent_rule_induction_01_f05_i03_hidden_learn_case_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 52393,
+   "output_tokens": 482,
+   "calls": 14
+  },
+  "injected_chars": 383
+ },
+ "05_pc03_latent_rule_induction_01_f05_i05_hidden_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "0d579872d92a6f897c61e69f2099b4f60c6ca64ee99e931ec87b13fa2a510262",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Extract and preserve reusable migration-risk correlation procedures from incident tickets when inferred, even if a high-level overview exists in the KB.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has a brief. Use your saved DB migration correlation skill. Some tickets use\\nwording drift, so apply the saved procedure semantically rather than by exact strings.\\nDo not update near-miss tickets.\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets. Do NOT just output text.\\nAfter updating, output: TICKET_ID|priority|category|tags\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.486,
+   "passed": false,
+   "episode": "04_pc03_latent_rule_induction_01_f05_i04_hidden_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 52371,
+   "output_tokens": 459,
+   "calls": 14
+  },
+  "injected_chars": 383
+ },
+ "06_pc03_latent_rule_induction_01_f05_c01_control_shortcut": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12599,
+   "output_tokens": 231,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_pc03_latent_rule_induction_01_f05_c02_control_too_few_examples": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24474,
+   "output_tokens": 552,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

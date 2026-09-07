@@ -1,0 +1,82 @@
+{
+ "01_pg03_oncall_handoff_lookup_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 8108,
+   "output_tokens": 296,
+   "calls": 4
+  },
+  "injected_chars": 660,
+  "entries_after": 6,
+  "add_result": "{\"results\": [{\"id\": \"52717456-a740-469a-846a-fbd95b05c335\", \"memory\": \"User instructed to work the current CacheEdge maintenance follow-up by marking only the blocked follow-up tickets as waiting on maintenance, without updating the parent incident, and to output the result in the format HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"event\": \"ADD\"}, {\"id\": \"00e46815-0e24-4f44-8617-0be5d526f1ee\", \"memory\": \"The system attempted to access the handoffs directory at /workspace/handoffs/ but found it did not exist, resulting in a file not found error\", \"event\": \"ADD\"}, {\"id\": \"b5"
+ },
+ "02_pg03_oncall_handoff_lookup_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 19264,
+   "output_tokens": 492,
+   "calls": 9
+  },
+  "injected_chars": 1882,
+  "entries_after": 13,
+  "add_result": "{\"results\": [{\"id\": \"090fb568-e77b-46b2-9002-05a2fde336eb\", \"memory\": \"User reviewed a prior attempt to handle a CacheEdge maintenance follow-up and identified a failure pattern where the system acted before grounding on the latest handoff, missing the exact owner, maintenance window, and blocked ticket list from the prior handoff.\", \"event\": \"ADD\"}, {\"id\": \"dcf67fa7-d97e-43c3-8059-99e833be351f\", \"memory\": \"The system attempted to access the handoffs directory at /workspace/handoffs/ but found it did not exist, resulting in a file not found error, which prevented recovery of the prior handoff."
+ },
+ "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 4101,
+   "output_tokens": 129,
+   "calls": 2
+  },
+  "injected_chars": 2792,
+  "entries_after": 15,
+  "add_result": "{\"results\": [{\"id\": \"942d5a64-b4e1-4424-bfb2-f233ac367544\", \"memory\": \"User updated the retrieval policy for the oncall_handoff_lookup skill with a general rule that requires searching session history for the latest matching handoff before any ticket updates, verifying the exact owner and maintenance window, and updating only the blocked follow-up tickets without modifying the parent incident.\", \"event\": \"ADD\"}]}"
+ },
+ "04_pg03_oncall_handoff_lookup_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 64457,
+   "output_tokens": 1245,
+   "calls": 20
+  },
+  "injected_chars": 3050,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"90f3af4a-4855-43e2-a52a-b0b3d7d60358\", \"memory\": \"User was instructed to read the newly added handoff lookup skill file before proceeding, then search session history for the latest matching AuthProxy handoff prior to any ticket update, with the requirement to mark only blocked follow-up tickets as waiting on maintenance and not modify the parent incident.\", \"event\": \"ADD\"}, {\"id\": \"98cb40b6-7b40-47e6-8d55-fa563ec5cfe2\", \"memory\": \"The system attempted to read the handoff lookup skill file at /skills/oncall_handoff_lookup.md but returned a 'File not found' error, indicatin"
+ },
+ "05_pg03_oncall_handoff_lookup_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 33841,
+   "output_tokens": 589,
+   "calls": 12
+  },
+  "injected_chars": 3252,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"e82d2daa-e61a-49bd-90ff-d40decec22eb\", \"memory\": \"User was instructed to read the newly added handoff lookup skill file before proceeding, then search session history for the latest matching Billing stream handoff prior to any ticket update, with the requirement to mark only blocked follow-up tickets as waiting on maintenance and not modify the parent incident.\", \"event\": \"ADD\"}, {\"id\": \"f202e361-570b-4caa-99bb-556204ea61e8\", \"memory\": \"The system attempted to read the handoff lookup skill file at /skills/oncall_handoff_lookup.md but returned a 'File not found' error, indi"
+ },
+ "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 26840,
+   "output_tokens": 466,
+   "calls": 9
+  },
+  "injected_chars": 3378,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"5023dde1-a013-442e-bac2-8074ac863e8d\", \"memory\": \"User was instructed to read the newly added handoff lookup skill file before proceeding, then search session history for the latest matching CacheEdge handoff prior to acting on the follow-up queue, with the requirement to mark only blocked follow-up tickets as waiting on maintenance and not update the parent incident or the status-page reminder.\", \"event\": \"ADD\"}, {\"id\": \"b72e1f38-72bf-4c76-b167-fca153ab74b2\", \"memory\": \"The handoff lookup skill file at /skills/oncall_handoff_lookup.md could not be found, resulting in a 'F"
+ },
+ "07_pg03_oncall_handoff_lookup_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 23008,
+   "output_tokens": 411,
+   "calls": 8
+  },
+  "injected_chars": 3325,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"b31eb1f0-4f87-4d04-9b69-17d5954bde1a\", \"memory\": \"The handoff lookup skill file could not be found in the expected location (/skills/oncall_handoff_lookup.md), preventing the retrieval of the latest handoff details for the CacheEdge service.\", \"event\": \"ADD\"}, {\"id\": \"827ba711-aad3-4bae-9ac5-0778c2c3a5eb\", \"memory\": \"The parent incident (INC-870) for CacheEdge latency is open, high-priority, and contains a visible hint about a maintenance window later today, but no exact owner, maintenance window, or blocked ticket set is provided in the description.\", \"event\": \"ADD\"}, {\"i"
+ },
+ "08_pg03_oncall_handoff_lookup_control_boundary_latest_record": {
+  "usage": {
+   "input_tokens": 31683,
+   "output_tokens": 530,
+   "calls": 10
+  },
+  "injected_chars": 3568,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"23efe53f-8829-42f2-8301-de31fe807304\", \"memory\": \"User was instructed to work the current CacheEdge maintenance follow-up by marking only the blocked follow-up tickets as waiting on maintenance, without updating the parent incident or stale tickets, and to output the result in the format HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"event\": \"ADD\"}, {\"id\": \"495d1ebf-d25d-48e2-835a-d6ddda4df3e8\", \"memory\": \"The handoff lookup skill file could not be found at /skills/oncall_handoff_lookup.md, so the system proceeded to search session history for the latest"
+ }
+}

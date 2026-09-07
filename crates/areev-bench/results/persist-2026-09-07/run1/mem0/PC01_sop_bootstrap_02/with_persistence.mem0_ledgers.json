@@ -1,0 +1,82 @@
+{
+ "01_pc01_sop_bootstrap_02_fc02_i01_pipeline_cold": {
+  "usage": {
+   "input_tokens": 11832,
+   "output_tokens": 557,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc01_sop_bootstrap_02_fc02_i02_pipeline_learn_a": {
+  "usage": {
+   "input_tokens": 42945,
+   "output_tokens": 645,
+   "calls": 15
+  },
+  "injected_chars": 0,
+  "entries_after": 8,
+  "add_result": "{\"results\": [{\"id\": \"ba9618a9-11a4-4a33-b5a2-ef27da7ff7e0\", \"memory\": \"User requested a search for the 'Data Quality Analysis SOP' and applied its five-step pipeline standard to open helpdesk tickets, using the tools helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket to process and update tickets.\", \"event\": \"ADD\"}, {\"id\": \"12d62ff4-16a0-49ff-96aa-4217fc700332\", \"memory\": \"The 'Data Quality Analysis SOP' was not found in the knowledge base, as all search attempts returned zero results.\", \"event\": \"ADD\"}, {\"id\": \"baf0279b-bba3-4dea-967a-d250cead977e\", \"memory\": \"User process"
+ },
+ "03_pc01_sop_bootstrap_02_fc02_i02b_pipeline_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 33455,
+   "output_tokens": 420,
+   "calls": 10
+  },
+  "injected_chars": 1914,
+  "entries_after": 13,
+  "add_result": "{\"results\": [{\"id\": \"8154b779-cc60-4aca-80bb-d683fa79c234\", \"memory\": \"Ticket TK-R301 (Quarterly retention report contains unfiltered outliers) was updated with priority 'high', category 'Data Quality', and tags 'outlier_detection' and 'pipeline' because the report included invalid retention rates (negative or above 100%) that required filtering before aggregation.\", \"event\": \"ADD\"}, {\"id\": \"a1c1fa15-fdf2-4c96-9be7-9bdfbdcc7641\", \"memory\": \"Ticket TK-R302 (Cross-region sales data requires normalization) was updated with priority 'high', category 'Data Quality', and tags 'normalization' and 'pi"
+ },
+ "04_pc01_sop_bootstrap_02_fc02_i03_pipeline_eval_near": {
+  "usage": {
+   "input_tokens": 30035,
+   "output_tokens": 397,
+   "calls": 9
+  },
+  "injected_chars": 2564,
+  "entries_after": 18,
+  "add_result": "{\"results\": [{\"id\": \"a9071d02-3b2a-40bc-916c-9750eea1550f\", \"memory\": \"User processed four open helpdesk tickets on September 6, 2026, applying the team's recurring data quality analysis standard using the five-step pipeline procedure, and updated three data analysis tickets with priority 'high', category 'Data Quality', and relevant tags.\", \"event\": \"ADD\"}, {\"id\": \"54b2277a-b59e-4581-aa05-0d4eb15bfdc6\", \"memory\": \"Ticket TK-R401 (Order conversion rate data contains anomalies) was updated with priority 'high', category 'Data Quality', and tags 'outlier_detection' and 'pipeline' because it cont"
+ },
+ "05_pc01_sop_bootstrap_02_fc02_i03b_pipeline_eval_far": {
+  "usage": {
+   "input_tokens": 34472,
+   "output_tokens": 459,
+   "calls": 10
+  },
+  "injected_chars": 2549,
+  "entries_after": 18,
+  "add_result": "{\"results\": [{\"id\": \"6b62f4b4-0dbe-4cbd-8f33-5787a74c1785\", \"memory\": \"User processed four open helpdesk tickets from the IT Operations and Facilities departments on September 6, 2026, applying the team's recurring data quality analysis standard to three of them and categorizing the fourth as procurement.\", \"event\": \"ADD\"}, {\"id\": \"a9e6983a-8b43-44a8-877b-e73eb0ae56e5\", \"memory\": \"Ticket TK-R501 (Server log metrics contain unfiltered anomalies) was updated with priority 'high', category 'Data Quality', and tags 'data_cleaning' and 'pipeline' because the infrastructure monitoring report include"
+ },
+ "06_pc01_sop_bootstrap_02_fc02_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 12057,
+   "output_tokens": 511,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 10,
+  "add_result": "{\"results\": [{\"id\": \"796869cb-0714-4296-bc74-5ccbd921b8fc\", \"memory\": \"User instructed to call helpdesk_list_tickets to retrieve all open tickets, then call helpdesk_get_ticket for each to read their details, emphasizing the need to use these tools and not guess ticket IDs or contents.\", \"event\": \"ADD\"}, {\"id\": \"0b85ac68-9214-4a43-8f91-95f782011b97\", \"memory\": \"User provided the Data Quality Analysis SOP v1, which mandates a five-step pipeline (cleaning, normalization, outlier filtering, aggregation, report generation) for data analysis tickets, requiring all such tickets to be tagged pipeline"
+ },
+ "07_pc01_sop_bootstrap_02_fc02_c03_control_surface_memorization": {
+  "usage": {
+   "input_tokens": 19129,
+   "output_tokens": 438,
+   "calls": 7
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"3e45c501-7fae-4b4b-a540-05878b6e3e58\", \"memory\": \"User triaged four open helpdesk tickets on September 6, 2026, identifying and updating three tickets related to data quality and analysis work, while categorizing one as infrastructure.\", \"event\": \"ADD\"}, {\"id\": \"b37cd663-39d6-4801-956c-1ae6cf3fd786\", \"memory\": \"Ticket TK-R401, titled 'Order conversion rate data contains anomalies', was updated with high priority and categorized as data_quality due to invalid negative conversion rates requiring data cleaning and filtering.\", \"event\": \"ADD\"}, {\"id\": \"9bfc3cfd-56b3-4fb9-9cb5-"
+ },
+ "08_pc01_sop_bootstrap_02_fc02_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 18392,
+   "output_tokens": 387,
+   "calls": 7
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

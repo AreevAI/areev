@@ -1,0 +1,130 @@
+{
+ "01_sm01_preference_adoption_cold_style_baseline": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3509,
+   "output_tokens": 139,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_sm01_preference_adoption_learn_a_tsv_preference": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7907,
+   "output_tokens": 265,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "03_sm01_preference_adoption_learn_b_preference_reinforcement": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3480,
+   "output_tokens": 109,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_sm01_preference_adoption_eval_near_apply_saved_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7638,
+   "output_tokens": 123,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "05_sm01_preference_adoption_eval_far_transfer_saved_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7655,
+   "output_tokens": 164,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm01_preference_adoption_control_shortcut_visible_style_rule": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7786,
+   "output_tokens": 209,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm01_preference_adoption_control_style_preference_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7729,
+   "output_tokens": 200,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "08_sm01_preference_adoption_control_no_persistence_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7652,
+   "output_tokens": 133,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "01_pg06_kappa_integration_review_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 3493,
+   "output_tokens": 35,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pg06_kappa_integration_review_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 17360,
+   "output_tokens": 402,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_pg06_kappa_integration_review_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 2881,
+   "output_tokens": 165,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_pg06_kappa_integration_review_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 15521,
+   "output_tokens": 256,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_pg06_kappa_integration_review_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 11217,
+   "output_tokens": 188,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pg06_kappa_integration_review_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 11283,
+   "output_tokens": 227,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_pg06_kappa_integration_review_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 20107,
+   "output_tokens": 332,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_pg06_kappa_integration_review_control_boundary_scope_patch_mismatch": {
+  "usage": {
+   "input_tokens": 30001,
+   "output_tokens": 394,
+   "calls": 14
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

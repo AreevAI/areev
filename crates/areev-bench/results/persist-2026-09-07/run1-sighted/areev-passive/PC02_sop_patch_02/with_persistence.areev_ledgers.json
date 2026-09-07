@@ -1,0 +1,168 @@
+{
+ "01_pc02_sop_patch_02_fc04_i01_errcorr_cold": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 28856,
+   "output_tokens": 769,
+   "calls": 9
+  },
+  "injected_chars": 461
+ },
+ "02_pc02_sop_patch_02_fc04_i02b_errcorr_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 16,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 77829,
+   "output_tokens": 855,
+   "calls": 20
+  },
+  "injected_chars": 461
+ },
+ "03_pc02_sop_patch_02_fc04_i03_errcorr_eval_near": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 25481,
+   "output_tokens": 362,
+   "calls": 8
+  },
+  "injected_chars": 461
+ },
+ "04_pc02_sop_patch_02_fc04_i03b_errcorr_eval_far": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 16713,
+   "output_tokens": 569,
+   "calls": 5
+  },
+  "injected_chars": 461
+ },
+ "05_pc02_sop_patch_02_fc04_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22615,
+   "output_tokens": 335,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "06_pc02_sop_patch_02_fc04_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16628,
+   "output_tokens": 471,
+   "calls": 5
+  },
+  "injected_chars": 275
+ },
+ "07_pc02_sop_patch_02_fc04_c03_control_stale_procedure": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25319,
+   "output_tokens": 383,
+   "calls": 8
+  },
+  "injected_chars": 275
+ }
+}

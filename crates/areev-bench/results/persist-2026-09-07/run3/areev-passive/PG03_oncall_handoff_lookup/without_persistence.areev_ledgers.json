@@ -1,0 +1,130 @@
+{
+ "01_pg03_oncall_handoff_lookup_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7574,
+   "output_tokens": 93,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_pg03_oncall_handoff_lookup_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5866,
+   "output_tokens": 89,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2929,
+   "output_tokens": 163,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_pg03_oncall_handoff_lookup_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3664,
+   "output_tokens": 42,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "05_pg03_oncall_handoff_lookup_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1805,
+   "output_tokens": 2,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3678,
+   "output_tokens": 58,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "07_pg03_oncall_handoff_lookup_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3672,
+   "output_tokens": 29,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "08_pg03_oncall_handoff_lookup_control_boundary_latest_record": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3678,
+   "output_tokens": 52,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}

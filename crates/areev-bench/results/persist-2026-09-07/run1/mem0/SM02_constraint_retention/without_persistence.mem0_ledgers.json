@@ -1,0 +1,82 @@
+{
+ "01_sm02_constraint_retention_cold_boundary_baseline": {
+  "usage": {
+   "input_tokens": 7422,
+   "output_tokens": 178,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_sm02_constraint_retention_learn_a_external_boundary": {
+  "usage": {
+   "input_tokens": 7642,
+   "output_tokens": 163,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_sm02_constraint_retention_learn_b_boundary_reinforcement": {
+  "usage": {
+   "input_tokens": 7633,
+   "output_tokens": 299,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_sm02_constraint_retention_eval_near_retain_boundary": {
+  "usage": {
+   "input_tokens": 7418,
+   "output_tokens": 127,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_sm02_constraint_retention_eval_far_retain_boundary": {
+  "usage": {
+   "input_tokens": 5343,
+   "output_tokens": 99,
+   "calls": 3
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm02_constraint_retention_control_shortcut_visible_boundary_rule": {
+  "usage": {
+   "input_tokens": 7520,
+   "output_tokens": 145,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_sm02_constraint_retention_control_boundary_control": {
+  "usage": {
+   "input_tokens": 7494,
+   "output_tokens": 216,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_sm02_constraint_retention_control_no_persistence_boundary": {
+  "usage": {
+   "input_tokens": 7399,
+   "output_tokens": 184,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

@@ -1,0 +1,346 @@
+{
+ "01_pc01_sop_bootstrap_04_fm03_i01_datashare_cold": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14979,
+   "output_tokens": 253,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_04_fm03_i02_datashare_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4a8746b81feea47fe40f4ae7ea00082d20e9ad124f0b61e08543bb062c64e280",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply reusable approval criteria from the policy, not ticket surface details, when reviewing data export requests.",
+     "approved": true,
+     "because": "The instruction to apply reusable approval criteria from the policy is durable, general, actionable, and supported by the user's directive.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nSearch the knowledge base for the data sharing exception registry and read the full policy.\\nApply the registry rules to all open data export tickets. The policy includes reusable approval criteria and this batch has one-off ticket IDs and reporters; use the criteria, not the ticket surface, when deciding.\\nOutput: TICKET_ID|priority|category|tags\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 30218,
+   "output_tokens": 504,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_04_fm03_i02b_datashare_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2b91641b29695d0908719c57c81d9c73b9cba7e9a93c5f331baca2b61f54905c",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply reusable approval criteria from the policy, not ticket surface details, when reviewing data export requests.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has a brief overview of the data-sharing registry. Apply the registry procedure you retained from the earlier policy review.\\nThe ticket IDs and reporters have changed; apply the registry criteria instead of copying earlier ticket outputs. Update each ticket with the correct category, priority, tags, and any required internal notes.\\nOutput: TICKET_ID|priority|category|tags\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Apply reusable approval criteria from the policy, not ticket surface details, when reviewing data export requests.\", \"relation\": \"lesson\", \"subject\": \"data_export_review\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.8555,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_04_fm03_i02_datashare_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25442,
+   "output_tokens": 255,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_04_fm03_i03_datashare_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7e816f79bbfb5214eb5fda02504db1341c0275072c527513ee004b8cdd17fba0",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before processing any data export ticket, load and apply the full policy rules from the exception registry skill.",
+     "approved": true,
+     "because": "The instruction to load and apply full policy rules from the exception registry skill is durable, general, actionable, and supported by the user's directive.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB only has a brief overview. If you have a saved exception registry skill, open its full contents before processing.\\nProcess the open data export tickets in the helpdesk system. Apply the appropriate rules to each ticket and output: TICKET_ID|priority|category|tags\\nYou MUST use helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.27,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_04_fm03_i02b_datashare_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22604,
+   "output_tokens": 304,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "05_pc01_sop_bootstrap_04_fm03_i03b_datashare_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.406,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_04_fm03_i03_datashare_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9329,
+   "output_tokens": 93,
+   "calls": 4
+  },
+  "injected_chars": 275
+ },
+ "06_pc01_sop_bootstrap_04_fm03_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 21150,
+   "output_tokens": 296,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_04_fm03_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 20327,
+   "output_tokens": 272,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_04_fm03_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 15011,
+   "output_tokens": 247,
+   "calls": 6
+  },
+  "injected_chars": 0
+ }
+}

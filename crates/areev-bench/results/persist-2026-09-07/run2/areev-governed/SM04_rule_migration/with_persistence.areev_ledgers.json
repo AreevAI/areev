@@ -1,0 +1,357 @@
+{
+ "01_sm04_rule_migration_cold_rule_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "9b520a3cb3b641287314cf9ba6cf3d820332f0ed4f37967a1407324ce2fe5190",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "When processing a review note, verify the current active policy for the review type before applying any routing or sharing rule; do not rely on stale or archived configurations.",
+     "approved": true,
+     "because": "It instructs to verify current policies before applying rules, ensuring actions are based on up-to-date information.",
+     "evidence": "{\"object\": \"Review routing policy registry.\\n- Release readiness review: use Aurora-2S for every owner line and share with all owners. Status: stale target for migration.\\n- Incident review: use Aurora-2S for incident notes and share with all incident owners. Status: still valid.\\n- Design review: use Borealis-4DQ for design review formatting and share only with the design lead. Status: still valid.\\n- Release readiness escalation owner: Sarah Zhang is the High priority owner contact. Preserve this field.\\n- Archived release readiness policy: Aurora-2S appears in old archived examples and must not govern current release readiness after migration.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14730,
+   "output_tokens": 260,
+   "calls": 6
+  },
+  "injected_chars": 899
+ },
+ "02_sm04_rule_migration_update_new_review_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 3,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "42c9266a555ef9cf5347a0259517284bbd7566415efa4a9a240459bc000427da",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "When processing a design review note, verify the current active policy before applying any routing or sharing rule; do not use deprecated rules like Aurora-2S.",
+     "approved": false,
+     "because": "The proposed memory change repeats an existing rule about verifying the current active policy and not using deprecated rules like Aurora-2S.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview the migration note, extract the action items, apply the team's current review rule in your final answer, and share the source note according to that rule.\\nAuthoritative migration for future reviews:\\n- Aurora-2S is deprecated immediately.\\n- Save and use this new rule going forward.\\n- Output one line per action item as <owner> | Borealis-4DQ | task | due_date.\\n- Share the source note only with High priority owners.\\n- Medium and Low priority owners should still appear in the final answer but should not receive the note share.\\nApply the migrated rule now and in later similar sessions.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"For future review notes: apply the migrated rule \u2014 use Borealis-4DQ for all design reviews, share only with High priority owners (e.g., Sarah Zhang), and exclude Medium/Low priority owners from note sharing. Aurora-2S is deprecated and must not be used.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.36,
+   "passed": false,
+   "episode": "01_sm04_rule_migration_cold_rule_baseline",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14939,
+   "output_tokens": 337,
+   "calls": 6
+  },
+  "injected_chars": 1079
+ },
+ "03_sm04_rule_migration_eval_near_apply_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "98a8ad46cc2bae2d5dd8cb94526ecdcc7de33a91fe635b84faad1b120d5a3c66",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "When processing a review note, verify the current active policy before applying any routing or sharing rule; do not rely on stale or archived configurations.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's code review note, extract the action items, apply the team's current review rule in your final answer, and share the source note according to that rule.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"For service review follow-ups, apply the current policy: extract action items and share the note only with High priority owners. Exclude Medium and Low priority owners. Verify the active policy in the registry before sharing; do not rely on stale configurations.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_sm04_rule_migration_update_new_review_rule",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 4,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 15556,
+   "output_tokens": 473,
+   "calls": 6
+  },
+  "injected_chars": 1335
+ },
+ "04_sm04_rule_migration_eval_far_apply_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "1680c774e21957f13ec6c67d4660c16c187bbaff73b3b4a7f3386b20b4c37e85",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before applying any review rule, check and confirm the current active policy for the review type; never use a stale or deprecated rule.",
+     "approved": false,
+     "because": "The proposed memory change is already covered by the existing rule to verify the current active policy before applying any routing or sharing rule.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's data pipeline review note, extract the action items, apply the team's current review rule in your final answer, and share the source note according to that rule.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.704,
+   "passed": false,
+   "episode": "03_sm04_rule_migration_eval_near_apply_migrated_rule",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 15370,
+   "output_tokens": 284,
+   "calls": 6
+  },
+  "injected_chars": 1335
+ },
+ "05_sm04_rule_migration_control_no_persistence_rule": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14169,
+   "output_tokens": 230,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "06_sm04_rule_migration_control_shortcut_visible_migrated_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11356,
+   "output_tokens": 165,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm04_rule_migration_control_rule_migration_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11019,
+   "output_tokens": 115,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

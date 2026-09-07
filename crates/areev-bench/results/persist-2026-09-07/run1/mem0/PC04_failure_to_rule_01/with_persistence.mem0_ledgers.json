@@ -1,0 +1,92 @@
+{
+ "01_pc04_failure_to_rule_01_f07_i01_failure_baseline": {
+  "usage": {
+   "input_tokens": 26551,
+   "output_tokens": 500,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc04_failure_to_rule_01_f07_i02_failure_attempt": {
+  "usage": {
+   "input_tokens": 26303,
+   "output_tokens": 311,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 8,
+  "add_result": "{\"results\": [{\"id\": \"fa58438a-0dcc-4707-ab77-50fedcaa23fa\", \"memory\": \"User instructed to process open tickets and group child failures under the deployment event they belong to, using tags=[deploy-child, root-event-pending], priority=high, category=incident for child failures that should be escalated, without closing any ticket or updating the root deployment ticket.\", \"event\": \"ADD\"}, {\"id\": \"b960aef0-ed07-4f07-b1fa-6864266c1011\", \"memory\": \"User was recommended to use the helpdesk_list_tickets, helpdesk_get_ticket, and helpdesk_update_ticket tools to process and update tickets, and to treat"
+ },
+ "03_pc04_failure_to_rule_01_f07_i03_failure_reflection": {
+  "usage": {
+   "input_tokens": 29849,
+   "output_tokens": 312,
+   "calls": 8
+  },
+  "injected_chars": 1911,
+  "entries_after": 14,
+  "add_result": "{\"results\": [{\"id\": \"c96defd9-789a-41a1-a2a9-7a56ce3feb28\", \"memory\": \"User reflected on the stable field linking child failures to root deployment events, identifying release_hash as the definitive identifier, and confirmed that grouping should not rely on surface service name or timing alone, resulting in a reusable procedure for accurate incident triage.\", \"event\": \"ADD\"}, {\"id\": \"cee91fa1-d6d1-4d75-af9f-ff99a0bcc6fc\", \"memory\": \"User processed a new batch of tickets for the SearchAPI service, identifying the root deployment event (TK-T301) with release_hash jkl012 deployed at 16:00 UTC on "
+ },
+ "04_pc04_failure_to_rule_01_f07_i03b_failure_confirmation": {
+  "usage": {
+   "input_tokens": 30585,
+   "output_tokens": 312,
+   "calls": 8
+  },
+  "injected_chars": 2551,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"c55005f0-8b52-497f-a1e3-89f7a49d761d\", \"memory\": \"User applied the full saved deployment rollback procedure to a batch of SearchAPI tickets, correctly identifying TK-T301 as the root deployment event for release_hash jkl012 deployed at 16:00 UTC on April 12, 2026, and grouping child failures based on matching release_hash.\", \"event\": \"ADD\"}, {\"id\": \"0e55d7f1-2b0f-4f27-85a7-8768d42b1828\", \"memory\": \"User updated ticket TK-T302 (SearchAPI returning stale results after jkl012 deploy) with priority=high, category=incident, and tags=[deploy-child, root-event-pending], confirmin"
+ },
+ "05_pc04_failure_to_rule_01_f07_i04_failure_eval_near": {
+  "usage": {
+   "input_tokens": 47454,
+   "output_tokens": 378,
+   "calls": 12
+  },
+  "injected_chars": 2623,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"6ae474f7-28bb-4f13-b8bb-a475c2825f27\", \"memory\": \"User processed a new batch of NotifyService tickets on September 6, 2026, identifying TK-U401 as the root deployment event for release_hash pqr678 deployed at 09:15 UTC on April 13, 2026, and correctly grouped child failures based on matching release_hash.\", \"event\": \"ADD\"}, {\"id\": \"93bf002e-c8b1-40be-9011-85fc58d4a4c7\", \"memory\": \"User updated ticket TK-U402 (NotifyService push notifications failing \\u2014 pqr678 deployment) with priority=high, category=incident, and tags=[deploy-child, root-event-pending], confirming it a"
+ },
+ "06_pc04_failure_to_rule_01_f07_i05_failure_eval_far": {
+  "usage": {
+   "input_tokens": 36040,
+   "output_tokens": 297,
+   "calls": 9
+  },
+  "injected_chars": 2641,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"d2d69aab-9b94-4586-abea-1fb2ce1b9fd6\", \"memory\": \"User applied the full saved deployment rollback procedure to a new batch of AuthService tickets, correctly identifying TK-V501 as the root deployment event for release_hash vwx234 deployed at 11:00 UTC on April 13, 2026, and grouping child failures based on matching release_hash despite semantic variations in ticket titles and descriptions.\", \"event\": \"ADD\"}, {\"id\": \"6191affc-2c56-4112-b412-fbaca939635e\", \"memory\": \"User updated ticket TK-V502 (AuthService SSO broken \\u2014 related to vwx234 deployment) with priority=high, "
+ },
+ "07_pc04_failure_to_rule_01_f07_c01_control_reflection_off": {
+  "usage": {
+   "input_tokens": 35184,
+   "output_tokens": 439,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_pc04_failure_to_rule_01_f07_c02_control_no_persistence": {
+  "usage": {
+   "input_tokens": 45620,
+   "output_tokens": 567,
+   "calls": 12
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "09_pc04_failure_to_rule_01_f07_c03_control_shortcut": {
+  "usage": {
+   "input_tokens": 25133,
+   "output_tokens": 312,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

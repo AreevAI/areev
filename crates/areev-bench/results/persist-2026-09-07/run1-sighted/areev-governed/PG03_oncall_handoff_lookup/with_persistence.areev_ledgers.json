@@ -1,0 +1,475 @@
+{
+ "01_pg03_oncall_handoff_lookup_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c1b33fba2a7dc59cbe5bce458a3de77dfbd69a8135d5d2fb6c4c7517b7af264d",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff context from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "This is a weaker restatement of an existing rule already in force.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nWork the current CacheEdge maintenance follow-up before you touch any tickets. Mark only the blocked follow-up tickets as waiting on maintenance. Do not update the parent incident. Output: HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"subject\": \"assistant\"}\n{\"object\": \"Handoff records are episodic and time-sensitive.\\nBefore the first ticket update, search session history for the latest matching handoff and recover the exact owner, maintenance window, and blocked follow-up tickets.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9726,
+   "output_tokens": 84,
+   "calls": 4
+  },
+  "injected_chars": 1528
+ },
+ "02_pg03_oncall_handoff_lookup_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.608,
+   "passed": false,
+   "episode": "01_pg03_oncall_handoff_lookup_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5247,
+   "output_tokens": 79,
+   "calls": 3
+  },
+  "injected_chars": 310
+ },
+ "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": false,
+    "error": "ValueError: old_text not found in skill oncall_handoff_lookup"
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.964,
+   "passed": false,
+   "episode": "02_pg03_oncall_handoff_lookup_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 7767,
+   "output_tokens": 303,
+   "calls": 4
+  },
+  "injected_chars": 310
+ },
+ "04_pg03_oncall_handoff_lookup_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e1db640fa048f9de4ab9435b79e2d399237098db2eeda498afe0aadd5164abdf",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff context from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "This is a weaker restatement of an instruction already in force.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRead your newly added handoff lookup skill first, then search session history for the matching AuthProxy handoff before any ticket update. Mark only the blocked follow-up tickets as waiting on maintenance, and do not touch the parent incident. Output: HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.88,
+   "passed": false,
+   "episode": "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9091,
+   "output_tokens": 77,
+   "calls": 3
+  },
+  "injected_chars": 1528
+ },
+ "05_pg03_oncall_handoff_lookup_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "9628e3ecc0ecf4b2fa6a994799b24a78ac9ca1cf3dace8c94f59b43b519a7518",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff context from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "This is a weaker restatement of an instruction already in force.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRead your newly added handoff lookup skill first, then search session history for the matching Billing stream handoff before the first ticket update. Mark only the blocked follow-up tickets as waiting on maintenance, and leave the parent incident alone. Output: HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "04_pg03_oncall_handoff_lookup_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9806,
+   "output_tokens": 76,
+   "calls": 3
+  },
+  "injected_chars": 1528
+ },
+ "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "05_pg03_oncall_handoff_lookup_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9390,
+   "output_tokens": 77,
+   "calls": 3
+  },
+  "injected_chars": 1528
+ },
+ "07_pg03_oncall_handoff_lookup_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8924,
+   "passed": false,
+   "episode": "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 27173,
+   "output_tokens": 274,
+   "calls": 7
+  },
+  "injected_chars": 1528
+ },
+ "08_pg03_oncall_handoff_lookup_control_boundary_latest_record": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "9843795f83d8094fc62846df86f05a9c84b1692315c7e2eee96e15de815e852d",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff context from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of the existing rule already in force.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nMultiple CacheEdge follow-up tickets are open, including stale ones from an older handoff. Read your newly added handoff lookup skill first, then search session history for the latest matching handoff before any ticket update, and update only the currently blocked follow-up tickets. Output: HANDOFF|handoff_id|incident_id|owner|window|blocked_ticket_ids\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.9524,
+   "passed": false,
+   "episode": "07_pg03_oncall_handoff_lookup_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11747,
+   "output_tokens": 99,
+   "calls": 4
+  },
+  "injected_chars": 1528
+ }
+}

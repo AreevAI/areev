@@ -1,0 +1,130 @@
+{
+ "01_pg01_release_decision_followup_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6213,
+   "output_tokens": 114,
+   "calls": 3
+  },
+  "injected_chars": 0
+ },
+ "02_pg01_release_decision_followup_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1379,
+   "output_tokens": 62,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "03_pg01_release_decision_followup_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2791,
+   "output_tokens": 41,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_pg01_release_decision_followup_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6151,
+   "output_tokens": 94,
+   "calls": 3
+  },
+  "injected_chars": 0
+ },
+ "05_pg01_release_decision_followup_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7953,
+   "output_tokens": 126,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_pg01_release_decision_followup_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6140,
+   "output_tokens": 115,
+   "calls": 3
+  },
+  "injected_chars": 0
+ },
+ "07_pg01_release_decision_followup_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3904,
+   "output_tokens": 80,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "08_pg01_release_decision_followup_control_boundary_wrong_record": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10247,
+   "output_tokens": 174,
+   "calls": 5
+  },
+  "injected_chars": 0
+ }
+}

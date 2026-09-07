@@ -1,0 +1,82 @@
+{
+ "01_sm01_preference_adoption_cold_style_baseline": {
+  "usage": {
+   "input_tokens": 7600,
+   "output_tokens": 235,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_sm01_preference_adoption_learn_a_tsv_preference": {
+  "usage": {
+   "input_tokens": 10028,
+   "output_tokens": 317,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 9,
+  "add_result": "{\"results\": [{\"id\": \"89c4805b-69a0-4f64-9018-576a7401d6ee\", \"memory\": \"User requested a review of today's note to extract action items and share the source note with the owners of those action items.\", \"event\": \"ADD\"}, {\"id\": \"6eaa1dbb-ab2f-4e3e-ba61-805583e26323\", \"memory\": \"User established a durable team default for future action-item summaries: use TSV format with exactly four columns (owner, priority, task, due_date), normalize urgency labels to High/Medium/Low, and format dates as YYYY/MM/DD.\", \"event\": \"ADD\"}, {\"id\": \"229d529c-6077-4bdd-8fe4-3e241d3f8419\", \"memory\": \"User's action item "
+ },
+ "03_sm01_preference_adoption_learn_b_preference_reinforcement": {
+  "usage": {
+   "input_tokens": 13866,
+   "output_tokens": 305,
+   "calls": 6
+  },
+  "injected_chars": 1392,
+  "entries_after": 16,
+  "add_result": "{\"results\": [{\"id\": \"9b69daa2-dbf7-4e7a-b18e-445e2482da3c\", \"memory\": \"User extracted three action items from note NOTE-SM01-003 titled 'Quarterly Metrics Cleanup', created on April 12, 2026, with participants Iris Chen, Victor Hu, Mina Park, and Noah Price.\", \"event\": \"ADD\"}, {\"id\": \"2fbb67f9-7113-428c-9f7e-6d87ec2a45d0\", \"memory\": \"User assigned the task 'remove duplicated attribution labels' with High priority to Iris Chen, due on April 25, 2026.\", \"event\": \"ADD\"}, {\"id\": \"36988d54-bfc2-4313-a4f0-d565235dfb1e\", \"memory\": \"User assigned the task 'repair the campaign mismatch alert' with Medi"
+ },
+ "04_sm01_preference_adoption_eval_near_apply_saved_style": {
+  "usage": {
+   "input_tokens": 9177,
+   "output_tokens": 137,
+   "calls": 4
+  },
+  "injected_chars": 1682,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"1aafd957-0754-4a44-86a4-d3a1b521c6dd\", \"memory\": \"User requested a review of today's product review note to extract action items and share the source note with the owners of those action items.\", \"event\": \"ADD\"}, {\"id\": \"e652493f-915b-4a2d-8366-03699ef18e93\", \"memory\": \"User extracted three action items from note NOTE-SM01-004 titled 'Product Review Follow-up', created on April 13, 2026, with participants Iris Chen, Victor Hu, Mina Park, and Owen Bell.\", \"event\": \"ADD\"}, {\"id\": \"d3cdb1ab-e3d8-4833-8479-dce1f6ad80b9\", \"memory\": \"User assigned the task 'close the attribution"
+ },
+ "05_sm01_preference_adoption_eval_far_transfer_saved_style": {
+  "usage": {
+   "input_tokens": 11873,
+   "output_tokens": 328,
+   "calls": 5
+  },
+  "injected_chars": 1684,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"de125037-8da2-4d50-be2f-0d8428e99238\", \"memory\": \"User reviewed the security operations note titled 'Security Operations Readiness Review', created on April 14, 2026, with participants Harper Cole, Renee Shah, Evan Lin, and Dylan Moss, and extracted three action items for follow-up.\", \"event\": \"ADD\"}, {\"id\": \"884fa530-a99e-40dc-919d-1c9d7af37c3c\", \"memory\": \"User assigned the task 'rotate the expiring edge certificates' with High priority to Harper Cole, due on May 2, 2026.\", \"event\": \"ADD\"}, {\"id\": \"f7e14b88-4891-482c-a13f-1a2c714ad77d\", \"memory\": \"User assigned the task "
+ },
+ "06_sm01_preference_adoption_control_shortcut_visible_style_rule": {
+  "usage": {
+   "input_tokens": 9888,
+   "output_tokens": 242,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"d3202f99-2cfb-4591-a89b-d0f15929a345\", \"memory\": \"User requested extraction of action items from the 'Support Operations Exception Sweep' note (NOTE-SM01-007), created on April 14, 2026, with participants Asha Kim, Ben Ortiz, Cara Liu, and Drew Park, and shared the results with owners Asha Kim, Ben Ortiz, and Cara Liu on September 6, 2026.\", \"event\": \"ADD\"}, {\"id\": \"48251c76-5085-4335-956e-c0597c38d67b\", \"memory\": \"User was recommended to extract action items from the 'Support Operations Exception Sweep' note (NOTE-SM01-007) and format them in a TSV file with four columns:"
+ },
+ "07_sm01_preference_adoption_control_style_preference_control": {
+  "usage": {
+   "input_tokens": 9813,
+   "output_tokens": 254,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 3,
+  "add_result": "{\"results\": [{\"id\": \"a2654a56-b98c-4815-9558-2be6ec2d552a\", \"memory\": \"User extracted action items from the finance operations note titled 'Finance Operations Variance Review' (note ID: NOTE-SM01-006), created on April 15, 2026, and saved them to a TSV file named 'action_items.tsv' with columns: owner, priority, task, due_date, normalized to High/Medium/Low priority and YYYY/MM/DD date format.\", \"event\": \"ADD\"}, {\"id\": \"1a49e4e9-187b-40ab-8989-577706c88b19\", \"memory\": \"User extracted the following action items from the note: Paula Reed to reconcile the ad-spend variance worksheet with urgent p"
+ },
+ "08_sm01_preference_adoption_control_no_persistence_style": {
+  "usage": {
+   "input_tokens": 7455,
+   "output_tokens": 220,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "01_pg02_ops_exception_desk_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 14000,
+   "output_tokens": 208,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pg02_ops_exception_desk_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 13564,
+   "output_tokens": 443,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_pg02_ops_exception_desk_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 4276,
+   "output_tokens": 185,
+   "calls": 3
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_pg02_ops_exception_desk_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 9516,
+   "output_tokens": 302,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_pg02_ops_exception_desk_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 15981,
+   "output_tokens": 276,
+   "calls": 7
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pg02_ops_exception_desk_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 3534,
+   "output_tokens": 38,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_pg02_ops_exception_desk_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 14236,
+   "output_tokens": 499,
+   "calls": 7
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_pg02_ops_exception_desk_control_boundary_scope_mismatch": {
+  "usage": {
+   "input_tokens": 3552,
+   "output_tokens": 38,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

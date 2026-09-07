@@ -1,0 +1,82 @@
+{
+ "01_ep02_exception_list_recall_ep02_i01_exception_cold": {
+  "usage": {
+   "input_tokens": 19661,
+   "output_tokens": 203,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_ep02_exception_list_recall_ep02_i02_seed_exception": {
+  "usage": {
+   "input_tokens": 6760,
+   "output_tokens": 253,
+   "calls": 3
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_ep02_exception_list_recall_ep02_i03_context_noise": {
+  "usage": {
+   "input_tokens": 3596,
+   "output_tokens": 71,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_ep02_exception_list_recall_ep02_i04_eval_near": {
+  "usage": {
+   "input_tokens": 1711,
+   "output_tokens": 80,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_ep02_exception_list_recall_ep02_i05_eval_far": {
+  "usage": {
+   "input_tokens": 1719,
+   "output_tokens": 107,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_ep02_exception_list_recall_ep02_i07_control_shortcut": {
+  "usage": {
+   "input_tokens": 19862,
+   "output_tokens": 320,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_ep02_exception_list_recall_ep02_i08_control_wrong_mechanism": {
+  "usage": {
+   "input_tokens": 1722,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_ep02_exception_list_recall_ep02_i06_control_no_persistence": {
+  "usage": {
+   "input_tokens": 1715,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

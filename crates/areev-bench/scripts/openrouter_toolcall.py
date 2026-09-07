@@ -159,7 +159,7 @@ def build_body(req, model, provider, seed=None):
         "temperature": req.get("temperature", 0),
     }
     if provider:
-        body["provider"] = {"order": [provider], "allow_fallbacks": False}
+        body["provider"] = {"order": [x for x in provider.split(",") if x], "allow_fallbacks": False}
     if seed is not None:
         # Temperature 0 is not determinism: a seed-1 run measured two
         # BYTE-IDENTICAL eval states 9 points apart (p=0.049). `seed` is

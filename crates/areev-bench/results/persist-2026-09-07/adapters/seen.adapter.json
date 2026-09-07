@@ -1,0 +1,111 @@
+{
+ "base": "Qwen/Qwen3-1.7B",
+ "iters": 76,
+ "batch": 1,
+ "max_seq": 2048,
+ "lr": 0.0001,
+ "rank": 8,
+ "alpha": 16,
+ "layers": 8,
+ "resume": null,
+ "base_precision": "nf4 (QLoRA)",
+ "grad_checkpoint": true,
+ "rows_train": 32,
+ "rows_valid": 2,
+ "rows_dropped_unsupervised": [
+  6,
+  2
+ ],
+ "steps_skipped_nonfinite": 0,
+ "best_iter": 76,
+ "best_val_loss": 0.0372,
+ "val_curve": [
+  [
+   25,
+   0.229
+  ],
+  [
+   50,
+   0.0533
+  ],
+  [
+   75,
+   0.0375
+  ],
+  [
+   76,
+   0.0372
+  ]
+ ],
+ "train_curve": [
+  [
+   1,
+   3.6728
+  ],
+  [
+   5,
+   1.659
+  ],
+  [
+   10,
+   2.1059
+  ],
+  [
+   15,
+   1.5383
+  ],
+  [
+   20,
+   0.2764
+  ],
+  [
+   25,
+   0.3492
+  ],
+  [
+   30,
+   0.2854
+  ],
+  [
+   35,
+   0.3019
+  ],
+  [
+   40,
+   0.0396
+  ],
+  [
+   45,
+   0.024
+  ],
+  [
+   50,
+   0.0334
+  ],
+  [
+   55,
+   0.1377
+  ],
+  [
+   60,
+   0.5533
+  ],
+  [
+   65,
+   0.0122
+  ],
+  [
+   70,
+   0.0217
+  ],
+  [
+   75,
+   0.0156
+  ]
+ ],
+ "seconds": 186.5,
+ "peak_vram_mb": 7122,
+ "device": "NVIDIA GeForce RTX 4060",
+ "seed": 1,
+ "trainer": "persist/tune/train_lora.py (transformers+peft)"
+}

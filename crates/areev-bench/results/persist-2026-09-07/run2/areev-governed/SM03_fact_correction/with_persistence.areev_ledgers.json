@@ -1,0 +1,326 @@
+{
+ "01_sm03_fact_correction_cold_fact_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "841a6fce4fbf4877065b12df2bc74b48ae1ed8df945b3b8171321769a7cca70b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the Phoenix release freeze date against the memory registry's authoritative status before including it in any summary.",
+     "approved": true,
+     "because": "It instructs to verify the Phoenix release freeze date against the memory registry's status, which is durable, general, actionable, and supported by the evidence.",
+     "evidence": "{\"object\": \"Phoenix rollout memory registry.\\n- Phoenix release freeze date: 2026-06-14. Scope: Phoenix release rollout. Status: stale target awaiting authoritative correction.\\n- Phoenix QA freeze date: 2026-06-12. Scope: QA readiness. Status: still valid.\\n- Phoenix marketing lock date: 2026-06-16. Scope: campaign materials. Status: still valid and not the release freeze.\\n- Phoenix-West release freeze date: 2026-06-21. Scope: Phoenix-West regional release. Status: still valid.\\n- Orion release freeze date: 2026-06-16. Scope: Orion release rollout. Status: still valid and unrelated.\\n- Phoenix rollout owners: Elena Gomez and Ravi Shah. Preserve unless an owner update says otherwise.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11802,
+   "output_tokens": 169,
+   "calls": 5
+  },
+  "injected_chars": 937
+ },
+ "02_sm03_fact_correction_update_corrected_freeze_date": {
+  "governance": {
+   "funnel": {
+    "evidence": 3,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7112c1eada9ea2cc138a4da5f0c7007859ed478107d9251713df156d7ceb85b8",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the Phoenix release freeze date against the memory registry's authoritative status before including it in any summary.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview the correction note, extract the action items, include the current Phoenix freeze date in your final summary, and share the source note with the rollout owners.\\nAuthoritative update for future Phoenix work:\\n- The previously used Phoenix freeze date 2026-06-14 is obsolete.\\n- Save and use 2026-06-16 as the official Phoenix release freeze date going forward.\\nApply that overwrite now and in later similar sessions.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Phoenix release freeze date: 2026-06-16. Scope: Phoenix release rollout. Status: authoritative update applied.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6,
+   "passed": false,
+   "episode": "01_sm03_fact_correction_cold_fact_baseline",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12508,
+   "output_tokens": 265,
+   "calls": 5
+  },
+  "injected_chars": 1065
+ },
+ "03_sm03_fact_correction_eval_near_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": false,
+   "episode": "02_sm03_fact_correction_update_corrected_freeze_date",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 13601,
+   "output_tokens": 223,
+   "calls": 6
+  },
+  "injected_chars": 500
+ },
+ "04_sm03_fact_correction_eval_far_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "03_sm03_fact_correction_eval_near_use_corrected_fact",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11138,
+   "output_tokens": 208,
+   "calls": 5
+  },
+  "injected_chars": 500
+ },
+ "05_sm03_fact_correction_control_no_persistence_fact": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7604,
+   "output_tokens": 186,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm03_fact_correction_control_shortcut_visible_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2cdaa88a9a3bafdbab1ac4768f8295a622657b9a7a1926fa083321c6a60a5891",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Include the current Phoenix freeze date in the final summary when instructed to do so.",
+     "approved": false,
+     "because": "The instruction to include the Phoenix freeze date is specific to one task and not a general rule.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's Phoenix customer-success note, extract the action items, include the current Phoenix freeze date in your final summary, and share the source note with the owners.\\nFor this task only, the current Phoenix freeze date is 2026-06-16.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10998,
+   "output_tokens": 184,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm03_fact_correction_control_fact_correction_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11070,
+   "output_tokens": 182,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

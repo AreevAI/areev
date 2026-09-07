@@ -1,0 +1,345 @@
+{
+ "01_sm03_fact_correction_cold_fact_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "18be1e0c343afa96041970c5db54b67db521fc7386416648ac6a15478dbd3442",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check the scope of the freeze date before including it in a summary; use 'release freeze' only for release-related actions.",
+     "approved": true,
+     "because": "It provides a general, actionable guideline to ensure accurate use of freeze dates in summaries, supported by existing memory entries.",
+     "evidence": "{\"object\": \"Phoenix rollout memory registry.\\n- Phoenix release freeze date: 2026-06-14. Scope: Phoenix release rollout. Status: stale target awaiting authoritative correction.\\n- Phoenix QA freeze date: 2026-06-12. Scope: QA readiness. Status: still valid.\\n- Phoenix marketing lock date: 2026-06-16. Scope: campaign materials. Status: still valid and not the release freeze.\\n- Phoenix-West release freeze date: 2026-06-21. Scope: Phoenix-West regional release. Status: still valid.\\n- Orion release freeze date: 2026-06-16. Scope: Orion release rollout. Status: still valid and unrelated.\\n- Phoenix rollout owners: Elena Gomez and Ravi Shah. Preserve unless an owner update says otherwise.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11653,
+   "output_tokens": 182,
+   "calls": 5
+  },
+  "injected_chars": 937
+ },
+ "02_sm03_fact_correction_update_corrected_freeze_date": {
+  "governance": {
+   "funnel": {
+    "evidence": 3,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 2,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 2,
+    "stored": 2
+   },
+   "findings": 0,
+   "pending": 2,
+   "applied": 0,
+   "rejected": 2,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c4bb8e48440502608e9069c73626afcf100d2922cc2a7b5c33b1d10ba204450f",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Cross-check the scope of each freeze date against the current rollout phase before referencing it in action items or summaries.",
+     "approved": false,
+     "because": "It repeats the existing instruction to check the scope of the freeze date before including it in a summary.",
+     "evidence": "{\"object\": \"Phoenix rollout memory registry.\\nPhoenix release freeze date: 2026-06-16. Scope: Phoenix release rollout. Status: current and authoritative.\\nPhoenix QA freeze date: 2026-06-12. Scope: QA readiness. Status: still valid.\\nPhoenix marketing lock date: 2026-06-16. Scope: campaign materials. Status: still valid and not the release freeze.\\nPhoenix-West release freeze date: 2026-06-21. Scope: Phoenix-West regional release. Status: still valid.\\nOrion release freeze date: 2026-06-16. Scope: Orion release rollout. Status: still valid and unrelated.\\nPhoenix rollout owners: Elena Gomez and Ravi Shah. Preserve unless an owner update says otherwise.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    },
+    {
+     "hash": "81ce8083cd5e4c04d95b4e66207f9d052607f4c3ce198aa55085c2f7f4b99f49",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the scope of any freeze date before using it in a summary; use 'release freeze' only for release-related actions.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview the correction note, extract the action items, include the current Phoenix freeze date in your final summary, and share the source note with the rollout owners.\\nAuthoritative update for future Phoenix work:\\n- The previously used Phoenix freeze date 2026-06-14 is obsolete.\\n- Save and use 2026-06-16 as the official Phoenix release freeze date going forward.\\nApply that overwrite now and in later similar sessions.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Check the scope of the freeze date before including it in a summary; use 'release freeze' only for release-related actions.\", \"relation\": \"lesson\", \"subject\": \"phoenix_rollout\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6,
+   "passed": false,
+   "episode": "01_sm03_fact_correction_cold_fact_baseline",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 10400,
+   "output_tokens": 442,
+   "calls": 4
+  },
+  "injected_chars": 1063
+ },
+ "03_sm03_fact_correction_eval_near_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": false,
+   "episode": "02_sm03_fact_correction_update_corrected_freeze_date",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11897,
+   "output_tokens": 169,
+   "calls": 5
+  },
+  "injected_chars": 1030
+ },
+ "04_sm03_fact_correction_eval_far_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "03_sm03_fact_correction_eval_near_use_corrected_fact",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14991,
+   "output_tokens": 210,
+   "calls": 6
+  },
+  "injected_chars": 1030
+ },
+ "05_sm03_fact_correction_control_no_persistence_fact": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7604,
+   "output_tokens": 191,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm03_fact_correction_control_shortcut_visible_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "632a40271957903e908fc569028b13eaea1ab7a4098a54ce3d7963e0f08a201b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Include the current Phoenix freeze date in the final summary when explicitly requested in the task instructions.",
+     "approved": false,
+     "because": "The proposed memory change is specific to a single task and not a general rule for future tasks.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's Phoenix customer-success note, extract the action items, include the current Phoenix freeze date in your final summary, and share the source note with the owners.\\nFor this task only, the current Phoenix freeze date is 2026-06-16.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11002,
+   "output_tokens": 188,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm03_fact_correction_control_fact_correction_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "885edbf68a0ee6345ac9d207db4af39f8c0b20a1ee394b3d976c5a5293f5e8e1",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Include the current Phoenix freeze date in the final summary when explicitly requested in the instruction.",
+     "approved": false,
+     "because": "The proposed memory change is task-specific and not a general rule for future sessions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's finance coordination note, extract the action items, include the current Phoenix freeze date in your final summary, and share the source note with the coordination owners.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11074,
+   "output_tokens": 175,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

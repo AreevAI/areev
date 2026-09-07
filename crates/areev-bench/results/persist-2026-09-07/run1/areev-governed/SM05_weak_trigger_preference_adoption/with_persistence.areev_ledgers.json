@@ -1,0 +1,388 @@
+{
+ "01_sm05_weak_trigger_preference_adoption_cold_style_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7436,
+   "output_tokens": 199,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm05_weak_trigger_preference_adoption_learn_a_explicit_save_preference": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4f98ed655b89af18ed7c5c05b8bf481a3418b973309d6b0382a4424aa01815a1",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the durable TSV action format with columns owner, priority, task, due_date in every action item extraction, regardless of session context.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support its necessity or correctness."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14117,
+   "output_tokens": 289,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "03_sm05_weak_trigger_preference_adoption_learn_b_soft_preference": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "8782e7032637c25f6f7a31e84469342593d27bfa5610d173677187f73d99fc2a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply the durable TSV action format with columns owner, priority, task, due_date in every action item extraction, regardless of session context.",
+     "approved": false,
+     "because": "The proposed memory change is already in force and lacks supporting evidence."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.76,
+   "passed": false,
+   "episode": "02_sm05_weak_trigger_preference_adoption_learn_a_explicit_save_preference",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14230,
+   "output_tokens": 338,
+   "calls": 6
+  },
+  "injected_chars": 392
+ },
+ "04_sm05_weak_trigger_preference_adoption_update_or_stabilize_embedded_preference": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "replace needs old_text"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "no memory entry contains 'due_date_format:'"
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.728,
+   "passed": false,
+   "episode": "03_sm05_weak_trigger_preference_adoption_learn_b_soft_preference",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14775,
+   "output_tokens": 465,
+   "calls": 6
+  },
+  "injected_chars": 508
+ },
+ "05_sm05_weak_trigger_preference_adoption_eval_near_apply_weak_trigger_style": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.728,
+   "passed": false,
+   "episode": "04_sm05_weak_trigger_preference_adoption_update_or_stabilize_embedded_preference",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13779,
+   "output_tokens": 251,
+   "calls": 6
+  },
+  "injected_chars": 601
+ },
+ "06_sm05_weak_trigger_preference_adoption_eval_far_transfer_weak_trigger_style": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.704,
+   "passed": false,
+   "episode": "05_sm05_weak_trigger_preference_adoption_eval_near_apply_weak_trigger_style",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13866,
+   "output_tokens": 329,
+   "calls": 6
+  },
+  "injected_chars": 601
+ },
+ "07_sm05_weak_trigger_preference_adoption_control_shortcut_visible_style_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13552,
+   "output_tokens": 243,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "08_sm05_weak_trigger_preference_adoption_control_style_preference_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11276,
+   "output_tokens": 334,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "09_sm05_weak_trigger_preference_adoption_control_no_persistence_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7438,
+   "output_tokens": 133,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

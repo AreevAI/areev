@@ -1,0 +1,146 @@
+{
+ "01_sm05_weak_trigger_preference_adoption_cold_style_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7436,
+   "output_tokens": 210,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm05_weak_trigger_preference_adoption_learn_a_explicit_save_preference": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10131,
+   "output_tokens": 338,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "03_sm05_weak_trigger_preference_adoption_learn_b_soft_preference": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10031,
+   "output_tokens": 239,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "04_sm05_weak_trigger_preference_adoption_update_or_stabilize_embedded_preference": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7560,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "05_sm05_weak_trigger_preference_adoption_eval_near_apply_weak_trigger_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7438,
+   "output_tokens": 133,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm05_weak_trigger_preference_adoption_eval_far_transfer_weak_trigger_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7491,
+   "output_tokens": 208,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm05_weak_trigger_preference_adoption_control_shortcut_visible_style_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10057,
+   "output_tokens": 239,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "08_sm05_weak_trigger_preference_adoption_control_style_preference_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7841,
+   "output_tokens": 381,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "09_sm05_weak_trigger_preference_adoption_control_no_persistence_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7610,
+   "output_tokens": 125,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

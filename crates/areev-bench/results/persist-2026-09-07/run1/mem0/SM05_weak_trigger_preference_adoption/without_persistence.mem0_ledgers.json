@@ -1,0 +1,92 @@
+{
+ "01_sm05_weak_trigger_preference_adoption_cold_style_baseline": {
+  "usage": {
+   "input_tokens": 7436,
+   "output_tokens": 213,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_sm05_weak_trigger_preference_adoption_learn_a_explicit_save_preference": {
+  "usage": {
+   "input_tokens": 9904,
+   "output_tokens": 272,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_sm05_weak_trigger_preference_adoption_learn_b_soft_preference": {
+  "usage": {
+   "input_tokens": 9933,
+   "output_tokens": 303,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_sm05_weak_trigger_preference_adoption_update_or_stabilize_embedded_preference": {
+  "usage": {
+   "input_tokens": 7560,
+   "output_tokens": 249,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_sm05_weak_trigger_preference_adoption_eval_near_apply_weak_trigger_style": {
+  "usage": {
+   "input_tokens": 7776,
+   "output_tokens": 368,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm05_weak_trigger_preference_adoption_eval_far_transfer_weak_trigger_style": {
+  "usage": {
+   "input_tokens": 7448,
+   "output_tokens": 206,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_sm05_weak_trigger_preference_adoption_control_shortcut_visible_style_rule": {
+  "usage": {
+   "input_tokens": 9830,
+   "output_tokens": 259,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_sm05_weak_trigger_preference_adoption_control_style_preference_control": {
+  "usage": {
+   "input_tokens": 7843,
+   "output_tokens": 367,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "09_sm05_weak_trigger_preference_adoption_control_no_persistence_style": {
+  "usage": {
+   "input_tokens": 7731,
+   "output_tokens": 331,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

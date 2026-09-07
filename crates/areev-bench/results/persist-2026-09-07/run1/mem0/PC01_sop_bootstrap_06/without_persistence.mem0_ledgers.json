@@ -1,0 +1,82 @@
+{
+ "01_pc01_sop_bootstrap_06_fx01_i01_x_cold": {
+  "usage": {
+   "input_tokens": 24720,
+   "output_tokens": 554,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc01_sop_bootstrap_06_fx01_i02_x_learn_a": {
+  "usage": {
+   "input_tokens": 28690,
+   "output_tokens": 481,
+   "calls": 11
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_pc01_sop_bootstrap_06_fx01_i02b_x_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 11451,
+   "output_tokens": 510,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_pc01_sop_bootstrap_06_fx01_i03_x_eval_near": {
+  "usage": {
+   "input_tokens": 15206,
+   "output_tokens": 389,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_pc01_sop_bootstrap_06_fx01_i03b_x_eval_far": {
+  "usage": {
+   "input_tokens": 28514,
+   "output_tokens": 481,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pc01_sop_bootstrap_06_fx01_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 18870,
+   "output_tokens": 387,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_pc01_sop_bootstrap_06_fx01_c03_control_surface_memorization": {
+  "usage": {
+   "input_tokens": 10863,
+   "output_tokens": 508,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_pc01_sop_bootstrap_06_fx01_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 25075,
+   "output_tokens": 481,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

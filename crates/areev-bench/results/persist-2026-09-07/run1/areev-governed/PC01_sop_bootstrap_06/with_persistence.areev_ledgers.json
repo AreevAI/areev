@@ -1,0 +1,343 @@
+{
+ "01_pc01_sop_bootstrap_06_fx01_i01_x_cold": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24419,
+   "output_tokens": 539,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_06_fx01_i02_x_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "ad899bc3c947c670abb38fb5cba5f99d4a9efd1455fb61524884fff67cbaa54a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify tool availability before invoking it; check the tool registry or documentation first.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support its necessity or correctness."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22342,
+   "output_tokens": 496,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_06_fx01_i02b_x_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.1,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_06_fx01_i02_x_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16025,
+   "output_tokens": 515,
+   "calls": 5
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_06_fx01_i03_x_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.472,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_06_fx01_i02b_x_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6752,
+   "output_tokens": 23,
+   "calls": 3
+  },
+  "injected_chars": 275
+ },
+ "05_pc01_sop_bootstrap_06_fx01_i03b_x_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.28,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_06_fx01_i03_x_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6767,
+   "output_tokens": 23,
+   "calls": 3
+  },
+  "injected_chars": 275
+ },
+ "06_pc01_sop_bootstrap_06_fx01_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "0f4cfff2660e6d07593277d6e2add2c1851524b94da6c948b728dbb77618ad06",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify the `x_action` tool is used for all X operations at session start; reject any direct invocation of X functions not routed through `x_action`.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support the instruction."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24248,
+   "output_tokens": 420,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_06_fx01_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "fbafe8629da217499667d4414c716f1b50b943f283a0f3701d05c6b6675dc691",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check for prior session context on task keywords and thresholds before requesting re-instruction in a new session",
+     "approved": false,
+     "because": "The proposal lacks evidence and does not meet the criteria for durable, general, and supported memory changes."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 28482,
+   "output_tokens": 491,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_06_fx01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10642,
+   "output_tokens": 311,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

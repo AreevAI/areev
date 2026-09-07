@@ -1,0 +1,156 @@
+{
+ "01_sm02_constraint_retention_cold_boundary_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7422,
+   "output_tokens": 178,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm02_constraint_retention_learn_a_external_boundary": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11349,
+   "output_tokens": 238,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "03_sm02_constraint_retention_learn_b_boundary_reinforcement": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10955,
+   "output_tokens": 127,
+   "calls": 5
+  },
+  "injected_chars": 485
+ },
+ "04_sm02_constraint_retention_eval_near_retain_boundary": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10877,
+   "output_tokens": 146,
+   "calls": 5
+  },
+  "injected_chars": 485
+ },
+ "05_sm02_constraint_retention_eval_far_retain_boundary": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10894,
+   "output_tokens": 149,
+   "calls": 5
+  },
+  "injected_chars": 485
+ },
+ "06_sm02_constraint_retention_control_shortcut_visible_boundary_rule": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11002,
+   "output_tokens": 139,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm02_constraint_retention_control_boundary_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11182,
+   "output_tokens": 349,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "08_sm02_constraint_retention_control_no_persistence_boundary": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7571,
+   "output_tokens": 177,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

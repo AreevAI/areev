@@ -1,0 +1,160 @@
+{
+ "01_ep02_exception_list_recall_ep02_i01_exception_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3952,
+   "output_tokens": 56,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_ep02_exception_list_recall_ep02_i02_seed_exception": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13251,
+   "output_tokens": 340,
+   "calls": 5
+  },
+  "injected_chars": 310
+ },
+ "03_ep02_exception_list_recall_ep02_i03_context_noise": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5496,
+   "output_tokens": 63,
+   "calls": 3
+  },
+  "injected_chars": 310
+ },
+ "04_ep02_exception_list_recall_ep02_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3364,
+   "output_tokens": 134,
+   "calls": 2
+  },
+  "injected_chars": 310
+ },
+ "05_ep02_exception_list_recall_ep02_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12973,
+   "output_tokens": 550,
+   "calls": 5
+  },
+  "injected_chars": 310
+ },
+ "06_ep02_exception_list_recall_ep02_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9583,
+   "output_tokens": 143,
+   "calls": 5
+  },
+  "injected_chars": 310
+ },
+ "07_ep02_exception_list_recall_ep02_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14744,
+   "output_tokens": 381,
+   "calls": 5
+  },
+  "injected_chars": 631
+ },
+ "08_ep02_exception_list_recall_ep02_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1715,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0
+ }
+}

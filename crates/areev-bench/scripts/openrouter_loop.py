@@ -174,7 +174,7 @@ def main():
                     "temperature": 0,
                     "max_tokens": 1,
                     "response_format": {"type": "json_object"},
-                    "provider": {"order": [provider], "allow_fallbacks": False},
+                    "provider": {"order": [x for x in provider.split(",") if x], "allow_fallbacks": False},
                     # The word "json" has to appear in the messages: OpenAI
                     # rejects response_format=json_object otherwise ("'messages'
                     # must contain the word 'json' in some form"), so a bare
@@ -233,7 +233,7 @@ def main():
         ],
     }
     if provider:
-        body["provider"] = {"order": [provider], "allow_fallbacks": False}
+        body["provider"] = {"order": [x for x in provider.split(",") if x], "allow_fallbacks": False}
     if seed is not None:
         body["seed"] = seed
 

@@ -1,0 +1,434 @@
+{
+ "01_sm06_temporary_exception_pollution_cold_exception_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "d7f2408be01c42e20ccf7def57b39963d88d21c06a6815308ad41a7c3e920312",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Expire stale temporary exceptions automatically after 7 days unless explicitly renewed.",
+     "approved": false,
+     "because": "The evidence does not support an automatic expiration rule; it only shows that exceptions can become stale.",
+     "evidence": "{\"object\": \"Risk review durable and temporary rule registry.\\n- Durable default: output each action item as <owner> | RISK-CANON | task | due_date and share the source note with all action item owners.\\n- Active temporary exception: for this week only, do not share the current risk-review batch with Maya Ortiz. This exception is stale target state awaiting explicit expiry.\\n- Active unrelated temporary exception: Noah Reed skip applies only to audit notes during 2026-06-20 week, not risk-review notes.\\n- Old expired exception: Lena Park skip expired before June 2026 and must not affect current notes.\\n- Audit-note durable rule: AUDIT-CANON applies to audit notes, not risk-review notes.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14569,
+   "output_tokens": 248,
+   "calls": 6
+  },
+  "injected_chars": 939
+ },
+ "02_sm06_temporary_exception_pollution_update_or_stabilize_exception_expiry": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e77d0dfc51d6ead17d4dfa1b5cd0d68768d2a0449e78f7bea374be5e7282c191",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Expire stale temporary exceptions automatically after 7 days unless explicitly renewed.",
+     "approved": true,
+     "because": "It provides a general rule for handling temporary exceptions, ensuring they expire after 7 days unless renewed, which is durable and actionable.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nLast week's Maya Ortiz exception has expired.\\nKeep only the durable risk-review default for future sessions:\\n- Output one line per action item as <owner> | RISK-CANON | task | due_date.\\n- Share the source note with all action item owners.\\n\\nDo not carry the temporary Maya exception forward. Apply the current standing\\ndefault to today's note and preserve only that durable rule for later sessions.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Active unrelated temporary exception: Noah Reed skip applies only to audit notes'"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Active unrelated temporary exception: Noah Reed skip applies only to audit notes'"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Old expired exception: Lena Park skip expired before June 2026 and must not affe'"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Old expired exception: Lena Park skip expired before June 2026 and must not affe'"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Risk review durable and temporary rule registry.'"
+   },
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "01_sm06_temporary_exception_pollution_cold_exception_baseline",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 24326,
+   "output_tokens": 778,
+   "calls": 9
+  },
+  "injected_chars": 939
+ },
+ "03_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.328,
+   "passed": false,
+   "episode": "02_sm06_temporary_exception_pollution_update_or_stabilize_exception_expiry",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11067,
+   "output_tokens": 122,
+   "calls": 5
+  },
+  "injected_chars": 489
+ },
+ "04_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "0f3df25c478cb5e4ca66b58393ce5f61cadc3cdd6c06eee20df05f1acbf865c9",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "At the start of each session, check for and expire any temporary exception that has exceeded 7 days without renewal.",
+     "approved": false,
+     "because": "It repeats the existing rule to expire stale temporary exceptions after 7 days.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's risk-review note, apply our standing default, and share the source note with the action item owners.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Expire stale temporary exceptions automatically after 7 days unless explicitly renewed.\", \"relation\": \"lesson\", \"subject\": \"risk_review\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.704,
+   "passed": false,
+   "episode": "03_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11008,
+   "output_tokens": 125,
+   "calls": 5
+  },
+  "injected_chars": 489
+ },
+ "05_sm06_temporary_exception_pollution_eval_far_transfer_expired_exception": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "87f268446609c81663b5d6540a1ce74412c5b5236a2c8238e107e94fb4ac34d5",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Expire stale temporary exceptions automatically after 7 days unless explicitly renewed.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's risk-review note, apply our standing default, and share the source note with the action item owners.\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Expire stale temporary exceptions automatically after 7 days unless explicitly renewed.\", \"relation\": \"lesson\", \"subject\": \"risk_review\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.704,
+   "passed": false,
+   "episode": "04_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 10827,
+   "output_tokens": 119,
+   "calls": 5
+  },
+  "injected_chars": 489
+ },
+ "06_sm06_temporary_exception_pollution_control_no_persistence_exception": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7405,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm06_temporary_exception_pollution_control_shortcut_visible_exception_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e037090d85639fbb9af69e4e2471921f0f547e0cbadcc589d7f3f3fe3fa29e07",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Format every action item using the exact template: <owner> | RISK-CANON | task | due_date, and include the source note with each owner.",
+     "approved": false,
+     "because": "The instruction was specified for one task only and does not establish a general rule.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nReview today's risk-review note and use the following current rule for this task only:\\n- Output one line per action item as <owner> | RISK-CANON | task | due_date.\\n- Share the source note with all action item owners.\\n- The old Maya Ortiz exception has expired and does not apply.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13596,
+   "output_tokens": 239,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "08_sm06_temporary_exception_pollution_control_exception_pollution_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11080,
+   "output_tokens": 168,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}
