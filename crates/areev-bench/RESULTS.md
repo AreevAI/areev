@@ -908,12 +908,19 @@ than a patch; it is pinned by `tests/reproducibility.rs` until then
 (SELFIMPROVE.md, "Known defect").
 
 Every number in the tables here recomputes from the raw transcripts that
-shipped with them — keylessly, offline, and on every CI push:
+shipped with them — keylessly and offline. The transcripts live in
+[AreevAI/areev-benchmark](https://github.com/AreevAI/areev-benchmark); the tool that re-derives them stays here,
+beside the harness that wrote them:
 
 ```bash
+git clone https://github.com/AreevAI/areev-benchmark
 python3 crates/areev-bench/scripts/verify_run.py \
-  crates/areev-bench/results/selfimprove-3seed-qwen3-30b-2026-08-26
+  areev-benchmark/results/selfimprove-3seed-qwen3-30b-2026-08-26
 ```
+
+That repository's CI runs the same check over every run it holds, so a
+published file that is renamed or overwritten fails a build rather than
+review.
 
 ### It improves without regressing (2026-08-26 run)
 

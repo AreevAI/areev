@@ -374,7 +374,8 @@ On the public [LoCoMo](https://github.com/snap-research/locomo) long-conversatio
 benchmark, a plain retrieve-then-read pipeline scored around 74.5% / 81.6%
 retrieval hit@10 / hit@20 (with `text-embedding-3-small`) and ~54.2% end-to-end
 answer accuracy at k=20. Bring your own models and embedder. Every answer and
-judge verdict is committed for audit under `crates/areev-bench/results/`.
+judge verdict is committed for audit under [AreevAI/areev-benchmark](https://github.com/AreevAI/areev-benchmark)
+(`results/`).
 
 ## Project
 

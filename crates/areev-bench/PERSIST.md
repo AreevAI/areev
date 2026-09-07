@@ -587,7 +587,8 @@ sandbox image built; Harbor 0.22 with the Horizon reference agents; the
 Horizon environment image. The `bench/persist` worktree is rsynced to
 `~/mg/products/areev-persist` (never pushed). Runs live in
 `~/mg/local/areev-runs/persist/`; only counts, manifests and checksums
-travel back into `crates/areev-bench/results/persist-<date>/`.
+travel back into `results/persist-<date>/` in
+[AreevAI/areev-benchmark](https://github.com/AreevAI/areev-benchmark).
 
 Model legs, all through OpenRouter on the one key in `dev-areev.env`:
 agent and DISCOVER/VERIFY `qwen/qwen3-30b-a3b-instruct-2507` pinned to

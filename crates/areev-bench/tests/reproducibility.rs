@@ -65,7 +65,7 @@ fn assert_golden(actual: &str) {
         actual,
         expected,
         "\nThe selfimprove inputs drifted from {}.\n\
-         Every run under crates/areev-bench/results/ was produced against the \
+         Every published run (AreevAI/areev-benchmark) was produced against the \
          pinned values; a re-run after this change is NOT comparable to them.\n\
          If the change is intended: GOLDEN_BLESS=1 cargo test -p areev-bench \
          --test reproducibility, review the diff, and name the invalidated runs \
