@@ -336,11 +336,12 @@ grain selection, dynamic planning, do/don't) is
   queue: **`run.respond` refuses shared-token and anonymous callers** — only
   a per-principal credential (`areev ui --auth`) may approve, because the
   approver's identity IS the audit record; cancel keeps the low bar.
-- **areev**: ~28 verbs (incl. `migrate` from other memory systems,
+- **areev**: ~29 verbs (incl. `migrate` from other memory systems,
   `reindex`, the graph/time reads `related`/`entity-at`/`step-actions`, the
-  join `run-trace`/`runs-touching`, the DSAR read `subject-report`, and the
-  credential lifecycle `auth mint|list|revoke` — which takes **no `--db`**,
-  dispatching before `resolve_db` because the credential map names no memory),
+  join `run-trace`/`runs-touching`, the DSAR read `subject-report`, the
+  credential lifecycle `auth mint|list|revoke`, and `provision` — the last two
+  take **no `--db`** and dispatch before `resolve_db`, because a credential map
+  names no memory and a schema to bootstrap is not one to open),
   hand-rolled `parse_args` → HashMap; global `--embed-cmd` installs
   a `CommandEmbed` for vector recall on any verb. Opens honor
   the file's meta declarations; `--index-text true|false` explicitly
