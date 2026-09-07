@@ -114,17 +114,36 @@ by instances against the server's `max_connections` — cache handles per tenant
 with an LRU and close idle ones (`close()` in Node; drop in Rust/Python). There
 is no built-in pool.
 
-**A pooler must run in session mode, never transaction mode.** The store pins
-`search_path` once per session and takes the bootstrap advisory lock per
-session. Transaction pooling hands each transaction to whichever backend is
-free, so neither survives: a statement lands on a connection whose `search_path`
-is unset or belongs to a different schema. Because one schema is one memory,
-that is not a failed query — it is a query answered from the wrong tenant.
+**A pooler must run in session mode, never transaction mode.** The store keeps
+three pieces of state on the session: `search_path`, pinned once at open; the
+bootstrap advisory lock (`pg_advisory_lock`, not the `_xact_` form); and the
+hot-path queries, held as server-side **named prepared statements** cached per
+connection. Transaction pooling hands each transaction to whichever backend is
+free, so none of the three survives.
 
-PgBouncer in `session` mode is safe and still caps server connections.
-`transaction` and `statement` modes are not. The Cloud SQL Auth Proxy and the
-Cloudflare/Neon-style connection proxies pass sessions through and are safe.
-Supavisor's transaction mode and PgCat's transaction mode are not.
+The prepared-statement cache is what an operator hits first — a later
+transaction lands on a backend that never prepared the statement, and the
+driver reports `prepared statement "s0" does not exist`. That one is loud. The
+`search_path` failure is the dangerous one: a statement lands on a connection
+whose `search_path` is unset or belongs to a **different schema**, and because
+one schema is one memory, that is not a failed query — it is a query answered
+from another tenant.
+
+The invariant a proxy has to satisfy: **one client connection maps to one
+server session for that connection's whole life.** Check any product against
+that sentence rather than against its marketing.
+
+| | |
+|---|---|
+| Safe | PgBouncer `session` mode; pass-through proxies that are not pooling at all (the Cloud SQL Auth Proxy is a TLS/IAM tunnel); Neon's **direct** endpoint |
+| Not safe | PgBouncer `transaction`/`statement`; Supavisor transaction mode; PgCat transaction mode; Neon's **`-pooler`** endpoint, which is transaction-mode PgBouncer |
+
+Neon deserves the explicit line because the pooled hostname is the one its
+quickstarts hand out, and the two endpoints differ by a substring.
+
+PgBouncer in `session` mode still caps server connections — but it caps by
+**queueing** clients, so the per-tenant handle cache above is what keeps the
+queue short rather than merely moving the contention.
 
 **Open cost: provision schemas ahead of the request path.** First open of a
 NEW schema runs the full DDL bootstrap under an advisory lock — hundreds of

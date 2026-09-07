@@ -400,7 +400,9 @@ enabling it changes no existing deployment. The TLS-terminating local proxy
 is still right when it is also pooling or doing IAM auth — point the DSN at
 it with `sslmode=disable`. A pooler must run in **session mode**: the store pins
 `search_path` per session, and transaction pooling can answer a query from
-another tenant's schema ([deployment-profile.md](deployment-profile.md)).
+another tenant's schema. Neon's `-pooler` endpoint is transaction-mode
+PgBouncer; its direct endpoint is not
+([deployment-profile.md](deployment-profile.md)).
 
 Verification is pinned by a real handshake against a throwaway CA
 (`pgtls::handshake_tests` in `areev-store`): that `require` completes against
