@@ -1815,34 +1815,42 @@ impl UiServer {
             //    mutations are guarded above (token-less → 401). ────────────
             // ── /api/run/*: the governed runtime's console surface ──
             ("GET", "/api/run/list") => {
+                // Paged and namespace-scoped on the server (#165): the
+                // console used to filter a fixed newest-50 page client-side,
+                // so a quiet tenant's runs — open approvals included — were
+                // simply absent behind a busier tenant's. `ns` takes an exact
+                // name or an `org.*` prefix; `limit` is clamped so one
+                // request cannot ask for the whole history; the response
+                // says the total and whether it truncated.
                 let runner = self.runner("console:read");
-                match runner.recent_runs(50) {
-                    Ok(ids) => {
-                        let rows: Vec<Value> = ids
+                let ns = q("ns").filter(|s| !s.is_empty() && s.as_str() != "*");
+                let limit = q("limit")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(50)
+                    .clamp(1, 500);
+                let offset = q("offset").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+                match runner.list_runs(ns.as_deref(), offset, limit) {
+                    Ok(page) => {
+                        let rows: Vec<Value> = page
+                            .runs
                             .iter()
-                            .map(|id| {
-                                let outcome = self.facade.with_store(|m| {
-                                    m.recent(
-                                        "agent:harness",
-                                        Some(areev_core::types::GrainType::Observation),
-                                        4096,
-                                    )
-                                })
-                                .ok()
-                                .and_then(|rows| {
-                                    rows.into_iter().find(|g| {
-                                        g.get_str("run_id") == Some(id.as_str())
-                                            && g.get_str("observation_kind")
-                                                == Some("run_outcome")
-                                    })
-                                });
+                            .map(|r| {
                                 serde_json::json!({
-                                    "run_id": id,
-                                    "outcome": outcome.as_ref().and_then(|g| g.get_str("object")).unwrap_or("open"),
+                                    "run_id": r.run_id,
+                                    "ns": r.ns,
+                                    "outcome": r.outcome,
                                 })
                             })
                             .collect();
-                        ok_json(serde_json::json!({"ok": true, "runs": rows}))
+                        ok_json(serde_json::json!({
+                            "ok": true,
+                            "runs": rows,
+                            "total": page.total,
+                            "truncated": page.truncated,
+                            "offset": page.offset,
+                            "limit": page.limit,
+                            "unattributed": page.unattributed,
+                        }))
                     }
                     Err(e) => run_api_err(&e.to_string()),
                 }
@@ -3113,6 +3121,82 @@ mod run_api_tests {
         serde_json::json!({"run_id": run_id, "tool_call_id": ask, "result": {"approved": true}})
             .to_string()
             .into_bytes()
+    }
+
+    /// #165: `/api/run/list` is scoped and paged on the server, and says
+    /// its total and whether it truncated. Twenty older runs in a quiet
+    /// namespace behind forty newer ones in a busy one is exactly the
+    /// shape under which the old fixed newest-50 page, filtered
+    /// client-side, showed the quiet tenant as having no runs.
+    #[test]
+    fn run_list_is_scoped_and_paged_server_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut store = Areev::open(path.to_str().unwrap()).unwrap();
+        for i in 0..60u32 {
+            let (id, ns) = if i < 20 {
+                (format!("quiet-{i}"), "tenant.quiet")
+            } else {
+                (format!("busy-{i}"), "tenant.busy")
+            };
+            let mut f = Fact::new(&format!("run:{id}"), "mg:harness", "00")
+                .namespace(areev_core::authz::HARNESS_NS)
+                .created_at(1_000 + i64::from(i));
+            f.common.extra_fields.insert("run_id".into(), serde_json::json!(id));
+            f.common.extra_fields.insert("run_ns".into(), serde_json::json!(ns));
+            store.add(&f).unwrap();
+        }
+        std::mem::forget(dir);
+        let s = UiServer::new(AreevFacade::with_session(store, Some("ops".into()), None), "test".into());
+        let page = |query: &str| -> serde_json::Value {
+            let r = s.route("GET", &format!("/api/run/list{query}"), b"", None, None);
+            assert!(r.0.starts_with("200"), "{} {}", r.0, String::from_utf8_lossy(&r.2));
+            serde_json::from_slice(&r.2).unwrap()
+        };
+        let rows = |v: &serde_json::Value| v["runs"].as_array().unwrap().clone();
+
+        // The default page: newest fifty of sixty, and it SAYS so.
+        let all = page("");
+        assert_eq!(rows(&all).len(), 50);
+        assert_eq!(all["total"], 60);
+        assert_eq!(all["truncated"], true);
+        assert_eq!(rows(&all).iter().filter(|r| r["ns"] == "tenant.quiet").count(), 10);
+
+        // Scoped: the whole quiet tenant, no truncation, nothing else.
+        let quiet = page("?ns=tenant.quiet");
+        assert_eq!(quiet["total"], 20);
+        assert_eq!(quiet["truncated"], false);
+        assert_eq!(rows(&quiet).len(), 20);
+        assert!(rows(&quiet).iter().all(|r| r["ns"] == "tenant.quiet"), "{quiet}");
+
+        // A prefix scope, paged to the end.
+        let tail = page("?ns=tenant.*&limit=10&offset=55");
+        assert_eq!(tail["total"], 60);
+        assert_eq!(rows(&tail).len(), 5);
+        assert_eq!(tail["truncated"], false);
+        assert_eq!((tail["offset"].as_u64(), tail["limit"].as_u64()), (Some(55), Some(10)));
+
+        // `*` is unscoped; an absurd limit is clamped rather than honored.
+        assert_eq!(page("?ns=*")["total"], 60);
+        assert_eq!(page("?limit=100000")["limit"], 500);
+
+        // A row from before the namespace stamp is not known to be in any
+        // scope: excluded from a scoped read and COUNTED, present unscoped.
+        s.facade
+            .with_store(|m| {
+                let mut f = Fact::new("run:old", "mg:harness", "00")
+                    .namespace(areev_core::authz::HARNESS_NS)
+                    .created_at(1);
+                f.common.extra_fields.insert("run_id".into(), serde_json::json!("old"));
+                m.add(&f)
+            })
+            .unwrap();
+        let quiet = page("?ns=tenant.quiet");
+        assert_eq!(quiet["total"], 20, "scoping stays exact: {quiet}");
+        assert_eq!(quiet["unattributed"], 1, "and says what it left out: {quiet}");
+        let unscoped = page("");
+        assert_eq!(unscoped["total"], 61);
+        assert_eq!(unscoped["unattributed"], 0);
     }
 
     #[test]

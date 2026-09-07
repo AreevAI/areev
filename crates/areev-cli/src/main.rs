@@ -224,7 +224,11 @@ COMMANDS:
   run      <start|resume|respond|cancel|list|inspect|verify|fork|shadow|
            oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
-           Workflow grains. start --workflow HASH --run-id ID [--input JSON]
+           Workflow grains. list [--last N] [--offset N] prints the newest
+           runs with outcome + spend (default 20; stderr says when the page
+           truncated). An explicit --ns scopes it to that session namespace;
+           without one, every namespace is listed.
+           start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--base-url URL]
            [--key-env VAR] [--llm-max-tokens N]
            [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
@@ -3758,33 +3762,58 @@ fn run_run(
             // Recent runs, newest first, with terminal outcome + spend when
             // recorded (the run-outcome Observation) — "what has this
             // memory been running?" as one command.
+            // Outcomes come from the run index (#165), which reads each
+            // run's own census record by index rather than rescanning the
+            // whole census once per row. An EXPLICIT --ns scopes the listing
+            // to that session namespace (the one `run start` stamps); with
+            // no --ns every namespace is listed, which is what this command
+            // has always done. The truncation note goes to stderr, so the
+            // JSON array scripts consume is unchanged.
             let n = flag(flags, "last").and_then(|v| v.parse().ok()).unwrap_or(20);
-            let ids = runner.recent_runs(n).map_err(|e| e.to_string())?;
-            let mut rows = Vec::new();
-            for id in &ids {
-                let outcome = runner.facade.with_store(|m| {
-                    m.latest("agent:harness", &format!("run:{id}"), "mg:harness").ok().flatten()
-                });
-                let obs = runner.facade.with_store(|m| {
-                    m.recent("agent:harness", Some(areev_core::types::GrainType::Observation), 4096)
-                }).ok().and_then(|rows| {
-                    rows.into_iter().find(|g| {
-                        g.get_str("run_id") == Some(id.as_str())
-                            && g.get_str("observation_kind") == Some("run_outcome")
+            let offset = flag(flags, "offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let scope = flags.contains_key("ns").then_some(ns);
+            let page = runner.list_runs(scope, offset, n).map_err(|e| e.to_string())?;
+            let rows: Vec<serde_json::Value> = page
+                .runs
+                .iter()
+                .map(|r| {
+                    // Still a real check, not a constant: the row proves a
+                    // link Fact EXISTED, and this asks whether it is still
+                    // the live head (a forgotten or superseded link answers
+                    // false). One indexed point read per row.
+                    let has_manifest = runner
+                        .facade
+                        .with_store(|m| {
+                            m.latest("agent:harness", &format!("run:{}", r.run_id), "mg:harness")
+                        })
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    serde_json::json!({
+                        "run_id": r.run_id,
+                        "ns": r.ns,
+                        "outcome": r.outcome,
+                        "usd_micros": r.spent_usd_micros,
+                        "tokens": r.spent_tokens,
+                        "has_manifest": has_manifest,
                     })
-                });
-                rows.push(serde_json::json!({
-                    "run_id": id,
-                    "outcome": obs.as_ref().and_then(|g| g.get_str("object")).unwrap_or("open"),
-                    "usd_micros": obs.as_ref().and_then(|g| g.get_u64("spent_usd_micros")),
-                    "tokens": obs.as_ref().map(|g| {
-                        g.get_u64("spent_input_tokens").unwrap_or(0)
-                            + g.get_u64("spent_output_tokens").unwrap_or(0)
-                    }),
-                    "has_manifest": outcome.is_some(),
-                }));
-            }
+                })
+                .collect();
             println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            if page.truncated {
+                eprintln!(
+                    "areev: showing {} of {} runs (newest first) — raise --last or page with --offset",
+                    rows.len(),
+                    page.total
+                );
+            }
+            if page.unattributed > 0 {
+                eprintln!(
+                    "areev: {} more run(s) predate the session-namespace stamp and cannot be \
+                     attributed to a namespace — list them without --ns",
+                    page.unattributed
+                );
+            }
         }
         "inspect" => {
             // One run, whole picture: the frozen manifest, terminal outcome,

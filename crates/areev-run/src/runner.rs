@@ -61,6 +61,46 @@ pub struct RunOptions {
     pub inject_crash: Option<CrashPoint>,
 }
 
+/// One `run:<id> mg:harness` link as the run index reads it:
+/// `(created_at, run_id, session namespace if stamped)`.
+type RunIndexRow = (i64, String, Option<String>);
+
+/// What one census read found.
+struct RunIndexPage {
+    rows: Vec<RunIndexRow>,
+    /// Runs matching the scope, before paging.
+    total: usize,
+    /// The scan reached the end of `agent:harness`, so the census is
+    /// complete and a caller may stop widening its window.
+    exhausted: bool,
+    /// Runs excluded from a SCOPED read because their index entry predates
+    /// the session-namespace stamp. Never silently dropped: a caller reports
+    /// the count, and the unscoped listing still shows them.
+    unattributed: usize,
+}
+
+/// Page size for walking one run's `agent:harness` records. NOT an upper
+/// bound on how many there are: besides the per-run link, cancel and outcome
+/// records, that namespace receives one Observation per brokered outbound
+/// call, per refusal, per blob read and per redelivery — so a call-heavy run
+/// has thousands, and its outcome (written last) sits behind all of them.
+/// `run_outcome` pages to exhaustion; this only sizes each step.
+const RUN_HARNESS_PAGE: usize = 512;
+
+/// Upper bound on harness grains one run-index read will scan — the same
+/// interim bound the loop adapter uses for its own full reads.
+const RUN_INDEX_MAX_SCAN: usize = 1_000_000;
+
+/// Whether a run's session namespace falls inside a listing scope: an exact
+/// name, or an `"org.*"` prefix that also admits `org` itself and every
+/// dotted descendant — the same reading every plural store read gives it.
+pub fn ns_in_scope(scope: &str, ns: &str) -> bool {
+    match scope.strip_suffix(".*") {
+        Some(prefix) => ns == prefix || ns.strip_prefix(prefix).is_some_and(|r| r.starts_with('.')),
+        None => ns == scope,
+    }
+}
+
 /// The runtime driver: a host over one facade.
 pub struct Runner {
     pub facade: Arc<AreevFacade>,
@@ -490,7 +530,7 @@ impl Runner {
             }
         }
         self.facade
-            .with_store(|m| manifest.persist(m))
+            .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
             .map_err(err_run)?;
 
         let st = SchedulerState::new(run_id, &plan);
@@ -750,7 +790,7 @@ impl Runner {
         };
         manifest.fork_of = Some(fork_base.clone());
         self.facade
-            .with_store(|m| manifest.persist(m))
+            .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
             .map_err(err_run)?;
 
         // The fork index Fact: `runs_touching`-style joins report forks for
@@ -1775,27 +1815,156 @@ impl Runner {
 
     /// The `run_id`s of the most recent runs in this namespace, newest
     /// first — manifest link Facts in `agent:harness` are the census.
+    ///
+    /// Ids only and no total, so this reads a BOUNDED window and widens it
+    /// only when the window held fewer than `limit` runs. `agent:harness`
+    /// also holds cancel, fork and audit Facts, which dilute a fixed window
+    /// until it carries fewer runs than it has room for — that dilution is
+    /// the bug (#165), and escalating on it is what fixes it without making
+    /// every "give me the newest run" call read the whole namespace.
     pub fn recent_runs(&self, limit: usize) -> Result<Vec<String>, RunError> {
-        let mut out: Vec<(i64, String)> = self
-            .facade
-            .with_store(|m| {
-                m.recent(
-                    HARNESS_NS,
-                    Some(areev_core::types::GrainType::Fact),
-                    limit.saturating_mul(8).max(64),
-                )
+        let mut scan = limit.saturating_mul(8).max(64);
+        loop {
+            let page = self.run_index(None, 0, limit, scan)?;
+            if page.rows.len() >= limit || page.exhausted || scan >= RUN_INDEX_MAX_SCAN {
+                return Ok(page.rows.into_iter().map(|(_, id, _)| id).collect());
+            }
+            scan = scan.saturating_mul(4).min(RUN_INDEX_MAX_SCAN);
+        }
+    }
+
+    /// The run index, paged and optionally scoped to one session namespace
+    /// (#165): rows newest first with outcome and spend, the total that
+    /// matched, and whether the page cut the set short.
+    ///
+    /// Every `run:<id> mg:harness` link in `agent:harness` is read, not a
+    /// bounded window of recent Facts: that namespace also holds cancel,
+    /// fork and audit records, so a window of "the newest N Facts" held
+    /// fewer than N runs and silently dropped the older ones — which, on a
+    /// memory with two tenants, read as "this namespace has no runs" while
+    /// it had open approvals. A `total` is inherently a full census, which
+    /// is what this call promises and `recent_runs` deliberately does not.
+    ///
+    /// `ns` accepts an exact namespace or an `"org.*"` prefix scope, and a
+    /// scoped read returns the runs KNOWN to match it. A link written before
+    /// the namespace was stamped on it (`run_ns` absent) is not known to
+    /// match anything, so it is excluded and counted in `unattributed`
+    /// instead — never silently, and never by guessing: a run's plan
+    /// namespace is not its session namespace, so inferring one would be a
+    /// guess, and admitting it to every scope would make scoping meaningless
+    /// on a memory upgraded across this change. The unscoped listing (the
+    /// default) still shows every such run.
+    pub fn list_runs(
+        &self,
+        ns: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<crate::RunListPage, RunError> {
+        let page = self.run_index(ns, offset, limit, RUN_INDEX_MAX_SCAN)?;
+        let (total, unattributed) = (page.total, page.unattributed);
+        let truncated = offset + page.rows.len() < total;
+        let runs = page
+            .rows
+            .into_iter()
+            .map(|(created_at, run_id, run_ns)| {
+                let (outcome, usd, tokens) = self.run_outcome(&run_id);
+                crate::RunRow { run_id, ns: run_ns, created_at, outcome, spent_usd_micros: usd, spent_tokens: tokens }
             })
-            .map_err(err_run)?
+            .collect();
+        Ok(crate::RunListPage { runs, total, truncated, offset, limit, unattributed })
+    }
+
+    /// One run's terminal outcome and spend, from its run-outcome
+    /// Observation. An INDEXED read (`run_idx`, via `run_grains`), not a
+    /// scan: the Observation carries a top-level `run_id`, so it is joined
+    /// to the run directly. Both alternatives were worse — a scan per row is
+    /// the N+1 this replaced, and one shared scan over the outcome census
+    /// cannot terminate early, because a run that is still OPEN has no
+    /// outcome to find and open runs are the normal case on the very page
+    /// (the approval queue) this serves.
+    ///
+    /// An unfinished run answers `("open", None, None)`, which is also what
+    /// a run whose census record is missing answers — the list must not fail
+    /// because one record is absent.
+    fn run_outcome(&self, run_id: &str) -> (String, Option<u64>, Option<u64>) {
+        // Page to EXHAUSTION, keeping the last match. `run_grains` is
+        // ascending by seq and the outcome is the run's last harness record,
+        // so a single page would report a call-heavy run — one that logged
+        // more egress calls than the page holds — as open forever.
+        let mut found = None;
+        let mut after = 0i64;
+        loop {
+            let page = self
+                .facade
+                .with_store(|m| m.run_grains(HARNESS_NS, run_id, after, RUN_HARNESS_PAGE))
+                .unwrap_or_default();
+            let exhausted = page.len() < RUN_HARNESS_PAGE;
+            for (seq, g) in page {
+                after = seq;
+                if g.get_str("observation_kind") == Some("run_outcome")
+                    && g.get_str("run_id") == Some(run_id)
+                {
+                    found = Some(g);
+                }
+            }
+            if exhausted {
+                break;
+            }
+        }
+        match found {
+            Some(g) => (
+                g.get_str("object").unwrap_or("open").to_string(),
+                g.get_u64("spent_usd_micros"),
+                Some(
+                    g.get_u64("spent_input_tokens").unwrap_or(0)
+                        + g.get_u64("spent_output_tokens").unwrap_or(0),
+                ),
+            ),
+            None => ("open".to_string(), None, None),
+        }
+    }
+
+    /// The `mg:harness` links, newest first, deduplicated per run, scoped
+    /// and paged: `(page, total)`.
+    fn run_index(
+        &self,
+        ns: Option<&str>,
+        offset: usize,
+        limit: usize,
+        scan: usize,
+    ) -> Result<RunIndexPage, RunError> {
+        let scanned = self
+            .facade
+            .with_store(|m| m.recent(HARNESS_NS, Some(areev_core::types::GrainType::Fact), scan))
+            .map_err(err_run)?;
+        // Fewer grains than asked for means the namespace ran out, so the
+        // census is complete and a caller may stop widening.
+        let exhausted = scanned.len() < scan;
+        let mut rows: Vec<RunIndexRow> = scanned
             .into_iter()
             .filter(|g| g.get_str("relation") == Some("mg:harness"))
             .filter_map(|g| {
                 let id = g.get_str("run_id")?.to_string();
-                Some((g.get_i64("created_at").unwrap_or(0), id))
+                let run_ns = g.get_str("run_ns").map(String::from);
+                Some((g.get_i64("created_at").unwrap_or(0), id, run_ns))
             })
             .collect();
-        out.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-        out.dedup_by(|a, b| a.1 == b.1);
-        Ok(out.into_iter().map(|(_, id)| id).take(limit).collect())
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let mut seen = std::collections::HashSet::new();
+        rows.retain(|(_, id, _)| seen.insert(id.clone()));
+        let mut unattributed = 0usize;
+        if let Some(scope) = ns.filter(|s| !s.is_empty() && *s != "*") {
+            rows.retain(|(_, _, run_ns)| match run_ns.as_deref() {
+                Some(n) => ns_in_scope(scope, n),
+                None => {
+                    unattributed += 1;
+                    false
+                }
+            });
+        }
+        let total = rows.len();
+        let rows = rows.into_iter().skip(offset).take(limit).collect();
+        Ok(RunIndexPage { rows, total, exhausted, unattributed })
     }
 
     /// One run's full picture for an operator UI (issue #34): the frozen

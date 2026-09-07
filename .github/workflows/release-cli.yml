@@ -235,6 +235,12 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Same rule as `build`: a backfill's SBOM is named for and uploaded
+          # to attach_to_tag's release, so it must describe THAT tag's tree,
+          # not whatever ref the run was dispatched against. An SBOM of the
+          # wrong tree is worse than none — confidently wrong, and attested.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.attach_to_tag || '' }}
       - name: Install Rust
         run: rustup update stable
       - name: Install cargo-cyclonedx

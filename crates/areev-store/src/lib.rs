@@ -6122,15 +6122,7 @@ impl Areev {
     /// re-count them.
     fn scrub_term_if_unreferenced(&mut self, id: i64) -> Result<u64> {
         let placeholder = format!("\u{1}erased:{id}");
-        self.db.execute(
-            "UPDATE terms SET term = ?2 WHERE id = ?1 \
-             AND NOT EXISTS (SELECT 1 FROM triples WHERE s=?1 OR p=?1 OR o=?1) \
-             AND NOT EXISTS (SELECT 1 FROM thread_idx WHERE session=?1) \
-             AND NOT EXISTS (SELECT 1 FROM run_idx WHERE run=?1) \
-             AND NOT EXISTS (SELECT 1 FROM grains WHERE ns=?1) \
-             AND term NOT LIKE ?3",
-            vec![pi(id), pt(&placeholder), pt("\u{1}erased:%")],
-        )
+        self.db.scrub_term(id, &placeholder)
     }
 
     /// Append one op-log record (fresh local `op_seq`, caller-supplied `hlc`).
