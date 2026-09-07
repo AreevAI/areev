@@ -165,9 +165,17 @@ impl SpawnPolicy {
     /// hosts use: they hold `Option<String>` for `--passphrase-env` and
     /// `--token-env` and want both scrubbed when set.
     pub fn deny_vars<I: IntoIterator<Item = String>>(mut self, vars: I) -> Self {
+        // A cleared environment already denies everything not named, so
+        // denying more is a no-op — and rebuilding it as `InheritExcept`
+        // would silently WIDEN the child's environment to everything else
+        // this process holds, discarding the caller's allow list without a
+        // compile error. Leave it alone.
         let mut denied: BTreeSet<String> = match self.env {
             EnvPolicy::InheritExcept { deny } => deny.into_iter().collect(),
-            EnvPolicy::ClearExcept { .. } => BTreeSet::new(),
+            EnvPolicy::ClearExcept { allow } => {
+                self.env = EnvPolicy::ClearExcept { allow };
+                return self;
+            }
         };
         denied.extend(vars);
         self.env = EnvPolicy::InheritExcept { deny: denied.into_iter().collect() };

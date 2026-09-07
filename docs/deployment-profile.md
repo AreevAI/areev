@@ -231,7 +231,10 @@ Reads on the embedded backend are unaffected; this is a Postgres-tier rule.
 The motivating consumer is `areev ui --read-only`: paired
 with #124 (the console no longer displays its own DSN), a read-only console
 instance never needs — and never holds — write authority over the memory it
-renders.
+renders. The same open is reachable from the bindings —
+`areev.Areev(dsn, read_only=True)` and `new Areev(dsn, …, readOnly)` (#183) —
+so an embedded console, evaluator or analytics reader is handed the
+SELECT-only role rather than the owner's credential.
 
 ## SSO note (trusted-header mode)
 

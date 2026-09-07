@@ -1611,7 +1611,9 @@ return is visible rather than inferred. Raised as
 
 ### A read-only open is a property of the handle, not a privilege to negotiate
 
-**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`) opens
+**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`,
+`read_only=`/`readOnly` in the two bindings since
+[#183](https://github.com/AreevAI/areev/issues/183)) opens
 a memory that refuses every write in-process with `STO-E004`, and on the
 Postgres backend issues **no DDL at all** — no `CREATE SCHEMA`, no
 `CREATE … IF NOT EXISTS` index maintenance, no seed, no advisory lock. It

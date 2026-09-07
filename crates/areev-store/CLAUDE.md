@@ -476,7 +476,9 @@ schema exists, and table OWNERSHIP before it checks whether an index exists —
 so even fully idempotent `IF NOT EXISTS` DDL 42501s a least-privilege
 SELECT-only role. `docs/deployment-profile.md` has the grant recipe;
 `areev ui --read-only` is the motivating consumer (paired with #124, so a
-read-only console never needs a writable DSN).
+read-only console never needs a writable DSN); the Python and Node
+constructors reach the same option as `read_only=`/`readOnly` (#183), which
+is what lets an embedded reader hold the SELECT-only role too.
 
 - **Postgres open (`pg::PgDb::open`)**: `read_only` skips the bootstrap
   advisory lock, `CREATE SCHEMA`, `PG_SCHEMA`'s DDL and `PG_SEED`'s upserts

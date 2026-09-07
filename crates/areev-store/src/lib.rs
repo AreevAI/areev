@@ -1341,6 +1341,24 @@ fn parse_kdf_sidecar(text: &str, sidecar: &str) -> Result<([u8; KDF_SALT_LEN], u
     Ok((salt, m, t, p))
 }
 
+/// The read-only precondition: a read-only open never brings a memory into
+/// existence.
+///
+/// Public because a host has to apply it BEFORE work of its own that would
+/// create a file — `derive_key_for` writes a `.kdf` sidecar for an absent
+/// path, which is correct when creating an encrypted memory and wrong on the
+/// way to a refusal. One rule, one message, three callers (CLI, Python, Node).
+pub fn read_only_requires_existing(path: &str, read_only: bool) -> Result<()> {
+    if read_only && !std::path::Path::new(path).exists() {
+        return Err(AreevError::ReadOnlyOpenFailed(format!(
+            "memory file {path:?} does not exist — a read-only open never creates one. \
+             Open it read-write once (drop --read-only / read_only: true) to create the \
+             memory, then retry read-only"
+        )));
+    }
+    Ok(())
+}
+
 impl Areev {
     /// Derive a 32-byte AES-256 key from a passphrase using Argon2id. The salt
     /// and cost parameters live in a non-secret `<path>.kdf` sidecar created on
@@ -1860,13 +1878,7 @@ impl Areev {
         // to an existing, freshly-checkpointed file is normal and must still
         // open. Mirrors postgres's "schema absent" `STO-E005` — same code,
         // same shape of message, backend-appropriate wording.
-        if read_only && !std::path::Path::new(path).exists() {
-            return Err(AreevError::ReadOnlyOpenFailed(format!(
-                "memory file {path:?} does not exist — a read-only open never creates one. \
-                 Open it read-write once (drop --read-only / read_only: true) to create the \
-                 memory, then retry read-only"
-            )));
-        }
+        read_only_requires_existing(path, read_only)?;
         let telemetry_overridden = read_only && telemetry_mode != TelemetryMode::Off;
         let telemetry_mode = if telemetry_overridden { TelemetryMode::Off } else { telemetry_mode };
         // Keep the AEAD key only in a Zeroizing buffer for the duration of the

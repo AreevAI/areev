@@ -168,6 +168,22 @@ pre-1.3 behaviour, restored on request. A document-analysis leg making a
 dozen model calls needs longer than the `pdftotext`-shaped tool the default
 was sized for.
 
+By default a tool inherits this process's environment minus the variables
+Areev was *told* hold secrets — `--passphrase-env`, `--token-env`,
+`--credential` and the rest of the `*-env` family
+([security-model.md](security-model.md)). That is the non-breaking default,
+because a deployed tool may legitimately read an API key out of the
+environment.
+`--tool-env VAR,…` (CLI), `$AREEV_RUN_TOOL_ENV` (MCP), `tool_env=` (Python),
+`toolEnv` (Node) inverts it: the environment is cleared and only the named
+variables get through, on top of the minimal set (`PATH` above all) without
+which a bare command name resolves to nothing. Name what a tool may see when
+this process holds secrets Areev has no way to know about. A bare `--tool-env`
+passes nothing but that minimal set, and naming a variable Areev already knows
+holds a secret does not re-admit it — the name is dropped and reported. It
+applies to `--tool-cmd`, to a `trigger run` connector, and to a pinned
+**native** blob; the sandbox seam already clears and is unaffected.
+
 ### The model boundary (anonymization)
 
 If an `anon:<ns>` policy declares `egress` (or `both`) for the run's namespace,

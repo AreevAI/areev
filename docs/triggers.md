@@ -198,7 +198,10 @@ Same shape as `--tool-cmd`, because a connector **is** a tool: JSON on stdin,
 JSON on stdout, one process per invocation. That means one contract to learn,
 and connectors inherit the spawn hardening every host command gets — a wall-clock
 ceiling, an output cap, and the withholding of any variable named by
-`--passphrase-env` or `--token-env`.
+`--passphrase-env` or `--token-env` — `--tool-env` covers a connector too (on
+the CLI and in both bindings), and clears its environment down to what that
+flag names. A connector holds the third-party credential more often than a
+tool does, so the two must not diverge.
 
 **stdin**
 
