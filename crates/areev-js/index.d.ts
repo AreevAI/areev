@@ -275,6 +275,36 @@ export declare class Areev {
    */
   declaredEmbedding(): Promise<string>
   /**
+   * The bulk form of `addEmbedding`: one transaction for
+   * `itemsJson = [{"hash": "<64-hex>", "vector": [..]}, ...]`. An unknown
+   * hash or a dimension mismatch refuses the whole batch before anything
+   * is written. Resolves to `{"written": n}`.
+   */
+  addEmbeddings(itemsJson: string): Promise<string>
+  /**
+   * Build the ANN (pgvector HNSW) index over the stored vectors. Postgres
+   * only — the embedded engine rejects with `STO-E007`. Defaults are
+   * pgvector's (`m` 16, `efConstruction` 64, `efSearch` 40). Resolves to
+   * `{"index": name}`. Grade it with `vectorRecallCheck` before relying on it.
+   */
+  ensureVectorIndex(m?: number | undefined | null, efConstruction?: number | undefined | null, efSearch?: number | undefined | null): Promise<string>
+  /**
+   * Drop the ANN index, returning vector recall to an exact scan.
+   * Resolves to `{"index": null}`.
+   */
+  dropVectorIndex(): Promise<string>
+  /** `{"index": name}` if an ANN index is built, `{"index": null}` if not. */
+  vectorIndex(): Promise<string>
+  /**
+   * Grade the ANN index against the exact scan with YOUR query vectors:
+   * `queriesJson` is a JSON array of vectors, `k` the cutoff (default 10),
+   * `ns` the scope you really query with, `efSearch` an optional retune of
+   * the index for this session first. Resolves to
+   * `{"index", "ef_search", "k", "queries", "recall"}`; with no index built
+   * the read path is exact and the report says so.
+   */
+  vectorRecallCheck(queriesJson: string, k?: number | undefined | null, ns?: string | undefined | null, efSearch?: number | undefined | null): Promise<string>
+  /**
    * Which runs produced or refined this grain — the reverse join.
    *
    * Runs that merely *read* the grain are not recorded: a read leaves no

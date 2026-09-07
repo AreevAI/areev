@@ -188,6 +188,35 @@ pub fn external_vectors_need_no_embedder(b: &dyn Backend) {
     assert!(near[0].1 > 0.9, "self-similarity should be ~1, got {}", near[0].1);
 }
 
+/// #141: the bulk embedding write is one transaction on both backends —
+/// every vector lands and reads back, a repeated hash keeps its last vector,
+/// and a batch with one bad row writes NOTHING. Storage semantics, so it must
+/// hold identically on the embedded engine and on Postgres, where the point
+/// of the batch (round trips per chunk, not per vector) actually shows.
+pub fn bulk_embeddings_land_atomically(b: &dyn Backend) {
+    let mut m = b.open();
+    let n = areev_store::EMBEDDING_BATCH_CHUNK + 5;
+    let mut items = Vec::with_capacity(n);
+    for i in 0..n {
+        let h = m.add(&fact("caller", &format!("s{i}"), "has", "vector")).unwrap();
+        let a = i as f32 * 0.7;
+        items.push((h, vec![a.cos(), a.sin(), 0.0, 0.0]));
+    }
+    assert_eq!(m.set_grain_embeddings(&items).unwrap(), n);
+    assert_eq!(m.declared_embedding(), Some(("external", 4)));
+    for (h, v) in items.iter().step_by(41) {
+        let near = m.nearest_vector("caller", None, None, v, 1).unwrap();
+        assert_eq!(near[0].0, *h, "each vector is its own nearest neighbour");
+    }
+
+    // One unknown address refuses the whole batch, and nothing is written.
+    let fresh = m.add(&fact("caller", "unvectored", "has", "nothing")).unwrap();
+    let ghost = areev_core::error::Hash::from_hex(&"e".repeat(64)).unwrap();
+    assert!(m.set_grain_embeddings(&[(fresh, vec![1.0, 0.0, 0.0, 0.0]), (ghost, vec![0.0, 1.0, 0.0, 0.0])]).is_err());
+    let near = m.nearest_vector("caller", None, None, &[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+    assert_ne!(near[0].0, fresh, "the refused batch left no vector behind");
+}
+
 /// Provenance must not outlive a failed write.
 pub fn a_refused_vector_declares_nothing(b: &dyn Backend) {
     let mut m = b.open();

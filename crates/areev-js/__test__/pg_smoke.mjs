@@ -76,3 +76,33 @@ test('subject erasure and retention sweep', { skip }, async () => {
     dropPostgresSchema(url, schema)
   }
 })
+
+test('the ANN index and its grade, from the binding alone (#141)', { skip }, async () => {
+  const schema = `js_vec_${process.pid}`
+  try {
+    const m = new Areev(dsnFor(schema), 'caller')
+    const hs = []
+    for (let i = 0; i < 60; i++) hs.push(await m.addFact(`s${i}`, 'has', 'vector'))
+    const items = hs.map((hash, i) => ({ hash, vector: [Math.cos(i * 0.31), Math.sin(i * 0.31), 0.05 * i, 1.0] }))
+    assert.deepEqual(JSON.parse(await m.addEmbeddings(JSON.stringify(items))), { written: 60 })
+    assert.deepEqual(JSON.parse(await m.vectorIndex()), { index: null })
+
+    const built = JSON.parse(await m.ensureVectorIndex(16, 64, 40))
+    assert.equal(built.index, 'idx_embeddings_hnsw')
+
+    const rep = JSON.parse(await m.vectorRecallCheck(JSON.stringify(items.slice(0, 8).map(it => it.vector)), 5))
+    assert.equal(rep.index, 'idx_embeddings_hnsw')
+    assert.equal(rep.queries, 8)
+    assert.equal(rep.ef_search, 40)
+    assert.ok(rep.recall >= 0 && rep.recall <= 1, `recall ${rep.recall}`)
+    const retuned = JSON.parse(await m.vectorRecallCheck(JSON.stringify(items.slice(0, 8).map(it => it.vector)), 5, null, 200))
+    assert.equal(retuned.ef_search, 200)
+    const near = JSON.parse(await m.nearestVector(items[3].vector, null, null, 1))
+    assert.equal(near[0].hash, hs[3], 'the exact-scan bypass was lifted afterwards')
+
+    assert.deepEqual(JSON.parse(await m.dropVectorIndex()), { index: null })
+    m.close()
+  } finally {
+    dropPostgresSchema(url, schema)
+  }
+})

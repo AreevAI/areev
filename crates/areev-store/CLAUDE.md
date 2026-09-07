@@ -2,7 +2,12 @@
 
 The store: backend-agnostic store logic (src/lib.rs) over an internal sync
 `Db` seam (src/db.rs — `execute/query/query_hot/begin/commit/rollback`, plus
-the `prefers_batched_reads`/`ensure_embeddings` capability hooks). Two
+the `prefers_batched_reads`/`ensure_embeddings` capability hooks, the ANN
+trio `ensure_ann_index`/`drop_ann_index`/`ann_index_name`, and
+`set_exact_vector_scan`, which `vector_recall_check` uses to get the exact
+top-k it grades the index against — Postgres disables index scans for the
+handle's session and re-enables them after; the embedded default is a no-op
+because its reads are exact already, as is its `drop_ann_index`). Two
 transports implement it:
 
 - **`TursoDb`** (default; embedded): one memory = one Turso database file.
@@ -74,6 +79,11 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   open refuses a schema without the column (`STO-E005`). The scrub path
   re-keys the row through the `Db::scrub_term` seam. Conformance:
   `incompressible_values_of_any_size_are_stored` (both backends).
+- `embeddings(seq, vec)` — one row per vectorized grain, written by
+  `set_grain_embedding` (one txn per vector) or `set_grain_embeddings` (#141:
+  one txn per batch, `EMBEDDING_BATCH_CHUNK` rows per statement, all-or-
+  nothing — hashes and dimensions are checked before the first write). On
+  Postgres the `vec vector(dim)` column arrives at the first vector.
 - `grains` — `seq` PK, `hash` (content address), ns/gtype/created_at,
   s/p/o dict ids, `vf/vt` (world-time validity), `svf/svt` (knowledge-time /
   supersession), `superseded_by/supersedes`, `text` (FTS source), and the

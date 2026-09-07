@@ -1712,3 +1712,31 @@ test('a subscriber does not change what the run recorded', async () => {
   assert.deepEqual(await shape('obs-on'), await shape('obs-off'))
   await m.close()
 })
+
+test('bulk embeddings and the vector-index surface (#141)', async () => {
+  const m = makeDb()
+  const hs = []
+  for (let i = 0; i < 3; i++) hs.push(await m.addFact(`s${i}`, 'has', 'vector'))
+  const items = hs.map((hash, i) => ({ hash, vector: [0, 1, 2].map(j => (j === i ? 1.0 : 0.0)) }))
+  assert.deepEqual(JSON.parse(await m.addEmbeddings(JSON.stringify(items))), { written: 3 })
+  const near = JSON.parse(await m.nearestVector([0.0, 1.0, 0.0], null, null, 1))
+  assert.equal(near[0].hash, hs[1])
+
+  // all-or-nothing, with the bad row named
+  await assert.rejects(
+    () => m.addEmbeddings(JSON.stringify([{ hash: hs[0], vector: [1, 0, 0] }, { hash: hs[1], vector: [1, 0] }])),
+    /dimensions/)
+  await assert.rejects(() => m.addEmbeddings(JSON.stringify([{ hash: 'nope', vector: [1] }])), /item 0/)
+  await assert.rejects(() => m.addEmbeddings('not json'), /JSON array/)
+
+  // a file memory scans exactly
+  assert.deepEqual(JSON.parse(await m.vectorIndex()), { index: null })
+  await assert.rejects(() => m.ensureVectorIndex(), /STO-E007/)
+  const rep = JSON.parse(await m.vectorRecallCheck(JSON.stringify([[1, 0, 0]]), 2))
+  assert.deepEqual(rep, { index: null, ef_search: null, k: 2, queries: 0, recall: 1.0 })
+  await assert.rejects(() => m.vectorRecallCheck('[[1,0,0]]', 0), /k >= 1/)
+  await assert.rejects(() => m.vectorRecallCheck('[]', 2), /at least one/)
+  await assert.rejects(() => m.vectorRecallCheck('[[1,0,0]]', 2, null, 100), /STO-E007/)
+  assert.deepEqual(JSON.parse(await m.dropVectorIndex()), { index: null })
+  m.close()
+})

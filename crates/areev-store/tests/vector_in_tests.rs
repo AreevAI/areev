@@ -190,3 +190,92 @@ fn a_prefix_scope_still_honours_the_subject_filter() {
     let none = m.nearest_vector("deal.*", Some("ghost"), None, &[1.0, 0.0, 0.0], 10).unwrap();
     assert!(none.is_empty(), "an uninterned subject short-circuits instead of scanning");
 }
+
+/// #141: the bulk write lands many vectors in one transaction, across more
+/// than one statement chunk, and reads back exactly like the per-grain path.
+#[test]
+fn set_grain_embeddings_writes_a_multi_chunk_batch_atomically() {
+    let (mut m, _d) = open_mem();
+    let n = areev_store::EMBEDDING_BATCH_CHUNK + 50; // forces a second chunk
+    let mut items = Vec::with_capacity(n);
+    for i in 0..n {
+        let h = m.add(&fact(&format!("g{i}"), "is", "a grain", 100 + i as i64)).unwrap();
+        // Distinct directions in a 4-dim space so nearest() can tell them apart.
+        let a = i as f32;
+        items.push((h, vec![a.cos(), a.sin(), (a * 0.5).cos(), (a * 0.5).sin()]));
+    }
+    assert_eq!(m.set_grain_embeddings(&items).unwrap(), n);
+    assert_eq!(m.declared_embedding(), Some(("external", 4)));
+    // Every vector is its own nearest neighbour.
+    for (h, v) in items.iter().step_by(37) {
+        let near = m.nearest_vector("kb", None, None, v, 1).unwrap();
+        assert_eq!(near[0].0, *h);
+        assert!(near[0].1 > 0.999, "{}", near[0].1);
+    }
+
+    // A repeated hash takes its LAST vector.
+    let (h0, _) = items[0].clone();
+    let twice = vec![(h0, vec![1.0, 0.0, 0.0, 0.0]), (h0, vec![0.0, 1.0, 0.0, 0.0])];
+    assert_eq!(m.set_grain_embeddings(&twice).unwrap(), 1);
+    let near = m.nearest_vector("kb", None, None, &[0.0, 1.0, 0.0, 0.0], 1).unwrap();
+    assert_eq!(near[0].0, h0);
+
+    // An empty batch is a no-op, not an error.
+    assert_eq!(m.set_grain_embeddings(&[]).unwrap(), 0);
+}
+
+/// One bad entry refuses the WHOLE batch before anything is written —
+/// whether the fault is a dimension or an unknown address.
+#[test]
+fn set_grain_embeddings_is_all_or_nothing() {
+    let (mut m, _d) = open_mem();
+    let a = m.add(&fact("a", "is", "x", 1)).unwrap();
+    let b = m.add(&fact("b", "is", "y", 2)).unwrap();
+    let missing = areev_core::error::Hash::from_hex(&"9".repeat(64)).unwrap();
+
+    let err = m
+        .set_grain_embeddings(&[(a, vec![1.0, 0.0]), (b, vec![0.0, 1.0, 0.0])])
+        .unwrap_err();
+    assert!(err.to_string().contains("dimensions"), "{err}");
+    assert!(m.nearest_vector("kb", None, None, &[1.0, 0.0], 5).unwrap().is_empty(), "nothing written");
+    assert!(m.declared_embedding().is_none(), "and no provenance stamped");
+
+    let err = m
+        .set_grain_embeddings(&[(a, vec![1.0, 0.0]), (missing, vec![0.0, 1.0])])
+        .unwrap_err();
+    assert!(err.to_string().contains("MEM-E") || err.to_string().contains("not found"), "{err}");
+    assert!(m.nearest_vector("kb", None, None, &[1.0, 0.0], 5).unwrap().is_empty(), "nothing written");
+}
+
+/// The embedded engine has no ANN index, so its reads are exact by
+/// construction: the check says so (`index: None`, recall 1.0) and runs no
+/// queries, rather than pretending to grade an index that is not there.
+#[test]
+fn vector_recall_check_is_trivially_exact_without_an_index() {
+    let (mut m, _d) = open_mem();
+    let a = m.add_with_embedding(&fact("a", "is", "x", 1), &[1.0, 0.0]).unwrap();
+    let _ = a;
+    let report = m.vector_recall_check("kb", &[vec![1.0, 0.0], vec![0.0, 1.0]], 3).unwrap();
+    assert_eq!((report.index, report.ef_search), (None, None));
+    assert_eq!((report.queries, report.k), (0, 3));
+    assert_eq!(report.recall, Some(1.0));
+    assert!(m.vector_recall_check("kb", &[vec![1.0, 0.0]], 0).is_err(), "k = 0 is refused");
+    assert!(m.vector_recall_check("kb", &[], 3).is_err(), "no queries is refused");
+    assert!(
+        m.vector_recall_check("kb", &[vec![1.0, 0.0, 0.0]], 3).is_err(),
+        "a query of the wrong dimension is refused even when no index exists"
+    );
+    assert!(
+        m.set_vector_ef_search(100).unwrap_err().to_string().starts_with("STO-E007"),
+        "nothing to tune on the embedded engine"
+    );
+    assert!(
+        m.ensure_vector_index(16, 64, 40).unwrap_err().to_string().starts_with("STO-E007"),
+        "the embedded engine still refuses to build one"
+    );
+    assert_eq!(m.vector_index().unwrap(), None);
+    // Dropping what was never built is a no-op, not a refusal: the point of
+    // a drop is exact reads, and they already are.
+    m.drop_vector_index().unwrap();
+    assert_eq!(m.vector_index().unwrap(), None);
+}

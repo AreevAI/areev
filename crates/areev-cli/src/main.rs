@@ -206,6 +206,17 @@ COMMANDS:
   reindex                             backfill + rebuild the BM25 text index
                                       (e.g. after --index-text true on a file
                                       written with indexing off)
+  vector-index <status|build|drop|check> [--m N] [--ef-construction N]
+           [--ef-search N] [--queries FILE.json --ns SCOPE] [--k N]
+                                      the ANN (pgvector HNSW) index over the
+                                      stored vectors. Postgres only: build
+                                      answers STO-E007 on a file memory, which
+                                      scans exactly. `check` grades the index
+                                      against the exact scan with YOUR query
+                                      vectors (recall@k) over the WIDE --ns
+                                      scope you actually query; --ef-search
+                                      retunes the session first (no rebuild).
+                                      `status` says whether reads are exact.
   stream   --to DIR [--interval-ms N] [--once] [--checkpoint] [--retain 30d]
                                       continuous op-log shipping; --checkpoint
                                       opens a new generation with a full
@@ -2356,6 +2367,60 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             // until this runs.
             let links = m.rebuild_link_indexes().map_err(|e| e.to_string())?;
             println!("link indexes rebuilt: {links} rows (provenance, runs, cross-links)");
+        }
+        // ── areev vector-index: the ANN index, from the shell (#141) ──
+        "vector-index" => {
+            let usage = "usage: areev vector-index <status|build|drop|check> --db DSN \
+                         [build: --m N --ef-construction N --ef-search N] \
+                         [check: --queries FILE.json --ns SCOPE --k N --ef-search N]";
+            let num = |key: &str, default: usize| -> Result<usize, String> {
+                flag(&flags, key)
+                    .map_or(Ok(default), |v| v.parse::<usize>())
+                    .map_err(|_| format!("--{key} must be a number"))
+            };
+            match positional.first().map(String::as_str).unwrap_or("status") {
+                "status" => {
+                    let name = m.vector_index().map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::json!({"index": name}));
+                }
+                "build" => {
+                    let (hm, efc, efs) =
+                        (num("m", 16)?, num("ef-construction", 64)?, num("ef-search", 40)?);
+                    m.ensure_vector_index(hm, efc, efs).map_err(|e| e.to_string())?;
+                    let name = m.vector_index().map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::json!({"index": name, "m": hm, "ef_construction": efc, "ef_search": efs}));
+                }
+                "drop" => {
+                    m.drop_vector_index().map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::json!({"index": serde_json::Value::Null}));
+                }
+                "check" => {
+                    // The queries are the caller's own vectors: recall is a
+                    // property of THEIR model's geometry, not of the index.
+                    let path = flag(&flags, "queries")
+                        .ok_or("vector-index check requires --queries FILE.json (a JSON array of vectors)")?;
+                    // An explicit scope, because the global default ("shared")
+                    // is a narrow one the structural index serves exactly —
+                    // grading it says nothing about the ANN graph.
+                    if !flags.contains_key("ns") {
+                        return Err("vector-index check requires --ns SCOPE — the WIDE scope you actually \
+                                    query (e.g. --ns 'firm.deals.*'); a narrow scope is exact regardless"
+                            .into());
+                    }
+                    let text = std::fs::read_to_string(&path)
+                        .map_err(|e| format!("cannot read --queries {path}: {e}"))?;
+                    let queries: Vec<Vec<f32>> = serde_json::from_str(&text)
+                        .map_err(|e| format!("--queries must be a JSON array of number arrays: {e}"))?;
+                    let k = num("k", 10)?;
+                    if let Some(ef) = flag(&flags, "ef-search") {
+                        let ef: usize = ef.parse().map_err(|_| "--ef-search must be a number")?;
+                        m.set_vector_ef_search(ef).map_err(|e| e.to_string())?;
+                    }
+                    let report = m.vector_recall_check(&ns, &queries, k).map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                }
+                _ => return Err(usage.into()),
+            }
         }
         "related" => {
             let start = flag(&flags, "start").ok_or("related requires --start")?;

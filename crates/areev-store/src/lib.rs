@@ -1414,6 +1414,51 @@ impl Areev {
 }
 
 
+/// Rows per statement in [`Areev::set_grain_embeddings`]: well under the
+/// embedded engine's bind-variable ceiling (two binds per row), and large
+/// enough that a networked backend's round trips are per chunk, not per row.
+pub const EMBEDDING_BATCH_CHUNK: usize = 200;
+
+/// What [`Areev::vector_recall_check`] measured.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct VectorRecallReport {
+    /// The ANN index graded; `None` means every read is exact already.
+    pub index: Option<String>,
+    /// The session's `hnsw.ef_search` the grade was taken at (`None` off Postgres).
+    pub ef_search: Option<usize>,
+    pub k: usize,
+    /// Query vectors actually run (0 when there was no index to grade).
+    pub queries: usize,
+    /// Fraction of the exact top-k the indexed read returned; `None` when the
+    /// scope yielded no exact neighbours to grade against.
+    pub recall: Option<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct EmbeddingItemRaw {
+    hash: String,
+    vector: Vec<f32>,
+}
+
+/// `[{"hash": "<64-hex>", "vector": [..]}, …]` — the shape every binding and
+/// the CLI accept — as [`Areev::set_grain_embeddings`] takes it. A bad row is
+/// named by index.
+pub fn parse_embedding_items(json: &str) -> Result<Vec<(Hash, Vec<f32>)>> {
+    let rows: Vec<EmbeddingItemRaw> = serde_json::from_str(json).map_err(|e| {
+        AreevError::Validation(format!(
+            "items must be a JSON array of {{\"hash\", \"vector\"}} objects: {e}"
+        ))
+    })?;
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let hash = Hash::from_hex(&r.hash)
+                .map_err(|e| AreevError::Validation(format!("item {i}: {e}")))?;
+            Ok((hash, r.vector))
+        })
+        .collect()
+}
+
 fn vec_to_json(v: &[f32]) -> String {
     let mut s = String::with_capacity(v.len() * 8);
     s.push('[');
@@ -3695,43 +3740,177 @@ impl Areev {
     }
 
     /// Install or replace the indexed embedding for an already-stored grain,
-    /// by content address. The backfill primitive behind
-    /// [`Self::add_with_embedding`]; also what an adapter uses to carry a
-    /// framework's own vectors onto grains that were added earlier.
+    /// by content address. The one-row form of
+    /// [`set_grain_embeddings`](Self::set_grain_embeddings), and the same path.
     pub fn set_grain_embedding(&mut self, hash: &Hash, embedding: &[f32]) -> Result<Hash> {
-        self.check_embedding_dim(embedding.len())?;
-        let rows = self.db.query(
-            "SELECT seq FROM grains WHERE hash=?1",
-            vec![pb(hash.as_bytes().to_vec())],
-        )?;
-        let Some(seq) = rows.first().and_then(|r| r.i64(0)) else {
-            return Err(AreevError::NotFound(*hash));
+        match self.set_grain_embeddings(&[(*hash, embedding.to_vec())])? {
+            0 => Err(AreevError::NotFound(*hash)),
+            _ => Ok(*hash),
+        }
+    }
+
+    /// Install or replace the indexed embeddings for many stored grains in
+    /// one transaction, [`EMBEDDING_BATCH_CHUNK`] rows per statement. Nothing
+    /// is written unless every hash resolves and every vector has the batch's
+    /// dimension; a grain another writer forgets mid-batch is skipped, so the
+    /// count returned can be lower than `items.len()`.
+    pub fn set_grain_embeddings(&mut self, items: &[(Hash, Vec<f32>)]) -> Result<usize> {
+        self.check_writable("write embeddings")?;
+        let Some((_, first)) = items.first() else {
+            return Ok(0);
         };
-        // As `set_embedder` does: Postgres creates its `vector(dim)` column
-        // here, and a host supplying its own vectors never takes that path.
-        self.db.ensure_embeddings(embedding.len())?;
-        let dbr = self.db.as_ref();
-        let qjson = vec_to_json(embedding);
-        with_txn(dbr, || {
-            // DELETE + INSERT rather than an upsert: portable across the
-            // embedded and Postgres backends without dialect-specific
-            // ON CONFLICT / OR REPLACE translation.
-            dbr.execute("DELETE FROM embeddings WHERE seq=?1", vec![pi(seq)])?;
-            dbr.execute(
-                "INSERT INTO embeddings(seq, vec) VALUES (?1, vector32(?2))",
-                vec![pi(seq), pt(&qjson)],
+        let dim = first.len();
+        self.check_embedding_dim(dim)?;
+        for (h, v) in items {
+            if v.len() != dim {
+                return Err(AreevError::Validation(format!(
+                    "embedding for {} has {} dimensions; this batch is {dim}-dimensional",
+                    h.to_hex(),
+                    v.len()
+                )));
+            }
+        }
+        let mut by_hash: HashMap<Vec<u8>, i64> = HashMap::new();
+        for chunk in items.chunks(EMBEDDING_BATCH_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<Value> = chunk.iter().map(|(h, _)| pb(h.as_bytes().to_vec())).collect();
+            let rows = self.db.query(
+                &format!("SELECT seq, hash FROM grains WHERE hash IN ({})", placeholders.join(",")),
+                params,
             )?;
-            Ok(())
+            for r in &rows {
+                if let (Some(seq), Some(hash)) = (r.i64(0), r.blob(1)) {
+                    by_hash.insert(hash, seq);
+                }
+            }
+        }
+        // Last write wins for a hash that appears twice.
+        let mut rows: Vec<(i64, String)> = Vec::with_capacity(items.len());
+        let mut seen: HashMap<i64, usize> = HashMap::new();
+        for (h, v) in items {
+            let Some(seq) = by_hash.get(h.as_bytes().as_slice()) else {
+                return Err(AreevError::NotFound(*h));
+            };
+            match seen.get(seq) {
+                Some(&at) => rows[at].1 = vec_to_json(v),
+                None => {
+                    seen.insert(*seq, rows.len());
+                    rows.push((*seq, vec_to_json(v)));
+                }
+            }
+        }
+        self.db.ensure_embeddings(dim)?;
+        let dbr = self.db.as_ref();
+        let written = with_txn(dbr, || {
+            let mut written = 0usize;
+            for chunk in rows.chunks(EMBEDDING_BATCH_CHUNK) {
+                let seqs: Vec<i64> = chunk.iter().map(|(seq, _)| *seq).collect();
+                // Under the row lock: on the multi-writer backend a forget can
+                // land between the resolve above and this insert, and a vector
+                // left behind for an erased grain would undo the erasure.
+                let alive: HashSet<i64> = dbr
+                    .query(
+                        &format!(
+                            "SELECT seq FROM grains WHERE seq IN ({}){}",
+                            seq_csv(&seqs),
+                            dbr.for_update()
+                        ),
+                        vec![],
+                    )?
+                    .iter()
+                    .filter_map(|r| r.i64(0))
+                    .collect();
+                let live: Vec<&(i64, String)> =
+                    chunk.iter().filter(|(seq, _)| alive.contains(seq)).collect();
+                if live.is_empty() {
+                    continue;
+                }
+                let live_seqs: Vec<i64> = live.iter().map(|(seq, _)| *seq).collect();
+                dbr.execute(
+                    &format!("DELETE FROM embeddings WHERE seq IN ({})", seq_csv(&live_seqs)),
+                    vec![],
+                )?;
+                let mut values: Vec<String> = Vec::with_capacity(live.len());
+                let mut params: Vec<Value> = Vec::with_capacity(live.len() * 2);
+                for (i, (seq, qjson)) in live.iter().enumerate() {
+                    values.push(format!("(?{}, vector32(?{}))", 2 * i + 1, 2 * i + 2));
+                    params.push(pi(*seq));
+                    params.push(pt(qjson));
+                }
+                dbr.execute(
+                    &format!("INSERT INTO embeddings(seq, vec) VALUES {}", values.join(", ")),
+                    params,
+                )?;
+                written += live.len();
+            }
+            Ok(written)
         })?;
-        // After the write: a declaration the memory cannot serve is worse
-        // than none.
-        if self.meta_embed.is_none() {
-            let dim = embedding.len();
+        if written > 0 && self.meta_embed.is_none() {
             self.meta_put("embedding_model", "external")?;
             self.meta_put("embedding_dim", &dim.to_string())?;
             self.meta_embed = Some(("external".to_string(), dim));
         }
-        Ok(*hash)
+        Ok(written)
+    }
+
+    /// Grade the ANN index against the exact scan with the caller's own
+    /// query vectors over the scope they really query with — recall is a
+    /// property of their model's geometry. With no index the read path is
+    /// exact already: `recall` is 1.0 and nothing runs. The exact side is a
+    /// per-handle planner bypass, lifted before returning on every path.
+    pub fn vector_recall_check(
+        &mut self,
+        ns: &str,
+        queries: &[Vec<f32>],
+        k: usize,
+    ) -> Result<VectorRecallReport> {
+        if k == 0 {
+            return Err(AreevError::Validation("recall@k needs k >= 1".into()));
+        }
+        if queries.is_empty() {
+            return Err(AreevError::Validation(
+                "recall@k needs at least one query vector".into(),
+            ));
+        }
+        for q in queries {
+            self.check_embedding_dim(q.len())?;
+        }
+        let ef_search = self.db.ann_ef_search()?;
+        let Some(index) = self.vector_index()? else {
+            return Ok(VectorRecallReport {
+                index: None,
+                ef_search,
+                k,
+                queries: 0,
+                recall: Some(1.0),
+            });
+        };
+        let mut approx = Vec::with_capacity(queries.len());
+        for q in queries {
+            approx.push(self.nearest_vector(ns, None, None, q, k)?);
+        }
+        self.db.set_exact_vector_scan(true)?;
+        let exact: Result<Vec<Vec<(Hash, f32)>>> =
+            queries.iter().map(|q| self.nearest_vector(ns, None, None, q, k)).collect();
+        self.db.set_exact_vector_scan(false)?;
+        let exact = exact?;
+        let (mut hits, mut possible) = (0usize, 0usize);
+        for (a, e) in approx.iter().zip(&exact) {
+            possible += e.len();
+            let truth: HashSet<&Hash> = e.iter().map(|(h, _)| h).collect();
+            hits += a.iter().filter(|(h, _)| truth.contains(h)).count();
+        }
+        // No exact neighbours at all (a scope with nothing in it) grades
+        // nothing; that is `None`, never a 1.0 that reads as a pass.
+        let recall = (possible > 0).then(|| hits as f32 / possible as f32);
+        Ok(VectorRecallReport { index: Some(index), ef_search, k, queries: queries.len(), recall })
+    }
+
+    /// Set the ANN index's query-time candidate-list size (`hnsw.ef_search`)
+    /// for this handle's session — the accuracy/latency knob that needs no
+    /// rebuild. Refused where there is no index (`STO-E007`).
+    pub fn set_vector_ef_search(&mut self, ef_search: usize) -> Result<()> {
+        self.db.set_ann_ef_search(ef_search)
     }
 
     /// Build an approximate-nearest-neighbour index over the stored vectors,

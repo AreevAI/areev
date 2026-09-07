@@ -47,6 +47,7 @@ fn err<E: std::fmt::Display>(e: E) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 
+
 /// A host-supplied 32-byte anonymization root, given as 64 hex characters.
 ///
 /// The FFI convention is scalars in, so the key arrives as hex rather than as
@@ -1876,6 +1877,107 @@ impl Areev {
                 Some((model, dim)) => json!({"model": model, "dim": dim}).to_string(),
                 None => "null".to_string(),
             })
+        })
+    }
+
+    /// The bulk form of `addEmbedding`: one transaction for
+    /// `itemsJson = [{"hash": "<64-hex>", "vector": [..]}, ...]`. An unknown
+    /// hash or a dimension mismatch refuses the whole batch before anything
+    /// is written. Resolves to `{"written": n}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn add_embeddings(&self, items_json: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let items = areev_store::parse_embedding_items(&items_json).map_err(err)?;
+            let n = facade.with_store(|m| m.set_grain_embeddings(&items)).map_err(err)?;
+            Ok(json!({"written": n}).to_string())
+        })
+    }
+
+    /// Build the ANN (pgvector HNSW) index over the stored vectors. Postgres
+    /// only — the embedded engine rejects with `STO-E007`. Defaults are
+    /// pgvector's (`m` 16, `efConstruction` 64, `efSearch` 40). Resolves to
+    /// `{"index": name}`. Grade it with `vectorRecallCheck` before relying on it.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn ensure_vector_index(
+        &self,
+        m: Option<u32>,
+        ef_construction: Option<u32>,
+        ef_search: Option<u32>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let (m, efc, efs) = (
+            m.unwrap_or(16) as usize,
+            ef_construction.unwrap_or(64) as usize,
+            ef_search.unwrap_or(40) as usize,
+        );
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let name = facade
+                .with_store(|s| {
+                    s.ensure_vector_index(m, efc, efs)?;
+                    s.vector_index()
+                })
+                .map_err(err)?;
+            Ok(json!({"index": name}).to_string())
+        })
+    }
+
+    /// Drop the ANN index, returning vector recall to an exact scan.
+    /// Resolves to `{"index": null}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn drop_vector_index(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.with_store(|s| s.drop_vector_index()).map_err(err)?;
+            Ok(json!({"index": serde_json::Value::Null}).to_string())
+        })
+    }
+
+    /// `{"index": name}` if an ANN index is built, `{"index": null}` if not.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn vector_index(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let name = facade.with_store(|s| s.vector_index()).map_err(err)?;
+            Ok(json!({"index": name}).to_string())
+        })
+    }
+
+    /// Grade the ANN index against the exact scan with YOUR query vectors:
+    /// `queriesJson` is a JSON array of vectors, `k` the cutoff (default 10),
+    /// `ns` the scope you really query with, `efSearch` an optional retune of
+    /// the index for this session first. Resolves to
+    /// `{"index", "ef_search", "k", "queries", "recall"}`; with no index built
+    /// the read path is exact and the report says so.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn vector_recall_check(
+        &self,
+        queries_json: String,
+        k: Option<u32>,
+        ns: Option<String>,
+        ef_search: Option<u32>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
+        let k = k.unwrap_or(10) as usize;
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let queries: Vec<Vec<f32>> = serde_json::from_str(&queries_json).map_err(|e| {
+                err(format!("queries must be a JSON array of number arrays: {e}"))
+            })?;
+            let report = facade
+                .with_store(|s| {
+                    if let Some(ef) = ef_search {
+                        s.set_vector_ef_search(ef as usize)?;
+                    }
+                    s.vector_recall_check(&ns, &queries, k)
+                })
+                .map_err(err)?;
+            serde_json::to_string(&report).map_err(err)
         })
     }
 

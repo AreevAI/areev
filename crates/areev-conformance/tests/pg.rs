@@ -775,3 +775,55 @@ fn a_least_privilege_role_opens_a_current_schema_read_write() {
 
     let _ = areev_store::pg::execute_raw(&url, &cleanup);
 }
+
+/// #141: the recall check grades a REAL HNSW index against the exact scan
+/// (needs pgvector on the server). With no index it reports 1.0 and runs
+/// nothing; with one it runs every query, names the index, and the bypass it
+/// uses for the exact side is lifted afterwards so ordinary reads still work.
+#[test]
+fn vector_recall_check_grades_a_real_hnsw_index() {
+    let Some(b) = backend() else { return };
+    let mut m = b.open_named("recall_check");
+    let n = 300usize;
+    let mut items = Vec::with_capacity(n);
+    for i in 0..n {
+        let h = m.add(&areev_conformance::fact("caller", &format!("s{i}"), "has", "vector")).unwrap();
+        let a = i as f32 * 0.137;
+        items.push((h, vec![a.cos(), a.sin(), (a * 0.3).cos(), 1.0]));
+    }
+    assert_eq!(m.set_grain_embeddings(&items).unwrap(), n);
+    let queries: Vec<Vec<f32>> = items.iter().step_by(30).map(|(_, v)| v.clone()).collect();
+
+    // No index: exact by construction, nothing run.
+    let before = m.vector_recall_check("caller", &queries, 5).unwrap();
+    assert_eq!((before.index.as_deref(), before.queries, before.recall), (None, 0, Some(1.0)));
+
+    m.ensure_vector_index(16, 64, 40).unwrap();
+    assert_eq!(m.vector_index().unwrap().as_deref(), Some("idx_embeddings_hnsw"));
+    let graded = m.vector_recall_check("caller", &queries, 5).unwrap();
+    assert_eq!(graded.index.as_deref(), Some("idx_embeddings_hnsw"));
+    assert_eq!((graded.queries, graded.k, graded.ef_search), (queries.len(), 5, Some(40)));
+    let recall = graded.recall.expect("neighbours existed to grade against");
+    // 300 well-separated vectors at pgvector's defaults: the graph should
+    // find essentially everything. A floor, not an equality — HNSW is
+    // approximate by definition.
+    assert!((0.8..=1.0).contains(&recall), "{graded:?}");
+
+    // Retuning is session-scoped, needs no rebuild, and is reported.
+    m.set_vector_ef_search(200).unwrap();
+    let retuned = m.vector_recall_check("caller", &queries, 5).unwrap();
+    assert_eq!(retuned.ef_search, Some(200));
+    assert!(m.set_vector_ef_search(0).is_err(), "out of pgvector's range");
+
+    // A scope with nothing in it grades nothing — `None`, not a 1.0 pass.
+    let empty = m.vector_recall_check("nobody", &queries, 5).unwrap();
+    assert_eq!((empty.queries, empty.recall), (queries.len(), None));
+
+    // The exact-scan bypass was lifted: a plain read still answers.
+    let (h3, v3) = &items[3];
+    let near = m.nearest_vector("caller", None, None, v3, 1).unwrap();
+    assert_eq!(&near[0].0, h3);
+
+    m.drop_vector_index().unwrap();
+    assert_eq!(m.vector_index().unwrap(), None);
+}

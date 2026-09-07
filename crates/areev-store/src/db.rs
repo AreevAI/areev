@@ -108,11 +108,31 @@ pub(crate) trait Db: Send {
         ))
     }
 
-    /// Remove the ANN index, returning vector recall to an exact scan.
+    /// Remove the ANN index, returning vector recall to an exact scan. A
+    /// no-op where none can exist: reads there are exact already, which is
+    /// what a drop promises (Postgres answers the same with `IF EXISTS`).
     fn drop_ann_index(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Set the ANN index's query-time candidate-list size for this handle's
+    /// session. Refused where there is no index to tune.
+    fn set_ann_ef_search(&self, _ef_search: usize) -> Result<()> {
         Err(AreevError::AnnIndexUnsupported(
-            "no ANN index exists on this backend".into(),
+            "no ANN index on this backend to tune".into(),
         ))
+    }
+
+    /// The session's current `ef_search`, `None` where there is no ANN index.
+    fn ann_ef_search(&self) -> Result<Option<usize>> {
+        Ok(None)
+    }
+
+    /// Route this handle's vector reads past any ANN index (an exact scan)
+    /// until switched back — the ground truth `vector_recall_check` grades
+    /// against. No-op where reads are exact already.
+    fn set_exact_vector_scan(&self, _on: bool) -> Result<()> {
+        Ok(())
     }
 
     /// The ANN index's name if one is built, `None` if not. Never errors on a

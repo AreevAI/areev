@@ -1571,6 +1571,42 @@ Three things worth knowing:
 
 ---
 
+## 23. Bulk-load vectors, build the ANN index, and check what it costs you
+
+Postgres tier, external embeddings, a corpus large enough that the exact scan
+stopped fitting the budget (#141). Three steps, in this order, from Python;
+Node is the same names in camelCase, and `areev vector-index` is the shell.
+
+```python
+import json, areev
+m = areev.Areev("postgres://…?schema=firm", ns="firm.deals.*", telemetry="off")
+
+# 1. Vectors in bulk — one transaction, not one per grain.
+items = [{"hash": h, "vector": embed(text)} for h, text in corpus]
+print(m.add_embeddings(json.dumps(items)))          # {"written": 100000}
+
+# 2. The index, only for the genuinely corpus-wide query. A k-NN scoped to
+#    one deal is exact and faster WITHOUT it.
+print(m.ensure_vector_index(m=16, ef_construction=64, ef_search=40))
+#    → {"index": "idx_embeddings_hnsw"}
+
+# 3. Grade it with YOUR queries, over the WIDE scope you actually search.
+sample = [embed(q) for q in held_out_queries[:200]]
+print(m.vector_recall_check(json.dumps(sample), k=10, ns="firm.deals.*"))
+#    → {"index": "idx_embeddings_hnsw", "k": 10, "queries": 200, "recall": 0.97}
+```
+
+If the recall is not what you need, raise `ef_search` — pass it straight to
+the check, `vector_recall_check(..., ef_search=200)`, session-scoped and no
+rebuild — or `m` / `ef_construction` (rebuild), or `drop_vector_index()` and
+go back to exact. From the shell the same check is `areev vector-index check
+--queries q.json --ns 'firm.deals.*' --k 10 --ef-search 200`; the scope is
+mandatory there because the CLI's default namespace is a narrow one. A recall that does not move when `ef_search` does is measuring
+your embedder, not the index (`scale-and-tenancy.md`). On a file memory every
+one of these answers honestly: `vector_index()` is `null`, a build is
+`STO-E007`, and the check reports `recall: 1.0` without running anything,
+because the reads were exact to begin with.
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
