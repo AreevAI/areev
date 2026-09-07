@@ -83,16 +83,35 @@ fn a_legal_hold_stops_an_age_based_sweep_until_it_is_released() {
     assert!(ok);
     assert!(out.contains("4200"), "the held grain must survive the refused sweep: {out}");
 
+    // Releasing is held to the same bar as placing: it is the act an auditor
+    // asks about, and the hold row is DELETED on release, so without a reason
+    // on the trail the placement would be the only half on record.
+    let (ok, _out, err) = areev(&["hold", "release", "--db", &db, "--ns", "books"]);
+    assert!(!ok, "a release with no reason must be refused");
+    assert!(err.contains("usage:"), "{err}");
+
     // Released, the same sweep proceeds.
-    let (ok, out, err) = areev(&["hold", "release", "--db", &db, "--ns", "books"]);
+    let (ok, out, err) = areev(&[
+        "hold", "release", "--db", &db, "--ns", "books",
+        "--because", "matter closed", "--by", "user:counsel",
+    ]);
     assert!(ok, "hold release failed: {err}");
     assert!(out.contains("released"), "{out}");
+    assert!(out.contains("matter closed"), "the release echoes its reason: {out}");
 
     let (ok, out, err) =
         areev(&["retention", "sweep", "--yes", "--db", &db, "--ns", "books"]);
     assert!(ok, "a sweep must proceed once the hold is released: {err}");
     assert!(!out.contains("legal hold"), "the released hold must stop blocking: {out}");
     assert!(out.contains("1 grains erased"), "the sweep must now do its work: {out}");
+    // Both transitions are on the Tier-2 trail `audit export` reads — the
+    // hold row itself is gone, so this is the only record that survives.
+    let (ok, out, err) = areev(&["audit", "export", "--db", &db]);
+    assert!(ok, "audit export failed: {err}");
+    assert!(out.contains("hold.set"), "the placement must be on the trail: {out}");
+    assert!(out.contains("hold.release"), "and so must the release: {out}");
+    assert!(out.contains("matter closed"), "with the reason given: {out}");
+
 
     // And the grain is actually gone — the released sweep was not cosmetic
     // either.
@@ -192,4 +211,5 @@ fn a_sweep_without_yes_prints_the_plan_instead_of_erasing() {
     let (ok, _out, err) = areev(&["hold", "revoke", "--db", &db]);
     assert!(!ok);
     assert!(err.contains("set") && err.contains("release"), "{err}");
+
 }

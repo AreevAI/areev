@@ -345,6 +345,10 @@ m = areev.Areev(dsn, ns="caller", read_only=True)   # writes raise STO-E004
 const m = new Areev(dsn, 'caller', null, null, null, null, null, null, true)
 ```
 
+For a deployment-shaped bundle of these controls — which flags a GDPR,
+healthcare or financial posture sets, and which of them survive a copy — see
+[`compliance-profiles.md`](compliance-profiles.md).
+
 ### Give each person their own credential
 
 `--token-env` is one shared secret: everyone who holds it is the same
