@@ -38,7 +38,14 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 # 16K is what the 8 GB card's KV cache holds beside the weights, and it is
 # recorded as the tuned arm's context — one twentieth of the 262K the 30B
 # was served with, which is the point the tuning claim is about.
-COMMON="--dtype bfloat16 --max-model-len 16384 --gpu-memory-utilization 0.85 --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false}"
+# SLM_EAGER=1 skips CUDA-graph capture: it costs some speed and saves ~1 GB.
+# Graph capture is what tipped the third condition over the 8 GB card after
+# the first two had come up fine at the same settings, so the caller retries
+# with it rather than losing a condition to a fragmentation-dependent OOM.
+EAGER=""
+[ "${SLM_EAGER:-0}" = "1" ] && EAGER="--enforce-eager"
+UTIL="${SLM_GPU_UTIL:-0.85}"
+COMMON="--dtype bfloat16 --max-model-len 16384 --gpu-memory-utilization $UTIL --seed ${SEED:-1} --enable-auto-tool-choice --tool-call-parser hermes --default-chat-template-kwargs {\"enable_thinking\":false} $EAGER"
 if [ "$ADAPTER" = "none" ]; then
   # shellcheck disable=SC2086
   exec "$PY" -m vllm.entrypoints.openai.api_server --model "$BASE" --served-model-name slm --port "$PORT" $COMMON

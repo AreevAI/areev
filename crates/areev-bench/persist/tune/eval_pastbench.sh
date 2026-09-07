@@ -20,15 +20,25 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ADAPTER="${ADAPTER:?set ADAPTER (dir or none)}"; FAMILIES="${FAMILIES:?}"; ROOT="${ROOT:?}"
 AGENT="${AGENT:-areev-passive}"; PORT="${PORT:-8300}"
 mkdir -p "$ROOT"
-sh "$HERE/slm_serve_cuda.sh" "$ADAPTER" "$PORT" > "$ROOT/vllm.log" 2>&1 &
-SERVER=$!
+start_server() {
+  sh "$HERE/slm_serve_cuda.sh" "$ADAPTER" "$PORT" > "$ROOT/vllm.log" 2>&1 &
+  SERVER=$!
+  i=0
+  until curl -s "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; do
+    i=$((i+1)); [ $i -gt 240 ] && return 1
+    kill -0 $SERVER 2>/dev/null || return 1
+    sleep 2
+  done
+  return 0
+}
 trap 'kill $SERVER 2>/dev/null || true' EXIT INT TERM
-i=0
-until curl -s "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; do
-  i=$((i+1)); [ $i -gt 180 ] && { echo "vLLM did not come up (see $ROOT/vllm.log)" >&2; exit 1; }
-  kill -0 $SERVER 2>/dev/null || { echo "vLLM exited (see $ROOT/vllm.log)" >&2; exit 1; }
-  sleep 2
-done
+if ! start_server; then
+  echo "vLLM did not come up; retrying without CUDA graphs (see $ROOT/vllm.log)" >&2
+  kill $SERVER 2>/dev/null || true
+  sleep 5
+  mv "$ROOT/vllm.log" "$ROOT/vllm.first-attempt.log" 2>/dev/null || true
+  SLM_EAGER=1 start_server || { echo "vLLM did not come up twice (see $ROOT/vllm.log)" >&2; exit 1; }
+fi
 echo "vLLM up on :$PORT (adapter: $ADAPTER)"
 # Watchdog: the first attempt lost its server mid-family and the runner then
 # hung on a request that never returns — silent for hours. If the server
