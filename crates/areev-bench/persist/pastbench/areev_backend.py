@@ -135,11 +135,58 @@ def live_facts(db):
     return [g for g in _grains(db, "facts") if _fields(g).get("relation") not in (RETIRED, "mg:eval_run")]
 
 
+def _now_ms():
+    """Epoch milliseconds — the grain's `valid_to` unit. `_now()` below is the
+    ISO string the trace log wants; the two are not interchangeable."""
+    import time as _time
+    return int(_time.time() * 1000)
+
+
+def _parse_expires(text):
+    """`expires` on the memory tool -> epoch ms for the grain's `valid_to`.
+    A date (YYYY-MM-DD, taken as the end of that day, UTC), a datetime
+    (ISO 8601), or a duration from now ('7d', '48h', '30m'). Anything else
+    is ignored rather than guessed: an entry the model meant to be temporary
+    stays durable, which is the pre-`expires` behaviour, not a wrong date."""
+    import datetime as _dt
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = re.fullmatch(r"(\d+)\s*([dhm])", t)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        ms = {"d": 86_400_000, "h": 3_600_000, "m": 60_000}[unit] * n
+        return _now_ms() + ms
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
+            d = _dt.datetime.strptime(t, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc)
+            return int((d + _dt.timedelta(days=1)).timestamp() * 1000) - 1
+        d = _dt.datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=_dt.timezone.utc)
+        return int(d.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _until_label(valid_to):
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(int(valid_to) / 1000, tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
 def live_notes(db):
     """What MEMORY.md renders: the assistant's own notes and every approved
     lesson, whatever subject the proposer named — plus any other durable
-    fact the loop stored, written as `subject relation: object`."""
+    fact the loop stored, written as `subject relation: object`. An entry
+    past its declared `valid_to` is not rendered: a temporary exception
+    lapses on its own, which is what the grain's validity window is for
+    (the loop's `staleness` analyzer proposes the tombstone later). One
+    still in force says until when."""
     out = []
+    now = _now_ms()
     for g in live_facts(db):
         f = _fields(g)
         rel, subj, obj = f.get("relation") or "", f.get("subject") or "", f.get("object") or ""
@@ -147,6 +194,16 @@ def live_notes(db):
             continue
         if rel == "profile":
             continue
+        valid_to = f.get("valid_to")
+        if valid_to is not None:
+            try:
+                if int(valid_to) < now:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            label = _until_label(valid_to)
+            if label:
+                obj = "%s (until %s)" % (obj, label)
         if rel in ("note", "lesson"):
             out.append((g.get("hash"), obj))
         else:
@@ -167,6 +224,37 @@ def live_skills(db):
         if name and f.get("description") != RETIRED:
             out[name] = (g.get("hash"), f)
     return out
+
+
+def live_plans(db):
+    """The loop's authored PLANS: Workflow grains carrying a `name`, keyed by
+    it. A plan is the structure the runtime validated — steps and edges with
+    conditions — beside the Skill of the same name that carries the prose.
+    Rendered under the skill so the benchmark's Hermes-shaped scorer reads
+    one artifact, and shown by `skill_view` so the agent sees the graph."""
+    out = {}
+    for g in _grains(db, "workflows", strict=False):
+        f = _fields(g)
+        name = f.get("name") or ""
+        if name:
+            out[name] = (g.get("hash"), f)
+    return out
+
+
+def _plan_markdown(f):
+    nodes = f.get("nodes") or []
+    edges = f.get("edges") or []
+    lines = ["", "## Plan (validated by the runtime)", "Steps: " + " → ".join(str(n) for n in nodes)]
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        line = "- %s → %s" % (e.get("src"), e.get("dst"))
+        if e.get("cond"):
+            line += " if %s" % e["cond"]
+        if e.get("max_cycles"):
+            line += " (at most %s times)" % e["max_cycles"]
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def session_titles(db):
@@ -209,9 +297,9 @@ def render_home(db_path, out_dir):
         return {"notes": 0, "profile": 0, "skills": 0}
 
     def go(db):
-        return live_notes(db), live_profile(db), live_skills(db)
+        return live_notes(db), live_profile(db), live_skills(db), live_plans(db)
 
-    notes, profile, skills = with_memory(db_path, ACTOR_AGENT, go)
+    notes, profile, skills, plans = with_memory(db_path, ACTOR_AGENT, go)
     mem_dir = out_dir / "memories"
     if notes:
         mem_dir.mkdir(parents=True, exist_ok=True)
@@ -222,15 +310,18 @@ def render_home(db_path, out_dir):
     for name, (_, f) in skills.items():
         d = out_dir / "skills" / _safe_name(name)
         d.mkdir(parents=True, exist_ok=True)
-        (d / "SKILL.md").write_text(_skill_markdown(f), encoding="utf-8")
-    return {"notes": len(notes), "profile": len(profile), "skills": len(skills)}
+        plan = plans.get(name)
+        (d / "SKILL.md").write_text(_skill_markdown(f, plan[1] if plan else None), encoding="utf-8")
+    return {"notes": len(notes), "profile": len(profile), "skills": len(skills), "plans": len(plans)}
 
 
-def _skill_markdown(f):
+def _skill_markdown(f, plan=None):
     body = f.get("instructions") or ""
     head = "---\nname: %s\ndescription: %s\n" % (f.get("name", ""), f.get("description", ""))
     if f.get("when_to_use"):
         head += "when_to_use: %s\n" % f["when_to_use"]
+    if plan:
+        body += _plan_markdown(plan)
     return head + "---\n\n" + body
 
 
@@ -397,8 +488,9 @@ def persistence_tools(tool_config):
             description=("Your persistent notes. Later sessions start with an empty context and see "
                          "ONLY what is saved here, so save durable preferences, standing instructions, "
                          "corrections and constraints as you learn them, replace an entry when a rule "
-                         "changes, and remove one that no longer holds. 'memory' holds working notes, "
-                         "'user' holds facts about the person you work for. 'search' looks entries up."),
+                         "changes, and remove one that no longer holds. Give a temporary rule an 'expires' "
+                         "so it lapses on its own. 'memory' holds working notes, 'user' holds facts about "
+                         "the person you work for. 'search' looks entries up."),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -407,6 +499,11 @@ def persistence_tools(tool_config):
                     "target": {"type": "string", "enum": ["memory", "user"],
                                "description": "Which store: 'memory' for notes, 'user' for the user profile."},
                     "content": {"type": "string", "description": "Entry text. Required for add and replace."},
+                    "expires": {"type": "string",
+                                "description": "Optional, for add/replace: when this entry STOPS being true — a date "
+                                               "(YYYY-MM-DD), a datetime, or a duration like '7d' / '48h'. Use it for "
+                                               "anything temporary (an exception, a waiver, a freeze window) so it "
+                                               "expires instead of becoming a standing rule. Omit for durable rules."},
                     "old_text": {"type": "string",
                                  "description": "Short unique substring identifying the entry to replace or remove."},
                     "query": {"type": "string", "description": "For search: what to look for."},
@@ -743,7 +840,8 @@ class AreevAdapter(RuntimeAdapter):
             hit = skills.get(str(args.get("name") or ""))
             if not hit:
                 return "no skill named %r; saved: %s" % (args.get("name"), ", ".join(skills) or "(none)")
-            return _skill_markdown(hit[1])
+            plan = live_plans(db).get(str(args.get("name") or ""))
+            return _skill_markdown(hit[1], plan[1] if plan else None)
         if name == "session_search":
             return self._session_search(db, str(args.get("query") or ""))
         raise ValueError("unknown persistence tool %s" % name)
@@ -759,7 +857,11 @@ class AreevAdapter(RuntimeAdapter):
             existing = live_profile(db) if target == "user" else live_notes(db)
             if any(t == content for _, t in existing):
                 return "already saved"
-            db.add("fact", json.dumps({"subject": subject, "relation": relation, "object": content}), ns=NS)
+            fields = {"subject": subject, "relation": relation, "object": content}
+            valid_to = _parse_expires(args.get("expires"))
+            if valid_to is not None:
+                fields["valid_to"] = valid_to
+            db.add("fact", json.dumps(fields), ns=NS)
             return "saved"
         if action in ("replace", "remove"):
             old_text = (args.get("old_text") or "").strip()
@@ -776,8 +878,11 @@ class AreevAdapter(RuntimeAdapter):
                 content = (args.get("content") or "").strip()
                 if not content:
                     raise ValueError("replace needs content")
-                db.supersede(old_hash, "fact", json.dumps({"subject": subject, "relation": relation,
-                                                           "object": content}), ns=NS)
+                fields = {"subject": subject, "relation": relation, "object": content}
+                valid_to = _parse_expires(args.get("expires"))
+                if valid_to is not None:
+                    fields["valid_to"] = valid_to
+                db.supersede(old_hash, "fact", json.dumps(fields), ns=NS)
                 return "replaced (the earlier wording stays in history)"
             try:
                 db.forget(old_hash)

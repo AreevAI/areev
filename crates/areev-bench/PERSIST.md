@@ -704,6 +704,55 @@ Written before any scored run; the pilot may amend the budget, never these.
 - **Horizon public tasks:** plumbing only; no claim from three tasks.
 - **Any arm inside the A0R noise floor:** not interpreted.
 
+### Stated in advance — run 4 (written 2026-09-07, after the three-seed forensics, before any run-4 episode)
+
+Run 4 is the same design — three seeds, the three main arms, all 26
+families, the same model and provider pin, Hermes untouched — with four
+changes to the Areev arms, each aimed at a mechanism the ledger names
+(§11 #20–#22, #23 deliberately left open) and each a policy that defaults to
+the run-3 behaviour:
+
+1. **The Verify gate is live**: `checkpoints: [{"after_runs": 1}]` — a
+   lesson is measured at the next graded episode after its apply, and the
+   gate's second question, `premise_drift`, is on (#20, #22).
+2. **The proposer may author a Skill or a Plan** from a trajectory that
+   succeeded; successful tool calls reach the evidence bundle (#21).
+3. **The agent may give a note an `expires`**; an expired note is not
+   rendered and the `staleness` analyzer proposes its tombstone.
+4. `min_evidence` stays at 1, so run 4 measures the writer and the gate,
+   not the evidence floor. `AREEV_LOOP_POLICY_EXTRA={"min_evidence": 2}` is
+   the pre-registered arm for a run 5 if governed still trails passive.
+
+Predictions, in order of confidence:
+
+- **Procedural (8 families):** the empty-store arm-seeds (9 of 60 in runs
+  1–3) have a writer. Prediction: Areev's procedural Δ rises from
+  +0.144/+0.112 toward Hermes's +0.169; `sop_bootstrap_04` and `_06` stop
+  scoring below their own no-memory floor. If procedural does not move, the
+  writer is not the cause and the proposer's skill/plan drafts are being
+  refused — the funnel says where.
+- **Governed vs passive:** runs 1–3 read −0.025 (p 0.78) with zero reverts.
+  Prediction: governed ≥ passive once harmful lessons are measured at the
+  next episode and reverted, and lessons whose premise was superseded are
+  reverted (`rule_migration`, −0.324 in run 3, is the named case). If
+  governed still trails passive with reverts now firing, the lessons
+  themselves are the harm and run 5's `min_evidence: 2` is the test.
+- **Passive vs Hermes (the headline):** +0.045 (p 0.21) as measured. The
+  counterfactual said parity on `sop_bootstrap_04`, `failure_to_rule_01` and
+  `constraint_retention` reaches p ≈ 0.016. Run 4 addresses the first two;
+  #23 is deliberately unchanged, so the bar for run 4 is **p < 0.10 on the
+  paired Wilcoxon**, and a significant win is not claimed from it. If passive
+  − Hermes is unchanged or worse, published as that, beside the funnel.
+- **Cost:** no more than +10% prompt tokens per episode on the Areev arms —
+  plans and skills render into the prompt; the bundle's reserved shares are
+  unchanged. Above that, the cost claim is re-stated with the new number.
+- **Any per-family swing inside the noise floor (0.09–0.13):** not
+  interpreted.
+
+Cap for run 4: **$12**. The three-seed statistics script and the audit run
+unchanged; the harness's configuration is written beside every ledger as
+`loop-policy.json`.
+
 ## 11. The defect ledger — what building the harness found (running)
 
 Recorded as the receipts programme recorded its six, because each one

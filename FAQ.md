@@ -117,6 +117,19 @@ lookup in microseconds, BM25 text search, optional vector search, and provenance
 — all in one embedded file you own. Vector search is optional: you bring your own
 embedder through the `EmbedBackend` trait, and Areev works fine without one.
 
+### Can I ask what was true at a point in time?
+
+Yes, on two axes. Every grain carries `valid_from`/`valid_to` (when it was
+true in the world) and a recorded time (when the memory learned it), and
+`areev entity-at --subject S --relation R --at T --axis world|knowledge`
+answers either question: what the memory *believed* at T, or what was
+*true* at T as best it knows now. That is the bi-temporal model — the same
+one temporal knowledge graphs advertise — but on immutable, content-addressed
+grains, so the answer is reproducible from the file rather than from an
+index that has since been rewritten. A temporary exception written with a
+`valid_to` lapses on its own and is tombstoned by the loop's `staleness`
+analyzer under review; a superseded value stays in `HISTORY`.
+
 ### How is Areev different from RAG?
 
 RAG is usually "chunk documents, embed them, retrieve top-k passages." Areev
