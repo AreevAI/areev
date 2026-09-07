@@ -692,6 +692,58 @@ test('indexText on the constructor is a deliberate re-stamp', async () => {
   on.close()
 })
 
+test('readOnly serves reads and refuses every write', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-ro-'))
+  const path = join(dir, 'ro.db')
+  const rw = new Areev(path, 'caller')
+  await rw.addFact('john', 'prefers', 'tea')
+  rw.close()
+
+  const ro = new Areev(path, 'caller', null, null, null, null, null, null, true)
+  assert.equal(JSON.parse(await ro.recall('john')).length, 1)
+  await assert.rejects(() => ro.addFact('john', 'prefers', 'coffee'), /STO-E004/)
+  ro.close()
+
+  // A read-only open never creates the memory it was pointed at, and cannot
+  // honor an indexText re-stamp — that is a write.
+  assert.throws(
+    () => new Areev(join(dir, 'missing.db'), 'caller',
+      null, null, null, null, null, null, true))
+  assert.throws(
+    () => new Areev(path, 'caller', null, null, null, null, true, null, true),
+    /re-stamps/,
+  )
+})
+
+test('toolEnv clears a host tool environment down to what it names', async () => {
+  // Without toolEnv a tool inherits this process's environment, so a variable
+  // the host holds for its own use is visible to it. With one, the environment
+  // is cleared and only the named variables get through.
+  process.env.AREEV_TEST_PLANTED = 'leaked'
+  const m = makeDb('ops')
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition',
+    tool_description: 'greets', created_at: 500,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['greet'], edges: [], bindings: { greet }, created_at: 502,
+  }), 'ops')
+  const cmd = `printf '{"seen":"%s"}' "$AREEV_TEST_PLANTED"`
+
+  const seen = async (runId, toolEnv) => {
+    const session = JSON.parse(await m.runStart(
+      wf, runId, '{}', cmd, null, null, null, null, null, null, null, null,
+      null, null, null, null, toolEnv))
+    assert.equal(session.finished, 'Completed')
+    const trace = JSON.parse(await m.runTrace(runId)).trace
+    return trace[0].fields.context.scheduler.context.seen
+  }
+
+  assert.equal(await seen('js-env-inherit', null), 'leaked')
+  assert.equal(await seen('js-env-cleared', 'AREEV_TEST_OTHER'), '')
+  await m.close()
+})
+
 test('subjectReport mirrors erasure and subjectBundle is portable', async () => {
   // The DSAR read (GDPR Art. 15/20): the erasure selector in show-me mode.
   const m = makeDb()

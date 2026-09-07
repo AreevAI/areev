@@ -512,6 +512,56 @@ def test_open_warnings_is_json_list(tmp_path):
     assert isinstance(json.loads(m.open_warnings()), list)
 
 
+def test_read_only_serves_reads_and_refuses_every_write(tmp_path):
+    path = str(tmp_path / "ro.db")
+    m = areev.Areev(path, ns="caller")
+    m.add_fact("john", "prefers", "tea")
+    del m
+
+    ro = areev.Areev(path, ns="caller", read_only=True)
+    assert len(json.loads(ro.recall("john"))) == 1
+    with pytest.raises(ValueError, match="STO-E004"):
+        ro.add_fact("john", "prefers", "coffee")
+
+
+def test_read_only_never_creates_an_absent_memory(tmp_path):
+    with pytest.raises(ValueError):
+        areev.Areev(str(tmp_path / "missing.db"), ns="caller", read_only=True)
+
+
+def test_read_only_refuses_an_explicit_index_text(tmp_path):
+    path = str(tmp_path / "ro.db")
+    m = areev.Areev(path, ns="caller")
+    del m
+    with pytest.raises(ValueError, match="re-stamps"):
+        areev.Areev(path, ns="caller", index_text=True, read_only=True)
+
+
+def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
+    # Without tool_env a host tool inherits this process's environment, so a
+    # variable the host holds for its own use is visible to it. With one, the
+    # environment is cleared and only the named variables get through.
+    monkeypatch.setenv("AREEV_TEST_PLANTED", "leaked")
+    m = make_db(tmp_path, ns="ops")
+    greet = m.add("tool", json.dumps({
+        "tool_name": "greet", "kind": "definition",
+        "tool_description": "greets", "created_at": 500,
+    }), "ops")
+    wf = m.add("workflow", json.dumps({
+        "nodes": ["greet"], "edges": [], "bindings": {"greet": greet},
+        "created_at": 502,
+    }), "ops")
+    cmd = 'printf \'{"seen":"%s"}\' "$AREEV_TEST_PLANTED"'
+
+    def seen(run_id, **kw):
+        assert json.loads(m.run_start(wf, run_id, "{}", cmd, **kw))["finished"] == "Completed"
+        trace = json.loads(m.run_trace(run_id))["trace"]
+        return trace[0]["fields"]["context"]["scheduler"]["context"]["seen"]
+
+    assert seen("py-env-inherit") == "leaked"
+    assert seen("py-env-cleared", tool_env="AREEV_TEST_OTHER") == ""
+
+
 # --------------------------------------------------------------------------
 # areev-loop — the governed self-improvement loop
 # --------------------------------------------------------------------------

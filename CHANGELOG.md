@@ -66,6 +66,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to `build` now covers `sbom` too
   ([#162](https://github.com/AreevAI/areev/issues/162)).
 
+### Added
+
+- **A read-only open in the Python and Node bindings.** `--read-only` has
+  refused every write on the CLI since 1.7.0, but the binding constructors
+  had no equivalent, so a console, an evaluator or an analytics reader
+  embedding Areev had to hold owner-grade credentials to do nothing but read.
+  `Areev(path, read_only=True)` / `new Areev(path, …, readOnly)` opens the
+  same way: writes fail with `STO-E004`, an absent memory is never created,
+  no telemetry sidecar is attached (its flush is a write), and on the
+  Postgres backend the open issues no DDL at all — SELECT-only verification
+  instead, which is what makes a role holding only `USAGE` and `SELECT` a
+  workable identity. An explicit `index_text`/`indexText` is refused
+  alongside it, because that re-stamps the file's declaration
+  ([#183](https://github.com/AreevAI/areev/issues/183)).
+- **`--tool-env` names what a host tool's environment contains, instead of
+  what it must not.** Host tools spawn under `InheritExcept`: everything this
+  process holds minus the variables Areev was told hold secrets. A host whose
+  own environment carries secrets Areev never named therefore had to keep
+  them out of the process entirely. `--tool-env VAR,…` (env
+  `$AREEV_RUN_TOOL_ENV`, `tool_env=` in Python, `toolEnv` in Node) clears the
+  environment and passes only the named variables plus the minimal set a
+  command needs to start. It reaches `--tool-cmd`, a `trigger run` connector,
+  and a pinned **native** blob; the sandbox seam already cleared and is
+  unchanged ([#188](https://github.com/AreevAI/areev/issues/188)).
+
 ## [1.7.2] — 2026-09-02
 
 ### Fixed

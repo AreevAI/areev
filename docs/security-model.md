@@ -733,7 +733,7 @@ evaluator's connector path share one credential broker. A brokered command gets
 are read from host-named environment variables in the driver's process and
 never enter a grain, a bundle, or the child's environment.
 
-Six properties are worth stating because each closes a specific hole:
+Each of the following is worth stating because it closes a specific hole:
 
 - **The broker authenticates its callers.** It binds loopback on an ephemeral
   port, and loopback is not an authorization — any process on the box could
@@ -777,6 +777,20 @@ Six properties are worth stating because each closes a specific hole:
   left three open. The sandbox seam additionally spawns under
   `EnvPolicy::ClearExcept` — a wasm host has no claim on the operator's
   environment, and under #101 it is also the process holding a broker token.
+- **A host tool's environment can be an allow list instead of a deny list**
+  (#188). The default is `InheritExcept`: a tool sees every
+  variable this process holds minus the ones Areev was *told* hold secrets
+  (`--passphrase-env`, `--token-env`, `--credential` and the rest above). That
+  is the right default for a deployed `--tool-cmd` that legitimately reads an
+  API key out of the environment, but it means a host whose own environment
+  carries secrets Areev never named has to keep those out of the process
+  entirely — a worker reading its credentials from mode-0400 files rather than
+  from `environ`. `--tool-env VAR,…` (env `$AREEV_RUN_TOOL_ENV`,
+  `tool_env=`/`toolEnv` in the bindings) inverts it: the environment is
+  cleared and only the named variables get through, on top of the minimal set
+  (`PATH` above all) without which a bare command name resolves to nothing.
+  It applies to `--tool-cmd`, to a connector, and to a pinned **native** blob;
+  the sandbox seam already clears and is unaffected.
 - **A credential may be minted per call rather than read once** (#113, added
   in 1.6.2). `--credential NAME=ENV_VAR` makes every brokered secret static
   for the life of the process, which is the wrong shape for the credentials

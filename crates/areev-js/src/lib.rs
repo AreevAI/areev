@@ -235,10 +235,7 @@ fn js_evaluator(
                 principal.clone(),
                 tool_cmd,
                 llm,
-                pin.allow_executor,
-                pin.executor_cache,
-                pin.sandbox_cmd,
-                pin.executor_timeout_secs,
+                pin,
             ),
             opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -567,15 +564,35 @@ impl Areev {
         principal: Option<String>,
         index_text: Option<bool>,
         anon_key: Option<String>,
+        read_only: Option<bool>,
     ) -> napi::Result<Self> {
         let ns = ns.unwrap_or_else(|| "shared".to_string());
         let actor = actor.unwrap_or_else(|| "user:local".to_string());
+        // `readOnly` refuses every write (STO-E004), creates nothing, and
+        // issues no DDL on postgres — SELECT-only verification instead, which
+        // is what makes a USAGE+SELECT role a workable identity. `indexText`
+        // re-stamps the file's declaration, which is a write, so refuse the
+        // pair up front rather than partway through open.
+        let read_only = read_only.unwrap_or(false);
+        if read_only && index_text.is_some() {
+            return Err(err(
+                "readOnly cannot be combined with an explicit indexText: indexText always \
+                 re-stamps the file's declaration, and a read-only open never writes. Drop \
+                 indexText (a read-only open honors whatever the file already declares) or \
+                 drop readOnly",
+            ));
+        }
         // Recall-telemetry sidecar (host capability, §8): agents are the main
         // telemetry producers, so the binding default is `aggregate`; pass
-        // telemetry="off" to disable. Never a file-truth.
-        let telemetry = telemetry.unwrap_or_else(|| "aggregate".to_string());
-        let tel = TelemetryMode::parse(&telemetry)
-            .ok_or_else(|| err(format!("unknown telemetry mode '{telemetry}' (off|aggregate|full)")))?;
+        // telemetry="off" to disable. Never a file-truth. A read-only handle
+        // attaches no sidecar regardless (its flush is a write), so an
+        // unasked-for one resolves straight to `off` — nothing to warn about.
+        let tel = match telemetry.as_deref() {
+            Some(v) => TelemetryMode::parse(v)
+                .ok_or_else(|| err(format!("unknown telemetry mode '{v}' (off|aggregate|full)")))?,
+            None if read_only => TelemetryMode::Off,
+            None => TelemetryMode::Aggregate,
+        };
         // Encryption at rest: a passphrase derives an AES-256 key (Argon2id;
         // non-secret salt in a <path>.kdf sidecar). Host-supplied, never
         // stored in the file — same rules as the CLI's --passphrase-env.
@@ -614,11 +631,15 @@ impl Areev {
                 // An `anonKey` is the whole reason the vault and
                 // value-derived tokens are reachable on this backend at all:
                 // there is no page key here to derive them from.
+                // `readOnly` takes the explicit-options path too, having no
+                // other way to carry into the open.
                 match (index_text, anon) {
-                    (None, None) if tel != TelemetryMode::Off => {
+                    (None, None) if tel != TelemetryMode::Off && !read_only => {
                         RustAreev::open_postgres_with_telemetry(&url, &schema, tel).map_err(err)?
                     }
-                    (None, None) => RustAreev::open_postgres(&url, &schema).map_err(err)?,
+                    (None, None) if !read_only => {
+                        RustAreev::open_postgres(&url, &schema).map_err(err)?
+                    }
                     (want_text, anon) => RustAreev::open_postgres_with(
                         &url,
                         &schema,
@@ -627,6 +648,7 @@ impl Areev {
                                 .unwrap_or(areev_store::AreevOptions::default().index_text),
                             anon_key: anon,
                             telemetry: tel,
+                            read_only,
                             ..areev_store::AreevOptions::default()
                         },
                     )
@@ -638,10 +660,12 @@ impl Areev {
             // always made (it routes through `open_with` too), reported either
             // way by `openWarnings()`.
             (false, pass) => match (index_text, anon, pass) {
-                (None, None, Some(p)) => {
+                (None, None, Some(p)) if !read_only => {
                     RustAreev::open_with_passphrase_telemetry(&path, &p, tel).map_err(err)?
                 }
-                (None, None, None) => RustAreev::open_with_telemetry(&path, tel).map_err(err)?,
+                (None, None, None) if !read_only => {
+                    RustAreev::open_with_telemetry(&path, tel).map_err(err)?
+                }
                 (want_text, anon, pass) => {
                     let key = match pass {
                         Some(p) => Some(*RustAreev::derive_key_for(&path, &p).map_err(err)?),
@@ -655,6 +679,7 @@ impl Areev {
                             encryption_key: key,
                             anon_key: anon,
                             telemetry: tel,
+                            read_only,
                             ..areev_store::AreevOptions::default()
                         },
                     )
@@ -2507,6 +2532,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
+        tool_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2523,8 +2549,12 @@ impl Areev {
             // key fails without journaling a run that cannot advance.
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
-                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
-                executor_timeout_secs,
+                facade,
+                ns,
+                actor,
+                tool_cmd,
+                llm,
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             );
             let opts = js_run_options_full(
                 max_tokens,
@@ -2557,6 +2587,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
+        tool_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2565,8 +2596,12 @@ impl Areev {
             let facade = take_facade(&slot)?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
-                facade, ns, actor, tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd,
-                executor_timeout_secs,
+                facade,
+                ns,
+                actor,
+                tool_cmd,
+                llm,
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
@@ -2916,6 +2951,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
+        tool_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2931,7 +2967,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
-                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -2980,6 +3016,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
+        tool_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
@@ -2997,7 +3034,7 @@ impl Areev {
                 tool_cmd,
                 credentials_json,
                 llm,
-                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
+                JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -3148,7 +3185,7 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    js_runner_pinned(facade, ns, principal, tool_cmd, llm, None, None, None, None)
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, JsExecutorPin::default())
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
@@ -3160,6 +3197,11 @@ struct JsExecutorPin {
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
     executor_timeout_secs: Option<i64>,
+    /// Comma list of variables a host tool may keep. Unset (or empty)
+    /// inherits this process's environment minus the registered secrets; a
+    /// list clears it and passes only those, plus the minimal set a command
+    /// needs to start.
+    tool_env: Option<String>,
 }
 
 /// The pin-aware factory (#87): `allowExecutor` is the same comma list as
@@ -3175,19 +3217,24 @@ fn js_runner_pinned(
     principal: String,
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
-    allow_executor: Option<String>,
-    executor_cache: Option<String>,
-    sandbox_cmd: Option<String>,
-    executor_timeout_secs: Option<i64>,
+    pin: JsExecutorPin,
 ) -> areev_run::Runner {
-    let timeout = executor_timeout_secs.map(|secs| {
+    let timeout = pin.executor_timeout_secs.map(|secs| {
         if secs <= 0 { None } else { Some(std::time::Duration::from_secs(secs as u64)) }
     });
+    let env = pin
+        .tool_env
+        .as_deref()
+        .filter(|names| !names.trim().is_empty())
+        .map(areev_run::env_allow_policy);
     let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
         Some(cmd) if !cmd.trim().is_empty() => {
             let mut ce = areev_run::CommandExecutor::new(&cmd);
             if let Some(t) = timeout {
                 ce = ce.with_timeout(t);
+            }
+            if let Some(p) = env.clone() {
+                ce = ce.with_env_policy(p);
             }
             std::sync::Arc::new(ce)
         }
@@ -3210,21 +3257,24 @@ fn js_runner_pinned(
             std::sync::Arc::new(NoExec)
         }
     };
-    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+    let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match pin.allow_executor {
         None => base,
         Some(list) => {
             let mut ce = areev_run::CodeExecutor::new(base);
             for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                 ce = ce.allow(addr);
             }
-            if let Some(dir) = executor_cache {
+            if let Some(dir) = pin.executor_cache {
                 ce = ce.cache_dir(dir);
             }
-            if let Some(cmd) = sandbox_cmd {
+            if let Some(cmd) = pin.sandbox_cmd {
                 ce = ce.sandbox_cmd(&cmd);
             }
             if let Some(t) = timeout {
                 ce = ce.with_timeout(t);
+            }
+            if let Some(p) = env {
+                ce = ce.with_env_policy(p);
             }
             std::sync::Arc::new(ce)
         }

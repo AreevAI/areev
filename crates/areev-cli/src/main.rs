@@ -117,7 +117,8 @@ COMMANDS:
            [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR|cmd:CMD|vault:P#F]
            [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
-           [--executor-timeout SECS] [--model SPEC] [--base-url URL] [--key-env VAR]
+           [--executor-timeout SECS] [--tool-env VAR,...]
+           [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
@@ -234,6 +235,7 @@ COMMANDS:
            [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--sandbox-cmd 'areev-sandbox'] [--executor-timeout SECS]
+           [--tool-env VAR,...]
            [--credential NAME=ENV_VAR[@PRINCIPAL],...] [--allow-host URL,...]
            [--tool-egress TOOL:CRED[@HOST]+...:METHOD+METHOD,...]
            [--credential-ttl SECS] [--resolver-env VAR,...];
@@ -266,6 +268,13 @@ COMMANDS:
            otherwise runs under — a document-analysis leg making a dozen
            model calls needs longer than that default was sized for. 0 means
            wait forever;
+           --tool-env inverts how a tool's environment is decided: without it
+           a tool inherits this process's environment minus the variables
+           named to --passphrase-env/--token-env/--credential, with it the
+           environment is cleared and only the named variables (plus PATH and
+           the few a command needs to start) get through. A host that keeps
+           its own secrets in the environment should name what a tool sees
+           rather than name what it must not;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof

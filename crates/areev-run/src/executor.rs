@@ -203,6 +203,16 @@ impl EgressHandle {
     }
 }
 
+/// Clear the environment, passing only `names` (comma-separated) plus the
+/// minimal set a command needs to start. Four hosts spell the same list —
+/// `--tool-env`, `$AREEV_RUN_TOOL_ENV`, `tool_env`, `toolEnv` — so the
+/// parsing lives here once.
+pub fn env_allow_policy(names: &str) -> areev_core::proc::EnvPolicy {
+    let mut allow = areev_core::proc::EnvPolicy::minimal_allow();
+    allow.extend(names.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
+    areev_core::proc::EnvPolicy::ClearExcept { allow }
+}
+
 pub struct CommandExecutor {
     cmd: String,
     /// Wall-clock ceiling per invocation. Before 1.3 there was none, and a tool
@@ -212,6 +222,9 @@ pub struct CommandExecutor {
     /// When set, tools reach the network through the broker instead of
     /// holding credentials themselves.
     egress: Option<EgressHandle>,
+    /// Inherit-minus-registered-secrets by default, so a deployed
+    /// `--tool-cmd` reading an ambient API key keeps working.
+    env: areev_core::proc::EnvPolicy,
 }
 
 impl CommandExecutor {
@@ -220,7 +233,14 @@ impl CommandExecutor {
             cmd: cmd.to_string(),
             timeout: Some(areev_core::proc::DEFAULT_TIMEOUT),
             egress: None,
+            env: areev_core::proc::EnvPolicy::default(),
         }
+    }
+
+    /// Replace the environment policy this executor spawns tools under.
+    pub fn with_env_policy(mut self, env: areev_core::proc::EnvPolicy) -> Self {
+        self.env = env;
+        self
     }
 
     /// Route this executor's tools through a credential broker.
@@ -279,7 +299,11 @@ impl HostToolExecutor for CommandExecutor {
             use std::os::windows::process::CommandExt;
             shell.raw_arg("/C").raw_arg(&self.cmd);
         }
-        let policy = SpawnPolicy { timeout: self.timeout, ..SpawnPolicy::default() };
+        let policy = SpawnPolicy {
+            timeout: self.timeout,
+            env: self.env.clone(),
+            ..SpawnPolicy::default()
+        };
         let mut env: Vec<(&str, &str)> = vec![
             ("AREEV_TOOL_NAME", tool_name),
             ("AREEV_TOOL_HASH", tool_hash),
@@ -380,6 +404,8 @@ pub struct CodeExecutor {
     /// Host config, like the pin: a plan can declare `wasm32-areev`, but only
     /// an operator who configured a sandbox can dispatch it.
     sandbox_cmd: Option<Vec<String>>,
+    /// Native path only; the sandbox path clears whatever this says.
+    native_env: Option<areev_core::proc::EnvPolicy>,
 }
 
 impl CodeExecutor {
@@ -394,7 +420,14 @@ impl CodeExecutor {
             timeout: Some(areev_core::proc::DEFAULT_TIMEOUT),
             egress: None,
             sandbox_cmd: None,
+            native_env: None,
         }
+    }
+
+    /// Replace the policy native blobs spawn under; the sandbox is unaffected.
+    pub fn with_env_policy(mut self, env: areev_core::proc::EnvPolicy) -> Self {
+        self.native_env = Some(env);
+        self
     }
 
     /// Configure the areev-sandbox runner for `runtime: "wasm32-areev"`
@@ -708,21 +741,22 @@ impl HostToolExecutor for CodeExecutor {
         // a code-carrying executor is platform-specific and the operator pins
         // per platform. The sandbox path constructs argv the same way — the
         // shell never sees any of it.
-        // A native blob inherits (minus the registered secrets): it is an
-        // ordinary program and may legitimately read an ambient variable. The
-        // SANDBOX gets `ClearExcept` instead — it is a wasm host, so the only
-        // environment it can justify is what it needs to start, and under #101
-        // it is also the process holding a broker token. `InheritExcept` there
-        // would hand the operator's whole environment to the least-trusted
-        // seam in the tree for no capability it uses. The `AREEV_*` extras are
-        // applied AFTER the policy (`proc::run`), so the broker handshake and
-        // the tool identity survive the clear.
+        // A native blob inherits (minus the registered secrets) unless the host
+        // named an allow list: it is an ordinary program and may legitimately
+        // read an ambient variable. The SANDBOX gets `ClearExcept` whatever the
+        // host configured — it is a wasm host, so the only environment it can
+        // justify is what it needs to start, and under #101 it is also the
+        // process holding a broker token. `InheritExcept` there would hand the
+        // operator's whole environment to the least-trusted seam in the tree
+        // for no capability it uses. The `AREEV_*` extras are applied AFTER the
+        // policy (`proc::run`), so the broker handshake and the tool identity
+        // survive the clear.
         let policy = SpawnPolicy {
             timeout: self.timeout,
             env: if sandboxed {
                 EnvPolicy::ClearExcept { allow: EnvPolicy::minimal_allow() }
             } else {
-                EnvPolicy::default()
+                self.native_env.clone().unwrap_or_default()
             },
             ..SpawnPolicy::default()
         };

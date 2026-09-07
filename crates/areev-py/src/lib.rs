@@ -84,6 +84,7 @@ fn open_postgres_from_dsn(
     index_text: Option<bool>,
     has_passphrase: bool,
     anon_key: Option<[u8; 32]>,
+    read_only: bool,
 ) -> areev_core::error::Result<RustAreev> {
     if has_passphrase {
         return Err(AreevError::Validation(
@@ -97,12 +98,13 @@ fn open_postgres_from_dsn(
     // reachable on this backend at all: Postgres refuses `encryption_key`
     // (a page-cipher capability), so without a host-supplied root there is no
     // key material to derive them from. Supplying one takes the explicit-open
-    // path, exactly as an explicit `index_text` does.
+    // path, exactly as an explicit `index_text` does — and so does
+    // `read_only`, which has no other way to carry into the open.
     match (index_text, anon_key) {
-        (None, None) if tel != TelemetryMode::Off => {
+        (None, None) if tel != TelemetryMode::Off && !read_only => {
             RustAreev::open_postgres_with_telemetry(&url, &schema, tel)
         }
-        (None, None) => RustAreev::open_postgres(&url, &schema),
+        (None, None) if !read_only => RustAreev::open_postgres(&url, &schema),
         (want_text, anon) => RustAreev::open_postgres_with(
             &url,
             &schema,
@@ -110,6 +112,7 @@ fn open_postgres_from_dsn(
                 index_text: want_text.unwrap_or(areev_store::AreevOptions::default().index_text),
                 anon_key: anon,
                 telemetry: tel,
+                read_only,
                 ..areev_store::AreevOptions::default()
             },
         ),
@@ -123,6 +126,7 @@ fn open_postgres_from_dsn(
     _index_text: Option<bool>,
     _has_passphrase: bool,
     _anon_key: Option<[u8; 32]>,
+    _read_only: bool,
 ) -> areev_core::error::Result<RustAreev> {
     Err(AreevError::Validation(
         "this build lacks the postgres backend — rebuild the wheel with the \
@@ -375,23 +379,43 @@ struct Areev {
 impl Areev {
     #[new]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
-    #[pyo3(signature = (path, ns = "shared".to_string(), passphrase = None, actor = "user:local".to_string(), telemetry = "aggregate".to_string(), index_text = None, principal = None, anon_key = None))]
+    #[pyo3(signature = (path, ns = "shared".to_string(), passphrase = None, actor = "user:local".to_string(), telemetry = None, index_text = None, principal = None, anon_key = None, read_only = false))]
     fn new(
         py: Python<'_>,
         path: String,
         ns: String,
         passphrase: Option<String>,
         actor: String,
-        telemetry: String,
+        telemetry: Option<String>,
         index_text: Option<bool>,
         principal: Option<String>,
         anon_key: Option<String>,
+        read_only: bool,
     ) -> PyResult<Self> {
+        // `read_only=True` refuses every write (STO-E004), creates nothing,
+        // and issues no DDL on postgres — SELECT-only verification instead,
+        // which is what makes a USAGE+SELECT role a workable identity.
+        // `index_text` re-stamps the file's declaration, which is a write, so
+        // refuse the pair up front rather than partway through open.
+        if read_only && index_text.is_some() {
+            return Err(err(
+                "read_only=True cannot be combined with an explicit index_text: index_text \
+                 always re-stamps the file's declaration, and a read-only open never writes. \
+                 Drop index_text (a read-only open honors whatever the file already declares) \
+                 or drop read_only",
+            ));
+        }
         // Recall-telemetry sidecar (host capability, §8): agents are the main
         // telemetry producers, so the binding default is `aggregate`; pass
-        // telemetry="off" to disable. It is never a file-truth.
-        let tel = TelemetryMode::parse(&telemetry)
-            .ok_or_else(|| err(format!("unknown telemetry mode '{telemetry}' (off|aggregate|full)")))?;
+        // telemetry="off" to disable. It is never a file-truth. A read-only
+        // handle attaches no sidecar regardless (its flush is a write), so an
+        // unasked-for one resolves straight to `off` — nothing to warn about.
+        let tel = match telemetry.as_deref() {
+            Some(v) => TelemetryMode::parse(v)
+                .ok_or_else(|| err(format!("unknown telemetry mode '{v}' (off|aggregate|full)")))?,
+            None if read_only => TelemetryMode::Off,
+            None => TelemetryMode::Aggregate,
+        };
         // Encryption at rest: a passphrase derives an AES-256 key (Argon2id;
         // non-secret salt in a <path>.kdf sidecar). Same key rules as the
         // CLI's --passphrase-env: host-supplied, never stored in the file.
@@ -427,6 +451,7 @@ impl Areev {
                         index_text,
                         passphrase.is_some(),
                         anon,
+                        read_only,
                     );
                 }
                 // Supplying key material makes the open explicit, which
@@ -434,10 +459,12 @@ impl Areev {
                 // `passphrase` alone has always made (it routes through
                 // `open_with` too), reported either way by `open_warnings()`.
                 match (index_text, anon, passphrase) {
-                    (None, None, Some(p)) => {
+                    (None, None, Some(p)) if !read_only => {
                         RustAreev::open_with_passphrase_telemetry(&path, &p, tel)
                     }
-                    (None, None, None) => RustAreev::open_with_telemetry(&path, tel),
+                    (None, None, None) if !read_only => {
+                        RustAreev::open_with_telemetry(&path, tel)
+                    }
                     (want_text, anon, pass) => {
                         let key = match pass {
                             Some(p) => Some(*RustAreev::derive_key_for(&path, &p)?),
@@ -451,6 +478,7 @@ impl Areev {
                                 encryption_key: key,
                                 anon_key: anon,
                                 telemetry: tel,
+                                read_only,
                                 ..areev_store::AreevOptions::default()
                             },
                         )
@@ -1517,7 +1545,7 @@ impl Areev {
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
                         llm_max_tokens = None, allow_executor = None, executor_cache = None,
-                        sandbox_cmd = None, executor_timeout_secs = None))]
+                        sandbox_cmd = None, executor_timeout_secs = None, tool_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1538,6 +1566,7 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        tool_env: Option<String>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1548,7 +1577,9 @@ impl Areev {
         // fails without journaling a run that cannot advance.
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
         let runner = self.runner_pinned(
-            tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+            tool_cmd,
+            llm,
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
         );
         let opts =
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
@@ -1565,7 +1596,8 @@ impl Areev {
     /// config that is deliberately not journaled with the run.
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
                         key_env = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
+                        tool_env = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1580,10 +1612,13 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        tool_env: Option<String>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
         let runner = self.runner_pinned(
-            tool_cmd, llm, allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs,
+            tool_cmd,
+            llm,
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
         );
         let opts = run_options(None, None, None, None, llm_max_tokens);
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
@@ -2449,7 +2484,8 @@ impl Areev {
                         node = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
+                        tool_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2474,10 +2510,11 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        tool_env: Option<String>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
-            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
@@ -2503,7 +2540,8 @@ impl Areev {
                         credentials_json = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
-                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None))]
+                        executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
+                        tool_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2525,12 +2563,13 @@ impl Areev {
         executor_cache: Option<String>,
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
+        tool_env: Option<String>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
-            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs },
+            ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
@@ -2667,14 +2706,7 @@ impl Areev {
         let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(
             || {
                 std::sync::Arc::new(RunnerStarter {
-                    runner: self.runner_pinned(
-                        tool_cmd,
-                        llm,
-                        pin.allow_executor,
-                        pin.executor_cache,
-                        pin.sandbox_cmd,
-                        pin.executor_timeout_secs,
-                    ),
+                    runner: self.runner_pinned(tool_cmd, llm, pin),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
             },
@@ -2765,7 +2797,7 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        self.runner_pinned(tool_cmd, llm, None, None, None, None)
+        self.runner_pinned(tool_cmd, llm, ExecutorPin::default())
     }
 
     /// The pin-aware factory (#87): `allow_executor` is the same comma list
@@ -2779,18 +2811,24 @@ impl Areev {
         &self,
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
-        allow_executor: Option<String>,
-        executor_cache: Option<String>,
-        sandbox_cmd: Option<String>,
-        executor_timeout_secs: Option<u64>,
+        pin: ExecutorPin,
     ) -> areev_run::Runner {
-        let timeout = executor_timeout_secs
+        let timeout = pin
+            .executor_timeout_secs
             .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
+        let env = pin
+            .tool_env
+            .as_deref()
+            .filter(|names| !names.trim().is_empty())
+            .map(areev_run::env_allow_policy);
         let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
                 let mut ce = areev_run::CommandExecutor::new(&cmd);
                 if let Some(t) = timeout {
                     ce = ce.with_timeout(t);
+                }
+                if let Some(p) = env.clone() {
+                    ce = ce.with_env_policy(p);
                 }
                 std::sync::Arc::new(ce)
             }
@@ -2815,21 +2853,24 @@ impl Areev {
                 std::sync::Arc::new(NoExec)
             }
         };
-        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match allow_executor {
+        let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> = match pin.allow_executor {
             None => base,
             Some(list) => {
                 let mut ce = areev_run::CodeExecutor::new(base);
                 for addr in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                     ce = ce.allow(addr);
                 }
-                if let Some(dir) = executor_cache {
+                if let Some(dir) = pin.executor_cache {
                     ce = ce.cache_dir(dir);
                 }
-                if let Some(cmd) = sandbox_cmd {
+                if let Some(cmd) = pin.sandbox_cmd {
                     ce = ce.sandbox_cmd(&cmd);
                 }
                 if let Some(t) = timeout {
                     ce = ce.with_timeout(t);
+                }
+                if let Some(p) = env {
+                    ce = ce.with_env_policy(p);
                 }
                 std::sync::Arc::new(ce)
             }
@@ -2847,14 +2888,19 @@ impl Areev {
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
-/// value so the trigger surface takes the same three settings `run_start`
-/// does without growing three more positional parameters at every call.
+/// value so the trigger surface takes the same settings `run_start` does
+/// without growing that many more positional parameters at every call.
 #[derive(Default)]
 struct ExecutorPin {
     allow_executor: Option<String>,
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
     executor_timeout_secs: Option<u64>,
+    /// Comma list of variables a host tool may keep. Unset (or empty)
+    /// inherits this process's environment minus the registered secrets; a
+    /// list clears it and passes only those, plus the minimal set a command
+    /// needs to start.
+    tool_env: Option<String>,
 }
 
 fn run_options(

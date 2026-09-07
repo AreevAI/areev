@@ -253,6 +253,17 @@ fn executor_timeout(flags: &HashMap<String, String>) -> Option<Option<std::time:
         .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) })
 }
 
+/// The environment a host tool is spawned with, when the operator named one.
+///
+/// `None` keeps the inherit-minus-secrets default every deployed `--tool-cmd`
+/// was written against — the answer for a host that would rather enumerate
+/// what a tool sees than what it must not. `parse_args` records a valueless
+/// long flag as `"true"`, so a bare `--tool-env` clears to the minimal set.
+pub fn tool_env_policy(flags: &HashMap<String, String>) -> Option<areev_core::proc::EnvPolicy> {
+    let raw = flag_or_env(flags, "tool-env", "AREEV_RUN_TOOL_ENV")?;
+    Some(areev_run::env_allow_policy(if raw == "true" { "" } else { &raw }))
+}
+
 /// The executor a run's nodes dispatch through: the `--tool-cmd` subprocess,
 /// wrapped in the pinned code executor when the host authorized one.
 ///
@@ -267,12 +278,16 @@ pub fn tool_executor(
     egress: Option<&areev_run::EgressHandle>,
 ) -> Arc<dyn HostToolExecutor> {
     let timeout = executor_timeout(flags);
+    let env = tool_env_policy(flags);
     let base: Arc<dyn HostToolExecutor> = match flag_or_env(flags, "tool-cmd", "AREEV_RUN_TOOL_CMD")
     {
         Some(cmd) => {
             let mut ce = CommandExecutor::new(&cmd);
             if let Some(t) = timeout {
                 ce = ce.with_timeout(t);
+            }
+            if let Some(p) = env.clone() {
+                ce = ce.with_env_policy(p);
             }
             Arc::new(match egress {
                 Some(h) => ce.with_egress(h.clone()),
@@ -296,6 +311,9 @@ pub fn tool_executor(
             }
             if let Some(t) = timeout {
                 ce = ce.with_timeout(t);
+            }
+            if let Some(p) = env {
+                ce = ce.with_env_policy(p);
             }
             if let Some(h) = egress {
                 ce = ce.with_egress(h.clone());
@@ -549,5 +567,61 @@ mod tests {
             }
             ExecResult::Ok(v) => panic!("expected a timeout, got {v}"),
         }
+    }
+
+    #[test]
+    fn tool_env_policy_reads_the_flag_and_treats_a_bare_one_as_clear_only() {
+        use areev_core::proc::EnvPolicy;
+        assert_eq!(tool_env_policy(&flags(&[])), None, "unset keeps the inherit default");
+
+        let minimal = EnvPolicy::minimal_allow();
+        match tool_env_policy(&flags(&[("tool-env", "true")])) {
+            Some(EnvPolicy::ClearExcept { allow }) => assert_eq!(allow, minimal),
+            other => panic!("a valueless --tool-env must still clear, got {other:?}"),
+        }
+        match tool_env_policy(&flags(&[("tool-env", "AWS_REGION, HTTPS_PROXY")])) {
+            Some(EnvPolicy::ClearExcept { allow }) => {
+                let mut want = minimal.clone();
+                want.extend(["AWS_REGION".to_string(), "HTTPS_PROXY".to_string()]);
+                assert_eq!(allow, want);
+            }
+            other => panic!("expected a cleared environment, got {other:?}"),
+        }
+    }
+
+    /// #188: proof the flag reaches the constructed executor. `PATH` is
+    /// asserted alongside the planted variable because without it a bare
+    /// command name in a cleared environment resolves to nothing.
+    #[cfg(unix)]
+    #[test]
+    fn tool_env_clears_the_environment_and_passes_only_what_it_names() {
+        const PLANTED: &str = "AREEV_TEST_TOOL_ENV_PLANTED";
+        const NAMED: &str = "AREEV_TEST_TOOL_ENV_NAMED";
+        std::env::set_var(PLANTED, "leaked");
+        std::env::set_var(NAMED, "kept");
+        let cmd = format!(
+            r#"printf '{{"planted":"%s","named":"%s","path":"%s"}}' "${PLANTED}" "${NAMED}" "${{PATH:+set}}""#
+        );
+
+        let seen = |extra: &[(&str, &str)]| {
+            let mut f = vec![("tool-cmd", cmd.as_str())];
+            f.extend_from_slice(extra);
+            match tool_executor(&flags(&f), None).execute("work", "h", &serde_json::json!({}), "k")
+            {
+                ExecResult::Ok(v) => v,
+                ExecResult::Err { detail, .. } => panic!("{detail}"),
+            }
+        };
+
+        let inherited = seen(&[]);
+        assert_eq!(inherited["planted"], "leaked", "the default still inherits");
+
+        let cleared = seen(&[("tool-env", NAMED)]);
+        assert_eq!(cleared["planted"], "", "an unnamed variable must not survive the clear");
+        assert_eq!(cleared["named"], "kept", "a named one must");
+        assert_eq!(cleared["path"], "set", "PATH is load-bearing — without it nothing resolves");
+
+        std::env::remove_var(PLANTED);
+        std::env::remove_var(NAMED);
     }
 }
