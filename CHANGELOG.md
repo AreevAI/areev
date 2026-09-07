@@ -232,6 +232,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The deployment profile no longer recommends a pooler mode the store cannot
+  survive.** `docs/deployment-profile.md` suggested PgBouncer in transaction
+  mode for multi-tenant hosts. The store keeps three things on the session —
+  `search_path` pinned at open, the bootstrap advisory lock (`pg_advisory_lock`,
+  not the `_xact_` form), and the hot-path queries as server-side named prepared
+  statements cached per connection — and transaction pooling hands each
+  transaction to whichever backend is free, so none of them survives. The
+  prepared-statement failure is the loud one (`prepared statement "s0" does not
+  exist`); the `search_path` failure is the dangerous one, because one schema is
+  one memory, so a statement landing on a connection scoped to a different
+  schema is a query answered from **another tenant** rather than a query that
+  fails. Session mode is now stated as the requirement, with the invariant a
+  proxy must satisfy (one client connection, one server session, for its whole
+  life) and a table of what is and is not safe — including Neon's `-pooler`
+  endpoint, which is transaction-mode PgBouncer and is the hostname its
+  quickstarts hand out
+  ([#189](https://github.com/AreevAI/areev/issues/189)).
+
 - **The Postgres dictionary no longer bounds what a grain may say.** `terms`
   was `text UNIQUE`, and a Postgres btree entry caps at ~2704 bytes *after*
   compression — so any subject, relation or object that did not compress

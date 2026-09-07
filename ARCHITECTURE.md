@@ -1540,8 +1540,9 @@ What this retires is a shape the deployment docs previously had to prescribe:
 a PgBouncer or Cloud SQL Auth Proxy inserted purely to compensate for a
 missing client capability — an extra component *inside* the trust boundary,
 and one more thing to hold a credential. The proxy stays supported for the
-cases where it earns its place (pooling, IAM auth); it is no longer the price
-of encryption. Raised as
+cases where it earns its place (pooling — in **session mode**, per
+`deployment-profile.md` — and IAM auth); it is no longer the price of
+encryption. Raised as
 [#117](https://github.com/AreevAI/areev/issues/117) from a fleet deployment on
 Azure Flexible Server. Contract:
 [docs/deployment-profile.md](docs/deployment-profile.md) §"Postgres connection
