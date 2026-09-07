@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The deployment profile no longer recommends a pooler mode the store cannot
+  survive.** `docs/deployment-profile.md` suggested PgBouncer in transaction
+  mode for multi-tenant hosts. The store pins `search_path` once per session and
+  takes the bootstrap advisory lock per session; transaction pooling hands each
+  transaction to whichever backend is free, so a statement can land on a
+  connection whose `search_path` is unset or belongs to a different schema. One
+  schema is one memory, so that is a query answered from the wrong tenant rather
+  than a query that fails. Session mode is the requirement, and the safe and
+  unsafe proxies are now named
+  ([#189](https://github.com/AreevAI/areev/issues/189)).
+
 - **The Postgres dictionary no longer bounds what a grain may say.** `terms`
   was `text UNIQUE`, and a Postgres btree entry caps at ~2704 bytes *after*
   compression — so any subject, relation or object that did not compress

@@ -102,8 +102,8 @@ identically with and without the feature, so no existing deployment changes.
 
 This makes the local TLS-terminating proxy (Cloud SQL Auth Proxy, PgBouncer
 with a TLS upstream) optional rather than mandatory. It is still the right
-answer when the proxy is also pooling or doing IAM auth — point the DSN at it
-with `sslmode=disable`.
+answer when the proxy is also pooling (session mode only — see below) or doing
+IAM auth — point the DSN at it with `sslmode=disable`.
 
 **Connections per handle: 1, or 2 with telemetry.** One `tokio_postgres`
 client per `Areev` handle, plus a second for the recall-telemetry sidecar. The
@@ -111,9 +111,20 @@ client per `Areev` handle, plus a second for the recall-telemetry sidecar. The
 opens **two**. Pass `telemetry="off"` when you do not want the sidecar. A
 multi-tenant host with one memory per tenant multiplies this by tenants *and*
 by instances against the server's `max_connections` — cache handles per tenant
-with an LRU and close idle ones (`close()` in Node; drop in Rust/Python), or
-put a pooler (PgBouncer in transaction mode, Cloud SQL Auth Proxy) in front.
-There is no built-in pool.
+with an LRU and close idle ones (`close()` in Node; drop in Rust/Python). There
+is no built-in pool.
+
+**A pooler must run in session mode, never transaction mode.** The store pins
+`search_path` once per session and takes the bootstrap advisory lock per
+session. Transaction pooling hands each transaction to whichever backend is
+free, so neither survives: a statement lands on a connection whose `search_path`
+is unset or belongs to a different schema. Because one schema is one memory,
+that is not a failed query — it is a query answered from the wrong tenant.
+
+PgBouncer in `session` mode is safe and still caps server connections.
+`transaction` and `statement` modes are not. The Cloud SQL Auth Proxy and the
+Cloudflare/Neon-style connection proxies pass sessions through and are safe.
+Supavisor's transaction mode and PgCat's transaction mode are not.
 
 **Open cost: provision schemas ahead of the request path.** First open of a
 NEW schema runs the full DDL bootstrap under an advisory lock — hundreds of
