@@ -78,8 +78,10 @@ COMMANDS:
                                       partition keys, history — as JSONL
                                       (stdout or --out), and optionally a
                                       portable .mgb bundle (--bundle)
-  forget-subject <subject> [--ns NS] [--text-mentions] --yes   erase EVERY
-                                      grain referencing an identity — exact +
+  forget-subject <subject> [--ns NS] [--text-mentions] [--because \"why\"] --yes
+                                      erase EVERY grain referencing an
+                                      identity (--because rides the audit
+                                      record) — exact +
                                       partition keys (pat, pat#visit1), history
                                       included, + its dictionary entries;
                                       --text-mentions also erases grains whose
@@ -232,7 +234,9 @@ COMMANDS:
            --gating-run` loads
   tool     provenance <hash> [--depth N]   one-command code forensics: the
            recommendations targeting this code, each transition's approver +
-           BECAUSE + gating edge, and the runs that touched it
+           BECAUSE + gating edge, the runs that touched it, and the executor
+           blob its executor_uri points at (present? how many bytes? — read
+           lock-free, so it answers while the run is still holding the file)
   run      <start|resume|respond|cancel|list|inspect|verify|fork|shadow|
            oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
@@ -243,7 +247,8 @@ COMMANDS:
            start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--base-url URL]
            [--key-env VAR] [--llm-max-tokens N]
-           [--events] [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
+           [--events] [--otel-endpoint http://HOST:4318]
+           [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--sandbox-cmd 'areev-sandbox'] [--executor-timeout SECS]
            [--tool-env VAR,...]
@@ -279,6 +284,14 @@ COMMANDS:
            otherwise runs under — a document-analysis leg making a dozen
            model calls needs longer than that default was sized for. 0 means
            wait forever;
+           --events streams the run's §6.10 events to stderr as JSON lines
+           (stdout stays the machine surface); --otel-endpoint also exports
+           the run as ONE OTLP/HTTP JSON trace at completion — http:// only,
+           terminate TLS at a local collector. Its spans carry the
+           OpenTelemetry GenAI attributes (gen_ai.request.model,
+           gen_ai.usage.*, gen_ai.tool.call.id, …) beside Areev's own
+           superstep/task_path/attempt provenance, so a GenAI-aware backend
+           reads them with no Areev-specific configuration;
            --tool-env inverts how a tool's environment is decided: without it
            a tool inherits this process's environment minus the variables
            named to --passphrase-env/--token-env/--credential, with it the
@@ -297,9 +310,20 @@ COMMANDS:
                                       (walks provenance both ways)
   verify                              integrity + content-address recheck
   stats                               store counters
-  serve    --mcp [--ns NS] [--mount alias=path,...] [--no-destructive-ops] [--lock-ns NS] [--profile memory|full]  MCP server on stdio
-                                      (--mount adds read-only files for
-                                       cross-file ASSEMBLE; ns \"alias.inner\";
+  serve    --mcp [--ns NS] [--mount alias=path|DSN,...] [--no-destructive-ops] [--lock-ns NS] [--profile memory|full]  MCP server on stdio
+                                      (--mount adds read-only memories for
+                                       cross-file ASSEMBLE; ns \"alias.inner\".
+                                       A target is a memory FILE or a postgres
+                                       DSN (postgres://…?schema=NAME) — either
+                                       backend, always opened read-only, so a
+                                       missing file is refused rather than
+                                       created and a SELECT-only pg role is
+                                       enough. Commas separate mounts only
+                                       before another alias=, so a multi-host
+                                       DSN survives. A mount's vector leg uses
+                                       ITS OWN embedder, and --embed-cmd
+                                       installs one on the primary only, so
+                                       ABOUT/NOVELTY do not cross a mount;
                                        --profile memory drops the run/loop
                                        tool family, default full)
   repl     [--ns NS]                  interactive CAL console in the terminal
@@ -354,6 +378,21 @@ COMMANDS:
                                       NAME drops one credential without
                                       touching the principal's others
                                       (restart `areev ui` to apply)
+  provision --db DSN [--schema NAME] [--telemetry off|aggregate|full]
+                                      create/migrate a postgres memory's
+                                      schema AHEAD of use, so no request ever
+                                      pays for bootstrap DDL. Postgres only
+                                      (a file memory bootstraps itself at
+                                      open). Run it with a role that owns the
+                                      schema; the runtime role then needs no
+                                      CREATE, and can pin that with
+                                      `?provision=never` on its own DSN, which
+                                      refuses (STO-E008) instead of issuing
+                                      DDL. --schema supplies or overrides the
+                                      DSN's ?schema=. It also provisions the
+                                      telemetry tables, since --telemetry
+                                      defaults to aggregate on every verb —
+                                      pass --telemetry off to skip them
   ui       [--addr HOST:PORT] [--allow-remote] [--allow-origin ORIGIN[,ORIGIN...]]
            [--token-env VAR] [--no-destructive-ops] [--tls-cert PATH --tls-key PATH]
            [--sso-header NAME --sso-secret-env VAR [--sso-secret-env-next VAR]]
@@ -759,6 +798,139 @@ fn report_meta_warnings(facade: &areev_cal::AreevFacade) {
     for w in facade.meta_warnings() {
         eprintln!("areev: warning: {w}");
     }
+}
+
+/// A `--mount` target is a postgres DSN rather than a file path.
+fn is_pg_dsn(target: &str) -> bool {
+    target.starts_with("postgres://") || target.starts_with("postgresql://")
+}
+
+/// Would this mount point at the SAME memory as the primary?
+///
+/// The embedded backend refuses that by construction — a second handle on one
+/// file fails at open with `STO-E002`, because two handles drift on their
+/// cached allocators. Postgres has no such guard (it is genuinely
+/// multi-writer), so the asymmetry would be silent: the mount would open, and
+/// `alias.ns` would answer from the very store `ns` already reaches, doubling
+/// every row an ASSEMBLE drew from both sources. Refuse it here instead.
+#[cfg(feature = "postgres")]
+fn mount_is_the_primary(primary: &str, mount: &str) -> bool {
+    if !(is_pg_dsn(primary) && is_pg_dsn(mount)) {
+        return false;
+    }
+    let norm = |d: &str| {
+        areev_store::pg::split_schema_url(&areev_store::pg::strip_provision(d)).ok()
+    };
+    match (norm(primary), norm(mount)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+#[cfg(not(feature = "postgres"))]
+fn mount_is_the_primary(_primary: &str, _mount: &str) -> bool {
+    false
+}
+
+/// Redact a DSN's password for display. One implementation, shared with the
+/// console (which needs it for the same reason: `--db` reaches log lines and
+/// response bodies, and on the postgres backend it carries a secret).
+fn redact_dsn(label: &str) -> String {
+    areev_server::redact_dsn(label)
+}
+
+/// Does `s` begin with `alias=`? The one shape a `--mount` entry always has,
+/// and the one shape the interior of a DSN never has at the top level.
+fn starts_a_mount_entry(s: &str) -> bool {
+    let Some((name, _)) = s.split_once('=') else { return false };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Parse `--mount alias=target[,alias=target...]` into `(alias, target)` pairs.
+///
+/// Splitting on every `,` is wrong the moment a target can be a DSN: libpq's
+/// multi-host form (`postgres://h1:5432,h2:5432/db`) and an `options=` list
+/// both contain commas, and cutting there produces two nonsense mounts instead
+/// of one working one. A comma therefore separates mounts only when another
+/// `alias=` follows it.
+fn parse_mounts(spec: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let Some(spec) = spec else { return Ok(Vec::new()) };
+    let mut entries: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    for (i, c) in spec.char_indices() {
+        if c == ',' && starts_a_mount_entry(spec[i + 1..].trim_start()) {
+            entries.push(&spec[start..i]);
+            start = i + 1;
+        }
+    }
+    entries.push(&spec[start..]);
+    let mut out = Vec::new();
+    for entry in entries.into_iter().map(str::trim).filter(|e| !e.is_empty()) {
+        let (alias, target) = entry
+            .split_once('=')
+            .map(|(a, t)| (a.trim(), t.trim()))
+            .filter(|(a, t)| !a.is_empty() && !t.is_empty())
+            .ok_or_else(|| {
+                format!("--mount expects alias=<path|DSN>, got '{}'", redact_dsn(entry))
+            })?;
+        // The alias becomes a namespace prefix (`alias.inner`), so it must be
+        // one identifier — no dot (the facade routes on the FIRST dot, so a
+        // dotted alias could never be matched) and nothing a DSN contains.
+        // Without this, a bare DSN passed with no alias splits at its
+        // `?schema=` and mounts something nonsensical under an alias made of
+        // half a connection string.
+        if alias.is_empty()
+            || !alias.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            // Redacted like every other echo of caller text: a bare DSN
+            // passed with no alias lands its userinfo in exactly this slot.
+            return Err(format!(
+                "--mount alias {:?} is not a name: an alias is [A-Za-z0-9_-]+ and becomes a \
+                 namespace prefix (\"alias.inner\"). Write --mount <alias>=<path|DSN>",
+                redact_dsn(alias)
+            ));
+        }
+        out.push((alias.to_string(), target.to_string()));
+    }
+    Ok(out)
+}
+
+/// Open one `--mount` target: a memory FILE, or a postgres DSN
+/// (`postgres://…?schema=<name>`) — the mount tier is not file-only.
+///
+/// Always **read-only**, on either backend. Mounts were already read-only by
+/// construction (CAL routes writes to the session store and never to a mount),
+/// so this makes the guarantee real rather than incidental, and it buys two
+/// things that construction could not: a least-privilege postgres role with no
+/// DDL grant can back a mount, and a file path that does not exist is refused
+/// (`STO-E005`) instead of quietly becoming a new, empty memory that then
+/// answers every cross-file question with silence.
+///
+/// Telemetry is `Off` explicitly: a sidecar per mount would be a second
+/// connection and a second bootstrap for a store nothing writes to, and a
+/// read-only handle refuses one anyway — passing the host default would only
+/// print a "telemetry disabled" warning per mount.
+fn open_mount(target: &str) -> Result<Areev, String> {
+    if is_pg_dsn(target) {
+        return open_postgres_store(target, areev_store::TelemetryMode::Off, None, None, true);
+    }
+    let opts = areev_store::AreevOptions { read_only: true, ..Default::default() };
+    Areev::open_with(target, opts).map_err(|e| {
+        let mut msg = e.to_string();
+        if e.code() == "STO-E004" {
+            // The read-only reconciliation refuses a declaration disagreement,
+            // and a mount has no flag to spell the file's declaration with.
+            msg.push_str(
+                " — a mount is opened read-only, and a read-only open cannot re-stamp a \
+                 declaration. Open this memory read-write once with the settings it should \
+                 declare, then mount it",
+            );
+        }
+        msg
+    })
 }
 
 fn addr_is_loopback(addr: &str) -> bool {
@@ -1313,6 +1485,59 @@ fn run() -> Result<(), String> {
         return run_auth(&flags, &positional);
     }
 
+    // `provision` bootstraps a postgres schema OFF the request path. Also
+    // dispatched before `resolve_db`, and for a related reason: it does not
+    // open a memory the way every verb below does — it must not fall back to
+    // the personal default file (a file memory has nothing to provision), and
+    // it takes its DSN explicitly so the schema it creates is never a
+    // surprise.
+    if cmd == "provision" {
+        return run_provision(&flags);
+    }
+
+    // Long-lived / exposed surfaces must name their memory explicitly rather
+    // than silently defaulting to the personal file.
+    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
+    let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
+
+    // print-only verbs never open the store (paths may be untilde-expanded)
+    if cmd == "hook" {
+        let target = positional.first().map(String::as_str).unwrap_or("claude-code");
+        if target != "claude-code" {
+            return Err(format!("unknown hook target '{target}'"));
+        }
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "areev".into());
+        println!(
+            r#"Add to ~/.claude/settings.json (hooks section) to close the learning
+loop automatically — inject relevant memory before each prompt, and capture
+each exchange (with tool outcomes) when a turn ends:
+
+{{
+  "hooks": {{
+    "UserPromptSubmit": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} recall-hook --db {db} --ns {ns} --with-loop"
+    }}] }}],
+    "Stop": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} capture-stop --db {db} --ns {ns}"
+    }}] }}]
+  }}
+}}
+
+recall-hook reads the prompt and prints matching memories to stdout, which
+Claude Code injects as context — so retrieval no longer depends on the model
+choosing to call a tool. For on-demand reads/writes by the model itself, also
+register the MCP server:
+  claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
+
+Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
+        );
+        return Ok(());
+    }
+
     // `anonymize scan` and `anonymize test` are pure text processing: they
     // never open the store, so they dispatch BEFORE `resolve_db` for the same
     // reason `auth` does — resolving a default memory here is wasted work, and
@@ -1468,7 +1693,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // (Argon2id; salt in a <db>.kdf sidecar). The passphrase and the derived
     // key are held in zeroizing buffers; note the storage engine keeps the key
     // resident in memory while the database is open.
-    let is_pg_url = db.starts_with("postgres://") || db.starts_with("postgresql://");
+    let is_pg_url = is_pg_dsn(&db);
     let enc_key = match flag(&flags, "passphrase-env") {
         Some(_) if is_pg_url => {
             return Err(
@@ -2250,22 +2475,26 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             let mut facade = areev_cal::AreevFacade::with_session(m, Some(ns), None);
             report_meta_warnings(&facade);
             // Optional read-only mounts for cross-file ASSEMBLE:
-            //   --mount alias=path[,alias=path...]
+            //   --mount alias=<path|DSN>[,alias=<path|DSN>...]
             // A recall/query in namespace "alias.inner" routes to the mount;
-            // writes always stay on the primary file (mounts are read-only by
-            // construction), so this only widens what recall/ASSEMBLE can read.
-            if let Some(spec) = flag(&flags, "mount") {
-                for entry in spec.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-                    let (alias, path) = entry
-                        .split_once('=')
-                        .map(|(a, p)| (a.trim(), p.trim()))
-                        .filter(|(a, p)| !a.is_empty() && !p.is_empty())
-                        .ok_or_else(|| format!("--mount expects alias=path, got '{entry}'"))?;
-                    let store =
-                        Areev::open(path).map_err(|e| format!("mount '{alias}' ({path}): {e}"))?;
-                    eprintln!("areev: mounted '{alias}' (read-only) → {path}");
-                    facade.mount(alias, store);
+            // writes always stay on the primary memory (mounts are read-only
+            // by construction), so this only widens what recall/ASSEMBLE can
+            // read.
+            for (alias, target) in parse_mounts(flag(&flags, "mount").as_deref())? {
+                if mount_is_the_primary(&db, &target) {
+                    return Err(format!(
+                        "mount '{alias}' names the same postgres memory as --db — a mount is a \
+                         SECOND store, and mounting the primary would make \"{alias}.<ns>\" and \
+                         \"<ns>\" the same rows read twice. Point it at another schema, or drop \
+                         the mount and query the namespace directly"
+                    ));
                 }
+                let store = open_mount(&target)
+                    .map_err(|e| format!("mount '{alias}' ({}): {e}", redact_dsn(&target)))?;
+                // NEVER the raw target: a postgres DSN carries a password, and
+                // this line goes to the operator's terminal and their logs.
+                eprintln!("areev: mounted '{alias}' (read-only) → {}", redact_dsn(&target));
+                facade.mount(&alias, store);
             }
             let facade = apply_principal(facade, &flags)?;
             let mut server = areev_mcp::McpServer::new(facade, None)
@@ -3298,7 +3527,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             if sub_cmd != "provenance" || hash_arg.is_none() {
                 return Err("usage: areev tool provenance <hash> [--depth N]".into());
             }
-            return run_tool_provenance(m, &ns, &hash_arg.unwrap(), &flags);
+            return run_tool_provenance(m, &db, &ns, &hash_arg.unwrap(), &flags);
         }
         "blob" => {
             // `blob put` writes; `blob get` normally never reaches here (it is
@@ -3971,10 +4200,16 @@ fn run_run(
 /// `areev tool provenance <hash>` (§7.4): the full chain for one piece of
 /// governed code, as ONE command — the recommendation(s) targeting it, each
 /// lifecycle transition with approver + BECAUSE, the recorded gating edge
-/// (evalset hash, gate run, stats), and which runs the code touched since.
-/// One-command forensics is a product surface, not an implied join.
+/// (evalset hash, gate run, stats), which runs the code touched since, and
+/// the **executor blob itself**: the question a reviewer actually asks is
+/// "what code ran", and a Tool grain answers it only by reference
+/// (`executor_uri`). Chasing that reference by hand — parse the `cas://`
+/// address, find the sidecar, check the digest — is the step that got skipped,
+/// so the command takes it. One-command forensics is a product surface, not an
+/// implied join.
 fn run_tool_provenance(
     mut m: Areev,
+    db_path: &str,
     ns: &str,
     hash_arg: &str,
     flags: &HashMap<String, String>,
@@ -3982,8 +4217,15 @@ fn run_tool_provenance(
     use areev_loop::SubstrateRead;
     let depth = flag(flags, "depth").and_then(|v| v.parse().ok()).unwrap_or(2);
     // Store-level joins FIRST (the substrate takes ownership below).
+    let mut executor: Option<serde_json::Value> = None;
     let runs = match Hash::from_hex(hash_arg) {
         Ok(h) => {
+            executor = m
+                .get(&h)
+                .ok()
+                .and_then(|g| g.to_tool().ok())
+                .and_then(|t| t.executor_uri.clone())
+                .map(|uri| executor_blob_report(db_path, &uri));
             let mut all = m.runs_touching(ns, &h, depth).unwrap_or_default();
             if ns != "agent:harness" {
                 all.extend(m.runs_touching("agent:harness", &h, depth).unwrap_or_default());
@@ -4039,20 +4281,63 @@ fn run_tool_provenance(
             "lifecycle": chain,
         }));
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "tool": hash_arg,
-            "recommendations": out_recs,
-            "runs_touching": runs,
-            "runs_touching_count": runs.len(),
-        }))
-        .unwrap()
-    );
+    let mut report = serde_json::json!({
+        "tool": hash_arg,
+        "recommendations": out_recs,
+        "runs_touching": runs,
+        "runs_touching_count": runs.len(),
+    });
+    if let Some(e) = executor {
+        report["executor"] = e;
+    }
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
     if out_recs.is_empty() && runs.is_empty() {
         eprintln!("note: nothing recorded for this hash yet (no recommendations target it; no runs touch it)");
     }
     Ok(())
+}
+
+/// What the Tool's `executor_uri` actually points at, resolved.
+///
+/// Reads through [`areev_store::read_blob_offline`] — lock-free, straight off
+/// the `.blobs` sidecar — for the reason that function exists: this command
+/// is most useful WHILE something is running, and the embedded backend's file
+/// lock is exclusive, so a read that needed the database would be refused by
+/// the very run being investigated.
+///
+/// Only a `cas://` address can be chased: it is content, and the address is
+/// the checksum. Any other scheme (a command, an endpoint) names something
+/// this process cannot verify, and is reported as unresolvable rather than
+/// as missing — "we did not look" and "it is not there" are different
+/// findings.
+fn executor_blob_report(db_path: &str, uri: &str) -> serde_json::Value {
+    let mut out = serde_json::json!({"executor_uri": uri});
+    if !uri.starts_with("cas://") {
+        out["blob_present"] = serde_json::json!(false);
+        out["note"] = serde_json::json!(
+            "not a cas:// address — the code is not content-addressed in this memory, \
+             so what ran cannot be verified from here"
+        );
+        return out;
+    }
+    match areev_store::read_blob_offline(db_path, uri) {
+        Ok(Some(bytes)) => {
+            out["blob_present"] = serde_json::json!(true);
+            out["blob_bytes"] = serde_json::json!(bytes.len());
+        }
+        // Sealed: the blob IS here, the bytes need the memory's derived key.
+        // Reporting it absent would be a false negative on the one question
+        // this command exists to answer.
+        Ok(None) => {
+            out["blob_present"] = serde_json::json!(true);
+            out["blob_sealed"] = serde_json::json!(true);
+        }
+        Err(e) => {
+            out["blob_present"] = serde_json::json!(false);
+            out["error"] = serde_json::json!(e.to_string());
+        }
+    }
+    out
 }
 
 /// `areev eval` — evalsets and the §7.4 gating edge.
@@ -4923,6 +5208,97 @@ fn draft_json(d: &areev_store::FactDraft) -> serde_json::Value {
     })
 }
 
+/// `areev provision --db <DSN> [--schema NAME] [--telemetry MODE]` — bootstrap
+/// a postgres memory's schema ahead of use (issue #180).
+///
+/// The whole point is that the FIRST real open afterwards writes nothing at
+/// all — no DDL, no advisory lock, no meta stamps, no `ns_reg` rebuild. That
+/// is achieved by doing exactly what a first open would do and then closing:
+/// `PgDb::open` runs `PG_SCHEMA` + `PG_SEED` and stamps `meta.pg_schema`, and
+/// `finish_open` stamps `text_index`, `entity_relations`, `link_index` and
+/// `ns_registry`. Re-deriving that list here would be a second copy of the
+/// bootstrap to keep in sync — and a copy that fell behind would leave the
+/// request path doing the writes this command exists to remove.
+///
+/// Telemetry is provisioned too unless `--telemetry off`: the sidecar bootstrap
+/// is a SECOND `PgDb::open` with its own tables and its own stamp, and every
+/// other verb defaults to `--telemetry aggregate`, so a schema provisioned
+/// without it would still bootstrap seven tables on the first real request.
+fn run_provision(flags: &HashMap<String, String>) -> Result<(), String> {
+    let db = flag(flags, "db")
+        .or_else(|| std::env::var("AREEV_DB").ok().filter(|v| !v.trim().is_empty()))
+        .ok_or_else(|| {
+            "areev provision: --db <postgres DSN> names the memory to create".to_string()
+        })?;
+    if !is_pg_dsn(&db) {
+        return Err(format!(
+            "areev provision is postgres-only, and {db:?} is not a postgres DSN. A file-backed \
+             memory has nothing to provision: it creates and migrates itself at open, with no \
+             privilege system to fail against"
+        ));
+    }
+    let tel_mode = match flag(flags, "telemetry") {
+        Some(v) => areev_store::TelemetryMode::parse(&v)
+            .ok_or_else(|| format!("--telemetry: unknown mode '{v}' (off|aggregate|full)"))?,
+        // Matches the default every other verb resolves to, so provisioning
+        // covers what the request path will actually open.
+        None => areev_store::TelemetryMode::Aggregate,
+    };
+    provision_postgres(&db, flag(flags, "schema").as_deref(), tel_mode)
+}
+
+#[cfg(feature = "postgres")]
+fn provision_postgres(
+    db: &str,
+    schema_override: Option<&str>,
+    tel_mode: areev_store::TelemetryMode,
+) -> Result<(), String> {
+    // `?provision=never` is the runtime role's guard rail; on THIS command it
+    // would refuse the very work asked for, so it is stripped rather than
+    // honored. An operator can then keep one DSN in one secret and use it for
+    // both the migration job and the request path.
+    let dsn = areev_store::pg::strip_provision(db);
+    let (url, dsn_schema) = match schema_override {
+        // `--schema` may supply the name a bare DSN omits, so the split is
+        // attempted only when the DSN is expected to carry one.
+        Some(_) => (areev_store::pg::strip_schema(&dsn), String::new()),
+        None => areev_store::pg::split_schema_url(&dsn).map_err(|e| e.to_string())?,
+    };
+    let schema = schema_override.map(str::to_string).unwrap_or(dsn_schema);
+    if schema.is_empty() {
+        return Err("areev provision: name the schema with --schema NAME or ?schema=NAME".into());
+    }
+    let mut m = match tel_mode {
+        areev_store::TelemetryMode::Off => Areev::open_postgres(&url, &schema),
+        mode => Areev::open_postgres_with_telemetry(&url, &schema, mode),
+    }
+    .map_err(|e| e.to_string())?;
+    for w in m.open_warnings() {
+        eprintln!("areev: warning: {w}");
+    }
+    // Flush so the telemetry sidecar's own tables are exercised, then drop the
+    // handle: provisioning holds nothing open.
+    let _ = m.telemetry_flush();
+    drop(m);
+    println!(
+        "provisioned postgres schema {schema:?}{} — the next open runs no DDL",
+        match tel_mode {
+            areev_store::TelemetryMode::Off => " (telemetry tables NOT created)",
+            _ => " (including telemetry tables)",
+        }
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "postgres"))]
+fn provision_postgres(
+    _db: &str,
+    _schema_override: Option<&str>,
+    _tel_mode: areev_store::TelemetryMode,
+) -> Result<(), String> {
+    Err("this build lacks the postgres backend — rebuild with --features postgres-tls".into())
+}
+
 /// `areev auth mint|list|revoke` — the credential-map lifecycle (A1).
 ///
 /// The map is host config: it holds no policy, no raw secrets, and names no
@@ -5774,6 +6150,82 @@ mod tests {
 
     fn args(a: &[&str]) -> (HashMap<String, String>, Vec<String>) {
         parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    // ── --mount parsing (issue #184) ────────────────────────────────────
+
+    #[test]
+    fn mount_spec_splits_on_the_alias_not_on_every_comma() {
+        assert_eq!(
+            parse_mounts(Some("org=/srv/org.db,kb=/srv/kb.db")).unwrap(),
+            vec![
+                ("org".to_string(), "/srv/org.db".to_string()),
+                ("kb".to_string(), "/srv/kb.db".to_string()),
+            ]
+        );
+        // libpq's multi-host form: the comma inside the authority must not
+        // cut the DSN in half.
+        assert_eq!(
+            parse_mounts(Some("org=postgres://u:p@h1:5432,h2:5432/db?schema=org_kb")).unwrap(),
+            vec![(
+                "org".to_string(),
+                "postgres://u:p@h1:5432,h2:5432/db?schema=org_kb".to_string()
+            )]
+        );
+        // …and it still separates two mounts when one of them is such a DSN.
+        assert_eq!(
+            parse_mounts(Some(
+                "org=postgres://u:p@h1:5432,h2:5432/db?schema=org_kb, kb=/srv/kb.db"
+            ))
+            .unwrap(),
+            vec![
+                (
+                    "org".to_string(),
+                    "postgres://u:p@h1:5432,h2:5432/db?schema=org_kb".to_string()
+                ),
+                ("kb".to_string(), "/srv/kb.db".to_string()),
+            ]
+        );
+        // An `options=` list is the other comma-carrying DSN shape.
+        assert_eq!(
+            parse_mounts(Some(
+                "org=postgres://h/db?schema=s&options=-c%20a=1,-c%20b=2"
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(parse_mounts(None).unwrap(), Vec::new());
+        assert!(parse_mounts(Some("no-equals-sign")).is_err());
+    }
+
+    /// A mount target may be a DSN, and a DSN carries a password. Nothing the
+    /// CLI prints — the startup line or the failure — may contain it.
+    #[test]
+    fn mount_errors_and_logs_never_print_a_dsn_password() {
+        let dsn = "postgres://areev:SUPERSECRET@pg:5432/db?schema=org_kb";
+        assert!(!redact_dsn(dsn).contains("SUPERSECRET"), "{}", redact_dsn(dsn));
+        assert!(redact_dsn(dsn).contains("areev:***@pg:5432"));
+        // The malformed-entry error echoes the entry back; it must redact too.
+        let err = parse_mounts(Some(dsn)).unwrap_err();
+        assert!(!err.contains("SUPERSECRET"), "{err}");
+        // A file path is left exactly as written.
+        assert_eq!(redact_dsn("/srv/org.db"), "/srv/org.db");
+    }
+
+    /// Feature-gated because the comparison needs `split_schema_url`: a build
+    /// without the postgres backend cannot be handed a postgres primary in
+    /// the first place, so `mount_is_the_primary` is a constant `false` there.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_postgres_mount_of_the_primary_schema_is_recognized() {
+        let primary = "postgres://u:p@h/db?schema=main";
+        assert!(mount_is_the_primary(primary, "postgres://u:p@h/db?schema=main"));
+        // Same DSN, different schema — a legitimate mount.
+        assert!(!mount_is_the_primary(primary, "postgres://u:p@h/db?schema=org_kb"));
+        // A file mount of a file primary is left to the store's own
+        // single-handle guard (STO-E002).
+        assert!(!mount_is_the_primary("/srv/main.db", "/srv/main.db"));
     }
 
     /// [A1] `format_epoch_ms` is a hand-rolled `civil_from_days` — the exact

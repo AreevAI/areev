@@ -118,10 +118,17 @@ agent; memories separate *between* agents. Concretely:
   example — two agents, one Postgres, console + heartbeats all live at once.
   Adding an agent is adding a schema and a heartbeat service.
 - **Cross-agent reads** go through read-only `ASSEMBLE` facade mounts
-  (`--mount org=/data/org.db`) — never a shared
-  writable memory. Mount paths are file-backend today: on a Postgres fleet,
-  share knowledge by exporting a bundle from the source memory and following
-  it as a local read-only replica.
+  (`--mount org=/data/org.db`) — never a shared writable memory. A mount target
+  may be a file path **or** a Postgres DSN
+  (`--mount org=postgres://…?schema=org_kb`), so an `ASSEMBLE` can span
+  backends and a fleet no longer has to export a bundle and follow it as a
+  local replica just to share knowledge. Mounts open **read-only on both
+  backends**, so a Postgres mount can be backed by a role holding only
+  `CONNECT`, `USAGE` and `SELECT`. Two things to size for: each mount adds a
+  connection to the budget above, and the **vector leg does not cross a
+  mount** — `--embed-cmd` installs the embedder on the primary only, so plan
+  cross-mount reads as structural and BM25, not k-NN
+  ([`cal-reference.md`](cal-reference.md)).
 - **Separation of duties survives co-location:** one process = one principal
   (`--as`), grants live in each memory as `mg:permits` Facts, and an
   approver structurally cannot be the initiator — so a worker agent and its
@@ -163,7 +170,14 @@ Three honest caveats before you wire production:
   name (`STO-E003`) rather than connecting in the clear. The local-proxy
   pattern (Cloud SQL Auth Proxy, PgBouncer with a TLS upstream) still works
   and is still right where the proxy is doing something else too — point the
-  DSN at it with `sslmode=disable`.
+  DSN at it with `sslmode=disable`. **If that proxy pools, it must pool in
+  session mode** (PgBouncer `pool_mode = session`): the store keeps
+  session-scoped state — `search_path`, the bootstrap advisory lock,
+  server-side prepared statements, and the `hnsw.ef_search` GUC — that
+  transaction- and statement-mode pooling destroy, the last one with no error
+  at all. The Cloud SQL Auth Proxy is a TLS/IAM tunnel rather than a pooler
+  and is unaffected. Details:
+  [deployment-profile.md](deployment-profile.md#pooling-direct-or-session-mode).
 - **There is no official published image yet.** `docker build` from a
   release tag and push to the registry your platform pulls from (ECR /
   Artifact Registry / ACR). Multi-arch: `docker buildx build --platform

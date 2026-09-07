@@ -8,7 +8,10 @@ requirements you must meet for those answers to hold, and lists the limits
 honestly. Lift it into your DPIA; it is engineering documentation, not legal
 advice.
 
-Companions: [`erasure.md`](erasure.md) (the erasure requirement record,
+Companions: [`compliance-profiles.md`](compliance-profiles.md) (§2's
+requirements and §2a's retention surface bundled as a configurable `gdpr`
+preset, alongside `financial` and `healthcare`),
+[`erasure.md`](erasure.md) (the erasure requirement record,
 REQ-ERASE-1..9), [`security-model.md`](security-model.md) (threat model,
 auth, what is and isn't encrypted), [`cal-reference.md`](cal-reference.md)
 §8 (the destruction model),

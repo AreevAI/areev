@@ -455,16 +455,31 @@ export declare class Areev {
   /**
    * Start a governed run. Returns the session JSON:
    * `{"finished": …}` or `{"parked": envelope}`.
+   *
+   * `onEvent` is a callback taking ONE argument: a §6.10 run event as a
+   * JSON string, exactly the line the CLI's `--events` prints. It is
+   * observational — the journal is byte-identical with or without it, and a
+   * slow callback delays events rather than the run. Attaching one also
+   * turns on `TokenChunk` deltas from abstract nodes' model turns, which
+   * are observational in the same sense (the journaled result is the final
+   * message, not the concatenated deltas).
+   *
+   * Note `RunFinished` is emitted at a TERMINAL outcome: a run that parks
+   * on a human gate ends this leg at `AskRaised`, and the `runResume` leg
+   * carries `RunResumed` … `RunFinished`.
    */
-  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null): Promise<string>
+  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null): Promise<string>
   /**
    * Resume a parked/interrupted run from its latest checkpoint.
    *
    * Takes `model` for the same reason `runStart` does: resuming a plan with
    * abstract nodes still has to execute them, and the backend is host config
-   * that is deliberately not journaled with the run.
+   * that is deliberately not journaled with the run. Same reasoning for
+   * `onEvent`: a resume emits `RunResumed` and the rest of the stream —
+   * including the `RunFinished` a parked start leg never reached — so a
+   * host that watched the start must be able to watch the rest.
    */
-  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null): Promise<string>
+  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null): Promise<string>
   /**
    * Answer a pending Client ask. `responder` is REQUIRED — approval
    * separation of duties (responder ≠ triggering principal) is structural.

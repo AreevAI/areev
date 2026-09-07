@@ -61,6 +61,68 @@ pub struct RunOptions {
     pub inject_crash: Option<CrashPoint>,
 }
 
+/// The per-LLM-call ceiling when a manifest pins none (§6.7 reserves it per
+/// dispatch). Named because two places must agree: the prepared request and
+/// the `gen_ai.request.max_tokens` the span reports for that same request.
+pub(crate) const DEFAULT_LLM_MAX_TOKENS: u32 = 1024;
+
+/// The temperature every abstract-node turn is issued at. Mirrors the literal
+/// the pool builds its `ToolCallRequest` with (`executor.rs`); telemetry that
+/// claimed a different one would be worse than none.
+pub(crate) const LLM_TEMPERATURE: f64 = 0.0;
+
+/// `FailCause` as OpenTelemetry's `error.type` — a low-cardinality string, so
+/// the exhaustive match is the point: a new cause must be spelled here rather
+/// than falling into a catch-all that hides it.
+fn error_type_of(cause: &FailCause) -> &'static str {
+    match cause {
+        FailCause::Timeout => "timeout",
+        FailCause::ExecutorError => "executor_error",
+        FailCause::SchemaValidationFailed => "schema_validation_failed",
+        FailCause::UserAborted => "user_aborted",
+        FailCause::Unknown => "unknown",
+    }
+}
+
+/// The `RunEvent` fields an `EffectSettled` carries beyond "it settled":
+/// journaled usage, why the model stopped, and the failure class.
+///
+/// Keyed on the effect KIND, not on whether the numbers look model-shaped.
+/// Every outcome carries `input_tokens`/`output_tokens` fields and a tool's
+/// are structurally 0, so reporting them would put "0 tokens" on every tool
+/// call; and a tool free to return any JSON could return a `stop_reason` of
+/// its own, which is not a model's finish reason and must not be exported as
+/// one.
+fn settled_detail(
+    kind: areev_run_core::EffectKind,
+    outcome: &EffectOutcome,
+) -> (Option<u64>, Option<u64>, Option<String>, Option<String>) {
+    let is_llm = kind == areev_run_core::EffectKind::Llm;
+    match outcome {
+        EffectOutcome::Completed { result, input_tokens, output_tokens, .. } if is_llm => (
+            Some(*input_tokens),
+            Some(*output_tokens),
+            result.get("stop_reason").and_then(|s| s.as_str()).map(str::to_string),
+            None,
+        ),
+        EffectOutcome::Completed { .. } => (None, None, None, None),
+        EffectOutcome::Failed { cause, .. } => {
+            (None, None, None, Some(error_type_of(cause).to_string()))
+        }
+    }
+}
+
+/// `NodeExecutor` as the one-word kind an observer sees.
+fn executor_kind_of(executor: &areev_run_core::NodeExecutor) -> &'static str {
+    use areev_run_core::NodeExecutor::*;
+    match executor {
+        Host { .. } => "host",
+        Client { .. } => "client",
+        Abstract { .. } => "abstract",
+        Subgraph { .. } => "subgraph",
+    }
+}
+
 /// One `run:<id> mg:harness` link as the run index reads it:
 /// `(created_at, run_id, session namespace if stamped)`.
 type RunIndexRow = (i64, String, Option<String>);
@@ -1283,12 +1345,60 @@ impl Runner {
                                 )
                             })
                             .map_err(err_run)?;
+                        // The GenAI enrichment is assembled HERE and nowhere
+                        // else: the §6.10 observer thread holds no store
+                        // handle (one memory, one writer, and the driver has
+                        // it), so a span attribute that does not ride the
+                        // event can never be recovered.
+                        let node_idx = plan.nodes.iter().position(|n| *n == key.node);
+                        // A tool the MODEL called: its pending entry is booked
+                        // by the same step() pass that emitted this WriteIntent
+                        // (step.rs inserts before pushing the command), so the
+                        // model's own call id is readable now.
+                        let pending = node_idx
+                            .and_then(|i| st.abstract_flows.get(&i))
+                            .and_then(|f| f.pending_tools.get(&key.effect_seq));
+                        let in_agent = node_idx
+                            .map(|i| st.abstract_flows.contains_key(&i))
+                            .unwrap_or(false);
+                        let is_llm = key.kind == areev_run_core::EffectKind::Llm;
                         emit(crate::stream::RunEvent::NodeDispatched {
                             superstep,
                             node: key.node.clone(),
                             task_path: key.task_path.clone(),
                             attempt: key.attempt,
                             effect_seq: key.effect_seq,
+                            effect_kind: Some(
+                                match key.kind {
+                                    areev_run_core::EffectKind::Llm => "llm",
+                                    areev_run_core::EffectKind::Tool => "tool",
+                                }
+                                .into(),
+                            ),
+                            executor_kind: Some(executor_kind_of(&executor).into()),
+                            agent_name: in_agent.then(|| key.node.clone()),
+                            tool_name: match &executor {
+                                areev_run_core::NodeExecutor::Host { tool_name, .. }
+                                | areev_run_core::NodeExecutor::Client { tool_name, .. } => {
+                                    Some(tool_name.clone())
+                                }
+                                _ => None,
+                            },
+                            tool_call_id: pending.map(|p| p.model_call_id.clone()),
+                            // The model and its ceiling describe the REQUEST,
+                            // so they ride the model turn only — a flow tool
+                            // carries the provider (it is that agent's tool
+                            // call) but no request model of its own.
+                            model: is_llm
+                                .then(|| self.llm.as_ref().map(|l| l.model().to_string()))
+                                .flatten(),
+                            provider: in_agent
+                                .then(|| self.llm.as_ref().map(|l| l.provider().to_string()))
+                                .flatten(),
+                            max_tokens: is_llm.then(|| {
+                                manifest.llm_max_tokens.unwrap_or(DEFAULT_LLM_MAX_TOKENS)
+                            }),
+                            temperature: is_llm.then_some(LLM_TEMPERATURE),
                         });
                         intents.insert(key, h);
                         intents_written += 1;
@@ -1344,6 +1454,8 @@ impl Runner {
                                     )
                                 })
                                 .map_err(err_run)?;
+                            let (in_tok, out_tok, finish, err_type) =
+                                settled_detail(key.kind, &outcome);
                             emit(crate::stream::RunEvent::EffectSettled {
                                 superstep: st.superstep,
                                 node: key.node.clone(),
@@ -1351,6 +1463,10 @@ impl Runner {
                                 attempt: key.attempt,
                                 effect_seq: key.effect_seq,
                                 ok: matches!(outcome, EffectOutcome::Completed { .. }),
+                                input_tokens: in_tok,
+                                output_tokens: out_tok,
+                                finish_reason: finish,
+                                error_type: err_type,
                             });
                             results.insert(key.clone(), outcome.clone());
                             wave.push((key, Some(outcome)));
@@ -1397,7 +1513,9 @@ impl Runner {
                             Some(crate::executor::PreparedLlm {
                                 messages: seam_messages(&to_model),
                                 tools: defs,
-                                max_tokens: manifest.llm_max_tokens.unwrap_or(1024),
+                                max_tokens: manifest
+                                    .llm_max_tokens
+                                    .unwrap_or(DEFAULT_LLM_MAX_TOKENS),
                                 on_token,
                             })
                         } else {
@@ -1715,6 +1833,8 @@ impl Runner {
                                     )
                                 })
                                 .map_err(err_run)?;
+                            let (in_tok, out_tok, finish, err_type) =
+                                settled_detail(key.kind, &done.outcome);
                             emit(crate::stream::RunEvent::EffectSettled {
                                 superstep: st.superstep,
                                 node: key.node.clone(),
@@ -1722,6 +1842,10 @@ impl Runner {
                                 attempt: key.attempt,
                                 effect_seq: key.effect_seq,
                                 ok: matches!(done.outcome, EffectOutcome::Completed { .. }),
+                                input_tokens: in_tok,
+                                output_tokens: out_tok,
+                                finish_reason: finish,
+                                error_type: err_type,
                             });
                             results.insert(key.clone(), done.outcome.clone());
                             done.outcome

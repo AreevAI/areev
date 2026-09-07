@@ -1414,6 +1414,163 @@ Full rules: [`run.md`](run.md#where-a-credential-comes-from) and
 
 ---
 
+## 20. See a run in your existing LLM observability stack (OTel)
+
+**Goal:** watch model spend, tool calls and failures for a governed run in
+whatever you already use — Grafana, Langfuse, Arize, Datadog LLM
+Observability — without teaching it anything about Areev.
+
+Point a run at any OTLP/HTTP collector:
+
+```bash
+areev run start --db agent.db \
+  --workflow "$PLAN" --run-id inv-9 \
+  --model anthropic:claude-sonnet-4 \
+  --otel-endpoint http://127.0.0.1:4318
+```
+
+That is the whole wiring. One trace is POSTed per run at completion, so a
+collector outage costs one batch and never a millisecond of scheduler time.
+The trace id derives from the run id, so `areev run resume` on the same run
+lands in the **same trace** rather than starting a second one.
+
+**Two things make it readable with no configuration.**
+
+The spans speak the OpenTelemetry **GenAI semantic conventions**: an abstract
+node becomes an `invoke_agent` span; each model turn a CLIENT span named
+`chat {model}` carrying `gen_ai.request.model`, `gen_ai.usage.input_tokens` /
+`.output_tokens`, `gen_ai.request.max_tokens` and
+`gen_ai.response.finish_reasons`; each tool the model called an
+`execute_tool {tool}` span carrying `gen_ai.tool.name` and the model's own
+`gen_ai.tool.call.id`. A failed effect carries `error.type`. That is the
+vocabulary those products already index — nothing here is Areev-shaped.
+
+And every span *also* carries `areev.superstep` / `areev.task_path` /
+`areev.attempt` / `areev.effect_seq`, which is what takes you from a slow span
+back to the journal that produced it:
+
+```bash
+areev run-trace --db agent.db --run-id inv-9
+```
+
+There is no `gen_ai.usage.cost`: Areev prices nothing, and an always-zero cost
+attribute would read as "this run was free" rather than "nobody priced it".
+Cost belongs to whatever already knows your rate card.
+
+TLS is the collector's job in this profile — `--otel-endpoint` accepts
+`http://` only, so run a local agent or sidecar (the normal OTel deployment
+shape anyway) rather than shipping spans across a network from the driver.
+
+For the machine-readable stream instead of spans, `--events` writes the same
+run events to stderr as JSON lines while stdout stays the result surface.
+Both are **observational only**: the journal is byte-identical with no
+subscriber, a normal one, or a deliberately slow one — pinned by test.
+
+Full attribute table: [`run.md`](run.md#watching-a-run).
+
+---
+
+## 21. Provision a Postgres memory ahead of use (no DDL on the request path)
+
+**Goal:** a runtime role that holds no `CREATE`, and an open that costs a
+couple of SELECTs instead of a schema migration.
+
+A Postgres memory bootstraps itself the first time it is opened: 24 tables,
+13 indexes, the seed upserts, all under an advisory lock. That is right for
+`docker compose up`, and wrong for a fleet — every process would carry a
+role privileged enough to reshape the database, and the schema's shape would
+be decided by whichever binary happened to open it first.
+
+Do it once, deliberately, with an owning role:
+
+```bash
+areev provision --db 'postgres://owner:***@pg:5432/areev' --schema desk_invoice
+# provisioned postgres schema "desk_invoice" (including telemetry tables) — the next open runs no DDL
+```
+
+`--schema` may also come from the DSN (`?schema=desk_invoice`). Telemetry
+tables are created too unless you pass `--telemetry off`, because every other
+verb defaults to `--telemetry aggregate` and would otherwise bootstrap the
+sidecar on its first real request.
+
+After that, an open of that schema issues **no DDL, takes no advisory lock,
+and writes no row** — it reads one stamp (`meta.pg_schema`) and gets on with
+the query. It happens automatically; nothing needs a flag.
+
+To make it a guarantee rather than an optimization, add `provision=never` to
+the runtime DSN:
+
+```bash
+areev recall --db 'postgres://app:***@pg:5432/areev?schema=desk_invoice&provision=never' \
+  --ns caller --subject john
+```
+
+Under `never`, a schema that is absent or stamped at an older version is a
+hard refusal (`STO-E008`) — with no lock taken and no DDL attempted, not even
+`CREATE SCHEMA`. The message says which of the two things to do:
+
+```
+STO-E008: postgres schema "desk_invoice" exists but is not stamped at schema
+version 1, and this DSN says provision=never — so no bootstrap DDL was
+attempted. It was created by an older build, or a migration did not finish:
+run `areev provision --db <dsn> --schema desk_invoice` (or your migration job)
+with a role that owns the schema, then retry
+```
+
+That is the upgrade contract too: after a build whose schema changed, the
+runtime refuses instead of silently migrating under load, and the migration
+is a deploy step you run when you choose.
+
+**What the runtime role needs.** `USAGE` on the schema, `SELECT`, `INSERT`,
+`UPDATE` **and `DELETE`** on its tables, and `USAGE` on its sequences. `DELETE`
+surprises people: it is not only for erasure — the write path collapses head
+rows with `DELETE`+`INSERT`, so a role without it can open and read but cannot
+even `add`. A genuinely read-only consumer wants `--read-only` instead, which
+needs only `USAGE` + `SELECT` (see [`deployment-profile.md`](deployment-profile.md)).
+
+`areev provision` is Postgres-only. A file memory has nothing to provision:
+it creates and migrates itself at open, with no privilege system to fail
+against.
+
+---
+
+## 22. Mount another memory read-only (either backend)
+
+**Goal:** one `ASSEMBLE` that reads a per-user memory and a shared org
+knowledge base that lives somewhere else — including on Postgres.
+
+```bash
+# a file mount and a postgres mount, in one flag
+areev serve --mcp --db user.db --ns caller \
+  --mount org=/srv/org-kb.db,policy='postgres://ro:***@pg:5432/areev?schema=org_policy'
+```
+
+A mount shows up as a namespace prefix: `org.<ns>` and `policy.<ns>`.
+
+```sql
+ASSEMBLE "prompt"
+  FROM policies: (RECALL facts WHERE namespace = "policy.rules" AND subject = "refunds"),
+       profile:  (RECALL facts WHERE subject = "john")
+```
+
+Three things worth knowing:
+
+- **Mounts are opened read-only, on both backends.** Writes were already
+  impossible (CAL routes every write to the session memory), but the open
+  itself now says so: a Postgres mount works from a `SELECT`-only role, and a
+  file path that does not exist is refused (`STO-E005`) instead of quietly
+  becoming a new empty memory that answers every question with silence.
+- **Commas separate mounts only before another `alias=`**, so a libpq
+  multi-host DSN (`postgres://h1:5432,h2:5432/db`) survives being written on
+  the command line.
+- **The vector leg does not cross a mount.** `--embed-cmd` installs an
+  embedder on the primary memory only, so `ABOUT "…"` and `NOVELTY "…"`
+  against a mounted namespace have no model on the other side. Structural and
+  BM25 legs cross fine. See
+  [`cal-reference.md`](cal-reference.md#mounts-and-the-vector-leg).
+
+---
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

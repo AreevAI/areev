@@ -87,6 +87,7 @@ OMS-conformant, so your memory outlives the engine.
 ## Compliance & security
 
 - [GDPR](docs/gdpr.md): Obligations mapped to mechanisms for a DPIA — DSAR access/portability, one-operation erasure, audit export, retention policies, and the deployment requirements and limits stated honestly.
+- [Compliance profiles](docs/compliance-profiles.md): Host-configuration presets for regulated deployments — `financial`, `gdpr`, `healthcare` — assembled from flags that already exist, each row naming where the control is enforced (host process / file-truth / grant), what breaks without it, and which doc owns it. Not a certification and not legal advice; pseudonymization is not anonymisation.
 - [EU AI Act](docs/eu-ai-act.md): Article 12/14 record-keeping and human-oversight requirements mapped to specific commands — including a kill switch whose drain time is measured into the oversight report.
 - [Procurement](docs/procurement.md): Security-questionnaire answers for teams bringing Areev through review.
 - [Scale and tenancy](docs/scale-and-tenancy.md): Laying out a shared multi-tenant corpus past 10k grains — authorization is enforced at memory × namespace × verb and there are no intra-memory ACLs, so the partition map must be drawn from the access map; includes what namespaces vs memories each cost, measured.

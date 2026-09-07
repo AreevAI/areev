@@ -180,6 +180,13 @@ const LOG_ROW_CAP: i64 = 200_000;
 /// MEMORY's schema, so `DROP SCHEMA` erasure and `pg_dump -n` cover them),
 /// with IDENTITY standing in for the rowid auto-assign and every integer
 /// widened to bigint per the coercion contract.
+/// The version stamped into `telem_meta.schema_version`. Shared by both
+/// backends (the file sidecar has always written it); on Postgres it is also
+/// the bootstrap marker `PgDb::open` reads to decide whether `TELEM_SCHEMA_PG`
+/// needs running at all — so **bump it whenever `TELEM_SCHEMA_PG` or the
+/// migration below changes**, exactly like `pg::PG_SCHEMA_VERSION`.
+const TELEM_SCHEMA_VERSION: &str = "2";
+
 #[cfg(feature = "postgres")]
 const TELEM_SCHEMA_PG: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS telem_meta(k text PRIMARY KEY, v text)",
@@ -239,21 +246,51 @@ impl Telemetry {
     /// bootstraps `telem_*` tables the same way the main schema's open
     /// does — something a least-privilege role cannot do either. `false` is
     /// hard-coded rather than threaded through for that reason.
+    /// The sidecar carries its OWN bootstrap stamp (`telem_meta.
+    /// schema_version`), separate from the store's `meta.pg_schema`: they are
+    /// two independent bootstraps that happen to share a schema, and the
+    /// store's stamp is no evidence that `telem_*` exists. A stamped-current
+    /// sidecar opens with no DDL at all — which is what keeps the CLI's
+    /// default `--telemetry aggregate` from putting seven `CREATE TABLE`s and
+    /// an `ALTER TABLE` back on the request path that issue #180 just cleared.
+    ///
+    /// ⚠️ Bump [`TELEM_SCHEMA_VERSION`] whenever `TELEM_SCHEMA_PG` changes.
     #[cfg(feature = "postgres")]
     pub fn open_pg(url: &str, schema: &str, mode: TelemetryMode) -> Result<Self> {
-        let db: Box<dyn Db> = Box::new(crate::pg::PgDb::open(url, schema, TELEM_SCHEMA_PG, false)?);
-        Self::finish(db, mode)
+        let pg = crate::pg::PgDb::open(
+            url,
+            schema,
+            TELEM_SCHEMA_PG,
+            false,
+            Some(crate::pg::PgStamp {
+                table: "telem_meta",
+                key: "schema_version",
+                version: TELEM_SCHEMA_VERSION,
+            }),
+        )?;
+        // A skipped bootstrap already proves the v2 migration ran (the stamp
+        // is written last, in the same transaction), so the two statements
+        // below are exactly what does not need repeating.
+        let migrated = pg.bootstrap_skipped();
+        let db: Box<dyn Db> = Box::new(pg);
+        Self::finish_migrated(db, mode, migrated)
     }
 
     fn finish(db: Box<dyn Db>, mode: TelemetryMode) -> Result<Self> {
-        // `CREATE TABLE IF NOT EXISTS` does not evolve an existing disposable
-        // sidecar. The ALTER succeeds for v1 and is intentionally ignored for
-        // a fresh/v2 sidecar where the column already exists.
-        let _ = db.execute("ALTER TABLE telem_recall_log ADD COLUMN run_id TEXT", vec![]);
-        db.execute(
-            "INSERT OR REPLACE INTO telem_meta(k, v) VALUES ('schema_version', '2')",
-            vec![],
-        )?;
+        Self::finish_migrated(db, mode, false)
+    }
+
+    fn finish_migrated(db: Box<dyn Db>, mode: TelemetryMode, migrated: bool) -> Result<Self> {
+        if !migrated {
+            // `CREATE TABLE IF NOT EXISTS` does not evolve an existing disposable
+            // sidecar. The ALTER succeeds for v1 and is intentionally ignored for
+            // a fresh/v2 sidecar where the column already exists.
+            let _ = db.execute("ALTER TABLE telem_recall_log ADD COLUMN run_id TEXT", vec![]);
+            db.execute(
+                "INSERT OR REPLACE INTO telem_meta(k, v) VALUES ('schema_version', ?1)",
+                vec![crate::pt(TELEM_SCHEMA_VERSION)],
+            )?;
+        }
         Ok(Telemetry {
             db,
             mode,

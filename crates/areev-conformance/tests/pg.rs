@@ -488,3 +488,290 @@ fn legacy_text_keyed_dictionary_migrates_on_open() {
     assert!(msg.starts_with("STO-E005"), "{msg}");
     assert!(msg.contains("term_hash"), "{msg}");
 }
+
+// ── issue #180: the steady-state open ────────────────────────────────────
+//
+// These are Pg-runner-only by necessity: the shared case list in
+// `areev_conformance::cases` is the one source of truth for cross-backend
+// semantics, and "runs no DDL and takes no advisory lock" is not a semantic
+// the embedded backend has an analogue for (it has no privilege system, no
+// catalog, and its `SCHEMA` is re-applied on every open by design). Anything
+// expressible on both backends belongs in the shared list, not here.
+
+/// Rewrite a DSN's userinfo, so a test can connect as a role it just created.
+/// Deliberately narrow: `postgres://user:pass@host…` is the shape the suite's
+/// own `DATABASE_URL` takes.
+fn as_role(url: &str, user: &str, password: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority_len = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let at = rest[..authority_len].rfind('@')?;
+    Some(format!("{scheme}://{user}:{password}@{}", &rest[at + 1..]))
+}
+
+/// The acceptance for #180: opening an EXISTING, current schema issues no DDL
+/// and writes nothing.
+///
+/// Proved by removal rather than by reading the server log, which a test
+/// cannot see: every bootstrap statement is `IF NOT EXISTS`, so deleting
+/// something the bootstrap would recreate and finding it still gone after an
+/// open is exactly "the bootstrap did not run". The `meta` rows are checked by
+/// `xmin` — a re-`INSERT … ON CONFLICT DO UPDATE` of the identical value is
+/// invisible to a value comparison but mints a new row version, which is the
+/// write we are claiming not to make.
+#[test]
+fn opening_a_current_schema_issues_no_ddl() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let schema = b.schema_for("nodll");
+    let q = |sql: String| areev_store::pg::query_raw_i64(&url, &sql).unwrap();
+    let x = |sql: String| areev_store::pg::execute_raw(&url, &sql).unwrap();
+
+    // One open bootstraps and stamps.
+    {
+        let mut m = b.open_named("nodll");
+        m.add(&areev_conformance::fact("ns", "ana", "prefers", "quiet rooms")).unwrap();
+    }
+    assert_eq!(
+        q(format!("SELECT count(*) FROM \"{schema}\".meta WHERE k = 'pg_schema'")),
+        1,
+        "a completed bootstrap stamps the schema version"
+    );
+
+    // Break three things the bootstrap would put back, then reopen.
+    x(format!("DROP INDEX \"{schema}\".idx_osp_seq"));
+    x(format!("DELETE FROM \"{schema}\".counters WHERE name = 'op'"));
+    let meta_xmin = |k: &str| {
+        q(format!(
+            "SELECT xmin::text::bigint FROM \"{schema}\".meta WHERE k = '{k}'"
+        ))
+    };
+    let (before_text, before_rels) = (meta_xmin("text_index"), meta_xmin("entity_relations"));
+
+    let mut m = areev_store::Areev::open_postgres(&url, &schema).unwrap();
+    // The open still works…
+    assert_eq!(m.recall("ns", "ana", Some("prefers"), 4).unwrap().len(), 1);
+    // …and it put nothing back.
+    assert_eq!(
+        q(format!(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' \
+             AND indexname = 'idx_osp_seq'"
+        )),
+        0,
+        "PG_SCHEMA's DDL must not run on a schema already stamped current"
+    );
+    assert_eq!(
+        q(format!("SELECT count(*) FROM \"{schema}\".counters WHERE name = 'op'")),
+        0,
+        "PG_SEED's counter reseeding must not run either"
+    );
+    assert_eq!(
+        (meta_xmin("text_index"), meta_xmin("entity_relations")),
+        (before_text, before_rels),
+        "finish_open must not re-stamp declarations that already agree — an \
+         identical value is still a row version, a WAL record and a round trip"
+    );
+    drop(m);
+
+    // Put the counter back and confirm the memory is fully usable — the fast
+    // path must not have skipped anything the write path needs.
+    x(format!(
+        "INSERT INTO \"{schema}\".counters(name, v) \
+         SELECT 'op', COALESCE(MAX(op_seq),0) FROM \"{schema}\".oplog"
+    ));
+    let mut m = areev_store::Areev::open_postgres(&url, &schema).unwrap();
+    m.add(&areev_conformance::fact("ns", "ben", "prefers", "tea")).unwrap();
+    assert_eq!(m.recall("ns", "ben", Some("prefers"), 4).unwrap().len(), 1);
+    assert_eq!(m.count().unwrap(), 2);
+}
+
+/// `areev provision` is "do the first open now, off the request path", so its
+/// contract is that the first REAL open writes nothing at all — including the
+/// `meta` stamps and the `ns_reg` rebuild that live in `finish_open` rather
+/// than in the schema bootstrap. Pinned here at the store level, which is
+/// exactly what the CLI verb calls.
+#[test]
+fn provisioning_ahead_of_time_makes_the_first_real_open_write_nothing() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let schema = b.schema_for("prov");
+    let q = |sql: String| areev_store::pg::query_raw_i64(&url, &sql).unwrap();
+
+    // What `areev provision` does: open once, close.
+    drop(areev_store::Areev::open_postgres(&url, &schema).unwrap());
+
+    for k in ["pg_schema", "text_index", "entity_relations", "link_index", "ns_registry"] {
+        assert_eq!(
+            q(format!("SELECT count(*) FROM \"{schema}\".meta WHERE k = '{k}'")),
+            1,
+            "provisioning must stamp {k}, or the first real open writes it"
+        );
+    }
+
+    // Every meta row's version, before the first "real" open.
+    let versions = |sql_order: &str| -> Vec<i64> {
+        // One value per row, read one at a time (query_raw_i64 returns a
+        // scalar) — the registry is a handful of rows.
+        let n = q(format!("SELECT count(*) FROM \"{schema}\".meta"));
+        (0..n)
+            .map(|i| {
+                q(format!(
+                    "SELECT xmin::text::bigint FROM \"{schema}\".meta \
+                     ORDER BY {sql_order} OFFSET {i} LIMIT 1"
+                ))
+            })
+            .collect()
+    };
+    let before = versions("k");
+    assert!(!before.is_empty());
+
+    let mut m = areev_store::Areev::open_postgres(&url, &schema).unwrap();
+    assert_eq!(m.count().unwrap(), 0);
+    drop(m);
+
+    assert_eq!(
+        versions("k"),
+        before,
+        "the first open of a provisioned schema must not rewrite a single meta row"
+    );
+}
+
+/// `?provision=never` — the deployment that guarantees no DDL on the request
+/// path. An absent schema and a stale one are DIFFERENT operator actions, so
+/// the refusal says which, the way the read-only refusal does.
+#[test]
+fn provision_never_refuses_without_touching_the_schema() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let never = format!("{url}{sep}provision=never");
+    let q = |sql: String| areev_store::pg::query_raw_i64(&url, &sql).unwrap();
+
+    // Absent.
+    let absent = b.schema_for("never_absent");
+    let err = areev_store::Areev::open_postgres(&never, &absent)
+        .err()
+        .expect("provision=never must refuse an absent schema");
+    assert_eq!(err.code(), "STO-E008", "{err}");
+    assert!(err.to_string().contains("does not exist"), "{err}");
+    assert_eq!(
+        q(format!(
+            "SELECT count(*) FROM information_schema.schemata WHERE schema_name = '{absent}'"
+        )),
+        0,
+        "the refusal must not have created the schema"
+    );
+
+    // Present but never bootstrapped by this build.
+    let stale = b.schema_for("never_stale");
+    areev_store::pg::execute_raw(&url, &format!("CREATE SCHEMA \"{stale}\"")).unwrap();
+    let err = areev_store::Areev::open_postgres(&never, &stale)
+        .err()
+        .expect("provision=never must refuse an unstamped schema");
+    assert_eq!(err.code(), "STO-E008", "{err}");
+    assert!(err.to_string().contains("not stamped"), "{err}");
+    assert_eq!(
+        q(format!(
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = '{stale}'"
+        )),
+        0,
+        "the refusal must not have created a single table"
+    );
+
+    // Once provisioned, the SAME DSN opens and writes.
+    drop(areev_store::Areev::open_postgres(&url, &stale).unwrap());
+    let mut m = areev_store::Areev::open_postgres(&never, &stale).unwrap();
+    m.add(&areev_conformance::fact("ns", "cal", "state", "ok")).unwrap();
+    assert_eq!(m.recall("ns", "cal", Some("state"), 4).unwrap().len(), 1);
+}
+
+/// A role that owns nothing opens a current schema READ-WRITE.
+///
+/// The acceptance for #180 names USAGE/SELECT/INSERT/UPDATE, and that is
+/// exactly what this asserts for the OPEN. It also asserts the honest
+/// remainder: the store's write path collapses head rows with DELETE+INSERT
+/// and its erasure family deletes index rows outright, so **a role that can
+/// only SELECT/INSERT/UPDATE can open and read, but cannot `add`** — the
+/// minimum grant for a read-WRITE runtime role is
+/// USAGE + SELECT/INSERT/UPDATE/DELETE on tables and USAGE on sequences.
+/// Better to pin that here than to let an operator discover it at the first
+/// write.
+#[test]
+fn a_least_privilege_role_opens_a_current_schema_read_write() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let schema = b.schema_for("lowpriv");
+    // Bootstrap + stamp as the owner.
+    {
+        let mut m = b.open_named("lowpriv");
+        m.add(&areev_conformance::fact("ns", "ana", "prefers", "quiet rooms")).unwrap();
+    }
+
+    let role = format!("areev_lp_{}", std::process::id());
+    let cleanup = format!(
+        "DROP OWNED BY {role}; DROP ROLE IF EXISTS {role};"
+    );
+    let _ = areev_store::pg::execute_raw(&url, &cleanup);
+    // No CREATE ROLE (a shared/managed server, a non-superuser DSN): skip
+    // rather than fail — this is the one case here that needs a privilege the
+    // rest of the suite does not.
+    if areev_store::pg::execute_raw(
+        &url,
+        &format!("CREATE ROLE {role} LOGIN PASSWORD 'lowpriv'"),
+    )
+    .is_err()
+    {
+        eprintln!(
+            "skipping a_least_privilege_role_opens_a_current_schema_read_write: \
+             this DSN's role may not CREATE ROLE"
+        );
+        return;
+    }
+    let grant = |sql: String| areev_store::pg::execute_raw(&url, &sql).unwrap();
+    grant(format!("GRANT USAGE ON SCHEMA \"{schema}\" TO {role}"));
+    grant(format!(
+        "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA \"{schema}\" TO {role}"
+    ));
+    grant(format!(
+        "GRANT USAGE ON ALL SEQUENCES IN SCHEMA \"{schema}\" TO {role}"
+    ));
+
+    let Some(low_url) = as_role(&url, &role, "lowpriv") else {
+        eprintln!("skipping: DATABASE_URL carries no userinfo to rewrite");
+        let _ = areev_store::pg::execute_raw(&url, &cleanup);
+        return;
+    };
+
+    // THE acceptance: read-write open, no ownership, no CREATE anywhere.
+    let mut m = areev_store::Areev::open_postgres(&low_url, &schema)
+        .expect("a current schema must open read-write for a non-owning role");
+    assert_eq!(
+        m.recall("ns", "ana", Some("prefers"), 4).unwrap().len(),
+        1,
+        "and it must actually read"
+    );
+    // The honest boundary: writing needs DELETE as well (head collapse).
+    let add_without_delete =
+        m.add(&areev_conformance::fact("ns", "ben", "prefers", "tea"));
+    drop(m);
+
+    grant(format!(
+        "GRANT DELETE ON ALL TABLES IN SCHEMA \"{schema}\" TO {role}"
+    ));
+    let mut m = areev_store::Areev::open_postgres(&low_url, &schema).unwrap();
+    m.add(&areev_conformance::fact("ns", "ben", "prefers", "tea"))
+        .expect("with DELETE added, a non-owning role writes normally");
+    assert_eq!(m.recall("ns", "ben", Some("prefers"), 4).unwrap().len(), 1);
+    drop(m);
+
+    // Reported as a documented fact, not asserted as a requirement: if a
+    // future write path stops needing DELETE this should be revisited, not
+    // silently left as a stale claim.
+    if add_without_delete.is_ok() {
+        eprintln!(
+            "note: `add` succeeded without DELETE — the least-privilege grant in \
+             docs/deployment-profile.md can be narrowed"
+        );
+    }
+
+    let _ = areev_store::pg::execute_raw(&url, &cleanup);
+}

@@ -2337,6 +2337,18 @@ impl CalStoreFacade for AreevFacade {
     }
 
     /// `NOVELTY` — nearest existing grains; requires a host embedder.
+    ///
+    /// **Does not cross a mount, by design and by limitation.** Unlike
+    /// `cal_recall`, which routes `"alias.inner"` to the mounted store, this
+    /// always reads `self.store`. Two things would have to change first: the
+    /// mount router here, and the embedder — `--embed-cmd` installs one on the
+    /// PRIMARY memory only, so a mounted store's vector leg has no model to
+    /// embed the query with and would answer empty even if routed. Routing
+    /// alone would therefore trade one wrong answer for another, so the
+    /// limitation is documented instead (`docs/cal-reference.md`, "Mounts and
+    /// the vector leg") rather than half-fixed. A session whose namespace is
+    /// an alias gets the session store's answer, which is the honest reading
+    /// of "novel to THIS memory".
     fn cal_novelty(
         &self,
         text: &str,

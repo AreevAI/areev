@@ -292,6 +292,35 @@ e.g. `WHERE namespace = "org.policies"`), applies per-source token budgets and
 priorities, deduplicates, and renders one budgeted block. `STREAM ASSEMBLE ...` enables
 streamed output. There is a 2000-grain post-dedup cap across all sources.
 
+##### Mounts and the vector leg
+
+A mount target is a memory **file or a Postgres DSN**
+(`postgres://…?schema=<name>`) — the mount tier is not file-only. The host
+supplies them; the CLI's spelling is
+`areev serve --mcp --mount alias=<path|DSN>[,alias=…]`. Mounts are opened
+**read-only on either backend**, which is what lets a `SELECT`-only Postgres
+role back one, and what turns a mistyped file path into an `STO-E005` refusal
+instead of a silently-created empty memory.
+
+Two limits are worth stating plainly, because both fail *quietly* rather than
+loudly:
+
+- **`ABOUT "…"` inside a mounted namespace runs without its vector leg.** The
+  embedder is installed on the memory it was given to — `--embed-cmd` installs
+  one on the **primary** only — so a mounted store has no model to embed the
+  query with. The structural and BM25 legs cross a mount normally, so the
+  `RECALL` still answers; it is only the semantic leg that contributes
+  nothing.
+- **`NOVELTY "…"` never crosses a mount.** Unlike `RECALL`, it always reads the
+  session memory, even when the session namespace is an alias. Read it as
+  "novel to *this* memory", which is what it computes. Cross-memory novelty
+  needs a query per memory.
+
+A `RECALL` also cannot span two stores in one statement — a namespace set that
+mixes a mount with the session memory (or two mounts) is refused, and the
+refusal points at `ASSEMBLE`, which exists for exactly that (one source per
+store).
+
 #### `COALESCE` — first non-empty fallback chain
 
 ```sql

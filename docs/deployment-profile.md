@@ -204,9 +204,38 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>"
   GRANT SELECT ON TABLES TO areev_readonly;
 ```
 
-Run the owning role's normal (non-`--read-only`) open at least once first —
-`--read-only` never creates the schema, so there must be something for these
-grants to point at. The same rule covers migrations: a build that changes the
+**Least-privilege read-WRITE role.** Since a current schema's open issues no
+DDL, a read-write role no longer has to own the schema either. It does need
+`DELETE`, which is easy to leave out because it sounds like an erasure-only
+right and is not: superseding a grain collapses the head with a `DELETE`
+followed by an `INSERT`, so a role without it opens, reads, and then fails on
+the first `add`.
+
+```sql
+GRANT CONNECT ON DATABASE areev TO areev_rw;
+GRANT USAGE ON SCHEMA "<schema>" TO areev_rw;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "<schema>" TO areev_rw;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA "<schema>" TO areev_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>"
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO areev_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>" GRANT USAGE ON SEQUENCES TO areev_rw;
+```
+
+This role cannot bootstrap or migrate — that is the point. Provision with an
+owning role (`areev provision`), then hand the application this one. Add
+`?provision=never` to its DSN to make the guarantee enforceable: an absent or
+stale schema is then refused with **`STO-E008`** naming the operator action
+needed, with no lock taken and no `CREATE SCHEMA` attempted, instead of the
+application quietly bootstrapping on a request path.
+
+**A mount is a connection.** `--mount alias=<path|DSN>` opens each target
+read-only, and a Postgres mount is its own connection on top of the budget
+above — a console with three mounts draws four.
+
+Run `areev provision --db <DSN> --schema <schema>` (or the owning role's
+normal, non-`--read-only` open) at least once first — `--read-only` never
+creates the schema, so there must be something for these grants to point at.
+The same rule covers migrations: a build that changes the
 schema (the digest-keyed `terms` dictionary, #160, is one) applies the
 change on the owning role's next read-write open, and until then a read-only
 open of that memory refuses with `STO-E005` naming what is missing, rather

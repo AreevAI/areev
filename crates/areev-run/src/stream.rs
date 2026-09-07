@@ -10,6 +10,19 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// One §6.10 event, stamped with where in the run it happened. The enum is
 /// append-only (subscribers match non-exhaustively).
+///
+/// **Why the dispatch/settle variants carry model and usage detail.** The
+/// event is the ONLY channel an observer has. The §6.10 bus delivers on its
+/// own thread with no store handle — the memory is single-writer while the
+/// driver holds it — so an exporter physically cannot read the journal back
+/// to enrich what it saw. Anything an OpenTelemetry GenAI span needs
+/// (`gen_ai.request.model`, `gen_ai.usage.*`, the tool call's id) therefore
+/// travels inside the event or not at all.
+///
+/// Every one of those fields is `Option` and skipped when absent, so the
+/// `--events` JSON-lines contract stays strictly additive: a subscriber
+/// written before they existed reads byte-identical lines for a run that has
+/// no model in it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "event")]
 pub enum RunEvent {
@@ -21,6 +34,39 @@ pub enum RunEvent {
         task_path: String,
         attempt: u32,
         effect_seq: u32,
+        /// `"llm"` or `"tool"` — the journal key's `EffectKind`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_kind: Option<String>,
+        /// `"host"` / `"client"` / `"abstract"` / `"subgraph"` — the executor
+        /// the effect DISPATCHED under (a flow tool inside an abstract node
+        /// dispatches as `host`, matching what its result grain re-states).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        executor_kind: Option<String>,
+        /// The abstract node whose LLM loop owns this effect, when it has
+        /// one. Set on the node's own model turns AND on the tools those
+        /// turns called — it is what makes the two one agent invocation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_name: Option<String>,
+        /// The Tool Definition's name (Host/Client dispatches).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
+        /// The **model's** call id (`PendingToolCall::model_call_id`), which
+        /// is the one OpenTelemetry means by `gen_ai.tool.call.id`. It is NOT
+        /// `JournalKey::tool_call_id()` — that is Areev's journal digest, a
+        /// different identifier for a different join.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
+        /// The requested model (`ToolCallLlm::model`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The provider name (`ToolCallLlm::provider`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        /// The per-call ceiling the request carries (§6.7 reserves it).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        temperature: Option<f64>,
     },
     EffectSettled {
         superstep: u64,
@@ -29,6 +75,19 @@ pub enum RunEvent {
         attempt: u32,
         effect_seq: u32,
         ok: bool,
+        /// Journaled usage for LLM effects (§6.7's figures, verbatim).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        /// Why the model stopped: `end_turn` / `tool_use` / `max_tokens` /
+        /// `other`, read off the journaled result.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        /// The `FailCause` of a failed effect, snake_cased — OpenTelemetry's
+        /// `error.type`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_type: Option<String>,
     },
     AskRaised { superstep: u64, node: String, tool_call_id: String },
     CheckpointWritten { superstep: u64, hash: String },

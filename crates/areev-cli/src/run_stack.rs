@@ -259,9 +259,27 @@ fn executor_timeout(flags: &HashMap<String, String>) -> Option<Option<std::time:
 /// was written against — the answer for a host that would rather enumerate
 /// what a tool sees than what it must not. `parse_args` records a valueless
 /// long flag as `"true"`, so a bare `--tool-env` clears to the minimal set.
+///
+/// This deliberately does NOT use [`flag_or_env`], which treats an empty
+/// value as unset. That rule is right for every other knob — an unset
+/// `AREEV_RUN_SANDBOX_CMD=""` means "no sandbox" — but here it inverts the
+/// operator's intent: for this flag, empty means *clear to the minimal set*,
+/// which is the STRICTEST setting, and reading it as "unset" silently selects
+/// the weakest one. `AREEV_RUN_TOOL_ENV=""` in a systemd unit, or
+/// `--tool-env "$VARS"` with an empty `VARS` in a wrapper script, both say
+/// "clear" and would otherwise get "inherit everything" — a downgrade with
+/// nothing to notice, on exactly the unattended path this flag exists for.
+/// Presence is therefore the signal, and the value only decides what is
+/// re-admitted on top of the minimal set.
 pub fn tool_env_policy(flags: &HashMap<String, String>) -> Option<areev_core::proc::EnvPolicy> {
-    let raw = flag_or_env(flags, "tool-env", "AREEV_RUN_TOOL_ENV")?;
-    let (policy, dropped) = areev_run::env_allow_policy(if raw == "true" { "" } else { &raw });
+    let raw = match flag(flags, "tool-env") {
+        Some(v) => v,
+        // Present-but-empty is a real setting here, so only an ABSENT
+        // variable falls through to the inherit default.
+        None => std::env::var("AREEV_RUN_TOOL_ENV").ok()?,
+    };
+    let raw = raw.trim();
+    let (policy, dropped) = areev_run::env_allow_policy(if raw == "true" { "" } else { raw });
     if !dropped.is_empty() {
         eprintln!(
             "areev: --tool-env dropped {} — already registered as holding a secret \
@@ -448,6 +466,20 @@ pub fn run_options(flags: &HashMap<String, String>) -> areev_run::RunOptions {
 mod tests {
     use super::*;
 
+    /// `std::env` is process-global and Rust runs tests as threads, so every
+    /// test that reads or writes `AREEV_RUN_*` has to take this first or it
+    /// races the others. The failure is not hypothetical: one test setting
+    /// `AREEV_RUN_TOOL_ENV` made a sibling asserting the inherit default see
+    /// a cleared environment instead.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`ENV_LOCK`], surviving a sibling test that panicked while holding
+    /// it — the mutex protects ordering, not data, so poisoning is not a
+    /// reason to fail a second test.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn flags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
@@ -580,6 +612,7 @@ mod tests {
     #[test]
     fn tool_env_policy_reads_the_flag_and_treats_a_bare_one_as_clear_only() {
         use areev_core::proc::EnvPolicy;
+        let _env = env_guard();
         assert_eq!(tool_env_policy(&flags(&[])), None, "unset keeps the inherit default");
 
         let minimal = EnvPolicy::minimal_allow();
@@ -595,6 +628,53 @@ mod tests {
             }
             other => panic!("expected a cleared environment, got {other:?}"),
         }
+        // An EMPTY value is a real setting here — "clear to the minimal set" —
+        // and must never be read as "unset", which would silently pick the
+        // weaker inherit posture. `flag_or_env`'s empty-means-unset rule is
+        // right everywhere else and wrong here, which is why this function
+        // does its own presence check.
+        match tool_env_policy(&flags(&[("tool-env", "")])) {
+            Some(EnvPolicy::ClearExcept { allow }) => assert_eq!(allow, minimal),
+            other => panic!("an empty --tool-env must clear, not inherit, got {other:?}"),
+        }
+        match tool_env_policy(&flags(&[("tool-env", "   ")])) {
+            Some(EnvPolicy::ClearExcept { allow }) => assert_eq!(allow, minimal),
+            other => panic!("a whitespace --tool-env must clear, not inherit, got {other:?}"),
+        }
+    }
+
+    /// The same trap one layer out: a systemd unit or cron block that writes
+    /// `AREEV_RUN_TOOL_ENV=""` is asking for the strictest environment, and
+    /// must not be handed the loosest one.
+    #[test]
+    fn an_empty_tool_env_variable_still_clears() {
+        use areev_core::proc::EnvPolicy;
+        let _env = env_guard();
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("AREEV_RUN_TOOL_ENV", v),
+                    None => std::env::remove_var("AREEV_RUN_TOOL_ENV"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var("AREEV_RUN_TOOL_ENV").ok());
+
+        std::env::set_var("AREEV_RUN_TOOL_ENV", "");
+        match tool_env_policy(&flags(&[])) {
+            Some(EnvPolicy::ClearExcept { allow }) => {
+                assert_eq!(allow, EnvPolicy::minimal_allow());
+            }
+            other => panic!("AREEV_RUN_TOOL_ENV=\"\" must clear, not inherit, got {other:?}"),
+        }
+
+        std::env::remove_var("AREEV_RUN_TOOL_ENV");
+        assert_eq!(
+            tool_env_policy(&flags(&[])),
+            None,
+            "an ABSENT variable is what keeps the inherit default"
+        );
     }
 
     /// #188: proof the flag reaches the constructed executor. `PATH` is
@@ -603,6 +683,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tool_env_clears_the_environment_and_passes_only_what_it_names() {
+        let _env = env_guard();
         const PLANTED: &str = "AREEV_TEST_TOOL_ENV_PLANTED";
         const NAMED: &str = "AREEV_TEST_TOOL_ENV_NAMED";
         // Removed on unwind too: a failing assertion must not leak these into

@@ -8,6 +8,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Postgres: a steady-state open issues no DDL at all** (#180). A bootstrapped
+  schema is stamped with its schema version in `meta.pg_schema`; the next open
+  reads that stamp before taking any lock and skips the 43 DDL statements, the
+  advisory lock, the counter seeding, the dictionary slurp and the open-time
+  `meta` writes entirely. Measured on loopback with `log_statement=all`: **67
+  statements down to 2, 40 DDL down to 0**, and open latency from ~26 ms to
+  ~5 ms. A schema written by an earlier build migrates once, then goes quiet.
+  The stamp is guarded by a test that digests `PG_SCHEMA`/`PG_SEED` and fails if
+  either changes without a version bump — a stamp that lies would make a stale
+  schema skip a migration it needs, which is the failure mode where every recall
+  silently returns empty.
+- **`areev provision --db <DSN> [--schema NAME]`** (#180) creates or migrates a
+  Postgres memory's schema ahead of use, telemetry tables included, so the first
+  real request writes nothing. It dispatches before the memory is resolved, like
+  `auth`, because it names no memory to open.
+- **`?provision=never` on a DSN guarantees no DDL on the request path** (#180).
+  An absent or stale schema is refused with the new **`STO-E008`**, which names
+  which of the two operator actions is needed, with no lock taken and no
+  `CREATE SCHEMA` attempted.
+- **`--mount` accepts a Postgres DSN** (#184), so a cross-memory `ASSEMBLE` can
+  span backends. Mounts now open **read-only on both backends**: a `SELECT`-only
+  Postgres role can back one, and a mount path that does not exist is refused
+  (`STO-E005`) instead of being created as an empty memory. Mount specs split on
+  `,` only before another `alias=`, so a multi-host DSN survives, and a DSN is
+  redacted everywhere it is printed. Mounting the primary's own schema is
+  refused rather than silently double-counted.
+- **Run spans carry the OpenTelemetry GenAI semantic conventions** (#186).
+  `areev run --otel-endpoint` now emits `chat {model}` (CLIENT), `execute_tool
+  {tool}` and a synthesized `invoke_agent {node}` per abstract-node attempt,
+  with `gen_ai.provider.name`, request model/max_tokens/temperature,
+  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`, `gen_ai.tool.name`/
+  `.call.id`/`.type`, `gen_ai.agent.name`/`.id`, `gen_ai.conversation.id` and
+  `error.type`. A GenAI-aware backend classifies them with no Areev-specific
+  configuration, and every `areev.*` provenance attribute is kept beside them —
+  that is what takes a slow span back to `areev run-trace`. There is deliberately
+  no cost attribute: Areev prices nothing, and an always-zero one would read as
+  "this run was free" rather than "nobody priced it".
+- **Run events reach the Python and Node bindings** (#182). `on_event=` and
+  `onEvent` on `run_start`/`run_resume` receive each run event as the same JSON
+  line `areev run start --events` prints. Observational by construction: the
+  journal is byte-identical with or without a subscriber, a slow callback delays
+  events rather than the run, and a raising one is reported unraisable. Attaching
+  a callback also enables model `TokenChunk` deltas. Note that `RunFinished` is
+  emitted only at a terminal outcome, so a run that parks on a human gate ends
+  its start leg at `AskRaised` and finishes on the resume leg.
+- **`areev tool provenance` chases the executor blob** (#179, partial), reporting
+  whether the pinned code is present and how large. Read lock-free, so it answers
+  while a run still holds the file. A non-`cas://` scheme reports "not content
+  addressed" rather than "absent" — "we did not look" and "it is not there" are
+  different findings.
 - **Compliance profile presets** ([`docs/compliance-profiles.md`](docs/compliance-profiles.md)).
   GDPR, healthcare and financial deployments assembled as the exact commands
   that configure them, with the distinction that decides whether an auditor's
@@ -273,6 +323,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An empty `--tool-env` / `AREEV_RUN_TOOL_ENV` silently selected the *weaker*
+  environment posture** (#188). Presence of the flag is the setting, but it was
+  read through the helper that treats an empty value as "not configured" — right
+  for every other `$AREEV_RUN_*` knob (`AREEV_RUN_SANDBOX_CMD=""` means "no
+  sandbox"), and exactly backwards here, where empty means *clear to the minimal
+  set*. A systemd unit or wrapper script setting `AREEV_RUN_TOOL_ENV=""` asked
+  for the strictest environment and was handed the loosest, on the unattended
+  path the flag exists for, with nothing to notice. Only an absent flag and
+  variable now keep the inherit default.
+- **Postgres: `step_actions` without a node id missed predicates** interned by
+  another writer, and **`areev reindex` reported 0 indexed documents** — both
+  surfaced by the open path no longer seeding in-process state the backend is
+  authoritative for.
+- **Postgres bootstrap is atomic.** It runs in one transaction holding
+  `pg_advisory_xact_lock` (#181, first increment), so a half-applied schema is no
+  longer reachable and the lock cannot be leaked on a failure path.
+- The **sandbox seam's cleared environment is pinned by test** (#188): an
+  operator allow list that names a variable never reaches a `wasm32-areev`
+  module, even though it does reach a pinned native blob. The regression this
+  guards against is a one-line refactor — hoisting the policy above the
+  `if sandboxed` — so the test asserts it with a list the operator *did* name,
+  rather than only proving the default is safe.
 - **The deployment profile no longer recommends a pooler mode the store cannot
   survive.** `docs/deployment-profile.md` suggested PgBouncer in transaction
   mode for multi-tenant hosts. The store keeps three things on the session —

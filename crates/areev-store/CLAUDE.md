@@ -480,6 +480,34 @@ read-only console never needs a writable DSN); the Python and Node
 constructors reach the same option as `read_only=`/`readOnly` (#183), which
 is what lets an embedded reader hold the SELECT-only role too.
 
+- **A read-WRITE open skips the bootstrap too, when the schema is current.**
+  The last statement of a bootstrap stamps `meta.pg_schema` with
+  `PG_SCHEMA_VERSION`. Every later open reads that stamp **before taking any
+  lock** — one `SET search_path` plus a `to_regclass` probe, which needs no
+  privilege beyond `USAGE`/`SELECT` and never errors on an absent schema — and
+  returns immediately when it matches. Measured on loopback, a steady-state
+  open went from 67 statements (40 of them DDL) to 2, and from ~26 ms to
+  ~5 ms.
+  **`PG_SCHEMA_VERSION` MUST be bumped whenever `PG_SCHEMA` or `PG_SEED`
+  changes.** A stamp that lies makes a stale schema skip the migration it
+  needs, and that failure is silent — every recall returns empty, nothing
+  errors (the #160 shape). A unit test digests both arrays and fails if either
+  moves without a version bump; do not weaken it.
+  Two more consequences: the bootstrap now runs inside one transaction under
+  `pg_advisory_xact_lock` (atomic, and the lock cannot leak on a failure
+  path), and `Db::seeds_state_at_open()` returns `false` here so `finish_open`
+  skips the dictionary slurp and the counter scalars — `intern_term`,
+  `lookup_term*`, `reserve_write` and `collection_stats` are DB-authoritative
+  on this backend, so seeding them in RAM was dead weight.
+  `?provision=never` on the DSN turns an absent or stale schema into
+  **`STO-E008`** with no lock and no DDL attempted, for deployments that must
+  guarantee nothing bootstraps on the request path; `areev provision` is the
+  verb that does it ahead of time.
+  Note this and `verify_read_only` both answer "is this schema usable?" and
+  answer it differently on purpose: the stamp is an equality test gating
+  bootstrap, while `verify_read_only` is a capability test that must keep
+  working against older, unstamped schemas — so it deliberately ignores the
+  stamp. Keep the two cross-referenced or they will drift.
 - **Postgres open (`pg::PgDb::open`)**: `read_only` skips the bootstrap
   advisory lock, `CREATE SCHEMA`, `PG_SCHEMA`'s DDL and `PG_SEED`'s upserts
   entirely — none of it runs. It still issues `SET search_path` (a session

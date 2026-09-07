@@ -874,3 +874,155 @@ fn mcp_gated_apply_promotes_an_adapter() {
     let payload: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(payload["grains"].as_array().map(Vec::len), Some(1), "{out}");
 }
+
+/// The postgres twin of [`mcp_mount_cross_file`] (issue #184): `--mount
+/// alias=postgres://…?schema=…` mounts a memory on the SERVER tier, read-only,
+/// and one ASSEMBLE spans it and the primary file.
+///
+/// Gated twice. On the `postgres` cargo feature, because without it the binary
+/// has no such backend to mount; and on `DATABASE_URL`/`AREEV_PG_URL` exactly
+/// the way `areev-conformance`'s Pg runner gates — skipped loudly without one,
+/// a hard failure under `CI=true`, so a broken postgres job can never look
+/// like a skipped one.
+#[cfg(feature = "postgres")]
+#[test]
+fn mcp_mount_cross_backend_postgres() {
+    let url = match std::env::var("AREEV_PG_URL").or_else(|_| std::env::var("DATABASE_URL")) {
+        Ok(u) if u.starts_with("postgres") => u,
+        _ => {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("CI=true but no DATABASE_URL — the postgres job must not silently skip");
+            }
+            eprintln!(
+                "skipping mcp_mount_cross_backend_postgres: no DATABASE_URL/AREEV_PG_URL \
+                 (docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres \
+                 pgvector/pgvector:pg16)"
+            );
+            return;
+        }
+    };
+    // Schema-per-test, unique per process — the conformance suite's rule.
+    let schema = format!("mcpmnt_{}", std::process::id());
+    let _ = areev_store::pg::drop_postgres_schema(&url, &schema);
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let dsn = format!("{url}{sep}schema={schema}");
+
+    let dir = TempDir::new().unwrap();
+    let user = dir.path().join("user.db");
+    let user = user.to_str().unwrap();
+
+    let add = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev")).args(args).output().unwrap();
+        assert!(out.status.success(), "add failed: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    add(&["add", "refunds", "window_days", "45", "-d", &dsn, "--ns", "policies"]);
+    add(&["add", "john", "plan", "enterprise", "-d", user, "--ns", "caller"]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args([
+            "serve",
+            "--mcp",
+            "--db",
+            user,
+            "--ns",
+            "caller",
+            "--mount",
+            &format!("org={dsn}"),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let assemble = r#"ASSEMBLE "prompt" FROM policies: (RECALL facts WHERE namespace = "org.policies" AND subject = "refunds"), profile: (RECALL facts WHERE subject = "john")"#;
+    let script = [
+        rpc(1, "initialize", serde_json::json!({
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"}})),
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+        rpc(2, "tools/call", serde_json::json!({"name": "areev_cal", "arguments": {"query": assemble}})),
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in &script {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "serve failed: {stderr}");
+
+    // The startup line names the mount, and a DSN carries a password. Matched
+    // as the `user:password@` userinfo rather than as a bare substring: a
+    // password can legitimately also be the username or part of the database
+    // name (`areev:areev@…/areev`), and a substring test would then flag its
+    // own redacted output.
+    if let Some(userinfo) = url
+        .split_once("://")
+        .and_then(|(_, r)| r.split_once('@'))
+        .map(|(auth, _)| auth.to_string())
+        .filter(|a| a.contains(':'))
+    {
+        assert!(
+            !stderr.contains(&format!("{userinfo}@")),
+            "the mount log line leaked the DSN password: {stderr}"
+        );
+        assert!(
+            stderr.contains(":***@"),
+            "the mount line should show a redacted DSN: {stderr}"
+        );
+    }
+
+    let resp: serde_json::Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["id"] == 2)
+        .unwrap();
+    assert_eq!(resp["result"]["isError"], false, "cal errored: {resp}");
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("45"), "postgres (mounted) fact missing: {text}");
+    assert!(text.contains("enterprise"), "file (primary) fact missing: {text}");
+
+    let _ = areev_store::pg::drop_postgres_schema(&url, &schema);
+}
+
+/// A mount is read-only on the FILE backend too (issue #184): a path that does
+/// not exist is refused rather than quietly created as an empty memory, which
+/// used to make every cross-file question answer silence.
+#[test]
+fn mcp_mount_of_a_missing_file_is_refused_not_created() {
+    let dir = TempDir::new().unwrap();
+    let user = dir.path().join("user.db");
+    let user = user.to_str().unwrap();
+    let missing = dir.path().join("not-there.db");
+    let missing = missing.to_str().unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["add", "john", "plan", "enterprise", "-d", user, "--ns", "caller"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args([
+            "serve",
+            "--mcp",
+            "--db",
+            user,
+            "--ns",
+            "caller",
+            "--mount",
+            &format!("org={missing}"),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a mount of a missing memory must fail the server");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("STO-E005"), "expected the read-only-open refusal: {stderr}");
+    assert!(
+        !std::path::Path::new(missing).exists(),
+        "and it must not have created the file"
+    );
+}

@@ -2008,14 +2008,22 @@ impl Areev {
                     .into(),
             );
         }
-        // DDL + seeding run inside PgDb::open, under the schema's bootstrap
-        // advisory lock — concurrent openers of a brand-new memory would
-        // otherwise race the IF NOT EXISTS statements. Skipped entirely
-        // under `read_only` — see `pg::PgDb::open`.
+        // DDL + seeding run inside PgDb::open, in one transaction holding the
+        // schema's bootstrap advisory lock — concurrent openers of a brand-new
+        // memory would otherwise race the IF NOT EXISTS statements. Skipped
+        // entirely under `read_only`, and skipped on a schema already stamped
+        // at `PG_SCHEMA_VERSION` (the steady-state open, which issues no DDL
+        // and takes no lock) — see `pg::PgDb::open`.
         let mut bootstrap: Vec<&str> = Vec::with_capacity(pg::PG_SCHEMA.len() + pg::PG_SEED.len());
         bootstrap.extend_from_slice(pg::PG_SCHEMA);
         bootstrap.extend_from_slice(pg::PG_SEED);
-        let dbh: Box<dyn Db> = Box::new(pg::PgDb::open(url, schema, &bootstrap, read_only)?);
+        let dbh: Box<dyn Db> = Box::new(pg::PgDb::open(
+            url,
+            schema,
+            &bootstrap,
+            read_only,
+            Some(pg::STORE_STAMP),
+        )?);
         let telemetry = match telemetry_mode {
             TelemetryMode::Off => None,
             mode => Some(Telemetry::open_pg(url, schema, mode)?),
@@ -2180,48 +2188,85 @@ impl Areev {
         // Stamp declarations + create the FTS index if wanted. Skipped
         // entirely under `read_only`: a least-privilege postgres role has no
         // UPDATE/INSERT grant on `meta`, and on any backend a read-only
-        // handle must not write regardless — these stamps are idempotent
-        // no-ops on an already-declared file, so skipping them costs
-        // nothing when there is nothing new to declare (checked above).
+        // handle must not write regardless — a read-only open that disagrees
+        // with the file's declaration is refused up front (checked above)
+        // rather than silently ignored.
+        //
+        // Otherwise each stamp is written only when it would actually CHANGE
+        // the declaration. Re-writing the identical value was harmless but
+        // never free: it is a row version and a WAL record every open, two
+        // round trips of them on a server backend — and, with the `DROP INDEX`
+        // below, it is what stood between a current schema and an open that
+        // writes nothing at all (issue #180).
         if !opts.read_only {
-            dbh.execute(
-                "INSERT OR REPLACE INTO meta(k, v) VALUES ('text_index', ?1)",
-                vec![pt(if opts.index_text { "1" } else { "0" })],
-            )?;
+            let want_text = if opts.index_text { "1" } else { "0" };
+            if meta.get("text_index").map(String::as_str) != Some(want_text) {
+                dbh.execute(
+                    "INSERT OR REPLACE INTO meta(k, v) VALUES ('text_index', ?1)",
+                    vec![pt(want_text)],
+                )?;
+            }
             let mut rels: Vec<&String> = opts.entity_relations.iter().collect();
             rels.sort();
             let rels = serde_json::to_string(&rels).unwrap_or_else(|_| "[]".into());
-            dbh.execute(
-                "INSERT OR REPLACE INTO meta(k, v) VALUES ('entity_relations', ?1)",
-                vec![pt(&rels)],
-            )?;
+            if meta.get("entity_relations") != Some(&rels) {
+                dbh.execute(
+                    "INSERT OR REPLACE INTO meta(k, v) VALUES ('entity_relations', ?1)",
+                    vec![pt(&rels)],
+                )?;
+            }
             // Files written before the BM25 leg moved off Turso's experimental
             // FTS carry an `idx_fts` index that nothing reads any more, and
             // that still taxes every write to this table. Drop it on sight.
             // Absent (the normal case) it errors; that is not a problem.
-            let _ = dbh.execute("DROP INDEX idx_fts", vec![]);
+            // Backends whose schema never had one skip it: it is DDL, so it
+            // needs OWNERSHIP, and `let _` swallowing a `42501` would make the
+            // open *look* clean while the server logged a permission denial
+            // for something that could not have existed.
+            if dbh.may_have_legacy_fts_index() {
+                let _ = dbh.execute("DROP INDEX idx_fts", vec![]);
+            }
         }
 
-        // Load dictionary + counters.
+        // Load dictionary + counters — only where they are the authority.
+        //
+        // On a multi-writer backend every one of these is overridden by a
+        // `Db` hook (`reserve_write`, `intern_term`/`lookup_term*`/
+        // `terms_with_prefix`, `collection_stats`), so seeding them costs a
+        // full dictionary transfer plus several corpus-sized `COUNT(*)` scans
+        // per open to produce values nothing reads. `seeds_state_at_open()`
+        // is the seam; the embedded path below is unchanged.
+        let seeds = dbh.seeds_state_at_open();
         let mut dict = HashMap::new();
         let mut next_term = 1i64;
-        for row in dbh.query("SELECT id, term FROM terms", vec![])? {
-            let id = row.i64(0).unwrap_or(0);
-            if let Some(t) = row.text(1) {
-                dict.insert(t.to_string(), id);
-            }
-            next_term = next_term.max(id + 1);
-        }
         let one = |sql: &'static str| -> Result<i64> {
             Ok(dbh.query(sql, vec![])?.first().and_then(|r| r.i64(0)).unwrap_or(0))
         };
-        let next_seq = one("SELECT COALESCE(MAX(seq),0) FROM grains")? + 1;
-        let next_op = one("SELECT COALESCE(MAX(op_seq),0) FROM oplog")? + 1;
-        let hlc_last = one("SELECT COALESCE(MAX(hlc),0) FROM oplog")?;
-        let fts_docs = one("SELECT COUNT(*) FROM fts_doc")?;
-        let fts_total_len = one("SELECT COALESCE(SUM(len),0) FROM fts_doc")?;
-        let indexed_text = one("SELECT COUNT(*) FROM grains WHERE text IS NOT NULL")?;
-        let grain_count = one("SELECT COUNT(*) FROM grains")?;
+        // `indexed_text` and `grain_count` feed ONLY the self-heal branches
+        // below, and both are `COUNT(*)` — a full scan on a server backend.
+        // Where state is not seeded they stay at zero and each branch asks its
+        // own, cheaper question inside the branch that needs it.
+        let (next_seq, next_op, hlc_last, fts_docs, fts_total_len, indexed_text, grain_count) =
+            if seeds {
+                for row in dbh.query("SELECT id, term FROM terms", vec![])? {
+                    let id = row.i64(0).unwrap_or(0);
+                    if let Some(t) = row.text(1) {
+                        dict.insert(t.to_string(), id);
+                    }
+                    next_term = next_term.max(id + 1);
+                }
+                (
+                    one("SELECT COALESCE(MAX(seq),0) FROM grains")? + 1,
+                    one("SELECT COALESCE(MAX(op_seq),0) FROM oplog")? + 1,
+                    one("SELECT COALESCE(MAX(hlc),0) FROM oplog")?,
+                    one("SELECT COUNT(*) FROM fts_doc")?,
+                    one("SELECT COALESCE(SUM(len),0) FROM fts_doc")?,
+                    one("SELECT COUNT(*) FROM grains WHERE text IS NOT NULL")?,
+                    one("SELECT COUNT(*) FROM grains")?,
+                )
+            } else {
+                (1, 1, 0, 0, 0, 0, 0)
+            };
 
         let mut store = Areev {
             db: dbh,
@@ -2279,7 +2324,22 @@ impl Areev {
         // index. Left alone, every free-text recall would answer "nothing
         // found" — the worst failure available, since it is indistinguishable
         // from an honest empty result. Rebuild once, here, and say so.
-        if store.index_text && indexed_text > 0 && store.fts_docs == 0 {
+        // "Text was indexed but no postings exist." On the seeding backend
+        // that is `indexed_text > 0 && fts_docs == 0`, exactly as before;
+        // elsewhere it is the same question asked as two existence probes,
+        // cheapest first — an empty `fts_doc` is the rare case, so the scan
+        // over `grains` runs only when there is genuinely nothing indexed.
+        let needs_text_rebuild = store.index_text
+            && if seeds {
+                indexed_text > 0 && store.fts_docs == 0
+            } else {
+                store.db.query("SELECT seq FROM fts_doc LIMIT 1", vec![])?.is_empty()
+                    && !store
+                        .db
+                        .query("SELECT seq FROM grains WHERE text IS NOT NULL LIMIT 1", vec![])?
+                        .is_empty()
+            };
+        if needs_text_rebuild {
             if store.read_only {
                 store.warnings.push(
                     "text index needs a one-time rebuild (this file predates the current BM25 \
@@ -2313,6 +2373,18 @@ impl Areev {
         // does not match the current version heals too, so widening what the
         // indexes hold is a constant bump rather than a migration.
         if meta.get(LINK_INDEX_KEY).map(String::as_str) != Some(LINK_INDEX_VERSION) {
+            // Only a stamp mismatch — a migration, not the steady state —
+            // pays for the count on a backend that did not seed it.
+            let grain_count = if seeds {
+                grain_count
+            } else {
+                store
+                    .db
+                    .query("SELECT COUNT(*) FROM grains", vec![])?
+                    .first()
+                    .and_then(|r| r.i64(0))
+                    .unwrap_or(0)
+            };
             if store.read_only {
                 if grain_count > 0 {
                     store.warnings.push(
@@ -2347,6 +2419,16 @@ impl Areev {
         // no blob deserialization; serialized against concurrent writers the
         // same way rebuild_link_indexes is.
         if meta.get(NS_REGISTRY_KEY).map(String::as_str) != Some(NS_REGISTRY_VERSION) {
+            let grain_count = if seeds {
+                grain_count
+            } else {
+                store
+                    .db
+                    .query("SELECT COUNT(*) FROM grains", vec![])?
+                    .first()
+                    .and_then(|r| r.i64(0))
+                    .unwrap_or(0)
+            };
             if store.read_only {
                 if grain_count > 0 {
                     store.warnings.push(
@@ -2535,8 +2617,15 @@ impl Areev {
     /// needed their *text column* backfilled, which is zero on a file that was
     /// already populated — this is the number that answers "did the rebuild
     /// actually index anything".
+    /// Where the collection counters are DB-authoritative (a multi-writer
+    /// backend, whose handles do not seed them at open) the live stats answer;
+    /// the process-local counter is the fallback and the embedded backend's
+    /// authority.
     pub fn indexed_documents(&self) -> i64 {
-        self.fts_docs
+        match self.db.collection_stats() {
+            Ok(Some((docs, _))) => docs,
+            _ => self.fts_docs,
+        }
     }
 
     /// Whether the BM25 text index is populated on writes (file-declared,
@@ -6263,7 +6352,7 @@ impl Areev {
                 None => return Ok(Vec::new()),
             },
             None => self
-                .terms_with_prefix(STEP_ACTION_PREFIX)
+                .terms_with_prefix(STEP_ACTION_PREFIX)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect(),
@@ -6335,7 +6424,7 @@ impl Areev {
                 None => return Ok(Vec::new()),
             },
             None => self
-                .terms_with_prefix(STEP_ACTION_PREFIX)
+                .terms_with_prefix(STEP_ACTION_PREFIX)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect(),
@@ -6381,12 +6470,22 @@ impl Areev {
     /// The relation for an execution record is parameterized by node id, so the
     /// vocabulary cannot be enumerated statically. Bounded by the number of
     /// distinct node ids ever written, not by grain count.
-    fn terms_with_prefix(&self, prefix: &str) -> Vec<(i64, String)> {
-        self.dict
+    ///
+    /// A prefix scan has no "miss" to fall through on the way a point lookup
+    /// does, so where the process-local map is not the whole dictionary the
+    /// backend must answer — otherwise a predicate another writer interned (or
+    /// that this handle simply never loaded) reads as "no such step actions",
+    /// which is indistinguishable from a run that recorded none.
+    fn terms_with_prefix(&self, prefix: &str) -> Result<Vec<(i64, String)>> {
+        if let Some(rows) = self.db.terms_with_prefix(prefix)? {
+            return Ok(rows);
+        }
+        Ok(self
+            .dict
             .iter()
             .filter(|(term, _)| term.starts_with(prefix))
             .map(|(term, id)| (*id, term.clone()))
-            .collect()
+            .collect())
     }
 
     /// Grains that name `object` in their object position, newest first.

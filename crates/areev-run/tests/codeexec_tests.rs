@@ -404,6 +404,85 @@ fn a_wasm_runtime_dispatches_the_blob_to_the_sandbox_command() {
     assert!(argv.contains("--max-pages 64"), "{argv}");
 }
 
+/// #188: the sandbox seam clears the environment UNCONDITIONALLY, and no
+/// operator flag can widen it.
+///
+/// `--tool-env` exists to narrow what a host tool inherits, and it reaches a
+/// pinned NATIVE blob — an ordinary program that may legitimately read an
+/// ambient variable. The wasm seam is the opposite case: it is the
+/// least-trusted executor in the tree and, under #101, also the process
+/// holding a broker token, so the only environment it can justify is what it
+/// needs to start. Today that holds because `execute_code` consults
+/// `native_env` only on the non-sandboxed branch. This pins it, because the
+/// shape that breaks it is a one-line refactor: hoisting the policy above the
+/// `if sandboxed` so both branches share it. The assertion is deliberately
+/// made with an allow list the operator DID name — proving the sandbox
+/// ignores it, rather than merely proving the default is safe.
+#[cfg(unix)]
+#[test]
+fn a_tool_env_allow_list_never_reaches_the_sandbox() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    const PLANTED: &str = "AREEV_TEST_SANDBOX_MUST_NOT_SEE";
+    struct Planted;
+    impl Drop for Planted {
+        fn drop(&mut self) {
+            std::env::remove_var(PLANTED);
+        }
+    }
+    let _planted = Planted;
+    std::env::set_var(PLANTED, "leaked-into-the-sandbox");
+
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-module-bytes");
+    let plan = plan_with_runtime(&rig, &uri, "wasm32-areev", None);
+
+    // Reports the planted variable as the tool result, so an empty string is
+    // proof the child never received it.
+    let fake = rig.dir.join("fake-sandbox-env.sh");
+    {
+        let mut f = std::fs::File::create(&fake).unwrap();
+        f.write_all(
+            format!(
+                "#!/bin/sh\nprintf '{{\"seen\":\"%s\",\"path\":\"%s\"}}' \"${PLANTED}\" \"$PATH\"\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut perm = f.metadata().unwrap().permissions();
+        perm.set_mode(0o700);
+        f.set_permissions(perm).unwrap();
+    }
+
+    // The operator explicitly names the planted variable. A native blob would
+    // receive it; the sandbox must not.
+    let mut allow = areev_core::proc::EnvPolicy::minimal_allow();
+    allow.push(PLANTED.to_string());
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap())
+        .with_env_policy(areev_core::proc::EnvPolicy::ClearExcept { allow });
+
+    let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let records = rig.facade.with_store(|m| m.step_actions("ops", &plan, None, 10)).unwrap();
+    let grain = rig.facade.with_store(|m| m.get(&records[0].1)).unwrap();
+    let content = grain.get_str("tool_content").expect("a result grain carries its content");
+    let seen: serde_json::Value = serde_json::from_str(content).unwrap();
+    assert_eq!(
+        seen["seen"], "",
+        "the sandbox must not receive a variable even when --tool-env names it: {content}"
+    );
+    assert!(
+        !seen["path"].as_str().unwrap_or("").is_empty(),
+        "PATH must survive, or the sandbox binary itself would not resolve: {content}"
+    );
+}
+
 /// An unknown runtime refuses at resolve — possible on a grain that arrived
 /// by sync (our own write path refuses the value), and it must never fall
 /// back to native exec, which would run foreign bytes as a program.

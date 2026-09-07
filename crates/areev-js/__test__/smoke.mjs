@@ -1600,3 +1600,115 @@ test('adapter promotion is gated end to end', async () => {
   )).grains
   assert.equal(after.length, 0)
 })
+
+// ---- #182: onEvent on the run surface --------------------------------------
+//
+// A host control the CLI already had (`--events`) and the binding hardcoded
+// away: `observer: None` at both `js_runner_pinned` call sites. The payload is
+// the exact line `--events` prints, so there is no per-language event class to
+// keep in sync and no `Deserialize` on `RunEvent`.
+
+/// The same two-node plan the runtime test uses: host `greet` → Client
+/// `approve`, so a start always parks on the human gate.
+async function seedRunPlan(m) {
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition',
+    tool_description: 'greets', created_at: 500,
+  }), 'ops')
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition',
+    tool_description: 'human approves', executor_kind: 'client', created_at: 501,
+  }), 'ops')
+  return m.add('workflow', JSON.stringify({
+    nodes: ['greet', 'approve'],
+    edges: [{ src: 'greet', dst: 'approve' }],
+    bindings: { greet, approve },
+    created_at: 502,
+  }), 'ops')
+}
+
+const GREET_CMD = `printf '{"greeting":"hello"}'`
+
+test('onEvent streams the same JSON lines the CLI --events prints', async () => {
+  const m = makeDb('ops')
+  const wf = await seedRunPlan(m)
+
+  // The callback fires on the EventBus's OWN thread, not the JS thread and
+  // not the libuv worker the job runs on — a plain function could never be
+  // reached from there, which is why the binding builds a threadsafe function
+  // on the JS thread before queueing the job.
+  const started = []
+  // onEvent is the 18th argument — the 13 nulls stand in for the budget,
+  // model, executor-pin and toolEnv parameters between toolCmd and it.
+  const session = JSON.parse(await m.runStart(
+    wf, 'js-ev', '{"who":"world"}', GREET_CMD,
+    null, null, null, null, null, null, null, null, null, null, null, null, null,
+    (line) => started.push(line),
+  ))
+  assert.ok(session.parked, 'the client-gated node parks the run')
+
+  const startEvents = started.map(JSON.parse)
+  assert.ok(startEvents.length, 'the callback must have been called')
+  assert.deepEqual(startEvents[0], { event: 'RunStarted', run_id: 'js-ev' })
+  // RunFinished is emitted at a TERMINAL outcome, and this leg parks — so the
+  // start leg ends at the ask and the resume leg carries the last event.
+  assert.equal(startEvents.at(-1).event, 'AskRaised')
+  for (const want of ['NodeDispatched', 'EffectSettled', 'AskRaised']) {
+    assert.ok(startEvents.some((e) => e.event === want), `${want} must be in the stream`)
+  }
+
+  await m.runRespond('js-ev', session.parked.asks[0].tool_call_id, '{"ok":true}', 'user:officer')
+
+  const resumed = []
+  const done = JSON.parse(await m.runResume(
+    'js-ev', null, null, null, null, null, null, null, null, null, null,
+    (line) => resumed.push(line),
+  ))
+  assert.equal(done.finished, 'Completed')
+  const resumeEvents = resumed.map(JSON.parse)
+  assert.deepEqual(resumeEvents[0], { event: 'RunResumed', run_id: 'js-ev' })
+  assert.equal(resumeEvents.at(-1).event, 'RunFinished')
+  assert.equal(resumeEvents.at(-1).outcome, 'Completed')
+  assert.equal(
+    resumeEvents.at(-1).dropped_events, 0,
+    'a handful of events must not overflow a 1024-slot buffer',
+  )
+  await m.close()
+})
+
+test('a subscriber does not change what the run recorded', async () => {
+  // #182's acceptance criterion at the level a binding can assert it. The Rust
+  // twin (`streaming_observers_never_change_the_journal`) compares journals
+  // byte for byte and cannot see a binding callback at all; the binding-level
+  // equivalent is to run the same plan twice, observed and not, and assert
+  // both verify and inspect identically apart from the run id.
+  const m = makeDb('ops')
+  const wf = await seedRunPlan(m)
+  const seen = []
+
+  const drive = async (runId, onEvent) => {
+    const s = JSON.parse(await m.runStart(
+      wf, runId, '{"who":"world"}', GREET_CMD,
+      null, null, null, null, null, null, null, null, null, null, null, null, null,
+      onEvent,
+    ))
+    await m.runRespond(runId, s.parked.asks[0].tool_call_id, '{"ok":true}', 'user:officer')
+    await m.runResume(runId)
+  }
+  await drive('obs-on', (line) => seen.push(line))
+  await drive('obs-off', null)
+
+  assert.ok(seen.length, 'the observed leg really was observed')
+  assert.equal(JSON.parse(await m.runVerify('obs-on')).verified, true)
+  assert.equal(JSON.parse(await m.runVerify('obs-off')).verified, true)
+
+  // Everything but the run id and `spent`, which carries wall time.
+  const shape = async (runId) => {
+    const r = JSON.parse(await m.runInspect(runId))
+    const keys = ['plan_hash', 'principal', 'pinned', 'budgets', 'fork_of',
+      'checkpoints', 'journal_entries', 'phase', 'pending_asks']
+    return Object.fromEntries(keys.map((k) => [k, r[k]]))
+  }
+  assert.deepEqual(await shape('obs-on'), await shape('obs-off'))
+  await m.close()
+})
