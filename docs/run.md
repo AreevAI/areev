@@ -182,7 +182,16 @@ this process holds secrets Areev has no way to know about. A bare `--tool-env`
 passes nothing but that minimal set, and naming a variable Areev already knows
 holds a secret does not re-admit it — the name is dropped and reported. It
 applies to `--tool-cmd`, to a `trigger run` connector, and to a pinned
-**native** blob; the sandbox seam already clears and is unaffected.
+**native** blob; the sandbox seam clears unconditionally and cannot be widened
+by this flag (pinned by test).
+
+**Presence is the setting, not the value.** `--tool-env ""` and
+`AREEV_RUN_TOOL_ENV=""` both mean *clear to the minimal set* — the strictest
+posture — and are honored as such. Every other `$AREEV_RUN_*` variable reads an
+empty value as "not configured", which is right for them (`AREEV_RUN_SANDBOX_CMD=""`
+means "no sandbox") and would be exactly backwards here: it would take an
+operator asking for the strictest environment and silently hand them the
+loosest. Only an **absent** flag and variable keep the inherit default.
 
 ### The model boundary (anonymization)
 
