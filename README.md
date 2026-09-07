@@ -454,6 +454,7 @@ How each number is produced, and the benchmark receipts:
 | [`FAQ.md`](FAQ.md) | Questions & answers (also LLM-friendly) |
 | [`SECURITY.md`](SECURITY.md) · [`docs/security-model.md`](docs/security-model.md) | Security policy & threat model |
 | [`docs/gdpr.md`](docs/gdpr.md) · [`docs/erasure.md`](docs/erasure.md) | GDPR obligations → capabilities (for a DPIA); the erasure requirement record |
+| [`docs/compliance-profiles.md`](docs/compliance-profiles.md) | GDPR / healthcare / financial deployment presets — the exact flags each one sets, and which of them survive a copy |
 | [`AGENTS.md`](AGENTS.md) · [`llms.txt`](llms.txt) | For AI agents working in / with this repo |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute (DCO sign-off) |
 

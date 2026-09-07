@@ -88,11 +88,20 @@ COMMANDS:
   purge-older-than <days> [--ns NS] [--type event] --yes   retention sweep:
                                       erase grains older than N days
                                       (--ns \"\" sweeps every namespace)
-  retention <set|list|clear|sweep> [--days N] [--ns NS] [--type event]
+  retention <set|list|clear|sweep|floor|floor-clear|floors>
+           [--days N] [--min-days N] [--ns NS] [--type event]
            [--because \"why\"] [--yes]  declarative storage limitation: the
                                       policy is a file-truth that travels
                                       with the memory; `set` declares,
-                                      `sweep --yes` enforces (audited)
+                                      `sweep --yes` enforces (audited).
+                                      `floor --min-days N` declares a
+                                      MINIMUM any sweep must respect —
+                                      destruction younger than it refuses
+  hold     <set|release|list> [--ns NS] [--because \"why\"] [--by PRINCIPAL]
+                                      legal hold: while one is live on a
+                                      namespace, ALL age-based destruction
+                                      there refuses with the hold on record.
+                                      Also a file-truth
   trigger  add --type KIND --workflow HASH --because \"why\"
            [--context-query SPEC]     a saved query the evaluator runs at
                                       fire time; its result rides into the

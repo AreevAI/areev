@@ -65,6 +65,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `main` and uploaded it under the older tag's name — the fix #159 applied
   to `build` now covers `sbom` too
   ([#162](https://github.com/AreevAI/areev/issues/162)).
+- **`areev hold` and `retention floor|floor-clear|floors` reach `--help`.**
+  Both verbs shipped working and dispatched, but the usage text listed
+  `retention <set|list|clear|sweep>` and no `hold` line at all — so the two
+  controls a records-retention deployment most needs were discoverable only
+  by reading the source.
+
+### Added
+
+- **Compliance profile presets** ([`docs/compliance-profiles.md`](docs/compliance-profiles.md)).
+  GDPR, healthcare and financial deployments assembled as the exact commands
+  that configure them, with the distinction that decides whether an auditor's
+  answer holds: a **file-truth** (`anonymize set`, `retention set`,
+  `retention floor`, `hold set`) travels with a copy of the memory, a **host
+  config** (`--anonymize-egress`, `--no-destructive-ops`, `--read-only`) is a
+  cap for one process and is forgotten on the next open. Documentation of
+  existing flags — no new surface
+  ([#190](https://github.com/AreevAI/areev/issues/190)).
 
 ## [1.7.2] — 2026-09-02
 
