@@ -183,7 +183,7 @@ AREEV_JUDGE_CMD='python3 crates/areev-bench/scripts/openai_chat.py gpt-4o' \
 
 Full run (gpt-4o-mini reader, gpt-4o judge, real embeddings, k=20, all 1,982 QAs,
 2026-07-07): **54.2%**. Every question / gold / answer / judge verdict committed in
-[`results/…k20….transcripts.jsonl`](results/locomo-gpt-4o-mini-k20-2026-07-07.transcripts.jsonl)
+[`results/…k20….transcripts.jsonl`](https://github.com/AreevAI/areev-benchmark/blob/main/results/locomo-gpt-4o-mini-k20-2026-07-07.transcripts.jsonl)
 for audit.
 
 | category | answer accuracy |
@@ -828,7 +828,7 @@ two of them into one stream; this run is three genuinely independent task
 sets, which the 2026-08-26 run was not. Same model pair, same 300/100 sizes,
 governed states only (no passive arms — those remain the earlier run's).
 Evidence:
-[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
 the `governed-*` runs; it is the control half of the loop+LLM comparison
 below, which is why both live in one directory.*
 
@@ -869,7 +869,7 @@ without rendering the bars.
 *The original publication. Its numbers stand and its arms are not superseded
 (the run above did not repeat them), but its replication breadth is **two**
 task streams, not three — see the defect note below. Evidence:
-[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](results/selfimprove-3seed-qwen3-30b-2026-08-26/).*
+[`results/selfimprove-3seed-qwen3-30b-2026-08-26/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-3seed-qwen3-30b-2026-08-26/).*
 
 | state | seed 1 | seed 2 | seed 3 | mean | avg prompt tokens |
 |---|---|---|---|---|---|
@@ -984,7 +984,7 @@ and DISCOVER/VERIFY, `deepseek-chat` as GROUND, temperature 0. Two
 configurations at one git rev, differing in exactly one flag: the control
 applies only deterministic signature lessons; the arm additionally applies
 LLM-authored lessons that survived GROUND + VERIFY. Everything in
-[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
+[`results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-llmarm-3seed-qwen3-30b-2026-08-30/),
 with `paired-stats.txt` regenerable from the transcripts.*
 
 The loop's deterministic lessons state a **symptom** (`log_case` fails with
@@ -1067,7 +1067,7 @@ would catch this regression in a live deployment rather than a benchmark.
 Four cells over one axis: which lesson ORIGINS the review gate admits. The
 analyzers run in every cell, so discovery is held constant and only
 application varies. Evidence, including the failed run's log:
-[`results/selfimprove-2x2-qwen3-30b-2026-08-30/`](results/selfimprove-2x2-qwen3-30b-2026-08-30/).*
+[`results/selfimprove-2x2-qwen3-30b-2026-08-30/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/selfimprove-2x2-qwen3-30b-2026-08-30/).*
 
 The earlier arm compared *(deterministic)* against *(deterministic + LLM)*,
 which never isolated the LLM. This was the design that would: an **llm-only**

@@ -2,7 +2,7 @@
 
 **Status: PAST-Bench complete, 2026-09-07.** Three seeds × three arms ×
 26 families, plus mem0 on one seed, plus the tuning leg and a gate audit.
-Evidence: [`results/persist-2026-09-07/`](results/persist-2026-09-07/).
+Evidence: [`results/persist-2026-09-07/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/persist-2026-09-07/).
 The Horizon track ran on its three public tasks only (§4). Budget: **$50**
 cap ($30 approved 2026-09-06, raised the same day after run 1); about $25
 of it spent.

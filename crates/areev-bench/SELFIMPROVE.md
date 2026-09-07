@@ -962,7 +962,7 @@ measured next.
 
 ### Outcome (2026-09-04): the bottleneck was the cite-check, not abstention
 
-Evidence: [`results/authoring-rate-2026-09-04/`](results/authoring-rate-2026-09-04/)
+Evidence: [`results/authoring-rate-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/authoring-rate-2026-09-04/)
 — eight summaries and their per-pass rows, over one captured experience
 (seed 1, 300 tasks, `qwen3-30b` pinned `coreweave/bf16`, 1,533 tool calls
 of which 276 are errors). **Spend is not reported for this grid**: the

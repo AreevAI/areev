@@ -153,7 +153,7 @@ harness, whose agent uses no tools at all.
 
 The ceiling probe ran in full, 25 held-out tasks under each condition, no
 lessons in either. Evidence:
-[`../results/tau2-ceiling-2026-09-04/`](../results/tau2-ceiling-2026-09-04/).
+[`../results/tau2-ceiling-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/tau2-ceiling-2026-09-04/).
 
 | | solved | tool errors | runs killed by too many errors |
 |---|:---:|:---:|:---:|

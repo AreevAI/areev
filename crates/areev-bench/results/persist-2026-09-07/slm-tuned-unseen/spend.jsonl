@@ -1,6 +1,0 @@
-{"agent":"areev-passive","family":"update_ability/EP03_recall_then_modify","usage_before":66.881242242,"usage_after":67.073372064,"wall_s":1079,"exit":0,"at":"2026-09-07T01:05:00Z"}
-{"agent":"areev-passive","family":"procedural_ability/PC01_sop_bootstrap_01","usage_before":67.073372064,"usage_after":67.189296993,"wall_s":942,"exit":0,"at":"2026-09-07T01:20:43Z"}
-{"agent":"areev-passive","family":"procedural_ability/PC01_sop_bootstrap_02","usage_before":67.189296993,"usage_after":67.303689655,"wall_s":748,"exit":0,"at":"2026-09-07T01:33:12Z"}
-{"agent":"areev-passive","family":"procedural_ability/PC01_sop_bootstrap_06","usage_before":67.303689655,"usage_after":67.301770649,"wall_s":12,"exit":1,"at":"2026-09-07T01:33:24Z"}
-{"agent":"areev-passive","family":"proactive_information_gathering/PG03_oncall_handoff_lookup","usage_before":67.303689655,"usage_after":67.360019093,"wall_s":353,"exit":0,"at":"2026-09-07T01:39:17Z"}
-{"agent":"areev-passive","family":"proactive_information_gathering/PG06_kappa_integration_review","usage_before":67.3561235,"usage_after":67.435004148,"wall_s":470,"exit":0,"at":"2026-09-07T01:47:07Z"}

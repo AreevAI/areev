@@ -90,7 +90,7 @@ with their reasons.
 
 **It replicates, on documents ten times longer and a different filing
 convention.** Evidence:
-[`results/adbuy-vrdu-2026-09-04/`](results/adbuy-vrdu-2026-09-04/).
+[`results/adbuy-vrdu-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/adbuy-vrdu-2026-09-04/).
 
 | seed | rules | A (rolled back) | B (applied) | B vs A | noise floor |
 |---|:---:|:---:|:---:|:---:|:---:|

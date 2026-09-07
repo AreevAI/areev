@@ -8,7 +8,7 @@ a convention the agent has correctly learned is *replaced*, improving means
 retracting — and retracting is the one thing a memory that only stores and
 recalls cannot do.
 
-Evidence: [`results/drift-sroie-2026-09-04/`](results/drift-sroie-2026-09-04/).
+Evidence: [`results/drift-sroie-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/drift-sroie-2026-09-04/).
 One seed; the README there says why.
 
 ## The design

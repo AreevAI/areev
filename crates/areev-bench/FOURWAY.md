@@ -15,7 +15,7 @@ Four arms, one task, one axis of difference:
 | **Areev — governed** | rules the loop proposed from the run's own history, a reviewer approved, and the outcome gate measured | the loop, then a reviewer |
 | **Areev — tuned SLM** | a 1.5B model trained once on the governed memory, replacing the LLM agent | the loop, then `areev tune` |
 
-Evidence: [`results/fourway-2026-09-05/`](results/fourway-2026-09-05/).
+Evidence: [`results/fourway-2026-09-05/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/fourway-2026-09-05/).
 Every number below is recomputed from raw trials by `receipts/fourway.py`,
 and every dollar from the usage ledger every model call writes to.
 

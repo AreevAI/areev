@@ -363,7 +363,7 @@ So the two halves of the claim separate cleanly on real public data:
 ### Why the rules are shaped like that — the loop read the conversation backwards
 
 The pre-registered diagnostic
-([`results/receipts-learners-2026-09-04/`](results/receipts-learners-2026-09-04/))
+([`results/receipts-learners-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/receipts-learners-2026-09-04/))
 ran five governed learn passes per model over one fixed 40-receipt memory.
 **Not one of fifteen passes, across `gpt-oss-120b`, `qwen3-30b` and
 `qwen3-235b`, proposed a rule naming a field to capture.** Three models of
@@ -374,7 +374,7 @@ appeared to be.
 
 **The accountant's instruction is in the bundle, first, and not buried.**
 Dumping one DISCOVER request off the wire
-([`wire/discover-request-response.json`](results/receipts-learners-2026-09-04/wire/discover-request-response.json)):
+([`wire/discover-request-response.json`](https://github.com/AreevAI/areev-benchmark/blob/main/results/receipts-learners-2026-09-04/wire/discover-request-response.json)):
 the 64-item evidence bundle is **39 observations to 25 facts** — the
 person's words dominate the numbers — and item one is, verbatim:
 
@@ -437,7 +437,7 @@ or only say how to write one already produced. No held-out pass, no score.
 
 #### Outcome: it moved one model of three
 
-Evidence: [`results/receipts-learners-2026-09-04/attributed/`](results/receipts-learners-2026-09-04/attributed/),
+Evidence: [`results/receipts-learners-2026-09-04/attributed/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/receipts-learners-2026-09-04/attributed/),
 beside the before-rows in the same directory.
 
 | learner | additive rules per pass, before → after | passes with one, before → after |
@@ -587,7 +587,7 @@ the day-one field on 180 of 180 held-out receipts and the other three on
 Vendor Address on 60 of 180 (seed 2 alone learned the address).
 
 Evidence:
-[`results/receipts-sroie-run2-2026-09-04/`](results/receipts-sroie-run2-2026-09-04/).
+[`results/receipts-sroie-run2-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/receipts-sroie-run2-2026-09-04/).
 
 ### Run 2 result — per seed
 
@@ -772,7 +772,7 @@ projection fix was not what earned it.
 
 ### Ablation result — both changes earned part of it, and different parts
 
-Evidence: [`results/receipts-ablation-2026-09-04/`](results/receipts-ablation-2026-09-04/).
+Evidence: [`results/receipts-ablation-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/receipts-ablation-2026-09-04/).
 
 | | evidence **anonymous** | evidence **named** |
 |---|---|---|
@@ -1007,7 +1007,7 @@ Wait and re-run, or pass `--allow-ragged` for a run genuinely cut short —
 which records what is absent, so `--check` fails the day the rest arrives.
 
 Committed evidence and what deliberately stays local:
-[`results/receipts-sroie-2026-09-04/`](results/receipts-sroie-2026-09-04/).
+[`results/receipts-sroie-2026-09-04/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/receipts-sroie-2026-09-04/).
 
 ### Batch reads
 
