@@ -449,6 +449,24 @@ ever hit the session store, so mounts are read-only *by construction*. This is
 how a voice edge attaches local organization/category replicas and assembles a
 whole prompt in one in-process statement.
 
+**A mount target is a file path or a Postgres DSN** (`--mount
+org=postgres://…?schema=org_kb`), so an `ASSEMBLE` spans backends: a fleet
+sharing organization knowledge no longer has to export a bundle and follow it
+as a local replica. Mounts are additionally opened `read_only` on **both**
+backends, which turns read-only-by-construction into read-only-by-role — a
+Postgres mount can be backed by a `SELECT`-only credential, and a mount path
+that does not exist is refused (`STO-E005`) rather than created as an empty
+memory. Mounting the primary's own schema is refused, the way the embedded
+backend already refuses a second handle on one file.
+
+Two limits are deliberate rather than incidental. Each mount is its own
+connection, so a console with three mounts draws four. And **the vector leg
+does not cross a mount**: `--embed-cmd` installs an embedder on the primary
+only, so `NOVELTY` never crosses one and a cross-mount `ABOUT` contributes
+structural and BM25 evidence but no k-NN. Routing the embedder would trade one
+wrong answer for another, so it is documented instead
+([docs/cal-reference.md](docs/cal-reference.md)).
+
 ---
 
 ## 6. Recall: hybrid retrieval with RRF fusion

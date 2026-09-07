@@ -118,10 +118,17 @@ agent; memories separate *between* agents. Concretely:
   example — two agents, one Postgres, console + heartbeats all live at once.
   Adding an agent is adding a schema and a heartbeat service.
 - **Cross-agent reads** go through read-only `ASSEMBLE` facade mounts
-  (`--mount org=/data/org.db`) — never a shared
-  writable memory. Mount paths are file-backend today: on a Postgres fleet,
-  share knowledge by exporting a bundle from the source memory and following
-  it as a local read-only replica.
+  (`--mount org=/data/org.db`) — never a shared writable memory. A mount target
+  may be a file path **or** a Postgres DSN
+  (`--mount org=postgres://…?schema=org_kb`), so an `ASSEMBLE` can span
+  backends and a fleet no longer has to export a bundle and follow it as a
+  local replica just to share knowledge. Mounts open **read-only on both
+  backends**, so a Postgres mount can be backed by a role holding only
+  `CONNECT`, `USAGE` and `SELECT`. Two things to size for: each mount adds a
+  connection to the budget above, and the **vector leg does not cross a
+  mount** — `--embed-cmd` installs the embedder on the primary only, so plan
+  cross-mount reads as structural and BM25, not k-NN
+  ([`cal-reference.md`](cal-reference.md)).
 - **Separation of duties survives co-location:** one process = one principal
   (`--as`), grants live in each memory as `mg:permits` Facts, and an
   approver structurally cannot be the initiator — so a worker agent and its
