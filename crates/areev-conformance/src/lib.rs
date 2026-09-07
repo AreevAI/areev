@@ -261,6 +261,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(ns_registry_tracks_lifecycle);
         $per_case!(ns_registry_replicates_via_bundles);
         $per_case!(ns_scope_guards_hold);
+        $per_case!(ns_unspellable_names_refuse_on_write);
         $per_case!(ns_scoped_recall_spans_supersession_chains);
         $per_case!(ns_scoped_vector_search_selects_tree_exactly);
         // read-only opens (least-privilege postgres roles, issue #127)

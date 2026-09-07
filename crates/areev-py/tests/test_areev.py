@@ -512,6 +512,139 @@ def test_open_warnings_is_json_list(tmp_path):
     assert isinstance(json.loads(m.open_warnings()), list)
 
 
+def test_read_only_serves_reads_and_refuses_every_write(tmp_path):
+    path = str(tmp_path / "ro.db")
+    m = areev.Areev(path, ns="caller")
+    m.add_fact("john", "prefers", "tea")
+    del m
+
+    ro = areev.Areev(path, ns="caller", read_only=True)
+    assert len(json.loads(ro.recall("john"))) == 1
+    with pytest.raises(ValueError, match="STO-E004"):
+        ro.add_fact("john", "prefers", "coffee")
+
+
+def test_read_only_never_creates_an_absent_memory(tmp_path):
+    with pytest.raises(ValueError):
+        areev.Areev(str(tmp_path / "missing.db"), ns="caller", read_only=True)
+
+
+def test_read_only_refuses_an_explicit_index_text(tmp_path):
+    path = str(tmp_path / "ro.db")
+    m = areev.Areev(path, ns="caller")
+    del m
+    with pytest.raises(ValueError, match="re-stamps"):
+        areev.Areev(path, ns="caller", index_text=True, read_only=True)
+
+
+def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
+    # Without tool_env a host tool inherits this process's environment, so a
+    # variable the host holds for its own use is visible to it. With one, the
+    # environment is cleared and only the named variables get through.
+    monkeypatch.setenv("AREEV_TEST_PLANTED", "leaked")
+    m = make_db(tmp_path, ns="ops")
+    greet = m.add("tool", json.dumps({
+        "tool_name": "greet", "kind": "definition",
+        "tool_description": "greets", "created_at": 500,
+    }), "ops")
+    wf = m.add("workflow", json.dumps({
+        "nodes": ["greet"], "edges": [], "bindings": {"greet": greet},
+        "created_at": 502,
+    }), "ops")
+    cmd = 'printf \'{"seen":"%s"}\' "$AREEV_TEST_PLANTED"'
+
+    def seen(run_id, **kw):
+        assert json.loads(m.run_start(wf, run_id, "{}", cmd, **kw))["finished"] == "Completed"
+        trace = json.loads(m.run_trace(run_id))["trace"]
+        return trace[0]["fields"]["context"]["scheduler"]["context"]["seen"]
+
+    assert seen("py-env-inherit") == "leaked"
+    assert seen("py-env-cleared", tool_env="AREEV_TEST_OTHER") == ""
+
+
+def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
+    # A connector holds the third-party credential more often than a tool does,
+    # so a tool_env that stopped at the run starter would clear the environment
+    # for the wrong process. The CLI applies it here; the bindings must too.
+    monkeypatch.setenv("AREEV_TEST_PLANTED", "leaked")
+    m = make_db(tmp_path, ns="ops")
+    tool = m.add("tool", json.dumps({"tool_name": "noop", "kind": "definition"}), "ops")
+    wf = m.add("workflow", json.dumps({
+        "name": "poll", "nodes": ["only"], "edges": [], "bindings": {"only": tool},
+    }), "ops")
+    m.trigger_add(json.dumps({
+        "kind": "polling", "workflow": wf, "connector": "probe",
+        "interval_secs": 1, "dedup_key": ["/saw"],
+    }), "the connector reports what it can see")
+
+    # Returns a cursor because the FIRST poll only seeds one and deliberately
+    # fires nothing (areev-trigger's priming-poll rule).
+    connector = ('printf \'{"items":[{"id":"i%s","payload":{"saw":"%s"}}],'
+                 '"cursor":"c%s","more":false}\' "$$" "$AREEV_TEST_PLANTED" "$$"')
+
+    def poll(tool_env=None):
+        return json.loads(m.trigger_run(connector_cmd=connector, tool_env=tool_env))
+
+    def saw_so_far():
+        grains = json.loads(m.cal("RECALL events LIMIT 50"))["grains"]
+        return sorted(json.loads(g["fields"]["content"])["saw"] for g in grains
+                      if "saw" in json.loads(g["fields"]["content"]))
+
+    assert poll()["items"] == 0, "the first poll only seeds"
+    time.sleep(1.1)
+    assert poll()["items"] == 1
+    assert saw_so_far() == ["leaked"], "without tool_env the connector inherits"
+
+    time.sleep(1.1)
+    assert poll(tool_env="AREEV_TEST_OTHER")["items"] == 1
+    assert saw_so_far() == ["", "leaked"], "a cleared connector must not carry it"
+
+
+def test_tool_env_refuses_to_re_admit_a_registered_secret(tmp_path, monkeypatch):
+    # Reading `credentials_json` is what registers the variable as holding a
+    # secret; naming it in tool_env must not hand it back to the connector.
+    # End-to-end guarantee only: both the inherit default's deny list and the
+    # allow list's intersection withhold it, so this cannot tell them apart.
+    # The mechanism is pinned by run_stack's
+    # `tool_env_refuses_to_re_admit_a_registered_secret`.
+    monkeypatch.setenv("AREEV_TEST_CRED", "hunter2")
+    m = make_db(tmp_path, ns="ops")
+    tool = m.add("tool", json.dumps({"tool_name": "noop", "kind": "definition"}), "ops")
+    wf = m.add("workflow", json.dumps({
+        "name": "poll", "nodes": ["only"], "edges": [], "bindings": {"only": tool},
+    }), "ops")
+    m.trigger_add(json.dumps({
+        "kind": "polling", "workflow": wf, "connector": "probe",
+        "interval_secs": 1, "dedup_key": ["/saw"],
+    }), "a credential variable is never re-admitted")
+
+    connector = ('printf \'{"items":[{"id":"i%s","payload":{"saw":"%s"}}],'
+                 '"cursor":"c%s","more":false}\' "$$" "$AREEV_TEST_CRED" "$$"')
+
+    def poll():
+        return json.loads(m.trigger_run(
+            connector_cmd=connector,
+            credentials_json=json.dumps({"svc": "AREEV_TEST_CRED"}),
+            tool_env="AREEV_TEST_CRED",
+        ))
+
+    assert poll()["items"] == 0        # priming poll
+    time.sleep(1.1)
+    assert poll()["items"] == 1
+    grains = json.loads(m.cal("RECALL events LIMIT 50"))["grains"]
+    saw = [json.loads(g["fields"]["content"])["saw"] for g in grains]
+    assert saw == [""], f"a registered credential variable must stay withheld: {saw}"
+
+
+def test_read_only_open_of_an_absent_encrypted_path_creates_no_sidecar(tmp_path):
+    # Deriving the page key writes a .kdf sidecar; a refused read-only open
+    # must not leave one behind.
+    path = str(tmp_path / "typo.db")
+    with pytest.raises(ValueError, match="STO-E005"):
+        areev.Areev(path, ns="caller", passphrase="pw", read_only=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
 # --------------------------------------------------------------------------
 # areev-loop — the governed self-improvement loop
 # --------------------------------------------------------------------------

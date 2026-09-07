@@ -135,8 +135,12 @@ fn evaluator(
         run_stack::flag_or_env(flags, "connector-cmd", "AREEV_RUN_CONNECTOR_CMD")
             .or_else(|| run_stack::flag_or_env(flags, "tool-cmd", "AREEV_RUN_TOOL_CMD"))
             .map(|cmd| {
-                Arc::new(areev_run::CommandExecutor::new(&cmd))
-                    as Arc<dyn areev_run::HostToolExecutor>
+                let ce = areev_run::CommandExecutor::new(&cmd);
+                let ce = match run_stack::tool_env_policy(flags) {
+                    Some(p) => ce.with_env_policy(p),
+                    None => ce,
+                };
+                Arc::new(ce) as Arc<dyn areev_run::HostToolExecutor>
             });
 
     // The credential broker for the runs a firing starts, distinct from the

@@ -51,6 +51,14 @@ pub const MAX_LESSON_LEN: usize = 240;
 /// of the trust floor rather than tuning knobs.
 pub const MAX_RELATION_LEN: usize = 64;
 pub const MAX_OBJECT_LEN: usize = 480;
+/// A skill step is one instruction line; a skill has at most this many.
+pub const MAX_SKILL_STEP_LEN: usize = 240;
+pub const MAX_SKILL_STEPS: usize = 20;
+/// A skill name is an identifier a person types at `skill_view`, not a title.
+pub const MAX_SKILL_NAME_LEN: usize = 64;
+/// A plan has at most this many steps; a condition is one short line.
+pub const MAX_PLAN_NODES: usize = 20;
+pub const MAX_COND_LEN: usize = 200;
 pub const MAX_QUERY_BODY_LEN: usize = 2_000;
 pub const MAX_PLAN_EDITS: usize = 8;
 pub const MAX_CODE_LEN: usize = 20_000;
@@ -209,6 +217,58 @@ pub enum DraftProposal {
         #[serde(default)]
         source: String,
     },
+    /// A reusable procedure — a Skill grain — derived from a trajectory that
+    /// succeeded: what it does, when to reach for it, and the ordered steps.
+    /// The skill's NAME comes from the target (`entity:<ns>/<name>`), like a
+    /// fact's subject; when a live skill of that name exists the proposal
+    /// supersedes it rather than adding a near-duplicate (PAST-Bench's own
+    /// analysis names "splits into near-duplicate notes" as the procedural
+    /// failure mode). Offered only when `Policy::skills.enabled`.
+    Skill {
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        when_to_use: String,
+        #[serde(default)]
+        steps: Vec<String>,
+    },
+    /// A reusable procedure as a PLAN: named steps, each bound to a tool the
+    /// evidence shows was called, and edges with conditions in the runtime's
+    /// frozen grammar. Applies as a Workflow grain (the structure the runtime
+    /// validates and can execute) plus a Skill grain of the same name (the
+    /// prose a model reads), in one batch; a live pair of that name is
+    /// superseded. Offered only when `Policy::plans.enabled`.
+    Plan {
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        when_to_use: String,
+        #[serde(default)]
+        nodes: Vec<PlanNodeDraft>,
+        #[serde(default)]
+        edges: Vec<PlanEdgeDraft>,
+    },
+}
+
+/// One step of a `plan` draft: an identifier, the tool it calls, and what it
+/// does with it.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PlanNodeDraft {
+    pub id: String,
+    pub tool: String,
+    pub step: String,
+}
+
+/// One edge of a `plan` draft. `cond` is in the runtime's frozen grammar
+/// (`path == literal`, `path != literal`, `path exists`, `!path`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PlanEdgeDraft {
+    pub src: String,
+    pub dst: String,
+    pub cond: Option<String>,
+    pub max_cycles: Option<u32>,
 }
 
 impl LlmDraft {
@@ -530,4 +590,26 @@ mod tests {
         assert_eq!(cap("héllo", 2), "hé");
         assert_eq!(cap("hi", 5), "hi");
     }
+    #[test]
+    fn skill_proposal_parses_and_missing_fields_default_empty() {
+        let raw = r#"{"recommendations":[{"summary":"s","target":"entity:ops/triage-batch","evidence":["e1"],
+            "proposal":{"kind":"skill","description":"Triage an open ticket batch","when_to_use":"a batch of open helpdesk tickets arrives",
+            "steps":["List open tickets with helpdesk_list_tickets","Fetch each with helpdesk_get_ticket","Update priority and tags"]}}]}"#;
+        let d = &parse_discover(raw).recommendations[0];
+        match d.parsed_proposal() {
+            Some(DraftProposal::Skill { description, when_to_use, steps }) => {
+                assert_eq!(description, "Triage an open ticket batch");
+                assert!(when_to_use.starts_with("a batch"));
+                assert_eq!(steps.len(), 3);
+            }
+            other => panic!("expected a skill, got {other:?}"),
+        }
+        let d = &parse_discover(r#"{"recommendations":[{"summary":"s","target":"entity:a/b","evidence":["e1"],"proposal":{"kind":"skill"}}]}"#)
+            .recommendations[0];
+        assert!(
+            matches!(d.parsed_proposal(), Some(DraftProposal::Skill { steps, .. }) if steps.is_empty()),
+            "a bare skill parses to empties; the engine, not the parser, decides it is too thin"
+        );
+    }
+
 }

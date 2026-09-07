@@ -43,8 +43,8 @@ pub use areev_core::types::capability::AllowedHost;
 pub use areev_core::types::capability::{CapabilityDenied, Declaration};
 pub use egress::{EgressDenied, EgressPolicy};
 pub use executor::{
-    is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor, CommandExecutor, EgressHandle,
-    ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
+    env_allow_policy, is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor,
+    CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
 };
 pub use manifest::{abstract_nodes, BudgetsSpec, ForkBase, PinnedTool, RunManifest};
 pub use runner::{ns_in_scope, CrashPoint, OnDangling, RunOptions, Runner};

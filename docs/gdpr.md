@@ -89,6 +89,8 @@ a fingerprint.
 
 These are **requirements**, not suggestions. The article map above assumes
 them; a deployment that skips one has a finding waiting.
+[`compliance-profiles.md`](compliance-profiles.md) turns this section into the
+commands that configure it, beside the healthcare and financial presets.
 
 1. **One memory per trust domain.** A memory is the unit of erasure and of
    isolation, and `areev ui --token-env`'s bearer token is a single shared

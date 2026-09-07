@@ -950,6 +950,21 @@ must be granted, and the refusal names the pattern, never a discovered
 namespace); and one `RECALL`'s scope set cannot span mounts (that is
 ASSEMBLE's job).
 
+The write side carries one more rule, for a different reason. A namespace is
+brought into existence by the first grain written into it — there is no
+declaration step, and nothing downstream can tell a new name from a
+mistyped one. So a **locally authored write refuses an unspellable
+namespace**: whitespace, a control character, or an invisible formatting
+character (`VAL-E001`). Names stay opaque strings otherwise; what the rule
+excludes is names a human cannot read back off a diff or a command line.
+The failure it prevents is silent by construction — a harness whose
+`"agent:harness"` became `"age, build_messagesnt:harness"` kept writing
+successfully for twelve hours while every reader of the intended namespace
+saw an empty memory, and the governance loop that depended on those reads
+recorded no verdict and proposed no revert. Read surfaces do not enforce it,
+so a file written before the rule stays readable, erasable and disclosable
+under the name it used; replication replay is exempt for the same reason.
+
 ### Self-improvement is governed, not autonomous
 
 Most agent-memory products treat self-improvement as an intelligence problem —
@@ -1525,8 +1540,9 @@ What this retires is a shape the deployment docs previously had to prescribe:
 a PgBouncer or Cloud SQL Auth Proxy inserted purely to compensate for a
 missing client capability — an extra component *inside* the trust boundary,
 and one more thing to hold a credential. The proxy stays supported for the
-cases where it earns its place (pooling, IAM auth); it is no longer the price
-of encryption. Raised as
+cases where it earns its place (pooling — in **session mode**, per
+`deployment-profile.md` — and IAM auth); it is no longer the price of
+encryption. Raised as
 [#117](https://github.com/AreevAI/areev/issues/117) from a fleet deployment on
 Azure Flexible Server. Contract:
 [docs/deployment-profile.md](docs/deployment-profile.md) §"Postgres connection
@@ -1595,7 +1611,9 @@ return is visible rather than inferred. Raised as
 
 ### A read-only open is a property of the handle, not a privilege to negotiate
 
-**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`) opens
+**Decision (2026-08-25):** `AreevOptions::read_only` (CLI `--read-only`,
+`read_only=`/`readOnly` in the two bindings since
+[#183](https://github.com/AreevAI/areev/issues/183)) opens
 a memory that refuses every write in-process with `STO-E004`, and on the
 Postgres backend issues **no DDL at all** — no `CREATE SCHEMA`, no
 `CREATE … IF NOT EXISTS` index maintenance, no seed, no advisory lock. It

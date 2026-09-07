@@ -587,7 +587,8 @@ sandbox image built; Harbor 0.22 with the Horizon reference agents; the
 Horizon environment image. The `bench/persist` worktree is rsynced to
 `~/mg/products/areev-persist` (never pushed). Runs live in
 `~/mg/local/areev-runs/persist/`; only counts, manifests and checksums
-travel back into `crates/areev-bench/results/persist-<date>/`.
+travel back into `results/persist-<date>/` in
+[AreevAI/areev-benchmark](https://github.com/AreevAI/areev-benchmark).
 
 Model legs, all through OpenRouter on the one key in `dev-areev.env`:
 agent and DISCOVER/VERIFY `qwen/qwen3-30b-a3b-instruct-2507` pinned to
@@ -703,6 +704,55 @@ Written before any scored run; the pilot may amend the budget, never these.
 - **Horizon public tasks:** plumbing only; no claim from three tasks.
 - **Any arm inside the A0R noise floor:** not interpreted.
 
+### Stated in advance — run 4 (written 2026-09-07, after the three-seed forensics, before any run-4 episode)
+
+Run 4 is the same design — three seeds, the three main arms, all 26
+families, the same model and provider pin, Hermes untouched — with four
+changes to the Areev arms, each aimed at a mechanism the ledger names
+(§11 #20–#22, #23 deliberately left open) and each a policy that defaults to
+the run-3 behaviour:
+
+1. **The Verify gate is live**: `checkpoints: [{"after_runs": 1}]` — a
+   lesson is measured at the next graded episode after its apply, and the
+   gate's second question, `premise_drift`, is on (#20, #22).
+2. **The proposer may author a Skill or a Plan** from a trajectory that
+   succeeded; successful tool calls reach the evidence bundle (#21).
+3. **The agent may give a note an `expires`**; an expired note is not
+   rendered and the `staleness` analyzer proposes its tombstone.
+4. `min_evidence` stays at 1, so run 4 measures the writer and the gate,
+   not the evidence floor. `AREEV_LOOP_POLICY_EXTRA={"min_evidence": 2}` is
+   the pre-registered arm for a run 5 if governed still trails passive.
+
+Predictions, in order of confidence:
+
+- **Procedural (8 families):** the empty-store arm-seeds (9 of 60 in runs
+  1–3) have a writer. Prediction: Areev's procedural Δ rises from
+  +0.144/+0.112 toward Hermes's +0.169; `sop_bootstrap_04` and `_06` stop
+  scoring below their own no-memory floor. If procedural does not move, the
+  writer is not the cause and the proposer's skill/plan drafts are being
+  refused — the funnel says where.
+- **Governed vs passive:** runs 1–3 read −0.025 (p 0.78) with zero reverts.
+  Prediction: governed ≥ passive once harmful lessons are measured at the
+  next episode and reverted, and lessons whose premise was superseded are
+  reverted (`rule_migration`, −0.324 in run 3, is the named case). If
+  governed still trails passive with reverts now firing, the lessons
+  themselves are the harm and run 5's `min_evidence: 2` is the test.
+- **Passive vs Hermes (the headline):** +0.045 (p 0.21) as measured. The
+  counterfactual said parity on `sop_bootstrap_04`, `failure_to_rule_01` and
+  `constraint_retention` reaches p ≈ 0.016. Run 4 addresses the first two;
+  #23 is deliberately unchanged, so the bar for run 4 is **p < 0.10 on the
+  paired Wilcoxon**, and a significant win is not claimed from it. If passive
+  − Hermes is unchanged or worse, published as that, beside the funnel.
+- **Cost:** no more than +10% prompt tokens per episode on the Areev arms —
+  plans and skills render into the prompt; the bundle's reserved shares are
+  unchanged. Above that, the cost claim is re-stated with the new number.
+- **Any per-family swing inside the noise floor (0.09–0.13):** not
+  interpreted.
+
+Cap for run 4: **$12**. The three-seed statistics script and the audit run
+unchanged; the harness's configuration is written beside every ledger as
+`loop-policy.json`.
+
 ## 11. The defect ledger — what building the harness found (running)
 
 Recorded as the receipts programme recorded its six, because each one
@@ -729,3 +779,7 @@ changed a number before it was caught.
 | 17 | 2026-09-07, titled rerun | harness | `PG01_release_decision_followup`'s seeded sessions plus the family's own turns passed the 500-grain scan cap the harness inherited from the receipts rule ("a truncated prompt is a wrong prompt"), the scan raised, the exception's traceback kept the file handle alive, and the next open failed with STO-E002 for both Areev arms | event scans are bounded at CAL's 1000 and never raise (a truncated title list is a bounded answer, not a wrong one); `with_memory` drops the traceback before releasing the handle; PG01 rerun |
 | 18 | 2026-09-07, run 1 audit | harness | the ROOT CAUSE of #7 and #14: the binding's `recommendations()` JSON has no `evidence` field at all (analyzer, summary, target_ref, status, hash, severity, …), so every reviewer call since the pilot was handed "(none)" and the gate refused 75 of 75 proposals in run 1 as unsupported — the governed arm was the passive arm plus the loop's cost, by construction. The cited hashes live in the stored recommendation Fact (`areev-loop` namespace, relation `loop_recommendation`, the record in `object`) | the reviewer reads the evidence from the stored record; run 1's governed arm is the *blind-gate* reading and stays; run 2 is the first sighted run and is labelled so |
 | 19 | 2026-09-07, run 1 audit | harness | `session_search` returned single matching Events out of context: on the three session-search families Hermes (session summaries) beat the Areev arms by 0.13–0.15 even after the titles fix, and the returned turns named the session that mattered without carrying what it said | the top matching sessions are returned as whole threads, in order, bounded — lossless where Hermes summarises |
+| 20 | 2026-09-07, three-seed forensics | engine | the Verify gate never fired: 81 lessons applied across the 78 governed arm-seeds, **0 verdicts, 0 reverts**. The adapter journaled every episode's score as an evalset run and set `outcome_evalset`, but no schedule, so the loop's default applied — the first checkpoint a day after the apply — on families whose median wall time is 6.8 minutes (max 12). The half of governance the receipts harness had just proved end to end was structurally unable to come due; every harmful lesson in #22 stayed live | the loop takes its schedule in the deployment's unit — `checkpoints: [{"after_runs": 1}]` measures at the next graded episode — and the harness sets exactly that; `cadence` is policy too, for the same reason in the other direction |
+| 21 | 2026-09-07, three-seed forensics | engine | on procedural families 9 of 60 Areev arm-seeds had an EMPTY store at evaluation (Δ −0.033, below no memory); the other 51 scored +0.169 — Hermes's procedural score to the third decimal. In all nine the agent performed the procedure correctly in the learn episode (0.856 on `sop_bootstrap_04`, identical to Hermes) and then answered the session-end nudge "nothing to save". Every skill in the memory depended on the model volunteering one mid-task; Hermes runs a separate review pass that writes for it. Where Areev did write, the skill was thin (`artifact_rule_quality` 0.25 vs 1.0 on `failure_to_rule_01`): five terse lines against trigger / steps / verification / pitfalls | DISCOVER may author a Skill (`skills` policy, default on): description, `when_to_use`, ordered steps, named by the target, superseding a live skill of that name; successful tool calls join the evidence bundle after the failures, and the Tool brief carries the call's input. Gate-governed like every draft; never auto-applied |
+| 22 | 2026-09-07, three-seed forensics | harness + engine | of the 81 applied lessons only 41 came from learn episodes — 25 from control and 15 from evaluation episodes; 61 carry an absolute quantifier; 11 tell the agent to stop or escalate. One, "if a method is not found after three attempts, escalate to human immediately instead of retrying", applied at `eval_near`, took `sop_bootstrap_05` from passive +0.730 to governed −0.010; on `rule_migration` the loop encoded the OLD regime's flag as standing policy (−0.324). The audit's finding — 15 of 28 approvals generalised one instance — has a mechanism | `min_evidence` in the policy (default 1, today's behaviour; the audit argues 2); with #20 fixed, a harmful lesson is now measured at the next episode and reverted. The harness leaves `min_evidence` at its default for comparability and exposes `AREEV_LOOP_POLICY_EXTRA` to set it per run |
+| 23 | 2026-09-07, three-seed forensics | adapter | `constraint_retention`: both systems store the boundary with artifact quality 1.0 and retrieval 1.0; Areev scores a flat 0.664 on every seed, Hermes 0.904 on `eval_far`. Hermes routed it to `USER.md` (a behavioural expectation, always in context); Areev's agent used the profile slot in **0 of 156** arm-seeds. Where the governed loop restated the constraint as a procedure ("verify each recipient is an internal employee before sharing") `eval_far` rose 0.664 → 0.864 on two of three seeds: the same knowledge as a directive is obeyed, as a fact it is not | open — render constraints as in-scope directives and route behavioural rules to the profile section (the paper's E2); not changed before run 4 so the three fixes above can be attributed |

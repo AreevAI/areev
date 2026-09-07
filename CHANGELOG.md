@@ -8,6 +8,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Compliance profile presets** ([`docs/compliance-profiles.md`](docs/compliance-profiles.md)).
+  GDPR, healthcare and financial deployments assembled as the exact commands
+  that configure them, with the distinction that decides whether an auditor's
+  answer holds: a **file-truth** (`anonymize set`, `retention set`,
+  `retention floor`, `hold set`) travels with a copy of the memory, a **host
+  config** (`--anonymize-egress`, `--no-destructive-ops`, `--read-only`) is a
+  cap for one process and is forgotten on the next open. Documentation of
+  existing flags — no new surface
+  ([#190](https://github.com/AreevAI/areev/issues/190)).
+- **A read-only open in the Python and Node bindings.** `--read-only` has
+  refused every write on the CLI since 1.7.0, but the binding constructors
+  had no equivalent, so a console, an evaluator or an analytics reader
+  embedding Areev had to hold owner-grade credentials to do nothing but read.
+  `Areev(path, read_only=True)` / `new Areev(path, …, readOnly)` opens the
+  same way: writes fail with `STO-E004`, an absent memory is never created,
+  no telemetry sidecar is attached (its flush is a write), and on the
+  Postgres backend the open issues no DDL at all — SELECT-only verification
+  instead, which is what makes a role holding only `USAGE` and `SELECT` a
+  workable identity. An explicit `index_text`/`indexText` is refused
+  alongside it, because that re-stamps the file's declaration
+  ([#183](https://github.com/AreevAI/areev/issues/183)).
+- **`--tool-env` names what a host tool's environment contains, instead of
+  what it must not.** Host tools spawn under `InheritExcept`: everything this
+  process holds minus the variables Areev was told hold secrets. A host whose
+  own environment carries secrets Areev never named therefore had to keep
+  them out of the process entirely. `--tool-env VAR,…` (env
+  `$AREEV_RUN_TOOL_ENV`, `tool_env=` in Python, `toolEnv` in Node) clears the
+  environment and passes only the named variables plus the minimal set a
+  command needs to start. It reaches `--tool-cmd`, a `trigger run` connector,
+  and a pinned **native** blob; the sandbox seam already cleared and is
+  unchanged. An allow list cannot re-admit a variable Areev was already told
+  holds a secret — the name is dropped and reported, so #100's invariant stays
+  unconditional; `--resolver-env` remains the one deliberate exception, for
+  credential resolvers ([#188](https://github.com/AreevAI/areev/issues/188)).
+- **A refused read-only open leaves nothing behind.** Deriving a passphrase key
+  writes a `<path>.kdf` sidecar when one is absent, which is right when
+  creating an encrypted memory and wrong on the way to a refusal: pointing
+  `--read-only --passphrase-env` at a path that does not exist failed correctly
+  with `STO-E005` but left a stray `.kdf` file. The precondition is now one
+  shared rule (`areev_store::read_only_requires_existing`) applied before the
+  derivation on all three surfaces — CLI, Python and Node.
+- **The loop's cadence and the Verify gate's schedule take the deployment's
+  own units, as policy.** `outcome_evalset.checkpoints` schedules a
+  re-measurement in `after_ms`, `after_runs` (evalset runs journaled since the
+  apply) or `after_grains` (grains written since it); a bare integer still
+  means milliseconds, so every policy, snapshot and state blob written before
+  reads unchanged, and the 1d / 7d / 30d default is untouched. It exists
+  because a schedule counted in days is inert on a deployment that finishes in
+  minutes: on PAST-Bench the default fired zero verdicts and zero reverts
+  across 78 governed runs — the half of governance the receipts harness had
+  just proved worked — because a family finishes in seven minutes and the
+  first checkpoint was a day away. `cadence` lifts the per-call run gate
+  (`--min-new`, `--if-stale`) into the policy file so CLI, MCP and console
+  share one rhythm, and adds `every_events` (turns) and `every_sessions`;
+  unset, a pass is due whenever it is called, as before. Flags override the
+  block; a sweep always runs. A skipped pass reports `cadence_not_due`.
+- **DISCOVER may author a Skill.** A `skill` proposal — description,
+  `when_to_use`, ordered steps — derived from a trajectory that succeeded,
+  named by its target, placed in the evidence's namespace, and superseding a
+  live skill of the same name rather than duplicating it. Governed like every
+  draft: GROUND, VERIFY, the confidence floor, a review with a BECAUSE, never
+  auto-applied. `skills: {enabled, min_steps}` in the policy, default on with
+  two steps. Measured need: on PAST-Bench the agent performed a procedure
+  correctly on every seed and then, asked whether to save it, said "nothing
+  to save"; the store was empty at evaluation and scored below having no
+  memory. Every skill had depended on the model volunteering one mid-task.
+- **DISCOVER may author a plan.** A `plan` proposal — steps bound to tools
+  the cited evidence shows were called, edges with conditions in the
+  runtime's frozen grammar — applies as a Workflow grain (validated by the
+  substrate's plan validator before it can be stamped applicable) beside a
+  Skill of the same name, in one batch; a live pair of that name is
+  superseded. `plans: {enabled, min_nodes}`, default on. A skill is what a
+  model reads; a plan is what the runtime can check, run, journal and patch.
+- **The Verify gate asks a second question: does the premise still stand?**
+  When a grain an applied recommendation cited is later superseded by a
+  different value or retracted, the gate records `drifted` and
+  `outcome_review` proposes the revert (`outcome.premise_drift`). A
+  value-identical supersession is not drift. `premise_drift: true` by
+  default. Measured need: a governed lesson encoding a superseded rule cost
+  0.32 on PAST-Bench's migration family.
+- **`min_evidence`** (default 1): the fewest distinct grains an LLM draft
+  must cite to be offered as a change. Under it the draft is stored and
+  reviewable but applies as nothing; the funnel counts the demotions as
+  `advisory_thin_evidence`. An audit of 88 governed decisions found 15 of 28
+  approvals had generalised one instance into standing policy — `2` is the
+  setting that audit argues for.
+
 - **Batch reads for the bench harness.** `evaluate.py --batch` submits a
   whole held-out arm as one job to a batch endpoint — the OpenAI files
   shape or OpenRouter's inline `/api/beta/batches` (`scripts/batch_toolcall.py`,
@@ -116,6 +203,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Successful tool calls reach the evidence bundle when skill authoring is
+  on** — after the failures, inside the same reserved share, so a busy desk's
+  successes cannot bury the failure signal. With `skills.enabled: false` the
+  bundle is exactly what it was. The Tool brief now carries the call's
+  `input`: a procedure is not reconstructible from tool names and outputs.
+- `areev loop policy` prints the two new defaults (`skills`, `min_evidence`);
+  the goldens are re-blessed. `areev loop outcomes` labels a run- or
+  grain-counted checkpoint as `@1 run` / `@50 grains`; time checkpoints
+  render as before.
+
+- **A grain write refuses an unspellable namespace** (`VAL-E001`): one
+  carrying whitespace, a control character, or an invisible formatting
+  character (zero-width space, BOM, soft hyphen). Namespaces stay opaque
+  strings — `org.sales.emea`, `agent:authz` and `部門:営業` are all equally
+  fine — but a write is the operation that *mints* a namespace, and nothing
+  downstream can tell a new name from a mistyped one, so a typo there is
+  accepted by every surface and found by none. That is not hypothetical: a
+  bad substitution turned a harness's `"agent:harness"` into
+  `"age, build_messagesnt:harness"`, twelve hours of evaluations journaled
+  into it successfully, and the loop that reads that namespace recorded no
+  verdict and proposed no revert for a lesson that had cost the agent every
+  exact match it had. Read surfaces are deliberately unchanged and
+  replication replay is exempt, so a file written before this rule stays
+  readable, erasable and disclosable under the name it used.
 - **A lesson's outcome verdict compares against the newest evalset run
   before its apply**, not the run the proposal froze, when one exists. A
   deployment that journals its evalset on day one and then approves rule
@@ -161,6 +272,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as well; advisory flags keep one open flag per target.
 
 ### Fixed
+
+- **The deployment profile no longer recommends a pooler mode the store cannot
+  survive.** `docs/deployment-profile.md` suggested PgBouncer in transaction
+  mode for multi-tenant hosts. The store keeps three things on the session —
+  `search_path` pinned at open, the bootstrap advisory lock (`pg_advisory_lock`,
+  not the `_xact_` form), and the hot-path queries as server-side named prepared
+  statements cached per connection — and transaction pooling hands each
+  transaction to whichever backend is free, so none of them survives. The
+  prepared-statement failure is the loud one (`prepared statement "s0" does not
+  exist`); the `search_path` failure is the dangerous one, because one schema is
+  one memory, so a statement landing on a connection scoped to a different
+  schema is a query answered from **another tenant** rather than a query that
+  fails. Session mode is now stated as the requirement, with the invariant a
+  proxy must satisfy (one client connection, one server session, for its whole
+  life) and a table of what is and is not safe — including Neon's `-pooler`
+  endpoint, which is transaction-mode PgBouncer and is the hostname its
+  quickstarts hand out
+  ([#189](https://github.com/AreevAI/areev/issues/189)).
 
 - **The Postgres dictionary no longer bounds what a grain may say.** `terms`
   was `text UNIQUE`, and a Postgres btree entry caps at ~2704 bytes *after*
@@ -219,7 +348,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `main` and uploaded it under the older tag's name — the fix #159 applied
   to `build` now covers `sbom` too
   ([#162](https://github.com/AreevAI/areev/issues/162)).
-
+- **`areev hold` and `retention floor|floor-clear|floors` reach `--help`.**
+  Both verbs shipped working and dispatched, but the usage text listed
+  `retention <set|list|clear|sweep>` and no `hold` line at all — so the two
+  controls a records-retention deployment most needs were discoverable only
+  by reading the source.
+- **`areev hold release` records why.** `set` has always demanded a
+  `--because` "because a hold with no recorded rationale is not auditable",
+  but `release` — the act an auditor actually asks about — accepted the flag
+  and ignored it, and the hold row that carries the placement reason is
+  *deleted* on release. Both transitions now demand a reason and write a
+  Tier-2 audit record, so `areev audit export` shows `hold.set` and
+  `hold.release` with who and why. **Breaking for scripts**: a bare
+  `areev hold release --ns NS` is now refused.
+- **`areev anonymize scan|test` no longer name a memory they never open.**
+  Both are pure text processing, but they resolved the default memory first —
+  printing `using default memory ~/.areev/default.db` and creating the
+  directory. They now dispatch before `resolve_db`, like `auth`.
 
 ## [1.7.2] — 2026-09-02
 

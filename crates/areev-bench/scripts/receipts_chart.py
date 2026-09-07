@@ -4,8 +4,8 @@
     receipts_chart.py OUT_STEM LABEL=DIR [LABEL=DIR …]
 
     receipts_chart.py docs/assets/receipts-selfimprove \
-      "run 1=crates/areev-bench/results/receipts-sroie-2026-09-04" \
-      "run 2=crates/areev-bench/results/receipts-sroie-run2-2026-09-04"
+      "run 1=../areev-benchmark/results/receipts-sroie-2026-09-04" \
+      "run 2=../areev-benchmark/results/receipts-sroie-run2-2026-09-04"
 
 Writes OUT_STEM-light.svg and OUT_STEM-dark.svg. Two or more cells; the
 order given is the order drawn, and the label is what appears on the chart.

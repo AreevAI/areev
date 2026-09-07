@@ -681,7 +681,15 @@ RECALL facts WHERE namespace = "org.*" AND subject = "john"
 
 Because `*` carries this meaning on the read side, it is **reserved in
 namespace names**: `ADD … SET namespace = "org.*"` (and every other write)
-refuses. Scopes select **reads only** — `FORGET SUBJECT`, `PURGE OLDER THAN …
+refuses. A write also refuses an **unspellable** namespace — one carrying
+whitespace, a control character, or an invisible formatting character
+(`"agent harness"`, `"agent\u200bharness"`) — with `VAL-E001`. Namespaces are
+otherwise opaque strings and stay that way; the rule exists because a write is
+what *mints* a namespace, so a typo in one is accepted by every surface and
+found by none. Reads are deliberately unaffected: a file written before the
+rule stays readable, erasable and disclosable under the name it used.
+
+Scopes select **reads only** — `FORGET SUBJECT`, `PURGE OLDER THAN …
 IN`, grants (`GRANT … ON` takes exact names or `*` alone), retention/anon
 policy, and the point reads (`HISTORY`-style graph/time reads) all take exact
 namespaces and refuse patterns loudly: a wildcard must never widen a

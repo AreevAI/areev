@@ -273,6 +273,8 @@ are the identity when no backend is set:
   | `query_revision` | `query:<name>` / `template:<name>` | `DEFINE QUERY`/`DEFINE TEMPLATE` — the agent revising how it assembles its own context |
   | `plan_revision` | `grain:<workflow hash>` | `SUPERSEDE … WITH workflow` from ≤8 field-level edits |
   | `code_revision` | `tool:<name>` | §7.4's promotion grain, behind the Rule E1 evalset gate |
+  | `skill` | `entity:<ns>/<skill-name>` | `ADD skill` — a reusable procedure (description, `when_to_use`, ordered steps) from a trajectory that succeeded; `SUPERSEDE … WITH skill` when a live skill of that name exists. Offered only under `skills.enabled` |
+  | `plan` | `entity:<ns>/<plan-name>` | one batch: `ADD workflow` (steps bound to tools the evidence shows were called, edges with conditions in the runtime's frozen grammar — handed to the substrate's plan validator first) **and** `ADD skill` of the same name (the prose). `SUPERSEDE` both when a live pair of that name exists. Offered only under `plans.enabled` |
 
   A draft with no proposal — or one the engine cannot resolve — stays an
   advisory flag, exactly as every DISCOVER finding used to. What resolves
@@ -498,9 +500,12 @@ hand (`areev loop rollback`) earns no cooldown — the finding may come back on
 the next pass, which is what lets a lesson be restored through the governed
 path after a deliberate retraction.
 
-Crucially, it re-measures on a **schedule of checkpoints** (1d / 7d / 30d), not
-once — so an outcome that looked fine early can be caught regressing later. A
-single fixed window would freeze a false "held"; the time series doesn't:
+Crucially, it re-measures on a **schedule of checkpoints**, not once — so an
+outcome that looked fine early can be caught regressing later. A single fixed
+window would freeze a false "held"; the time series doesn't. The schedule is
+in whatever unit the deployment counts: elapsed time (the 1d / 7d / 30d
+default), evalset runs since the apply, or grains written since it — a
+checkpoint counted in runs renders as `@1 run`, one in grains as `@50 grains`:
 
 ```bash
 areev loop outcomes --db agent.db
@@ -692,10 +697,71 @@ host policy file — `areev loop --policy loop-policy.json` (or
   "severity_floors": { "loop.staleness": "medium" },
   "telemetry": "aggregate",
   "discover_objective": "review_queue",
-  "outcome_evalset": { "hash": "<evalset hash>", "field": "passed", "higher_is_better": true },
-  "evidence_attribution": "named"
+  "outcome_evalset": {
+    "hash": "<evalset hash>", "field": "passed", "higher_is_better": true,
+    "checkpoints": [{ "after_runs": 1 }, { "after_ms": 604800000 }]
+  },
+  "evidence_attribution": "named",
+  "cadence": { "every_events": 10 },
+  "skills": { "enabled": true, "min_steps": 2 },
+  "plans": { "enabled": true, "min_nodes": 2 },
+  "premise_drift": true,
+  "min_evidence": 1
 }
 ```
+
+Three of those blocks decide **when** the loop acts and **what** it may
+author, and each defaults to what every deployment had before it existed:
+
+`cadence` (default: none — a pass is due whenever it is called) is the
+per-call gate (`--min-new`, `--min-new-errors`, `--if-stale`) written once,
+in the policy, so the CLI, the MCP tool and the console all keep the same
+rhythm — and with the units a chat deployment counts in: `every_ms`,
+`every_grains`, `every_events` (turns) and `every_sessions` (distinct
+conversations). Any threshold met makes the pass due. Explicit flags still
+override the block (host CLI flags > policy file), and `areev loop reflect`
+always runs: a sweep is a command, not a tick. A skipped pass reports
+`cadence_not_due`.
+
+`skills` (default: on, two steps minimum) lets DISCOVER propose a **Skill**
+— a reusable procedure with a description, a `when_to_use` cue and ordered
+steps — from a trajectory that succeeded. The name comes from the target
+(`entity:<ns>/<skill-name>`), the namespace from the evidence, and a live
+skill of that name is superseded rather than duplicated. It is a draft like
+any other: GROUND, VERIFY, the confidence floor, a review with a BECAUSE,
+never auto-applied. When it is on, successful tool calls join the evidence
+bundle after the failures, inside the same reserved share; off, the bundle
+is exactly what it was. It exists because, measured on PAST-Bench, the agent
+performed a procedure correctly and then answered "nothing to save" when
+asked — every skill in the memory had depended on the model volunteering one
+mid-task (`crates/areev-bench/PERSIST.md`).
+
+`plans` (default: on, two steps minimum) lets DISCOVER propose the same
+procedure as a **plan** — a Workflow grain the runtime validates before a
+reviewer sees it (unique, reachable steps; edges whose conditions parse;
+bounded cycles), each step bound to a tool the cited evidence shows was
+called, beside a Skill of the same name carrying the prose. A skill is what a
+model reads; a plan is what `areev run`, the run journal and `run_outcome`
+can reach, and what `plan_revision` can patch by field. The benchmark's own
+label for every procedural family — "ordered steps, tools, conditions; a
+patched v2 supersedes v1" — is a Workflow.
+
+`premise_drift` (default: on) is the Verify gate's second question. Every
+applied recommendation cites the grains it was derived from; when one is
+later superseded by a **different** value, or retracted, the premise the
+reviewer approved no longer holds, the gate records `drifted`, and
+`outcome_review` proposes the revert. A value-identical supersession (what
+consolidation does) is not drift. It exists because a lesson that outlives
+its premise is measured harm: on PAST-Bench a rule encoding the old regime's
+flag cost the governed arm 0.32 on the very migration family it was learned
+in.
+
+`min_evidence` (default 1) is the fewest distinct grains a draft must cite
+to be offered as a change; under it the draft is stored and reviewable but
+applies as nothing. An independent audit of 88 governed decisions found 15 of
+28 approvals had made one instance into standing policy; `2` is what that
+audit argues for. The funnel reports the demotions as
+`advisory_thin_evidence`.
 
 `evidence_attribution` (default `named`) decides whether an Observation
 reaches the LLM with its observer named — `<observer> (a person) said of
@@ -715,7 +781,14 @@ host's evalset as its outcome metric: baseline from the newest
 `mg:eval_run` summary journaled before the **apply** (the proposal freezes
 the newest run of its day; a run journaled between proposal and apply
 replaces it at verdict time), current from summaries journaled after the
-apply, checkpoints at `horizons_ms` (default 1d / 7d / 30d). It exists because an authored lesson carries no recurrence metric —
+apply, at the **checkpoints** the host sets — `horizons_ms` (default 1d /
+7d / 30d) or, in the deployment's own unit, `checkpoints`: `{"after_ms": n}`,
+`{"after_runs": n}` (evalset runs journaled since the apply) or
+`{"after_grains": n}` (grains written since it); a bare integer is ms. A
+benchmark or CI harness wants `[{"after_runs": 1}]` — measure at the next
+graded run, however soon — because a schedule counted in days is inert on a
+deployment that finishes in minutes: on PAST-Bench the day-long default fired
+zero verdicts across 78 governed runs. It exists because an authored lesson carries no recurrence metric —
 nothing errors when a lesson is merely useless or quietly harmful — so
 without it the Verify gate had nothing to re-measure for exactly the
 proposals a reviewer was least able to judge from the text. No run

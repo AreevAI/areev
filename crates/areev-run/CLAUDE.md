@@ -338,9 +338,19 @@ Neither replaces the other — see `docs/security-model.md` and
 - **`PinnedTool.capabilities`** freezes the declaration beside `runtime`, so a
   mid-run supersession cannot widen reach. `runtime_allows_capabilities` gates
   the `--allow-fetch` flag off the MANIFEST, never off the module.
-- The sandbox seam spawns under `EnvPolicy::ClearExcept`; native blobs keep
-  `InheritExcept`. `AREEV_*` extras are applied AFTER the policy, so the broker
-  handshake survives the clear.
+- The sandbox seam spawns under `EnvPolicy::ClearExcept`; native blobs and
+  `--tool-cmd` keep `InheritExcept` unless the host names an allow list —
+  `CommandExecutor::with_env_policy` / `CodeExecutor::with_env_policy`, fed by
+  `env_allow_policy(names)`, the one parser behind `--tool-env`,
+  `$AREEV_RUN_TOOL_ENV` and the bindings' `tool_env`. It drops any name in the
+  `SECRET_ENV` registry and returns it, so an allow list cannot re-admit a
+  known secret; the broker's resolver seam re-admits on purpose, which is why
+  the filter lives in the parser and not in `proc::run`. `deny_vars` leaves a
+  `ClearExcept` policy alone — rebuilding it as `InheritExcept` would widen the
+  child's environment while looking like a tightening. The sandbox path ignores
+  it: a wasm host has no claim on the operator's environment either way.
+  `AREEV_*` extras are applied AFTER the policy, so the broker handshake
+  survives the clear.
 
 ## Not yet (documented gaps)
 

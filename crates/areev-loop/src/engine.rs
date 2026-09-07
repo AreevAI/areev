@@ -15,8 +15,7 @@ use crate::manifest::{AnalyzerManifest, Capability};
 use crate::model::{normalize_ident, ActionKind, GrainRecord, Origin, Severity, TargetRef};
 use crate::recommendation::{
     dedup_key, AuditRecord, ObserverType, Proposal, RecStatus, Recommendation, Summary,
-    MAX_BECAUSE, MAX_EVIDENCE,
-};
+    MAX_BECAUSE, MAX_EVIDENCE, Checkpoint};
 use crate::substrate::{Capabilities, OmsSubstrate, ReadOpts, SubstrateRead};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -100,6 +99,8 @@ pub enum SkipReason {
     MinNewNotMet,
     NotStale,
     LockHeld,
+    /// The host policy's `cadence` block set a threshold and none was met.
+    CadenceNotDue,
 }
 
 /// One analyzer that did not contribute drafts, with why.
@@ -173,6 +174,15 @@ pub struct LlmFunnel {
     pub kept: u64,
     /// Cleared the confidence floor and reached the queue.
     pub stored: u64,
+    /// Kept, but demoted to advisory for citing fewer distinct evidence
+    /// grains than `Policy::min_evidence`. Omitted when zero, so a run under
+    /// the default policy reads exactly as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub advisory_thin_evidence: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl RunResult {
@@ -329,14 +339,29 @@ impl Engine {
         // it from re-proposing what is already queued.
         let analysis_watermark = if opts.full_sweep { None } else { watermark };
 
-        let (new_grains, new_error_events) = count_new(sub, watermark)?;
+        let new = count_new(sub, watermark)?;
+        let (new_grains, new_error_events) = (new.grains, new.error_events);
         if let Some(reason) = gate(opts, &persisted, new_grains, new_error_events, now_ms) {
             return Ok(RunResult::skipped(reason, new_grains, new_error_events));
         }
+        // The policy's cadence applies when the caller set no gate of its own
+        // (host CLI flags > policy file) and is not asking for a sweep — a
+        // sweep is a command, not a tick.
+        let flags_set = opts.min_new.is_some() || opts.min_new_errors.is_some() || opts.if_stale_ms.is_some();
+        if !flags_set && !opts.full_sweep {
+            if let Some(reason) = cadence_gate(&self.policy.cadence, &persisted, new, now_ms) {
+                return Ok(RunResult::skipped(reason, new_grains, new_error_events));
+            }
+        }
 
         // Phase 0: re-measure applied recommendations due for review (the
-        // Verify gate). Records a measured outcome per due recommendation.
-        let outcome_inputs = measure_outcomes(sub, &mut persisted, now_ms)?;
+        // Verify gate). Records a measured outcome per due recommendation —
+        // and, under policy, asks the gate's second question: does each
+        // applied recommendation's PREMISE still stand?
+        let mut outcome_inputs = measure_outcomes(sub, &mut persisted, now_ms)?;
+        if self.policy.premise_drift {
+            outcome_inputs.extend(detect_premise_drift(sub, &mut persisted, now_ms)?);
+        }
 
         let AnalysisPass {
             survivors,
@@ -643,22 +668,37 @@ impl Engine {
         // a failure clustering missed — the one thing it is here for. The
         // top-up below called itself "non-parasitic" while omitting the very
         // grain type the flagship analyzer reads.
+        //
+        // Two passes over the same reserved share: failures first, then — only
+        // when the host lets the proposer author skills — the calls that
+        // SUCCEEDED. A skill's evidence is a trajectory that worked, and a
+        // model shown only what broke can never propose one (measured: with a
+        // successful procedure in the memory and no failure, the bundle was
+        // empty and DISCOVER was never called). Errors keep first claim on the
+        // share, so a busy desk's successes cannot bury the failure signal the
+        // lesson path exists for.
         let mut tool_seeded = 0usize;
-        'tools: for ns in &scan_ns {
-            if let Ok(recent) = sub.grains_of_type(crate::model::grain_type::TOOL, *ns, opts) {
-                for g in recent {
-                    if tool_seeded >= TOOL_SEED_CAP
-                        || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE
-                    {
-                        break 'tools;
-                    }
-                    if !g.is_error() {
-                        continue;
-                    }
-                    let before = evidence.len();
-                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
-                    if evidence.len() > before {
-                        tool_seeded += 1;
+        let seed_successes = self.policy.skills.enabled || self.policy.plans.enabled;
+        'tools: for want_error in [true, false] {
+            if !want_error && !seed_successes {
+                break;
+            }
+            for ns in &scan_ns {
+                if let Ok(recent) = sub.grains_of_type(crate::model::grain_type::TOOL, *ns, opts) {
+                    for g in recent {
+                        if tool_seeded >= TOOL_SEED_CAP
+                            || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE
+                        {
+                            break 'tools;
+                        }
+                        if g.is_error() != want_error {
+                            continue;
+                        }
+                        let before = evidence.len();
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
+                        if evidence.len() > before {
+                            tool_seeded += 1;
+                        }
                     }
                 }
             }
@@ -708,13 +748,23 @@ impl Engine {
         // history (recent approve/reject decisions on llm findings) is passed so
         // the model learns what this reviewer accepts.
         let (approved, rejected) = self.llm_history(sub);
+        let base = match self.policy.discover_objective {
+            crate::policy::DiscoverObjective::ReviewQueue => DISCOVER_INSTRUCTIONS,
+            crate::policy::DiscoverObjective::Learner => DISCOVER_LEARNER_INSTRUCTIONS,
+        };
+        // The skill kind is offered only when the host allows it, so the
+        // vocabulary the model sees is exactly the vocabulary that can apply.
+        let mut instructions = base.to_string();
+        if self.policy.skills.enabled {
+            instructions.push_str(&skill_instructions(self.policy.skills.min_steps));
+        }
+        if self.policy.plans.enabled {
+            instructions.push_str(&plan_instructions(self.policy.plans.min_nodes));
+        }
         let request = crate::llm::LlmRequest {
             loop_proto: 1,
             op: "discover",
-            instructions: match self.policy.discover_objective {
-                crate::policy::DiscoverObjective::ReviewQueue => DISCOVER_INSTRUCTIONS,
-                crate::policy::DiscoverObjective::Learner => DISCOVER_LEARNER_INSTRUCTIONS,
-            },
+            instructions: &instructions,
             findings: findings.clone(),
             evidence: evidence.clone(),
             rejected,
@@ -770,8 +820,20 @@ impl Engine {
                 continue;
             }
             // Resolve BEFORE the gates: what GROUND entails and VERIFY
-            // stress-tests is exactly what an apply would do.
-            let resolved = resolve_proposal(sub, &d, &target, &cited, &ns_by_hash, caps);
+            // stress-tests is exactly what an apply would do. A draft citing
+            // fewer distinct grains than the host's evidence floor is kept
+            // as a finding but offered as nothing a reviewer could apply — a
+            // single instance may be worth a person's attention; it is not,
+            // under that policy, a rule.
+            let thin = cited.len() < self.policy.min_evidence as usize;
+            if thin {
+                funnel.advisory_thin_evidence += 1;
+            }
+            let resolved = if thin {
+                None
+            } else {
+                resolve_proposal(sub, &d, &target, &cited, &ns_by_hash, caps, &self.policy)
+            };
             // A `tool:` target has exactly one legal shape (Rule E1: a code
             // target REQUIRES action_kind code_revision), so an unresolved one
             // could not even be stamped advisory — drop it here rather than
@@ -816,11 +878,13 @@ impl Engine {
         let e = self.policy.outcome_evalset.as_ref()?;
         let run = crate::eval::newest_eval_run(sub, &e.hash, None).ok().flatten()?;
         let baseline = crate::eval::run_value(&run, &e.field)?;
-        let horizons = if e.horizons_ms.is_empty() {
-            vec![86_400_000]
-        } else {
-            e.horizons_ms.clone()
-        };
+        // The schedule in the host's unit. `review_after_ms`/`horizons_ms` keep
+        // the time view for anything that only understands time; when the
+        // host counts runs or grains, `checkpoints` is the schedule.
+        let schedule = e.schedule();
+        let ms_only: Vec<i64> = schedule.iter().filter_map(Checkpoint::as_ms).collect();
+        let all_ms = ms_only.len() == schedule.len();
+        let horizons = if ms_only.is_empty() { vec![86_400_000] } else { ms_only };
         Some(crate::recommendation::MetricSnapshot {
             metric: format!("evalset:{}:{}", e.hash, e.field),
             baseline,
@@ -835,7 +899,8 @@ impl Engine {
                 e.hash
             ),
             review_after_ms: horizons[0],
-            horizons_ms: horizons,
+            horizons_ms: if all_ms { horizons } else { Vec::new() },
+            checkpoints: if all_ms { Vec::new() } else { schedule },
             higher_is_better: e.higher_is_better,
         })
     }
@@ -1799,7 +1864,8 @@ impl Engine {
     /// so a forgotten SessionEnd hook / cron doesn't silently kill it.
     pub fn health<S: OmsSubstrate>(&self, sub: &S, now_ms: i64) -> Result<Health> {
         let p = LoopPersisted::from_value(sub.load_state()?)?;
-        let (grains_since_run, error_events_since_run) = count_new(sub, p.state.watermark_ms)?;
+        let new = count_new(sub, p.state.watermark_ms)?;
+        let (grains_since_run, error_events_since_run) = (new.grains, new.error_events);
         let recs = self.recommendations(sub, None)?;
         let mut pending = 0;
         let mut applied = 0;
@@ -1892,23 +1958,25 @@ fn measure_outcomes<S: OmsSubstrate>(
     p: &mut LoopPersisted,
     now_ms: i64,
 ) -> Result<Vec<OutcomeInput>> {
-    // Collect all due (recommendation, horizon) checkpoints first.
-    let mut due: Vec<(String, crate::config::AppliedRecord, i64)> = Vec::new();
+    // Collect all due (recommendation, checkpoint) pairs first. A checkpoint
+    // is due in its own unit: elapsed time, evalset runs journaled since the
+    // apply, or grains written since it (`Checkpoint`).
+    let mut due: Vec<(String, crate::config::AppliedRecord, Checkpoint)> = Vec::new();
     for (h, a) in &p.applied {
         if p.status_index.get(h) != Some(&RecStatus::Applied) {
             continue;
         }
         let Some(metric) = &a.metric else { continue };
         let done = p.measured.get(h).cloned().unwrap_or_default();
-        for horizon in metric.horizons() {
-            if now_ms - a.applied_at_ms >= horizon && !done.contains(&horizon) {
-                due.push((h.clone(), a.clone(), horizon));
+        for cp in metric.schedule() {
+            if !done.contains(&cp) && checkpoint_due(sub, metric, a.applied_at_ms, cp, now_ms)? {
+                due.push((h.clone(), a.clone(), cp));
             }
         }
     }
 
     let mut out = Vec::new();
-    for (rec_hash, applied, horizon) in due {
+    for (rec_hash, applied, checkpoint) in due {
         let metric = applied.metric.as_ref().unwrap();
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
@@ -1926,11 +1994,14 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline,
                 current,
                 verdict: if regressed { "regressed" } else { "held" }.into(),
-                horizon_ms: horizon,
+                // A time checkpoint speaks through `horizon_ms`, as it always
+                // did; the other units carry themselves.
+                horizon_ms: checkpoint.as_ms().unwrap_or(0),
+                checkpoint: checkpoint.as_ms().is_none().then_some(checkpoint),
                 measured_at_ms: now_ms,
             },
         );
-        p.measured.entry(rec_hash.clone()).or_default().push(horizon);
+        p.measured.entry(rec_hash.clone()).or_default().push(checkpoint);
         if regressed {
             out.push(OutcomeInput {
                 rec_hash,
@@ -1944,6 +2015,33 @@ fn measure_outcomes<S: OmsSubstrate>(
         }
     }
     Ok(out)
+}
+
+/// Has this checkpoint come due for a recommendation applied at `applied_at_ms`?
+///
+/// Time is a subtraction. Runs are counted from the evalset the metric names
+/// — journaled strictly after the apply, the same set the measurement itself
+/// reads, so "due" and "measurable" can never disagree; on a metric that is
+/// not evalset-backed a run checkpoint never fires, honestly, rather than
+/// guessing what a run would be. Grains are the loop's own activity count
+/// since the apply.
+fn checkpoint_due<S: SubstrateRead>(
+    sub: &S,
+    metric: &crate::recommendation::MetricSnapshot,
+    applied_at_ms: i64,
+    cp: Checkpoint,
+    now_ms: i64,
+) -> Result<bool> {
+    Ok(match cp {
+        Checkpoint::AfterMs(ms) => now_ms - applied_at_ms >= ms,
+        Checkpoint::AfterRuns(n) => match crate::eval::parse_evalset_metric(&metric.metric) {
+            Some((evalset, _)) => {
+                crate::eval::eval_runs(sub, evalset, Some(applied_at_ms + 1))?.len() >= n as usize
+            }
+            None => false,
+        },
+        Checkpoint::AfterGrains(n) => count_new(sub, Some(applied_at_ms))?.grains >= n as u64,
+    })
 }
 
 /// The number a verdict compares against: for an evalset metric, the newest
@@ -2338,7 +2436,17 @@ fn grain_brief_with(g: &GrainRecord, attribution: crate::policy::EvidenceAttribu
     if let Some(t) = g.tool_name() {
         let status = if g.is_error() { "error" } else { "ok" };
         let out = g.tool_content().unwrap_or("");
-        return format!("tool {t} {status}: {out}");
+        // The call's input, when recorded: without it a successful trajectory
+        // reads as a list of tool names and outputs, and a procedure — WHICH
+        // ticket was fetched, WHAT tag was set — cannot be reconstructed from
+        // it. A skill proposal needs the arguments; a lesson usually does not,
+        // and the cap on the brief bounds the cost either way.
+        let input = match g.fields.get("input") {
+            Some(Value::String(v)) if !v.is_empty() => format!(" input={v}"),
+            Some(v @ Value::Object(_)) | Some(v @ Value::Array(_)) => format!(" input={v}"),
+            _ => String::new(),
+        };
+        return format!("tool {t}{input} {status}: {out}");
     }
     // `object` is last but it is not optional: an Observation stores its text
     // there (subject + object, no relation), so it misses the fact-triple
@@ -2600,10 +2708,80 @@ fn resolve_proposal<S: OmsSubstrate>(
     cited: &[String],
     ns_by_hash: &std::collections::BTreeMap<String, String>,
     caps: Capabilities,
+    policy: &crate::policy::Policy,
 ) -> Option<ResolvedProposal> {
     use crate::llm::DraftProposal as P;
+    let (skills, plans) = (&policy.skills, &policy.plans);
     let mut args = serde_json::Map::new();
     match d.parsed_proposal()? {
+        // ---- plan: a procedure as a validated Workflow + its Skill prose ----
+        P::Plan { description, when_to_use, nodes, edges } => {
+            if !plans.enabled || !caps.plans {
+                return None;
+            }
+            let PlanFields { skill, workflow, name, n_nodes, n_edges, existing_skill, existing_plan } =
+                derived_plan_fields(sub, target, &description, &when_to_use, &nodes, &edges, cited, ns_by_hash, plans)?;
+            args.insert("name".into(), Value::from(name.clone()));
+            args.insert("nodes".into(), Value::from(n_nodes as u64));
+            args.insert("edges".into(), Value::from(n_edges as u64));
+            let skill_stmt = match &existing_skill {
+                Some(h) => cal::supersede(h, "skill", &skill),
+                None => cal::add("skill", &skill),
+            };
+            let plan_stmt = match &existing_plan {
+                Some(h) => cal::supersede(h, "workflow", &workflow),
+                None => cal::add("workflow", &workflow),
+            };
+            let (action, verb) = if existing_skill.is_some() || existing_plan.is_some() {
+                (ActionKind::Revise, "revise")
+            } else {
+                (ActionKind::Record, "record")
+            };
+            Some(ResolvedProposal {
+                action,
+                proposal: Proposal::Cal { cal: cal::batch(&[skill_stmt, plan_stmt]) },
+                rendered: format!(
+                    "Proposed plan to {verb}: \"{name}\" — {n_nodes} steps, {n_edges} edges; when: {}",
+                    skill.get("when_to_use").and_then(Value::as_str).unwrap_or("")
+                ),
+                summary_key: "llm.plan",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.65,
+                fact_fields: None,
+            })
+        }
+        // ---- skill: a reusable procedure from a trajectory that succeeded ----
+        P::Skill { description, when_to_use, steps } => {
+            if !skills.enabled {
+                return None;
+            }
+            let SkillFields { fields, name, n_steps, existing } =
+                derived_skill_fields(sub, target, &description, &when_to_use, &steps, cited, ns_by_hash, skills)?;
+            args.insert("name".into(), Value::from(name.clone()));
+            args.insert("steps".into(), Value::from(n_steps as u64));
+            // A live skill of the same name in the same namespace is PATCHED
+            // (superseded), never duplicated beside itself.
+            let (action, cal, verb) = match existing {
+                Some(hash) => (ActionKind::Revise, cal::supersede(&hash, "skill", &fields), "revise"),
+                None => (ActionKind::Record, cal::add("skill", &fields), "record"),
+            };
+            Some(ResolvedProposal {
+                action,
+                proposal: Proposal::Cal { cal },
+                rendered: format!(
+                    "Proposed skill to {verb}: \"{name}\" — {n_steps} steps; when: {}",
+                    fields.get("when_to_use").and_then(Value::as_str).unwrap_or("")
+                ),
+                summary_key: "llm.skill",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.6,
+                fact_fields: None,
+            })
+        }
         // ---- lesson: the pre-vocabulary shape, unchanged ----
         P::Lesson { lesson } => {
             let lesson = sanitize_lesson(&lesson);
@@ -2919,6 +3097,419 @@ fn stamp_llm(
 /// evidence (max count, ties to the lexicographically smallest — the
 /// tool_failure rule), never a namespace the model names. `None` when the
 /// target gives no subject.
+/// The `skill` paragraph appended to the DISCOVER instructions when the host
+/// allows skill authoring. Kept beside the fixed instruction text it extends.
+fn skill_instructions(min_steps: u32) -> String {
+    format!(
+        " (6) {{\"kind\":\"skill\",\"description\":\"...\",\"when_to_use\":\"...\",\
+\"steps\":[\"...\",\"...\"]}} with target \"entity:<ns>/<skill-name>\" — a REUSABLE \
+PROCEDURE the agent carried out successfully in the evidence: a sequence of tool \
+calls that reached its goal, which a later session facing the same situation \
+should not have to rediscover. Give {min_steps} to {} ordered steps, each naming \
+the tool called and the values that mattered (the field checked, the tag set, the \
+exact format produced), a one-line description, and 'when_to_use' — the situation \
+that should trigger it. The skill-name is a short identifier (letters, digits, \
+_ -). If a saved skill already covers this procedure, use ITS name so it is \
+patched rather than duplicated. Do not propose a skill for a procedure that \
+failed, or for one already saved and unchanged.",
+        crate::llm::MAX_SKILL_STEPS
+    )
+}
+
+/// The `plan` paragraph appended to the DISCOVER instructions when the host
+/// allows plan authoring. The condition grammar is the runtime's frozen v1
+/// grammar, stated so the model writes conditions the plan validator accepts.
+fn plan_instructions(min_nodes: u32) -> String {
+    format!(
+        " (7) {{\"kind\":\"plan\",\"description\":\"...\",\"when_to_use\":\"...\",\
+\"nodes\":[{{\"id\":\"list_open\",\"tool\":\"<tool name>\",\"step\":\"...\"}},...],\
+\"edges\":[{{\"src\":\"list_open\",\"dst\":\"tag\",\"cond\":\"shared_incident == true\"}},...]}} \
+with target \"entity:<ns>/<plan-name>\" — the same reusable procedure as a skill, \
+but as a PLAN the runtime can validate and run: {min_nodes} to {} steps, each an \
+'id' (letters, digits, _ -), the 'tool' it calls — which MUST be a tool named in \
+the cited evidence — and what the step does with it; and 'edges' from step to \
+step. An edge 'cond' is optional and uses exactly this grammar: 'path == literal', \
+'path != literal', 'path exists' or '!path', where path is dotted names and the \
+literal is a JSON string, number, true, false or null — no other operators; state \
+a threshold as a flag the step sets ('reporters_ge_3 == true'). A loop back to an \
+earlier step needs 'max_cycles'. Prefer a plan over a skill when the procedure \
+has branches or a loop; prefer a skill when it is a straight list. If a saved \
+plan already covers this procedure, use ITS name so it is patched.",
+        crate::llm::MAX_PLAN_NODES
+    )
+}
+
+/// What a `plan` proposal resolves to: the Skill grain (prose), the Workflow
+/// grain (structure), the name both take from the target, the counts, and the
+/// live pair of that name (to supersede) if there is one.
+struct PlanFields {
+    skill: serde_json::Map<String, Value>,
+    workflow: serde_json::Map<String, Value>,
+    name: String,
+    n_nodes: usize,
+    n_edges: usize,
+    existing_skill: Option<String>,
+    existing_plan: Option<String>,
+}
+
+/// The two grains a `plan` proposal would write.
+///
+/// Grounding is structural: every step's tool must be one the cited evidence
+/// shows was called, so the model cannot plan around a tool it invented. The
+/// workflow body is handed to the substrate's own plan validator before the
+/// draft can be stamped applicable — a plan a reviewer could approve is one
+/// the runtime would accept. The pair shares a `name`; the Workflow carries it
+/// as a host field (the type is a container by design), and that is how the
+/// live plan of a name is found to be patched rather than duplicated.
+#[allow(clippy::too_many_arguments)]
+fn derived_plan_fields<S: SubstrateRead>(
+    sub: &S,
+    target: &TargetRef,
+    description: &str,
+    when_to_use: &str,
+    nodes: &[crate::llm::PlanNodeDraft],
+    edges: &[crate::llm::PlanEdgeDraft],
+    cited: &[String],
+    ns_by_hash: &std::collections::BTreeMap<String, String>,
+    plans: &crate::policy::PlanAuthoring,
+) -> Option<PlanFields> {
+    if target.scheme() != "entity" {
+        return None;
+    }
+    let name = sanitize_skill_name(
+        target.opaque().rsplit_once('/').map(|(_, n)| n).unwrap_or(target.opaque()),
+    )?;
+    let description = sanitize_line(description, crate::llm::MAX_OBJECT_LEN);
+    let when_to_use = sanitize_line(when_to_use, crate::llm::MAX_OBJECT_LEN);
+    if description.is_empty() || when_to_use.is_empty() {
+        return None;
+    }
+    if nodes.len() < plans.min_nodes.max(1) as usize || nodes.len() > crate::llm::MAX_PLAN_NODES {
+        return None;
+    }
+    // The tools the evidence shows were actually called.
+    let known_tools: BTreeSet<String> = cited
+        .iter()
+        .filter_map(|h| sub.grain(h).ok().flatten())
+        .filter_map(|g| g.tool_name().map(normalize_ident))
+        .collect();
+    let mut ids: Vec<String> = Vec::new();
+    let mut steps: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for n in nodes {
+        let id = sanitize_skill_name(&n.id)?;
+        if !seen.insert(id.clone()) {
+            return None; // duplicate step id
+        }
+        let tool = sanitize_line(&n.tool, crate::llm::MAX_SKILL_NAME_LEN);
+        if tool.is_empty() || !known_tools.contains(&normalize_ident(&tool)) {
+            return None; // a tool the evidence never shows: not grounded
+        }
+        let step = sanitize_line(&n.step, crate::llm::MAX_SKILL_STEP_LEN);
+        if step.is_empty() {
+            return None;
+        }
+        steps.push(format!("{}. {id} [{tool}]: {step}", steps.len() + 1));
+        ids.push(id);
+    }
+    let mut edge_vals: Vec<Value> = Vec::new();
+    let mut flow_lines: Vec<String> = Vec::new();
+    for e in edges {
+        let src = sanitize_skill_name(&e.src)?;
+        let dst = sanitize_skill_name(&e.dst)?;
+        if !seen.contains(&src) || !seen.contains(&dst) {
+            return None;
+        }
+        let mut ev = serde_json::Map::new();
+        ev.insert("src".into(), Value::from(src.clone()));
+        ev.insert("dst".into(), Value::from(dst.clone()));
+        let mut label = format!("{src} → {dst}");
+        if let Some(c) = e
+            .cond
+            .as_deref()
+            .map(|c| sanitize_line(c, crate::llm::MAX_COND_LEN))
+            .filter(|c| !c.is_empty())
+        {
+            label.push_str(&format!(" if {c}"));
+            ev.insert("cond".into(), Value::from(c));
+        }
+        if let Some(m) = e.max_cycles {
+            if m == 0 || m > 100 {
+                return None;
+            }
+            label.push_str(&format!(" (at most {m} times)"));
+            ev.insert("max_cycles".into(), Value::from(m));
+        }
+        flow_lines.push(label);
+        edge_vals.push(Value::Object(ev));
+    }
+    if edge_vals.len() > 4 * ids.len() {
+        return None;
+    }
+    // Namespace: where the evidence lives, by majority — a lesson's rule.
+    let mut ns_counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    for h in cited {
+        if let Some(ns) = ns_by_hash.get(h) {
+            if !ns.is_empty() {
+                *ns_counts.entry(ns.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let ns = ns_counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(ns, _)| ns.to_string());
+
+    // The Workflow: what the runtime validates. Unbound steps are abstract
+    // nodes — legal, and what a plan over a host's own tools is.
+    let mut workflow = serde_json::Map::new();
+    workflow.insert("nodes".into(), Value::from(ids.clone()));
+    workflow.insert("edges".into(), Value::Array(edge_vals));
+    workflow.insert("name".into(), Value::from(name.clone()));
+    if let Some(ns) = &ns {
+        workflow.insert("namespace".into(), Value::from(ns.clone()));
+    }
+    sub.validate_plan(&Value::Object(workflow.clone())).ok()?;
+
+    // The Skill: the same procedure as prose, with the graph's edges spelled
+    // out under the steps so a reader sees the branches the plan encodes.
+    let mut instructions = steps.join("\n");
+    if !flow_lines.is_empty() {
+        instructions.push_str("\n\nFlow:\n");
+        instructions.push_str(&flow_lines.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"));
+    }
+    let mut skill = serde_json::Map::new();
+    skill.insert("name".into(), Value::from(name.clone()));
+    skill.insert("description".into(), Value::from(description));
+    skill.insert("when_to_use".into(), Value::from(when_to_use));
+    skill.insert("instructions".into(), Value::from(instructions));
+    if let Some(ns) = &ns {
+        skill.insert("namespace".into(), Value::from(ns.clone()));
+    }
+    let live = |gt: &str, pick: &dyn Fn(&GrainRecord) -> bool| -> Option<String> {
+        sub.grains_of_type(gt, ns.as_deref(), ReadOpts { live_only: true, since_ms: None })
+            .ok()?
+            .into_iter()
+            .find(|g| pick(g))
+            .map(|g| g.hash)
+    };
+    let existing_skill = live(crate::model::grain_type::SKILL, &|g| g.skill_name() == Some(name.as_str()));
+    let existing_plan = live(crate::model::grain_type::WORKFLOW, &|g| g.str_field("name") == Some(name.as_str()));
+    Some(PlanFields {
+        skill,
+        workflow,
+        name,
+        n_nodes: ids.len(),
+        n_edges: flow_lines.len(),
+        existing_skill,
+        existing_plan,
+    })
+}
+
+/// The metric name under which the Verify gate records a premise that moved.
+pub const PREMISE_DRIFT_METRIC: &str = "premise_drift";
+
+/// The Verify gate's second question. For every applied recommendation, the
+/// grains it cited are looked up again: one that has been retracted, or
+/// superseded by a grain holding a DIFFERENT value, is a premise that moved.
+/// A value-identical supersession — what consolidation does — is not, and
+/// neither is a supersession the recommendation's OWN apply performed: a
+/// contradiction resolution cites the two conflicting facts and retires one
+/// of them; that is the change it was approved to make, not its premise
+/// moving out from under it.
+///
+/// Compared with the wrong rule (counting the apply's own work as drift), this
+/// is what keeps the gate quiet on the analyzers that exist to supersede.
+/// Records `drifted` in the outcome series once per distinct count (so a
+/// pass does not re-record what the last pass already did) and returns an
+/// input `outcome_review` turns into the revert proposal. The reviewer
+/// decides; nothing here applies.
+fn detect_premise_drift<S: OmsSubstrate>(
+    sub: &S,
+    p: &mut LoopPersisted,
+    now_ms: i64,
+) -> Result<Vec<OutcomeInput>> {
+    let mut out = Vec::new();
+    let applied: Vec<(String, String, Vec<String>)> = p
+        .applied
+        .iter()
+        .filter(|(h, _)| p.status_index.get(*h) == Some(&RecStatus::Applied))
+        .map(|(h, a)| (h.clone(), a.target_ref.clone(), a.created_hashes.clone()))
+        .collect();
+    for (rec_hash, target_ref, own) in applied {
+        let Ok(rec) = load_rec(sub, &rec_hash) else { continue };
+        if rec.evidence.is_empty() {
+            continue;
+        }
+        let mut moved = 0u64;
+        for e in &rec.evidence {
+            match sub.grain(e)? {
+                None => moved += 1, // retracted or gone
+                Some(g) => {
+                    let Some(newer) = &g.superseded_by else { continue };
+                    if own.iter().any(|c| c == newer) {
+                        continue; // the apply's own supersession
+                    }
+                    match sub.grain(newer)? {
+                        // Superseded by something unreadable: a retraction
+                        // (the reference substrate marks FORGET this way).
+                        None => moved += 1,
+                        Some(n) => {
+                            if !same_value(&g, &n) {
+                                moved += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if moved == 0 {
+            continue;
+        }
+        let already = p
+            .outcomes
+            .get(&rec_hash)
+            .and_then(|v| v.iter().rev().find(|o| o.metric == PREMISE_DRIFT_METRIC))
+            .is_some_and(|o| o.current == moved as f64);
+        if !already {
+            p.outcomes.entry(rec_hash.clone()).or_default().push(
+                crate::recommendation::OutcomeResult {
+                    rec_hash: rec_hash.clone(),
+                    metric: PREMISE_DRIFT_METRIC.into(),
+                    baseline: 0.0,
+                    current: moved as f64,
+                    verdict: "drifted".into(),
+                    horizon_ms: 0,
+                    checkpoint: None,
+                    measured_at_ms: now_ms,
+                },
+            );
+        }
+        out.push(OutcomeInput {
+            rec_hash,
+            target_ref,
+            metric: PREMISE_DRIFT_METRIC.into(),
+            baseline: 0.0,
+            current: moved as f64,
+            unit: "superseded premises".into(),
+            higher_is_better: false,
+        });
+    }
+    Ok(out)
+}
+
+/// Does the superseding grain say the same thing as the one it replaced? A
+/// fact compares its object; anything else compares its text body. Two grains
+/// that cannot be compared are treated as different — the fail-closed
+/// reading, since a premise we cannot confirm still holds is one that moved.
+fn same_value(old: &GrainRecord, new: &GrainRecord) -> bool {
+    if let (Some(a), Some(b)) = (old.fact_object(), new.fact_object()) {
+        return normalize_ident(a) == normalize_ident(b);
+    }
+    for key in ["content", "tool_content", "body", "text", "object"] {
+        if let (Some(a), Some(b)) = (old.str_field(key), new.str_field(key)) {
+            return normalize_ident(a) == normalize_ident(b);
+        }
+    }
+    false
+}
+
+/// A skill name is an identifier: `[A-Za-z0-9_-]`, bounded, case preserved.
+fn sanitize_skill_name(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty()
+        || t.chars().count() > crate::llm::MAX_SKILL_NAME_LEN
+        || !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// What a `skill` proposal resolves to: the grain's fields, the name it took
+/// from the target, how many steps survived sanitizing, and the live skill of
+/// that name in the same namespace (to supersede) if there is one.
+struct SkillFields {
+    fields: serde_json::Map<String, Value>,
+    name: String,
+    n_steps: usize,
+    existing: Option<String>,
+}
+
+/// The fields of the Skill grain a `skill` proposal would write.
+///
+/// The namespace is the one most of the cited evidence lives in — the same
+/// rule a lesson follows — never one the model names.
+#[allow(clippy::too_many_arguments)]
+fn derived_skill_fields<S: SubstrateRead>(
+    sub: &S,
+    target: &TargetRef,
+    description: &str,
+    when_to_use: &str,
+    steps: &[String],
+    cited: &[String],
+    ns_by_hash: &std::collections::BTreeMap<String, String>,
+    skills: &crate::policy::SkillAuthoring,
+) -> Option<SkillFields> {
+    if target.scheme() != "entity" {
+        return None;
+    }
+    let name = sanitize_skill_name(
+        target.opaque().rsplit_once('/').map(|(_, n)| n).unwrap_or(target.opaque()),
+    )?;
+    let description = sanitize_line(description, crate::llm::MAX_OBJECT_LEN);
+    let when_to_use = sanitize_line(when_to_use, crate::llm::MAX_OBJECT_LEN);
+    let steps: Vec<String> = steps
+        .iter()
+        .map(|st| sanitize_line(st, crate::llm::MAX_SKILL_STEP_LEN))
+        .filter(|st| !st.is_empty())
+        .take(crate::llm::MAX_SKILL_STEPS)
+        .collect();
+    if description.is_empty() || when_to_use.is_empty() || steps.len() < skills.min_steps.max(1) as usize {
+        return None;
+    }
+    // Namespace: where the evidence lives, by majority (ties → lexically
+    // first), exactly as a lesson's.
+    let mut ns_counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    for h in cited {
+        if let Some(ns) = ns_by_hash.get(h) {
+            if !ns.is_empty() {
+                *ns_counts.entry(ns.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let ns = ns_counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(ns, _)| ns.to_string());
+    let instructions = steps
+        .iter()
+        .enumerate()
+        .map(|(i, st)| format!("{}. {st}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut fields = serde_json::Map::new();
+    fields.insert("name".into(), Value::from(name.clone()));
+    fields.insert("description".into(), Value::from(description));
+    fields.insert("when_to_use".into(), Value::from(when_to_use));
+    fields.insert("instructions".into(), Value::from(instructions));
+    if let Some(ns) = &ns {
+        fields.insert("namespace".into(), Value::from(ns.clone()));
+    }
+    // Patch, don't duplicate: the live skill of this name in this namespace.
+    let existing = sub
+        .grains_of_type(
+            crate::model::grain_type::SKILL,
+            ns.as_deref(),
+            ReadOpts { live_only: true, since_ms: None },
+        )
+        .ok()?
+        .into_iter()
+        .find(|g| g.skill_name() == Some(name.as_str()))
+        .map(|g| g.hash);
+    Some(SkillFields { fields, name, n_steps: steps.len(), existing })
+}
+
 fn derived_fact_fields(
     target: &TargetRef,
     relation: &str,
@@ -3105,13 +3696,27 @@ fn gate(
     }
 }
 
-fn count_new<S: SubstrateRead>(sub: &S, watermark: Option<i64>) -> Result<(u64, u64)> {
+/// What landed since a watermark, in every unit a gate can count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NewSince {
+    /// Grains of the four evidence-bearing types.
+    pub grains: u64,
+    /// Tool grains recording a failure (`--min-new-errors`).
+    pub error_events: u64,
+    /// Event grains — turns, in a chat deployment (`cadence.every_events`).
+    pub events: u64,
+    /// Distinct `session_id`s among those Events (`cadence.every_sessions`).
+    pub sessions: u64,
+}
+
+fn count_new<S: SubstrateRead>(sub: &S, watermark: Option<i64>) -> Result<NewSince> {
     let opts = ReadOpts {
         live_only: false,
         since_ms: watermark.map(|w| w + 1),
     };
-    let mut new_grains = 0u64;
-    let mut new_errors = 0u64;
+    let mut n = NewSince::default();
+    let mut sessions: BTreeSet<&str> = BTreeSet::new();
+    let mut events_held: Vec<GrainRecord> = Vec::new();
     for t in [
         crate::model::grain_type::FACT,
         crate::model::grain_type::EVENT,
@@ -3119,13 +3724,46 @@ fn count_new<S: SubstrateRead>(sub: &S, watermark: Option<i64>) -> Result<(u64, 
         crate::model::grain_type::OBSERVATION,
     ] {
         let g = sub.grains_of_type(t, None, opts)?;
-        new_grains += g.len() as u64;
+        n.grains += g.len() as u64;
         // The error gate (--min-new-errors) watches captured tool failures.
         if t == crate::model::grain_type::TOOL {
-            new_errors += g.iter().filter(|e| e.is_error()).count() as u64;
+            n.error_events += g.iter().filter(|e| e.is_error()).count() as u64;
+        }
+        if t == crate::model::grain_type::EVENT {
+            n.events = g.len() as u64;
+            events_held = g;
         }
     }
-    Ok((new_grains, new_errors))
+    for e in &events_held {
+        if let Some(sid) = e.str_field("session_id").filter(|s| !s.is_empty()) {
+            sessions.insert(sid);
+        }
+    }
+    n.sessions = sessions.len() as u64;
+    Ok(n)
+}
+
+/// The policy cadence, evaluated: `None` when a pass is due.
+///
+/// OR over the thresholds the host set — the pass runs when any one is met.
+/// The same shape as the per-call gate above, deliberately: the flags and
+/// the policy block are one mechanism spelled in two places, and the flags
+/// win when both are present.
+fn cadence_gate(c: &crate::policy::Cadence, p: &LoopPersisted, new: NewSince, now_ms: i64) -> Option<SkipReason> {
+    if !c.is_set() {
+        return None;
+    }
+    let time_ok = c
+        .every_ms
+        .is_some_and(|d| p.state.last_run_ms.is_none_or(|last| now_ms - last >= d));
+    let grains_ok = c.every_grains.is_some_and(|m| new.grains >= m);
+    let events_ok = c.every_events.is_some_and(|m| new.events >= m);
+    let sessions_ok = c.every_sessions.is_some_and(|m| new.sessions >= m);
+    if time_ok || grains_ok || events_ok || sessions_ok {
+        None
+    } else {
+        Some(SkipReason::CadenceNotDue)
+    }
 }
 
 fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<BTreeSet<String>> {

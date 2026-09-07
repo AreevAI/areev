@@ -333,7 +333,21 @@ scheme + host[:port], no wildcards, no subdomains — so naming
 Postgres backend it is what makes a least-privilege database role possible at
 all: without it, opening a memory runs schema bootstrap and index maintenance
 on every open, so the connecting role must **own** the schema — see
-[`deployment-profile.md`](deployment-profile.md) for the `GRANT` recipe.
+[`deployment-profile.md`](deployment-profile.md) for the `GRANT` recipe. The
+bindings take the same option, for a reader you embed rather than serve:
+
+```python
+m = areev.Areev(dsn, ns="caller", read_only=True)   # writes raise STO-E004
+```
+
+```js
+// path, ns, passphrase, actor, telemetry, principal, indexText, anonKey, readOnly
+const m = new Areev(dsn, 'caller', null, null, null, null, null, null, true)
+```
+
+For a deployment-shaped bundle of these controls — which flags a GDPR,
+healthcare or financial posture sets, and which of them survive a copy — see
+[`compliance-profiles.md`](compliance-profiles.md).
 
 ### Give each person their own credential
 
@@ -1377,6 +1391,14 @@ old value. A declaration names a credential; it never carries one.
   resolvers. That is the point: a `VAULT_TOKEN` left ambient is readable by
   every `--tool-cmd` you run, and unlike the credential it fetches, it can
   fetch *all* of them.
+- **`--tool-env` is the same idea one level up.** `--resolver-env` and the
+  other `*-env` flags name what a tool must *not* see, which only works for
+  secrets Areev was told about. If this process holds secrets it was never
+  told about, name what a tool *may* see instead: `--tool-env AWS_REGION`
+  clears the tool's environment and passes only that, plus `PATH` and the few
+  variables a command needs to start. It does not work as an override:
+  a variable already named to `--passphrase-env`/`--token-env`/`--credential`
+  is dropped from the allow list and reported.
 - **A failing resolver refuses the call.** It never sends the request
   unauthenticated, and the error names which credential failed without
   repeating what the resolver printed. Check for it in the audit trail the way

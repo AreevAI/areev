@@ -90,26 +90,22 @@ COMMANDS:
   purge-older-than <days> [--ns NS] [--type event] --yes   retention sweep:
                                       erase grains older than N days
                                       (--ns \"\" sweeps every namespace)
-  retention <set|list|clear|sweep> [--days N] [--ns NS] [--type event]
+  retention <set|list|clear|sweep|floor|floor-clear|floors>
+           [--days N] [--min-days N] [--ns NS] [--type event]
            [--because \"why\"] [--yes]  declarative storage limitation: the
                                       policy is a file-truth that travels
                                       with the memory; `set` declares,
-                                      `sweep --yes` enforces (audited)
-  retention <floor|floor-clear|floors> [--min-days N] [--because \"why\"] [--ns NS]
-                                      the FLOOR half: a minimum age below
-                                      which destruction REFUSES everywhere
-                                      (CAL PURGE, sweeps, the loop). `floor`
-                                      REQUIRES --min-days and --because — a
-                                      floor with no recorded rationale is not
-                                      auditable; `floor-clear` removes one
-                                      namespace's floor, `floors` lists them
-  hold     <set|release|list> [--because \"why\"] [--ns NS] [--by PRINCIPAL]
+                                      `sweep --yes` enforces (audited).
+                                      `floor --min-days N` declares a
+                                      MINIMUM any sweep must respect —
+                                      destruction younger than it refuses
+  hold     <set|release|list> [--ns NS] --because \"why\" [--by PRINCIPAL]
                                       legal hold: while one is live on a
                                       namespace, ALL age-based destruction
-                                      there refuses and sweeps skip it with
-                                      the refusal on record. `set` REQUIRES
-                                      --because; a global sweep is refused
-                                      outright while any hold exists
+                                      there refuses with the hold on record.
+                                      A file-truth; `set` and `release` both
+                                      demand a reason and both land in
+                                      `areev audit export`
   trigger  add --type KIND --workflow HASH --because \"why\"
            [--context-query SPEC]     a saved query the evaluator runs at
                                       fire time; its result rides into the
@@ -134,7 +130,8 @@ COMMANDS:
            [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR|cmd:CMD|vault:P#F]
            [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
-           [--executor-timeout SECS] [--model SPEC] [--base-url URL] [--key-env VAR]
+           [--executor-timeout SECS] [--tool-env VAR,...]
+           [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
@@ -254,6 +251,7 @@ COMMANDS:
            [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
            [--sandbox-cmd 'areev-sandbox'] [--executor-timeout SECS]
+           [--tool-env VAR,...]
            [--credential NAME=ENV_VAR[@PRINCIPAL],...] [--allow-host URL,...]
            [--tool-egress TOOL:CRED[@HOST]+...:METHOD+METHOD,...]
            [--credential-ttl SECS] [--resolver-env VAR,...];
@@ -294,6 +292,15 @@ COMMANDS:
            gen_ai.usage.*, gen_ai.tool.call.id, …) beside Areev's own
            superstep/task_path/attempt provenance, so a GenAI-aware backend
            reads them with no Areev-specific configuration;
+           --tool-env inverts how a tool's environment is decided: without it
+           a tool inherits this process's environment minus the variables
+           named to --passphrase-env/--token-env/--credential, with it the
+           environment is cleared and only the named variables (plus PATH and
+           the few a command needs to start) get through. A host that keeps
+           its own secrets in the environment should name what a tool sees
+           rather than name what it must not. A bare --tool-env passes nothing
+           but that minimal set. Naming a variable already registered as
+           holding a secret does NOT re-admit it: it is dropped and reported;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof
@@ -1531,9 +1538,11 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         return Ok(());
     }
 
-    // `anonymize scan` is pure text processing: it never opens the store,
-    // so it runs before the open like `hook`. The policy verbs
-    // (set/list/clear/mappings) are store-backed and dispatch below.
+    // `anonymize scan` and `anonymize test` are pure text processing: they
+    // never open the store, so they dispatch BEFORE `resolve_db` for the same
+    // reason `auth` does — resolving a default memory here is wasted work, and
+    // it prints a line naming a database the command never touches. The policy
+    // verbs (set/list/clear/mappings) are store-backed and dispatch below.
     if cmd == "anonymize" && positional.first().map(String::as_str) == Some("scan") {
         let text = match flag(&flags, "text") {
             Some(t) => t,
@@ -1631,6 +1640,54 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         return Ok(());
     }
 
+    // Long-lived / exposed surfaces must name their memory explicitly rather
+    // than silently defaulting to the personal file.
+    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
+    let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
+
+    // print-only verbs never open the store (paths may be untilde-expanded)
+    if cmd == "hook" {
+        let target = positional.first().map(String::as_str).unwrap_or("claude-code");
+        if target != "claude-code" {
+            return Err(format!("unknown hook target '{target}'"));
+        }
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "areev".into());
+        println!(
+            r#"Add to ~/.claude/settings.json (hooks section) to close the learning
+loop automatically — inject relevant memory before each prompt, and capture
+each exchange (with tool outcomes) when a turn ends:
+
+{{
+  "hooks": {{
+    "UserPromptSubmit": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} recall-hook --db {db} --ns {ns} --with-loop"
+    }}] }}],
+    "Stop": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} capture-stop --db {db} --ns {ns}"
+    }}] }}]
+  }}
+}}
+
+recall-hook reads the prompt and prints matching memories to stdout, which
+Claude Code injects as context — so retrieval no longer depends on the model
+choosing to call a tool. For on-demand reads/writes by the model itself, also
+register the MCP server:
+  claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
+
+Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
+        );
+        return Ok(());
+    }
+
+    // `--read-only` is needed before the key derivation just below (which
+    // creates a .kdf sidecar for an absent path), and again for `tel_mode`,
+    // the `--index-text` conflict check, and the open itself.
+    let read_only = flags.contains_key("read-only");
+
     // Optional encryption: when --passphrase-env <VAR> is given, derive an
     // AES-256 key from the passphrase held in that environment variable
     // (Argon2id; salt in a <db>.kdf sidecar). The passphrase and the derived
@@ -1651,6 +1708,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             })?);
             if pass.trim().is_empty() {
                 return Err(format!("--passphrase-env {var}: passphrase is empty"));
+            }
+            // Deriving writes the .kdf sidecar when absent, so the read-only
+            // precondition has to be checked first or a refused open leaves a
+            // stray file behind.
+            if !is_pg_url {
+                areev_store::read_only_requires_existing(&db, read_only)
+                    .map_err(|e| e.to_string())?;
             }
             Some(Areev::derive_key_for(&db, pass.as_str()).map_err(|e| e.to_string())?)
         }
@@ -1674,11 +1738,6 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
         None => None,
     };
-
-    // `--read-only` computed up front (also used just below by `tel_mode`,
-    // and again further down for the `--index-text` conflict check and the
-    // open itself).
-    let read_only = flags.contains_key("read-only");
 
     // Recall-telemetry sidecar (host capability, §8): the agent-host default is
     // `aggregate`; `--telemetry off|aggregate|full` overrides. It is NOT a
@@ -4684,6 +4743,30 @@ fn run_eval_case_model(
     }
 }
 
+/// Record a hold transition on the Tier-2 trail `areev audit export` reads.
+///
+/// The hold row itself is a file-truth that is DELETED on release, so without
+/// this the release leaves no trace at all — the placement would be the only
+/// half on record.
+fn audit_hold(
+    m: &mut Areev,
+    verb: &str,
+    ns: &str,
+    because: &str,
+    by: &str,
+    now: i64,
+) -> Result<(), String> {
+    let obs = areev_core::authz::audit_observation(
+        by,
+        verb,
+        &format!("hold ns:{ns}"),
+        Some(because),
+        0,
+        now,
+    );
+    m.add(&obs).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// `areev hold` — legal holds (governed-agents §5.4): while a hold is live on
 /// a namespace, ALL age-based destruction there refuses; sweeps skip it
 /// with the refusal on record. Erasure-vs-hold precedence (D10's
@@ -4702,16 +4785,26 @@ fn run_hold(
                     .to_string()
             })?;
             let by = flag(flags, "by").unwrap_or_else(|| "user:local".into());
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now = now_ms();
             m.place_hold(ns, &because, &by, now).map_err(|e| e.to_string())?;
+            audit_hold(m, "hold.set", ns, &because, &by, now)?;
             println!("hold placed on '{ns}' by {by}: {because}");
         }
+        // Releasing is the act an auditor asks about, so it is held to the
+        // same bar as placing: a reason is mandatory, and both ends land in
+        // `areev audit export` rather than only the placement.
         "release" => {
+            let because = flag(flags, "because").ok_or_else(|| {
+                "usage: areev hold release --because \"matter closed\" [--ns NS] \
+                 [--by PRINCIPAL] — a release with no recorded rationale is the \
+                 half of the trail an auditor actually asks for"
+                    .to_string()
+            })?;
+            let by = flag(flags, "by").unwrap_or_else(|| "user:local".into());
+            let now = now_ms();
             m.release_hold(ns).map_err(|e| e.to_string())?;
-            println!("hold released on '{ns}'");
+            audit_hold(m, "hold.release", ns, &because, &by, now)?;
+            println!("hold released on '{ns}' by {by}: {because}");
         }
         "list" => {
             let holds = m.holds().map_err(|e| e.to_string())?;
@@ -5892,10 +5985,12 @@ fn run_loop(
                 );
             } else {
                 for o in &outcomes {
-                    let horizon = if o.horizon_ms % 86_400_000 == 0 {
-                        format!("{}d", o.horizon_ms / 86_400_000)
-                    } else {
-                        format!("{}h", o.horizon_ms / 3_600_000)
+                    // A time checkpoint renders as it always has; one counted
+                    // in runs or grains says so.
+                    let horizon = match o.checkpoint {
+                        Some(cp) => cp.label(),
+                        None if o.horizon_ms % 86_400_000 == 0 => format!("{}d", o.horizon_ms / 86_400_000),
+                        None => format!("{}h", o.horizon_ms / 3_600_000),
                     };
                     println!(
                         "{}  {:<22}  @{:<4}  baseline {} → current {}  [{}]",
