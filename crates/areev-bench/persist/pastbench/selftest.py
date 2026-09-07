@@ -159,6 +159,16 @@ def run(root):
     check(found is not None and found["task_score"] == 0.772 and found["failed"] == 1,
           "the cold baseline is found in shared_cold when the variant copy has no score yet (%r)" % (found,))
     check(ab._episode_score(variant / "01_cold") is None, "an ungraded episode yields no score rather than a guess")
+    # The reviewer's branch for a revert must match the analyzer FAMILY: the
+    # id carries a version (`loop.outcome_review/1`), and comparing it to the
+    # bare name refused all 12 reverts run 4's gate proposed (§11 #28).
+    check(ab.is_family("loop.outcome_review/1", "outcome_review")
+          and ab.is_family("loop.outcome_review/2", "outcome_review")
+          and ab.is_family("outcome_review", "outcome_review"),
+          "a revert is recognised whatever its analyzer version")
+    check(not ab.is_family("loop.tool_failure/1", "outcome_review")
+          and not ab.is_family("", "outcome_review"),
+          "and nothing else is mistaken for one")
     check(it["skill_create_count"] == 1 and it["skill_update_count"] == 1, "skill create/update counted")
     check(it["session_search_calls"] == 1 and it["skill_read_count"] == 1, "session_search and skill_view counted")
 

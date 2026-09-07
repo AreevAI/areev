@@ -151,6 +151,20 @@ def _latest_episode_below(variant_dir, mine):
     return prev
 
 
+def is_family(analyzer_id, family):
+    """Does this recommendation come from `family`?
+
+    An analyzer id is `loop.<family>/<version>` — `loop.outcome_review/1`.
+    Comparing it to the bare family name is always false, and the cost of
+    that was specific: run 4's gate proposed 12 reverts over 26 measured
+    regressions and the reviewer refused every one of them as "advisory only
+    — asks for no change", because the branch that exists to approve a
+    revert never matched (PERSIST.md §11 #28). Version-insensitive by
+    construction, so a version bump cannot re-break it."""
+    a = (analyzer_id or "").strip()
+    return a.split("/", 1)[0].removeprefix("loop.") == family
+
+
 def _episode_score(episode_dir):
     """The graded summary in an episode directory's trace, or None when that
     episode has not been graded yet. The score row is appended when the
@@ -1211,7 +1225,7 @@ def govern(db_path, family_id, seed):
             analyzer = str(rec.get("analyzer") or "")
             because = ""
             evidence = ""
-            if analyzer == "outcome_review":
+            if is_family(analyzer, "outcome_review"):
                 ok, because = True, "the gate measured a regression on this family's graded episodes"
             elif kind in ("lesson", "fact", "plan_revision", "query_revision"):
                 evidence = evidence_text(db, rec, cited)
@@ -1222,7 +1236,7 @@ def govern(db_path, family_id, seed):
                 if ok:
                     db.apply_recommendation(rec["hash"], because)
                     out["applied"] += 1
-                    if analyzer == "outcome_review":
+                    if is_family(analyzer, "outcome_review"):
                         out["reverted"] += 1
                     elif kind in ("lesson", "fact"):
                         in_force.append(text)
