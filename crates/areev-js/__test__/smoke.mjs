@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
 import { Areev, readBlobOffline } from '../index.js'
@@ -690,6 +690,120 @@ test('indexText on the constructor is a deliberate re-stamp', async () => {
     `the re-stamp must be reported: ${JSON.stringify(warnings)}`,
   )
   on.close()
+})
+
+test('readOnly serves reads and refuses every write', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-ro-'))
+  const path = join(dir, 'ro.db')
+  const rw = new Areev(path, 'caller')
+  await rw.addFact('john', 'prefers', 'tea')
+  rw.close()
+
+  const ro = new Areev(path, 'caller', null, null, null, null, null, null, true)
+  assert.equal(JSON.parse(await ro.recall('john')).length, 1)
+  await assert.rejects(() => ro.addFact('john', 'prefers', 'coffee'), /STO-E004/)
+  ro.close()
+
+  // A read-only open never creates the memory it was pointed at, and cannot
+  // honor an indexText re-stamp — that is a write.
+  assert.throws(
+    () => new Areev(join(dir, 'missing.db'), 'caller',
+      null, null, null, null, null, null, true))
+
+  // Not even a .kdf sidecar: deriving the page key writes one for an absent
+  // path, so the precondition has to be checked before the derivation.
+  const encDir = mkdtempSync(join(tmpdir(), 'areev-js-ro-kdf-'))
+  assert.throws(
+    () => new Areev(join(encDir, 'typo.db'), 'caller', 'pw',
+      null, null, null, null, null, true),
+    /STO-E005/,
+  )
+  assert.deepEqual(readdirSync(encDir), [], 'a refused read-only open leaves nothing behind')
+  assert.throws(
+    () => new Areev(path, 'caller', null, null, null, null, true, null, true),
+    /re-stamps/,
+  )
+})
+
+test('toolEnv clears a host tool environment down to what it names', async () => {
+  // Without toolEnv a tool inherits this process's environment, so a variable
+  // the host holds for its own use is visible to it. With one, the environment
+  // is cleared and only the named variables get through.
+  process.env.AREEV_TEST_PLANTED = 'leaked'
+  const m = makeDb('ops')
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition',
+    tool_description: 'greets', created_at: 500,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['greet'], edges: [], bindings: { greet }, created_at: 502,
+  }), 'ops')
+  const cmd = `printf '{"seen":"%s"}' "$AREEV_TEST_PLANTED"`
+
+  const seen = async (runId, toolEnv) => {
+    const session = JSON.parse(await m.runStart(
+      wf, runId, '{}', cmd, null, null, null, null, null, null, null, null,
+      null, null, null, null, toolEnv))
+    assert.equal(session.finished, 'Completed')
+    const trace = JSON.parse(await m.runTrace(runId)).trace
+    return trace[0].fields.context.scheduler.context.seen
+  }
+
+  assert.equal(await seen('js-env-inherit', null), 'leaked')
+  assert.equal(await seen('js-env-cleared', 'AREEV_TEST_OTHER'), '')
+  await m.close()
+})
+
+test('toolEnv reaches the trigger connector, not just the run executors', async () => {
+  // A connector holds the third-party credential more often than a tool does,
+  // so a toolEnv that stopped at the run starter would clear the environment
+  // for the wrong process. The CLI applies it here; the bindings must too.
+  process.env.AREEV_TEST_PLANTED = 'leaked'
+  const dir = mkdtempSync(join(tmpdir(), 'areev-conn-env-'))
+  const m = new Areev(join(dir, 'c.db'), 'ops')
+  const tool = await m.add('tool', JSON.stringify({ tool_name: 'noop', kind: 'definition' }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'poll', nodes: ['only'], edges: [], bindings: { only: tool },
+  }))
+  await m.triggerAdd(
+    JSON.stringify({
+      kind: 'polling', workflow: wf, connector: 'probe',
+      interval_secs: 1, dedup_key: ['/saw'],
+    }),
+    'the connector reports what it can see',
+  )
+
+  // The connector echoes the planted variable into the item payload, so what
+  // it saw is readable from the ingested item. It returns a cursor because the
+  // FIRST poll only seeds one and deliberately fires nothing (eval.rs).
+  const connector = `printf '{"items":[{"id":"i%s","payload":{"saw":"%s"}}],"cursor":"c%s","more":false}' "$$" "$AREEV_TEST_PLANTED" "$$"`
+  const wait = () => new Promise((r) => setTimeout(r, 1100))
+
+  const poll = async (toolEnv) => JSON.parse(await m.triggerRun(
+    null, false, null, null, connector, null, null, null, null, null, null,
+    null, null, null, null, null, null, null, null, null, toolEnv))
+
+  // What each ingested item's connector actually saw, newest last.
+  const sawSoFar = async () =>
+    JSON.parse(await m.cal('RECALL events LIMIT 50')).grains
+      .map((g) => JSON.parse(g.fields.content).saw)
+      .filter((v) => v !== undefined)
+
+  const seeded = await poll(null)
+  assert.equal(seeded.items, 0, `the first poll only seeds: ${JSON.stringify(seeded)}`)
+
+  await wait()
+  const inherited = await poll(null)
+  assert.equal(inherited.items, 1, JSON.stringify(inherited))
+  assert.deepEqual(await sawSoFar(), ['leaked'],
+    'without toolEnv the connector inherits, as the default promises')
+
+  await wait()
+  const cleared = await poll('AREEV_TEST_OTHER')
+  assert.equal(cleared.items, 1, `the connector still runs: ${JSON.stringify(cleared)}`)
+  assert.deepEqual((await sawSoFar()).sort(), ['', 'leaked'],
+    'a cleared connector environment must not carry the planted variable')
+  await m.close()
 })
 
 test('subjectReport mirrors erasure and subjectBundle is portable', async () => {

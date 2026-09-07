@@ -11,5 +11,17 @@
   ],
   "deny": [],
   "severity_floors": {},
-  "telemetry": "aggregate"
+  "telemetry": "aggregate",
+  "discover_objective": "review_queue",
+  "evidence_attribution": "named",
+  "skills": {
+    "enabled": true,
+    "min_steps": 2
+  },
+  "min_evidence": 1,
+  "plans": {
+    "enabled": true,
+    "min_nodes": 2
+  },
+  "premise_drift": true
 }

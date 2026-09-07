@@ -1,0 +1,7 @@
+# PAST-Bench config for the persist track: the judge the paper used
+# (MiniMax-M2.7), reached through OpenRouter so one key serves every leg.
+judge:
+  enabled: true
+  api_key: ${OPENROUTER_API_KEY}
+  base_url: https://openrouter.ai/api/v1
+  model_id: minimax/minimax-m2.7

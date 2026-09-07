@@ -16,6 +16,13 @@
 //! namespace contains `*` (`VAL-E001`). Replication replay deliberately does
 //! not enforce this, so files written before the reservation stay importable.
 //!
+//! The write side refuses one more thing ([`require_writable_ns`]): a
+//! namespace that cannot be spelled back — whitespace, control characters, or
+//! invisible formatting characters. A namespace is otherwise an opaque string
+//! and stays one; this rule exists because minting a namespace is the only
+//! operation with no way to fail, so a typo in one is accepted everywhere and
+//! found nowhere.
+//!
 //! Scopes select **reads only**. Destruction (`FORGET SUBJECT`,
 //! `PURGE OLDER THAN … IN`), grants, retention/anonymization policy, and
 //! point reads (`latest`, `thread_tail`, graph traversals) all take exact
@@ -103,6 +110,66 @@ impl NsScope {
             }
         }
     }
+}
+
+/// Characters that make a namespace unspellable — invisible on a terminal, in
+/// a diff, and in a review, so a name carrying one is not the name anyone
+/// meant to write. Not a general Unicode category check (no dependency for
+/// one, by workspace policy): the formatting characters that actually collide
+/// with an ASCII identifier, named individually so the list is auditable.
+const UNSPELLABLE: [char; 7] = [
+    '\u{200b}', // ZERO WIDTH SPACE
+    '\u{200c}', // ZERO WIDTH NON-JOINER
+    '\u{200d}', // ZERO WIDTH JOINER
+    '\u{200e}', // LEFT-TO-RIGHT MARK
+    '\u{200f}', // RIGHT-TO-LEFT MARK
+    '\u{00ad}', // SOFT HYPHEN
+    '\u{feff}', // ZERO WIDTH NO-BREAK SPACE (BOM)
+];
+
+/// Guard for MINTING a namespace — a locally authored grain write, the one
+/// operation that brings a namespace into existence rather than naming one
+/// that already does.
+///
+/// Namespaces stay opaque strings (ARCHITECTURE.md, "Namespace prefix scopes
+/// widen reads only"): a host may spell its hierarchy `org.sales.emea`,
+/// `agent:authz` or 部門:営業, and none of that is this crate's business. What
+/// a namespace may not be is **unspellable** — carrying whitespace, a control
+/// character, or an invisible formatting character. Such a name cannot be
+/// typed back at `--ns`, read off a diff, or told apart from the name it was
+/// meant to be, and a write is not refused for it anywhere downstream: the
+/// grain lands, the registry gains a row, and every reader that names the
+/// intended namespace sees nothing.
+///
+/// That is not hypothetical. A bad substitution in a benchmark harness turned
+/// `"agent:harness"` into `"age, build_messagesnt:harness"`; twelve hours of
+/// held-out evaluations were journaled into it, the loop found no runs under
+/// the namespace it reads, recorded no verdict, and proposed no revert for a
+/// lesson that had cost the agent every exact match it had. Nothing failed —
+/// which is the whole problem, and why this is a refusal and not a warning.
+///
+/// Read surfaces deliberately do NOT enforce this ([`require_exact_ns`] is
+/// unchanged): a file written before the rule must stay readable, erasable
+/// and disclosable under whatever name it used, or the rule would strand the
+/// very data it exists to keep findable. Replication replay is exempt for the
+/// same reason the `*` reservation exempts it.
+pub fn require_writable_ns(ns: &str) -> Result<()> {
+    require_exact_ns("a grain write", ns)?;
+    let bad = ns
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace() || c.is_control() || UNSPELLABLE.contains(c));
+    if let Some((at, c)) = bad {
+        return Err(AreevError::Validation(format!(
+            "a grain write takes a spellable namespace (got \"{}\": U+{:04X} at byte {at}): \
+             a namespace is an identifier, and whitespace or an invisible character in one is \
+             a splice, a quoting accident or a bad paste. It would be accepted everywhere and \
+             found nowhere — grains written under it are invisible to every reader that names \
+             the namespace you meant",
+            ns.escape_debug(),
+            c as u32
+        )));
+    }
+    Ok(())
 }
 
 /// Guard for surfaces that take exactly one namespace (writes, destruction,
@@ -210,6 +277,78 @@ mod tests {
         assert!(s.matches("org"));
         assert!(!s.matches("org.sales"));
         assert!(!s.matches("or"));
+    }
+
+    #[test]
+    fn writable_ns_accepts_the_names_hosts_actually_use() {
+        for ok in [
+            "",
+            "caller",
+            "agent:harness",
+            "org.sales.emea",
+            "claude-code",
+            "deal.energy.42",
+            "retention:org.sales",
+            "部門:営業",
+            "org→x", // an arbitrary separator stays the host's business
+        ] {
+            assert!(require_writable_ns(ok).is_ok(), "{ok:?} should be writable");
+        }
+    }
+
+    #[test]
+    fn writable_ns_refuses_the_unspellable() {
+        // The one that shipped: a bad substitution spliced an import fragment
+        // into the constant, and every write under it was accepted in silence.
+        let err = require_writable_ns("age, build_messagesnt:harness").unwrap_err();
+        assert!(err.to_string().starts_with("VAL-E001"), "{err}");
+        assert!(err.to_string().contains("U+0020"), "names the character: {err}");
+
+        for bad in [
+            "agent harness",  // space
+            "agent\tharness", // tab
+            "agent\nharness", // newline
+            " caller",        // leading
+            "caller ",        // trailing
+            " ",              // whitespace only
+            "agent\u{200b}harness", // zero width space — looks identical
+            "agent\u{feff}harness", // BOM
+            "agent\u{00ad}harness", // soft hyphen
+            "agent\u{0007}harness", // control
+        ] {
+            let err = require_writable_ns(bad).unwrap_err();
+            assert!(
+                matches!(err, AreevError::Validation(_)),
+                "{bad:?} should be a validation error, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn writable_ns_still_refuses_the_reserved_star() {
+        assert!(require_writable_ns("org.*").is_err());
+        assert!(require_writable_ns("o*rg").is_err());
+    }
+
+    #[test]
+    fn writable_ns_error_does_not_leak_a_raw_control_character() {
+        // The message quotes the namespace back; escaped, or a name carrying a
+        // newline or an escape sequence would forge lines in the log that
+        // records the refusal.
+        let msg = require_writable_ns("a\nb\u{1b}[31m").unwrap_err().to_string();
+        assert!(!msg.contains('\n'), "no raw newline: {msg:?}");
+        assert!(!msg.contains('\u{1b}'), "no raw escape: {msg:?}");
+        assert!(msg.contains("\\n"), "escaped instead: {msg:?}");
+    }
+
+    #[test]
+    fn read_surfaces_still_accept_a_legacy_unspellable_name() {
+        // A file written before the rule must stay readable, erasable and
+        // disclosable under the name it used — otherwise the rule strands the
+        // data it exists to keep findable.
+        assert!(require_exact_ns("forget_subject", "age, build_messagesnt:harness").is_ok());
+        assert!(require_exact_ns("subject_report", "agent harness").is_ok());
+        assert!(NsScope::parse("agent harness").is_ok());
     }
 
     #[test]

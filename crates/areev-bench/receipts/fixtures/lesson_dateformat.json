@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    {
+      "summary": "the accountant keeps correcting the date format",
+      "target": "entity:ledger/receipt_capture",
+      "guidance": "one formatting convention, stated once",
+      "confidence": 0.9,
+      "proposal": {"kind": "lesson", "lesson": "Write the Invoice Date as DD/MM/YYYY."}
+    }
+  ]
+}

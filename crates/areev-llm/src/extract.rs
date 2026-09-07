@@ -135,6 +135,7 @@ pub fn ground_facts(
     }
     let evidence = || {
         vec![EvidenceItem {
+            id: "e1".to_string(),
             hash: source.to_string(),
             grain_type: "event".to_string(),
             text: content.to_string(),

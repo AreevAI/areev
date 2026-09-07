@@ -293,6 +293,55 @@ fn writes_refuse_wildcard_namespaces() {
     assert!(m.namespaces().unwrap().is_empty());
 }
 
+/// A namespace is minted by the write that first uses it, and nothing
+/// downstream can tell a typo from a deliberate new name. So the write is
+/// where a name that cannot be spelled back has to be refused — see
+/// `areev_core::ns::require_writable_ns` for the incident that motivated it.
+#[test]
+fn writes_refuse_unspellable_namespaces() {
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d);
+
+    let err = m
+        .add(&fact("age, build_messagesnt:harness", "s", "r", "o"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.starts_with("VAL-E001"), "{err}");
+    assert!(err.contains("spellable"), "{err}");
+    assert!(err.contains("U+0020"), "names the offending character: {err}");
+
+    for bad in [
+        "agent harness",
+        "agent\tharness",
+        " caller",
+        "caller ",
+        "agent\u{200b}harness",
+        "agent\u{feff}harness",
+    ] {
+        assert!(
+            m.add(&fact(bad, "s", "r", "o")).is_err(),
+            "{bad:?} should be refused"
+        );
+    }
+
+    // Nothing was stored and no namespace was registered — a refused write
+    // must not leave the registry naming a namespace that holds no grains.
+    assert!(m.namespaces().unwrap().is_empty());
+    assert!(m.recall("agent harness", "s", None, 8).unwrap().is_empty());
+}
+
+/// The rule governs minting, not naming. Every name a host already uses stays
+/// writable, including hierarchies this crate has no opinion about.
+#[test]
+fn writes_accept_every_shape_a_host_actually_uses() {
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d);
+    for ok in ["caller", "agent:harness", "org.sales.emea", "claude-code", "部門:営業"] {
+        m.add(&fact(ok, "s", "r", "o")).unwrap_or_else(|e| panic!("{ok:?}: {e}"));
+    }
+    assert_eq!(m.namespaces().unwrap().len(), 5);
+}
+
 #[test]
 fn point_reads_policy_and_destruction_refuse_patterns() {
     let d = TempDir::new().unwrap();

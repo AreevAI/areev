@@ -24,7 +24,7 @@ use areev_core::authz;
 use areev_core::error::{Hash, AreevError, Result};
 use areev_core::format::deserialize::{deserialize_blob, DeserializedGrain};
 use areev_core::format::serialize::serialize_grain;
-use areev_core::ns::{require_exact_ns, NsScope};
+use areev_core::ns::{require_exact_ns, require_writable_ns, NsScope};
 use areev_core::types::Grain;
 use areev_core::types::{
     step_action_node, step_action_relation, Observation, RelatedTo, STEP_ACTION_PREFIX,
@@ -1341,6 +1341,24 @@ fn parse_kdf_sidecar(text: &str, sidecar: &str) -> Result<([u8; KDF_SALT_LEN], u
     Ok((salt, m, t, p))
 }
 
+/// The read-only precondition: a read-only open never brings a memory into
+/// existence.
+///
+/// Public because a host has to apply it BEFORE work of its own that would
+/// create a file — `derive_key_for` writes a `.kdf` sidecar for an absent
+/// path, which is correct when creating an encrypted memory and wrong on the
+/// way to a refusal. One rule, one message, three callers (CLI, Python, Node).
+pub fn read_only_requires_existing(path: &str, read_only: bool) -> Result<()> {
+    if read_only && !std::path::Path::new(path).exists() {
+        return Err(AreevError::ReadOnlyOpenFailed(format!(
+            "memory file {path:?} does not exist — a read-only open never creates one. \
+             Open it read-write once (drop --read-only / read_only: true) to create the \
+             memory, then retry read-only"
+        )));
+    }
+    Ok(())
+}
+
 impl Areev {
     /// Derive a 32-byte AES-256 key from a passphrase using Argon2id. The salt
     /// and cost parameters live in a non-secret `<path>.kdf` sidecar created on
@@ -1860,13 +1878,7 @@ impl Areev {
         // to an existing, freshly-checkpointed file is normal and must still
         // open. Mirrors postgres's "schema absent" `STO-E005` — same code,
         // same shape of message, backend-appropriate wording.
-        if read_only && !std::path::Path::new(path).exists() {
-            return Err(AreevError::ReadOnlyOpenFailed(format!(
-                "memory file {path:?} does not exist — a read-only open never creates one. \
-                 Open it read-write once (drop --read-only / read_only: true) to create the \
-                 memory, then retry read-only"
-            )));
-        }
+        read_only_requires_existing(path, read_only)?;
         let telemetry_overridden = read_only && telemetry_mode != TelemetryMode::Off;
         let telemetry_mode = if telemetry_overridden { TelemetryMode::Off } else { telemetry_mode };
         // Keep the AEAD key only in a Zeroizing buffer for the duration of the
@@ -3785,14 +3797,17 @@ impl Areev {
 
     /// Serialize-side preparation shared by `add_batch` and bundle import.
     /// `new_write` distinguishes a locally authored grain (add / supersede /
-    /// merge — where `*` in the namespace is refused, the character being
-    /// reserved for prefix scoping) from replication replay (`insert_blob`),
-    /// which must keep files written before the reservation importable.
+    /// merge) from replication replay (`insert_blob`). A local write is the
+    /// only operation that MINTS a namespace, so it is the only one that
+    /// checks the name is writable: no `*` (reserved for prefix scoping) and
+    /// nothing unspellable (whitespace, control or invisible characters —
+    /// `areev_core::ns::require_writable_ns`). Replay stays permissive so
+    /// files written before either rule keep importing.
     fn prep_from_blob(&mut self, blob: Vec<u8>, hash: Hash, new_write: bool) -> Result<GrainPrep> {
         let view = deserialize_blob(&blob)?;
         let gv = extract_view(&view);
         if new_write {
-            require_exact_ns("a grain write", &gv.ns)?;
+            require_writable_ns(&gv.ns)?;
         }
         // Known-identity propagation (anon gate): a subject written now must
         // be detectable in prose the boundary transforms later, even if no
@@ -9418,6 +9433,68 @@ mod tests {
     //! items (fns, methods, struct fields), so we test them directly.
     use super::*;
     use tempfile::TempDir;
+
+    // ---- namespace rules: minting vs replay ----------------------------
+
+    /// A file written before the namespace rules must keep importing, and its
+    /// grains must stay readable, erasable and disclosable under whatever name
+    /// they used — otherwise the rule strands exactly the data it exists to
+    /// keep findable. `prep_from_blob(new_write = false)` is what makes that
+    /// true, and this is the only place it can be asserted: the public API has
+    /// no way to author such a grain any more, which is the point.
+    #[test]
+    fn replication_replay_accepts_a_namespace_a_local_write_would_refuse() {
+        use areev_core::format::serialize::serialize_grain;
+        use areev_core::types::Fact;
+
+        let dir = TempDir::new().unwrap();
+        let mut m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+
+        // The name the incident produced, and a wildcard one — both refused
+        // to a local author, both already present in files somewhere.
+        for legacy in ["age, build_messagesnt:harness", "org.*"] {
+            let mut f = Fact::new("evalset:9409", "mg:eval_run", "{}");
+            f.common.namespace = Some(legacy.to_string());
+            f.common.created_at = Some(1_700_000_000_000);
+            let (blob, hash) = serialize_grain(&f).unwrap();
+
+            assert!(
+                m.add(&f).is_err(),
+                "{legacy:?} must be unwritable to a local author"
+            );
+            m.insert_blob(blob, hash, OP_ADD, 1)
+                .unwrap_or_else(|e| panic!("replay of {legacy:?} must apply: {e}"));
+
+            assert_eq!(
+                m.recall(legacy, "evalset:9409", None, 8).unwrap().len(),
+                1,
+                "{legacy:?} must stay readable"
+            );
+            assert!(m.namespaces().unwrap().iter().any(|(n, _)| n == legacy));
+        }
+
+        // The two rules differ in what they cost the data they grandfather,
+        // and the difference is the reason to prefer one refusal over the
+        // other. An unspellable name is only unspellable to a HUMAN: every
+        // exact selector still takes it verbatim, so a legacy grain stays
+        // erasable and disclosable.
+        m.forget_subject("age, build_messagesnt:harness", "evalset:9409")
+            .expect("erasure must reach a grandfathered unspellable namespace");
+
+        // A `*` name is different in kind: the character is overloaded on the
+        // read side, so an exact selector cannot tell the literal namespace
+        // from the pattern and refuses. A pre-reservation file holding one can
+        // be read (through the pattern that collides with it) but never
+        // erased through `forget_subject` — a known and narrow consequence of
+        // the reservation, asserted here so it stays a decision rather than a
+        // surprise during a DSAR.
+        let err = m
+            .forget_subject("org.*", "evalset:9409")
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("VAL-E001"), "{err}");
+        assert!(err.contains("exact namespace"), "{err}");
+    }
 
     // ---- CAL host metadata (meta_scan / meta_put / meta_delete) ---------
 

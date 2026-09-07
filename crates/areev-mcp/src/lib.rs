@@ -185,7 +185,9 @@ impl McpServer {
     /// client can never pin code, because the pin IS the authorization.
     /// `$AREEV_RUN_EXECUTOR_TIMEOUT` (#133) overrides the fixed 300s
     /// ceiling either executor otherwise runs a tool under — `0` waits
-    /// forever, an unparseable value is ignored and the default stands. The
+    /// forever, an unparseable value is ignored and the default stands.
+    /// `$AREEV_RUN_TOOL_ENV` (the CLI's `--tool-env`) clears the tool's
+    /// environment down to the variables it names. The
     /// principal is always [`run_identity`](Self::run_identity)'s
     /// server-bound value — callers pass it through, never a client string.
     fn runner(&self, principal: &str) -> areev_run::Runner {
@@ -193,12 +195,29 @@ impl McpServer {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
+        let env = std::env::var("AREEV_RUN_TOOL_ENV")
+            .ok()
+            .filter(|names| !names.trim().is_empty())
+            .map(|names| {
+                let (policy, dropped) = areev_run::env_allow_policy(&names);
+                if !dropped.is_empty() {
+                    eprintln!(
+                        "areev-mcp: $AREEV_RUN_TOOL_ENV dropped {} — registered as \
+                         holding a secret",
+                        dropped.join(", ")
+                    );
+                }
+                policy
+            });
         let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> =
             match std::env::var("AREEV_RUN_TOOL_CMD") {
                 Ok(cmd) if !cmd.trim().is_empty() => {
                     let mut ce = areev_run::CommandExecutor::new(&cmd);
                     if let Some(t) = timeout {
                         ce = ce.with_timeout(t);
+                    }
+                    if let Some(p) = env.clone() {
+                        ce = ce.with_env_policy(p);
                     }
                     std::sync::Arc::new(ce)
                 }
@@ -243,6 +262,9 @@ impl McpServer {
                     }
                     if let Some(t) = timeout {
                         ce = ce.with_timeout(t);
+                    }
+                    if let Some(p) = env {
+                        ce = ce.with_env_policy(p);
                     }
                     std::sync::Arc::new(ce)
                 }

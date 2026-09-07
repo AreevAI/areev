@@ -1,0 +1,5 @@
+# The corpus is fetched by a builder (its terms are the source's), and runs
+# are local. Only counts travel — see RECEIPTS.md.
+data/
+runs/
+__pycache__/

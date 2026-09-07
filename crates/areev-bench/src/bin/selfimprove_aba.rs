@@ -42,7 +42,8 @@
 //! one thread.
 
 use areev_bench::selfimprove::context::{ContextProvider, ExperienceGrain};
-use areev_bench::selfimprove::memory::{LessonArms, Memory, MockLoopLlm};
+use areev_bench::selfimprove::memory::{LearnConfig, LearnOutcome, LessonArms, Memory, MockLoopLlm};
+use areev_loop::policy::DiscoverObjective;
 use areev_loop::{CommandLlm, LlmBackend};
 use areev_bench::selfimprove::{agent, context, env, report::Reporter};
 use areev_bench::selfimprove::{EvalSummary, Ledger, RuleId, RuleStat, TaskRunRecord, Usage};
@@ -79,6 +80,12 @@ struct Args {
     no_analyzer_lessons: bool,
     /// Keyless canned loop-LLM (shape runs) in place of `--llm-cmd`.
     mock_llm: bool,
+    /// Give DISCOVER the learner scoring rule (`Policy::discover_objective =
+    /// learner`) instead of the review-queue default.
+    learner: bool,
+    /// Stop once the experience phase is captured, leaving `bench.db` for
+    /// `selfimprove_learn` to measure learn passes over. No eval runs.
+    stop_after_experience: bool,
     /// Requested passive arms, deduped, in the order given (empty = the
     /// A/B/A/B states only, i.e. exactly the pre-arms behavior).
     arms: Vec<String>,
@@ -97,6 +104,19 @@ impl Args {
     /// Which lesson origins this run may apply — the 2x2 cell it measures.
     fn lesson_arms(&self) -> LessonArms {
         LessonArms { analyzer: !self.no_analyzer_lessons, llm: self.llm_lessons }
+    }
+
+    /// The whole learn-pass configuration: the arms plus the DISCOVER
+    /// objective.
+    fn learn_config(&self) -> LearnConfig {
+        LearnConfig {
+            arms: self.lesson_arms(),
+            objective: if self.learner {
+                DiscoverObjective::Learner
+            } else {
+                DiscoverObjective::ReviewQueue
+            },
+        }
     }
 
     /// The chat adapter the m-llm summarizer runs on: its own flag, else the
@@ -128,7 +148,8 @@ fn usage() -> ! {
         "usage: selfimprove_aba --workdir PATH (--mock | --agent-cmd 'CMD')\n\
          \x20                       [--seed N] [--experience N] [--eval N]\n\
          \x20                       [--llm-cmd 'CMD' | --mock-llm] [--ground-cmd 'CMD']\n\
-         \x20                       [--llm-lessons] [--no-analyzer-lessons]\n\
+         \x20                       [--llm-lessons] [--no-analyzer-lessons] [--learner]\n\
+         \x20                       [--stop-after experience]\n\
          \x20                       [--arms m-steel,m-all,m-llm,m-cmd]\n\
          \x20                       [--context-cmd 'CMD'] [--mllm-cmd 'CMD']\n\
          \x20                       [--workers N] [--max-turns N] [--assert-shape]"
@@ -179,6 +200,8 @@ fn parse_args() -> Args {
     let mut llm_lessons = false;
     let mut mock_llm = false;
     let mut no_analyzer_lessons = false;
+    let mut learner = false;
+    let mut stop_after: Option<String> = None;
 
     let mut i = 0;
     while i < argv.len() {
@@ -199,6 +222,10 @@ fn parse_args() -> Args {
                 mock_llm = true;
                 i += 1;
             }
+            "--learner" => {
+                learner = true;
+                i += 1;
+            }
             "--no-analyzer-lessons" => {
                 no_analyzer_lessons = true;
                 i += 1;
@@ -207,6 +234,7 @@ fn parse_args() -> Args {
                 let Some(value) = argv.get(i + 1) else { usage() };
                 match flag {
                     "--workdir" => workdir = Some(PathBuf::from(value)),
+                    "--stop-after" => stop_after = Some(value.clone()),
                     "--seed" => seed = value.parse().unwrap_or_else(|_| usage()),
                     "--experience" => experience = value.parse().unwrap_or_else(|_| usage()),
                     "--eval" => eval = value.parse().unwrap_or_else(|_| usage()),
@@ -266,6 +294,21 @@ fn parse_args() -> Args {
                    (otherwise no lesson is applied at all and B is just another A0)");
         usage()
     }
+    // One stop point, named: a typo here must not run the whole bench.
+    let stop_after_experience = match stop_after.as_deref() {
+        None => false,
+        Some("experience") => true,
+        Some(other) => {
+            eprintln!("selfimprove_aba: --stop-after takes 'experience', got {other:?}");
+            usage()
+        }
+    };
+    // The objective changes what the LLM proposer is asked; with no LLM it
+    // would be a label on a run that never asked one.
+    if learner && llm_cmd.is_none() && !mock_llm {
+        eprintln!("selfimprove_aba: --learner requires --llm-cmd or --mock-llm");
+        usage()
+    }
     Args {
         workdir,
         seed,
@@ -278,6 +321,8 @@ fn parse_args() -> Args {
         llm_lessons,
         no_analyzer_lessons,
         mock_llm,
+        learner,
+        stop_after_experience,
         arms,
         context_cmd,
         mllm_cmd,
@@ -912,6 +957,19 @@ fn main() {
         }
     }
 
+    // --stop-after experience: the captured memory is the deliverable.
+    // `selfimprove_learn` measures learn passes over it without paying for
+    // the eval states, which is how an objective or a model is tried before
+    // a full run spends on it.
+    if args.stop_after_experience {
+        eprintln!(
+            "stopped after experience: {} tasks captured in {}",
+            exp_tasks.len(),
+            mem.db_path().display()
+        );
+        return;
+    }
+
     // The held-out set: disjoint from experience, fixed per seed, evaluated
     // in the same order under all four states.
     let eval_tasks = env::gen_tasks(args.seed, env::Split::Eval, args.eval);
@@ -951,8 +1009,8 @@ fn main() {
     // 3 LEARN → apply (scripted review: executable non-destructive approved
     // + applied, destructive rejected, advisory ledgered) → eval B.
     let (llm, ground) = loop_llm_backends(&args);
-    let (ledger1, applied1) = mem
-        .learn_with(llm, ground, args.lesson_arms(), t_learn1)
+    let LearnOutcome { ledger: ledger1, applied: applied1, .. } = mem
+        .learn_with(llm, ground, args.learn_config(), t_learn1)
         .unwrap_or_else(|e| die(&e));
     eprintln!(
         "learn 1: {} ledger rows, {} applied",
@@ -975,8 +1033,8 @@ fn main() {
     // 5 RE-APPLY → eval B2. RolledBack is terminal per hash, so this is the
     // whole governed path a second time: re-propose → approve → apply.
     let (llm, ground) = loop_llm_backends(&args);
-    let (ledger2, applied2) = mem
-        .learn_with(llm, ground, args.lesson_arms(), t_learn2)
+    let LearnOutcome { ledger: ledger2, applied: applied2, .. } = mem
+        .learn_with(llm, ground, args.learn_config(), t_learn2)
         .unwrap_or_else(|e| die(&e));
     eprintln!(
         "learn 2: {} ledger rows, {} applied",
@@ -1094,6 +1152,8 @@ mod tests {
             llm_lessons: false,
             no_analyzer_lessons: false,
             mock_llm: false,
+            learner: false,
+            stop_after_experience: false,
             arms: vec![],
             context_cmd: None,
             mllm_cmd: None,

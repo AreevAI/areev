@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Exact-match rate on registrants the agent never learned from as the deployment grows: no memory (day-one agent) 26% at 320; Areev governed: LLM with the loop's rules 69% at 320; Areev tuned: 1.7B from scratch 95% at 320; Areev tuned: 1.7B continually 91% at 320.</title>
+<desc>Documents learned from on a log axis. No memory is the day-one agent, read once per seed. mem0 stores each accountant exchange and retrieves into the prompt. The LLM carries the rules the governed loop had approved at each checkpoint; the small model is tuned on the filed rows up to it, from the plain base or from the previous checkpoint. Pooled over 1 seed(s); bars are 95% Wilson intervals where recorded.</desc>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#e6e8ec"/>
+<text x="49" y="338.0" text-anchor="end" font-size="11" fill="#5f6470">0%</text>
+<line x1="58" y1="259.0" x2="718" y2="259.0" stroke="#e6e8ec"/>
+<text x="49" y="263.0" text-anchor="end" font-size="11" fill="#5f6470">25%</text>
+<line x1="58" y1="184.0" x2="718" y2="184.0" stroke="#e6e8ec"/>
+<text x="49" y="188.0" text-anchor="end" font-size="11" fill="#5f6470">50%</text>
+<line x1="58" y1="109.0" x2="718" y2="109.0" stroke="#e6e8ec"/>
+<text x="49" y="113.0" text-anchor="end" font-size="11" fill="#5f6470">75%</text>
+<line x1="58" y1="34.0" x2="718" y2="34.0" stroke="#e6e8ec"/>
+<text x="49" y="38.0" text-anchor="end" font-size="11" fill="#5f6470">100%</text>
+<text x="58.0" y="353" text-anchor="middle" font-size="11" fill="#5f6470">20</text>
+<text x="223.0" y="353" text-anchor="middle" font-size="11" fill="#5f6470">40</text>
+<text x="388.0" y="353" text-anchor="middle" font-size="11" fill="#5f6470">80</text>
+<text x="553.0" y="353" text-anchor="middle" font-size="11" fill="#5f6470">160</text>
+<text x="718.0" y="353" text-anchor="middle" font-size="11" fill="#5f6470">320</text>
+<text x="26" y="20" font-size="11" fill="#5f6470">exact-match rate on registrants the agent never learned from</text>
+<text x="388" y="374" text-anchor="middle" font-size="11.5" fill="#5f6470">documents learned from (log scale)</text>
+<line x1="58" y1="309.1" x2="718" y2="309.1" stroke="#7f9cc7" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="62" y="304.1" font-size="10.5" fill="#7f9cc7">untuned 1.7B under the final rules, 8%</text>
+<path d="M58.0 257.2 L223.0 257.2 L388.0 257.2 L553.0 257.2 L718.0 257.2" fill="none" stroke="#9aa0ac" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="58.0" cy="257.2" r="3.2" fill="#9aa0ac"/>
+<circle cx="223.0" cy="257.2" r="3.2" fill="#9aa0ac"/>
+<circle cx="388.0" cy="257.2" r="3.2" fill="#9aa0ac"/>
+<circle cx="553.0" cy="257.2" r="3.2" fill="#9aa0ac"/>
+<circle cx="718.0" cy="257.2" r="3.2" fill="#9aa0ac"/>
+<path d="M58.0 219.1 L223.0 220.6 L388.0 126.4 L553.0 127.3 L718.0 127.3" fill="none" stroke="#1f6f4f" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="58.0" cy="219.1" r="3.2" fill="#1f6f4f"/>
+<circle cx="223.0" cy="220.6" r="3.2" fill="#1f6f4f"/>
+<circle cx="388.0" cy="126.4" r="3.2" fill="#1f6f4f"/>
+<circle cx="553.0" cy="127.3" r="3.2" fill="#1f6f4f"/>
+<circle cx="718.0" cy="127.3" r="3.2" fill="#1f6f4f"/>
+<path d="M58.0 169.3 L223.0 176.2 L388.0 169.3 L553.0 60.4 L718.0 48.7" fill="none" stroke="#2f5f9e" stroke-width="2.4" stroke-linejoin="round"/>
+<line x1="58.0" y1="184.3" x2="58.0" y2="154.6" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="58.0" cy="169.3" r="3.2" fill="#2f5f9e"/>
+<line x1="223.0" y1="191.2" x2="223.0" y2="161.5" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="223.0" cy="176.2" r="3.2" fill="#2f5f9e"/>
+<line x1="388.0" y1="184.3" x2="388.0" y2="154.6" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="388.0" cy="169.3" r="3.2" fill="#2f5f9e"/>
+<line x1="553.0" y1="70.3" x2="553.0" y2="53.2" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="553.0" cy="60.4" r="3.2" fill="#2f5f9e"/>
+<line x1="718.0" y1="56.8" x2="718.0" y2="43.6" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="718.0" cy="48.7" r="3.2" fill="#2f5f9e"/>
+<path d="M58.0 169.3 L223.0 233.8 L388.0 187.9 L553.0 83.8 L718.0 61.3" fill="none" stroke="#2f5f9e" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<line x1="58.0" y1="184.3" x2="58.0" y2="154.6" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="58.0" cy="169.3" r="3.2" fill="#2f5f9e"/>
+<line x1="223.0" y1="247.3" x2="223.0" y2="219.1" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="223.0" cy="233.8" r="3.2" fill="#2f5f9e"/>
+<line x1="388.0" y1="202.6" x2="388.0" y2="172.9" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="388.0" cy="187.9" r="3.2" fill="#2f5f9e"/>
+<line x1="553.0" y1="95.8" x2="553.0" y2="73.6" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="553.0" cy="83.8" r="3.2" fill="#2f5f9e"/>
+<line x1="718.0" y1="70.9" x2="718.0" y2="53.8" stroke="#2f5f9e" stroke-width="1.2" opacity="0.7"/>
+<circle cx="718.0" cy="61.3" r="3.2" fill="#2f5f9e"/>
+<text x="728.0" y="52.7" font-size="12" font-weight="600" fill="#2f5f9e">Areev tuned: 1.7B from scratch</text>
+<text x="728.0" y="67.7" font-size="12" font-weight="600" fill="#2f5f9e">Areev tuned: 1.7B continually</text>
+<text x="728.0" y="131.3" font-size="12" font-weight="600" fill="#1f6f4f">Areev governed: LLM with the loop's rules</text>
+<text x="728.0" y="261.2" font-size="12" font-weight="600" fill="#9aa0ac">no memory (day-one agent)</text>
+<line x1="58" y1="334.0" x2="718" y2="334.0" stroke="#c9cdd4"/>
+</svg>

@@ -2,8 +2,9 @@
 """OpenRouter tool-calling adapter for the selfimprove_* benches.
 
     usage: openrouter_toolcall.py MODEL [--provider PROVIDER] [--seed N] [--selfcheck]
-    key:   $OPENROUTER_API_KEY
-    base:  $OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1)
+    key:   $OPENROUTER_API_KEY, or the variable named by --key-env
+    base:  $OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1), or --base-url
+           (an OpenAI model is cheaper called at api.openai.com directly)
 
 Reads ONE JSON request line on stdin (the SELFIMPROVE.md runner protocol):
     {"op":"chat","model":M,"messages":[...],"tools":[...],"temperature":0}
@@ -22,6 +23,7 @@ response without touching the network (keyless; CI round-trips use it).
 Stdlib only (urllib) — no pip install. Exit codes: 2 = missing key / bad
 usage / bad request, 1 = upstream failure after retries.
 """
+import http.client
 import json
 import os
 import sys
@@ -29,7 +31,31 @@ import time
 import urllib.error
 import urllib.request
 
-RETRY_DELAYS = (2.0, 4.0, 8.0)
+
+def _meter(model, provider, usage, op):
+    """Append one line to $AREEV_USAGE_LOG, if set. Every model call in a run
+    passes through one of these adapters, so this one hook meters the whole
+    programme -- agent, learner, grounder, reviewer -- and a cost chart can be
+    drawn from journaled tokens rather than from a card statement read after
+    the fact (which is how an earlier spend figure got published unmeasured)."""
+    path = os.environ.get("AREEV_USAGE_LOG")
+    if not path or not usage:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": int(time.time() * 1000), "script": os.path.basename(sys.argv[0]),
+                "model": model, "provider": provider, "op": op,
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+            }) + "\n")
+    except OSError:
+        pass
+
+# Long enough to outlast a provider's rate-limit window, not just a blip: a
+# sustained upstream 429 ended two metered seeds at 14 seconds of retries.
+# Retry-After is honoured (capped at 60s) when the provider sends one.
+RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0)
 
 CANNED_RESPONSE = {
     "choices": [
@@ -62,9 +88,26 @@ def die(msg: str, code: int = 2) -> None:
 
 def parse_args(argv):
     model, provider, selfcheck, seed = None, None, False, None
+    base_url, key_env = None, None
     i = 1
     while i < len(argv):
         a = argv[i]
+        if a in ("--base-url", "--key-env"):
+            # Any OpenAI-compatible chat endpoint, called directly: an OpenAI
+            # model goes to api.openai.com with $OPENAI_API_KEY rather than
+            # through OpenRouter, so a study's per-call and batch reads share
+            # one model on one provider. OpenRouter stays for the models it
+            # is the only route to. The provider pin is OpenRouter's and is
+            # dropped off it.
+            i += 1
+            if i >= len(argv):
+                die(f"{a} needs a value")
+            if a == "--base-url":
+                base_url = argv[i]
+            else:
+                key_env = argv[i]
+            i += 1
+            continue
         if a == "--seed":
             i += 1
             if i >= len(argv):
@@ -84,7 +127,7 @@ def parse_args(argv):
             selfcheck = True
         elif a.startswith("--"):
             die(f"unknown flag {a}; usage: openrouter_toolcall.py MODEL "
-                f"[--provider P] [--seed N] [--selfcheck]")
+                f"[--provider P] [--seed N] [--base-url URL] [--key-env VAR] [--selfcheck]")
         elif model is None:
             model = a
         else:
@@ -93,7 +136,7 @@ def parse_args(argv):
     if model is None:
         die("usage: openrouter_toolcall.py MODEL [--provider PROVIDER] "
             "[--seed N] [--selfcheck]")
-    return model, provider, selfcheck, seed
+    return model, provider, selfcheck, seed, base_url, key_env
 
 
 def read_request(line: str):
@@ -116,7 +159,7 @@ def build_body(req, model, provider, seed=None):
         "temperature": req.get("temperature", 0),
     }
     if provider:
-        body["provider"] = {"order": [provider], "allow_fallbacks": False}
+        body["provider"] = {"order": [x for x in provider.split(",") if x], "allow_fallbacks": False}
     if seed is not None:
         # Temperature 0 is not determinism: a seed-1 run measured two
         # BYTE-IDENTICAL eval states 9 points apart (p=0.049). `seed` is
@@ -172,7 +215,20 @@ def post(body, key, base):
         )
         try:
             with urllib.request.urlopen(req, timeout=110) as r:
-                return json.load(r)
+                body = json.load(r)
+            # OpenRouter can answer 200 with {"error": {"code": 429, ...}} and no
+            # choices -- a provider error wearing a success status. Until
+            # 2026-09-06 that escaped as "unexpected response shape" and killed
+            # the caller; it is retried like the status it names.
+            err = body.get("error") if isinstance(body, dict) else None
+            if err:
+                code = err.get("code") if isinstance(err, dict) else None
+                last = f"error body: {str(err)[:200]}"
+                if (code == 429 or (isinstance(code, int) and 500 <= code < 600)) and attempt < len(RETRY_DELAYS):
+                    time.sleep(RETRY_DELAYS[attempt])
+                    continue
+                break
+            return body
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read()[:300].decode("utf-8", "replace")
@@ -197,12 +253,25 @@ def post(body, key, base):
                 time.sleep(RETRY_DELAYS[attempt])
                 continue
             break
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # The connect succeeded and the READ failed -- a socket timeout
+            # mid-body, a reset, a truncated chunked response, or a body that
+            # is not JSON. As transient as a 503; URLError covers the connect
+            # phase only, and until 2026-09-06 these escaped as a traceback.
+            last = f"read: {type(e).__name__}: {e}"
+            if attempt < len(RETRY_DELAYS):
+                time.sleep(RETRY_DELAYS[attempt])
+                continue
+            break
     sys.stderr.write(f"openrouter_toolcall: request failed: {last}\n")
     sys.exit(1)
 
 
 def main() -> None:
-    model, provider, selfcheck, seed = parse_args(sys.argv)
+    model, provider, selfcheck, seed, base_url, key_env = parse_args(sys.argv)
+    base = base_url or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    if "openrouter.ai" not in base:
+        provider = None  # the provider pin is OpenRouter's routing hint; other endpoints reject unknown fields
     line = "" if (selfcheck and sys.stdin.isatty()) else sys.stdin.readline()
     if not line.strip():
         if not selfcheck:
@@ -221,13 +290,15 @@ def main() -> None:
     if selfcheck:
         out = normalize(CANNED_RESPONSE)
     else:
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        key_var = key_env or "OPENROUTER_API_KEY"
+        key = os.environ.get(key_var, "").strip()
         if not key:
-            die("OPENROUTER_API_KEY is not set")
-        base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            die(f"{key_var} is not set")
         resp = post(body, key, base)
         try:
             out = normalize(resp)
+            host = base.split("//", 1)[-1].split("/", 1)[0]
+            _meter(model, provider if "openrouter.ai" in base else host, out.get("usage"), "chat")
         except (KeyError, IndexError, TypeError) as e:
             sys.stderr.write(
                 f"openrouter_toolcall: unexpected response shape ({e}); "
