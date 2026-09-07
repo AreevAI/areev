@@ -52,15 +52,31 @@ must publish bottom-up.
   (cd crates/areev-js && ./node_modules/.bin/napi build --platform --release)
   git diff crates/areev-js/index.js   # must be version lines ONLY
   ```
-- **Refresh `crates/areev-js/Cargo.lock` in the same commit.** areev-js is a
-  DETACHED cargo workspace with its own lockfile, so bumping its `Cargo.toml`
-  leaves the lock pinning the previous version for itself and every path
-  dependency. CI's `node` job asserts this (`cargo metadata --locked`), and
-  `release-npm.yml` builds `--locked` — so left alone it surfaces as a failed
-  RELEASE, not a failed build. 1.6.1 hit exactly this.
+- **Refresh BOTH lockfiles in the same commit — the root one and areev-js's.**
+  A lockfile pins every workspace crate by version, so the moment
+  `[workspace.package]` moves, both locks still say the previous one.
   ```bash
-  (cd crates/areev-js && cargo metadata --format-version 1 >/dev/null)
+  cargo metadata --format-version 1 >/dev/null                      # root
+  (cd crates/areev-js && cargo metadata --format-version 1 >/dev/null)  # detached
+  git add Cargo.lock crates/areev-js/Cargo.lock
   ```
+  - **Root `Cargo.lock`.** CI's `msrv` job runs `cargo build --workspace
+    --locked` and fails in ~20 seconds — fast enough to look like a toolchain
+    problem rather than a stale file. **The ordering is the trap**: the only
+    step that would otherwise refresh it is `cargo publish --dry-run`, which
+    this runbook deliberately places *after* the version commit, so the lock
+    gets fixed on disk moments too late to be committed and is left sitting
+    dirty in the tree. Refresh it here, explicitly, as part of the bump.
+    1.7.3 hit exactly this.
+  - **`crates/areev-js/Cargo.lock`.** areev-js is a DETACHED cargo workspace
+    with its own lockfile, covering itself and every path dependency. CI's
+    `node` job asserts it (`cargo metadata --locked`) and `release-npm.yml`
+    builds `--locked` — so left alone it surfaces as a failed RELEASE, not a
+    failed build. 1.6.1 hit exactly this.
+
+  Both share a failure signature worth recognising: `--locked` rejects the
+  tree, the job dies before compiling anything, and the error names the
+  lockfile rather than the version you changed.
 - **Regenerate the repo-stats artifacts after the bump** — they embed the
   version string, so the pre-flight `--check` (run before the bump) goes
   stale the moment `Cargo.toml` moves and the `stats` CI job fails the
