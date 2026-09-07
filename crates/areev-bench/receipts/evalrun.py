@@ -20,7 +20,7 @@ import ledger_profile
 import memory as mem
 from agent import build_messages, parse_reply, propose
 
-HARNESS_NS = "age, build_messagesnt:harness"
+HARNESS_NS = "agent:harness"
 
 
 def batch_replies(profile, at, rows, lessons, lessons_fn, batch_argv, journal):
