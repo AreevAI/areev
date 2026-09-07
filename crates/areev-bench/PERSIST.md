@@ -312,6 +312,41 @@ passive arm; p = 0.076 for the governed arm, which pays for its loop
 passes). Mechanism evidence favours Areev (0.21–0.22 against 0.16) but not
 significantly (p = 0.17–0.42).
 
+### The tuning leg — the memory did not move into the weights at this scale
+
+The 1.7B model, served locally at its own 16K context, evaluated as the
+agent through the same `areev-passive` scaffold and the same paired
+protocol as every other arm (25 of 26 families; the sixth is the SOP family
+that needs port offset 0):
+
+| agent | with the memory in its prompt | with NO persistence | Δ | prompt tokens / episode |
+|---|---:|---:|---:|---:|
+| 30B + Areev memory (runs 2–3) | **0.62** | 0.34 | +0.28 | 18.0K |
+| 1.7B **tuned** on the governed corpus | 0.468 | 0.317 | +0.151 | 15.7K |
+| 1.7B **untuned** (the control) | 0.483 | 0.312 | +0.172 | 13.9K |
+
+**The tuned model is not better than the untuned base** — 0.468 against
+0.483 with the memory, 0.317 against 0.312 without it. If the corpus had
+moved the memory into the weights, the tuned model would beat the control
+*without persistence*; it does not, by 0.005 on 25 families, which is
+nothing. This is §10's stated-in-advance outcome ("Tuned 1.7B ≤ untuned
+control: published as a bound on the method at this scale, with the loss
+curves"), and the bound is the honest headline: **32 training rows drawn
+from 26 unlike task families did not transfer.**
+
+Read beside [`FOURWAY.md`](FOURWAY.md), where the same recipe on the same
+model size took a receipts agent from 97 to 571 of 720 on a 34-row corpus,
+this sharpens rather than contradicts the tuning claim: that corpus was
+**one** document type, one ledger, one set of conventions repeated 40
+times; this one is 26 families with different services, tools and rules and
+one or two rows each. The claim that survives is the one FOURWAY's own
+sources state — distillation pays on narrow, high-volume, recurring work —
+and PAST-Bench is the counter-example that says where it stops. Neither
+small-model configuration reaches the 30B's 0.62 either.
+
+The held-out (unseen-families) adapter is rerunning; its condition lost its
+server to an out-of-memory during CUDA-graph capture.
+
 ### The gate, audited by a second judge
 
 `persist/pastbench/audit_reviewer.py` re-judges every decision of run 2's
