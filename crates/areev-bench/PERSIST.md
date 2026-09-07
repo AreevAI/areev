@@ -275,42 +275,53 @@ nothing from more streams.
 
 ## Results so far — read against the noise floor
 
-**The two post-fix runs (seeds 2 and 3), all 26 families, all three arms,
-paired by family (`persist/pastbench/stats.py`; every Δ read from the
-benchmark's own `sequence_comparison.json`, nothing re-scored):**
+**Three seeds, all 26 families, all three arms, paired by family
+(`persist/pastbench/stats.py`; every Δ read from the benchmark's own
+`sequence_comparison.json`, nothing re-scored). Seeds are `run1-sighted`,
+`run2`, `run3` — all three post-fix; run 1's blind-gate readings are
+archived, not pooled:**
 
-| arm | mean Δ | seed 2 | seed 3 | mechanism | prompt tokens / episode |
-|---|---:|---:|---:|---:|---:|
-| areev-governed | +0.280 | +0.286 | +0.273 | 0.208 | 18,474 |
-| areev-passive | +0.283 | +0.273 | +0.294 | 0.224 | 18,819 |
-| hermes 0.4.0 | +0.243 | +0.265 | +0.221 | 0.159 | 28,531 |
+| arm | mean Δ | s1 | s2 | s3 | mechanism | prompt tok / episode |
+|---|---:|---:|---:|---:|---:|---:|
+| areev-governed | +0.266 | +0.237 | +0.286 | +0.273 | 0.201 | 19,416 |
+| areev-passive | +0.291 | +0.306 | +0.273 | +0.294 | 0.235 | 18,650 |
+| hermes 0.4.0 | +0.246 | +0.252 | +0.265 | +0.221 | 0.166 | 28,269 |
 
-**The noise floor makes the score difference unreadable.** The same arm on
-the same family, run under two seeds, differs by **0.098** on average —
-larger than any gap between the arms. The paired contrasts, 26 families,
-two-sided Wilcoxon signed-rank with a sign test beside it:
+**The noise floor makes the score differences unreadable.** The same arm on
+the same family, across seeds, differs by **0.09–0.13** on average — larger
+than any gap between the arms:
 
 | contrast | mean difference | wins/losses | Wilcoxon p | sign p |
 |---|---:|---|---:|---:|
-| governed − passive | −0.004 | 14/12 | 0.879 | 0.845 |
-| governed − hermes | +0.037 | 15/9 | 0.247 | 0.308 |
-| passive − hermes | +0.040 | 15/11 | 0.264 | 0.557 |
+| governed − passive | −0.025 | 14/12 | 0.780 | 0.845 |
+| governed − hermes | +0.020 | 12/13 | 0.420 | 1.000 |
+| passive − hermes | +0.045 | 16/10 | 0.213 | 0.327 |
 
-So: **Areev and Hermes are statistically indistinguishable on the
-benchmark's own metric at 26 families** — Areev's point estimate is higher
-in both seeds and on three capabilities of four, and that is all the data
-supports. It is not "Areev beats Hermes". A third seed is running; with
-family-to-family variation dominating (the between-seed component is only
-~0.05 of the ~0.16 spread of family differences), it will sharpen the
-estimate, not the verdict. Detecting +0.04 at this variance needs roughly
-70 families; PAST-Bench has 26.
+**All three arms are statistically indistinguishable on the benchmark's own
+metric.** Areev's passive arm has the highest point estimate and wins 16 of
+26 families against Hermes, and that is all the data supports; the governed
+arm against Hermes is a coin flip at 12–13. It is **not** "Areev beats
+Hermes". Detecting a +0.045 difference against a per-family spread of ~0.16
+needs roughly 70 families; PAST-Bench has 26, and a fourth seed would not
+change it because family-to-family variation, not seed noise, dominates.
 
-**What IS significant is the cost of the answer.** Areev reaches the same
-score on **35% fewer prompt tokens per episode** — 18.5K against Hermes's
-28.5K, lower in 19 of 26 families (paired sign test, p = 0.029 for the
-passive arm; p = 0.076 for the governed arm, which pays for its loop
-passes). Mechanism evidence favours Areev (0.21–0.22 against 0.16) but not
-significantly (p = 0.17–0.42).
+**The cost of the answer is where the difference is real.** Areev reaches
+the same score on fewer prompt tokens per episode, in 18 of 26 families,
+**Wilcoxon p = 0.005** (passive) and **0.010** (governed, which also pays
+for its loop passes). Two honest readings of the size, both stated:
+
+- **typical family**: Areev uses **80%** of Hermes's tokens (median ratio;
+  mean ratio 0.90) — a fifth less, not a third;
+- **aggregate**: **66%** — 18.7K against 28.3K — because Hermes blows up on
+  a few families (121K per episode on `PC01_sop_bootstrap_05`, 51K on
+  `PC01_sop_bootstrap_04`) where Areev's budgeted assembly does not. Six
+  families see Hermes use more than twice Areev's tokens; on eight, Areev
+  uses more.
+
+The bill follows the aggregate; the typical episode follows the median. The
+defensible sentence is "a fifth cheaper per episode and a third cheaper
+across a workload, because it has no tail". Mechanism evidence favours
+Areev (0.20–0.24 against 0.17) but not significantly (p = 0.42–0.56).
 
 ### The tuning leg — the memory did not move into the weights at this scale
 
