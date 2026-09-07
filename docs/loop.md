@@ -274,6 +274,7 @@ are the identity when no backend is set:
   | `plan_revision` | `grain:<workflow hash>` | `SUPERSEDE … WITH workflow` from ≤8 field-level edits |
   | `code_revision` | `tool:<name>` | §7.4's promotion grain, behind the Rule E1 evalset gate |
   | `skill` | `entity:<ns>/<skill-name>` | `ADD skill` — a reusable procedure (description, `when_to_use`, ordered steps) from a trajectory that succeeded; `SUPERSEDE … WITH skill` when a live skill of that name exists. Offered only under `skills.enabled` |
+  | `plan` | `entity:<ns>/<plan-name>` | one batch: `ADD workflow` (steps bound to tools the evidence shows were called, edges with conditions in the runtime's frozen grammar — handed to the substrate's plan validator first) **and** `ADD skill` of the same name (the prose). `SUPERSEDE` both when a live pair of that name exists. Offered only under `plans.enabled` |
 
   A draft with no proposal — or one the engine cannot resolve — stays an
   advisory flag, exactly as every DISCOVER finding used to. What resolves
@@ -703,6 +704,8 @@ host policy file — `areev loop --policy loop-policy.json` (or
   "evidence_attribution": "named",
   "cadence": { "every_events": 10 },
   "skills": { "enabled": true, "min_steps": 2 },
+  "plans": { "enabled": true, "min_nodes": 2 },
+  "premise_drift": true,
   "min_evidence": 1
 }
 ```
@@ -732,6 +735,26 @@ is exactly what it was. It exists because, measured on PAST-Bench, the agent
 performed a procedure correctly and then answered "nothing to save" when
 asked — every skill in the memory had depended on the model volunteering one
 mid-task (`crates/areev-bench/PERSIST.md`).
+
+`plans` (default: on, two steps minimum) lets DISCOVER propose the same
+procedure as a **plan** — a Workflow grain the runtime validates before a
+reviewer sees it (unique, reachable steps; edges whose conditions parse;
+bounded cycles), each step bound to a tool the cited evidence shows was
+called, beside a Skill of the same name carrying the prose. A skill is what a
+model reads; a plan is what `areev run`, the run journal and `run_outcome`
+can reach, and what `plan_revision` can patch by field. The benchmark's own
+label for every procedural family — "ordered steps, tools, conditions; a
+patched v2 supersedes v1" — is a Workflow.
+
+`premise_drift` (default: on) is the Verify gate's second question. Every
+applied recommendation cites the grains it was derived from; when one is
+later superseded by a **different** value, or retracted, the premise the
+reviewer approved no longer holds, the gate records `drifted`, and
+`outcome_review` proposes the revert. A value-identical supersession (what
+consolidation does) is not drift. It exists because a lesson that outlives
+its premise is measured harm: on PAST-Bench a rule encoding the old regime's
+flag cost the governed arm 0.32 on the very migration family it was learned
+in.
 
 `min_evidence` (default 1) is the fewest distinct grains a draft must cite
 to be offered as a change; under it the draft is stored and reviewable but

@@ -10,5 +10,10 @@
     "enabled": true,
     "min_steps": 2
   },
-  "min_evidence": 1
+  "min_evidence": 1,
+  "plans": {
+    "enabled": true,
+    "min_nodes": 2
+  },
+  "premise_drift": true
 }

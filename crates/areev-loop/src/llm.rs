@@ -56,6 +56,9 @@ pub const MAX_SKILL_STEP_LEN: usize = 240;
 pub const MAX_SKILL_STEPS: usize = 20;
 /// A skill name is an identifier a person types at `skill_view`, not a title.
 pub const MAX_SKILL_NAME_LEN: usize = 64;
+/// A plan has at most this many steps; a condition is one short line.
+pub const MAX_PLAN_NODES: usize = 20;
+pub const MAX_COND_LEN: usize = 200;
 pub const MAX_QUERY_BODY_LEN: usize = 2_000;
 pub const MAX_PLAN_EDITS: usize = 8;
 pub const MAX_CODE_LEN: usize = 20_000;
@@ -229,6 +232,43 @@ pub enum DraftProposal {
         #[serde(default)]
         steps: Vec<String>,
     },
+    /// A reusable procedure as a PLAN: named steps, each bound to a tool the
+    /// evidence shows was called, and edges with conditions in the runtime's
+    /// frozen grammar. Applies as a Workflow grain (the structure the runtime
+    /// validates and can execute) plus a Skill grain of the same name (the
+    /// prose a model reads), in one batch; a live pair of that name is
+    /// superseded. Offered only when `Policy::plans.enabled`.
+    Plan {
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        when_to_use: String,
+        #[serde(default)]
+        nodes: Vec<PlanNodeDraft>,
+        #[serde(default)]
+        edges: Vec<PlanEdgeDraft>,
+    },
+}
+
+/// One step of a `plan` draft: an identifier, the tool it calls, and what it
+/// does with it.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PlanNodeDraft {
+    pub id: String,
+    pub tool: String,
+    pub step: String,
+}
+
+/// One edge of a `plan` draft. `cond` is in the runtime's frozen grammar
+/// (`path == literal`, `path != literal`, `path exists`, `!path`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PlanEdgeDraft {
+    pub src: String,
+    pub dst: String,
+    pub cond: Option<String>,
+    pub max_cycles: Option<u32>,
 }
 
 impl LlmDraft {

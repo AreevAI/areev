@@ -221,6 +221,35 @@ impl Default for SkillAuthoring {
     }
 }
 
+/// Whether, and how, DISCOVER may author a **plan** — a Workflow grain: named
+/// steps, edges with conditions in the runtime's frozen grammar, validated
+/// before a reviewer sees it — beside the Skill that carries the prose.
+///
+/// A skill is what a model reads; a plan is what the runtime can check and
+/// run. PAST-Bench's own labels call every procedural family "ordered steps,
+/// tools, conditions… a patched v2 supersedes v1" — which is a Workflow, and
+/// its patch is the `plan_revision` this engine already has. Storing the
+/// procedure as a plan buys structural validation (unique, reachable nodes;
+/// conditions that parse; bounded cycles) at author time, and puts the
+/// procedure where `areev run`, the run journal and `run_outcome` can reach
+/// it. Governed like every draft; never auto-applied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanAuthoring {
+    /// Offer the `plan` proposal kind (default: yes, under LLM enrichment).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Fewer steps than this is a lesson, not a procedure (default 2).
+    #[serde(default = "default_min_steps")]
+    pub min_nodes: u32,
+}
+
+impl Default for PlanAuthoring {
+    fn default() -> Self {
+        PlanAuthoring { enabled: true, min_nodes: 2 }
+    }
+}
+
 /// The parsed host policy. Everything default-closed — the two fields whose
 /// closed state is not the zero value (`skills`, `min_evidence`) say so in
 /// their own `Default`.
@@ -269,6 +298,20 @@ pub struct Policy {
     /// carries nothing a reviewer could apply.
     #[serde(default = "default_min_evidence")]
     pub min_evidence: u32,
+    /// Plan authoring by the LLM proposer (default: on, two steps minimum).
+    #[serde(default)]
+    pub plans: PlanAuthoring,
+    /// The Verify gate's second question (default: on). An applied
+    /// recommendation cites the grains it was derived from; when one of them
+    /// is later superseded by a DIFFERENT value, or retracted, the premise
+    /// the reviewer approved no longer holds. A lesson that outlives its
+    /// premise is measured harm: on PAST-Bench a rule encoding the old
+    /// regime's flag cost the governed arm 0.32 on the migration family it
+    /// was learned in (`crates/areev-bench/PERSIST.md`). With this on, the
+    /// gate records `drifted` and proposes the revert; a value-identical
+    /// supersession (consolidation) is not drift.
+    #[serde(default = "default_true")]
+    pub premise_drift: bool,
 }
 
 fn is_default_cadence(c: &Cadence) -> bool {
@@ -289,6 +332,8 @@ impl Default for Policy {
             cadence: Cadence::default(),
             skills: SkillAuthoring::default(),
             min_evidence: 1,
+            plans: PlanAuthoring::default(),
+            premise_drift: true,
         }
     }
 }
@@ -491,6 +536,19 @@ mod tests {
         let round = Policy::from_json(&serde_json::to_string(&Policy::default()).unwrap()).unwrap();
         assert_eq!(round.min_evidence, 1);
         assert!(round.skills.enabled);
+    }
+
+    #[test]
+    fn plans_and_premise_drift_default_on_and_are_switchable() {
+        let p = Policy::default();
+        assert!(p.plans.enabled);
+        assert_eq!(p.plans.min_nodes, 2);
+        assert!(p.premise_drift);
+        let p = Policy::from_json(r#"{"plans": {"enabled": false}, "premise_drift": false}"#).unwrap();
+        assert!(!p.plans.enabled);
+        assert_eq!(p.plans.min_nodes, 2);
+        assert!(!p.premise_drift);
+        assert!(Policy::from_json(r#"{"plans": {"auto_apply": true}}"#).is_err(), "no back door");
     }
 
     #[test]

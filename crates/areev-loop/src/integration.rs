@@ -1887,13 +1887,13 @@ fn llm_sees_tool_failures_no_analyzer_flagged() {
             },
             seen: Arc::clone(&seen2),
         }))
-        .with_policy(Policy::from_json(r#"{"skills": {"enabled": false}}"#).unwrap());
+        .with_policy(Policy::from_json(r#"{"skills": {"enabled": false}, "plans": {"enabled": false}}"#).unwrap());
     e2.run(&mut sub.inner, &RunOptions { full_sweep: true, ..Default::default() }, 10_001).unwrap();
     let seen2 = seen2.lock().unwrap();
     let d2: serde_json::Value =
         serde_json::from_str(seen2.iter().find(|r| r.contains("\"op\":\"discover\"")).unwrap()).unwrap();
     let tools2 = d2["evidence"].as_array().unwrap().iter().filter(|i| i["grain_type"] == "tool").count();
-    assert_eq!(tools2, 2, "skills off: only the failures, as before");
+    assert_eq!(tools2, 2, "skills and plans off: only the failures, as before");
     for t in v["evidence"].as_array().unwrap().iter().filter(|i| i["grain_type"] == "tool").filter(|t| t["text"].as_str().unwrap_or("").contains(" error:")) {
         let text = t["text"].as_str().unwrap_or("");
         assert!(text.contains("cancelled_before_refund"));
@@ -4095,4 +4095,242 @@ fn the_skill_kind_is_offered_only_under_policy() {
     };
     assert!(run("{}"), "default: offered");
     assert!(!run(r#"{"skills": {"enabled": false}}"#), "disabled: not offered");
+}
+
+
+// ---- plan authoring -----------------------------------------------------------
+
+/// A procedure with a branch is authored as a PLAN: a Workflow the runtime
+/// validated (steps bound to tools the evidence shows were called, an edge
+/// with a condition in the frozen grammar) and a Skill of the same name that
+/// carries the prose. One batch, one review. The same name again supersedes
+/// both — the patch `PC02_sop_patch` is about.
+#[test]
+fn the_proposer_authors_a_plan_as_a_validated_workflow_beside_its_skill() {
+    use crate::model::Origin;
+    use crate::substrate::{ReadOpts, SubstrateRead};
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_tool_call("helpdesk_list_tickets", false, "TK-1 open, TK-2 open, TK-3 open");
+    let h2 = sub.add_tool_call("helpdesk_update_ticket", false, "TK-2 tagged shared-incident");
+    let draft = |nodes: &str, edges: &str| {
+        format!(
+            r#"{{"recommendations":[{{"summary":"a repeatable triage with a branch","target":"entity:test/shared-incident-triage","evidence":["{h1}","{h2}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"Triage a batch for a shared incident","when_to_use":"several open tickets mention one component","nodes":{nodes},"edges":{edges}}}}}]}}"#
+        )
+    };
+    let mk = |discover: String| MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let nodes = r#"[{"id":"list_open","tool":"helpdesk_list_tickets","step":"List every open ticket"},{"id":"tag_shared","tool":"helpdesk_update_ticket","step":"Tag each ticket sharing the component with shared-incident, priority high"},{"id":"leave","tool":"helpdesk_update_ticket","step":"Leave resolution to on-call: do not close"}]"#;
+    let edges = r#"[{"src":"list_open","dst":"tag_shared","cond":"shared_component == true"},{"src":"tag_shared","dst":"leave"}]"#;
+    let e = Engine::with_builtins().with_llm(Box::new(mk(draft(nodes, edges))));
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert_eq!(r.llm_funnel.as_ref().map(|f| f.stored), Some(1));
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    let text = rec.summary.render();
+    assert!(text.contains("record plan: \"shared-incident-triage\" (3 steps, 2 edges)"), "{text}");
+    match &rec.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.starts_with("ADD skill "), "{cal}");
+            assert!(cal.contains("\nADD workflow "), "one batch, two grains: {cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reusable", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    let live = |s: &TestSubstrate, gt: &str| s.inner.grains_of_type(gt, None, ReadOpts { live_only: true, since_ms: None }).unwrap();
+    let skills = live(&sub, crate::model::grain_type::SKILL);
+    let plans = live(&sub, crate::model::grain_type::WORKFLOW);
+    assert_eq!((skills.len(), plans.len()), (1, 1));
+    let sk = &skills[0];
+    assert_eq!(sk.skill_name(), Some("shared-incident-triage"));
+    let instr = sk.str_field("instructions").unwrap();
+    assert!(instr.starts_with("1. list_open [helpdesk_list_tickets]: List every open ticket"), "{instr}");
+    assert!(instr.contains("Flow:\n- list_open → tag_shared if shared_component == true\n- tag_shared → leave"), "{instr}");
+    let wf = &plans[0];
+    assert_eq!(wf.str_field("name"), Some("shared-incident-triage"));
+    assert_eq!(wf.namespace, "test");
+    assert_eq!(wf.fields["nodes"], serde_json::json!(["list_open", "tag_shared", "leave"]));
+    assert_eq!(wf.fields["edges"][0]["cond"], serde_json::json!("shared_component == true"));
+    let (skill_hash, plan_hash) = (sk.hash.clone(), wf.hash.clone());
+
+    // Patched by name: a second plan of the same name supersedes both grains.
+    let e2 = Engine::with_builtins().with_llm(Box::new(mk(draft(
+        r#"[{"id":"list_open","tool":"helpdesk_list_tickets","step":"List open tickets"},{"id":"tag_shared","tool":"helpdesk_update_ticket","step":"Tag with shared-incident AND zone-correlated"}]"#,
+        r#"[{"src":"list_open","dst":"tag_shared"}]"#,
+    ))));
+    e2.run(&mut sub.inner, &RunOptions { full_sweep: true, ..Default::default() }, t + DAY).unwrap();
+    let rec2 = e2
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.hash != rec.hash)
+        .unwrap();
+    assert_eq!(rec2.action_kind, crate::model::ActionKind::Revise);
+    match &rec2.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            assert!(cal.contains(&format!("SUPERSEDE {skill_hash} WITH skill ")), "{cal}");
+            assert!(cal.contains(&format!("SUPERSEDE {plan_hash} WITH workflow ")), "{cal}");
+        }
+        other => panic!("{other:?}"),
+    }
+    e2.review(&mut sub.inner, &rec2.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "v2", t + DAY + 1).unwrap();
+    e2.apply(&mut sub.inner, &rec2.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + DAY + 2).unwrap();
+    assert_eq!((live(&sub, crate::model::grain_type::SKILL).len(), live(&sub, crate::model::grain_type::WORKFLOW).len()), (1, 1), "one live pair");
+    assert!(live(&sub, crate::model::grain_type::SKILL)[0].str_field("instructions").unwrap().contains("zone-correlated"));
+
+    // Not grounded, not runnable, or not allowed: advisory, never a change.
+    let advisory = |sub: &mut TestSubstrate, e: &Engine| {
+        e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+        e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .into_iter()
+            .find(|r| matches!(r.origin, Origin::Llm { .. }))
+            .map(|r| r.action_kind)
+    };
+    // a tool the evidence never shows
+    let mut s3 = TestSubstrate::new();
+    let a = s3.add_tool_call("helpdesk_list_tickets", false, "ok");
+    let bad_tool = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"delete_everything","step":"s"}}],"edges":[]}}}}]}}"#
+    );
+    assert_eq!(advisory(&mut s3, &Engine::with_builtins().with_llm(Box::new(mk(bad_tool)))), Some(crate::model::ActionKind::Flag));
+    // an edge to a step that does not exist
+    let mut s4 = TestSubstrate::new();
+    let a = s4.add_tool_call("helpdesk_list_tickets", false, "ok");
+    let bad_edge = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"helpdesk_list_tickets","step":"s"}}],"edges":[{{"src":"x","dst":"nowhere"}}]}}}}]}}"#
+    );
+    assert_eq!(advisory(&mut s4, &Engine::with_builtins().with_llm(Box::new(mk(bad_edge)))), Some(crate::model::ActionKind::Flag));
+    // plans off by policy
+    let mut s5 = TestSubstrate::new();
+    let a = s5.add_tool_call("helpdesk_list_tickets", true, "boom");
+    let fine = format!(
+        r#"{{"recommendations":[{{"summary":"s","target":"entity:test/p","evidence":["{a}"],"confidence":0.9,"proposal":{{"kind":"plan","description":"d","when_to_use":"w","nodes":[{{"id":"x","tool":"helpdesk_list_tickets","step":"s"}},{{"id":"y","tool":"helpdesk_list_tickets","step":"s"}}],"edges":[{{"src":"x","dst":"y"}}]}}}}]}}"#
+    );
+    let off = Engine::with_builtins()
+        .with_llm(Box::new(mk(fine)))
+        .with_policy(Policy::from_json(r#"{"plans": {"enabled": false}}"#).unwrap());
+    assert_eq!(advisory(&mut s5, &off), Some(crate::model::ActionKind::Flag));
+}
+
+// ---- the Verify gate's second question: premise drift ---------------------------
+
+fn applied_lesson_over(sub: &mut TestSubstrate, e: &Engine, t: i64) -> Recommendation {
+    use crate::model::Origin;
+    let scopes = ScopeSet::all();
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
+    rec
+}
+
+fn lesson_llm(h1: &str) -> MockLlm {
+    MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"the readiness rule is flagged stale","target":"entity:test/release","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Skip the Release readiness review when it is flagged as a stale target."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }
+}
+
+/// A lesson learned from a rule that is later REPLACED has lost its premise:
+/// the gate records `drifted` and proposes the revert; applying it rolls the
+/// lesson back. A value-identical supersession (consolidation) is not drift,
+/// and the check is a policy switch.
+#[test]
+fn a_lesson_whose_cited_evidence_was_superseded_by_a_different_value_is_reverted() {
+    use crate::substrate::OmsSubstrate;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    let rec = applied_lesson_over(&mut sub, &e, t);
+    // Nothing moved yet: no drift, no revert.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 10).unwrap();
+    assert!(e.outcomes(&sub.inner).unwrap().is_empty());
+
+    // The rule the lesson was learned from is replaced by a DIFFERENT one.
+    sub.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h1} WITH fact {{"subject":"release","relation":"readiness_rule","object":"REL-GAMMA: review before every deploy","namespace":"test"}}"#
+        ))
+        .unwrap();
+    e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    let v: Vec<_> = e.outcomes(&sub.inner).unwrap().into_iter().filter(|o| o.rec_hash == rec.hash).collect();
+    assert_eq!(v.len(), 1);
+    assert_eq!((v[0].metric.as_str(), v[0].verdict.as_str(), v[0].current), ("premise_drift", "drifted", 1.0));
+    let revert = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .expect("a revert is proposed");
+    assert!(revert.summary.render().contains("premise moved"), "{}", revert.summary.render());
+    // A further pass does not re-record the same drift.
+    e.run(&mut sub.inner, &RunOptions::default(), t + 30).unwrap();
+    assert_eq!(e.outcomes(&sub.inner).unwrap().iter().filter(|o| o.rec_hash == rec.hash).count(), 1);
+    // Applying the revert rolls the lesson back.
+    e.review(&mut sub.inner, &revert.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "its premise changed", t + 31).unwrap();
+    e.apply(&mut sub.inner, &revert.hash, "user:a", ObserverType::Human, &scopes, "revert", false, t + 32).unwrap();
+    let statuses: std::collections::BTreeMap<_, _> = e
+        .recommendations(&sub.inner, None)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.hash, r.status))
+        .collect();
+    assert_eq!(statuses[&rec.hash], RecStatus::RolledBack);
+
+    // Value-identical supersession is not drift.
+    let mut sub2 = TestSubstrate::new();
+    let h = sub2.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e2 = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h)));
+    let rec2 = applied_lesson_over(&mut sub2, &e2, t);
+    sub2.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h} WITH fact {{"subject":"release","relation":"readiness_rule","object":"Flagged: stale target for migration ","namespace":"test","confidence":0.99}}"#
+        ))
+        .unwrap();
+    e2.run(&mut sub2.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e2.outcomes(&sub2.inner).unwrap().iter().all(|o| o.rec_hash != rec2.hash), "same value, different confidence: the premise stands");
+
+    // A retracted premise IS drift.
+    let mut sub3 = TestSubstrate::new();
+    let h = sub3.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e3 = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h)));
+    let rec3 = applied_lesson_over(&mut sub3, &e3, t);
+    sub3.inner.execute_cal(&format!("FORGET {h}")).unwrap();
+    e3.run(&mut sub3.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e3.outcomes(&sub3.inner).unwrap().iter().any(|o| o.rec_hash == rec3.hash && o.verdict == "drifted"));
+
+    // Switched off by policy: nothing.
+    let mut sub4 = TestSubstrate::new();
+    let h = sub4.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e4 = Engine::with_builtins()
+        .with_llm(Box::new(lesson_llm(&h)))
+        .with_policy(Policy::from_json(r#"{"premise_drift": false}"#).unwrap());
+    let rec4 = applied_lesson_over(&mut sub4, &e4, t);
+    sub4.inner
+        .execute_cal(&format!(r#"SUPERSEDE {h} WITH fact {{"subject":"release","relation":"readiness_rule","object":"something else","namespace":"test"}}"#))
+        .unwrap();
+    e4.run(&mut sub4.inner, &RunOptions::default(), t + 20).unwrap();
+    assert!(e4.outcomes(&sub4.inner).unwrap().iter().all(|o| o.rec_hash != rec4.hash));
 }

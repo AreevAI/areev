@@ -33,6 +33,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   correctly on every seed and then, asked whether to save it, said "nothing
   to save"; the store was empty at evaluation and scored below having no
   memory. Every skill had depended on the model volunteering one mid-task.
+- **DISCOVER may author a plan.** A `plan` proposal — steps bound to tools
+  the cited evidence shows were called, edges with conditions in the
+  runtime's frozen grammar — applies as a Workflow grain (validated by the
+  substrate's plan validator before it can be stamped applicable) beside a
+  Skill of the same name, in one batch; a live pair of that name is
+  superseded. `plans: {enabled, min_nodes}`, default on. A skill is what a
+  model reads; a plan is what the runtime can check, run, journal and patch.
+- **The Verify gate asks a second question: does the premise still stand?**
+  When a grain an applied recommendation cited is later superseded by a
+  different value or retracted, the gate records `drifted` and
+  `outcome_review` proposes the revert (`outcome.premise_drift`). A
+  value-identical supersession is not drift. `premise_drift: true` by
+  default. Measured need: a governed lesson encoding a superseded rule cost
+  0.32 on PAST-Bench's migration family.
 - **`min_evidence`** (default 1): the fewest distinct grains an LLM draft
   must cite to be offered as a change. Under it the draft is stored and
   reviewable but applies as nothing; the funnel counts the demotions as

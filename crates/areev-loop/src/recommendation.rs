@@ -81,6 +81,9 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "outcome.regression" => {
             "Applied recommendation regressed: {metric} moved {baseline} → {current}"
         }
+        "outcome.premise_drift" => {
+            "{current} of the grains this recommendation cited have since been superseded by a different value or retracted — its premise moved; revert it"
+        }
         "run.failures" => {
             "Workflow {workflow} failed {failed}/{runs} recent runs ({rate}%): {last_error}"
         }
@@ -101,6 +104,7 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         // the other. A reviewer approving blind is the failure this prevents.
         "llm.fact" => "{text} — record fact: {relation} = \"{object}\"",
         "llm.skill" => "{text} — record skill: \"{name}\" ({steps} steps)",
+        "llm.plan" => "{text} — record plan: \"{name}\" ({nodes} steps, {edges} edges)",
         "llm.query_revision" => "{text} — redefine \"{name}\" as: {body}",
         "llm.plan_revision" => "{text} — revise plan {plan}: {edits}",
         "llm.code_revision" => {
