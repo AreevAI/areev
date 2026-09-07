@@ -950,6 +950,21 @@ must be granted, and the refusal names the pattern, never a discovered
 namespace); and one `RECALL`'s scope set cannot span mounts (that is
 ASSEMBLE's job).
 
+The write side carries one more rule, for a different reason. A namespace is
+brought into existence by the first grain written into it — there is no
+declaration step, and nothing downstream can tell a new name from a
+mistyped one. So a **locally authored write refuses an unspellable
+namespace**: whitespace, a control character, or an invisible formatting
+character (`VAL-E001`). Names stay opaque strings otherwise; what the rule
+excludes is names a human cannot read back off a diff or a command line.
+The failure it prevents is silent by construction — a harness whose
+`"agent:harness"` became `"age, build_messagesnt:harness"` kept writing
+successfully for twelve hours while every reader of the intended namespace
+saw an empty memory, and the governance loop that depended on those reads
+recorded no verdict and proposed no revert. Read surfaces do not enforce it,
+so a file written before the rule stays readable, erasable and disclosable
+under the name it used; replication replay is exempt for the same reason.
+
 ### Self-improvement is governed, not autonomous
 
 Most agent-memory products treat self-improvement as an intelligence problem —

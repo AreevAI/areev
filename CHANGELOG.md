@@ -116,6 +116,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A grain write refuses an unspellable namespace** (`VAL-E001`): one
+  carrying whitespace, a control character, or an invisible formatting
+  character (zero-width space, BOM, soft hyphen). Namespaces stay opaque
+  strings — `org.sales.emea`, `agent:authz` and `部門:営業` are all equally
+  fine — but a write is the operation that *mints* a namespace, and nothing
+  downstream can tell a new name from a mistyped one, so a typo there is
+  accepted by every surface and found by none. That is not hypothetical: a
+  bad substitution turned a harness's `"agent:harness"` into
+  `"age, build_messagesnt:harness"`, twelve hours of evaluations journaled
+  into it successfully, and the loop that reads that namespace recorded no
+  verdict and proposed no revert for a lesson that had cost the agent every
+  exact match it had. Read surfaces are deliberately unchanged and
+  replication replay is exempt, so a file written before this rule stays
+  readable, erasable and disclosable under the name it used.
 - **A lesson's outcome verdict compares against the newest evalset run
   before its apply**, not the run the proposal froze, when one exists. A
   deployment that journals its evalset on day one and then approves rule

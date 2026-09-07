@@ -221,9 +221,19 @@ facade's path after per-namespace authz). Under a multi-namespace scope the
 egress hint is `None`, so each grain resolves its own anon policy, and
 telemetry records the pattern as typed.
 
+Writes go one step further: `prep_from_blob(new_write=true)` calls
+`require_writable_ns`, which refuses a pattern **and** an unspellable name —
+whitespace, control or invisible formatting characters (VAL-E001). A local
+write is the only operation that MINTS a namespace, so it is the only one that
+can catch a typo in one; every later surface would take the name and find
+nothing under it. Read surfaces stay permissive on purpose, so a file written
+before the rule is still readable, erasable and disclosable. (`org.*` as a
+literal name is the one grandfathered case that is NOT erasable — the
+character is overloaded, so `forget_subject` cannot tell it from the pattern.
+Asserted in `lib.rs`'s inline `replication_replay_accepts_a_namespace_…`.)
+
 Everything else **refuses patterns** via `require_exact_ns` (VAL-E001):
-writes (`prep_from_blob(new_write=true)` — `insert_blob` stays permissive so
-pre-reservation files import), point reads (`latest`, `thread_tail`, `heads`),
+point reads (`latest`, `thread_tail`, `heads`),
 graph/run reads, destruction (`forget_subject`, `forget_older_than`,
 `subject_report`/`subject_bundle` — the DSAR pair refuses identically to the
 erasure it mirrors), and the policy setters (retention/floor/hold/anon).
