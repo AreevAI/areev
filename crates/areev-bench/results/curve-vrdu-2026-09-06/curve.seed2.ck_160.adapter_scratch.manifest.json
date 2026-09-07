@@ -1,0 +1,226 @@
+{
+ "base_model": "mlx-community/Qwen3-1.7B-4bit",
+ "adapter_path": "/Users/sathish/mg/local/areev-runs/curve/seed2/ck_160/adapter_scratch",
+ "iters": 312,
+ "epochs": 4,
+ "train_seconds": 4028,
+ "resumed_from": null,
+ "corpus": {
+  "learned_db": "/Users/sathish/mg/local/areev-runs/curve/seed2/snap_160.db",
+  "seed": 2,
+  "experience": 320,
+  "eval": 100,
+  "train": 156,
+  "valid": 4,
+  "rules_in_system_prompt": 9,
+  "since_seq": 0,
+  "upto_seq": 160,
+  "held_out_excluded": 99
+ },
+ "val_loss": [
+  [
+   1,
+   2.069
+  ],
+  [
+   25,
+   0.092
+  ],
+  [
+   50,
+   0.077
+  ],
+  [
+   75,
+   0.077
+  ],
+  [
+   100,
+   0.071
+  ],
+  [
+   125,
+   0.074
+  ],
+  [
+   150,
+   0.037
+  ],
+  [
+   175,
+   0.019
+  ],
+  [
+   200,
+   0.014
+  ],
+  [
+   225,
+   0.027
+  ],
+  [
+   250,
+   0.018
+  ],
+  [
+   275,
+   0.028
+  ],
+  [
+   300,
+   0.033
+  ],
+  [
+   312,
+   0.034
+  ]
+ ],
+ "train_loss": [
+  [
+   10,
+   0.469
+  ],
+  [
+   20,
+   0.09
+  ],
+  [
+   30,
+   0.041
+  ],
+  [
+   40,
+   0.035
+  ],
+  [
+   50,
+   0.098
+  ],
+  [
+   60,
+   0.082
+  ],
+  [
+   70,
+   0.06
+  ],
+  [
+   80,
+   0.022
+  ],
+  [
+   90,
+   0.017
+  ],
+  [
+   100,
+   0.005
+  ],
+  [
+   110,
+   0.01
+  ],
+  [
+   120,
+   0.02
+  ],
+  [
+   130,
+   0.02
+  ],
+  [
+   140,
+   0.029
+  ],
+  [
+   150,
+   0.009
+  ],
+  [
+   160,
+   0.008
+  ],
+  [
+   170,
+   0.006
+  ],
+  [
+   180,
+   0.006
+  ],
+  [
+   190,
+   0.008
+  ],
+  [
+   200,
+   0.004
+  ],
+  [
+   210,
+   0.021
+  ],
+  [
+   220,
+   0.001
+  ],
+  [
+   230,
+   0.005
+  ],
+  [
+   240,
+   0.002
+  ],
+  [
+   250,
+   0.008
+  ],
+  [
+   260,
+   0.002
+  ],
+  [
+   270,
+   0.002
+  ],
+  [
+   280,
+   0.001
+  ],
+  [
+   290,
+   0.001
+  ],
+  [
+   300,
+   0.005
+  ],
+  [
+   310,
+   0.005
+  ],
+  [
+   312,
+   0.0
+  ]
+ ],
+ "best_val_iter": 200,
+ "best_val_loss": 0.014,
+ "train_loss_at_best": 0.004,
+ "loss_gap_at_best": 0.01,
+ "effective_epochs": 4.0,
+ "trainable": {
+  "percent": 0.145,
+  "millions": 2.49,
+  "of_millions": 1720.575
+ },
+ "kept_checkpoint": "0000200_adapters.safetensors",
+ "fine_tune": {
+  "type": "lora",
+  "num_layers": 8,
+  "batch_size": 2,
+  "lr": 0.0001,
+  "mask_prompt": true
+ }
+}

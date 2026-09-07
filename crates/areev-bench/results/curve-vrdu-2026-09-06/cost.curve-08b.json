@@ -1,0 +1,342 @@
+{
+ "total_usd": 0.22818,
+ "calls": 5185,
+ "by": [
+  {
+   "script": "openrouter_loop.py",
+   "model": "openai/gpt-4o-mini",
+   "calls": 159,
+   "prompt_tokens": 160339,
+   "completion_tokens": 16799,
+   "usd": 0.03413,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_loop.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 295,
+   "prompt_tokens": 589856,
+   "completion_tokens": 97510,
+   "usd": 0.04713,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "openai/gpt-4o",
+   "calls": 12,
+   "prompt_tokens": 4970,
+   "completion_tokens": 275,
+   "usd": 0.01517,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 1499,
+   "prompt_tokens": 2397087,
+   "completion_tokens": 86458,
+   "usd": 0.13175,
+   "shadow_usd": null
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:base",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 87760,
+   "usd": 0.0,
+   "shadow_usd": 0.01359
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-continual",
+   "calls": 200,
+   "prompt_tokens": 321539,
+   "completion_tokens": 12741,
+   "usd": 0.0,
+   "shadow_usd": 0.00745
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-continual-next",
+   "calls": 20,
+   "prompt_tokens": 23712,
+   "completion_tokens": 1245,
+   "usd": 0.0,
+   "shadow_usd": 0.00057
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-continual-train",
+   "calls": 20,
+   "prompt_tokens": 22359,
+   "completion_tokens": 1280,
+   "usd": 0.0,
+   "shadow_usd": 0.00055
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-scratch",
+   "calls": 200,
+   "prompt_tokens": 321539,
+   "completion_tokens": 12741,
+   "usd": 0.0,
+   "shadow_usd": 0.00745
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-scratch-next",
+   "calls": 20,
+   "prompt_tokens": 23712,
+   "completion_tokens": 1245,
+   "usd": 0.0,
+   "shadow_usd": 0.00057
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck020-scratch-train",
+   "calls": 20,
+   "prompt_tokens": 22359,
+   "completion_tokens": 1280,
+   "usd": 0.0,
+   "shadow_usd": 0.00055
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-continual",
+   "calls": 200,
+   "prompt_tokens": 321539,
+   "completion_tokens": 28726,
+   "usd": 0.0,
+   "shadow_usd": 0.00873
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-continual-next",
+   "calls": 20,
+   "prompt_tokens": 24383,
+   "completion_tokens": 2416,
+   "usd": 0.0,
+   "shadow_usd": 0.00068
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-continual-train",
+   "calls": 40,
+   "prompt_tokens": 46071,
+   "completion_tokens": 2614,
+   "usd": 0.0,
+   "shadow_usd": 0.00113
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-scratch",
+   "calls": 200,
+   "prompt_tokens": 321539,
+   "completion_tokens": 12889,
+   "usd": 0.0,
+   "shadow_usd": 0.00746
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-scratch-next",
+   "calls": 20,
+   "prompt_tokens": 24383,
+   "completion_tokens": 1274,
+   "usd": 0.0,
+   "shadow_usd": 0.00059
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck040-scratch-train",
+   "calls": 40,
+   "prompt_tokens": 46071,
+   "completion_tokens": 2612,
+   "usd": 0.0,
+   "shadow_usd": 0.00113
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-continual",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 14127,
+   "usd": 0.0,
+   "shadow_usd": 0.0077
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-continual-next",
+   "calls": 20,
+   "prompt_tokens": 26393,
+   "completion_tokens": 1281,
+   "usd": 0.0,
+   "shadow_usd": 0.00063
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-continual-train",
+   "calls": 40,
+   "prompt_tokens": 48338,
+   "completion_tokens": 2583,
+   "usd": 0.0,
+   "shadow_usd": 0.00117
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-scratch",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 12828,
+   "usd": 0.0,
+   "shadow_usd": 0.00759
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-scratch-next",
+   "calls": 20,
+   "prompt_tokens": 26393,
+   "completion_tokens": 1284,
+   "usd": 0.0,
+   "shadow_usd": 0.00063
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck080-scratch-train",
+   "calls": 40,
+   "prompt_tokens": 48338,
+   "completion_tokens": 2578,
+   "usd": 0.0,
+   "shadow_usd": 0.00117
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-continual",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 12754,
+   "usd": 0.0,
+   "shadow_usd": 0.00759
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-continual-latest",
+   "calls": 100,
+   "prompt_tokens": 173012,
+   "completion_tokens": 8788,
+   "usd": 0.0,
+   "shadow_usd": 0.00416
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-continual-next",
+   "calls": 20,
+   "prompt_tokens": 34924,
+   "completion_tokens": 1273,
+   "usd": 0.0,
+   "shadow_usd": 0.0008
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-continual-train",
+   "calls": 40,
+   "prompt_tokens": 56083,
+   "completion_tokens": 2564,
+   "usd": 0.0,
+   "shadow_usd": 0.00133
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-scratch",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 13889,
+   "usd": 0.0,
+   "shadow_usd": 0.00768
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-scratch-latest",
+   "calls": 100,
+   "prompt_tokens": 173012,
+   "completion_tokens": 6489,
+   "usd": 0.0,
+   "shadow_usd": 0.00398
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-scratch-next",
+   "calls": 20,
+   "prompt_tokens": 34924,
+   "completion_tokens": 1274,
+   "usd": 0.0,
+   "shadow_usd": 0.0008
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck160-scratch-train",
+   "calls": 40,
+   "prompt_tokens": 56083,
+   "completion_tokens": 3659,
+   "usd": 0.0,
+   "shadow_usd": 0.00141
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-continual",
+   "calls": 200,
+   "prompt_tokens": 328339,
+   "completion_tokens": 13960,
+   "usd": 0.0,
+   "shadow_usd": 0.00768
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-continual-latest",
+   "calls": 100,
+   "prompt_tokens": 173012,
+   "completion_tokens": 7595,
+   "usd": 0.0,
+   "shadow_usd": 0.00407
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-continual-train",
+   "calls": 40,
+   "prompt_tokens": 63601,
+   "completion_tokens": 2531,
+   "usd": 0.0,
+   "shadow_usd": 0.00147
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-scratch",
+   "calls": 300,
+   "prompt_tokens": 501351,
+   "completion_tokens": 18867,
+   "usd": 0.0,
+   "shadow_usd": 0.01154
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-scratch-latest",
+   "calls": 100,
+   "prompt_tokens": 173012,
+   "completion_tokens": 5891,
+   "usd": 0.0,
+   "shadow_usd": 0.00393
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:ck320-scratch-train",
+   "calls": 40,
+   "prompt_tokens": 63601,
+   "completion_tokens": 2496,
+   "usd": 0.0,
+   "shadow_usd": 0.00147
+  }
+ ],
+ "unpriced": [],
+ "documents": null,
+ "per_document_usd": null
+}

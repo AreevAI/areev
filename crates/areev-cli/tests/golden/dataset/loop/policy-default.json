@@ -3,5 +3,7 @@
   "auto_apply": [],
   "deny": [],
   "severity_floors": {},
-  "telemetry": "aggregate"
+  "telemetry": "aggregate",
+  "discover_objective": "review_queue",
+  "evidence_attribution": "named"
 }

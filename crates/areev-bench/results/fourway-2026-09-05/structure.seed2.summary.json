@@ -1,0 +1,201 @@
+{
+ "seed": 2,
+ "base_cell": "system-bottom|markdown",
+ "cells": {
+  "system-bottom|markdown": {
+   "position": "system-bottom",
+   "format": "markdown",
+   "exact": 147,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1099,
+   "vs_base": {
+    "wins": 0,
+    "losses": 0,
+    "p": 1.0
+   }
+  },
+  "system-bottom|json": {
+   "position": "system-bottom",
+   "format": "json",
+   "exact": 154,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1139,
+   "vs_base": {
+    "wins": 7,
+    "losses": 0,
+    "p": 0.015625
+   }
+  },
+  "system-bottom|xml": {
+   "position": "system-bottom",
+   "format": "xml",
+   "exact": 148,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1208,
+   "vs_base": {
+    "wins": 4,
+    "losses": 3,
+    "p": 1.0
+   }
+  },
+  "system-bottom|toon": {
+   "position": "system-bottom",
+   "format": "toon",
+   "exact": 147,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1116,
+   "vs_base": {
+    "wins": 1,
+    "losses": 1,
+    "p": 1.0
+   }
+  },
+  "system-bottom|cal-markdown": {
+   "position": "system-bottom",
+   "format": "cal-markdown",
+   "exact": 149,
+   "semantic": 220,
+   "n": 240,
+   "chars": 1436,
+   "vs_base": {
+    "wins": 4,
+    "losses": 2,
+    "p": 0.6875
+   }
+  },
+  "system-top|markdown": {
+   "position": "system-top",
+   "format": "markdown",
+   "exact": 34,
+   "semantic": 55,
+   "n": 240,
+   "chars": 1099,
+   "vs_base": {
+    "wins": 0,
+    "losses": 113,
+    "p": 0.0
+   }
+  },
+  "system-top|json": {
+   "position": "system-top",
+   "format": "json",
+   "exact": 34,
+   "semantic": 55,
+   "n": 240,
+   "chars": 1139,
+   "vs_base": {
+    "wins": 0,
+    "losses": 113,
+    "p": 0.0
+   }
+  },
+  "system-top|xml": {
+   "position": "system-top",
+   "format": "xml",
+   "exact": 37,
+   "semantic": 58,
+   "n": 240,
+   "chars": 1208,
+   "vs_base": {
+    "wins": 0,
+    "losses": 110,
+    "p": 0.0
+   }
+  },
+  "system-top|toon": {
+   "position": "system-top",
+   "format": "toon",
+   "exact": 33,
+   "semantic": 55,
+   "n": 240,
+   "chars": 1116,
+   "vs_base": {
+    "wins": 0,
+    "losses": 114,
+    "p": 0.0
+   }
+  },
+  "system-top|cal-markdown": {
+   "position": "system-top",
+   "format": "cal-markdown",
+   "exact": 34,
+   "semantic": 55,
+   "n": 240,
+   "chars": 1436,
+   "vs_base": {
+    "wins": 0,
+    "losses": 113,
+    "p": 0.0
+   }
+  },
+  "user-turn|markdown": {
+   "position": "user-turn",
+   "format": "markdown",
+   "exact": 145,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1099,
+   "vs_base": {
+    "wins": 2,
+    "losses": 4,
+    "p": 0.6875
+   }
+  },
+  "user-turn|json": {
+   "position": "user-turn",
+   "format": "json",
+   "exact": 148,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1139,
+   "vs_base": {
+    "wins": 2,
+    "losses": 1,
+    "p": 1.0
+   }
+  },
+  "user-turn|xml": {
+   "position": "user-turn",
+   "format": "xml",
+   "exact": 150,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1208,
+   "vs_base": {
+    "wins": 3,
+    "losses": 0,
+    "p": 0.25
+   }
+  },
+  "user-turn|toon": {
+   "position": "user-turn",
+   "format": "toon",
+   "exact": 146,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1116,
+   "vs_base": {
+    "wins": 2,
+    "losses": 3,
+    "p": 1.0
+   }
+  },
+  "user-turn|cal-markdown": {
+   "position": "user-turn",
+   "format": "cal-markdown",
+   "exact": 144,
+   "semantic": 221,
+   "n": 240,
+   "chars": 1436,
+   "vs_base": {
+    "wins": 3,
+    "losses": 6,
+    "p": 0.507812
+   }
+  }
+ }
+}

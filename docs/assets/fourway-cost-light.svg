@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 354" width="920" height="354" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Dollars per thousand documents, from journaled tokens: what each arm pays to read a document, and what its memory system pays to learn from one.</title>
+<desc>Two bars per arm. The solid bar is inference, the agent call per document read. The hatched bar is the memory system itself: mem0 extract and update calls, or the governed loop and its reviewer. The tuned small model ran locally, so its inference bar is drawn at zero with a shadow marker at a hosted small-model rate.</desc>
+<defs><pattern id="h" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#5f6470" stroke-width="2"/></pattern></defs>
+<line x1="190.0" y1="30" x2="190.0" y2="294" stroke="#e6e8ec"/>
+<text x="190.0" y="312" text-anchor="middle" font-size="11" fill="#5f6470">$0.00</text>
+<line x1="345.0" y1="30" x2="345.0" y2="294" stroke="#e6e8ec"/>
+<text x="345.0" y="312" text-anchor="middle" font-size="11" fill="#5f6470">$0.25</text>
+<line x1="500.0" y1="30" x2="500.0" y2="294" stroke="#e6e8ec"/>
+<text x="500.0" y="312" text-anchor="middle" font-size="11" fill="#5f6470">$0.50</text>
+<line x1="655.0" y1="30" x2="655.0" y2="294" stroke="#e6e8ec"/>
+<text x="655.0" y="312" text-anchor="middle" font-size="11" fill="#5f6470">$0.75</text>
+<line x1="810.0" y1="30" x2="810.0" y2="294" stroke="#e6e8ec"/>
+<text x="810.0" y="312" text-anchor="middle" font-size="11" fill="#5f6470">$1.00</text>
+<text x="500" y="334" text-anchor="middle" font-size="11.5" fill="#5f6470">USD per 1,000 documents</text>
+<text x="180" y="48" text-anchor="end" font-size="12" font-weight="600" fill="#b8763a">mem0</text>
+<rect x="190" y="34" width="58.4" height="14" fill="#b8763a"/>
+<text x="254.4" y="45" font-size="11" fill="#1b1b1f">read $0.09</text>
+<rect x="190" y="51" width="350.4" height="14" fill="url(#h)"/>
+<text x="546.4" y="62" font-size="11" fill="#5f6470">learn $0.57</text>
+<text x="180" y="92" text-anchor="end" font-size="12" font-weight="600" fill="#d9a066">mem0 (raw)</text>
+<rect x="190" y="78" width="99.7" height="14" fill="#d9a066"/>
+<text x="295.7" y="89" font-size="11" fill="#1b1b1f">read $0.16</text>
+<text x="180" y="136" text-anchor="end" font-size="12" font-weight="600" fill="#8a6d1f">mem0 (domain)</text>
+<rect x="190" y="122" width="39.8" height="14" fill="#8a6d1f"/>
+<text x="235.8" y="133" font-size="11" fill="#1b1b1f">read $0.06</text>
+<rect x="190" y="139" width="379.7" height="14" fill="url(#h)"/>
+<text x="575.7" y="150" font-size="11" fill="#5f6470">learn $0.61</text>
+<text x="180" y="180" text-anchor="end" font-size="12" font-weight="600" fill="#1f6f4f">Areev — governed</text>
+<rect x="190" y="166" width="30.5" height="14" fill="#1f6f4f"/>
+<text x="226.5" y="177" font-size="11" fill="#1b1b1f">read $0.05</text>
+<rect x="190" y="183" width="379.5" height="14" fill="url(#h)"/>
+<text x="575.5" y="194" font-size="11" fill="#5f6470">learn $0.61</text>
+<text x="180" y="224" text-anchor="end" font-size="12" font-weight="600" fill="#7f9cc7">small model + rules</text>
+<rect x="190" y="210" width="1.5" height="14" fill="#7f9cc7"/>
+<text x="210.4" y="221" font-size="11" fill="#1b1b1f">read $0 local <tspan fill="#5f6470">· $0.02 at a hosted small-model rate</tspan></text>
+<line x1="202.4" y1="208" x2="202.4" y2="226" stroke="#7f9cc7" stroke-width="2" stroke-dasharray="3 2"/>
+<text x="180" y="268" text-anchor="end" font-size="12" font-weight="600" fill="#2f5f9e">Areev — tuned SLM</text>
+<rect x="190" y="254" width="1.5" height="14" fill="#2f5f9e"/>
+<text x="211.8" y="265" font-size="11" fill="#1b1b1f">read $0 local <tspan fill="#5f6470">· $0.02 at a hosted small-model rate</tspan></text>
+<line x1="203.8" y1="252" x2="203.8" y2="270" stroke="#2f5f9e" stroke-width="2" stroke-dasharray="3 2"/>
+</svg>

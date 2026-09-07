@@ -1,0 +1,138 @@
+{
+ "base_model": "mlx-community/Qwen3-1.7B-4bit",
+ "adapter_path": "/Users/sathish/mg/local/areev-runs/curve/seed3/ck_160/adapter_continual",
+ "iters": 152,
+ "epochs": 4,
+ "train_seconds": 4434,
+ "resumed_from": "/Users/sathish/mg/local/areev-runs/curve/seed3/ck_080/adapter_continual",
+ "corpus": {
+  "learned_db": "/Users/sathish/mg/local/areev-runs/curve/seed3/snap_160.db",
+  "seed": 3,
+  "experience": 320,
+  "eval": 100,
+  "train": 76,
+  "valid": 4,
+  "rules_in_system_prompt": 8,
+  "since_seq": 80,
+  "upto_seq": 160,
+  "held_out_excluded": 100
+ },
+ "val_loss": [
+  [
+   1,
+   0.129
+  ],
+  [
+   25,
+   0.112
+  ],
+  [
+   50,
+   0.066
+  ],
+  [
+   75,
+   0.065
+  ],
+  [
+   100,
+   0.054
+  ],
+  [
+   125,
+   0.049
+  ],
+  [
+   150,
+   0.05
+  ],
+  [
+   152,
+   0.053
+  ]
+ ],
+ "train_loss": [
+  [
+   10,
+   0.16
+  ],
+  [
+   20,
+   0.079
+  ],
+  [
+   30,
+   0.138
+  ],
+  [
+   40,
+   0.063
+  ],
+  [
+   50,
+   0.055
+  ],
+  [
+   60,
+   0.046
+  ],
+  [
+   70,
+   0.024
+  ],
+  [
+   80,
+   0.02
+  ],
+  [
+   90,
+   0.021
+  ],
+  [
+   100,
+   0.011
+  ],
+  [
+   110,
+   0.029
+  ],
+  [
+   120,
+   0.012
+  ],
+  [
+   130,
+   0.007
+  ],
+  [
+   140,
+   0.005
+  ],
+  [
+   150,
+   0.009
+  ],
+  [
+   152,
+   0.001
+  ]
+ ],
+ "best_val_iter": 125,
+ "best_val_loss": 0.049,
+ "train_loss_at_best": 0.012,
+ "loss_gap_at_best": 0.037,
+ "effective_epochs": 4.0,
+ "trainable": {
+  "percent": 0.145,
+  "millions": 2.49,
+  "of_millions": 1720.575
+ },
+ "kept_checkpoint": "0000125_adapters.safetensors",
+ "fine_tune": {
+  "type": "lora",
+  "num_layers": 8,
+  "batch_size": 2,
+  "lr": 0.0001,
+  "mask_prompt": true
+ }
+}

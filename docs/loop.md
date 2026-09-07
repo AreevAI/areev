@@ -489,6 +489,15 @@ records a **measured outcome** — `held` or `regressed`:
   count can't honestly measure it — that needs a supersede-by-existing
   substrate primitive first.)
 
+A revert the gate proposed and a reviewer applied is a verdict on the
+finding, not only on that apply: the lesson was tried and it hurt. So the
+reverted finding goes on the same doubling cooldown a rejection earns (7d,
+14d, … capped at 90d) and the next pass does not re-propose it, even though
+the situation that produced it is still there. A rollback an operator runs by
+hand (`areev loop rollback`) earns no cooldown — the finding may come back on
+the next pass, which is what lets a lesson be restored through the governed
+path after a deliberate retraction.
+
 Crucially, it re-measures on a **schedule of checkpoints** (1d / 7d / 30d), not
 once — so an outcome that looked fine early can be caught regressing later. A
 single fixed window would freeze a false "held"; the time series doesn't:
@@ -542,6 +551,29 @@ the metric is *not yet measurable* and the checkpoint stays due — the engine
 does not fall back to the baseline run. Scoring the baseline against itself
 would report `held` forever, which is a fabricated receipt and worse than none.
 
+**Authored lessons are measured the same way.** With `outcome_evalset` in
+the host policy, an applied LLM-authored lesson is re-measured against the
+evalset at every checkpoint; a run after the apply that scores worse than
+the newest run **before the apply** is `regressed`, `outcome_review`
+proposes the revert, and applying it retracts the lesson and puts it on the
+rejection cooldown so the next pass does not re-propose what the gate just
+removed. The proposal freezes the newest run of its day as the snapshot;
+the verdict reads the newest run before the apply when one exists, so a
+deployment that measures before each apply judges each rule against the
+state it changed, and one that measured only on day one judges every rule
+against day one (below).
+That is the whole "verify the change improved, otherwise revert" arc, on
+the one kind of change a human approves from prose alone.
+
+A revert's identity is the recommendation it retracts: two lessons on one
+entity that both regress get two reverts (a deterministic finding's dedup
+key is analyzer + target + action, and keyed that way the second revert was
+dropped as a duplicate of the first until 2026-09-06). And the verdict has
+**no noise floor**: any drop past `1e-9` is a regression, so a 359 → 355
+dip on 387 trials — within what one adapter read twice can differ by —
+proposes a revert. That is a limit, stated here; a policy-level minimum
+effect size is not implemented.
+
 No scheduler is implied: run `areev eval run` from cron or CI exactly as you run
 `areev loop run`; outcomes only ever **read** what it journaled. The apply gate
 (`areev loop apply --gating-run <id>`) and the outcome edge deliberately read
@@ -553,6 +585,40 @@ be: *canonical-vendor accuracy on the 184-row ground truth went up, and stayed
 up at 1d, 7d and 30d.*
 Outcomes accrue over real calendar time as checkpoints elapse; the loop is
 exercised end-to-end by the engine test suite, which controls the clock.
+
+### What the gate does not catch — measured, not hypothesised
+
+Both of these were found by running the loop on a public corpus, not by
+reading the code. The evidence is
+[`crates/areev-bench/ADBUY.md`](../crates/areev-bench/ADBUY.md), seed 3.
+
+**Outcome measurement catches damage, not lost opportunity.** The comparison
+is against the newest run journaled before the apply. An agent that
+climbed to 238 of 280, then fell to 128 as later rules landed, is still four
+times better than the day-one run of 35 — so when day one is the only run
+journaled before the apply, the gate reports `held`, correctly by its own
+definition, and no revert is proposed. It has no way to see the 238. The
+per-rule marginal measurement is now what the verdict does *when the host
+journals a run before each apply* (`crates/areev-bench/CURVE.md`, seed 1: a
+rule that contradicted an earlier one took the agent from 86% to 66% and
+measured as `held` against day one's 26% until the checkpoint reads were
+journaled onto the timeline). A high-water mark carried forward is not
+implemented; a deployment that does not measure between applies still sees
+a rising-then-falling agent as a rising one.
+
+**Dedup is by content, not by meaning.** `authored_dedup_key` fingerprints
+the proposal text, so it collapses a rule proposed twice verbatim. It cannot
+collapse the same instruction rephrased — which is what an LLM proposer
+emits, pass after pass, from the same recurring evidence. In that run ten
+approved rules stated four distinct facts, each true and well-formed enough
+that a reviewer approved it alone, and the agent stopped emitting the very
+fields the rules most insistently named. Every rule in the prompt is a rule
+competing for the model's attention; a reviewer judging one at a time cannot
+see the pile. Semantic near-duplicate suppression is not in the engine.
+
+Neither is a bug in the four gates. Both are limits of what the gates
+measure, and a host running the loop unattended over many passes should
+know them.
 
 ## Triggers — no daemon, anywhere
 
@@ -624,9 +690,52 @@ host policy file — `areev loop --policy loop-policy.json` (or
   ],
   "deny": [],
   "severity_floors": { "loop.staleness": "medium" },
-  "telemetry": "aggregate"
+  "telemetry": "aggregate",
+  "discover_objective": "review_queue",
+  "outcome_evalset": { "hash": "<evalset hash>", "field": "passed", "higher_is_better": true },
+  "evidence_attribution": "named"
 }
 ```
+
+`evidence_attribution` (default `named`) decides whether an Observation
+reaches the LLM with its observer named — `<observer> (a person) said of
+<subject>: <text>` — or as bare text. It is host policy for two independent
+reasons. An observer id can be a person's name or account, and whether that
+belongs in a model prompt is a privacy decision only the host can make. And
+attribution changes what gets proposed: a bare correction ("Vendor Name is
+ACME") is ambiguous about direction, and a model given a run of them
+concluded the *agent* had been asking for data it already had, proposing
+rules to stop it asking (`crates/areev-bench/RECEIPTS.md`). `anonymous`
+restores the pre-2026-09-04 rendering exactly, which is what makes it usable
+as an ablation switch.
+
+`outcome_evalset` (optional, default none) gives every **applicable
+LLM-authored proposal** — a lesson, a fact, a query or plan revision — the
+host's evalset as its outcome metric: baseline from the newest
+`mg:eval_run` summary journaled before the **apply** (the proposal freezes
+the newest run of its day; a run journaled between proposal and apply
+replaces it at verdict time), current from summaries journaled after the
+apply, checkpoints at `horizons_ms` (default 1d / 7d / 30d). It exists because an authored lesson carries no recurrence metric —
+nothing errors when a lesson is merely useless or quietly harmful — so
+without it the Verify gate had nothing to re-measure for exactly the
+proposals a reviewer was least able to judge from the text. No run
+journaled yet → no metric, never a fabricated one; the direction is
+mandatory because a guessed one would revert an improvement.
+
+`discover_objective` picks the scoring rule the LLM proposer is given
+(`docs/loop-reflection.md` §5.1) and nothing else — the gates behind it are
+the same either way. `review_queue` (default) makes "nothing to report" a
+zero-penalty answer and a wrong finding cost twice a right one: the rule for
+a queue a person triages. `learner` is for an agent that has to improve from
+this pass: abstaining while the evidence holds a recurring failure, two or
+more rejected outcomes, or a person's instruction is penalized like a wrong
+lesson, and the model is told to prefer the one proposal that addresses the
+most frequent failure. It exists because, measured live, a cheap model under
+the review-queue rule authored a lesson on fewer than half of its passes over
+evidence that plainly held one (`crates/areev-bench/RESULTS.md`, the 2x2).
+Every draft under either objective still passes GROUND, VERIFY, the
+confidence floor and a human review with a BECAUSE; the objective changes
+what the proposer is asked to optimize, not what may reach the memory.
 
 A recommendation auto-applies **only if all** hold (proposal §6.3): host
 opt-in + a matching grant, a built-in analyzer (never command/LLM), a
@@ -670,6 +779,16 @@ Existing write callers add `--token-env`; a token unlocks review + apply.
 - **Tool grains.** The flagship analyzer reads Tool grains (0x05), which
   carry `tool_name`/`is_error`/`content` natively. `record_tool_call` and
   `areev migrate --from tool-log` both produce them.
+- **Authored proposals dedup on content.** An analyzer finding keys on
+  `family ⟂ target ⟂ action` and deliberately not on content, so a growing
+  cluster does not re-propose as novel. An LLM-authored executable proposal
+  keys on a fingerprint of its content as well: two different lessons on one
+  entity are two findings and both reach the queue, while the same lesson
+  re-authored (different confidence, spacing, case) is one and is deduped
+  against the pending or applied original. Rejection and measured-revert
+  cooldowns therefore apply to *that lesson*, not to every lesson on the
+  entity. Found by the receipts harness: the second rule the accountant
+  asked for was silently dropped as a duplicate of the first.
 - **Occurrences, not values.** Content-addressed dedup is right for a fact —
   a fact restated is the same fact — and wrong for a tool call: a tool that
   failed five times is a different state of the world from one that failed

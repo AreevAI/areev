@@ -1,0 +1,13 @@
+{
+ "arm": "mem0",
+ "mode": "default",
+ "profile": "sroie",
+ "seed": 1,
+ "experience": 40,
+ "eval": 60,
+ "evalset": "e75276a1a5002547",
+ "top_k": 10,
+ "mem0_llm": "qwen/qwen3-30b-a3b-instruct-2507",
+ "mem0_embedder": "ollama:mxbai-embed-large",
+ "agent_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507 --provider coreweave/bf16 --seed 1"
+}

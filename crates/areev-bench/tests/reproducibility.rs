@@ -26,7 +26,7 @@
 use areev_bench::selfimprove::context::{
     AllProvider, ContextProvider, ExperienceGrain, LlmProvider, SteelProvider,
 };
-use areev_bench::selfimprove::memory::Memory;
+use areev_bench::selfimprove::memory::{LearnOutcome, Memory};
 use areev_bench::selfimprove::{agent, env};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -181,7 +181,8 @@ fn section_governed_pipeline(out: &mut String) {
     let _ = writeln!(out, "A0.lessons_empty={}", a0.is_empty());
 
     // LEARN 1 → B.
-    let (ledger1, applied1) = mem.learn(None, None, BASE_MS + HOUR_MS).expect("learn 1");
+    let LearnOutcome { ledger: ledger1, applied: applied1, .. } =
+        mem.learn(None, None, BASE_MS + HOUR_MS).expect("learn 1");
     let _ = writeln!(out, "learn1.applied_count={}", applied1.len());
     for line in ledger_lines(&ledger1) {
         let _ = writeln!(out, "learn1.ledger {line}");
@@ -197,7 +198,8 @@ fn section_governed_pipeline(out: &mut String) {
 
     // LEARN 2 → B2: a rolled-back hash is terminal, so this is a fresh
     // governed proposal — and it must restore the same prompt bytes.
-    let (ledger2, applied2) = mem.learn(None, None, BASE_MS + 3 * HOUR_MS).expect("learn 2");
+    let LearnOutcome { ledger: ledger2, applied: applied2, .. } =
+        mem.learn(None, None, BASE_MS + 3 * HOUR_MS).expect("learn 2");
     let _ = writeln!(out, "learn2.applied_count={}", applied2.len());
     for line in ledger_lines(&ledger2) {
         let _ = writeln!(out, "learn2.ledger {line}");
@@ -347,7 +349,8 @@ fn re_apply_restores_the_same_prompt_bytes() {
     let mem = Memory::create(dir.path()).expect("memory");
     capture_experience(&mem, 1, 40);
 
-    let (_, applied1) = mem.learn(None, None, BASE_MS + HOUR_MS).expect("learn 1");
+    let LearnOutcome { applied: applied1, .. } =
+        mem.learn(None, None, BASE_MS + HOUR_MS).expect("learn 1");
     assert!(!applied1.is_empty(), "the pinned experience must produce a lesson");
     let b = mem.lessons_markdown().expect("lessons");
     assert!(!b.is_empty(), "B must have lessons");
@@ -355,7 +358,8 @@ fn re_apply_restores_the_same_prompt_bytes() {
     mem.rollback(&applied1, BASE_MS + 2 * HOUR_MS).expect("rollback");
     assert_eq!(mem.lessons_markdown().expect("lessons"), "", "rollback must empty");
 
-    let (_, applied2) = mem.learn(None, None, BASE_MS + 3 * HOUR_MS).expect("learn 2");
+    let LearnOutcome { applied: applied2, .. } =
+        mem.learn(None, None, BASE_MS + 3 * HOUR_MS).expect("learn 2");
     assert!(!applied2.is_empty(), "restoration must re-apply");
     assert!(
         applied2.iter().all(|h| !applied1.contains(h)),

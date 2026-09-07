@@ -1,0 +1,21 @@
+{
+  "authoring_rate": 1.0,
+  "funnel_totals": {
+    "cited": 40,
+    "dropped_target": 0,
+    "dropped_uncited": 0,
+    "evidence": 640,
+    "grounded": 40,
+    "kept": 39,
+    "proposed": 40,
+    "stored": 39
+  },
+  "label": "learner-qwen3-30b",
+  "llm_lessons": true,
+  "mean_elapsed_ms": 25974.0,
+  "mean_llm_stored_per_pass": 3.9,
+  "objective": "learner",
+  "passes": 10,
+  "passes_with_llm_finding": 10,
+  "rows": "/Users/sathish/mg/local/areev-runs/learn-s1/learn/learner-qwen3-30b.jsonl"
+}

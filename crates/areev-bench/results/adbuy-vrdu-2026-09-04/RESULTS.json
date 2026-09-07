@@ -1,0 +1,1080 @@
+{
+ "pooled": {
+  "exact_B2_vs_A": {
+   "losses": 0,
+   "n": 840,
+   "p": 0.0,
+   "wins": 465
+  },
+  "exact_B_vs_A": {
+   "losses": 0,
+   "n": 840,
+   "p": 0.0,
+   "wins": 468
+  },
+  "exact_B_vs_B2": {
+   "losses": 2,
+   "n": 840,
+   "p": 0.453125,
+   "wins": 5
+  },
+  "passed": {
+   "A": {
+    "exact": 122,
+    "semantic": 176
+   },
+   "B": {
+    "exact": 590,
+    "semantic": 592
+   },
+   "B2": {
+    "exact": 587,
+    "semantic": 589
+   }
+  },
+  "semantic_B2_vs_A": {
+   "losses": 0,
+   "n": 840,
+   "p": 0.0,
+   "wins": 413
+  },
+  "semantic_B_vs_A": {
+   "losses": 0,
+   "n": 840,
+   "p": 0.0,
+   "wins": 416
+  },
+  "semantic_B_vs_B2": {
+   "losses": 2,
+   "n": 840,
+   "p": 0.453125,
+   "wins": 5
+  },
+  "trials_per_arm": 840
+ },
+ "seeds": [
+  {
+   "A0": {
+    "exact": 45,
+    "semantic": 57,
+    "total": 285
+   },
+   "coverage_A": {
+    "Advertiser": [
+     0,
+     60
+    ],
+    "Contract Number": [
+     0,
+     60
+    ],
+    "Flight From": [
+     0,
+     53
+    ],
+    "Flight To": [
+     0,
+     52
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Advertiser": [
+     60,
+     60
+    ],
+    "Contract Number": [
+     60,
+     60
+    ],
+    "Flight From": [
+     53,
+     53
+    ],
+    "Flight To": [
+     52,
+     52
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Advertiser": [
+     60,
+     60
+    ],
+    "Contract Number": [
+     60,
+     60
+    ],
+    "Flight From": [
+     53,
+     53
+    ],
+    "Flight To": [
+     52,
+     52
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 45,
+     "semantic": 57
+    },
+    "10": {
+     "exact": 137,
+     "semantic": 140
+    },
+    "20": {
+     "exact": 226,
+     "semantic": 229
+    },
+    "30": {
+     "exact": 222,
+     "semantic": 224
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 285,
+    "p": 0.0,
+    "wins": 178
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 285,
+    "p": 0.0,
+    "wins": 179
+   },
+   "exact_B_vs_B2": {
+    "losses": 2,
+    "n": 285,
+    "p": 1.0,
+    "wins": 3
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Advertiser": 51,
+    "Contract Number": 28,
+    "Flight From": 43,
+    "Flight To": 45,
+    "Gross Amount": 12
+   },
+   "experience": {
+    "completion_tokens": 2897,
+    "documents": 40,
+    "learn_passes": 16,
+    "lessons_applied": 4,
+    "lessons_rejected": 5,
+    "prompt_tokens": 133346
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 4,
+   "passed_A": {
+    "exact": 45,
+    "semantic": 57
+   },
+   "passed_B": {
+    "exact": 224,
+    "semantic": 226
+   },
+   "passed_B2": {
+    "exact": 223,
+    "semantic": 225
+   },
+   "regress": {
+    "H": {
+     "exact": 209,
+     "failed": 76,
+     "note": "harmful lesson applied",
+     "passed": 209,
+     "run_id": "eval-h",
+     "semantic": 225,
+     "total": 285
+    },
+    "R": {
+     "exact": 224,
+     "failed": 61,
+     "note": "harmful lesson reverted",
+     "passed": 224,
+     "run_id": "eval-r",
+     "semantic": 226,
+     "total": 285
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 4,
+     "n": 285,
+     "p": 0.002599,
+     "wins": 19
+    },
+    "exact_B_vs_R": {
+     "losses": 3,
+     "n": 285,
+     "p": 1.0,
+     "wins": 3
+    },
+    "exact_R_vs_H": {
+     "losses": 5,
+     "n": 285,
+     "p": 0.004077,
+     "wins": 20
+    },
+    "semantic_B_vs_H": {
+     "losses": 5,
+     "n": 285,
+     "p": 1.0,
+     "wins": 6
+    },
+    "semantic_B_vs_R": {
+     "losses": 3,
+     "n": 285,
+     "p": 1.0,
+     "wins": 3
+    },
+    "semantic_R_vs_H": {
+     "losses": 6,
+     "n": 285,
+     "p": 1.0,
+     "wins": 7
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 45.0,
+      "current": 224.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 45.0,
+      "current": 224.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 45.0,
+      "current": 224.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 45.0,
+      "current": 224.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the advertiser and contract number from every invoice, using the full format as specified by the accountant.",
+     "why": "This rule tells you which fields to capture and how to write them."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record the advertiser and contract number from every invoice using the full, unmodified format as specified by the accountant.",
+     "why": "I've already told you this \u2014 it restates: extract and record the advertiser and contract number from every invoi"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates from every invoice, using the exact format provided by the accountant.",
+     "why": "The rule does not specify the date format to use."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Format the Gross Amount as a plain number with two decimals, no dollar sign and no thousands separator, like 27900.00.",
+     "why": "This rule tells you how to write the Gross Amount correctly."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record the contract number from every invoice using the full, unmodified format as specified by the accountant.",
+     "why": "I've already told you this \u2014 it restates: extract and record the advertiser and contract number from every invoi"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record the advertiser from every invoice using the exact, unmodified format as specified by the accountant.",
+     "why": "The rule does not specify how to capture the advertiser from the invoice."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates from every invoice using the exact YYYY-MM-DD format as provided.",
+     "why": "This rule tells you how to write the dates in the ledger."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates from every invoice using the exact YYYY-MM-DD format as provided.",
+     "why": "already in force \u2014 this restates a rule I've approved"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the contract number and advertiser using the full, unmodified format as specified by the accountant, including all prefixes, suffixes, and special characters.",
+     "why": "Capture the contract number and advertiser exactly as they appear on the invoice."
+    }
+   ],
+   "seed_dir": "seed1",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 285,
+    "p": 0.0,
+    "wins": 168
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 285,
+    "p": 0.0,
+    "wins": 169
+   },
+   "semantic_B_vs_B2": {
+    "losses": 2,
+    "n": 285,
+    "p": 1.0,
+    "wins": 3
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Advertiser": 53,
+    "Contract Number": 28,
+    "Flight From": 43,
+    "Flight To": 45
+   },
+   "trials_per_arm": 285
+  },
+  {
+   "A0": {
+    "exact": 43,
+    "semantic": 60,
+    "total": 275
+   },
+   "coverage_A": {
+    "Advertiser": [
+     0,
+     60
+    ],
+    "Contract Number": [
+     0,
+     60
+    ],
+    "Flight From": [
+     0,
+     48
+    ],
+    "Flight To": [
+     0,
+     47
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Advertiser": [
+     60,
+     60
+    ],
+    "Contract Number": [
+     60,
+     60
+    ],
+    "Flight From": [
+     48,
+     48
+    ],
+    "Flight To": [
+     47,
+     47
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Advertiser": [
+     60,
+     60
+    ],
+    "Contract Number": [
+     60,
+     60
+    ],
+    "Flight From": [
+     48,
+     48
+    ],
+    "Flight To": [
+     47,
+     47
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 43,
+     "semantic": 60
+    },
+    "10": {
+     "exact": 233,
+     "semantic": 234
+    },
+    "20": {
+     "exact": 228,
+     "semantic": 229
+    },
+    "30": {
+     "exact": 233,
+     "semantic": 233
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 275,
+    "p": 0.0,
+    "wins": 189
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 275,
+    "p": 0.0,
+    "wins": 190
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 275,
+    "p": 1.0,
+    "wins": 1
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Advertiser": 54,
+    "Contract Number": 37,
+    "Flight From": 40,
+    "Flight To": 42,
+    "Gross Amount": 17
+   },
+   "experience": {
+    "completion_tokens": 3099,
+    "documents": 40,
+    "learn_passes": 11,
+    "lessons_applied": 7,
+    "lessons_rejected": 5,
+    "prompt_tokens": 132681
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 7,
+   "passed_A": {
+    "exact": 43,
+    "semantic": 60
+   },
+   "passed_B": {
+    "exact": 233,
+    "semantic": 233
+   },
+   "passed_B2": {
+    "exact": 232,
+    "semantic": 232
+   },
+   "regress": {
+    "H": {
+     "exact": 227,
+     "failed": 48,
+     "note": "harmful lesson applied",
+     "passed": 227,
+     "run_id": "eval-h",
+     "semantic": 230,
+     "total": 275
+    },
+    "R": {
+     "exact": 233,
+     "failed": 42,
+     "note": "harmful lesson reverted",
+     "passed": 233,
+     "run_id": "eval-r",
+     "semantic": 233,
+     "total": 275
+    },
+    "all_ok": true,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": true,
+     "applying the revert rolls the lesson back": true,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": true,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": true,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 1,
+     "n": 275,
+     "p": 0.070312,
+     "wins": 7
+    },
+    "exact_B_vs_R": {
+     "losses": 0,
+     "n": 275,
+     "p": 1.0,
+     "wins": 0
+    },
+    "exact_R_vs_H": {
+     "losses": 1,
+     "n": 275,
+     "p": 0.070312,
+     "wins": 7
+    },
+    "semantic_B_vs_H": {
+     "losses": 1,
+     "n": 275,
+     "p": 0.375,
+     "wins": 4
+    },
+    "semantic_B_vs_R": {
+     "losses": 0,
+     "n": 275,
+     "p": 1.0,
+     "wins": 0
+    },
+    "semantic_R_vs_H": {
+     "losses": 1,
+     "n": 275,
+     "p": 0.375,
+     "wins": 4
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 43.0,
+      "current": 233.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Format the Gross Amount as a plain number with two decimals, no dollar sign and no thousands separator.",
+     "why": "This rule tells you how to write the Gross Amount."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Capture the advertiser and contract number on every receipt, not just the date.",
+     "why": "Capture the advertiser and contract number from each invoice."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Capture the Flight From and Flight To dates on every receipt, not just the date.",
+     "why": "Capture both Flight From and Flight To dates for completeness."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Format all dates as YYYY-MM-DD, including Flight From and Flight To, on every receipt.",
+     "why": "Use the YYYY-MM-DD format for all dates."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the advertiser's name exactly as printed on the invoice, including all formatting and delimiters.",
+     "why": "Copying the advertiser's name exactly ensures accuracy and consistency."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Apply the same extraction rules and formatting consistently across all documents, using the source text as the sole authority for each field.",
+     "why": "Use the source text to consistently extract and format fields."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Verify every extracted value against the source document before submission; correct any discrepancy using the original text, not assumptions.",
+     "why": "The rule presupposes a verification stage the assistant does not have."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract every field exactly as it appears in the source document, using the original text as the sole authority; do not infer, assume, or correct based on external knowledge.",
+     "why": "This rule tells you to capture fields exactly as they appear, ensuring accuracy."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Always extract and validate the advertiser and contract number from every receipt, regardless of prior assumptions or partial data.",
+     "why": "Validation is not part of your role; just extract the fields."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract the advertiser and contract number exactly as they appear in the source document, using the original text as the sole authority; do not infer, assume, or correct based on external knowledge.",
+     "why": "I've already told you this \u2014 it restates: extract every field exactly as it appears in the source document using"
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "When a field has conflicting values across documents, use the most recently corrected value from the latest authoritative source as the definitive extraction; do not revert to prior or assumed values.",
+     "why": "The assistant cannot track or revisit previous invoices."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "After a field is corrected, store the validated value in context and apply it consistently across all future extractions for that field, using the corrected version as the new baseline.",
+     "why": "The assistant cannot store or apply corrections across multiple invoices."
+    }
+   ],
+   "seed_dir": "seed2",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 275,
+    "p": 0.0,
+    "wins": 172
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 275,
+    "p": 0.0,
+    "wins": 173
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 275,
+    "p": 1.0,
+    "wins": 1
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Advertiser": 54,
+    "Contract Number": 37,
+    "Flight From": 40,
+    "Flight To": 42
+   },
+   "trials_per_arm": 275
+  },
+  {
+   "A0": {
+    "exact": 35,
+    "semantic": 59,
+    "total": 280
+   },
+   "coverage_A": {
+    "Advertiser": [
+     0,
+     60
+    ],
+    "Contract Number": [
+     0,
+     60
+    ],
+    "Flight From": [
+     0,
+     50
+    ],
+    "Flight To": [
+     0,
+     50
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B": {
+    "Advertiser": [
+     4,
+     60
+    ],
+    "Contract Number": [
+     3,
+     60
+    ],
+    "Flight From": [
+     40,
+     50
+    ],
+    "Flight To": [
+     40,
+     50
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "coverage_B2": {
+    "Advertiser": [
+     4,
+     60
+    ],
+    "Contract Number": [
+     3,
+     60
+    ],
+    "Flight From": [
+     39,
+     50
+    ],
+    "Flight To": [
+     39,
+     50
+    ],
+    "Gross Amount": [
+     60,
+     60
+    ]
+   },
+   "curve": {
+    "0": {
+     "exact": 35,
+     "semantic": 59
+    },
+    "10": {
+     "exact": 156,
+     "semantic": 216
+    },
+    "20": {
+     "exact": 238,
+     "semantic": 241
+    },
+    "30": {
+     "exact": 128,
+     "semantic": 128
+    }
+   },
+   "exact_B2_vs_A": {
+    "losses": 0,
+    "n": 280,
+    "p": 0.0,
+    "wins": 98
+   },
+   "exact_B_vs_A": {
+    "losses": 0,
+    "n": 280,
+    "p": 0.0,
+    "wins": 99
+   },
+   "exact_B_vs_B2": {
+    "losses": 0,
+    "n": 280,
+    "p": 1.0,
+    "wins": 1
+   },
+   "exact_wins_by_field_B_vs_A": {
+    "Advertiser": 4,
+    "Contract Number": 2,
+    "Flight From": 33,
+    "Flight To": 35,
+    "Gross Amount": 25
+   },
+   "experience": {
+    "completion_tokens": 3075,
+    "documents": 40,
+    "learn_passes": 15,
+    "lessons_applied": 10,
+    "lessons_rejected": 3,
+    "prompt_tokens": 124092
+   },
+   "held_out_documents": 60,
+   "lessons_in_prompt_at_end": 10,
+   "passed_A": {
+    "exact": 34,
+    "semantic": 59
+   },
+   "passed_B": {
+    "exact": 133,
+    "semantic": 133
+   },
+   "passed_B2": {
+    "exact": 132,
+    "semantic": 132
+   },
+   "regress": {
+    "H": {
+     "exact": 144,
+     "failed": 136,
+     "note": "harmful lesson applied",
+     "passed": 144,
+     "run_id": "eval-h",
+     "semantic": 144,
+     "total": 280
+    },
+    "R": {
+     "exact": 149,
+     "failed": 131,
+     "note": "harmful lesson reverted",
+     "passed": 149,
+     "run_id": "eval-r",
+     "semantic": 149,
+     "total": 280
+    },
+    "all_ok": false,
+    "checks": {
+     "R recovers past H": true,
+     "a revert is proposed": false,
+     "applying the revert rolls the lesson back": false,
+     "every applied lesson got a verdict": true,
+     "it renders into the prompt": true,
+     "it was measured against the evalset (the metric the policy attached)": true,
+     "no revert proposed for the lessons that held": true,
+     "the harmful lesson is measured as regressed": false,
+     "the harmful lesson reached the queue": true,
+     "the prompt no longer carries it": false,
+     "the reverted lesson is not re-proposed": true
+    },
+    "exact_B_vs_H": {
+     "losses": 12,
+     "n": 280,
+     "p": 0.003418,
+     "wins": 1
+    },
+    "exact_B_vs_R": {
+     "losses": 17,
+     "n": 280,
+     "p": 0.000145,
+     "wins": 1
+    },
+    "exact_R_vs_H": {
+     "losses": 2,
+     "n": 280,
+     "p": 0.179688,
+     "wins": 7
+    },
+    "semantic_B_vs_H": {
+     "losses": 12,
+     "n": 280,
+     "p": 0.003418,
+     "wins": 1
+    },
+    "semantic_B_vs_R": {
+     "losses": 17,
+     "n": 280,
+     "p": 0.000145,
+     "wins": 1
+    },
+    "semantic_R_vs_H": {
+     "losses": 2,
+     "n": 280,
+     "p": 0.179688,
+     "wins": 7
+    },
+    "verdicts_after_B": [
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     },
+     {
+      "baseline": 35.0,
+      "current": 133.0,
+      "verdict": "held"
+     }
+    ]
+   },
+   "review_decisions": [
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the advertiser and contract number from every receipt before submission.",
+     "why": "This rule tells you which fields to capture from each invoice."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Treat all receipts as requiring the same mandatory metadata fields: advertiser and contract number.",
+     "why": "This rule tells you which fields to capture from each invoice."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Treat all receipts as requiring the same mandatory metadata fields: advertiser and contract number, without exception.",
+     "why": "I've already told you this \u2014 it restates: treat all receipts as requiring the same mandatory metadata fields adv"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Copy the advertiser name exactly as printed on the invoice, including all segments like POL/AB PAC or POL/Amy Klobuchar/President/US/Dem.",
+     "why": "Copying the advertiser name exactly as printed ensures accuracy."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Format the Gross Amount as a plain number with two decimals, no dollar sign, and no thousands separator, like 9780.00, on every receipt.",
+     "why": "This rule tells you how to write the Gross Amount."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates for every receipt, as they are required for accrual period calculation.",
+     "why": "Capture both Flight From and Flight To dates from each invoice."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Write all flight dates in YYYY-MM-DD format, such as 2020-05-15, without exceptions.",
+     "why": "Use YYYY-MM-DD format for all flight dates."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Copy the advertiser name exactly as printed on the invoice, including all segments like POL/AB PAC or POL/Amy Klobuchar/President/US/Dem, and extract the contract number from every receipt.",
+     "why": "I've already told you this \u2014 it restates: copy the advertiser name exactly as printed on the invoice including a"
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the advertiser and contract number from every receipt, even if the values differ across documents, to ensure compliance with accounting requirements.",
+     "why": "This rule tells you which fields to capture from each invoice."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates from every receipt, using the exact values and format (YYYY-MM-DD) as shown in the document.",
+     "why": "This rule tells you how to write the dates in the correct format."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record the contract number from every receipt, using the exact value as printed, such as 2381227, without substituting or omitting it.",
+     "why": "This rule tells you how to capture the contract number correctly."
+    },
+    {
+     "approved": true,
+     "kind": "lesson",
+     "text": "Extract and record Flight From, Flight To, Gross Amount, advertiser, and contract number from every receipt using the exact values and format as printed, without exceptions.",
+     "why": "This rule tells you which fields to capture and how to write them."
+    },
+    {
+     "approved": false,
+     "kind": "lesson",
+     "text": "Extract and record both Flight From and Flight To dates from every receipt using the exact values and format (YYYY-MM-DD) as shown in the document, without exceptions.",
+     "why": "I've already told you this \u2014 it restates: extract and record both flight from and flight to dates from every rec"
+    }
+   ],
+   "seed_dir": "seed3",
+   "semantic_B2_vs_A": {
+    "losses": 0,
+    "n": 280,
+    "p": 0.0,
+    "wins": 73
+   },
+   "semantic_B_vs_A": {
+    "losses": 0,
+    "n": 280,
+    "p": 0.0,
+    "wins": 74
+   },
+   "semantic_B_vs_B2": {
+    "losses": 0,
+    "n": 280,
+    "p": 1.0,
+    "wins": 1
+   },
+   "semantic_wins_by_field_B_vs_A": {
+    "Advertiser": 4,
+    "Contract Number": 2,
+    "Flight From": 33,
+    "Flight To": 35
+   },
+   "trials_per_arm": 280
+  }
+ ]
+}

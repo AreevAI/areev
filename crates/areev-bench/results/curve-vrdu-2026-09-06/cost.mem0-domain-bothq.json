@@ -1,0 +1,27 @@
+{
+ "total_usd": 0.41282,
+ "calls": 1440,
+ "by": [
+  {
+   "script": "mem0",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 320,
+   "prompt_tokens": 3590231,
+   "completion_tokens": 266751,
+   "usd": 0.22381,
+   "shadow_usd": null
+  },
+  {
+   "script": "openrouter_toolcall.py",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "calls": 1120,
+   "prompt_tokens": 3829540,
+   "completion_tokens": 26878,
+   "usd": 0.18901,
+   "shadow_usd": null
+  }
+ ],
+ "unpriced": [],
+ "documents": null,
+ "per_document_usd": null
+}

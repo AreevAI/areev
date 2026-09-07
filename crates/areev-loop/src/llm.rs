@@ -24,9 +24,10 @@
 //!
 //! Trust floor (enforced by the engine, not the backend): responses are parsed
 //! to a fixed schema (unknown fields dropped, strings capped), DISCOVER drafts
-//! must cite evidence hashes present in the bundle, instructions never
-//! interleave with evidence, and a failed/timed-out/garbled call drops the LLM
-//! contribution for the run rather than failing it.
+//! must cite evidence present in the bundle (by bundle id, full hash, or an
+//! unambiguous hash prefix), instructions never interleave with evidence, and
+//! a failed/timed-out/garbled call drops the LLM contribution for the run
+//! rather than failing it.
 //!
 //! `CommandLlm` mirrors the shipped `CommandEmbed`: whitespace-split argv (no
 //! shell), one process per call, a JSON request on stdin and a JSON response on
@@ -87,9 +88,13 @@ pub struct FindingBrief {
     pub severity: String,
 }
 
-/// One evidence grain, provenance-tagged.
+/// One evidence grain, provenance-tagged. `id` is the bundle-local label
+/// (`e1`, `e2`, …) a draft may cite instead of the 64-hex `hash`: the engine
+/// resolves either back to the grain, so a citation is still checked against
+/// the bundle — it is just no longer a transcription test for the model.
 #[derive(Debug, Clone, Serialize)]
 pub struct EvidenceItem {
+    pub id: String,
     pub hash: String,
     pub grain_type: String,
     pub text: String,

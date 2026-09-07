@@ -1,0 +1,13 @@
+{
+ "arm": "mem0",
+ "mode": "default",
+ "profile": "vrdu_reg",
+ "seed": 2,
+ "experience": 320,
+ "eval": 100,
+ "evalset": "3fdb2649cc01681c",
+ "top_k": 10,
+ "mem0_llm": "qwen/qwen3-30b-a3b-instruct-2507",
+ "mem0_embedder": "ollama:mxbai-embed-large",
+ "agent_cmd": "/Users/sathish/mg/products/areev/.venv/bin/python3 /Users/sathish/mg/products/areev/crates/areev-bench/scripts/openrouter_toolcall.py qwen/qwen3-30b-a3b-instruct-2507 --provider streamlake --seed 2"
+}

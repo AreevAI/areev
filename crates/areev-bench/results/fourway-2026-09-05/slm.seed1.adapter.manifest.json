@@ -1,0 +1,23 @@
+{
+ "base_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+ "adapter_path": "/Users/sathish/mg/local/areev-runs/slm/seed1/adapter",
+ "iters": 200,
+ "train_seconds": 507,
+ "corpus": {
+  "learned_db": "/Users/sathish/mg/local/areev-runs/receipts-run2/seed1/ledger.db",
+  "seed": 1,
+  "experience": 40,
+  "eval": 60,
+  "train": 34,
+  "valid": 4,
+  "rules_in_system_prompt": 1,
+  "held_out_excluded": 60
+ },
+ "fine_tune": {
+  "type": "lora",
+  "num_layers": 8,
+  "batch_size": 2,
+  "lr": 0.0001,
+  "mask_prompt": true
+ }
+}

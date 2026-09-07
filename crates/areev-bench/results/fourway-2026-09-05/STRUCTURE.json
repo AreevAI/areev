@@ -1,0 +1,573 @@
+{
+ "base_cell": "system-bottom|markdown",
+ "cells": {
+  "system-bottom|cal-markdown": {
+   "chars": 843,
+   "exact": 378,
+   "format": "cal-markdown",
+   "n": 720,
+   "position": "system-bottom",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 4,
+    "p": 0.019211,
+    "wins": 15
+   }
+  },
+  "system-bottom|json": {
+   "chars": 696,
+   "exact": 379,
+   "format": "json",
+   "n": 720,
+   "position": "system-bottom",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 4,
+    "p": 0.011818,
+    "wins": 16
+   }
+  },
+  "system-bottom|markdown": {
+   "chars": 666,
+   "exact": 367,
+   "format": "markdown",
+   "n": 720,
+   "position": "system-bottom",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 0,
+    "p": 1.0,
+    "wins": 0
+   }
+  },
+  "system-bottom|toon": {
+   "chars": 683,
+   "exact": 366,
+   "format": "toon",
+   "n": 720,
+   "position": "system-bottom",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 7,
+    "p": 1.0,
+    "wins": 6
+   }
+  },
+  "system-bottom|xml": {
+   "chars": 731,
+   "exact": 363,
+   "format": "xml",
+   "n": 720,
+   "position": "system-bottom",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 11,
+    "p": 0.480682,
+    "wins": 7
+   }
+  },
+  "system-top|cal-markdown": {
+   "chars": 843,
+   "exact": 73,
+   "format": "cal-markdown",
+   "n": 720,
+   "position": "system-top",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 298,
+    "p": 0.0,
+    "wins": 4
+   }
+  },
+  "system-top|json": {
+   "chars": 696,
+   "exact": 77,
+   "format": "json",
+   "n": 720,
+   "position": "system-top",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 296,
+    "p": 0.0,
+    "wins": 6
+   }
+  },
+  "system-top|markdown": {
+   "chars": 666,
+   "exact": 76,
+   "format": "markdown",
+   "n": 720,
+   "position": "system-top",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 294,
+    "p": 0.0,
+    "wins": 3
+   }
+  },
+  "system-top|toon": {
+   "chars": 683,
+   "exact": 111,
+   "format": "toon",
+   "n": 720,
+   "position": "system-top",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 265,
+    "p": 0.0,
+    "wins": 9
+   }
+  },
+  "system-top|xml": {
+   "chars": 731,
+   "exact": 120,
+   "format": "xml",
+   "n": 720,
+   "position": "system-top",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 254,
+    "p": 0.0,
+    "wins": 7
+   }
+  },
+  "user-turn|cal-markdown": {
+   "chars": 843,
+   "exact": 376,
+   "format": "cal-markdown",
+   "n": 720,
+   "position": "user-turn",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 9,
+    "p": 0.122078,
+    "wins": 18
+   }
+  },
+  "user-turn|json": {
+   "chars": 696,
+   "exact": 368,
+   "format": "json",
+   "n": 720,
+   "position": "user-turn",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 6,
+    "p": 1.0,
+    "wins": 7
+   }
+  },
+  "user-turn|markdown": {
+   "chars": 666,
+   "exact": 366,
+   "format": "markdown",
+   "n": 720,
+   "position": "user-turn",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 7,
+    "p": 1.0,
+    "wins": 6
+   }
+  },
+  "user-turn|toon": {
+   "chars": 683,
+   "exact": 368,
+   "format": "toon",
+   "n": 720,
+   "position": "user-turn",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 8,
+    "p": 1.0,
+    "wins": 9
+   }
+  },
+  "user-turn|xml": {
+   "chars": 731,
+   "exact": 362,
+   "format": "xml",
+   "n": 720,
+   "position": "user-turn",
+   "seeds": 3,
+   "vs_base": {
+    "losses": 15,
+    "p": 0.424356,
+    "wins": 10
+   }
+  }
+ },
+ "per_seed": {
+  "1": {
+   "system-bottom|cal-markdown": {
+    "exact": 126,
+    "vs_base": {
+     "losses": 1,
+     "p": 0.375,
+     "wins": 4
+    }
+   },
+   "system-bottom|json": {
+    "exact": 123,
+    "vs_base": {
+     "losses": 2,
+     "p": 1.0,
+     "wins": 2
+    }
+   },
+   "system-bottom|markdown": {
+    "exact": 123,
+    "vs_base": {
+     "losses": 0,
+     "p": 1.0,
+     "wins": 0
+    }
+   },
+   "system-bottom|toon": {
+    "exact": 123,
+    "vs_base": {
+     "losses": 1,
+     "p": 1.0,
+     "wins": 1
+    }
+   },
+   "system-bottom|xml": {
+    "exact": 121,
+    "vs_base": {
+     "losses": 4,
+     "p": 0.6875,
+     "wins": 2
+    }
+   },
+   "system-top|cal-markdown": {
+    "exact": 28,
+    "vs_base": {
+     "losses": 95,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|json": {
+    "exact": 30,
+    "vs_base": {
+     "losses": 93,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|markdown": {
+    "exact": 32,
+    "vs_base": {
+     "losses": 91,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|toon": {
+    "exact": 65,
+    "vs_base": {
+     "losses": 61,
+     "p": 0.0,
+     "wins": 3
+    }
+   },
+   "system-top|xml": {
+    "exact": 73,
+    "vs_base": {
+     "losses": 54,
+     "p": 0.0,
+     "wins": 4
+    }
+   },
+   "user-turn|cal-markdown": {
+    "exact": 130,
+    "vs_base": {
+     "losses": 1,
+     "p": 0.039062,
+     "wins": 8
+    }
+   },
+   "user-turn|json": {
+    "exact": 122,
+    "vs_base": {
+     "losses": 3,
+     "p": 1.0,
+     "wins": 2
+    }
+   },
+   "user-turn|markdown": {
+    "exact": 125,
+    "vs_base": {
+     "losses": 1,
+     "p": 0.625,
+     "wins": 3
+    }
+   },
+   "user-turn|toon": {
+    "exact": 124,
+    "vs_base": {
+     "losses": 0,
+     "p": 1.0,
+     "wins": 1
+    }
+   },
+   "user-turn|xml": {
+    "exact": 124,
+    "vs_base": {
+     "losses": 2,
+     "p": 1.0,
+     "wins": 3
+    }
+   }
+  },
+  "2": {
+   "system-bottom|cal-markdown": {
+    "exact": 149,
+    "vs_base": {
+     "losses": 2,
+     "p": 0.6875,
+     "wins": 4
+    }
+   },
+   "system-bottom|json": {
+    "exact": 154,
+    "vs_base": {
+     "losses": 0,
+     "p": 0.015625,
+     "wins": 7
+    }
+   },
+   "system-bottom|markdown": {
+    "exact": 147,
+    "vs_base": {
+     "losses": 0,
+     "p": 1.0,
+     "wins": 0
+    }
+   },
+   "system-bottom|toon": {
+    "exact": 147,
+    "vs_base": {
+     "losses": 1,
+     "p": 1.0,
+     "wins": 1
+    }
+   },
+   "system-bottom|xml": {
+    "exact": 148,
+    "vs_base": {
+     "losses": 3,
+     "p": 1.0,
+     "wins": 4
+    }
+   },
+   "system-top|cal-markdown": {
+    "exact": 34,
+    "vs_base": {
+     "losses": 113,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|json": {
+    "exact": 34,
+    "vs_base": {
+     "losses": 113,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|markdown": {
+    "exact": 34,
+    "vs_base": {
+     "losses": 113,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|toon": {
+    "exact": 33,
+    "vs_base": {
+     "losses": 114,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "system-top|xml": {
+    "exact": 37,
+    "vs_base": {
+     "losses": 110,
+     "p": 0.0,
+     "wins": 0
+    }
+   },
+   "user-turn|cal-markdown": {
+    "exact": 144,
+    "vs_base": {
+     "losses": 6,
+     "p": 0.507812,
+     "wins": 3
+    }
+   },
+   "user-turn|json": {
+    "exact": 148,
+    "vs_base": {
+     "losses": 1,
+     "p": 1.0,
+     "wins": 2
+    }
+   },
+   "user-turn|markdown": {
+    "exact": 145,
+    "vs_base": {
+     "losses": 4,
+     "p": 0.6875,
+     "wins": 2
+    }
+   },
+   "user-turn|toon": {
+    "exact": 146,
+    "vs_base": {
+     "losses": 3,
+     "p": 1.0,
+     "wins": 2
+    }
+   },
+   "user-turn|xml": {
+    "exact": 150,
+    "vs_base": {
+     "losses": 0,
+     "p": 0.25,
+     "wins": 3
+    }
+   }
+  },
+  "3": {
+   "system-bottom|cal-markdown": {
+    "exact": 103,
+    "vs_base": {
+     "losses": 1,
+     "p": 0.070312,
+     "wins": 7
+    }
+   },
+   "system-bottom|json": {
+    "exact": 102,
+    "vs_base": {
+     "losses": 2,
+     "p": 0.179688,
+     "wins": 7
+    }
+   },
+   "system-bottom|markdown": {
+    "exact": 97,
+    "vs_base": {
+     "losses": 0,
+     "p": 1.0,
+     "wins": 0
+    }
+   },
+   "system-bottom|toon": {
+    "exact": 96,
+    "vs_base": {
+     "losses": 5,
+     "p": 1.0,
+     "wins": 4
+    }
+   },
+   "system-bottom|xml": {
+    "exact": 94,
+    "vs_base": {
+     "losses": 4,
+     "p": 0.375,
+     "wins": 1
+    }
+   },
+   "system-top|cal-markdown": {
+    "exact": 11,
+    "vs_base": {
+     "losses": 90,
+     "p": 0.0,
+     "wins": 4
+    }
+   },
+   "system-top|json": {
+    "exact": 13,
+    "vs_base": {
+     "losses": 90,
+     "p": 0.0,
+     "wins": 6
+    }
+   },
+   "system-top|markdown": {
+    "exact": 10,
+    "vs_base": {
+     "losses": 90,
+     "p": 0.0,
+     "wins": 3
+    }
+   },
+   "system-top|toon": {
+    "exact": 13,
+    "vs_base": {
+     "losses": 90,
+     "p": 0.0,
+     "wins": 6
+    }
+   },
+   "system-top|xml": {
+    "exact": 10,
+    "vs_base": {
+     "losses": 90,
+     "p": 0.0,
+     "wins": 3
+    }
+   },
+   "user-turn|cal-markdown": {
+    "exact": 102,
+    "vs_base": {
+     "losses": 2,
+     "p": 0.179688,
+     "wins": 7
+    }
+   },
+   "user-turn|json": {
+    "exact": 98,
+    "vs_base": {
+     "losses": 2,
+     "p": 1.0,
+     "wins": 3
+    }
+   },
+   "user-turn|markdown": {
+    "exact": 96,
+    "vs_base": {
+     "losses": 2,
+     "p": 1.0,
+     "wins": 1
+    }
+   },
+   "user-turn|toon": {
+    "exact": 98,
+    "vs_base": {
+     "losses": 5,
+     "p": 1.0,
+     "wins": 6
+    }
+   },
+   "user-turn|xml": {
+    "exact": 88,
+    "vs_base": {
+     "losses": 13,
+     "p": 0.049042,
+     "wins": 4
+    }
+   }
+  }
+ },
+ "seeds": [
+  1,
+  2,
+  3
+ ]
+}

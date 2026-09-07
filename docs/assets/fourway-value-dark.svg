@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 440" width="920" height="440" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif">
+<title>Cost against quality: no memory at $0.05 per thousand documents and 13 percent exact; mem0 at $0.66 per thousand documents and 15 percent exact; mem0 (raw) at $0.16 per thousand documents and 17 percent exact; mem0 (domain) at $0.68 per thousand documents and 19 percent exact; small model + rules at $0.02 per thousand documents and 24 percent exact; Areev — governed at $0.66 per thousand documents and 53 percent exact; Areev — tuned SLM at $0.02 per thousand documents and 79 percent exact.</title>
+<desc>Each arm is one point. Across: dollars per thousand documents when every document is both read and learned from. Up: exact-match rate on the held-out receipts. Better is up and to the left. Plain memory sits low and to the right of no memory; the governed loop sits high at the same cost as plain memory; the tuned small model sits highest and furthest left, priced at a hosted small-model rate with its one-time training noted.</desc>
+<line x1="70" y1="360.0" x2="730" y2="360.0" stroke="#2a2e35"/>
+<text x="61" y="364.0" text-anchor="end" font-size="11" fill="#9aa1ad">0%</text>
+<line x1="70" y1="277.5" x2="730" y2="277.5" stroke="#2a2e35"/>
+<text x="61" y="281.5" text-anchor="end" font-size="11" fill="#9aa1ad">25%</text>
+<line x1="70" y1="195.0" x2="730" y2="195.0" stroke="#2a2e35"/>
+<text x="61" y="199.0" text-anchor="end" font-size="11" fill="#9aa1ad">50%</text>
+<line x1="70" y1="112.5" x2="730" y2="112.5" stroke="#2a2e35"/>
+<text x="61" y="116.5" text-anchor="end" font-size="11" fill="#9aa1ad">75%</text>
+<line x1="70" y1="30.0" x2="730" y2="30.0" stroke="#2a2e35"/>
+<text x="61" y="34.0" text-anchor="end" font-size="11" fill="#9aa1ad">100%</text>
+<line x1="70.0" y1="30" x2="70.0" y2="360" stroke="#2a2e35"/>
+<text x="70.0" y="379" text-anchor="middle" font-size="11" fill="#9aa1ad">$0.00</text>
+<line x1="235.0" y1="30" x2="235.0" y2="360" stroke="#2a2e35"/>
+<text x="235.0" y="379" text-anchor="middle" font-size="11" fill="#9aa1ad">$0.25</text>
+<line x1="400.0" y1="30" x2="400.0" y2="360" stroke="#2a2e35"/>
+<text x="400.0" y="379" text-anchor="middle" font-size="11" fill="#9aa1ad">$0.50</text>
+<line x1="565.0" y1="30" x2="565.0" y2="360" stroke="#2a2e35"/>
+<text x="565.0" y="379" text-anchor="middle" font-size="11" fill="#9aa1ad">$0.75</text>
+<line x1="730.0" y1="30" x2="730.0" y2="360" stroke="#2a2e35"/>
+<text x="730.0" y="379" text-anchor="middle" font-size="11" fill="#9aa1ad">$1.00</text>
+<text x="30" y="18" font-size="11" fill="#9aa1ad">fields filed exactly right, of all held-out fields</text>
+<text x="400" y="402" text-anchor="middle" font-size="11.5" fill="#9aa1ad">USD per 1,000 documents, reading plus learning &#8594; better is up and to the left</text>
+<circle cx="505.1" cy="311.0" r="7" fill="#d99a5c"/>
+<circle cx="176.2" cy="302.7" r="7" fill="#e8b98a"/>
+<circle cx="516.5" cy="297.7" r="7" fill="#d3b04a"/>
+<circle cx="506.5" cy="184.9" r="7" fill="#5fcd9b"/>
+<circle cx="83.2" cy="281.2" r="7" fill="#a9c3e8"/>
+<circle cx="84.7" cy="98.3" r="7" fill="#7aa8e0"/>
+<circle cx="102.4" cy="315.5" r="7" fill="#767d8a"/>
+<text x="97.7" y="102.3" text-anchor="start" font-size="12" font-weight="600" fill="#7aa8e0">Areev — tuned SLM · hosted-rate shadow, trained once</text>
+<text x="519.5" y="188.9" text-anchor="start" font-size="12" font-weight="600" fill="#5fcd9b">Areev — governed</text>
+<text x="96.2" y="285.2" text-anchor="start" font-size="12" font-weight="600" fill="#a9c3e8">small model + rules · hosted-rate shadow, trained once</text>
+<text x="529.5" y="301.7" text-anchor="start" font-size="12" font-weight="600" fill="#d3b04a">mem0 (domain)</text>
+<text x="189.2" y="316.7" text-anchor="start" font-size="12" font-weight="600" fill="#e8b98a">mem0 (raw)</text>
+<text x="518.1" y="331.7" text-anchor="start" font-size="12" font-weight="600" fill="#d99a5c">mem0</text>
+<text x="115.4" y="346.7" text-anchor="start" font-size="12" font-weight="600" fill="#767d8a">no memory</text>
+<line x1="70" y1="360.0" x2="730" y2="360.0" stroke="#4a505a"/>
+<line x1="70" y1="30" x2="70" y2="360" stroke="#4a505a"/>
+</svg>

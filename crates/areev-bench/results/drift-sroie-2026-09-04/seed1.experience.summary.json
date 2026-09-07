@@ -1,0 +1,17 @@
+{
+ "profile": "sroie_drift",
+ "seed": 1,
+ "experience": 160,
+ "learn_every": 2,
+ "exact": 339,
+ "semantic": 547,
+ "scored": 598,
+ "parked": 0,
+ "approved": 24,
+ "documents": 160,
+ "prompt_tokens": 110276,
+ "completion_tokens": 14526,
+ "learn_passes": 68,
+ "lessons_applied": 5,
+ "lessons_rejected": 14
+}

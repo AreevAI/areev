@@ -602,6 +602,7 @@ impl Engine {
         // RECENT grains (created since the last run) so the LLM gets its own
         // lens and can find issues in grains no analyzer flagged. Without this
         // the LLM could only elaborate near what determinism already caught.
+        let attribution = self.policy.evidence_attribution;
         let mut evidence: Vec<crate::llm::EvidenceItem> = Vec::new();
         let mut bundle: BTreeSet<String> = BTreeSet::new();
         let mut ns_by_hash: std::collections::BTreeMap<String, String> = Default::default();
@@ -620,7 +621,7 @@ impl Engine {
                 }
                 if !bundle.contains(h) {
                     if let Ok(Some(g)) = sub.grain(h) {
-                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     }
                 }
             }
@@ -655,7 +656,7 @@ impl Engine {
                         continue;
                     }
                     let before = evidence.len();
-                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     if evidence.len() > before {
                         tool_seeded += 1;
                     }
@@ -679,7 +680,7 @@ impl Engine {
                     if evidence.len() >= CITED_SEED_CAP + TOOL_SEED_CAP + NOTE_SEED_CAP {
                         break 'notes;
                     }
-                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                 }
             }
         }
@@ -693,7 +694,7 @@ impl Engine {
                         if evidence.len() >= EVIDENCE_CAP {
                             break 'seed;
                         }
-                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g);
+                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
                     }
                 }
             }
@@ -710,7 +711,10 @@ impl Engine {
         let request = crate::llm::LlmRequest {
             loop_proto: 1,
             op: "discover",
-            instructions: DISCOVER_INSTRUCTIONS,
+            instructions: match self.policy.discover_objective {
+                crate::policy::DiscoverObjective::ReviewQueue => DISCOVER_INSTRUCTIONS,
+                crate::policy::DiscoverObjective::Learner => DISCOVER_LEARNER_INSTRUCTIONS,
+            },
             findings: findings.clone(),
             evidence: evidence.clone(),
             rejected,
@@ -734,9 +738,19 @@ impl Engine {
             .take(crate::llm::MAX_LLM_DRAFTS)
             .collect();
         funnel.proposed = drafts.len() as u64;
+        let id_to_hash: std::collections::BTreeMap<&str, &str> = evidence
+            .iter()
+            .map(|e| (e.id.as_str(), e.hash.as_str()))
+            .collect();
         for d in drafts {
-            let cited: Vec<String> =
-                d.evidence.iter().filter(|h| bundle.contains(*h)).cloned().collect();
+            let mut cited: Vec<String> = Vec::new();
+            for c in &d.evidence {
+                if let Some(h) = resolve_citation(c, &bundle, &id_to_hash) {
+                    if !cited.contains(&h) {
+                        cited.push(h);
+                    }
+                }
+            }
             if cited.is_empty() {
                 funnel.dropped_uncited += 1;
                 continue; // uncited → drop (no fabrication)
@@ -784,7 +798,46 @@ impl Engine {
         // GROUND may run on a separate backend (§11); VERIFY always uses the
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
-        self.verify_drafts(&**llm, ground, validated, &evidence, now_ms, funnel)
+        let outcome_metric = self.outcome_metric_template(sub);
+        self.verify_drafts(&**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel)
+    }
+
+    /// The metric an applicable LLM-authored proposal will be re-measured by,
+    /// when the host policy names an evalset (`Policy::outcome_evalset`).
+    /// The baseline is the newest run journaled so far — the state of the
+    /// world BEFORE the proposal, which is what "did applying it help" has
+    /// to be read against. No run journaled yet → no metric: the lesson is
+    /// honestly unmeasured rather than scored against a number nobody
+    /// recorded.
+    fn outcome_metric_template<S: OmsSubstrate>(
+        &self,
+        sub: &S,
+    ) -> Option<crate::recommendation::MetricSnapshot> {
+        let e = self.policy.outcome_evalset.as_ref()?;
+        let run = crate::eval::newest_eval_run(sub, &e.hash, None).ok().flatten()?;
+        let baseline = crate::eval::run_value(&run, &e.field)?;
+        let horizons = if e.horizons_ms.is_empty() {
+            vec![86_400_000]
+        } else {
+            e.horizons_ms.clone()
+        };
+        Some(crate::recommendation::MetricSnapshot {
+            metric: format!("evalset:{}:{}", e.hash, e.field),
+            baseline,
+            unit: e.field.clone(),
+            n: run.total(),
+            window: "per-run".into(),
+            subject: None,
+            namespace: None,
+            relation: None,
+            query: format!(
+                "RECALL facts WHERE subject = \"evalset:{}\" AND relation = \"mg:eval_run\"",
+                e.hash
+            ),
+            review_after_ms: horizons[0],
+            horizons_ms: horizons,
+            higher_is_better: e.higher_is_better,
+        })
     }
 
     /// GROUND → VERIFY → ROUTE (§5.2–5.4). Two independent model calls, batched
@@ -793,12 +846,14 @@ impl Engine {
     /// confidence. A draft reaches the queue only if it is grounded **and** kept
     /// **and** clears the confidence floor. Any failed call drops the whole LLM
     /// contribution for the run (safe default), never the run.
+    #[allow(clippy::too_many_arguments)]
     fn verify_drafts(
         &self,
         llm: &dyn crate::llm::LlmBackend,
         ground: &dyn crate::llm::LlmBackend,
         validated: Vec<ValidatedDraft>,
         evidence: &[crate::llm::EvidenceItem],
+        outcome_metric: Option<crate::recommendation::MetricSnapshot>,
         now_ms: i64,
         funnel: &mut LlmFunnel,
     ) -> Vec<Recommendation> {
@@ -901,7 +956,7 @@ impl Engine {
         for (i, v) in validated.into_iter().enumerate() {
             if let Some(&conf) = verdicts.get(&i) {
                 if conf >= MIN_LLM_CONFIDENCE {
-                    out.push(stamp_llm(
+                    let mut rec = stamp_llm(
                         llm.model(),
                         &v.draft,
                         v.target_ref,
@@ -909,7 +964,14 @@ impl Engine {
                         v.resolved,
                         conf,
                         now_ms,
-                    ));
+                    );
+                    // Only a proposal an apply can execute (and roll back)
+                    // is measured: an advisory flag changes nothing, so
+                    // there is nothing to hold or regress.
+                    if rec.rollbackable {
+                        rec.metric = outcome_metric.clone();
+                    }
+                    out.push(rec);
                 }
             }
         }
@@ -1161,16 +1223,7 @@ impl Engine {
         p.status_index.insert(rec_hash.into(), to);
         if to == RecStatus::Rejected {
             if let Ok(rec) = load_rec(sub, rec_hash) {
-                // Exponential backoff keyed on dedup_key: 7d, 14d, 28d, … capped
-                // at 90d, so a finding a reviewer keeps rejecting stops
-                // re-surfacing on a fixed 7d cadence (was a flat 7d despite the
-                // "doubling" comment).
-                const BASE_MS: i64 = 7 * 86_400_000;
-                const CAP_MS: i64 = 90 * 86_400_000;
-                let strikes = p.cooldown_strikes.entry(rec.dedup_key.clone()).or_insert(0);
-                let interval = BASE_MS.saturating_mul(1_i64 << (*strikes).min(31)).min(CAP_MS);
-                *strikes = strikes.saturating_add(1);
-                p.cooldowns.insert(rec.dedup_key, now_ms + interval);
+                strike_cooldown(&mut p, rec.dedup_key, now_ms);
             }
         }
         sub.store_state(&p.to_value()?)?;
@@ -1484,6 +1537,18 @@ impl Engine {
                 // rollback stored a newer lifecycle state; merge this apply
                 // into that state rather than overwriting the rollback.
                 p = LoopPersisted::from_value(sub.load_state()?)?;
+                // A measured revert is a verdict on the finding, not only on
+                // this apply: the lesson was tried and it hurt. Rolled-back
+                // findings normally re-propose ("the situation returned"),
+                // which is right for an operator's rollback — but here the
+                // situation never left, so the next pass would re-propose the
+                // same lesson at once and the reviewer would be asked to
+                // re-approve what the Verify gate just retracted. Put the
+                // reverted finding on the same doubling cooldown a rejection
+                // earns; the operator can still re-propose it by hand.
+                if let Ok(reverted) = load_rec(sub, revert_of) {
+                    strike_cooldown(&mut p, reverted.dedup_key, now_ms);
+                }
             }
         }
 
@@ -1848,8 +1913,9 @@ fn measure_outcomes<S: OmsSubstrate>(
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
         };
+        let baseline = baseline_at_apply(sub, metric, applied.applied_at_ms)?;
         let regressed = crate::recommendation::is_regression(
-            metric.baseline,
+            baseline,
             current,
             metric.higher_is_better,
         );
@@ -1857,7 +1923,7 @@ fn measure_outcomes<S: OmsSubstrate>(
             crate::recommendation::OutcomeResult {
                 rec_hash: rec_hash.clone(),
                 metric: metric.metric.clone(),
-                baseline: metric.baseline,
+                baseline,
                 current,
                 verdict: if regressed { "regressed" } else { "held" }.into(),
                 horizon_ms: horizon,
@@ -1870,7 +1936,7 @@ fn measure_outcomes<S: OmsSubstrate>(
                 rec_hash,
                 target_ref: applied.target_ref.clone(),
                 metric: metric.metric.clone(),
-                baseline: metric.baseline,
+                baseline,
                 current,
                 unit: metric.unit.clone(),
                 higher_is_better: metric.higher_is_better,
@@ -1878,6 +1944,32 @@ fn measure_outcomes<S: OmsSubstrate>(
         }
     }
     Ok(out)
+}
+
+/// The number a verdict compares against: for an evalset metric, the newest
+/// run journaled BEFORE the apply when there is one, else the snapshot the
+/// proposal froze. "Did applying it help" is a question about the state of
+/// the world at the apply, not at the proposal — and a deployment that
+/// measures once, at day one, and then approves its twentieth rule would
+/// otherwise read a rule that cost twenty points as `held` against a
+/// baseline the first nineteen had already left far behind. Found on a real
+/// corpus (`crates/areev-bench/CURVE.md`: a rule that contradicted an earlier
+/// one took the agent from 86% to 66% and measured as held against 26%).
+/// With nothing journaled between proposal and apply the two are the same
+/// run, so no verdict recorded before this changes.
+fn baseline_at_apply<S: SubstrateRead>(
+    sub: &S,
+    metric: &crate::recommendation::MetricSnapshot,
+    applied_at_ms: i64,
+) -> Result<f64> {
+    if let Some((evalset, field)) = crate::eval::parse_evalset_metric(&metric.metric) {
+        if let Some(run) = crate::eval::newest_eval_run_before(sub, evalset, applied_at_ms)? {
+            if let Some(v) = crate::eval::run_value(&run, field) {
+                return Ok(v);
+            }
+        }
+    }
+    Ok(metric.baseline)
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
@@ -1950,19 +2042,7 @@ pub(crate) fn measure_metric<S: SubstrateRead>(
             let Some(run) = crate::eval::newest_eval_run(sub, evalset, Some(since_ms))? else {
                 return Ok(None);
             };
-            // `failed`/`passed`/`total` are promoted so a metric can be written
-            // against any evalset without the host having to add fields;
-            // anything else is read from the summary the host did write.
-            Ok(match field {
-                "failed" => Some(run.failed as f64),
-                "passed" => Some(run.passed as f64),
-                "total" => Some(run.total() as f64),
-                "error_rate" => match run.total() {
-                    0 => None, // no cases ran: undefined, not zero
-                    t => Some(run.failed as f64 / t as f64),
-                },
-                other => run.field(other),
-            })
+            Ok(crate::eval::run_value(&run, field))
         }
         _ => Ok(None),
     }
@@ -2063,11 +2143,19 @@ const LENS_RESERVE: usize = 24;
 /// verifier's calibrated confidence is the gate, not the proposer's self-report.
 const MIN_LLM_CONFIDENCE: f64 = 0.75;
 
-/// The fixed DISCOVER instruction (§5.1). The scoring rule makes "nothing to
-/// report" a first-class, zero-penalty answer — the structural antidote to
-/// over-generation. Kept in its own request field so it never interleaves with
-/// (attacker-influenced) evidence text.
-const DISCOVER_INSTRUCTIONS: &str = "You review an agent's memory for quality. \
+/// The fixed DISCOVER instruction (§5.1), in two objectives that differ in
+/// exactly one paragraph — the scoring rule — so the vocabulary, the cite
+/// rule and the JSON contract cannot drift between them. Kept in its own
+/// request field so it never interleaves with (attacker-influenced) evidence
+/// text. The review-queue rule makes "nothing to report" a first-class,
+/// zero-penalty answer — the structural antidote to over-generation; the
+/// learner rule makes abstaining over evidence that plainly holds a lesson
+/// cost the same as a wrong one. Which applies is host policy
+/// (`Policy::discover_objective`), never the model's or the file's choice.
+macro_rules! discover_instructions {
+    ($scoring:literal) => {
+        concat!(
+            "You review an agent's memory for quality. \
 Given deterministic findings and the evidence they cite, propose ADDITIONAL \
 findings the deterministic checks would miss (e.g. a semantic contradiction, a \
 stale assumption, a duplicated meaning, a recurring preventable mistake, a \
@@ -2079,17 +2167,15 @@ problem that raised no error at all is exactly the kind the deterministic \
 checks cannot see, so compare the rejected outcomes against the accepted \
 ones: a feature they share and the accepted ones lack is a candidate rule. \
 Require at least two rejected outcomes before proposing one — a single \
-rejection is an anecdote, not a pattern. \
-SCORING: propose a finding ONLY if you \
-are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
-useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
-earns 0. When in doubt, propose nothing — an empty list is the correct answer \
-when there is nothing worth flagging. The 'approved' and 'rejected' lists, when \
+rejection is an anecdote, not a pattern. ",
+            $scoring,
+            " The 'approved' and 'rejected' lists, when \
 present, show findings this reviewer recently accepted or rejected — prefer the \
 kind they accept and avoid the kind they reject. Every proposal MUST cite one \
-or more evidence hashes from the bundle, name a 'target', and include your \
-confidence 0.0-1.0. Return JSON: {\"recommendations\":[{\"summary\":\"...\",\
-\"target\":\"...\",\"guidance\":\"...\",\"evidence\":[\"<hash>\"],\
+or more evidence items from the bundle by their 'id' (or 'hash'), name a \
+'target', and include your confidence 0.0-1.0. Return JSON: \
+{\"recommendations\":[{\"summary\":\"...\",\
+\"target\":\"...\",\"guidance\":\"...\",\"evidence\":[\"<id>\"],\
 \"confidence\":0.0,\"proposal\":{...}}]}. \
 OMIT 'proposal' for an advisory finding — one worth a human's attention that \
 you are not asking to change anything. Include it ONLY when the evidence \
@@ -2123,7 +2209,32 @@ code is the defect. \
 The subject of a fact, the name of a query, the plan hash and the tool name \
 all come from 'target' — do not repeat them inside 'proposal'. A proposal \
 becomes a change a human reviewer may apply, so it must be fully supported by \
-the cited evidence. Propose nothing you cannot ground in the evidence.";
+the cited evidence. Propose nothing you cannot ground in the evidence."
+        )
+    };
+}
+
+/// The review-queue objective (the default).
+const DISCOVER_INSTRUCTIONS: &str = discover_instructions!(
+    "SCORING: propose a finding ONLY if you \
+are more than 0.75 confident it is BOTH correct AND materially useful. A correct, \
+useful finding earns 1; a wrong or trivial one is penalized 2; returning nothing \
+earns 0. When in doubt, propose nothing — an empty list is the correct answer \
+when there is nothing worth flagging."
+);
+
+/// The learner objective (`Policy::discover_objective = learner`).
+const DISCOVER_LEARNER_INSTRUCTIONS: &str = discover_instructions!(
+    "SCORING: you are the learning stage of a deployed agent, and what you \
+propose now is what it will do differently next time — a lesson you withhold \
+is a mistake it repeats. A correct, actionable proposal earns 1; a wrong or \
+trivial one is penalized 1; returning nothing while the evidence holds a \
+recurring failure, two or more rejected outcomes, or an instruction from a \
+person is ALSO penalized 1. Abstain only when the evidence shows none of \
+those. Prefer the one proposal that addresses the most frequent or most costly \
+failure over several speculative ones, and report your confidence honestly — \
+an independent verifier, not you, decides what survives."
+);
 
 /// The fixed GROUND instruction (§5.2): verify the finding's factual PREMISES
 /// are real (anti-fabrication), while allowing an inference. A self-improvement
@@ -2171,19 +2282,52 @@ fn push_evidence(
     bundle: &mut BTreeSet<String>,
     ns_by_hash: &mut std::collections::BTreeMap<String, String>,
     g: &GrainRecord,
+    attribution: crate::policy::EvidenceAttribution,
 ) {
     if evidence.len() < EVIDENCE_CAP && bundle.insert(g.hash.clone()) {
         ns_by_hash.insert(g.hash.clone(), g.namespace.clone());
         evidence.push(crate::llm::EvidenceItem {
+            id: format!("e{}", evidence.len() + 1),
             hash: g.hash.clone(),
             grain_type: g.grain_type.clone(),
-            text: crate::llm::cap(&grain_brief(g), 400),
+            text: crate::llm::cap(&grain_brief_with(g, attribution), 400),
         });
     }
 }
 
-/// A short human-readable projection of a grain for the evidence bundle.
-fn grain_brief(g: &GrainRecord) -> String {
+/// Resolve one citation to a bundled grain's hash: the full hash, the
+/// bundle-local `id` the evidence item carried, or an unambiguous hash prefix
+/// of at least 12 hex chars. Anything else is a fabrication and resolves to
+/// nothing. Small models copy 64-hex hashes badly — measured live, the
+/// cite-check was where most of a cheap model's drafts died ("proposed 3 →
+/// cited 1") — and a citation that plainly names one bundled grain is not
+/// the thing that check exists to catch.
+pub(crate) fn resolve_citation(
+    cite: &str,
+    bundle: &BTreeSet<String>,
+    id_to_hash: &std::collections::BTreeMap<&str, &str>,
+) -> Option<String> {
+    let cite = cite.trim();
+    if bundle.contains(cite) {
+        return Some(cite.to_string());
+    }
+    if let Some(h) = id_to_hash.get(cite) {
+        return Some((*h).to_string());
+    }
+    const MIN_PREFIX: usize = 12;
+    if cite.len() >= MIN_PREFIX && cite.chars().all(|c| c.is_ascii_hexdigit()) {
+        let lower = cite.to_ascii_lowercase();
+        let mut it = bundle.iter().filter(|h| h.starts_with(&lower));
+        if let (Some(h), None) = (it.next(), it.next()) {
+            return Some(h.clone());
+        }
+    }
+    None
+}
+
+/// A short human-readable projection of a grain for the evidence bundle,
+/// under the host's attribution policy.
+fn grain_brief_with(g: &GrainRecord, attribution: crate::policy::EvidenceAttribution) -> String {
     if let (Some(s), Some(r), Some(o)) = (g.fact_subject(), g.fact_relation(), g.fact_object()) {
         return format!("{s} {r} {o}");
     }
@@ -2205,9 +2349,42 @@ fn grain_brief(g: &GrainRecord) -> String {
     // into `body` to work around it; nothing should have to.
     for key in ["content", "body", "text", "summary", "object"] {
         if let Some(v) = g.fields.get(key).and_then(|v| v.as_str()) {
-            if !v.is_empty() {
+            if v.is_empty() {
+                continue;
+            }
+            // Who said it, when the grain records it. An Observation reaches
+            // the model as a bare sentence otherwise, and a bare sentence is
+            // ambiguous about direction in exactly the way that matters: a
+            // person's correction ("Vendor Name is ACME") reads identically
+            // to the agent having been told something it asked for. Measured
+            // live on the receipts corpus, a model given 31 unattributed
+            // corrections concluded the agent was repeatedly *requesting*
+            // data it already had, and proposed rules to stop it asking.
+            // The observer is already on the grain; only the projection
+            // dropped it.
+            if attribution == crate::policy::EvidenceAttribution::Anonymous {
                 return v.to_string();
             }
+            if let Some(who) = g.fields.get("observer_id").and_then(|v| v.as_str()) {
+                if !who.is_empty() {
+                    let kind = g
+                        .fields
+                        .get("observer_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let about = g.fields.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut prefix = if kind == "human" {
+                        format!("{who} (a person) said")
+                    } else {
+                        format!("{who} observed")
+                    };
+                    if !about.is_empty() {
+                        prefix.push_str(&format!(" of {about}"));
+                    }
+                    return format!("{prefix}: {v}");
+                }
+            }
+            return v.to_string();
         }
     }
     String::new()
@@ -2651,8 +2828,23 @@ fn stamp_llm(
     } else {
         Some(crate::llm::cap(&d.guidance, crate::llm::MAX_GUIDANCE_LEN))
     };
-    let (action, proposal, summary, rollbackable, importance, evalset_hash) = match resolved {
+    let (action, proposal, summary, rollbackable, importance, evalset_hash, content) = match resolved {
         Some(mut r) => {
+            // What the proposal would DO, before the verifier's confidence
+            // is folded into the fact: the dedup key fingerprints this, so
+            // the same lesson at a different confidence is one finding.
+            let content = match &r.fact_fields {
+                Some(fields) => format!(
+                    "{} {}",
+                    fields.get("relation").and_then(Value::as_str).unwrap_or(""),
+                    fields.get("object").and_then(Value::as_str).unwrap_or("")
+                ),
+                None => match &r.proposal {
+                    Proposal::Cal { cal } => cal.clone(),
+                    Proposal::Data { data } => Value::Object(data.clone()).to_string(),
+                    Proposal::Edit { diff, .. } => diff.clone(),
+                },
+            };
             // The grain records the VERIFIER's calibrated confidence — the
             // independent signal — never the proposer's self-report.
             if let Some(mut fields) = r.fact_fields.take() {
@@ -2668,6 +2860,7 @@ fn stamp_llm(
                 r.rollbackable,
                 r.importance,
                 r.evalset_hash,
+                Some(content),
             )
         }
         None => {
@@ -2682,8 +2875,16 @@ fn stamp_llm(
                 false,
                 0.3,
                 None,
+                None,
             )
         }
+    };
+    // An advisory flag keeps the analyzer-style key (one open flag per
+    // target); an executable proposal keys on its content too, because
+    // there the content is the finding.
+    let dedup = match &content {
+        Some(c) => crate::recommendation::authored_dedup_key("llm", &target_ref, action, c),
+        None => dedup_key("llm", &target_ref, action),
     };
     Recommendation {
         hash: String::new(),
@@ -2692,7 +2893,7 @@ fn stamp_llm(
         origin: Origin::Llm { model: model.to_string() },
         target_ref: target_ref.clone(),
         action_kind: action,
-        dedup_key: dedup_key("llm", &target_ref, action),
+        dedup_key: dedup,
         summary,
         severity: Severity::Low,
         proposal,
@@ -2787,7 +2988,18 @@ fn stamp(
         target.target_class(),
         d.evalset_hash.as_deref(),
     )?;
-    let dedup = dedup_key(m.family(), &d.target_ref, d.action_kind);
+    // A revert's identity is the recommendation it retracts, not just its
+    // target: two regressed lessons on one entity are two reverts.
+    let revert_of = match (&d.action_kind, &d.proposal) {
+        (ActionKind::Revert, Proposal::Data { data }) => {
+            data.get("revert_of").and_then(|v| v.as_str()).map(str::to_string)
+        }
+        _ => None,
+    };
+    let dedup = match revert_of.as_deref() {
+        Some(h) => crate::recommendation::revert_dedup_key(m.family(), &d.target_ref, h),
+        None => dedup_key(m.family(), &d.target_ref, d.action_kind),
+    };
     let destructive = match &d.proposal {
         Proposal::Cal { cal } => cal::contains_destructive(cal),
         _ => false,
@@ -2934,8 +3146,10 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
             .unwrap_or(RecStatus::Pending);
         // Pending/approved (still open) and applied (already handled)
         // recommendations suppress re-proposal of the same finding. Rejected
-        // is handled by cooldowns; rolled_back/expired may legitimately
-        // re-propose (the situation returned).
+        // is handled by cooldowns, and so is a rollback the Verify gate
+        // caused (`strike_cooldown` at the revert apply); an operator's own
+        // rollback and expiry may legitimately re-propose (the situation
+        // returned).
         if matches!(
             status,
             RecStatus::Pending | RecStatus::Approved | RecStatus::Applied
@@ -2946,6 +3160,21 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
         }
     }
     Ok(set)
+}
+
+/// Put a finding's `dedup_key` on an exponential cooldown: 7d, 14d, 28d, …
+/// capped at 90d, so a finding a reviewer keeps rejecting stops re-surfacing
+/// on a fixed 7d cadence (it was a flat 7d despite the "doubling" comment).
+/// Two events earn a strike: a reviewer's rejection, and a revert the Verify
+/// gate proposed on a measured regression — both are a verdict that the
+/// finding, as it stands, should not come back on the next pass.
+fn strike_cooldown(p: &mut LoopPersisted, dedup_key: String, now_ms: i64) {
+    const BASE_MS: i64 = 7 * 86_400_000;
+    const CAP_MS: i64 = 90 * 86_400_000;
+    let strikes = p.cooldown_strikes.entry(dedup_key.clone()).or_insert(0);
+    let interval = BASE_MS.saturating_mul(1_i64 << (*strikes).min(31)).min(CAP_MS);
+    *strikes = strikes.saturating_add(1);
+    p.cooldowns.insert(dedup_key, now_ms + interval);
 }
 
 fn load_rec<S: SubstrateRead>(sub: &S, rec_hash: &str) -> Result<Recommendation> {

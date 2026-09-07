@@ -853,6 +853,8 @@ the prompt to re-run.
 | `--mock-llm` | keyless canned loop-LLM (authors one fixed lesson) in place of `--llm-cmd`; the two are mutually exclusive |
 | `--llm-lessons` | the **loop+LLM arm**: the scripted review also approves + applies LLM-authored lessons, and they render into LESSONS. Requires `--llm-cmd` or `--mock-llm`. Off = the published-run review policy, byte-for-byte |
 | `--no-analyzer-lessons` | suppress APPLYING analyzer lessons; the analyzers still run, so the LLM's evidence is unchanged. With `--llm-lessons` this is the **llm-only** cell of the 2x2. Refused on its own — nothing would apply and B would be a second A0 |
+| `--learner` | give DISCOVER the **learner** scoring rule (`Policy::discover_objective = learner`, `docs/loop.md`) instead of the review-queue default: withholding a lesson over a recurring failure costs the same as a wrong one. The gates behind it are unchanged. Requires `--llm-cmd` or `--mock-llm` |
+| `--stop-after experience` | capture the experience phase into `bench.db` and exit — no eval states. The input `selfimprove_learn` measures learn passes over |
 | `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
 | `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
 | `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |
@@ -864,6 +866,203 @@ tool-call protocol (`openrouter_toolcall.py`); `--llm-cmd`/`--ground-cmd`
 speak the loop's `probe`/`discover`/`ground`/`verify` protocol
 (`openrouter_loop.py`). Crossing them fails at the loop's construction-time
 probe, which is the intended loud failure.
+
+## The authoring-rate instrument — `selfimprove_learn`
+
+The A/B/A/B bench asks "did the lessons help?". For an LLM-authored learner
+a prior question decides whether that one can be asked at all: **does the
+model author an applicable lesson on a pass, and where does it lose the ones
+it drafts?** The 2x2 could not be run because the answer was "on 0.42 of
+passes" — cells assigned to the LLM treatment did not receive it, and the
+first time that was known was after the eval states had been paid for.
+
+`selfimprove_learn` measures it first, for cents:
+
+```bash
+# 1. capture experience once (the agent is the only paid leg here)
+cargo run --release -p areev-bench --bin selfimprove_aba -- \
+  --workdir /tmp/learn-s1 --seed 1 --experience 300 --agent-cmd "$AGENT" \
+  --stop-after experience
+
+# 2. learn over a fresh copy of that memory, K times per configuration
+cargo run --release -p areev-bench --bin selfimprove_learn -- \
+  --workdir /tmp/learn-s1 --passes 10 --llm-lessons \
+  --llm-cmd "$LOOP_LLM" --ground-cmd "$GROUND"            # review-queue rule
+cargo run --release -p areev-bench --bin selfimprove_learn -- \
+  --workdir /tmp/learn-s1 --passes 10 --llm-lessons --learner \
+  --llm-cmd "$LOOP_LLM" --ground-cmd "$GROUND"            # learner rule
+```
+
+A literal `{pass}` in `--llm-cmd` / `--ground-cmd` becomes the pass number,
+so `--seed {pass}` on the adapter gives every pass its own request seed —
+with temperature 0 and one fixed seed, ten passes can be one sample repeated
+ten times, and a rate measured that way is not a rate.
+
+Every pass copies `bench.db*` into its own directory (the store is
+single-writer per file and a learn pass mutates it), runs one governed pass
+through the real engine — DISCOVER → GROUND → VERIFY → scripted review →
+apply — and appends one row to `<workdir>/learn/<label>.jsonl`: the funnel
+stage by stage (`evidence → proposed → cited → grounded → kept → stored`),
+the LLM findings with their dispositions, what was applied from each origin,
+and the wall time. `<label>.summary.json` derives the **authoring rate**
+(passes with ≥1 stored LLM finding / passes), the mean stored per pass and
+the funnel totals from those rows; nothing in it is computed separately.
+
+Two things it deliberately does not do. It does not score a lesson — a
+finding that survives every gate can still be useless on held-out tasks,
+and only the A/B/A/B states can say. And it does not vary the evidence: the
+same captured experience is what every configuration and every model sees,
+so a difference between two summaries is the proposer (model, objective,
+provider pin) and nothing upstream of it.
+
+### Pre-registered: the authoring-rate measurement (written before any pass ran)
+
+Committed 2026-09-04, before the first live pass. **Question.** Under which
+DISCOVER objective, and on which model, does the loop author an applicable
+lesson reliably enough that an LLM-authored learner can be measured at all?
+The 2x2's answer under the review-queue rule on `qwen3-30b` was 0.42
+lessons per pass and 7 of 12 passes authoring nothing.
+
+**Design.** One captured experience: seed 1, 300 tasks, agent
+`qwen/qwen3-30b-a3b-instruct-2507` pinned `coreweave/bf16`, temperature 0,
+`--seed 1` on the request. It is captured once and copied per pass, so every
+configuration reflects over byte-identical evidence. Then **10 passes per
+cell** over a 2 × 4 grid — objective {`review_queue`, `learner`} × DISCOVER/
+VERIFY model {`qwen3-30b` (coreweave/bf16), `qwen3-235b-a22b-2507`
+(nebius/fp8), `deepseek-v3.2` (siliconflow/fp8), `gpt-oss-120b`
+(deepinfra/bf16)} — GROUND on `openai/gpt-4o-mini` (openai) in every cell so
+no proposer grades itself and the grader is the one constant. The loop legs
+take `--seed {pass}` (pass 1..10), so the ten passes are ten draws, not one
+draw repeated. `--llm-lessons`
+on, so the row also records what the scripted review would have applied.
+Every leg pinned; the pin is part of the cell's label.
+
+**What is read, in order.** (1) Authoring rate: passes with ≥1 stored LLM
+finding / 10. (2) Where the drafts die: the funnel totals, because an
+objective that lifts `proposed` and loses it all at `grounded` has bought
+nothing, and a model that loses drafts at `cited` is a transcription
+problem the bundle-id change was meant to remove. (3) What was authored:
+the lesson texts, read for whether they name an action (the finding in
+EXPENSE.md that a lesson can clear every gate and still be a no-op).
+
+**Decision rule, stated now.** The paid A/B/A/B run uses the learner
+objective if its authoring rate exceeds the review-queue rule's on the same
+model by more than one pass in ten AND its grounded fraction
+(`grounded / proposed`) is not more than 0.2 lower; otherwise the
+review-queue rule stays. The model is the cheapest one whose authoring rate
+under the chosen objective is ≥ 0.8; if none reaches 0.8 the highest wins
+and the paper says so. Ties go to the cheaper leg. Whatever the outcome, all
+eight summaries are committed under `results/` beside the run they chose.
+
+**Not a claim about learning.** Nothing here scores a lesson on held-out
+tasks. A configuration this instrument prefers can still lose the A/B/A/B,
+and the earlier arm result — remedy-shaped lessons trading breadth for
+precision — is exactly that shape. This measurement decides only what gets
+measured next.
+
+### Outcome (2026-09-04): the bottleneck was the cite-check, not abstention
+
+Evidence: [`results/authoring-rate-2026-09-04/`](results/authoring-rate-2026-09-04/)
+— eight summaries and their per-pass rows, over one captured experience
+(seed 1, 300 tasks, `qwen3-30b` pinned `coreweave/bf16`, 1,533 tool calls
+of which 276 are errors). **Spend is not reported for this grid**: the
+loop adapter does not return usage, and the account-level delta that would
+have bounded it was not read before the first pass. The omission is the
+honest answer — a dollar figure nobody measured is worse than none. Every
+leg is priced in the table below, and the receipts run that followed it
+cost a measured $0.26 for 1,700 held-out reads, which is the order of
+magnitude.
+
+| objective | model (pinned) | $/M in | rate | mean stored | proposed → cited → grounded → kept | s/pass |
+|---|---|---|:---:|:---:|---|---:|
+| learner | `qwen3-30b` (coreweave/bf16) | 0.100 | **10/10** | 3.90 | 40 → 40 → 40 → 39 | 26 |
+| learner | `qwen3-235b` (nebius/fp8) | 0.200 | **10/10** | 2.60 | 26 → 26 → 26 → 26 | 22 |
+| learner | `gpt-oss-120b` (deepinfra/bf16) | **0.037** | **8/10** | 0.80 | 10 → 10 → 10 → 8 | 54 |
+| learner | `deepseek-v3.2` (siliconflow/fp8) | 0.259 | 7/10 | 0.70 | 10 → 10 → 10 → 7 | 28 |
+| review_queue | `qwen3-30b` | 0.100 | **10/10** | 3.50 | 35 → 35 → 35 → 35 | 21 |
+| review_queue | `qwen3-235b` | 0.200 | **10/10** | 1.30 | 14 → 13 → 13 → 13 | 17 |
+| review_queue | `gpt-oss-120b` | **0.037** | **10/10** | 1.00 | 10 → 10 → 10 → 10 | 68 |
+| review_queue | `deepseek-v3.2` | 0.259 | **0/10** | 0.00 | 0 → 0 → 0 → 0 | 10 |
+
+**The headline is not the objective.** The 2x2 measured 0.42 lessons per
+pass and 7 of 12 passes authoring nothing, and concluded an LLM-only
+learner "cannot be measured". Seven of these eight cells author on at
+least 7 passes in 10. The funnel says why, and it is not that the models
+became less diffident: **cited = proposed in 86 of 86 learner drafts and
+58 of 59 review-queue drafts.** The 2x2's live funnel read `proposed 3 →
+cited 1`. What changed between them is the citation rule — a draft may now
+cite a bundle-local `id` instead of transcribing a 64-hex hash — so the
+attrition the 2x2 read as abstention was mostly small models losing drafts
+at a transcription check. That is a defect this repo shipped and has now
+removed, and it bounds the 2x2's conclusion rather than confirming it.
+
+**The objective is a real but second-order effect, and it is not uniform.**
+Pooled, learner authors on 35 of 40 passes against review-queue's 30 of 40
+(+1.25 per ten, the pre-registered threshold being +1) with no loss of
+grounded fraction (1.00 vs 0.98), which selects `learner`. But the pooled
+number is carried almost entirely by one cell: on the two leading models
+the two objectives **tie at 10/10**, `gpt-oss-120b` is 2 passes *worse*
+under learner, and the entire pooled margin comes from `deepseek-v3.2`
+going 0/10 → 7/10. Read per model, the honest statement is narrower than
+the rule's verdict: *the learner objective rescues a model that abstains
+categorically, and changes nothing on models that already author.* Its
+visible effect on the others is volume, not incidence — mean stored per
+pass rises 3.50 → 3.90 and 1.30 → 2.60 — which the pre-registration did
+not name as a criterion and which is therefore reported, not acted on.
+
+**`deepseek-v3.2`'s 0/10 is abstention, not a broken adapter**, checked
+rather than assumed: one pass re-run through `scripts/tee_llm.py` returned
+`{"recommendations": []}` verbatim, with `returncode 0` and empty stderr.
+
+**What was authored.** Every applied lesson in every cell names an action.
+All four models found **R10**, the rule that arrives only as a person's
+note and that nothing statistical can recover; `qwen3-235b` additionally
+reached R3, R5 and R6, and `gpt-oss-120b` reached R7. Two of
+`gpt-oss-120b`'s five distinct lessons are scoped "before completing the
+episode" — a boundary the agent has no notion of, which is the shape
+EXPENSE.md's second defect describes (a lesson can clear every gate and
+still be a no-op). That is recorded here as a risk against the model the
+rule selected, not as a reason to override it.
+
+**Applying the rule as written**: objective **learner**; model the cheapest
+whose rate is ≥ 0.8, which is **`gpt-oss-120b` (deepinfra/bf16)** at 8/10
+and $0.037/M in. The rule is followed rather than reinterpreted — it
+selects the cheapest and slowest option, not a convenient one — and the
+two reservations above (the "episode" wording, 54s/pass against 26s) are
+stated as risks the receipts run will either survive or expose.
+
+**The transfer is not guaranteed and is not claimed.** This grid measured
+authoring over a memory of tool calls, episodes and one human note. The
+receipts workload has no tool calls at all: its evidence is human
+observations and filed rows. A rate measured here is evidence about the
+proposer, not a prediction about that corpus.
+
+**And it did not transfer — recorded here because this grid chose the
+model.** On the receipts corpus (`RECEIPTS.md`), `gpt-oss-120b` had all
+five of its proposals refused at GROUND, against zero refusals for either
+qwen, and the run it was selected for produced a null. The same experiment
+with `qwen3-30b` as the learner produced 286 wins against 1 loss. The rule
+above was followed and the rule above picked wrong: an authoring rate
+measured on a workload of tool failures said nothing useful about a
+workload of human corrections. A future selection needs a grid over the
+corpus it will be used on, which is a change to this instrument's design
+and not a tuning of its threshold.
+
+**"Proposed 0" has two readings, and only the raw response tells them
+apart.** The engine fail-softs a backend that answers in a shape the parser
+drops, so a model that abstained and a model that answered with the wrong
+key are the same empty funnel. `scripts/tee_llm.py DIR ADAPTER ARGS…` wraps
+any adapter and records every request and response to `DIR`; when a cell
+reads 0/10, re-run one pass through it before reporting abstention. (Done
+for `deepseek-v3.2` under the review-queue rule: the raw answer was
+`{"recommendations": []}` — abstention, ten times out of ten.)
+
+**The rows are the evidence for one choice: which objective and which model
+the paid run uses.** An objective that lifts the authoring rate at the cost
+of drafts GROUND then refuses is visible as a funnel that widens at
+`proposed` and narrows again at `grounded`; a model that copies hashes badly
+shows as `dropped_uncited`. Whatever the paid run's `--learner` and
+`--llm-cmd` are, the summary that chose them is committed beside it.
 
 ## Reproduce
 

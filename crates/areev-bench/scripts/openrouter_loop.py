@@ -21,12 +21,34 @@ silently empties that stage. `instructions` stays the system role and the
 payload stays the user role — evidence text is untrusted and must never reach
 the system prompt.
 """
+import http.client
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+
+
+def _meter(model, provider, usage, op):
+    """Append one line to $AREEV_USAGE_LOG, if set. Every model call in a run
+    passes through one of these adapters, so this one hook meters the whole
+    programme -- agent, learner, grounder, reviewer -- and a cost chart can be
+    drawn from journaled tokens rather than from a card statement read after
+    the fact (which is how an earlier spend figure got published unmeasured)."""
+    path = os.environ.get("AREEV_USAGE_LOG")
+    if not path or not usage:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": int(time.time() * 1000), "script": os.path.basename(sys.argv[0]),
+                "model": model, "provider": provider, "op": op,
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+            }) + "\n")
+    except OSError:
+        pass
 
 BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 # Five, not three. The engine FAIL-SOFTS a failing loop call by design, and
@@ -35,7 +57,7 @@ BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 # empty, and the run reads as a model that had nothing to say. Losing a pass
 # is far more expensive to a measurement than waiting a few more seconds, and
 # retrying is strictly cheaper than the re-run it otherwise costs.
-RETRIES = 5
+RETRIES = 8  # 3s doubling, capped at 60s: ~3.5 min, enough to outlast a rate-limit window
 
 
 def fail(msg, code=2):
@@ -62,7 +84,18 @@ def post(body, key, raise_http=False):
     for attempt in range(RETRIES):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
-                return json.loads(r.read())
+                body = json.loads(r.read())
+            # a 200 carrying {"error": {"code": 429}} is a provider error wearing
+            # a success status; retried like the status it names
+            err = body.get("error") if isinstance(body, dict) else None
+            if err:
+                code = err.get("code") if isinstance(err, dict) else None
+                if (code == 429 or (isinstance(code, int) and 500 <= code < 600)) and attempt < RETRIES - 1:
+                    time.sleep(min(delay, 60.0))
+                    delay *= 2
+                    continue
+                fail(f"error body: {str(err)[:200]}", 1)
+            return body
         except urllib.error.HTTPError as e:
             if e.code not in (429, 500, 502, 503, 504) or attempt == RETRIES - 1:
                 detail = f"HTTP {e.code}: {e.read()[:200]!r}"
@@ -70,11 +103,20 @@ def post(body, key, raise_http=False):
                     raise HttpFail(e.code, detail) from e
                 fail(detail, 1)
             wait = e.headers.get("Retry-After")
-            time.sleep(float(wait) if wait and wait.isdigit() else delay)
+            time.sleep(min(float(wait) if wait and wait.isdigit() else delay, 60.0))
         except urllib.error.URLError as e:
             if attempt == RETRIES - 1:
                 fail(f"connection: {e}", 1)
-            time.sleep(delay)
+            time.sleep(min(delay, 60.0))
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # The connect succeeded and the READ failed -- a socket timeout
+            # mid-body, a reset, a truncated chunked response, or a body that
+            # is not JSON. As transient as a 503, and until 2026-09-06 it
+            # escaped the loop as a traceback (URLError is the connect-phase
+            # error only).
+            if attempt == RETRIES - 1:
+                fail(f"read: {type(e).__name__}: {e}", 1)
+            time.sleep(min(delay, 60.0))
         delay *= 2
     fail("retries exhausted", 1)
 
@@ -196,6 +238,7 @@ def main():
         body["seed"] = seed
 
     resp = post(body, key)
+    _meter(model, provider, resp.get("usage"), req.get("op"))
     try:
         content = resp["choices"][0]["message"]["content"]
     except (KeyError, IndexError):

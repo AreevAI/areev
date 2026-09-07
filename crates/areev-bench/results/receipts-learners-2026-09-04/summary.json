@@ -1,0 +1,61 @@
+{
+ "memory": "/Users/sathish/mg/local/areev-runs/receipts-run/seed1/snap_040.db",
+ "objective": "learner",
+ "ground": "openai/gpt-4o-mini@openai",
+ "learners": [
+  {
+   "learner": "gpt-oss-120b",
+   "model": "openai/gpt-oss-120b",
+   "provider": "deepinfra/bf16",
+   "passes": 5,
+   "mean_proposed": 0.0,
+   "mean_approved": 0.0,
+   "mean_additive": 0.0,
+   "passes_with_an_additive_rule": 0,
+   "funnel_totals": {
+    "evidence": 320,
+    "proposed": 5,
+    "cited": 5,
+    "grounded": 0,
+    "kept": 0,
+    "stored": 0
+   }
+  },
+  {
+   "learner": "qwen3-30b",
+   "model": "qwen/qwen3-30b-a3b-instruct-2507",
+   "provider": "coreweave/bf16",
+   "passes": 5,
+   "mean_proposed": 2.0,
+   "mean_approved": 0.2,
+   "mean_additive": 0.0,
+   "passes_with_an_additive_rule": 0,
+   "funnel_totals": {
+    "evidence": 320,
+    "proposed": 10,
+    "cited": 10,
+    "grounded": 10,
+    "kept": 10,
+    "stored": 10
+   }
+  },
+  {
+   "learner": "qwen3-235b",
+   "model": "qwen/qwen3-235b-a22b-2507",
+   "provider": "nebius/fp8",
+   "passes": 5,
+   "mean_proposed": 1.0,
+   "mean_approved": 0.0,
+   "mean_additive": 0.0,
+   "passes_with_an_additive_rule": 0,
+   "funnel_totals": {
+    "evidence": 320,
+    "proposed": 5,
+    "cited": 5,
+    "grounded": 5,
+    "kept": 5,
+    "stored": 5
+   }
+  }
+ ]
+}

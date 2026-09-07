@@ -1,0 +1,45 @@
+{
+ "total_usd": 0.0,
+ "calls": 720,
+ "by": [
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:qwen2.5-1.5b-base",
+   "calls": 360,
+   "prompt_tokens": 255794,
+   "completion_tokens": 26088,
+   "usd": 0.0,
+   "shadow_usd": 0.0072
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:qwen2.5-1.5b-lora-s1",
+   "calls": 120,
+   "prompt_tokens": 75366,
+   "completion_tokens": 11840,
+   "usd": 0.0,
+   "shadow_usd": 0.00245
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:qwen2.5-1.5b-lora-s2",
+   "calls": 120,
+   "prompt_tokens": 98342,
+   "completion_tokens": 11918,
+   "usd": 0.0,
+   "shadow_usd": 0.00292
+  },
+  {
+   "script": "slm_serve.py",
+   "model": "mlx-slm:qwen2.5-1.5b-lora-s3",
+   "calls": 120,
+   "prompt_tokens": 82086,
+   "completion_tokens": 12474,
+   "usd": 0.0,
+   "shadow_usd": 0.00264
+  }
+ ],
+ "unpriced": [],
+ "documents": null,
+ "per_document_usd": null
+}
