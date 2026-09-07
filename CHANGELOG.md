@@ -89,7 +89,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   environment and passes only the named variables plus the minimal set a
   command needs to start. It reaches `--tool-cmd`, a `trigger run` connector,
   and a pinned **native** blob; the sandbox seam already cleared and is
-  unchanged ([#188](https://github.com/AreevAI/areev/issues/188)).
+  unchanged. An allow list cannot re-admit a variable Areev was already told
+  holds a secret — the name is dropped and reported, so #100's invariant stays
+  unconditional; `--resolver-env` remains the one deliberate exception, for
+  credential resolvers ([#188](https://github.com/AreevAI/areev/issues/188)).
+- **A refused read-only open leaves nothing behind.** Deriving a passphrase key
+  writes a `<path>.kdf` sidecar when one is absent, which is right when
+  creating an encrypted memory and wrong on the way to a refusal: pointing
+  `--read-only --passphrase-env` at a path that does not exist failed correctly
+  with `STO-E005` but left a stray `.kdf` file. The precondition is now one
+  shared rule (`areev_store::read_only_requires_existing`) applied before the
+  derivation on all three surfaces — CLI, Python and Node.
 
 ## [1.7.2] — 2026-09-02
 

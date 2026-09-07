@@ -789,8 +789,12 @@ Each of the following is worth stating because it closes a specific hole:
   `tool_env=`/`toolEnv` in the bindings) inverts it: the environment is
   cleared and only the named variables get through, on top of the minimal set
   (`PATH` above all) without which a bare command name resolves to nothing.
-  It applies to `--tool-cmd`, to a connector, and to a pinned **native** blob;
-  the sandbox seam already clears and is unaffected.
+  It applies to `--tool-cmd`, to a `trigger run` connector, and to a pinned
+  **native** blob; the sandbox seam already clears and is unaffected. Naming a
+  variable Areev was already told holds a secret does **not** re-admit it: the
+  name is dropped and reported, so the #100 invariant stays unconditional
+  rather than becoming "unless the operator asked". The one deliberate
+  re-admission is still `--resolver-env`, for credential resolvers only.
 - **A credential may be minted per call rather than read once** (#113, added
   in 1.6.2). `--credential NAME=ENV_VAR` makes every brokered secret static
   for the life of the process, which is the wrong shape for the credentials

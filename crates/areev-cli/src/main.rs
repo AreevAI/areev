@@ -274,7 +274,9 @@ COMMANDS:
            environment is cleared and only the named variables (plus PATH and
            the few a command needs to start) get through. A host that keeps
            its own secrets in the environment should name what a tool sees
-           rather than name what it must not;
+           rather than name what it must not. A bare --tool-env passes nothing
+           but that minimal set. Naming a variable already registered as
+           holding a secret does NOT re-admit it: it is dropped and reported;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof
@@ -1443,6 +1445,11 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         return Ok(());
     }
 
+    // `--read-only` is needed before the key derivation just below (which
+    // creates a .kdf sidecar for an absent path), and again for `tel_mode`,
+    // the `--index-text` conflict check, and the open itself.
+    let read_only = flags.contains_key("read-only");
+
     // Optional encryption: when --passphrase-env <VAR> is given, derive an
     // AES-256 key from the passphrase held in that environment variable
     // (Argon2id; salt in a <db>.kdf sidecar). The passphrase and the derived
@@ -1463,6 +1470,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             })?);
             if pass.trim().is_empty() {
                 return Err(format!("--passphrase-env {var}: passphrase is empty"));
+            }
+            // Deriving writes the .kdf sidecar when absent, so the read-only
+            // precondition has to be checked first or a refused open leaves a
+            // stray file behind.
+            if !is_pg_url {
+                areev_store::read_only_requires_existing(&db, read_only)
+                    .map_err(|e| e.to_string())?;
             }
             Some(Areev::derive_key_for(&db, pass.as_str()).map_err(|e| e.to_string())?)
         }
@@ -1486,11 +1500,6 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
         None => None,
     };
-
-    // `--read-only` computed up front (also used just below by `tel_mode`,
-    // and again further down for the `--index-text` conflict check and the
-    // open itself).
-    let read_only = flags.contains_key("read-only");
 
     // Recall-telemetry sidecar (host capability, §8): the agent-host default is
     // `aggregate`; `--telemetry off|aggregate|full` overrides. It is NOT a

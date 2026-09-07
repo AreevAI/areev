@@ -198,7 +198,17 @@ impl McpServer {
         let env = std::env::var("AREEV_RUN_TOOL_ENV")
             .ok()
             .filter(|names| !names.trim().is_empty())
-            .map(|names| areev_run::env_allow_policy(&names));
+            .map(|names| {
+                let (policy, dropped) = areev_run::env_allow_policy(&names);
+                if !dropped.is_empty() {
+                    eprintln!(
+                        "areev-mcp: $AREEV_RUN_TOOL_ENV dropped {} — registered as \
+                         holding a secret",
+                        dropped.join(", ")
+                    );
+                }
+                policy
+            });
         let executor: std::sync::Arc<dyn areev_run::HostToolExecutor> =
             match std::env::var("AREEV_RUN_TOOL_CMD") {
                 Ok(cmd) if !cmd.trim().is_empty() => {

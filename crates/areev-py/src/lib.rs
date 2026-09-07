@@ -467,7 +467,13 @@ impl Areev {
                     }
                     (want_text, anon, pass) => {
                         let key = match pass {
-                            Some(p) => Some(*RustAreev::derive_key_for(&path, &p)?),
+                            // Deriving writes the .kdf sidecar when absent, so the
+                            // read-only precondition is checked first or a refused
+                            // open leaves a stray file behind.
+                            Some(p) => {
+                                areev_store::read_only_requires_existing(&path, read_only)?;
+                                Some(*RustAreev::derive_key_for(&path, &p)?)
+                            }
                             None => None,
                         };
                         RustAreev::open_with(
@@ -2687,12 +2693,20 @@ impl Areev {
         // A connector IS a tool — JSON in, JSON out, one process per
         // invocation — so there is one subprocess contract to learn and
         // connectors inherit its timeout, output cap and secret scrub.
+        // A connector holds the third-party credential more often than a tool
+        // does, so `tool_env` has to reach it too — the CLI applies the same
+        // policy here (`trigger_cli.rs`), and `docs/triggers.md` says so.
+        let connector_env = tool_env_policy(pin.tool_env.as_deref());
         let connector: Option<std::sync::Arc<dyn areev_run::HostToolExecutor>> = connector_cmd
             .clone()
             .or_else(|| tool_cmd.clone())
             .map(|cmd| {
-                std::sync::Arc::new(areev_run::CommandExecutor::new(&cmd))
-                    as std::sync::Arc<dyn areev_run::HostToolExecutor>
+                let ce = areev_run::CommandExecutor::new(&cmd);
+                let ce = match connector_env {
+                    Some(p) => ce.with_env_policy(p),
+                    None => ce,
+                };
+                std::sync::Arc::new(ce) as std::sync::Arc<dyn areev_run::HostToolExecutor>
             });
 
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
@@ -2816,11 +2830,7 @@ impl Areev {
         let timeout = pin
             .executor_timeout_secs
             .map(|secs| if secs == 0 { None } else { Some(std::time::Duration::from_secs(secs)) });
-        let env = pin
-            .tool_env
-            .as_deref()
-            .filter(|names| !names.trim().is_empty())
-            .map(areev_run::env_allow_policy);
+        let env = tool_env_policy(pin.tool_env.as_deref());
         let base: std::sync::Arc<dyn areev_run::HostToolExecutor> = match tool_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
                 let mut ce = areev_run::CommandExecutor::new(&cmd);
@@ -2901,6 +2911,21 @@ struct ExecutorPin {
     /// list clears it and passes only those, plus the minimal set a command
     /// needs to start.
     tool_env: Option<String>,
+}
+
+/// `tool_env` → an allow-list policy, warning on any name already registered
+/// as holding a secret. One helper so the connector and the run executors
+/// cannot drift apart.
+fn tool_env_policy(names: Option<&str>) -> Option<areev_core::proc::EnvPolicy> {
+    let names = names.map(str::trim).filter(|n| !n.is_empty())?;
+    let (policy, dropped) = areev_run::env_allow_policy(names);
+    if !dropped.is_empty() {
+        eprintln!(
+            "areev: tool_env dropped {} — registered as holding a secret",
+            dropped.join(", ")
+        );
+    }
+    Some(policy)
 }
 
 fn run_options(

@@ -1392,7 +1392,9 @@ old value. A declaration names a credential; it never carries one.
   secrets Areev was told about. If this process holds secrets it was never
   told about, name what a tool *may* see instead: `--tool-env AWS_REGION`
   clears the tool's environment and passes only that, plus `PATH` and the few
-  variables a command needs to start.
+  variables a command needs to start. It does not work as an override:
+  a variable already named to `--passphrase-env`/`--token-env`/`--credential`
+  is dropped from the allow list and reported.
 - **A failing resolver refuses the call.** It never sends the request
   unauthenticated, and the error names which credential failed without
   repeating what the resolver printed. Check for it in the audit trail the way

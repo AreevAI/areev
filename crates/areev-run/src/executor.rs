@@ -207,10 +207,29 @@ impl EgressHandle {
 /// minimal set a command needs to start. Four hosts spell the same list —
 /// `--tool-env`, `$AREEV_RUN_TOOL_ENV`, `tool_env`, `toolEnv` — so the
 /// parsing lives here once.
-pub fn env_allow_policy(names: &str) -> areev_core::proc::EnvPolicy {
+///
+/// A name Areev was **told** holds a secret (`--passphrase-env`,
+/// `--token-env`, `--credential`, …) is dropped and returned in the second
+/// element, so the host can say so. Without this an allow list would be the
+/// one path that reopens #100: the registry exists precisely so no seam has to
+/// remember to scrub, and an operator naming a registered variable here is
+/// far more likely to have reused a name than to have meant it.
+///
+/// The broker's resolver seam re-admits registered secrets on purpose
+/// (`--resolver-env`, `CredentialSource::spawn_policy`), which is why this
+/// filter lives here rather than in `proc::run`'s `ClearExcept` arm.
+pub fn env_allow_policy(names: &str) -> (areev_core::proc::EnvPolicy, Vec<String>) {
+    let secrets = areev_core::proc::secret_env_vars();
     let mut allow = areev_core::proc::EnvPolicy::minimal_allow();
-    allow.extend(names.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
-    areev_core::proc::EnvPolicy::ClearExcept { allow }
+    let mut dropped = Vec::new();
+    for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if secrets.iter().any(|s| s == name) {
+            dropped.push(name.to_string());
+        } else {
+            allow.push(name.to_string());
+        }
+    }
+    (areev_core::proc::EnvPolicy::ClearExcept { allow }, dropped)
 }
 
 pub struct CommandExecutor {
