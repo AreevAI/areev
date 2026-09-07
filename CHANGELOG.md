@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The loop's cadence and the Verify gate's schedule take the deployment's
+  own units, as policy.** `outcome_evalset.checkpoints` schedules a
+  re-measurement in `after_ms`, `after_runs` (evalset runs journaled since the
+  apply) or `after_grains` (grains written since it); a bare integer still
+  means milliseconds, so every policy, snapshot and state blob written before
+  reads unchanged, and the 1d / 7d / 30d default is untouched. It exists
+  because a schedule counted in days is inert on a deployment that finishes in
+  minutes: on PAST-Bench the default fired zero verdicts and zero reverts
+  across 78 governed runs — the half of governance the receipts harness had
+  just proved worked — because a family finishes in seven minutes and the
+  first checkpoint was a day away. `cadence` lifts the per-call run gate
+  (`--min-new`, `--if-stale`) into the policy file so CLI, MCP and console
+  share one rhythm, and adds `every_events` (turns) and `every_sessions`;
+  unset, a pass is due whenever it is called, as before. Flags override the
+  block; a sweep always runs. A skipped pass reports `cadence_not_due`.
+- **DISCOVER may author a Skill.** A `skill` proposal — description,
+  `when_to_use`, ordered steps — derived from a trajectory that succeeded,
+  named by its target, placed in the evidence's namespace, and superseding a
+  live skill of the same name rather than duplicating it. Governed like every
+  draft: GROUND, VERIFY, the confidence floor, a review with a BECAUSE, never
+  auto-applied. `skills: {enabled, min_steps}` in the policy, default on with
+  two steps. Measured need: on PAST-Bench the agent performed a procedure
+  correctly on every seed and then, asked whether to save it, said "nothing
+  to save"; the store was empty at evaluation and scored below having no
+  memory. Every skill had depended on the model volunteering one mid-task.
+- **`min_evidence`** (default 1): the fewest distinct grains an LLM draft
+  must cite to be offered as a change. Under it the draft is stored and
+  reviewable but applies as nothing; the funnel counts the demotions as
+  `advisory_thin_evidence`. An audit of 88 governed decisions found 15 of 28
+  approvals had generalised one instance into standing policy — `2` is the
+  setting that audit argues for.
+
 - **Batch reads for the bench harness.** `evaluate.py --batch` submits a
   whole held-out arm as one job to a batch endpoint — the OpenAI files
   shape or OpenRouter's inline `/api/beta/batches` (`scripts/batch_toolcall.py`,
@@ -115,6 +147,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the corpus is committed.
 
 ### Changed
+
+- **Successful tool calls reach the evidence bundle when skill authoring is
+  on** — after the failures, inside the same reserved share, so a busy desk's
+  successes cannot bury the failure signal. With `skills.enabled: false` the
+  bundle is exactly what it was. The Tool brief now carries the call's
+  `input`: a procedure is not reconstructible from tool names and outputs.
+- `areev loop policy` prints the two new defaults (`skills`, `min_evidence`);
+  the goldens are re-blessed. `areev loop outcomes` labels a run- or
+  grain-counted checkpoint as `@1 run` / `@50 grains`; time checkpoints
+  render as before.
 
 - **A grain write refuses an unspellable namespace** (`VAL-E001`): one
   carrying whitespace, a control character, or an invisible formatting

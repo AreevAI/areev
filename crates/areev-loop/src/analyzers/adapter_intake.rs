@@ -189,6 +189,7 @@ impl Analyzer for AdapterIntake {
                     // 1 day, 1 week, 1 month — a late regression is caught by
                     // the schedule.
                     horizons_ms: vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000],
+                    checkpoints: Vec::new(),
                     // Failure count: fewer is better (the default).
                     higher_is_better: false,
                 });
