@@ -1,0 +1,190 @@
+{
+ "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop": {
+  "governance": null,
+  "tool_calls": 21,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 156173,
+   "output_tokens": 632,
+   "calls": 24
+  },
+  "injected_chars": 451
+ },
+ "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": false,
+    "error": "ValueError: old_text not found in skill legacy-billing-sop-archive"
+   },
+   {
+    "tool": "skill_manage",
+    "action": "edit",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 20013,
+   "output_tokens": 598,
+   "calls": 6
+  },
+  "injected_chars": 451
+ },
+ "03_pc02_sop_patch_01_f02_i04_patch_eval_near": {
+  "governance": null,
+  "tool_calls": 16,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 100833,
+   "output_tokens": 681,
+   "calls": 19
+  },
+  "injected_chars": 464
+ },
+ "04_pc02_sop_patch_01_f02_i05_patch_eval_conflict": {
+  "governance": null,
+  "tool_calls": 18,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 121837,
+   "output_tokens": 1100,
+   "calls": 21
+  },
+  "injected_chars": 464
+ },
+ "05_pc02_sop_patch_01_f02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 19381,
+   "output_tokens": 469,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "06_pc02_sop_patch_01_f02_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 17,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 113043,
+   "output_tokens": 945,
+   "calls": 19
+  },
+  "injected_chars": 275
+ },
+ "07_pc02_sop_patch_01_f02_c03_control_stale_procedure": {
+  "governance": null,
+  "tool_calls": 14,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "{\"name\": \"skill_manage\", \"arguments\": {\"action\": \"create\", \"name\": \"billing_incident_sop\", \"content\": \"Read all open billing tickets and identify the cluster name. Tag each incident ticket with: incid"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 81603,
+   "output_tokens": 840,
+   "calls": 16
+  },
+  "injected_chars": 275
+ }
+}

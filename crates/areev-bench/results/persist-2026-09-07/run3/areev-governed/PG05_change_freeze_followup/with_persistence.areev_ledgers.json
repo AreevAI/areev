@@ -1,0 +1,469 @@
+{
+ "01_pg05_change_freeze_followup_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "83db567908cdbbd7cbbf432cdd508870fe7cbf4424a462f6cc0f2bdc122f2ea7",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Search session history for the latest matching CAB packet before updating a freeze note; use the exact UTC window and exception projects from that packet.",
+     "approved": false,
+     "because": "It repeats the existing rule about searching session history for the latest matching CAB packet and using the exact UTC window and exception projects.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nFinish the current Atlas Billing freeze note the same way CAB already settled it earlier. Determine the applicable freeze packet, then update FREEZE-PG05-A using this exact format only:\\nFREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects\\nOutput the same line.\", \"subject\": \"assistant\"}\n{\"object\": \"Change freeze windows are episodic and time-sensitive.\\nBefore updating or sharing a freeze note, search session history for the latest matching CAB packet and recover the exact UTC window plus exception projects.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14421,
+   "output_tokens": 212,
+   "calls": 5
+  },
+  "injected_chars": 1752
+ },
+ "02_pg05_change_freeze_followup_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "a4409445cab810dfe8383e14f312a71029ad7ed69b5157cff30b756c5b2cef24",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Search session history for the latest matching CAB packet before updating a freeze note; use the exact UTC window and exception projects from that packet.",
+     "approved": false,
+     "because": "It repeats an existing rule about searching session history for the latest CAB packet and using the exact UTC window and exception projects.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPrior attempt review.\\nReflection only. Do not recover or reveal any exact freeze packet IDs, project names, exception projects, or UTC timestamps from the failed case.\\n\\nObserved failure pattern:\\n- error_class: updated the freeze note from a weak cue instead of grounding on the exact earlier packet\\n- missed_clue_type: exact freeze packet, UTC window, and exception project list\\n- next_check_priority: before updating or sharing a freeze note, search session history for the latest matching CAB packet and verify the exact UTC window plus exception projects\\n\\nOutput exactly three lines:\\nERROR_CLASS|...\\nMISSED_CLUE|...\\nNEXT_CHECK|...\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "01_pg05_change_freeze_followup_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5295,
+   "output_tokens": 94,
+   "calls": 3
+  },
+  "injected_chars": 308
+ },
+ "03_pg05_change_freeze_followup_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "edit",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_pg05_change_freeze_followup_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3643,
+   "output_tokens": 118,
+   "calls": 2
+  },
+  "injected_chars": 308
+ },
+ "04_pg05_change_freeze_followup_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "ecdad14354c0e40e65dbb09ce116ac62c354bf079d3fb926c4953fdc31d0ea18",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Search session history for the latest matching CAB packet before updating a freeze note; use the exact UTC window and exception projects from that packet.",
+     "approved": false,
+     "because": "It repeats the existing rule about using the exact UTC window and exception projects from the CAB packet.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRead your newly added change freeze lookup skill first, then search session history to finish the Nova Auth freeze note using the applicable CAB packet, even though the exact window is not restated here. Update FREEZE-PG05-NA using this exact format only:\\nFREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects\\nOutput the same line.\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7952,
+   "passed": false,
+   "episode": "03_pg05_change_freeze_followup_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 18644,
+   "output_tokens": 210,
+   "calls": 5
+  },
+  "injected_chars": 1752
+ },
+ "05_pg05_change_freeze_followup_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "04_pg05_change_freeze_followup_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 18826,
+   "output_tokens": 219,
+   "calls": 5
+  },
+  "injected_chars": 1752
+ },
+ "06_pg05_change_freeze_followup_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "05_pg05_change_freeze_followup_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 19720,
+   "output_tokens": 241,
+   "calls": 5
+  },
+  "injected_chars": 1752
+ },
+ "07_pg05_change_freeze_followup_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "06_pg05_change_freeze_followup_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 20045,
+   "output_tokens": 254,
+   "calls": 5
+  },
+  "injected_chars": 1753
+ },
+ "08_pg05_change_freeze_followup_control_boundary_latest_packet": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6864,
+   "passed": false,
+   "episode": "07_pg05_change_freeze_followup_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 41101,
+   "output_tokens": 219,
+   "calls": 8
+  },
+  "injected_chars": 1753
+ }
+}

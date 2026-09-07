@@ -1,0 +1,160 @@
+{
+ "01_sm07_scoped_rule_migration_cold_scope_baseline": {
+  "governance": null,
+  "tool_calls": 19,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 106754,
+   "output_tokens": 719,
+   "calls": 20
+  },
+  "injected_chars": 845
+ },
+ "02_sm07_scoped_rule_migration_update_or_stabilize_security_migration": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12546,
+   "output_tokens": 330,
+   "calls": 5
+  },
+  "injected_chars": 845
+ },
+ "03_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_a": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12528,
+   "output_tokens": 229,
+   "calls": 5
+  },
+  "injected_chars": 1232
+ },
+ "04_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12549,
+   "output_tokens": 231,
+   "calls": 5
+  },
+  "injected_chars": 1232
+ },
+ "05_sm07_scoped_rule_migration_eval_far_transfer_scoped_migration": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12472,
+   "output_tokens": 231,
+   "calls": 5
+  },
+  "injected_chars": 1232
+ },
+ "06_sm07_scoped_rule_migration_control_no_persistence_scope": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8038,
+   "output_tokens": 240,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm07_scoped_rule_migration_control_shortcut_visible_scoped_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14491,
+   "output_tokens": 251,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "08_sm07_scoped_rule_migration_control_scoped_rule_migration_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11773,
+   "output_tokens": 210,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

@@ -1,0 +1,454 @@
+{
+ "01_pg03_oncall_handoff_lookup_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e6927cf47c3b8e6d4a339b83ddd9c5d6a76e1b2ff9e54020db1a3a5a3c132b73",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff details from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of an existing rule already in force.",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 35539,
+   "output_tokens": 214,
+   "calls": 10
+  },
+  "injected_chars": 1528
+ },
+ "02_pg03_oncall_handoff_lookup_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.608,
+   "passed": false,
+   "episode": "01_pg03_oncall_handoff_lookup_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3216,
+   "output_tokens": 57,
+   "calls": 2
+  },
+  "injected_chars": 310
+ },
+ "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_pg03_oncall_handoff_lookup_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5532,
+   "output_tokens": 165,
+   "calls": 3
+  },
+  "injected_chars": 310
+ },
+ "04_pg03_oncall_handoff_lookup_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "6dd8327e400db6d83650363fce80eb81071f5513f6748df595331e3281e17765",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Recover handoff details from session history before updating any ticket in a new session.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of an existing rule already in force.",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.88,
+   "passed": false,
+   "episode": "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12778,
+   "output_tokens": 76,
+   "calls": 5
+  },
+  "injected_chars": 1528
+ },
+ "05_pg03_oncall_handoff_lookup_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "752663d8b9a28f75c7d86c3dfbad18ebdecd0d466e7a61c1010313d400994e5d",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff details from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of an existing rule already in force.",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "04_pg03_oncall_handoff_lookup_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9360,
+   "output_tokens": 52,
+   "calls": 4
+  },
+  "injected_chars": 1528
+ },
+ "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c8438626b21880902e7029002e130451f7fef1fdaf83f630b35f082fc9fa01d8",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff details from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of an existing rule already in force.",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "05_pg03_oncall_handoff_lookup_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9388,
+   "output_tokens": 52,
+   "calls": 4
+  },
+  "injected_chars": 1528
+ },
+ "07_pg03_oncall_handoff_lookup_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e4224a51865881c77337b8e41d44bd364bc3a9ca5c427ac8f895e0d086e15929",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before updating any ticket in a new session, recover the latest handoff details from session history: owner, maintenance window, and blocked follow-up tickets.",
+     "approved": false,
+     "because": "The proposed memory change is a weaker restatement of an already in force rule.",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9368,
+   "output_tokens": 51,
+   "calls": 4
+  },
+  "injected_chars": 1528
+ }
+}

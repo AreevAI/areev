@@ -1,0 +1,364 @@
+{
+ "01_pc01_sop_bootstrap_05_fp01_i01_plonk_cold": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25023,
+   "output_tokens": 595,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_05_fp01_i02_plonk_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "50a2509ae80b1ada5fa94b647ca7ea8c025be22ce54b4b98b1cdf28ba99beb29",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Save the Plonk incident response procedure (KB-PLK-001) as a reusable skill immediately after reading it when explicitly instructed.",
+     "approved": true,
+     "because": "The memory change is durable, general, actionable, and supported by the user's explicit instruction to save the procedure as a reusable skill.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPlease first consult the Plonk incident response procedure (KB-PLK-001) in the knowledge base. After reading it carefully, save the SOP as a reusable skill so it can be used directly when handling similar incidents in the future.\\n\\nThe AuthWall login service is experiencing a failure and users are unable to authenticate.\\nPlease handle this according to the incident response procedure.\\nOutput a single line: DONE|<pinned message ID>|<incident channel>\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 21744,
+   "output_tokens": 415,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_05_fp01_i02b_plonk_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_pc01_sop_bootstrap_05_fp01_i02_plonk_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 23093,
+   "output_tokens": 228,
+   "calls": 8
+  },
+  "injected_chars": 356
+ },
+ "04_pc01_sop_bootstrap_05_fp01_i03_plonk_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 12,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.92,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_05_fp01_i02b_plonk_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 50975,
+   "output_tokens": 464,
+   "calls": 15
+  },
+  "injected_chars": 356
+ },
+ "05_pc01_sop_bootstrap_05_fp01_i03b_plonk_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.54,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_05_fp01_i03_plonk_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 35789,
+   "output_tokens": 638,
+   "calls": 12
+  },
+  "injected_chars": 356
+ },
+ "06_pc01_sop_bootstrap_05_fp01_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "dd5c4394784f79a1ebd4270fcf7fd8a0e1e00a405322f8b7fc4277a6d2918b00",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Set jurela to the affected service name or incident keyword when calling nexobi in Plonk incident response",
+     "approved": true,
+     "because": "The instruction to set jurela to the affected service name or incident keyword when calling nexobi is a durable, general, actionable, and supported procedure for Plonk incident response.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe following is the Plonk incident response SOP (Standard Operating Procedure):\\n\\nWhen handling Plonk service incidents, always use the following three-step procedure:\\n\\n1. Use nexobi to locate the incident source message. When calling nexobi, set jurela to the affected service name or incident keyword. Use the returned tikano value as the source message ID.\\n\\n2. Use felura to pin the source message. When calling felura, set pikano to the source message ID obtained in step 1.\\n\\n3. Use zubefa to post an official incident update to plk-incidents. When calling zubefa, set xovik to plk-incidents and start belatu with [INCIDENT]. Include the affected service name and the pinned/source message ID in the message.\\n\\nNever use deprecated Plonk functions (kaviru, plentu, zolanti, fenaldi, torvani).\\n\\n---\\n\\nInfrastructure inc"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 30955,
+   "output_tokens": 296,
+   "calls": 10
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_05_fp01_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 14,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 2,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 2,
+    "stored": 2
+   },
+   "findings": 0,
+   "pending": 2,
+   "applied": 1,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "37229ac168d3c1db3264fe990b993d56f038b946a7c56ba22b581eb546c1c2f8",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check the method registry for valid alert retrieval methods before invoking any alert-related function.",
+     "approved": true,
+     "because": "The memory change is a general, actionable procedure supported by multiple instances of errors due to unknown methods, ensuring valid methods are used in future sessions.",
+     "evidence": "{\"input\": {\"action\": \"find_source_alert\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is_error\": true, \"tool_content\": \"{\\\"vorix\\\": false, \\\"faltex\\\": \\\"unknown_method\\\", \\\"detiku\\\": \\\"Unknown method 'find_source_alert'\\\"}\", \"tool_name\": \"plonk_action\"}\n{\"input\": {\"action\": \"search_alerts\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is_error\": true, \"tool_content\": \"{\\\"vorix\\\": false, \\\"faltex\\\": \\\"unknown_method\\\", \\\"detiku\\\": \\\"Unknown method 'search_alerts'\\\"}\", \"tool_name\": \"plonk_action\"}\n{\"input\": {\"action\": \"query_alerts\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is_error\": true, \"tool_content\": \"{\\\"vorix\\\": false, \\\"faltex\\\": \\\"unknown_method\\\", \\\"detiku\\\": \\\"Unknown method 'query_alerts'\\\"}\", \"tool_name\": \"plonk_action\"}\n{\"input\": {\"action\": \"get_alerts\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is_error\": true, \"tool_content\": \"{\\\"vorix\\\": false, \\\"faltex\\\": \\\"unknown_method\\\", \\\"detiku\\\": \\\"Unknown method 'get_alerts'\\\"}\", \"tool_name\": \"plonk_action\"}\n{\"input\": {\"action\": \"list_alerts\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is_error\": true, \"tool_content\": \"{\\\"vorix\\\": false, \\\"faltex\\\": \\\"unknown_method\\\", \\\"detiku\\\": \\\"Unknown method 'list_alerts'\\\"}\", \"tool_name\": \"plonk_action\"}\n{\"input\": {\"action\": \"find_alerts\", \"belatu\": \"routing_fabric\", \"fenoka\": \"degradation\", \"xovik\": \"NetGuard\"}, \"is"
+    },
+    {
+     "hash": "ccf005f9734a9570857434b11b87f62b2acdb4d12d483d23c2076ef519fe05b3",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Parse and apply incident keywords from user hints to select appropriate handling methods.",
+     "approved": false,
+     "because": "The proposed memory change is based on a single instance and lacks general, durable, and supported evidence.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nHint: Previous incident handling involved keywords such as nexobi, felura, zubefa, and plk-incidents.\\n\\nInfrastructure incident: The NetGuard network routing fabric is experiencing severe degradation and multiple services are affected.\\nPlease handle this according to the standard procedure.\\nOutput a single line: DONE|<pinned message ID>|<incident channel>\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 19,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 73782,
+   "output_tokens": 879,
+   "calls": 20
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_05_fp01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 4039,
+   "output_tokens": 50,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}

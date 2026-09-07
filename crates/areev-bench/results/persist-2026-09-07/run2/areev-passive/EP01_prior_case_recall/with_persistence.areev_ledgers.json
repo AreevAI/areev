@@ -1,0 +1,184 @@
+{
+ "01_ep01_prior_case_recall_ep01_i01_recall_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3673,
+   "output_tokens": 36,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_ep01_prior_case_recall_ep01_i02_recall_seed": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13839,
+   "output_tokens": 177,
+   "calls": 6
+  },
+  "injected_chars": 371
+ },
+ "03_ep01_prior_case_recall_ep01_i03_recall_noise": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7907,
+   "output_tokens": 76,
+   "calls": 4
+  },
+  "injected_chars": 451
+ },
+ "04_ep01_prior_case_recall_ep01_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6311,
+   "output_tokens": 88,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "05_ep01_prior_case_recall_ep01_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8630,
+   "output_tokens": 169,
+   "calls": 4
+  },
+  "injected_chars": 544
+ },
+ "06_ep01_prior_case_recall_ep01_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6289,
+   "output_tokens": 137,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "07_ep01_prior_case_recall_ep01_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11061,
+   "output_tokens": 85,
+   "calls": 5
+  },
+  "injected_chars": 544
+ },
+ "08_ep01_prior_case_recall_ep01_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3750,
+   "output_tokens": 43,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}

@@ -1,0 +1,533 @@
+{
+ "01_pg01_release_decision_followup_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 2,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "1ff452671b9bf26a9943bea49fd1f77bcdc1864e7f6739baee0ede31daa97614",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Cite the exact release decision reference ID and expiry date in all release follow-ups.",
+     "approved": false,
+     "because": "This is a repetition of an already existing rule in memory.",
+     "evidence": "{\"object\": \"Release follow-ups should cite exact reference IDs and expiry dates.\\nThe exact verdicts remain episodic: search session history before sharing release guidance.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 66239,
+   "output_tokens": 608,
+   "calls": 17
+  },
+  "injected_chars": 1743
+ },
+ "02_pg01_release_decision_followup_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "8c1e193603c56d17242310300e09a7da43c82a5f42ae33a583b23ade4a3ca6cf",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Cite the exact release decision reference ID and expiry date in all release follow-ups.",
+     "approved": false,
+     "because": "This is a weaker restatement of an already in force rule about citing exact reference IDs and expiry dates in release follow-ups.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPrior attempt review.\\nReflection only. Do not recover or reveal any exact reference IDs, product names, or dates from the failed case.\\n\\nObserved failure pattern:\\n- error_class: answered from fuzzy prior-decision recall instead of grounding on the exact earlier record\\n- missed_clue_type: exact release reference plus environment/expiry fields\\n- next_check_priority: before sharing release guidance, search session history for the matching release review and verify the exact reference, allowed environment, and expiry\\n\\nOutput exactly three lines:\\nERROR_CLASS|...\\nMISSED_CLUE|...\\nNEXT_CHECK|...\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.656,
+   "passed": false,
+   "episode": "01_pg01_release_decision_followup_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3231,
+   "output_tokens": 66,
+   "calls": 2
+  },
+  "injected_chars": 314
+ },
+ "03_pg01_release_decision_followup_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": false,
+    "error": "ValueError: old_text not found in skill release_followup_lookup"
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.982,
+   "passed": false,
+   "episode": "02_pg01_release_decision_followup_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 7598,
+   "output_tokens": 300,
+   "calls": 4
+  },
+  "injected_chars": 314
+ },
+ "04_pg01_release_decision_followup_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.916,
+   "passed": false,
+   "episode": "03_pg01_release_decision_followup_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 18222,
+   "output_tokens": 107,
+   "calls": 5
+  },
+  "injected_chars": 1744
+ },
+ "05_pg01_release_decision_followup_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "cea31a5e574a0a5b346550bde652dac0dcd4529efed6dbb9ddf830b3f67c139b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Cite the exact release decision reference ID and expiry date in all release follow-ups by retrieving them from persisted history.",
+     "approved": false,
+     "because": "This repeats the existing rule about citing exact reference IDs and expiry dates in release follow-ups.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nA reviewer needs the exact prior Blueport ingest plugin verdict, but the visible note shell is not authoritative. Read your newly added release follow-up skill first, then search persisted history, and share RELNOTE-PG01-NB with vendor-review@corp.com. Output: RELEASE|reference|status|environment|expiry\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.6624,
+   "passed": false,
+   "episode": "04_pg01_release_decision_followup_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 4180,
+   "output_tokens": 27,
+   "calls": 2
+  },
+  "injected_chars": 1744
+ },
+ "06_pg01_release_decision_followup_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.212,
+   "passed": false,
+   "episode": "05_pg01_release_decision_followup_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 30575,
+   "output_tokens": 236,
+   "calls": 7
+  },
+  "injected_chars": 1744
+ },
+ "07_pg01_release_decision_followup_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "a191941340e076dbcec4854a23db9c3ed9513600fd46b5c0fded02d78d140d95",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve and cite the exact release decision reference ID and expiry date from persisted history in every release follow-up.",
+     "approved": false,
+     "because": "The proposed memory change repeats the existing rule about citing exact reference IDs and expiry dates in release follow-ups.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe visible note hints that Atlas Sync is still blocked, but the exact earlier decision fields are not shown. Read your newly added release follow-up skill first, then search persisted history before you act, and share RELNOTE-PG01-CP with release-ops@corp.com. Output: RELEASE|reference|status|environment|expiry\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7104,
+   "passed": false,
+   "episode": "06_pg01_release_decision_followup_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 47791,
+   "output_tokens": 337,
+   "calls": 10
+  },
+  "injected_chars": 1744
+ },
+ "08_pg01_release_decision_followup_control_boundary_wrong_record": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6864,
+   "passed": false,
+   "episode": "07_pg01_release_decision_followup_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 33608,
+   "output_tokens": 162,
+   "calls": 7
+  },
+  "injected_chars": 1744
+ }
+}

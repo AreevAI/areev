@@ -1,0 +1,72 @@
+{
+ "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop": {
+  "usage": {
+   "input_tokens": 5633,
+   "output_tokens": 55,
+   "calls": 2
+  },
+  "injected_chars": 1435,
+  "entries_after": 15,
+  "add_result": "{\"results\": [{\"id\": \"ba619d1e-93ea-4d71-9cdc-b554985db19e\", \"memory\": \"User is a billing support agent tasked with triaging open helpdesk tickets according to the Billing Incident SOP v1, which requires escalating incidents when 2 or more open tickets share the same billing cluster, setting priority=high, category=incident, and adding tag=incident-core.\", \"event\": \"ADD\"}, {\"id\": \"936cf7ce-86c7-428b-aa9c-3bf54395d9c0\", \"memory\": \"User was instructed to retrieve the full Billing Incident SOP v1 from the skill library instead of relying on a brief KB reference or memory summary, and to apply the "
+ },
+ "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 59346,
+   "output_tokens": 854,
+   "calls": 13
+  },
+  "injected_chars": 2476,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"65d23fb1-0faa-4aff-8921-781731ec52e3\", \"memory\": \"User is a billing support agent tasked with triaging open helpdesk tickets according to the updated Billing Incident SOP v2, which requires escalating incidents when 3 or more tickets from distinct reporters identify the same billing cluster failure within a 4-hour window, with priority=critical, category=incident-billing, and tags=incident-core, billing-sla-breach.\", \"event\": \"ADD\"}, {\"id\": \"ed3e252e-3aa0-4f79-8252-1f1dd8f33fa8\", \"memory\": \"The Billing Incident SOP v2 replaced the deprecated v1 on April 1, 2026, with a hig"
+ },
+ "03_pc02_sop_patch_01_f02_i04_patch_eval_near": {
+  "usage": {
+   "input_tokens": 70752,
+   "output_tokens": 507,
+   "calls": 17
+  },
+  "injected_chars": 2833,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"e9ff4c4f-40c2-43e2-9dcf-1de4a1e968f3\", \"memory\": \"User escalated tickets TK-I401, TK-I402, and TK-I403 with priority=high, category=incident, and tag=incident-core based on the shared root cause of payment-cluster-4 failure, as per the Billing Incident SOP v1.\", \"event\": \"ADD\"}, {\"id\": \"f08671e0-aea9-4840-94d0-5f3272a97723\", \"memory\": \"User determined that ticket TK-I404, reporting a promo-cluster outage, does not qualify as a billing cluster incident because it involves a different cluster (promo-cluster) and only two teams are affected, not a widespread billing system fa"
+ },
+ "04_pc02_sop_patch_01_f02_i05_patch_eval_conflict": {
+  "usage": {
+   "input_tokens": 87012,
+   "output_tokens": 694,
+   "calls": 19
+  },
+  "injected_chars": 2833,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"08010d40-3a73-4b6f-a074-d90371f9a85d\", \"memory\": \"User was instructed to retrieve the full Billing Incident SOP v2 from the skill library instead of relying on a brief KB reference or memory summary, and to apply the SOP rules to distinguish real billing cluster incidents from routine requests.\", \"event\": \"ADD\"}, {\"id\": \"4ec787ca-56a1-47bb-bbdd-777325748604\", \"memory\": \"User attempted to retrieve the saved Billing Incident SOP v2 from the skill library but received a 'File not found' error for all versions including /skills/billing-incident-sop.md, /skills/billing-incident"
+ },
+ "05_pc02_sop_patch_01_f02_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 10987,
+   "output_tokens": 106,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pc02_sop_patch_01_f02_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 35536,
+   "output_tokens": 476,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 9,
+  "add_result": "{\"results\": [{\"id\": \"6eb57eb3-e7a9-43e3-9545-4229119eba6a\", \"memory\": \"User is a billing support agent tasked with triaging open helpdesk tickets using the Billing Incident SOP v2, which requires escalation when 3 or more tickets from distinct reporters identify the same billing cluster failure within a 4-hour window.\", \"event\": \"ADD\"}, {\"id\": \"83c6738b-4119-407b-9dc0-c6a8d4c8052c\", \"memory\": \"Three distinct tickets (TK-I401, TK-I402, TK-I403) were identified as part of a billing incident involving payment-cluster-4, with reporters Thomas-Eriksson, Brigitte-Moreau, and Raj-Pillai all reporting"
+ },
+ "07_pc02_sop_patch_01_f02_c03_control_stale_procedure": {
+  "usage": {
+   "input_tokens": 26671,
+   "output_tokens": 418,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"2797b489-b1f4-4de2-a2c8-85662f52bcf6\", \"memory\": \"User is a billing support agent tasked with triaging open helpdesk tickets using the Billing Incident SOP v1, which requires escalating incidents when 2 or more tickets from distinct reporters identify the same billing cluster failure within a 4-hour window.\", \"event\": \"ADD\"}, {\"id\": \"1a613732-2a72-47ec-90ce-87e54c5b38c6\", \"memory\": \"User identified that three tickets (TK-I401, TK-I402, TK-I403) are related to a failure in payment-cluster-4, with distinct reporters (Thomas-Eriksson, Brigitte-Moreau, Raj-Pillai) reporting wi"
+ }
+}

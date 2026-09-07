@@ -1,0 +1,82 @@
+{
+ "01_pg03_oncall_handoff_lookup_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 9495,
+   "output_tokens": 205,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pg03_oncall_handoff_lookup_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 1345,
+   "output_tokens": 53,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_pg03_oncall_handoff_lookup_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 2881,
+   "output_tokens": 167,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_pg03_oncall_handoff_lookup_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 1761,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_pg03_oncall_handoff_lookup_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 1761,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pg03_oncall_handoff_lookup_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 3590,
+   "output_tokens": 61,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_pg03_oncall_handoff_lookup_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 7506,
+   "output_tokens": 197,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_pg03_oncall_handoff_lookup_control_boundary_latest_record": {
+  "usage": {
+   "input_tokens": 3590,
+   "output_tokens": 57,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

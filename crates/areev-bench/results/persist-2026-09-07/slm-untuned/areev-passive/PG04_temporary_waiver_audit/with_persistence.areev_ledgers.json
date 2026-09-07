@@ -1,0 +1,248 @@
+{
+ "01_pg04_temporary_waiver_audit_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5587,
+   "output_tokens": 7,
+   "calls": 2
+  },
+  "injected_chars": 2008
+ },
+ "02_pg04_temporary_waiver_audit_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3270,
+   "output_tokens": 54,
+   "calls": 2
+  },
+  "injected_chars": 312
+ },
+ "03_pg04_temporary_waiver_audit_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "edit",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3583,
+   "output_tokens": 77,
+   "calls": 2
+  },
+  "injected_chars": 312
+ },
+ "04_pg04_temporary_waiver_audit_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 30316,
+   "output_tokens": 599,
+   "calls": 7
+  },
+  "injected_chars": 2008
+ },
+ "05_pg04_temporary_waiver_audit_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "{\"name\": \"memory\", \"arguments\": {\"action\": \"add\", \"target\": \"memory\", \"content\": \"Request under review: owner=infra-ops service=cacheedge scope=overnight-maintenance candidates=CE-17,CE-18,CE-21. Chec"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14083,
+   "output_tokens": 125,
+   "calls": 4
+  },
+  "injected_chars": 2211
+ },
+ "06_pg04_temporary_waiver_audit_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: replace needs old_text"
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: no memory entry contains 'Request under review: owner=infra-ops service=cacheedge scope=overnight-maintena'"
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 42097,
+   "output_tokens": 830,
+   "calls": 10
+  },
+  "injected_chars": 2211
+ },
+ "07_pg04_temporary_waiver_audit_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "{\"name\": \"memory\", \"arguments\": {\"action\": \"add\", \"target\": \"memory\", \"content\": \"Request under review: owner=infra-ops service=cacheedge scope=overnight-maintenance candidates=CE-17,CE-18,CE-21. Chec"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32859,
+   "output_tokens": 224,
+   "calls": 7
+  },
+  "injected_chars": 2376
+ },
+ "08_pg04_temporary_waiver_audit_control_boundary_scope_mismatch": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14090,
+   "output_tokens": 79,
+   "calls": 4
+  },
+  "injected_chars": 2376
+ }
+}

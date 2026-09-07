@@ -1,0 +1,182 @@
+{
+ "01_sm07_scoped_rule_migration_cold_scope_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14868,
+   "output_tokens": 258,
+   "calls": 6
+  },
+  "injected_chars": 845
+ },
+ "02_sm07_scoped_rule_migration_update_or_stabilize_security_migration": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": "The scoped migration rules have been applied and are now active for future sessions:\n- Security items must use SEC-GAMMA and be shared only with High priority Security owners.\n- Ops items retain OPS-D"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12324,
+   "output_tokens": 366,
+   "calls": 5
+  },
+  "injected_chars": 845
+ },
+ "03_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_a": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 15640,
+   "output_tokens": 314,
+   "calls": 6
+  },
+  "injected_chars": 1083
+ },
+ "04_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12142,
+   "output_tokens": 226,
+   "calls": 5
+  },
+  "injected_chars": 1083
+ },
+ "05_sm07_scoped_rule_migration_eval_far_transfer_scoped_migration": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 15677,
+   "output_tokens": 325,
+   "calls": 6
+  },
+  "injected_chars": 1083
+ },
+ "06_sm07_scoped_rule_migration_control_no_persistence_scope": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7866,
+   "output_tokens": 244,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm07_scoped_rule_migration_control_shortcut_visible_scoped_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14216,
+   "output_tokens": 265,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "08_sm07_scoped_rule_migration_control_scoped_rule_migration_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11685,
+   "output_tokens": 233,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

@@ -1,0 +1,72 @@
+{
+ "01_sm04_rule_migration_cold_rule_baseline": {
+  "usage": {
+   "input_tokens": 8758,
+   "output_tokens": 227,
+   "calls": 4
+  },
+  "injected_chars": 1319,
+  "entries_after": 10,
+  "add_result": "{\"results\": [{\"id\": \"b49da2c0-d5c3-4e00-bd48-6a1a93f43e55\", \"memory\": \"User requested a review of the code review note titled 'Service Review Follow-up' (note_id: NOTE-SM04-004), created on April 13, 2026, with four participants: Sarah Zhang, Leo Li, Kevin Wang, and Maya Patel, and a duration of 40 minutes. The note was active at the time of review.\", \"event\": \"ADD\"}, {\"id\": \"4331a581-aa9c-49ba-b83e-52aa32135394\", \"memory\": \"The 'Service Review Follow-up' note contains three action items: Sarah Zhang must tighten the formatter check rollout (High priority) by April 28, Leo Li must clean up sty"
+ },
+ "02_sm04_rule_migration_update_new_review_rule": {
+  "usage": {
+   "input_tokens": 10081,
+   "output_tokens": 167,
+   "calls": 4
+  },
+  "injected_chars": 2442,
+  "entries_after": 16,
+  "add_result": "{\"results\": [{\"id\": \"e6ac15e4-bd37-4f9b-833d-de87219afbfd\", \"memory\": \"The 'Standards Migration Notice' note (note_id: NOTE-SM04-003), created on April 12, 2026, with four participants\\u2014Sarah Zhang, Leo Li, Kevin Wang, and Maya Patel\\u2014and a duration of 25 minutes, was reviewed and processed under the migrated review rule effective September 6, 2026.\", \"event\": \"ADD\"}, {\"id\": \"358c837a-53fc-47ef-9ace-a24c4ca2207e\", \"memory\": \"The 'Standards Migration Notice' note contains three action items: Sarah Zhang must add the new formatter gate to CI (High priority) by April 24, 2026; Leo Li must"
+ },
+ "03_sm04_rule_migration_eval_near_apply_migrated_rule": {
+  "usage": {
+   "input_tokens": 13314,
+   "output_tokens": 346,
+   "calls": 5
+  },
+  "injected_chars": 2930,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"fdfad949-5e15-4eb8-959e-48576290bc66\", \"memory\": \"The team's current review rule is Borealis-4DQ, which supersedes the deprecated Aurora-2S rule. All action items must be formatted as <owner> | Borealis-4DQ | task | due_date, and source notes must be shared with all action owners.\", \"event\": \"ADD\"}, {\"id\": \"bced6e1c-1ddf-4e61-b2c6-22524666b557\", \"memory\": \"The 'Service Review Follow-up' note (note_id: NOTE-SM04-004) contains three action items: Sarah Zhang must tighten the formatter check rollout (High priority) by April 28, Leo Li must clean up style drift in worker modul"
+ },
+ "04_sm04_rule_migration_eval_far_apply_migrated_rule": {
+  "usage": {
+   "input_tokens": 13275,
+   "output_tokens": 343,
+   "calls": 5
+  },
+  "injected_chars": 2930,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"f9a6fd65-d4d6-40c2-94ca-c760293691f3\", \"memory\": \"User requested a review of the data pipeline review note titled 'Data Pipeline Script Review' (note_id: NOTE-SM04-005), created on April 14, 2026, with four participants: Maya Chen, Owen Price, Lucia Park, and Dylan Moss, and a duration of 45 minutes. The note was active at the time of review.\", \"event\": \"ADD\"}, {\"id\": \"712482a7-4192-48ca-a0c0-820930bd63b0\", \"memory\": \"The team's current review rule requires using Borealis-4DQ for all action items, with formatting: <owner> | Borealis-4DQ | task | due_date. This rule superse"
+ },
+ "05_sm04_rule_migration_control_no_persistence_rule": {
+  "usage": {
+   "input_tokens": 23975,
+   "output_tokens": 535,
+   "calls": 11
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm04_rule_migration_control_shortcut_visible_migrated_rule": {
+  "usage": {
+   "input_tokens": 7774,
+   "output_tokens": 194,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 7,
+  "add_result": "{\"results\": [{\"id\": \"0cc175ad-ab5c-4a9b-8bf1-c48ca52e80ba\", \"memory\": \"User requested a review of the platform review note, extraction of action items, application of the team's current review rule, and sharing of the source note according to that rule.\", \"event\": \"ADD\"}, {\"id\": \"11a57c81-e01b-41fb-a57f-71fce46a8759\", \"memory\": \"The platform review follow-up note (NOTE-SM04-007) was created on April 14, 2026, with a duration of 30 minutes and participants including Renee Shah, Evan Lin, Noah Price, and Drew Park.\", \"event\": \"ADD\"}, {\"id\": \"9aea8da0-7ce1-4b90-87a9-0c137d59b900\", \"memory\": \"User"
+ },
+ "07_sm04_rule_migration_control_rule_migration_control": {
+  "usage": {
+   "input_tokens": 7645,
+   "output_tokens": 121,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 4,
+  "add_result": "{\"results\": [{\"id\": \"a76db8e8-e7a6-42e9-b1a0-693f25e5f963\", \"memory\": \"User reviewed the infrastructure review note titled 'Infrastructure Review Follow-up' (note ID: NOTE-SM04-006), created on April 15, 2026, with participants Renee Shah, Evan Lin, Noah Price, and Dylan Moss, and a duration of 45 minutes. The note was active and contained action items with priority levels and due dates.\", \"event\": \"ADD\"}, {\"id\": \"25afcb33-9f16-454a-b011-e75aa73e40e2\", \"memory\": \"The team's current review rule (Aurora-2S is deprecated) requires that action items be formatted as <owner> | Borealis-4DQ | <task> "
+ }
+}

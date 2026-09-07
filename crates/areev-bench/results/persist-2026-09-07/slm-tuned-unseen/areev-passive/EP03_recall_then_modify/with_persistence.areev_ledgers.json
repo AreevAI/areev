@@ -1,0 +1,254 @@
+{
+ "01_ep03_recall_then_modify_ep03_i01_modify_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "Nothing to save."
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 9065,
+   "output_tokens": 74,
+   "calls": 4
+  },
+  "injected_chars": 681
+ },
+ "02_ep03_recall_then_modify_ep03_i02_modify_seed": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "Nothing to save."
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 30613,
+   "output_tokens": 239,
+   "calls": 10
+  },
+  "injected_chars": 774
+ },
+ "03_ep03_recall_then_modify_ep03_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14184,
+   "output_tokens": 76,
+   "calls": 5
+  },
+  "injected_chars": 867
+ },
+ "04_ep03_recall_then_modify_ep03_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "Nothing to save."
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14141,
+   "output_tokens": 119,
+   "calls": 5
+  },
+  "injected_chars": 867
+ },
+ "05_ep03_recall_then_modify_ep03_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3898,
+   "output_tokens": 74,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "06_ep03_recall_then_modify_ep03_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "Nothing to save."
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 18053,
+   "output_tokens": 241,
+   "calls": 7
+  },
+  "injected_chars": 867
+ },
+ "07_ep03_recall_then_modify_ep03_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 22887,
+   "output_tokens": 234,
+   "calls": 6
+  },
+  "injected_chars": 1722
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "01_ep01_prior_case_recall_ep01_i01_recall_cold": {
+  "usage": {
+   "input_tokens": 3673,
+   "output_tokens": 36,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_ep01_prior_case_recall_ep01_i02_recall_seed": {
+  "usage": {
+   "input_tokens": 10320,
+   "output_tokens": 127,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 1,
+  "add_result": "{\"results\": [{\"id\": \"274943bd-fe2f-4669-b127-4248d76b4de5\", \"memory\": \"The team decided that Vendor X is not approved for production until they pass SOC2 compliance, with an exception granted for a staging-only pilot running through May 31, 2026. This decision was formally logged and is referenced in the 'Vendor X Contract Decision' note.\", \"event\": \"ADD\"}]}"
+ },
+ "03_ep01_prior_case_recall_ep01_i03_recall_noise": {
+  "usage": {
+   "input_tokens": 3830,
+   "output_tokens": 33,
+   "calls": 2
+  },
+  "injected_chars": 358,
+  "entries_after": 1,
+  "add_result": "{\"results\": []}"
+ },
+ "04_ep01_prior_case_recall_ep01_i04_eval_near": {
+  "usage": {
+   "input_tokens": 7846,
+   "output_tokens": 121,
+   "calls": 4
+  },
+  "injected_chars": 358,
+  "entries_after": 2,
+  "add_result": "{\"results\": [{\"id\": \"9ff84419-2838-4947-be73-16bf90bf1bc0\", \"memory\": \"Vendor X is not approved for production until they pass SOC2 compliance, with an exception granted for a staging-only pilot running through May 31, 2026. This decision was formally logged in the 'Vendor X Contract Decision' note and is referenced in prior sessions.\", \"event\": \"ADD\"}]}"
+ },
+ "05_ep01_prior_case_recall_ep01_i05_eval_far": {
+  "usage": {
+   "input_tokens": 16567,
+   "output_tokens": 219,
+   "calls": 8
+  },
+  "injected_chars": 358,
+  "entries_after": 2,
+  "add_result": "{\"results\": [{\"id\": \"a134bd3d-98f2-4802-b173-cdd60cc0b247\", \"memory\": \"No pending vendor-approval exceptions were found in the meeting notes as of September 6, 2026, despite a request from Legal for a list of active exceptions during a compliance audit.\", \"event\": \"ADD\"}]}"
+ },
+ "06_ep01_prior_case_recall_ep01_i07_control_shortcut": {
+  "usage": {
+   "input_tokens": 10003,
+   "output_tokens": 166,
+   "calls": 5
+  },
+  "injected_chars": 358,
+  "entries_after": 1,
+  "add_result": "{\"results\": []}"
+ },
+ "07_ep01_prior_case_recall_ep01_i08_control_wrong_mechanism": {
+  "usage": {
+   "input_tokens": 12103,
+   "output_tokens": 131,
+   "calls": 6
+  },
+  "injected_chars": 358,
+  "entries_after": 1,
+  "add_result": "{\"results\": []}"
+ },
+ "08_ep01_prior_case_recall_ep01_i06_control_no_persistence": {
+  "usage": {
+   "input_tokens": 3705,
+   "output_tokens": 47,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

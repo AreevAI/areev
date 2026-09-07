@@ -1,0 +1,332 @@
+{
+ "01_sm03_fact_correction_cold_fact_baseline": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "585ea143aff9a34527f26ae0e5a081ef5de706f932cc8d05d5b8e8952a00ee11",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check the Phoenix rollout memory registry for the current freeze date before summarizing action items, and use the most recent valid entry.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence and does not meet the supported criterion."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11580,
+   "output_tokens": 174,
+   "calls": 5
+  },
+  "injected_chars": 937
+ },
+ "02_sm03_fact_correction_update_corrected_freeze_date": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "db5298478cf1edb6bf11a896323cc0235bb370117549b5d8d99aaa75ee9993ef",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check the Phoenix rollout memory registry for the current freeze date before summarizing action items, and use the most recent valid entry.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence and is already covered by the existing memory about the Phoenix rollout memory registry."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6,
+   "passed": false,
+   "episode": "01_sm03_fact_correction_cold_fact_baseline",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12558,
+   "output_tokens": 446,
+   "calls": 5
+  },
+  "injected_chars": 937
+ },
+ "03_sm03_fact_correction_eval_near_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": false,
+   "episode": "02_sm03_fact_correction_update_corrected_freeze_date",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11545,
+   "output_tokens": 174,
+   "calls": 5
+  },
+  "injected_chars": 907
+ },
+ "04_sm03_fact_correction_eval_far_use_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "03_sm03_fact_correction_eval_near_use_corrected_fact",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14655,
+   "output_tokens": 228,
+   "calls": 6
+  },
+  "injected_chars": 907
+ },
+ "05_sm03_fact_correction_control_no_persistence_fact": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7432,
+   "output_tokens": 189,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm03_fact_correction_control_shortcut_visible_corrected_fact": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7d430c8b5c4e5f73a3a3a39eac3e61bda72aea709652edea6c7a1a7eb70e84f1",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Include the current Phoenix freeze date in the final summary when instructed to do so.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence and is specific to a single task rather than a general rule."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10773,
+   "output_tokens": 186,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "07_sm03_fact_correction_control_fact_correction_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "10e732f16ecf55465bd1745491eb0595db1b18b76b5f4b6ba9c0e0beb697252b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Include the current Phoenix freeze date in the summary when explicitly requested in the user's instruction.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence and is not general or durable, as it pertains to a specific task outcome."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10852,
+   "output_tokens": 180,
+   "calls": 5
+  },
+  "injected_chars": 272
+ }
+}

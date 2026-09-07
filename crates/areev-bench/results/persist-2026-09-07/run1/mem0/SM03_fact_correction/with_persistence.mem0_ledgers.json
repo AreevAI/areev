@@ -1,0 +1,72 @@
+{
+ "01_sm03_fact_correction_cold_fact_baseline": {
+  "usage": {
+   "input_tokens": 8953,
+   "output_tokens": 214,
+   "calls": 4
+  },
+  "injected_chars": 1445,
+  "entries_after": 12,
+  "add_result": "{\"results\": [{\"id\": \"b20c897c-d028-4327-a528-a6ed8e1ca61c\", \"memory\": \"User requested a review of the Phoenix Rollout Coordination note (NOTE-SM03-004) created on April 13, 2026, to extract action items and include the current Phoenix release freeze date in the summary.\", \"event\": \"ADD\"}, {\"id\": \"c3e97c4e-5817-46ea-ab30-ee2f632caca7\", \"memory\": \"The Phoenix Rollout Coordination note (NOTE-SM03-004) was created on April 13, 2026, with a duration of 30 minutes and participants including Elena Gomez, Ravi Shah, and Nora Klein as an observer.\", \"event\": \"ADD\"}, {\"id\": \"80fb6a45-c782-4d73-9ffb-4a6d"
+ },
+ "02_sm03_fact_correction_update_corrected_freeze_date": {
+  "usage": {
+   "input_tokens": 12743,
+   "output_tokens": 309,
+   "calls": 5
+  },
+  "injected_chars": 2172,
+  "entries_after": 18,
+  "add_result": "{\"results\": [{\"id\": \"16179ccb-2660-4923-9744-eb1263516bbe\", \"memory\": \"The Phoenix release freeze date has been officially updated from 2026-06-14 to 2026-06-16 as the authoritative date going forward, based on an authoritative correction note (NOTE-SM03-003) created on April 12, 2026.\", \"event\": \"ADD\"}, {\"id\": \"f3911aed-c41d-4f07-bce0-29a7b4cea29c\", \"memory\": \"User requested a review of the Phoenix Freeze Date Correction note (NOTE-SM03-003) created on April 12, 2026, to extract action items and apply the updated freeze date to future coordination.\", \"event\": \"ADD\"}, {\"id\": \"268710dd-c9aa-4e9"
+ },
+ "03_sm03_fact_correction_eval_near_use_corrected_fact": {
+  "usage": {
+   "input_tokens": 10161,
+   "output_tokens": 213,
+   "calls": 4
+  },
+  "injected_chars": 2575,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"2a1ac426-a813-4124-8445-23b4abe9efa3\", \"memory\": \"The Phoenix Rollout Coordination note (NOTE-SM03-004) was reviewed on September 6, 2026, and confirmed to include the current Phoenix release freeze date of 2026-06-16, which supersedes the outdated 2026-06-14 date.\", \"event\": \"ADD\"}, {\"id\": \"ea22b515-01e0-4669-b0ee-d598c5b81470\", \"memory\": \"User was recommended to review the Phoenix Rollout Coordination note (NOTE-SM03-004) created on April 13, 2026, to extract action items and include the current Phoenix freeze date (2026-06-16) in the final summary.\", \"event\": \"ADD\"}, {\""
+ },
+ "04_sm03_fact_correction_eval_far_use_corrected_fact": {
+  "usage": {
+   "input_tokens": 33136,
+   "output_tokens": 541,
+   "calls": 12
+  },
+  "injected_chars": 2078,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"46e4f1c3-5ae9-4a6c-8929-ae5abb5b1ed9\", \"memory\": \"The current official Phoenix release freeze date is 2026-06-16, as confirmed by the authoritative configuration file and established in the Phoenix Freeze Date Correction note (NOTE-SM03-003) created on April 12, 2026.\", \"event\": \"ADD\"}, {\"id\": \"f75cbe76-23c2-40f8-afa1-6f22b29e7718\", \"memory\": \"User requested a review of the Phoenix Customer Comms Rehearsal note (NOTE-SM03-005) created on April 14, 2026, to extract action items and include the current Phoenix release freeze date in the summary for comms owners.\", \"event\": \""
+ },
+ "05_sm03_fact_correction_control_no_persistence_fact": {
+  "usage": {
+   "input_tokens": 7432,
+   "output_tokens": 204,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm03_fact_correction_control_shortcut_visible_corrected_fact": {
+  "usage": {
+   "input_tokens": 7492,
+   "output_tokens": 194,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"d299bad1-4420-4b1a-9ad1-0b23a36c7861\", \"memory\": \"User requested a review of the Phoenix customer success sync note (NOTE-SM03-007) to extract action items, include the current Phoenix freeze date of 2026-06-16 in the summary, and share the source note with the owners.\", \"event\": \"ADD\"}, {\"id\": \"8de0c27c-5647-4d68-8b25-7835be2325e4\", \"memory\": \"The Phoenix customer success sync note (NOTE-SM03-007) was created on April 14, 2026, by Mila Stone, Jon Kim, and Drew Park, and had a duration of 25 minutes with an active status.\", \"event\": \"ADD\"}, {\"id\": \"4aba9ad1-50e6-4215-aa95-"
+ },
+ "07_sm03_fact_correction_control_fact_correction_control": {
+  "usage": {
+   "input_tokens": 7534,
+   "output_tokens": 175,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 4,
+  "add_result": "{\"results\": [{\"id\": \"f4c5a58b-5edc-4933-893a-51a67d02f67d\", \"memory\": \"The current Phoenix release freeze date is 2026-06-16, superseding the previous date of 2026-06-14, as confirmed in the Phoenix Finance Coordination note created on 2026-04-15.\", \"event\": \"ADD\"}, {\"id\": \"a697b4c7-4cc0-49d7-a77a-4910f15a786c\", \"memory\": \"Paula Reed was assigned the action item to align the revenue cutoff checklist with the rollout calendar as part of the Phoenix finance coordination.\", \"event\": \"ADD\"}, {\"id\": \"710e04b1-ce42-4d84-890b-b397012e4d9d\", \"memory\": \"Jonah Fisk was assigned the action item to update"
+ }
+}

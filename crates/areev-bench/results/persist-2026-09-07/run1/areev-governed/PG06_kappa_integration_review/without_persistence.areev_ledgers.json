@@ -1,0 +1,130 @@
+{
+ "01_pg06_kappa_integration_review_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3493,
+   "output_tokens": 28,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_pg06_kappa_integration_review_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7479,
+   "output_tokens": 178,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "03_pg06_kappa_integration_review_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2921,
+   "output_tokens": 205,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_pg06_kappa_integration_review_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13381,
+   "output_tokens": 240,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "05_pg06_kappa_integration_review_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9501,
+   "output_tokens": 215,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "06_pg06_kappa_integration_review_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 20185,
+   "output_tokens": 415,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "07_pg06_kappa_integration_review_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9251,
+   "output_tokens": 164,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "08_pg06_kappa_integration_review_control_boundary_scope_patch_mismatch": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5527,
+   "output_tokens": 131,
+   "calls": 3
+  },
+  "injected_chars": 0
+ }
+}

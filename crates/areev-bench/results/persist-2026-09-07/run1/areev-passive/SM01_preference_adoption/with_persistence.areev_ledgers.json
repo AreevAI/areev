@@ -1,0 +1,156 @@
+{
+ "01_sm01_preference_adoption_cold_style_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7499,
+   "output_tokens": 243,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm01_preference_adoption_learn_a_tsv_preference": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14262,
+   "output_tokens": 342,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "03_sm01_preference_adoption_learn_b_preference_reinforcement": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13512,
+   "output_tokens": 234,
+   "calls": 6
+  },
+  "injected_chars": 425
+ },
+ "04_sm01_preference_adoption_eval_near_apply_saved_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10944,
+   "output_tokens": 230,
+   "calls": 5
+  },
+  "injected_chars": 425
+ },
+ "05_sm01_preference_adoption_eval_far_transfer_saved_style": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13633,
+   "output_tokens": 306,
+   "calls": 6
+  },
+  "injected_chars": 425
+ },
+ "06_sm01_preference_adoption_control_shortcut_visible_style_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13621,
+   "output_tokens": 244,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "07_sm01_preference_adoption_control_style_preference_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11311,
+   "output_tokens": 345,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "08_sm01_preference_adoption_control_no_persistence_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7455,
+   "output_tokens": 219,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

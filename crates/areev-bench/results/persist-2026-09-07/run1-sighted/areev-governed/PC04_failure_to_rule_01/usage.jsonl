@@ -1,0 +1,16 @@
+{"ts": 1788698237898, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "discover", "prompt_tokens": 1146, "completion_tokens": 118}
+{"ts": 1788698239065, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 381, "completion_tokens": 51}
+{"ts": 1788698242422, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "verify", "prompt_tokens": 516, "completion_tokens": 188}
+{"ts": 1788698245017, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "enrich", "prompt_tokens": 174, "completion_tokens": 43}
+{"ts": 1788698246429, "script": "openrouter_toolcall.py", "model": "openai/gpt-4o", "provider": "openai", "op": "chat", "prompt_tokens": 517, "completion_tokens": 31}
+{"ts": 1788698288737, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "discover", "prompt_tokens": 1213, "completion_tokens": 150}
+{"ts": 1788698290090, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 372, "completion_tokens": 70}
+{"ts": 1788698342656, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "discover", "prompt_tokens": 1218, "completion_tokens": 152}
+{"ts": 1788698344224, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 378, "completion_tokens": 89}
+{"ts": 1788698348036, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "verify", "prompt_tokens": 520, "completion_tokens": 181}
+{"ts": 1788698351330, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "enrich", "prompt_tokens": 169, "completion_tokens": 43}
+{"ts": 1788698352664, "script": "openrouter_toolcall.py", "model": "openai/gpt-4o", "provider": "openai", "op": "chat", "prompt_tokens": 467, "completion_tokens": 34}
+{"ts": 1788698407932, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "discover", "prompt_tokens": 1272, "completion_tokens": 172}
+{"ts": 1788698409630, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 395, "completion_tokens": 78}
+{"ts": 1788698461847, "script": "openrouter_loop.py", "model": "qwen/qwen3-30b-a3b-instruct-2507", "provider": "streamlake,alibaba", "op": "discover", "prompt_tokens": 1273, "completion_tokens": 175}
+{"ts": 1788698463137, "script": "openrouter_loop.py", "model": "openai/gpt-4o-mini", "provider": "openai", "op": "ground", "prompt_tokens": 396, "completion_tokens": 79}

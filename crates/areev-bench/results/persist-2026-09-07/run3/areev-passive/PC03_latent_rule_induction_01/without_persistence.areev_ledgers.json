@@ -1,0 +1,114 @@
+{
+ "01_pc03_latent_rule_induction_01_f05_i01_hidden_baseline_cold": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 31553,
+   "output_tokens": 691,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "02_pc03_latent_rule_induction_01_f05_i02_hidden_learn_case_a": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24726,
+   "output_tokens": 540,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "03_pc03_latent_rule_induction_01_f05_i03_hidden_learn_case_b": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 48680,
+   "output_tokens": 644,
+   "calls": 14
+  },
+  "injected_chars": 0
+ },
+ "04_pc03_latent_rule_induction_01_f05_i04_hidden_eval_near": {
+  "governance": null,
+  "tool_calls": 12,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 39394,
+   "output_tokens": 462,
+   "calls": 13
+  },
+  "injected_chars": 0
+ },
+ "05_pc03_latent_rule_induction_01_f05_i05_hidden_eval_far": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24700,
+   "output_tokens": 636,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "06_pc03_latent_rule_induction_01_f05_c01_control_shortcut": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12431,
+   "output_tokens": 234,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_pc03_latent_rule_induction_01_f05_c02_control_too_few_examples": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24710,
+   "output_tokens": 541,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

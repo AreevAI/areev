@@ -1,0 +1,334 @@
+{
+ "01_pc01_sop_bootstrap_04_fm03_i01_datashare_cold": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14979,
+   "output_tokens": 253,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_04_fm03_i02_datashare_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "0981a574598d54625186e9b239a9f043bc66a826701567316f4dd443b2f59778",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply reusable approval criteria from the policy to all open data export tickets, ignoring ticket surface details like IDs and reporters.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support the instruction."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 30213,
+   "output_tokens": 499,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_04_fm03_i02b_datashare_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7e9dfbcc7cf88b559f65d18e3982c8053336a5288c6cb9f93d5d288c0844b6d3",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply reusable approval criteria from the policy to all open data export tickets, ignoring ticket surface details like IDs and reporters.",
+     "approved": false,
+     "because": "The proposed memory change lacks evidence to support the instruction."
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 20,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.8555,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_04_fm03_i02_datashare_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 86882,
+   "output_tokens": 916,
+   "calls": 22
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_04_fm03_i03_datashare_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7177,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_04_fm03_i02b_datashare_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22609,
+   "output_tokens": 306,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "05_pc01_sop_bootstrap_04_fm03_i03b_datashare_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.406,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_04_fm03_i03_datashare_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22033,
+   "output_tokens": 253,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "06_pc01_sop_bootstrap_04_fm03_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 21158,
+   "output_tokens": 296,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_04_fm03_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 19778,
+   "output_tokens": 262,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_04_fm03_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 15045,
+   "output_tokens": 266,
+   "calls": 6
+  },
+  "injected_chars": 0
+ }
+}

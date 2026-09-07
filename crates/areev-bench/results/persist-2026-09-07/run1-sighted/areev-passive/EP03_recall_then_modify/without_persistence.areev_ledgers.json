@@ -1,0 +1,114 @@
+{
+ "01_ep03_recall_then_modify_ep03_i01_modify_cold": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 22345,
+   "output_tokens": 668,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "02_ep03_recall_then_modify_ep03_i02_modify_seed": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 17306,
+   "output_tokens": 340,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "03_ep03_recall_then_modify_ep03_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 31634,
+   "output_tokens": 470,
+   "calls": 14
+  },
+  "injected_chars": 0
+ },
+ "04_ep03_recall_then_modify_ep03_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 17,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 48038,
+   "output_tokens": 1284,
+   "calls": 18
+  },
+  "injected_chars": 0
+ },
+ "05_ep03_recall_then_modify_ep03_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 12,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 29997,
+   "output_tokens": 631,
+   "calls": 13
+  },
+  "injected_chars": 0
+ },
+ "06_ep03_recall_then_modify_ep03_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9937,
+   "output_tokens": 152,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "07_ep03_recall_then_modify_ep03_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 19,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 49992,
+   "output_tokens": 809,
+   "calls": 20
+  },
+  "injected_chars": 0
+ }
+}

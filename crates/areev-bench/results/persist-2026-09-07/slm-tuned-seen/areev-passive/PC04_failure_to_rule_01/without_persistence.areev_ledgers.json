@@ -1,0 +1,146 @@
+{
+ "01_pc04_failure_to_rule_01_f07_i01_failure_baseline": {
+  "governance": null,
+  "tool_calls": 15,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 74801,
+   "output_tokens": 551,
+   "calls": 16
+  },
+  "injected_chars": 0
+ },
+ "02_pc04_failure_to_rule_01_f07_i02_failure_attempt": {
+  "governance": null,
+  "tool_calls": 15,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 75623,
+   "output_tokens": 653,
+   "calls": 16
+  },
+  "injected_chars": 0
+ },
+ "03_pc04_failure_to_rule_01_f07_i03_failure_reflection": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 9072,
+   "output_tokens": 297,
+   "calls": 3
+  },
+  "injected_chars": 0
+ },
+ "04_pc04_failure_to_rule_01_f07_i03b_failure_confirmation": {
+  "governance": null,
+  "tool_calls": 15,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 75453,
+   "output_tokens": 627,
+   "calls": 16
+  },
+  "injected_chars": 0
+ },
+ "05_pc04_failure_to_rule_01_f07_i04_failure_eval_near": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 18960,
+   "output_tokens": 523,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "06_pc04_failure_to_rule_01_f07_i05_failure_eval_far": {
+  "governance": null,
+  "tool_calls": 15,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 76033,
+   "output_tokens": 678,
+   "calls": 16
+  },
+  "injected_chars": 0
+ },
+ "07_pc04_failure_to_rule_01_f07_c01_control_reflection_off": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 44956,
+   "output_tokens": 480,
+   "calls": 12
+  },
+  "injected_chars": 0
+ },
+ "08_pc04_failure_to_rule_01_f07_c02_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 16,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 82779,
+   "output_tokens": 608,
+   "calls": 17
+  },
+  "injected_chars": 0
+ },
+ "09_pc04_failure_to_rule_01_f07_c03_control_shortcut": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13488,
+   "output_tokens": 534,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

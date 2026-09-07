@@ -1,0 +1,130 @@
+{
+ "01_pc01_sop_bootstrap_02_fc02_i01_pipeline_cold": {
+  "governance": null,
+  "tool_calls": 12,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12016,
+   "output_tokens": 543,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_02_fc02_i02_pipeline_learn_a": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 35718,
+   "output_tokens": 533,
+   "calls": 11
+  },
+  "injected_chars": 0
+ },
+ "03_pc01_sop_bootstrap_02_fc02_i02b_pipeline_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32200,
+   "output_tokens": 464,
+   "calls": 12
+  },
+  "injected_chars": 0
+ },
+ "04_pc01_sop_bootstrap_02_fc02_i03_pipeline_eval_near": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 15585,
+   "output_tokens": 344,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "05_pc01_sop_bootstrap_02_fc02_i03b_pipeline_eval_far": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 15296,
+   "output_tokens": 251,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "06_pc01_sop_bootstrap_02_fc02_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24106,
+   "output_tokens": 408,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "07_pc01_sop_bootstrap_02_fc02_c03_control_surface_memorization": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 19129,
+   "output_tokens": 438,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "08_pc01_sop_bootstrap_02_fc02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25173,
+   "output_tokens": 369,
+   "calls": 9
+  },
+  "injected_chars": 0
+ }
+}

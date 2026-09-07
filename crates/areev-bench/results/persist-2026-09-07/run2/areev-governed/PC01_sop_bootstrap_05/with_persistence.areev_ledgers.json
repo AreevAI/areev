@@ -1,0 +1,338 @@
+{
+ "01_pc01_sop_bootstrap_05_fp01_i01_plonk_cold": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16093,
+   "output_tokens": 319,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_05_fp01_i02_plonk_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c6f646c59b5a2547625444270c142dfcfe4e9bef465e104f07eff5705b83b6c8",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Save the Plonk incident response procedure (KB-PLK-001) as a reusable skill immediately after reading it when explicitly instructed.",
+     "approved": false,
+     "because": "The instruction is specific to a single task and does not provide a general rule or procedure for future sessions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPlease first consult the Plonk incident response procedure (KB-PLK-001) in the knowledge base. After reading it carefully, save the SOP as a reusable skill so it can be used directly when handling similar incidents in the future.\\n\\nThe AuthWall login service is experiencing a failure and users are unable to authenticate.\\nPlease handle this according to the incident response procedure.\\nOutput a single line: DONE|<pinned message ID>|<incident channel>\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14859,
+   "output_tokens": 183,
+   "calls": 6
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_05_fp01_i02b_plonk_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 16,
+    "proposed": 2,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 1,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "d9a605cd46b367d3362796ac5d23c2e61d763068bde7d4f1e4b51f37b013927d",
+     "analyzer": "loop.tool_failure/1",
+     "kind": "advisory",
+     "text": "Tool \"plonk_action\" failed 15 times (100% of the calls that could fail this way): {\"vorix\": false, \"faltex\": \"unknown_method\", \"detiku\": \"unknown method 'incident",
+     "approved": false,
+     "because": "advisory only \u2014 asks for no change",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 19,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.24,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_05_fp01_i02_plonk_learn_a",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 68677,
+   "output_tokens": 1071,
+   "calls": 20
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_05_fp01_i03_plonk_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 22,
+    "proposed": 2,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 1,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 13,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.12,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_05_fp01_i02b_plonk_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 46479,
+   "output_tokens": 828,
+   "calls": 16
+  },
+  "injected_chars": 275
+ },
+ "05_pc01_sop_bootstrap_05_fp01_i03b_plonk_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 19,
+    "proposed": 2,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 1,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 19,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.1,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_05_fp01_i03_plonk_eval_near",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 69567,
+   "output_tokens": 937,
+   "calls": 21
+  },
+  "injected_chars": 275
+ },
+ "06_pc01_sop_bootstrap_05_fp01_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16889,
+   "output_tokens": 210,
+   "calls": 6
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_05_fp01_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 6,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 2,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "29f0d3dcf813265fee081d5f75964379d8de356e0e0a58848f8262b22ecc4b8b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Check for known incident keywords in context before calling alert or incident methods; map keywords to valid method names.",
+     "approved": false,
+     "because": "The proposed memory change is based on a single session's instruction and lacks evidence of being a general, durable, and supported rule.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nHint: Previous incident handling involved keywords such as nexobi, felura, zubefa, and plk-incidents.\\n\\nInfrastructure incident: The NetGuard network routing fabric is experiencing severe degradation and multiple services are affected.\\nPlease handle this according to the standard procedure.\\nOutput a single line: DONE|<pinned message ID>|<incident channel>\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 14,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 54320,
+   "output_tokens": 531,
+   "calls": 16
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_05_fp01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 29243,
+   "output_tokens": 808,
+   "calls": 11
+  },
+  "injected_chars": 0
+ }
+}

@@ -1,0 +1,316 @@
+{
+ "01_sm01_preference_adoption_cold_style_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7499,
+   "output_tokens": 198,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm01_preference_adoption_learn_a_tsv_preference": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14557,
+   "output_tokens": 399,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "03_sm01_preference_adoption_learn_b_preference_reinforcement": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.76,
+   "passed": false,
+   "episode": "02_sm01_preference_adoption_learn_a_tsv_preference",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11185,
+   "output_tokens": 179,
+   "calls": 5
+  },
+  "injected_chars": 479
+ },
+ "04_sm01_preference_adoption_eval_near_apply_saved_style": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.76,
+   "passed": false,
+   "episode": "03_sm01_preference_adoption_learn_b_preference_reinforcement",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10980,
+   "output_tokens": 196,
+   "calls": 5
+  },
+  "injected_chars": 479
+ },
+ "05_sm01_preference_adoption_eval_far_transfer_saved_style": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "journaled_outcome": {
+   "task_score": 0.704,
+   "passed": false,
+   "episode": "04_sm01_preference_adoption_eval_near_apply_saved_style",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13686,
+   "output_tokens": 242,
+   "calls": 6
+  },
+  "injected_chars": 479
+ },
+ "06_sm01_preference_adoption_control_shortcut_visible_style_rule": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "7fa70102228ed4c1bfd8512832cdbdb3bb4530e6fa594087a73a038dc37255cf",
+     "analyzer": "loop.llm/1",
+     "kind": "advisory",
+     "text": "Missing validation of output format compliance in task extraction workflow",
+     "approved": false,
+     "because": "advisory only \u2014 asks for no change",
+     "evidence": ""
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13626,
+   "output_tokens": 249,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "07_sm01_preference_adoption_control_style_preference_control": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11277,
+   "output_tokens": 332,
+   "calls": 5
+  },
+  "injected_chars": 272
+ },
+ "08_sm01_preference_adoption_control_no_persistence_style": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7627,
+   "output_tokens": 198,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

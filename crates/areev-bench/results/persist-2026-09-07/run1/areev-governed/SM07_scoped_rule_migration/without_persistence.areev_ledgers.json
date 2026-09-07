@@ -1,0 +1,130 @@
+{
+ "01_sm07_scoped_rule_migration_cold_scope_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7901,
+   "output_tokens": 247,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_sm07_scoped_rule_migration_update_or_stabilize_security_migration": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8304,
+   "output_tokens": 216,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "03_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_a": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7971,
+   "output_tokens": 241,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "04_sm07_scoped_rule_migration_eval_near_apply_scoped_migration_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7845,
+   "output_tokens": 228,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "05_sm07_scoped_rule_migration_eval_far_transfer_scoped_migration": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7914,
+   "output_tokens": 251,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "06_sm07_scoped_rule_migration_control_no_persistence_scope": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8006,
+   "output_tokens": 240,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_sm07_scoped_rule_migration_control_shortcut_visible_scoped_rule": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10708,
+   "output_tokens": 266,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "08_sm07_scoped_rule_migration_control_scoped_rule_migration_control": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8200,
+   "output_tokens": 234,
+   "calls": 4
+  },
+  "injected_chars": 0
+ }
+}

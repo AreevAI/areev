@@ -1,0 +1,164 @@
+{
+ "01_pc03_latent_rule_induction_01_f05_i01_hidden_baseline_cold": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 31553,
+   "output_tokens": 691,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "02_pc03_latent_rule_induction_01_f05_i02_hidden_learn_case_a": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": "The pattern observed across the tickets indicates a durable correlation: database schema migrations on clusters with an odd shard count are high-risk and require elevated priority and monitoring, whil"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32162,
+   "output_tokens": 776,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "03_pc03_latent_rule_induction_01_f05_i03_hidden_learn_case_b": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32071,
+   "output_tokens": 609,
+   "calls": 9
+  },
+  "injected_chars": 383
+ },
+ "04_pc03_latent_rule_induction_01_f05_i04_hidden_eval_near": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 52136,
+   "output_tokens": 453,
+   "calls": 14
+  },
+  "injected_chars": 383
+ },
+ "05_pc03_latent_rule_induction_01_f05_i05_hidden_eval_far": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 52419,
+   "output_tokens": 447,
+   "calls": 14
+  },
+  "injected_chars": 383
+ },
+ "06_pc03_latent_rule_induction_01_f05_c01_control_shortcut": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12375,
+   "output_tokens": 235,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "07_pc03_latent_rule_induction_01_f05_c02_control_too_few_examples": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24199,
+   "output_tokens": 619,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

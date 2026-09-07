@@ -1,0 +1,82 @@
+{
+ "01_pg01_release_decision_followup_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 47973,
+   "output_tokens": 945,
+   "calls": 18
+  },
+  "injected_chars": 631,
+  "entries_after": 7,
+  "add_result": "{\"results\": [{\"id\": \"9e0618a0-865c-4b72-bfe3-6a30f04b2f55\", \"memory\": \"User is attempting to circulate the current governance guidance for the Falcon integration item that was previously settled, but the visible shell does not match the desired archive.\", \"event\": \"ADD\"}, {\"id\": \"044fcc1f-5cc0-4c80-9248-b7fa847d1282\", \"memory\": \"User requested to share release note RELNOTE-PG01-A with release-ops@corp.com, with output format: RELEASE|reference|status|environment|expiry.\", \"event\": \"ADD\"}, {\"id\": \"4b245cbb-aad2-40d9-8030-10931708fadd\", \"memory\": \"The system searched multiple directories includi"
+ },
+ "02_pg01_release_decision_followup_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 1725,
+   "output_tokens": 62,
+   "calls": 1
+  },
+  "injected_chars": 1870,
+  "entries_after": 13,
+  "add_result": "{\"results\": [{\"id\": \"2c4ca1e3-bd8e-4e28-adb7-72ba06cdf5d5\", \"memory\": \"User is reviewing a prior attempt to circulate governance guidance for the Falcon integration item, which was previously settled, but the visible shell does not match the desired archive.\", \"event\": \"ADD\"}, {\"id\": \"bd7906d4-ace6-44fd-8530-c87ac9f51112\", \"memory\": \"User identified a failure pattern in the prior attempt: relying on fuzzy prior-decision recall instead of grounding on the exact earlier record.\", \"event\": \"ADD\"}, {\"id\": \"fc9b111d-e92a-4c6f-9703-81a604236483\", \"memory\": \"User noted a missed clue type: the need to"
+ },
+ "03_pg01_release_decision_followup_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 3723,
+   "output_tokens": 123,
+   "calls": 2
+  },
+  "injected_chars": 2383,
+  "entries_after": 15,
+  "add_result": "{\"results\": [{\"id\": \"6ada6061-a707-4b5b-b78e-d3d985cd0535\", \"memory\": \"User updated the retrieval policy for future release follow-ups by writing a general rule to search session history first, verify the exact reference ID and exact expiry date, reject stale or superseded records, and only then share release guidance.\", \"event\": \"ADD\"}]}"
+ },
+ "04_pg01_release_decision_followup_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 21130,
+   "output_tokens": 314,
+   "calls": 8
+  },
+  "injected_chars": 2688,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"6b898f53-958f-4694-aa52-d113b61aca5c\", \"memory\": \"User is attempting to circulate the governance guidance for the Atlas Sync relay follow-up, requiring the same disciplined process as the Falcon integration item: first consult the release_followup_lookup skill, then search persisted history for the exact earlier decision before sharing RELNOTE-PG01-NA with release-ops@corp.com.\", \"event\": \"ADD\"}, {\"id\": \"4911e860-e052-4a95-99c5-4467dcc9762f\", \"memory\": \"User was advised to use the release_followup_lookup skill to recover the exact reference ID, allowed environment, and exp"
+ },
+ "05_pg01_release_decision_followup_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 12692,
+   "output_tokens": 151,
+   "calls": 5
+  },
+  "injected_chars": 2870,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"17c4b0d7-cb3d-439c-a3de-eacb14d217f8\", \"memory\": \"User is attempting to circulate the governance guidance for the Blueport ingest plugin follow-up, requiring the same disciplined process as previous items: first consult the release_followup_lookup skill, then search persisted history for the exact earlier decision before sharing RELNOTE-PG01-NB with vendor-review@corp.com.\", \"event\": \"ADD\"}, {\"id\": \"29e64405-6819-4df1-b02a-043b7ed72179\", \"memory\": \"The release_followup_lookup skill could not be located in the expected path, specifically at skills/release_followup_lookup.md"
+ },
+ "06_pg01_release_decision_followup_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 12470,
+   "output_tokens": 188,
+   "calls": 5
+  },
+  "injected_chars": 2651,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"9b422e4f-a3b1-4530-bb8f-8787da6d4fa2\", \"memory\": \"User is requesting to share release note RELNOTE-PG01-FAR with procurement@corp.com, requiring the exact prior Falcon Edge decision, including reference ID, status, environment, and expiry date, as per the disciplined process for governance circulation.\", \"event\": \"ADD\"}, {\"id\": \"07522634-9a0b-4d54-8dba-9ad478cdb322\", \"memory\": \"User was advised to use the release_followup_lookup skill to recover the exact reference ID, allowed environment, and expiry date before sharing release guidance, but the skill file could not be loc"
+ },
+ "07_pg01_release_decision_followup_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 7589,
+   "output_tokens": 176,
+   "calls": 3
+  },
+  "injected_chars": 2981,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"59615b0a-f191-4ec6-9a20-4777ae982eb3\", \"memory\": \"User is attempting to circulate the governance guidance for the Atlas Sync relay follow-up, requiring the same disciplined process as the Falcon integration: first consult the release_followup_lookup skill, then search persisted history for the exact earlier decision before sharing RELNOTE-PG01-CP with release-ops@corp.com.\", \"event\": \"ADD\"}, {\"id\": \"876f4ab3-621f-4f62-a439-9669347c073a\", \"memory\": \"No meeting notes with tags 'atlas_sync', 'release', or 'followup' were found in the persisted history, and no prior decision r"
+ },
+ "08_pg01_release_decision_followup_control_boundary_wrong_record": {
+  "usage": {
+   "input_tokens": 15120,
+   "output_tokens": 240,
+   "calls": 6
+  },
+  "injected_chars": 2560,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"e701c9e0-6e5d-401e-b708-81a913c81b89\", \"memory\": \"User is attempting to circulate the current governance guidance for the Falcon Edge decision, specifically sharing RELNOTE-PG01-CB with release-governance@corp.com, but the exact reference ID, allowed environment, and expiry date cannot be recovered because the release_followup_lookup skill file is missing from expected paths including /skills/release_followup_lookup.md and /home/ubuntu/skills/release_followup_lookup.md.\", \"event\": \"ADD\"}, {\"id\": \"c58eb89c-0cf1-4083-86ad-73cd40cb9154\", \"memory\": \"The system attempted to loc"
+ }
+}

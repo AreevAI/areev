@@ -1,0 +1,191 @@
+{
+ "01_ep03_recall_then_modify_ep03_i01_modify_cold": {
+  "governance": null,
+  "tool_calls": 19,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 64338,
+   "output_tokens": 990,
+   "calls": 21
+  },
+  "injected_chars": 681
+ },
+ "02_ep03_recall_then_modify_ep03_i02_modify_seed": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 34633,
+   "output_tokens": 401,
+   "calls": 12
+  },
+  "injected_chars": 774
+ },
+ "03_ep03_recall_then_modify_ep03_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 45425,
+   "output_tokens": 467,
+   "calls": 14
+  },
+  "injected_chars": 867
+ },
+ "04_ep03_recall_then_modify_ep03_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 49804,
+   "output_tokens": 454,
+   "calls": 15
+  },
+  "injected_chars": 867
+ },
+ "05_ep03_recall_then_modify_ep03_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 19404,
+   "output_tokens": 394,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "06_ep03_recall_then_modify_ep03_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 19,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 78807,
+   "output_tokens": 885,
+   "calls": 21
+  },
+  "injected_chars": 867
+ },
+ "07_ep03_recall_then_modify_ep03_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 16099,
+   "output_tokens": 157,
+   "calls": 5
+  },
+  "injected_chars": 1722
+ }
+}

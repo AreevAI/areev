@@ -1,0 +1,199 @@
+{
+ "01_sm03_fact_correction_cold_fact_baseline": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12217,
+   "output_tokens": 241,
+   "calls": 5
+  },
+  "injected_chars": 937
+ },
+ "02_sm03_fact_correction_update_corrected_freeze_date": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: replace needs old_text"
+   },
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: replace needs old_text"
+   },
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "replace",
+    "ok": false,
+    "error": "ValueError: replace needs old_text"
+   },
+   {
+    "tool": "memory",
+    "action": "search",
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 21657,
+   "output_tokens": 362,
+   "calls": 8
+  },
+  "injected_chars": 971
+ },
+ "03_sm03_fact_correction_eval_near_use_corrected_fact": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12389,
+   "output_tokens": 191,
+   "calls": 5
+  },
+  "injected_chars": 1005
+ },
+ "04_sm03_fact_correction_eval_far_use_corrected_fact": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11982,
+   "output_tokens": 196,
+   "calls": 5
+  },
+  "injected_chars": 1005
+ },
+ "05_sm03_fact_correction_control_no_persistence_fact": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11994,
+   "output_tokens": 258,
+   "calls": 6
+  },
+  "injected_chars": 0
+ },
+ "06_sm03_fact_correction_control_shortcut_visible_corrected_fact": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 13619,
+   "output_tokens": 275,
+   "calls": 6
+  },
+  "injected_chars": 272
+ },
+ "07_sm03_fact_correction_control_fact_correction_control": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5691,
+   "output_tokens": 100,
+   "calls": 3
+  },
+  "injected_chars": 272
+ }
+}

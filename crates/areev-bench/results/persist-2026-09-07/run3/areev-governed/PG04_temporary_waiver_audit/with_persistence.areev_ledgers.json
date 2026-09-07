@@ -1,0 +1,479 @@
+{
+ "01_pg04_temporary_waiver_audit_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "9a8d269bdc041713aff1d2d2591488e7e6927f3d79dbfcf654b8bdef24d6c7f2",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify exact match of owner, service, scope, and expiry before applying any temporary waiver in audit updates.",
+     "approved": false,
+     "because": "The proposed memory change repeats the existing rule about temporary waivers.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nAudit whether a prior temporary waiver still applies to the current ledger-export request. Update AUDIT-PG04-A using this exact format only: WAIVER_AUDIT|approved=<comma-list-or-none>|rejected=<comma-list-or-none>|reference=<waiver-id-or-none>|expiry=<yyyy-mm-dd-or-none>. Output the same line.\", \"subject\": \"assistant\"}\n{\"object\": \"Temporary waivers never generalize beyond the exact owner, service, scope, and expiry tuple.\\nSearch the exact waiver record before updating an audit note.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 30051,
+   "output_tokens": 265,
+   "calls": 8
+  },
+  "injected_chars": 2008
+ },
+ "02_pg04_temporary_waiver_audit_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "5264898a4f177f2e0bd0ba61dbd01daf0702a742e5567519c5f503123385071b",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Verify exact match of owner, service, scope, and expiry before applying any temporary waiver in audit updates.",
+     "approved": false,
+     "because": "The proposed memory change repeats the existing rule about verifying the exact match of owner, service, scope, and expiry before applying any temporary waiver.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nPrior attempt review.\\nReflection only. Do not reveal any exact waiver IDs, case IDs, or expiry dates from the failed case.\\n\\nObserved failure pattern:\\n- error_class: reused a near-match waiver instead of checking the exact scope tuple\\n- missed_clue_type: exact owner/service/scope/expiry match requirement\\n- next_check_priority: search session history for the exact waiver record before updating the audit note\\n\\nOutput exactly three lines:\\nERROR_CLASS|...\\nMISSED_CLUE|...\\nNEXT_CHECK|...\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.54,
+   "passed": false,
+   "episode": "01_pg04_temporary_waiver_audit_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5111,
+   "output_tokens": 78,
+   "calls": 3
+  },
+  "injected_chars": 312
+ },
+ "03_pg04_temporary_waiver_audit_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.952,
+   "passed": false,
+   "episode": "02_pg04_temporary_waiver_audit_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5621,
+   "output_tokens": 192,
+   "calls": 3
+  },
+  "injected_chars": 312
+ },
+ "04_pg04_temporary_waiver_audit_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8344,
+   "passed": false,
+   "episode": "03_pg04_temporary_waiver_audit_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 21077,
+   "output_tokens": 308,
+   "calls": 5
+  },
+  "injected_chars": 2008
+ },
+ "05_pg04_temporary_waiver_audit_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8844,
+   "passed": false,
+   "episode": "04_pg04_temporary_waiver_audit_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 21874,
+   "output_tokens": 249,
+   "calls": 5
+  },
+  "injected_chars": 2008
+ },
+ "06_pg04_temporary_waiver_audit_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7984,
+   "passed": false,
+   "episode": "05_pg04_temporary_waiver_audit_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 24631,
+   "output_tokens": 223,
+   "calls": 6
+  },
+  "injected_chars": 2008
+ },
+ "07_pg04_temporary_waiver_audit_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7084,
+   "passed": false,
+   "episode": "06_pg04_temporary_waiver_audit_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 25486,
+   "output_tokens": 281,
+   "calls": 6
+  },
+  "injected_chars": 2009
+ },
+ "08_pg04_temporary_waiver_audit_control_boundary_scope_mismatch": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6964,
+   "passed": false,
+   "episode": "07_pg04_temporary_waiver_audit_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 25804,
+   "output_tokens": 271,
+   "calls": 6
+  },
+  "injected_chars": 2009
+ }
+}

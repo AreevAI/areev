@@ -1,0 +1,72 @@
+{
+ "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop": {
+  "usage": {
+   "input_tokens": 29737,
+   "output_tokens": 357,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 37220,
+   "output_tokens": 592,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_pc02_sop_patch_01_f02_i04_patch_eval_near": {
+  "usage": {
+   "input_tokens": 60402,
+   "output_tokens": 607,
+   "calls": 17
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_pc02_sop_patch_01_f02_i05_patch_eval_conflict": {
+  "usage": {
+   "input_tokens": 53755,
+   "output_tokens": 535,
+   "calls": 15
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_pc02_sop_patch_01_f02_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 29796,
+   "output_tokens": 357,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_pc02_sop_patch_01_f02_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 26712,
+   "output_tokens": 486,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_pc02_sop_patch_01_f02_c03_control_stale_procedure": {
+  "usage": {
+   "input_tokens": 26907,
+   "output_tokens": 414,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

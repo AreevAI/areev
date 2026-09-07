@@ -1,0 +1,82 @@
+{
+ "01_sm06_temporary_exception_pollution_cold_exception_baseline": {
+  "usage": {
+   "input_tokens": 7577,
+   "output_tokens": 143,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_sm06_temporary_exception_pollution_update_or_stabilize_exception_expiry": {
+  "usage": {
+   "input_tokens": 12349,
+   "output_tokens": 286,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_a": {
+  "usage": {
+   "input_tokens": 7405,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_sm06_temporary_exception_pollution_eval_near_apply_expired_exception_b": {
+  "usage": {
+   "input_tokens": 7579,
+   "output_tokens": 144,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_sm06_temporary_exception_pollution_eval_far_transfer_expired_exception": {
+  "usage": {
+   "input_tokens": 7573,
+   "output_tokens": 135,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm06_temporary_exception_pollution_control_no_persistence_exception": {
+  "usage": {
+   "input_tokens": 7405,
+   "output_tokens": 155,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_sm06_temporary_exception_pollution_control_shortcut_visible_exception_rule": {
+  "usage": {
+   "input_tokens": 7741,
+   "output_tokens": 157,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "08_sm06_temporary_exception_pollution_control_exception_pollution_control": {
+  "usage": {
+   "input_tokens": 7540,
+   "output_tokens": 181,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

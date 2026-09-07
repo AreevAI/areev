@@ -1,0 +1,130 @@
+{
+ "01_ep01_prior_case_recall_ep01_i01_recall_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3676,
+   "output_tokens": 39,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_ep01_prior_case_recall_ep01_i02_recall_seed": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3824,
+   "output_tokens": 60,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "03_ep01_prior_case_recall_ep01_i03_recall_noise": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3780,
+   "output_tokens": 37,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_ep01_prior_case_recall_ep01_i04_eval_near": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3778,
+   "output_tokens": 27,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "05_ep01_prior_case_recall_ep01_i05_eval_far": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3780,
+   "output_tokens": 41,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "06_ep01_prior_case_recall_ep01_i07_control_shortcut": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3807,
+   "output_tokens": 63,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "07_ep01_prior_case_recall_ep01_i08_control_wrong_mechanism": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3798,
+   "output_tokens": 83,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "08_ep01_prior_case_recall_ep01_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3799,
+   "output_tokens": 41,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}

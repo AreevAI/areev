@@ -1,0 +1,372 @@
+{
+ "01_pc01_sop_bootstrap_06_fx01_i01_x_cold": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24514,
+   "output_tokens": 641,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_06_fx01_i02_x_learn_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 0,
+    "cited": 0,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 0,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 35779,
+   "output_tokens": 810,
+   "calls": 11
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_06_fx01_i02b_x_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "85be7b131ee57fccca495f80de3f67e0d2dee6c9fbc70340e4047ae224ea72d7",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Activate retained onboarding procedure when role and policy context are present, even with minimal KB content.",
+     "approved": false,
+     "because": "The proposed memory change is based on a specific task and lacks general applicability or evidence of a standing instruction.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nYou are the social media agent for @corp_x. Review the latest mentions and timeline,\\nthen engage with each post according to company social media policy.\\n\\nThe KB only has a brief policy index in this episode. Use any procedure retained from the earlier onboarding reference if your framework preserved it.\\n\\nUse getMentions, getTimeline, and getUserProfile as needed before deciding on actions.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8,
+   "passed": false,
+   "episode": "02_pc01_sop_bootstrap_06_fx01_i02_x_learn_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 16363,
+   "output_tokens": 699,
+   "calls": 5
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_06_fx01_i03_x_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.512,
+   "passed": false,
+   "episode": "03_pc01_sop_bootstrap_06_fx01_i02b_x_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 39618,
+   "output_tokens": 735,
+   "calls": 12
+  },
+  "injected_chars": 356
+ },
+ "05_pc01_sop_bootstrap_06_fx01_i03b_x_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 8,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.512,
+   "passed": false,
+   "episode": "04_pc01_sop_bootstrap_06_fx01_i03_x_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 40544,
+   "output_tokens": 707,
+   "calls": 12
+  },
+  "injected_chars": 356
+ },
+ "06_pc01_sop_bootstrap_06_fx01_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "35c16507954757eb9f0772bd8185e19b59e3a5b736721ec2f25c405db5d6bcc0",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Always route every X operation through the `x_action` tool using the specified verb as the first parameter.",
+     "approved": true,
+     "because": "The memory change is a durable, general, and actionable instruction supported by the user's explicit directive.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nHere is the X (Twitter) Engagement Protocol you must follow:\\n\\nIMPORTANT \u2014 TOOL DISPATCH PATTERN: All X operations are issued through a single tool named `x_action`. The verb (replyToTweet / likeTweet / sendDM / quoteTweet / retweetTweet / getMentions / getTimeline / getTweet / getUserProfile / postTweet) is the value of the `action` field in the tool input \u2014 it is NOT a separate tool. Examples:\\n- To reply publicly: call `x_action` with `{\\\"action\\\": \\\"replyToTweet\\\", \\\"tweetId\\\": \\\"<id>\\\", \\\"text\\\": \\\"<reply text>\\\"}`. - To like: call `x_action` with `{\\\"action\\\": \\\"likeTweet\\\", \\\"tweetId\\\": \\\"<id>\\\"}`. - To DM: call `x_action` with `{\\\"action\\\": \\\"sendDM\\\", \\\"recipientId\\\": \\\"<user id>\\\", \\\"text\\\": \\\"<DM text>\\\"}`. - To quote-tweet: call `x_action` with `{\\\"action\\\": \\\"quoteTweet\\\", \\\"tweetId\\\": \\\"<id>\\\", \\\"text\\\": \\\"<"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24193,
+   "output_tokens": 404,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_06_fx01_c03_control_surface_memorization": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "53579287cde7364fc9f903899f928664e0b87d7aa2c5abcb9db11a9b6164b89c",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Apply prior engagement rules from previous sessions to new sessions unless explicitly overridden.",
+     "approved": false,
+     "because": "The proposed memory change is speculative and lacks concrete evidence of a standing instruction to apply prior engagement rules.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nHint: Previous engagement tasks involved keywords like replyToTweet, likeTweet, sendDM, quoteTweet, ignore, #CorpX, and a 1000-follower threshold.\\n\\nYou are the social media agent for @corp_x. Review the latest mentions and timeline,\\nthen take the appropriate action for each post.\\n\\nUse getMentions, getTimeline, and getUserProfile as needed.\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 21393,
+   "output_tokens": 368,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_06_fx01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 5,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 15210,
+   "output_tokens": 488,
+   "calls": 6
+  },
+  "injected_chars": 0
+ }
+}

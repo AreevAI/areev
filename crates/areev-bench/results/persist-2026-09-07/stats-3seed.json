@@ -1,0 +1,188 @@
+{
+ "root": "/home/swe/mg/local/areev-runs/persist/full",
+ "runs": [
+  "run1-sighted",
+  "run2",
+  "run3"
+ ],
+ "arms": {
+  "areev-governed": {
+   "families": 26,
+   "seeds": [
+    "run1-sighted",
+    "run2",
+    "run3"
+   ],
+   "mean_delta": 0.2655201282051282,
+   "per_seed_mean": {
+    "run1-sighted": 0.23735711538461537,
+    "run2": 0.2859199230769231,
+    "run3": 0.27328334615384614
+   },
+   "mechanism": 0.20062403846153845
+  },
+  "areev-passive": {
+   "families": 26,
+   "seeds": [
+    "run1-sighted",
+    "run2",
+    "run3"
+   ],
+   "mean_delta": 0.29101301282051284,
+   "per_seed_mean": {
+    "run1-sighted": 0.3062627692307692,
+    "run2": 0.27251796153846153,
+    "run3": 0.2942583076923077
+   },
+   "mechanism": 0.23458698717948717
+  },
+  "hermes": {
+   "families": 26,
+   "seeds": [
+    "run1-sighted",
+    "run2",
+    "run3"
+   ],
+   "mean_delta": 0.24601432051282052,
+   "per_seed_mean": {
+    "run1-sighted": 0.25224742307692305,
+    "run2": 0.2647826923076923,
+    "run3": 0.22101284615384614
+   },
+   "mechanism": 0.16642684615384615
+  }
+ },
+ "contrasts": [
+  {
+   "a": "areev-governed",
+   "b": "areev-passive",
+   "families": 26,
+   "mean_difference": -0.025492884615384622,
+   "wins": 14,
+   "losses": 12,
+   "wilcoxon_p": 0.7799549445979588,
+   "sign_p": 0.8450189828872681,
+   "per_family": {
+    "EP01_prior_case_recall": -0.01711666666666667,
+    "EP02_exception_list_recall": -0.1821666666666666,
+    "EP03_recall_then_modify": 0.06633333333333334,
+    "PC01_sop_bootstrap_01": -0.1360666666666667,
+    "PC01_sop_bootstrap_02": 0.012999999999999998,
+    "PC01_sop_bootstrap_03": -0.010000000000000009,
+    "PC01_sop_bootstrap_04": 0.052883333333333345,
+    "PC01_sop_bootstrap_05": -0.281,
+    "PC01_sop_bootstrap_06": -0.023333333333333327,
+    "PC02_sop_patch_01": -0.040999999999999995,
+    "PC02_sop_patch_02": 0.069,
+    "PC03_latent_rule_induction_01": 0.015,
+    "PC04_failure_to_rule_01": 0.11419999999999997,
+    "PG01_release_decision_followup": -0.17062166666666673,
+    "PG02_ops_exception_desk": 0.019933333333333247,
+    "PG03_oncall_handoff_lookup": 0.03337800000000002,
+    "PG04_temporary_waiver_audit": -0.04177733333333333,
+    "PG05_change_freeze_followup": 0.09475566666666663,
+    "PG06_kappa_integration_review": 0.00666666666666671,
+    "SM01_preference_adoption": 0.058666666666666645,
+    "SM02_constraint_retention": 0.06666666666666665,
+    "SM03_fact_correction": 0.06666666666666665,
+    "SM04_rule_migration": -0.32355,
+    "SM05_weak_trigger_preference_adoption": -0.055999999999999994,
+    "SM06_temporary_exception_pollution": -0.09866633333333333,
+    "SM07_scoped_rule_migration": 0.04133333333333333
+   }
+  },
+  {
+   "a": "areev-governed",
+   "b": "hermes",
+   "families": 26,
+   "mean_difference": 0.019505807692307694,
+   "wins": 12,
+   "losses": 13,
+   "wilcoxon_p": 0.41954703025225326,
+   "sign_p": 1.0,
+   "per_family": {
+    "EP01_prior_case_recall": 0.04600000000000001,
+    "EP02_exception_list_recall": 0.3509166666666667,
+    "EP03_recall_then_modify": -0.00273333333333331,
+    "PC01_sop_bootstrap_01": -0.04933333333333337,
+    "PC01_sop_bootstrap_02": 0.1,
+    "PC01_sop_bootstrap_03": -0.05146666666666669,
+    "PC01_sop_bootstrap_04": -0.3096333333333333,
+    "PC01_sop_bootstrap_05": 0.07433333333333332,
+    "PC01_sop_bootstrap_06": -0.132,
+    "PC02_sop_patch_01": -0.06656666666666666,
+    "PC02_sop_patch_02": 0.11366666666666667,
+    "PC03_latent_rule_induction_01": 0.020533333333333334,
+    "PC04_failure_to_rule_01": -0.10663333333333336,
+    "PG01_release_decision_followup": -0.0307553333333333,
+    "PG02_ops_exception_desk": 0.1281553333333333,
+    "PG03_oncall_handoff_lookup": 0.123556,
+    "PG04_temporary_waiver_audit": 0.11044466666666664,
+    "PG05_change_freeze_followup": -0.051377666666666655,
+    "PG06_kappa_integration_review": -0.027955666666666656,
+    "SM01_preference_adoption": -0.026666666666666672,
+    "SM02_constraint_retention": -0.09333333333333332,
+    "SM03_fact_correction": 0.17333333333333334,
+    "SM04_rule_migration": -0.02266666666666664,
+    "SM05_weak_trigger_preference_adoption": 0.0,
+    "SM06_temporary_exception_pollution": 0.066667,
+    "SM07_scoped_rule_migration": 0.17066666666666666
+   }
+  },
+  {
+   "a": "areev-passive",
+   "b": "hermes",
+   "families": 26,
+   "mean_difference": 0.04499869230769231,
+   "wins": 16,
+   "losses": 10,
+   "wilcoxon_p": 0.21331527360236624,
+   "sign_p": 0.32693958282470703,
+   "per_family": {
+    "EP01_prior_case_recall": 0.06311666666666668,
+    "EP02_exception_list_recall": 0.5330833333333332,
+    "EP03_recall_then_modify": -0.06906666666666665,
+    "PC01_sop_bootstrap_01": 0.08673333333333333,
+    "PC01_sop_bootstrap_02": 0.08700000000000001,
+    "PC01_sop_bootstrap_03": -0.04146666666666668,
+    "PC01_sop_bootstrap_04": -0.36251666666666665,
+    "PC01_sop_bootstrap_05": 0.35533333333333333,
+    "PC01_sop_bootstrap_06": -0.10866666666666666,
+    "PC02_sop_patch_01": -0.025566666666666668,
+    "PC02_sop_patch_02": 0.04466666666666666,
+    "PC03_latent_rule_induction_01": 0.0055333333333333345,
+    "PC04_failure_to_rule_01": -0.22083333333333333,
+    "PG01_release_decision_followup": 0.13986633333333343,
+    "PG02_ops_exception_desk": 0.10822200000000004,
+    "PG03_oncall_handoff_lookup": 0.09017799999999998,
+    "PG04_temporary_waiver_audit": 0.15222199999999997,
+    "PG05_change_freeze_followup": -0.14613333333333328,
+    "PG06_kappa_integration_review": -0.034622333333333366,
+    "SM01_preference_adoption": -0.08533333333333332,
+    "SM02_constraint_retention": -0.15999999999999998,
+    "SM03_fact_correction": 0.10666666666666669,
+    "SM04_rule_migration": 0.30088333333333334,
+    "SM05_weak_trigger_preference_adoption": 0.055999999999999994,
+    "SM06_temporary_exception_pollution": 0.16533333333333333,
+    "SM07_scoped_rule_migration": 0.12933333333333333
+   }
+  }
+ ],
+ "noise": {
+  "areev-governed": {
+   "mean_abs_diff": 0.09475125641025642,
+   "mean_sd": 0.06277195247714465,
+   "n_families": 26
+  },
+  "areev-passive": {
+   "mean_abs_diff": 0.1264675641025641,
+   "mean_sd": 0.08149956617961168,
+   "n_families": 26
+  },
+  "hermes": {
+   "mean_abs_diff": 0.09224315384615385,
+   "mean_sd": 0.06151857963375622,
+   "n_families": 26
+  }
+ }
+}

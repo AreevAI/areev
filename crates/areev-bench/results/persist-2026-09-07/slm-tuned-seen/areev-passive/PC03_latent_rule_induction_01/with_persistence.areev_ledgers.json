@@ -1,0 +1,148 @@
+{
+ "01_pc03_latent_rule_induction_01_f05_i01_hidden_baseline_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 4265,
+   "output_tokens": 64,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_pc03_latent_rule_induction_01_f05_i02_hidden_learn_case_a": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 50780,
+   "output_tokens": 505,
+   "calls": 13
+  },
+  "injected_chars": 275
+ },
+ "03_pc03_latent_rule_induction_01_f05_i03_hidden_learn_case_b": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 14719,
+   "output_tokens": 130,
+   "calls": 5
+  },
+  "injected_chars": 275
+ },
+ "04_pc03_latent_rule_induction_01_f05_i04_hidden_eval_near": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6849,
+   "output_tokens": 40,
+   "calls": 3
+  },
+  "injected_chars": 275
+ },
+ "05_pc03_latent_rule_induction_01_f05_i05_hidden_eval_far": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6894,
+   "output_tokens": 52,
+   "calls": 3
+  },
+  "injected_chars": 275
+ },
+ "06_pc03_latent_rule_induction_01_f05_c01_control_shortcut": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 23612,
+   "output_tokens": 581,
+   "calls": 7
+  },
+  "injected_chars": 0
+ },
+ "07_pc03_latent_rule_induction_01_f05_c02_control_too_few_examples": {
+  "governance": null,
+  "tool_calls": 15,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 70444,
+   "output_tokens": 641,
+   "calls": 16
+  },
+  "injected_chars": 0
+ }
+}

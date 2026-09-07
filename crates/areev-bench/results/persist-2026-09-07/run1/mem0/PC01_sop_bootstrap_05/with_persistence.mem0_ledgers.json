@@ -1,0 +1,82 @@
+{
+ "01_pc01_sop_bootstrap_05_fp01_i01_plonk_cold": {
+  "usage": {
+   "input_tokens": 22529,
+   "output_tokens": 685,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc01_sop_bootstrap_05_fp01_i02_plonk_learn_a": {
+  "usage": {
+   "input_tokens": 22154,
+   "output_tokens": 828,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"cf9e518a-4477-4a5d-ab0e-aaf246ebbf33\", \"memory\": \"User encountered a failure in the AuthWall login service on September 6, 2026, where users were unable to authenticate, prompting an incident response action.\", \"event\": \"ADD\"}, {\"id\": \"8df01a13-8a65-423f-b657-921cd1dd90f8\", \"memory\": \"User attempted to retrieve the Plonk incident response procedure (KB-PLK-001) from the knowledge base but received a connection error and a 'not found' response, rendering the SOP unavailable.\", \"event\": \"ADD\"}, {\"id\": \"07e54496-1414-4269-b282-8ca0f3c482ab\", \"memory\": \"User was unable to exec"
+ },
+ "03_pc01_sop_bootstrap_05_fp01_i02b_plonk_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 20005,
+   "output_tokens": 555,
+   "calls": 8
+  },
+  "injected_chars": 982,
+  "entries_after": 9,
+  "add_result": "{\"results\": [{\"id\": \"dbea77ca-f283-415e-a078-d509d7a3ea06\", \"memory\": \"User encountered a failure in the PayHub payment processing service on September 6, 2026, where customers were unable to complete purchases, prompting an incident response action.\", \"event\": \"ADD\"}, {\"id\": \"63746913-6488-477f-9ce5-45a97b6cf643\", \"memory\": \"User attempted to retrieve the Plonk incident response procedure (KB-PLK-001) from the knowledge base but received no results and a 'not found' error, rendering the SOP unavailable for this incident.\", \"event\": \"ADD\"}, {\"id\": \"90a8bf38-e4ec-41ef-8124-39ed83092195\", \"memor"
+ },
+ "04_pc01_sop_bootstrap_05_fp01_i03_plonk_eval_near": {
+  "usage": {
+   "input_tokens": 21655,
+   "output_tokens": 581,
+   "calls": 8
+  },
+  "injected_chars": 1741,
+  "entries_after": 13,
+  "add_result": "{\"results\": [{\"id\": \"3faab466-e592-44f0-bda5-2377da609bdb\", \"memory\": \"User encountered a failure in the NetGuard network routing fabric on September 6, 2026, where severe degradation caused multiple services to be affected, prompting an incident response action.\", \"event\": \"ADD\"}, {\"id\": \"8619e261-a7ad-4afb-ba86-781b12954058\", \"memory\": \"User attempted to execute standard incident reporting actions (`incident_report`, `report_incident`, `log`) but received 'Unknown method' errors, indicating these methods are not recognized or available in the current environment.\", \"event\": \"ADD\"}, {\"id\": \"9"
+ },
+ "05_pc01_sop_bootstrap_05_fp01_i03b_plonk_eval_far": {
+  "usage": {
+   "input_tokens": 22415,
+   "output_tokens": 622,
+   "calls": 8
+  },
+  "injected_chars": 1741,
+  "entries_after": 16,
+  "add_result": "{\"results\": [{\"id\": \"be93ef11-409e-4408-9b3e-970f7b54a811\", \"memory\": \"User encountered a failure in the StreamFlow real-time ingestion pipeline on September 6, 2026, where the pipeline stopped, consumer lag grew continuously, and multiple dashboards showed stale data, prompting an incident response action.\", \"event\": \"ADD\"}, {\"id\": \"18958ce5-3150-4266-b891-f7e6f3040f98\", \"memory\": \"User was unable to check the status of the StreamFlow pipeline using systemctl due to its unavailability in the environment, requiring alternative methods for diagnosis.\", \"event\": \"ADD\"}, {\"id\": \"5c4e1909-5459-45e"
+ },
+ "06_pc01_sop_bootstrap_05_fp01_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 10050,
+   "output_tokens": 142,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 5,
+  "add_result": "{\"results\": [{\"id\": \"b5208a99-2150-4ff5-b927-196d385ee517\", \"memory\": \"User handled a NetGuard network routing fabric incident on April 7, 2026, following the Plonk incident response SOP by using nexobi with jurela set to 'NetGuard' to locate the source message, obtaining tikano 'm006' as the source message ID\", \"event\": \"ADD\"}, {\"id\": \"352e1fbf-a1ad-4726-b675-905f669d2464\", \"memory\": \"User used felura with pikano set to 'm006' to pin the source message, confirming successful pinning as indicated by the response with grevani: true\", \"event\": \"ADD\"}, {\"id\": \"64277131-ea4b-4d43-84d1-8ded74fe6592"
+ },
+ "07_pc01_sop_bootstrap_05_fp01_c03_control_surface_memorization": {
+  "usage": {
+   "input_tokens": 30818,
+   "output_tokens": 630,
+   "calls": 12
+  },
+  "injected_chars": 0,
+  "entries_after": 6,
+  "add_result": "{\"results\": [{\"id\": \"0ba16d42-fcd4-422a-ba4f-b1ab2e04d99f\", \"memory\": \"User encountered a NetGuard network routing fabric degradation incident on September 6, 2026, affecting multiple services, and requested handling according to standard procedure using keywords such as nexobi, felura, zubefa, and plk-incidents\", \"event\": \"ADD\"}, {\"id\": \"d4901b0d-0dfd-439d-a065-6edd79d696b6\", \"memory\": \"The system attempted to resolve the incident by calling kb_search, which returned no relevant articles in two attempts\", \"event\": \"ADD\"}, {\"id\": \"e45cb8e5-a811-48ba-a32a-232675e88611\", \"memory\": \"Multiple call"
+ },
+ "08_pc01_sop_bootstrap_05_fp01_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 4125,
+   "output_tokens": 52,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

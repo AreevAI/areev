@@ -1,0 +1,484 @@
+{
+ "01_pg02_ops_exception_desk_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c9f8ff702b9ee2f60a83ab4785109b5619bdcfb120de85c0d6556b3c1a29946e",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve the exact exception record from session history before updating tickets; never infer it from context.",
+     "approved": false,
+     "because": "The proposed memory change is already covered by the existing rule about using the desk workflow skill to retrieve exact exception records.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nHandle today's open Wave Cedar export exception queue the same narrow way it was already handled before. Determine the applicable temporary exception and update only the exact approved subset. Do not close any ticket. Output: EXCEPTION|exception_id|approved_ticket_ids|blocked_ticket_ids\", \"subject\": \"assistant\"}\n{\"object\": \"Default outbound export disposition is blocked_pending_review.\\nTemporary exceptions are not durable policy: use the desk workflow skill and retrieve the exact exception record from session history.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 5,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 29710,
+   "output_tokens": 241,
+   "calls": 8
+  },
+  "injected_chars": 2012
+ },
+ "02_pg02_ops_exception_desk_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.608,
+   "passed": false,
+   "episode": "01_pg02_ops_exception_desk_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5182,
+   "output_tokens": 88,
+   "calls": 3
+  },
+  "injected_chars": 322
+ },
+ "03_pg02_ops_exception_desk_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_pg02_ops_exception_desk_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5714,
+   "output_tokens": 256,
+   "calls": 3
+  },
+  "injected_chars": 322
+ },
+ "04_pg02_ops_exception_desk_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "b6213432f4e6f7a2af94f38e7651bf7bf6942f824759e0a3b07cfed37890e27c",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve the exact exception record from session history using the full exception ID before updating any ticket; never infer it from context.",
+     "approved": true,
+     "because": "This memory change provides a durable, general, and actionable procedure for handling exception records, supported by a direct user instruction.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nWork the Aurora Sync export exception queue. Read the desk workflow skill first, then search persisted history for the exact temporary exception before any ticket update. Do not close any ticket. Output: EXCEPTION|exception_id|approved_ticket_ids|blocked_ticket_ids\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.916,
+   "passed": false,
+   "episode": "03_pg02_ops_exception_desk_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 29529,
+   "output_tokens": 201,
+   "calls": 8
+  },
+  "injected_chars": 2012
+ },
+ "05_pg02_ops_exception_desk_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "489f352fc84fdfeccd1491f23bc9505dc17183d4059226fcbce5f1c1acad0519",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve the exact exception record from session history using the full exception ID before updating any ticket; never infer it from context.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nProcess the current mirror-west Wave Cedar queue. Read the desk workflow skill first, then search persisted history instead of relying on broad defaults or stale exceptions. Do not close any ticket. Output: EXCEPTION|exception_id|approved_ticket_ids|blocked_ticket_ids\", \"subject\": \"assistant\"}\n{\"object\": \"Retrieve the exact exception record from session history using the full exception ID before updating any ticket; never infer it from context.\", \"relation\": \"lesson\", \"subject\": \"desk_workflow\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.9864,
+   "passed": false,
+   "episode": "04_pg02_ops_exception_desk_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 66836,
+   "output_tokens": 529,
+   "calls": 13
+  },
+  "injected_chars": 2156
+ },
+ "06_pg02_ops_exception_desk_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7204,
+   "passed": false,
+   "episode": "05_pg02_ops_exception_desk_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 44942,
+   "output_tokens": 330,
+   "calls": 10
+  },
+  "injected_chars": 2156
+ },
+ "07_pg02_ops_exception_desk_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.9864,
+   "passed": false,
+   "episode": "06_pg02_ops_exception_desk_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 24422,
+   "output_tokens": 368,
+   "calls": 6
+  },
+  "injected_chars": 2156
+ },
+ "08_pg02_ops_exception_desk_control_boundary_scope_mismatch": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8364,
+   "passed": false,
+   "episode": "07_pg02_ops_exception_desk_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12569,
+   "output_tokens": 62,
+   "calls": 4
+  },
+  "injected_chars": 2156
+ }
+}

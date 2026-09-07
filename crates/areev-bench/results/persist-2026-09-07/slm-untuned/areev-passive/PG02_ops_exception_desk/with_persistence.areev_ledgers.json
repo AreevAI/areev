@@ -1,0 +1,285 @@
+{
+ "01_pg02_ops_exception_desk_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 44623,
+   "output_tokens": 304,
+   "calls": 10
+  },
+  "injected_chars": 2012
+ },
+ "02_pg02_ops_exception_desk_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3302,
+   "output_tokens": 65,
+   "calls": 2
+  },
+  "injected_chars": 322
+ },
+ "03_pg02_ops_exception_desk_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "edit",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 3594,
+   "output_tokens": 87,
+   "calls": 2
+  },
+  "injected_chars": 322
+ },
+ "04_pg02_ops_exception_desk_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11893,
+   "output_tokens": 106,
+   "calls": 4
+  },
+  "injected_chars": 2230
+ },
+ "05_pg02_ops_exception_desk_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11931,
+   "output_tokens": 62,
+   "calls": 4
+  },
+  "injected_chars": 2288
+ },
+ "06_pg02_ops_exception_desk_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "{\"name\": \"memory\", \"arguments\": {\"action\": \"replace\", \"target\": \"user\", \"content\": \"Before this session ends: is there anything from it that a later session must know without being told \u2014 a preference"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 89697,
+   "output_tokens": 556,
+   "calls": 14
+  },
+  "injected_chars": 2288
+ },
+ "07_pg02_ops_exception_desk_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 4,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 48575,
+   "output_tokens": 650,
+   "calls": 10
+  },
+  "injected_chars": 2288
+ },
+ "08_pg02_ops_exception_desk_control_boundary_scope_mismatch": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "memory",
+    "action": "add",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 4,
+   "profile": 1,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 12105,
+   "output_tokens": 181,
+   "calls": 4
+  },
+  "injected_chars": 2344
+ }
+}

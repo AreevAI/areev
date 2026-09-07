@@ -1,0 +1,130 @@
+{
+ "01_pg04_temporary_waiver_audit_attempt_probe_pre": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8190,
+   "output_tokens": 205,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_pg04_temporary_waiver_audit_reflection_gap_review": {
+  "governance": null,
+  "tool_calls": 3,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5710,
+   "output_tokens": 146,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "03_pg04_temporary_waiver_audit_update_or_stabilize_policy_note": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2789,
+   "output_tokens": 112,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "04_pg04_temporary_waiver_audit_eval_near_followup_a": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1854,
+   "output_tokens": 116,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "05_pg04_temporary_waiver_audit_eval_near_followup_b": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1855,
+   "output_tokens": 85,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "06_pg04_temporary_waiver_audit_eval_far_followup_transfer": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 1856,
+   "output_tokens": 66,
+   "calls": 1
+  },
+  "injected_chars": 0
+ },
+ "07_pg04_temporary_waiver_audit_control_preload_visible_hint": {
+  "governance": null,
+  "tool_calls": 4,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10472,
+   "output_tokens": 329,
+   "calls": 5
+  },
+  "injected_chars": 0
+ },
+ "08_pg04_temporary_waiver_audit_control_boundary_scope_mismatch": {
+  "governance": null,
+  "tool_calls": 2,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 5767,
+   "output_tokens": 146,
+   "calls": 3
+  },
+  "injected_chars": 0
+ }
+}

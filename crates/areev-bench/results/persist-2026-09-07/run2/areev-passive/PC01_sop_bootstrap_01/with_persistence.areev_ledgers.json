@@ -1,0 +1,204 @@
+{
+ "01_pc01_sop_bootstrap_01_f01_i01_skill_baseline_cold": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 34381,
+   "output_tokens": 430,
+   "calls": 11
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_01_f01_i02_skill_learn_a": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 27240,
+   "output_tokens": 608,
+   "calls": 7
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_01_f01_i03_skill_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 32467,
+   "output_tokens": 483,
+   "calls": 10
+  },
+  "injected_chars": 306
+ },
+ "04_pc01_sop_bootstrap_01_f01_i04_skill_eval_near": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 47717,
+   "output_tokens": 846,
+   "calls": 13
+  },
+  "injected_chars": 306
+ },
+ "05_pc01_sop_bootstrap_01_f01_i05_skill_eval_far": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 39150,
+   "output_tokens": 759,
+   "calls": 11
+  },
+  "injected_chars": 306
+ },
+ "06_pc01_sop_bootstrap_01_f01_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 28252,
+   "output_tokens": 516,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_01_f01_c03_control_surface_memorization": {
+  "governance": null,
+  "tool_calls": 11,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 32167,
+   "output_tokens": 607,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_01_f01_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 0,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 2034,
+   "output_tokens": 6,
+   "calls": 1
+  },
+  "injected_chars": 0
+ }
+}

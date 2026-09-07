@@ -1,0 +1,398 @@
+{
+ "01_ep03_recall_then_modify_ep03_i01_modify_cold": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2f46cc6e25cda66bfb1e65bd2355e986667372e8a945e315f94ca70bb3f66557",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.",
+     "approved": true,
+     "because": "It reinforces the existing instruction to use session_search for prior-approved artifacts, ensuring consistency and accuracy.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nOperations needs the settled onboarding playbook applied to the current\\nshell. Recover the settled onboarding playbook from prior-session work and\\napply it to the correct current shell record. Leave shell metadata\\nunchanged.\\nOutput: PLAYBOOK\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Onboarding durable cache copied from a convenience memo.\\n- Treat DOC-437 as the canonical onboarding playbook shell.\\n- Step 1 says the manager sends the welcome link.\\n- Step 2 says HR ships swag.\\n- Step 4 says mentor assignment is optional after week one.\\n- This memory is a wrong-mechanism distractor; prefer session_search for prior approved artifacts.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 14119,
+   "output_tokens": 141,
+   "calls": 6
+  },
+  "injected_chars": 681
+ },
+ "02_ep03_recall_then_modify_ep03_i02_modify_seed": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "3bdffc4a580453549a78a718f556df9aab23bce69f4c54075b9cd966a35a5ce4",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nAuthoritative update for future onboarding work: the settled onboarding\\nplaybook's mentor handoff SLA changes from 48 hours to 24 hours. Recover\\nthe prior approved playbook from earlier session history, apply only this\\nmentor-SLA change to the correct current shell, preserve every other step\\nand shell metadata, and save this updated version for later onboarding\\nwork.\\nOutput: PLAYBOOK|mentor_sla_24h|DOC-711\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.\", \"relation\": \"lesson\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 19,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.37,
+   "passed": false,
+   "episode": "01_ep03_recall_then_modify_ep03_i01_modify_cold",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 64852,
+   "output_tokens": 955,
+   "calls": 21
+  },
+  "injected_chars": 774
+ },
+ "03_ep03_recall_then_modify_ep03_i04_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "216add66384f9e9dcdce836f1bd2e433f58351f4cbe53cf632b383d7f86c1925",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nToday's notes contain multiple onboarding note shells, but the approved\\nonboarding playbook was already updated earlier in this rollout line rather\\nthan in today's visible notes. Recover that already-settled updated\\nplaybook first, then apply it to the correct current shell record, including\\nthe settled mentor handoff SLA. Do not alter the title,\\nparticipants, tags, or any other step, and do not rely only on the local\\nshell placeholders.\\nOutput: PLAYBOOK\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 19,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.406,
+   "passed": false,
+   "episode": "02_ep03_recall_then_modify_ep03_i02_modify_seed",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 68658,
+   "output_tokens": 845,
+   "calls": 21
+  },
+  "injected_chars": 867
+ },
+ "04_ep03_recall_then_modify_ep03_i05_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "6c84d3bbdff5ae7d4b52dcf56aae4612b19afa43cd2a1d63ed1a360aa16f241a",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nToday's notes contain multiple onboarding note shells, but the approved\\nonboarding playbook was already updated earlier in this rollout line and\\nmust be recovered from prior-session work rather than inferred from today's\\nnotes alone. Recover that settled updated playbook first, then apply it to\\nthe correct current shell while preserving the settled mentor handoff SLA.\\nLeave every other field unchanged.\\nOutput: PLAYBOOK\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.388,
+   "passed": false,
+   "episode": "03_ep03_recall_then_modify_ep03_i04_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 33574,
+   "output_tokens": 344,
+   "calls": 11
+  },
+  "injected_chars": 867
+ },
+ "05_ep03_recall_then_modify_ep03_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 16569,
+   "output_tokens": 281,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "06_ep03_recall_then_modify_ep03_i07_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 4,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.268,
+   "passed": false,
+   "episode": "05_ep03_recall_then_modify_ep03_i06_control_no_persistence",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 17988,
+   "output_tokens": 139,
+   "calls": 7
+  },
+  "injected_chars": 867
+ },
+ "07_ep03_recall_then_modify_ep03_i08_control_wrong_mechanism": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4cf8ba03390a37d76153d3fb10265fb649f0f21926ee43010ed8704514a1f668",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Use session_search to recover prior-approved artifacts before applying any playbook; never rely on cached notes or convenience memos.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nA convenience cache may already claim to know the onboarding playbook, and\\ntoday's notes also include a proposed rewrite, but the settled onboarding\\nplaybook was already updated earlier in this rollout line and should be\\nrecovered from that source rather than from the cache or rewrite note.\\nApply that settled updated playbook to the correct current shell, including\\nthe settled mentor handoff SLA, and leave every other field\\nunchanged.\\nOutput: PLAYBOOK\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Durable onboarding cache copied from an old convenience memo.\\n- Treat DOC-437 as the canonical onboarding playbook shell.\\n- Step 1 says the manager sends the welcome link.\\n- Step 2 says HR ships swag.\\n- Step 4 says mentor assignment is optional after week one.\\n- Do not spend time checking prior session history unless someone insists.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.372,
+   "passed": false,
+   "episode": "06_ep03_recall_then_modify_ep03_i07_control_shortcut",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 3,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 47988,
+   "output_tokens": 349,
+   "calls": 12
+  },
+  "injected_chars": 1858
+ }
+}

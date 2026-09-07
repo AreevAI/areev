@@ -1,0 +1,72 @@
+{
+ "01_sm04_rule_migration_cold_rule_baseline": {
+  "usage": {
+   "input_tokens": 21041,
+   "output_tokens": 477,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_sm04_rule_migration_update_new_review_rule": {
+  "usage": {
+   "input_tokens": 10402,
+   "output_tokens": 272,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "03_sm04_rule_migration_eval_near_apply_migrated_rule": {
+  "usage": {
+   "input_tokens": 11844,
+   "output_tokens": 187,
+   "calls": 6
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "04_sm04_rule_migration_eval_far_apply_migrated_rule": {
+  "usage": {
+   "input_tokens": 19014,
+   "output_tokens": 443,
+   "calls": 9
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "05_sm04_rule_migration_control_no_persistence_rule": {
+  "usage": {
+   "input_tokens": 31627,
+   "output_tokens": 693,
+   "calls": 14
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "06_sm04_rule_migration_control_shortcut_visible_migrated_rule": {
+  "usage": {
+   "input_tokens": 10303,
+   "output_tokens": 313,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "07_sm04_rule_migration_control_rule_migration_control": {
+  "usage": {
+   "input_tokens": 10114,
+   "output_tokens": 290,
+   "calls": 5
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

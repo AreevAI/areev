@@ -1,0 +1,82 @@
+{
+ "01_pg05_change_freeze_followup_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 23525,
+   "output_tokens": 389,
+   "calls": 10
+  },
+  "injected_chars": 748,
+  "entries_after": 6,
+  "add_result": "{\"results\": [{\"id\": \"bf278b26-1258-4611-ae61-365f4804ba24\", \"memory\": \"User requested to finish the current Atlas Billing change freeze note for FREEZE-PG05-A using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects, following the same resolution as previously settled by CAB.\", \"event\": \"ADD\"}, {\"id\": \"35f22750-e19c-475b-ad93-a9fa4789c8fd\", \"memory\": \"The system did not contain any valid change freeze packet or note for FREEZE-PG05-A on September 6, 2026, with both /workspace/notes/CHANGE_FREEZE_PG05.md and /workspace/notes/CHANGE_FREEZE_PG05-A.md returning file not f"
+ },
+ "02_pg05_change_freeze_followup_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 1802,
+   "output_tokens": 68,
+   "calls": 1
+  },
+  "injected_chars": 2057,
+  "entries_after": 10,
+  "add_result": "{\"results\": [{\"id\": \"c51b2a43-8f5a-4133-b45f-5bf0f9751ec9\", \"memory\": \"User reviewed the prior attempt to finalize the Atlas Billing change freeze note for FREEZE-PG05-A and identified a failure pattern: the assistant updated the note based on a weak cue rather than grounding the update on the exact earlier freeze packet.\", \"event\": \"ADD\"}, {\"id\": \"afdb1f7a-351e-4ade-bd66-5476980f975e\", \"memory\": \"User identified that the assistant missed the critical clues of the exact freeze packet ID, UTC start and end times, and the list of exception projects during the prior attempt.\", \"event\": \"ADD\"}, {\""
+ },
+ "03_pg05_change_freeze_followup_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 4095,
+   "output_tokens": 179,
+   "calls": 2
+  },
+  "injected_chars": 2937,
+  "entries_after": 12,
+  "add_result": "{\"results\": [{\"id\": \"44972a1d-d752-4c29-8e11-28010747c303\", \"memory\": \"User updated the retrieval policy for future change freeze follow-ups by writing a general rule to search session history for the latest matching freeze packet, verify the exact UTC start time, UTC end time, and exception projects, reject stale or wrong-scope packets, and only then update or share the current freeze note.\", \"event\": \"ADD\"}]}"
+ },
+ "04_pg05_change_freeze_followup_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 13389,
+   "output_tokens": 193,
+   "calls": 5
+  },
+  "injected_chars": 3345,
+  "entries_after": 17,
+  "add_result": "{\"results\": [{\"id\": \"81f0a96a-c544-4a7b-8c36-1b8b8ea01647\", \"memory\": \"User attempted to update the Nova Auth change freeze note for FREEZE-PG05-NA on September 6, 2026, by searching session history for the applicable CAB packet to complete the freeze note using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects.\", \"event\": \"ADD\"}, {\"id\": \"7e881476-0595-4e53-a016-ae2b6c6b154a\", \"memory\": \"The system could not retrieve any valid change freeze packet or note for Nova Auth in the workspace or session history on September 6, 2026, as both /workspace/skills/change_freeze_l"
+ },
+ "05_pg05_change_freeze_followup_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 61834,
+   "output_tokens": 810,
+   "calls": 19
+  },
+  "injected_chars": 3631,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"a81a3d45-0c51-48cd-a8a9-efd4edeaba20\", \"memory\": \"User attempted to update the Kappa Gateway change freeze note for FREEZE-PG05-NB on September 6, 2026, by searching session history and system logs for the applicable CAB packet using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects.\", \"event\": \"ADD\"}, {\"id\": \"b9fbe407-0a32-4163-b873-537ceaf6429a\", \"memory\": \"The assistant failed to retrieve the change freeze lookup skill file (/skills/change_freeze_lookup.md) on September 6, 2026, returning a 'File not found' error despite prior confirmation of "
+ },
+ "06_pg05_change_freeze_followup_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 16790,
+   "output_tokens": 188,
+   "calls": 6
+  },
+  "injected_chars": 3753,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"94594cbf-b82e-4afe-8d62-66c9a7ad1782\", \"memory\": \"User attempted to update the Meridian Data Bridge change freeze note for FREEZE-PG05-FAR on September 6, 2026, by searching session history and system logs for the applicable CAB packet using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects.\", \"event\": \"ADD\"}, {\"id\": \"2747241c-e1ac-4e37-b051-2bac4fd2c4b0\", \"memory\": \"No applicable CAB packet was found in session history or system logs for FREEZE-PG05-FAR, and the assistant confirmed that the freeze note update could not be completed due to missin"
+ },
+ "07_pg05_change_freeze_followup_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 17200,
+   "output_tokens": 236,
+   "calls": 6
+  },
+  "injected_chars": 3985,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"0dd9a42a-f3aa-4a99-ac32-01119705f96b\", \"memory\": \"User requested to update the change freeze note for FREEZE-PG05-CP on September 6, 2026, using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects, after first reading the change_freeze_lookup skill and searching session history and system logs.\", \"event\": \"ADD\"}, {\"id\": \"0da13764-a93c-4281-bbfb-957dfda16d1e\", \"memory\": \"The change_freeze_lookup skill could not be applied to FREEZE-PG05-CP because no valid session history or log files containing the search term 'FREEZE-PG05-CP' were found, and the s"
+ },
+ "08_pg05_change_freeze_followup_control_boundary_latest_packet": {
+  "usage": {
+   "input_tokens": 23344,
+   "output_tokens": 317,
+   "calls": 8
+  },
+  "injected_chars": 3928,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"0f908be1-dcd0-4ae7-9fc1-bf12ebcc16ea\", \"memory\": \"User requested to update the Atlas Billing change freeze note for FREEZE-PG05-CB using the exact format: FREEZE_NOTE|packet_id|start_utc|end_utc|exception_projects, following the same resolution as previously settled by CAB.\", \"event\": \"ADD\"}, {\"id\": \"4ebd8d76-399f-4ca0-a6ad-ac654fa22cad\", \"memory\": \"User emphasized that multiple CAB freeze packets exist for Atlas Billing, including stale and wrong-scope ones, and instructed to first read the newly added change_freeze_lookup skill before searching session history for the la"
+ }
+}

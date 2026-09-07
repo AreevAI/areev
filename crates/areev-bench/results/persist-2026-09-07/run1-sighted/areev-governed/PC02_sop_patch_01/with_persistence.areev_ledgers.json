@@ -1,0 +1,379 @@
+{
+ "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4906f3944dad0deb4ca85f1ffce56114939e7b5d8dea679dccc26f441cb0dabb",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve the current Billing Incident SOP from the skill library before triaging any ticket, ignoring stale cached summaries.",
+     "approved": true,
+     "because": "It provides a durable, general, and actionable procedure to ensure the assistant uses the most current Billing Incident SOP, supported by a direct user instruction.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nYou are a billing support agent. Review the open helpdesk tickets and triage them\\naccording to the Billing Incident SOP.\\n\\nThe KB only has a brief reference \u2014 it does not contain the full SOP. Check your\\nskill library for a saved Billing Incident SOP procedure and use that instead.\\nRetrieve and read the saved skill contents; do not rely on a skill listing or memory\\nsummary alone.\\n\\nApply the correct SOP rules to identify and escalate any billing cluster incidents.\\nDistinguish real incidents from routine requests.\\n\\nDo NOT close any ticket \u2014 leave resolution to the on-call billing engineer.\\nOutput one line per updated ticket: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 34649,
+   "output_tokens": 322,
+   "calls": 10
+  },
+  "injected_chars": 451
+ },
+ "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "fb2ec3ee8a6936d14b93b53e0142ef1bc1e0ae21a61736dc79149371aaa80102",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Retrieve the current Billing Incident SOP from the skill library before triaging any ticket, ignoring stale cached summaries.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nThe KB has been updated with a revised Billing Incident SOP (v2). The old SOP (v1) is\\nnow outdated and deprecated. Read the new SOP carefully \u2014 the escalation threshold,\\npriority label, category, and required tags have ALL changed from v1.\\n\\nIf you have a saved v1 SOP skill, UPDATE it to reflect the v2 rules now. Do not keep\\nthe old v1 procedure \u2014 it is deprecated and will produce incorrect results.\\nInspect the existing saved SOP skill before applying the patch, then patch that skill\\nto v2; do not rely on a skill listing or stale summary alone.\\n\\nApply the NEW v2 SOP to the open helpdesk tickets.\\n\\nDo NOT close any ticket \u2014 leave resolution to the on-call billing engineer.\\nOutput one line per updated ticket: TICKET_ID|priority|category|why\\n\", \"subject\": \"assistant\"}\n{\"object\": \"Retrieve the current Billing Incident SOP from the skill library before triaging any ticket, ignoring stale cached summaries.\", \"relation\": \"lesson\", \"subject\": \"billing_support\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 11,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.37,
+   "passed": false,
+   "episode": "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 65519,
+   "output_tokens": 723,
+   "calls": 15
+  },
+  "injected_chars": 451
+ },
+ "03_pc02_sop_patch_01_f02_i04_patch_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 1.0,
+   "passed": true,
+   "episode": "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 35358,
+   "output_tokens": 390,
+   "calls": 10
+  },
+  "injected_chars": 451
+ },
+ "04_pc02_sop_patch_01_f02_i05_patch_eval_conflict": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 7,
+  "memory_ops": [
+   {
+    "tool": "skills_list",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": false,
+    "error": "ValueError: old_text not found in skill billing-incident-sop"
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.388,
+   "passed": false,
+   "episode": "03_pc02_sop_patch_01_f02_i04_patch_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": ""
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 3
+  },
+  "usage": {
+   "input_tokens": 41251,
+   "output_tokens": 683,
+   "calls": 11
+  },
+  "injected_chars": 451
+ },
+ "05_pc02_sop_patch_01_f02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 48796,
+   "output_tokens": 469,
+   "calls": 14
+  },
+  "injected_chars": 0
+ },
+ "06_pc02_sop_patch_01_f02_c02_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "24f7dee5e6cadefd6a07d12432350f17ca2b0c4279870faef248c9910ebe65ea",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Count distinct reporters per billing cluster within a 4-hour window; escalate when 3 or more are identified",
+     "approved": true,
+     "because": "The memory change is a durable, general, actionable, and supported procedure for identifying and escalating billing incidents.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nYou are a billing support agent. Review the open helpdesk tickets and triage them\\nusing the Billing Incident SOP v2 provided below.\\n\\n## Billing Incident SOP v2\\n\\n**Escalation Trigger:** When 3 or more tickets from distinct reporters identify\\nthe same billing cluster failure within a 4-hour window, treat this as a billing\\nincident.\\n\\n**Required Actions:**\\n1. Read all open billing tickets and identify the cluster name.\\n2. Tag each incident ticket with: incident-core, billing-sla-breach\\n3. Set priority=critical on all cluster incident tickets.\\n4. Set category=incident-billing on all cluster incident tickets.\\n5. Do NOT close any ticket \u2014 leave resolution to the on-call billing engineer.\\n6. Output one line per updated ticket: TICKET_ID|priority|category|why\\n\\n**Threshold:** Minimum 3 tickets from distinct reporter"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 43635,
+   "output_tokens": 437,
+   "calls": 11
+  },
+  "injected_chars": 275
+ },
+ "07_pc02_sop_patch_01_f02_c03_control_stale_procedure": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c1c61a5b98a07c6f5be9adb708d0d5457743a4ec82563d4805e11699123335aa",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Flag any billing cluster failure reported by 2 or more distinct users within 4 hours as a potential escalation, even if not explicitly mentioned in the SOP.",
+     "approved": false,
+     "because": "The proposed memory change is already covered by the existing SOP and does not introduce a new general rule.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nYou are a billing support agent. Review the open helpdesk tickets and triage them\\nusing the Billing Incident SOP provided below.\\n\\n## Billing Incident SOP v1\\n\\n**Escalation Trigger:** When 2 or more tickets from distinct reporters identify\\nthe same billing cluster failure within a 4-hour window, treat this as a billing\\nincident.\\n\\n**Required Actions:**\\n1. Read all open billing tickets and identify the cluster name.\\n2. Tag each incident ticket with: incident-core\\n3. Set priority=high on all cluster incident tickets.\\n4. Set category=incident on all cluster incident tickets.\\n5. Do NOT close any ticket \u2014 leave resolution to the on-call billing engineer.\\n6. Output one line per updated ticket: TICKET_ID|priority|category|why\\n\\n**Threshold:** Minimum 2 tickets from distinct reporters pointing to the same\\ncluster = e"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 42949,
+   "output_tokens": 418,
+   "calls": 11
+  },
+  "injected_chars": 275
+ }
+}

@@ -1,0 +1,520 @@
+{
+ "01_pg06_kappa_integration_review_attempt_probe_pre": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "e6ab9c3774ea7fdea13bf71a4f825fc2dacd5e70ad3a67d94c2b8179b6a921ad",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before escalating any note, fetch the current week's exception IDs from session history and use them in the output.",
+     "approved": false,
+     "because": "The proposed memory change is a specific task instruction rather than a general rule or procedure.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nContinue the Kappa integration review in a fresh session. Work from the established Kappa review process, but only escalate notes that truly need escalation to the correct current alias; the weekly exception IDs are not repeated locally.\\nOutput each reviewed note as: NOTE_ID|decision|recipient|reason\", \"subject\": \"assistant\"}\n{\"object\": \"Kappa default escalation alias is infra-risk@corp.com.\\nWeekly exception IDs are not durable policy: retrieve the exact IDs from session history before escalating, and use the Kappa review workflow skill for triage.\", \"relation\": \"note\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 11684,
+   "output_tokens": 71,
+   "calls": 4
+  },
+  "injected_chars": 1961
+ },
+ "02_pg06_kappa_integration_review_reflection_gap_review": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.608,
+   "passed": false,
+   "episode": "01_pg06_kappa_integration_review_attempt_probe_pre",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 5285,
+   "output_tokens": 91,
+   "calls": 3
+  },
+  "injected_chars": 310
+ },
+ "03_pg06_kappa_integration_review_update_or_stabilize_policy_note": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "0709b76e71d2abd61e323d83da1153a89637f419806ea54e325e4066d1b5a362",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Immediately update meta-memory with any new routing rules from user instructions, using the current session's context.",
+     "approved": true,
+     "because": "The instruction to update meta-memory with new routing rules is durable, general, actionable, and supported by the user's directive.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nUpdate your own retrieval policy / meta-memory / skill note for future Kappa integration reviews.\\nStable routing fact change: - customer-facing payment or identity Kappa integrations now escalate to security-partners@corp.com instead of infra-risk@corp.com - every other Kappa escalation still uses infra-risk@corp.com - workflow steps are unchanged - weekly exception IDs must still be recovered from session history\\nWrite a general rule, not a case-specific memory. Do not include any exact weekly exception IDs or note IDs.\\nOutput: POLICY_UPDATED|kappa_review_workflow\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": false,
+    "error": "ValueError: old_text not found in skill kappa_review_workflow"
+   },
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "patch",
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.928,
+   "passed": false,
+   "episode": "02_pg06_kappa_integration_review_reflection_gap_review",
+   "n": 1
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 8075,
+   "output_tokens": 436,
+   "calls": 4
+  },
+  "injected_chars": 310
+ },
+ "04_pg06_kappa_integration_review_eval_near_followup_a": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "5f0b0b3d2d2dc146ae007f29d6fe37799c1397dfd17b030a125d7f8223dfd1c9",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before escalating any note, fetch the current week's exception IDs from session history and use them in the output.",
+     "approved": false,
+     "because": "The proposed memory change repeats the existing rule about retrieving exact exception IDs from session history before escalating.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRead the updated Kappa review workflow first, then re-check the Kappa panel after the scoped routing update. Customer-facing payment or identity notes now use the updated alias, but the weekly exception IDs are still not repeated locally. Recover the exact exception IDs and share only the notes that truly need escalation.\\nOutput each reviewed note as: NOTE_ID|decision|recipient|reason\", \"subject\": \"assistant\"}\n{\"object\": \"Immediately update meta-memory with any new routing rules from user instructions, using the current session's context.\", \"relation\": \"lesson\", \"subject\": \"kappa-integration-review\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 6,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.8616,
+   "passed": false,
+   "episode": "03_pg06_kappa_integration_review_update_or_stabilize_policy_note",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 55618,
+   "output_tokens": 382,
+   "calls": 11
+  },
+  "injected_chars": 2082
+ },
+ "05_pg06_kappa_integration_review_eval_near_followup_b": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 3,
+    "cited": 3,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 3,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7324,
+   "passed": false,
+   "episode": "04_pg06_kappa_integration_review_eval_near_followup_a",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 22313,
+   "output_tokens": 123,
+   "calls": 6
+  },
+  "injected_chars": 2082
+ },
+ "06_pg06_kappa_integration_review_eval_far_followup_transfer": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "4d522dba68645d39fc02aa508decf448e9026c1a999a60f32fb3c26aa6c46572",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before escalating any note, fetch the current week's exception IDs from session history and use them in the output.",
+     "approved": false,
+     "because": "The proposed memory change is already covered by the existing rule to retrieve exact IDs from session history before escalating.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nRead the updated Kappa review workflow first, then handle this different Kappa partner surface with the same disciplined review. Recover the exact weekly exception IDs before deciding, and do not let any old one-off shortcut leak into this case. Share only the notes that truly need escalation.\\nOutput each reviewed note as: NOTE_ID|decision|recipient|reason\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6964,
+   "passed": false,
+   "episode": "05_pg06_kappa_integration_review_eval_near_followup_b",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 26607,
+   "output_tokens": 119,
+   "calls": 6
+  },
+  "injected_chars": 2082
+ },
+ "07_pg06_kappa_integration_review_control_preload_visible_hint": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.7084,
+   "passed": false,
+   "episode": "06_pg06_kappa_integration_review_eval_far_followup_transfer",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 31718,
+   "output_tokens": 165,
+   "calls": 7
+  },
+  "injected_chars": 2082
+ },
+ "08_pg06_kappa_integration_review_control_boundary_scope_patch_mismatch": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 2,
+    "cited": 2,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 2,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.6964,
+   "passed": false,
+   "episode": "07_pg06_kappa_integration_review_control_preload_visible_hint",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 17842,
+   "output_tokens": 119,
+   "calls": 4
+  },
+  "injected_chars": 2146
+ }
+}

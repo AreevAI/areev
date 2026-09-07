@@ -1,0 +1,82 @@
+{
+ "01_pc01_sop_bootstrap_01_f01_i01_skill_baseline_cold": {
+  "usage": {
+   "input_tokens": 27228,
+   "output_tokens": 587,
+   "calls": 10
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ },
+ "02_pc01_sop_bootstrap_01_f01_i02_skill_learn_a": {
+  "usage": {
+   "input_tokens": 4193,
+   "output_tokens": 57,
+   "calls": 2
+  },
+  "injected_chars": 0,
+  "entries_after": 3,
+  "add_result": "{\"results\": [{\"id\": \"b1f3c508-6227-4cd5-a0e6-3694ea263dfe\", \"memory\": \"User has access to the Shared Incident SOP v1, which defines a trigger for incident escalation: three or more tickets from distinct reporters pointing to the same cluster failure within a 2-hour window, as of April 1, 2026\", \"event\": \"ADD\"}, {\"id\": \"1227fc77-2af9-47d9-9107-9bb1233893f9\", \"memory\": \"User was instructed to use the Shared Incident SOP v1 to identify the cluster crossing the shared-outage threshold, update only those tickets, and not close any, with the requirement to save the SOP as a reusable skill if not alr"
+ },
+ "03_pc01_sop_bootstrap_01_f01_i03_skill_update_or_stabilize": {
+  "usage": {
+   "input_tokens": 27770,
+   "output_tokens": 636,
+   "calls": 9
+  },
+  "injected_chars": 736,
+  "entries_after": 6,
+  "add_result": "{\"results\": [{\"id\": \"fbeadcde-cdee-4922-9432-9a6271315dd5\", \"memory\": \"User applied the Shared Incident SOP v1 to identify a cluster-wide incident on datasync-cluster-1, triggered by three or more distinct reporters (Nguyen-Van-Long, Anna-Kowalski, Rafael-Souza) reporting related issues within a 2-hour window on April 12, 2026, as defined in the SOP as of April 1, 2026\", \"event\": \"ADD\"}, {\"id\": \"558dbf5c-7d8f-493f-a398-13d6ec99d122\", \"memory\": \"User updated tickets TK-C301, TK-C302, and TK-C303 with 'high' priority, 'cluster' category, and 'shared-incident' and 'datasync-cluster-1' tags, confi"
+ },
+ "04_pc01_sop_bootstrap_01_f01_i04_skill_eval_near": {
+  "usage": {
+   "input_tokens": 52317,
+   "output_tokens": 510,
+   "calls": 16
+  },
+  "injected_chars": 1514,
+  "entries_after": 12,
+  "add_result": "{\"results\": [{\"id\": \"0f116009-7490-41a6-bc8a-82fa2c68393c\", \"memory\": \"User was instructed to use the Shared Incident SOP v1 to triage tickets, requiring access to the full SOP document to identify cluster-wide incidents, apply correct priority and category, and exclude unrelated tickets, but the full SOP is not available in the knowledge base as of September 6, 2026\", \"event\": \"ADD\"}, {\"id\": \"7d91ad23-7b2e-44a3-9d15-a874fb851696\", \"memory\": \"User attempted to retrieve the full Shared Incident SOP v1 from the knowledge base but found no matching articles, despite multiple searches, and the onl"
+ },
+ "05_pc01_sop_bootstrap_01_f01_i05_skill_eval_far": {
+  "usage": {
+   "input_tokens": 56583,
+   "output_tokens": 618,
+   "calls": 15
+  },
+  "injected_chars": 1514,
+  "entries_after": 11,
+  "add_result": "{\"results\": [{\"id\": \"0e14b93b-a43b-4e62-86b0-23e4de108ac0\", \"memory\": \"User identified a shared cluster incident on search-index-cluster-2 on April 12, 2026, triggered by three or more distinct reporters (Kenji-Watanabe, Min-Ji-Kim, Tariq-Al-Rashid) reporting related issues within a 2-hour window, consistent with the Shared Incident SOP v1 criteria as of April 1, 2026\", \"event\": \"ADD\"}, {\"id\": \"1a62d037-92cf-4323-b2c5-0b9f33c503b2\", \"memory\": \"User updated tickets TK-E501, TK-E502, and TK-E503 with 'high' priority, 'cluster' category, and 'shared-incident' and 'search-index-cluster-2' tags, co"
+ },
+ "06_pc01_sop_bootstrap_01_f01_c02_control_shortcut": {
+  "usage": {
+   "input_tokens": 12446,
+   "output_tokens": 602,
+   "calls": 4
+  },
+  "injected_chars": 0,
+  "entries_after": 6,
+  "add_result": "{\"results\": [{\"id\": \"5043412e-45cf-4fa5-a0b8-ef674482f72c\", \"memory\": \"User executed the Shared Incident SOP v1 to handle a cluster failure on auth-cluster-3 in the eu-west-1 region, triggered by three or more distinct reporters (Maria-Gonzalez, James-Okafor, Priya-Nair) reporting the same issue within a 2-hour window from 08:14 to 08:31 UTC on April 12, 2026\", \"event\": \"ADD\"}, {\"id\": \"b55d15b7-275c-497a-bce1-52266ed4df17\", \"memory\": \"User identified that three tickets (TK-A101, TK-A102, TK-A103) were related to a cluster incident involving auth-cluster-3, all reporting login failures and 500 "
+ },
+ "07_pc01_sop_bootstrap_01_f01_c03_control_surface_memorization": {
+  "usage": {
+   "input_tokens": 24497,
+   "output_tokens": 642,
+   "calls": 8
+  },
+  "injected_chars": 0,
+  "entries_after": 7,
+  "add_result": "{\"results\": [{\"id\": \"73303e15-2428-45fc-94bf-9c65a8f6e449\", \"memory\": \"User triaged open helpdesk tickets related to cluster failures and urgent issues on September 6, 2026, identifying a shared infrastructure outage affecting notify-cluster-5 in ap-southeast-1.\", \"event\": \"ADD\"}, {\"id\": \"d6f50ca9-6840-4a00-b44c-8b132e2e1d6d\", \"memory\": \"User updated ticket TK-D401 (notify-cluster-5 overloaded \\u2014 push notification service 504) with priority 'high' and category 'incident' due to critical impact on mobile users and 504 Gateway Timeout errors.\", \"event\": \"ADD\"}, {\"id\": \"39d71e7a-11f8-4ed3-ae8"
+ },
+ "08_pc01_sop_bootstrap_01_f01_c01_control_no_persistence": {
+  "usage": {
+   "input_tokens": 2034,
+   "output_tokens": 3,
+   "calls": 1
+  },
+  "injected_chars": 0,
+  "entries_after": 0,
+  "add_result": null
+ }
+}

@@ -1,0 +1,114 @@
+{
+ "01_pc02_sop_patch_01_f02_i01_patch_seed_old_sop": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 48737,
+   "output_tokens": 497,
+   "calls": 14
+  },
+  "injected_chars": 0
+ },
+ "02_pc02_sop_patch_01_f02_i03_patch_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 13,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 37220,
+   "output_tokens": 623,
+   "calls": 10
+  },
+  "injected_chars": 0
+ },
+ "03_pc02_sop_patch_01_f02_i04_patch_eval_near": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 29678,
+   "output_tokens": 359,
+   "calls": 9
+  },
+  "injected_chars": 0
+ },
+ "04_pc02_sop_patch_01_f02_i05_patch_eval_conflict": {
+  "governance": null,
+  "tool_calls": 24,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 93441,
+   "output_tokens": 716,
+   "calls": 25
+  },
+  "injected_chars": 0
+ },
+ "05_pc02_sop_patch_01_f02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 16,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 60976,
+   "output_tokens": 601,
+   "calls": 17
+  },
+  "injected_chars": 0
+ },
+ "06_pc02_sop_patch_01_f02_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 27184,
+   "output_tokens": 478,
+   "calls": 8
+  },
+  "injected_chars": 0
+ },
+ "07_pc02_sop_patch_01_f02_c03_control_stale_procedure": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 26671,
+   "output_tokens": 418,
+   "calls": 8
+  },
+  "injected_chars": 0
+ }
+}

@@ -355,8 +355,21 @@ sources state — distillation pays on narrow, high-volume, recurring work —
 and PAST-Bench is the counter-example that says where it stops. Neither
 small-model configuration reaches the 30B's 0.62 either.
 
-The held-out (unseen-families) adapter is rerunning; its condition lost its
-server to an out-of-memory during CUDA-graph capture.
+**The held-out split says nothing either way, and says so at n=5.** The
+second adapter trained on 20 families and was evaluated on the 6 it never
+saw (5 completed). On those families:
+
+| agent on the 5 held-out families | with memory | no persistence |
+|---|---:|---:|
+| 1.7B tuned on the **other 20** families | 0.496 | 0.324 |
+| 1.7B tuned on **all 26** (saw these) | 0.483 | 0.299 |
+| 1.7B untuned | 0.466 | 0.288 |
+
+Both adapters edge the base here, and the one that never saw these families
+edges the one that did — which is the ordering noise produces, not
+generalisation. Five families against a per-family spread of ~0.1 supports
+no claim at all, and it is reported as a null of measurement rather than a
+null of method.
 
 ### The gate, audited by a second judge
 

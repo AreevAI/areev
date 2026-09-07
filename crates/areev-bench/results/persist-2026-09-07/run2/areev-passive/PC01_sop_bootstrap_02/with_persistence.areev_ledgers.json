@@ -1,0 +1,165 @@
+{
+ "01_pc01_sop_bootstrap_02_fc02_i01_pipeline_cold": {
+  "governance": null,
+  "tool_calls": 12,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 12016,
+   "output_tokens": 544,
+   "calls": 4
+  },
+  "injected_chars": 0
+ },
+ "02_pc01_sop_bootstrap_02_fc02_i02_pipeline_learn_a": {
+  "governance": null,
+  "tool_calls": 6,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 20573,
+   "output_tokens": 286,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "03_pc01_sop_bootstrap_02_fc02_i02b_pipeline_update_or_stabilize": {
+  "governance": null,
+  "tool_calls": 10,
+  "memory_ops": [
+   {
+    "tool": "skill_view",
+    "action": null,
+    "ok": true
+   },
+   {
+    "tool": "skill_manage",
+    "action": "create",
+    "ok": true
+   }
+  ],
+  "nudge": {
+   "saved": 1,
+   "reply": "I have identified a recurring workflow for processing data analysis tickets using the team's standard. Since no existing skill or KB article defined the standard, I manually applied best practices bas"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 44996,
+   "output_tokens": 961,
+   "calls": 13
+  },
+  "injected_chars": 275
+ },
+ "04_pc01_sop_bootstrap_02_fc02_i03_pipeline_eval_near": {
+  "governance": null,
+  "tool_calls": 7,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 28228,
+   "output_tokens": 366,
+   "calls": 9
+  },
+  "injected_chars": 339
+ },
+ "05_pc01_sop_bootstrap_02_fc02_i03b_pipeline_eval_far": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 1
+  },
+  "usage": {
+   "input_tokens": 37327,
+   "output_tokens": 478,
+   "calls": 11
+  },
+  "injected_chars": 339
+ },
+ "06_pc01_sop_bootstrap_02_fc02_c02_control_shortcut": {
+  "governance": null,
+  "tool_calls": 9,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 30592,
+   "output_tokens": 407,
+   "calls": 9
+  },
+  "injected_chars": 275
+ },
+ "07_pc01_sop_bootstrap_02_fc02_c03_control_surface_memorization": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 25430,
+   "output_tokens": 355,
+   "calls": 8
+  },
+  "injected_chars": 275
+ },
+ "08_pc01_sop_bootstrap_02_fc02_c01_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 8,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 24893,
+   "output_tokens": 363,
+   "calls": 9
+  },
+  "injected_chars": 0
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "01_pg04_temporary_waiver_audit_attempt_probe_pre": {
+  "usage": {
+   "input_tokens": 4005,
+   "output_tokens": 42,
+   "calls": 2
+  },
+  "injected_chars": 528,
+  "entries_after": 4,
+  "add_result": "{\"results\": [{\"id\": \"3b344f27-d92a-46e7-9599-741b91115c18\", \"memory\": \"User requested an audit of a prior temporary waiver to determine its applicability to the current ledger-export request, using the exact format WAIVER_AUDIT|approved=<comma-list-or-none>|rejected=<comma-list-or-none>|reference=<waiver-id-or-none>|expiry=<yyyy-mm-dd-or-none>.\", \"event\": \"ADD\"}, {\"id\": \"c9bf1076-a4a5-49fc-a413-5d80b06432ce\", \"memory\": \"User's request was processed with no notes or records found, resulting in an empty audit response: WAIVER_AUDIT|approved=|rejected=|reference=|expiry=.\", \"event\": \"ADD\"}]}"
+ },
+ "02_pg04_temporary_waiver_audit_reflection_gap_review": {
+  "usage": {
+   "input_tokens": 6830,
+   "output_tokens": 171,
+   "calls": 4
+  },
+  "injected_chars": 1245,
+  "entries_after": 10,
+  "add_result": "{\"results\": [{\"id\": \"82595a00-4f96-43e9-b040-c9519987e5d7\", \"memory\": \"User reviewed a prior audit attempt and identified a failure pattern involving the reuse of a near-match waiver instead of verifying the exact owner, service, scope, and expiry tuple, which is required for valid waiver application.\", \"event\": \"ADD\"}, {\"id\": \"1556bf4b-612c-4911-bed4-f3928e7c8da8\", \"memory\": \"User highlighted that the missed clue in the failed case was the exact requirement to match owner, service, scope, and expiry precisely \\u2014 no generalization across near matches is allowed.\", \"event\": \"ADD\"}, {\"id\": \""
+ },
+ "03_pg04_temporary_waiver_audit_update_or_stabilize_policy_note": {
+  "usage": {
+   "input_tokens": 3783,
+   "output_tokens": 92,
+   "calls": 2
+  },
+  "injected_chars": 2412,
+  "entries_after": 12,
+  "add_result": "{\"results\": [{\"id\": \"5978d741-c56d-4e04-91c6-0e67a4638155\", \"memory\": \"User updated the retrieval policy for temporary waiver audits with a general rule that requires searching session history for the exact waiver record, verifying owner, service, scope, and expiry exactly, rejecting near matches, and updating the audit note only after successful retrieval.\", \"event\": \"ADD\"}]}"
+ },
+ "04_pg04_temporary_waiver_audit_eval_near_followup_a": {
+  "usage": {
+   "input_tokens": 15324,
+   "output_tokens": 172,
+   "calls": 6
+  },
+  "injected_chars": 2662,
+  "entries_after": 17,
+  "add_result": "{\"results\": [{\"id\": \"1a7bf8d5-da01-4327-b913-0f192d8cd8b1\", \"memory\": \"User attempted to update the AUDIT-PG04-NA record by searching session history for a prior temporary waiver applicable to the current CacheEdge request, but the system failed to locate the file skills/temporary_waiver_audit.md, indicating the file was not properly written or is missing.\", \"event\": \"ADD\"}, {\"id\": \"45d85b2f-4815-4b0b-b5c1-49a88c92505c\", \"memory\": \"User's attempt to retrieve session history for the temporary waiver audit failed due to the absence of any notes or files in the expected directory, as confirmed by"
+ },
+ "05_pg04_temporary_waiver_audit_eval_near_followup_b": {
+  "usage": {
+   "input_tokens": 10188,
+   "output_tokens": 167,
+   "calls": 4
+  },
+  "injected_chars": 2945,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"e2892e18-57ee-4783-a064-61f9d83dea77\", \"memory\": \"User attempted to update the AUDIT-PG04-NB record by searching session history for a prior temporary waiver applicable to the current metrics-drain request, but the system failed to locate the file skills/temporary_waiver_audit.md, indicating the file was not properly written or is missing.\", \"event\": \"ADD\"}, {\"id\": \"d9833576-0caa-438f-be5c-0226c7e1f7b1\", \"memory\": \"User requested an audit of a prior temporary waiver to determine its applicability to the current metrics-drain request, using the exact format WAIVER_AUDIT|app"
+ },
+ "06_pg04_temporary_waiver_audit_eval_far_followup_transfer": {
+  "usage": {
+   "input_tokens": 10264,
+   "output_tokens": 140,
+   "calls": 4
+  },
+  "injected_chars": 2937,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"11f183dd-c86f-42cc-bd3e-bcec7376433b\", \"memory\": \"User attempted to update the AUDIT-PG04-FAR record by searching session history for a prior temporary waiver applicable to the current ledger-export follow-up request, but the system failed to locate the file skills/temporary_waiver_audit.md, indicating the file was not properly written or is missing.\", \"event\": \"ADD\"}, {\"id\": \"445b4fa1-d2da-4426-a819-d8a6798c5425\", \"memory\": \"User received a response confirming that no prior temporary waiver record matching the exact criteria (owner, service, scope, expiry) was found in th"
+ },
+ "07_pg04_temporary_waiver_audit_control_preload_visible_hint": {
+  "usage": {
+   "input_tokens": 12890,
+   "output_tokens": 113,
+   "calls": 5
+  },
+  "injected_chars": 2946,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"f3243719-55a5-462d-8439-bc84b82cd8b9\", \"memory\": \"User attempted to update the AUDIT-PG04-CP record by searching session history for a prior temporary waiver applicable to the current request, but the system failed to locate the file skills/temporary_waiver_audit.md, indicating the file was not properly written or is missing, despite a visible note hinting at an EU waiver's existence.\", \"event\": \"ADD\"}, {\"id\": \"7557f59d-0269-40c8-abbc-8057eb7c4360\", \"memory\": \"User searched session history for a prior temporary waiver record matching the exact criteria (owner, service, sco"
+ },
+ "08_pg04_temporary_waiver_audit_control_boundary_scope_mismatch": {
+  "usage": {
+   "input_tokens": 7679,
+   "output_tokens": 73,
+   "calls": 3
+  },
+  "injected_chars": 2968,
+  "entries_after": 20,
+  "add_result": "{\"results\": [{\"id\": \"3dac0c6d-2e41-4ea0-94a1-a4e177e3ad18\", \"memory\": \"User attempted to update the AUDIT-PG04-CB record by searching session history for a prior temporary waiver applicable to the current ledger-export request, but the system failed to locate the file skills/temporary_waiver_audit/SKILL.md, indicating the file was not properly written or is missing, despite a visible note hinting at an EU waiver's existence.\", \"event\": \"ADD\"}]}"
+ }
+}

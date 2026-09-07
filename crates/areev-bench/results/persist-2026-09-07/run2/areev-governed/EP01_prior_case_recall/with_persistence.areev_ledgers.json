@@ -1,0 +1,386 @@
+{
+ "01_ep01_prior_case_recall_ep01_i01_recall_cold": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3673,
+   "output_tokens": 36,
+   "calls": 2
+  },
+  "injected_chars": 0
+ },
+ "02_ep01_prior_case_recall_ep01_i02_recall_seed": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "2c9dd7d1ce34412a44de91bd790f552b0b3517f9d37df4cd456f8b9b70c4847c",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Store every vendor approval decision with a unique ID, key terms, and expiry; retrieve it by ID in future sessions.",
+     "approved": true,
+     "because": "It provides a durable, general, and actionable procedure for logging and retrieving vendor approval decisions.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nWe need to formally log a vendor-approval decision. Please read the\\n\\\"Vendor X Contract Decision\\\" note in full and confirm its key terms in\\nyour response. We may reference this decision in later sessions, so make\\nsure the context is preserved.\\nOutput: VENDOR_DECISION|status|expiry\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 3,
+  "memory_ops": [],
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 11214,
+   "output_tokens": 104,
+   "calls": 5
+  },
+  "injected_chars": 371
+ },
+ "03_ep01_prior_case_recall_ep01_i03_recall_noise": {
+  "governance": {
+   "funnel": {
+    "evidence": 2,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.422,
+   "passed": false,
+   "episode": "02_ep01_prior_case_recall_ep01_i02_recall_seed",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 7907,
+   "output_tokens": 76,
+   "calls": 4
+  },
+  "injected_chars": 451
+ },
+ "04_ep01_prior_case_recall_ep01_i04_eval_near": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c8d6414c8b8b82a168a1302e7f0c949187204d2797afa91e7fa325cd4b9acd59",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Store every vendor approval decision with a unique ID, key terms, and expiry; retrieve it by ID in future sessions.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nProcurement is asking about Vendor X for production rollout next week.\\nAdvise them based on any prior-session decision we have on record.\\nOutput: VENDOR|advice|correct_note_id\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.532,
+   "passed": false,
+   "episode": "03_ep01_prior_case_recall_ep01_i03_recall_noise",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6163,
+   "output_tokens": 64,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "05_ep01_prior_case_recall_ep01_i05_eval_far": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 0,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 0,
+    "stored": 0
+   },
+   "findings": 0,
+   "pending": 0,
+   "applied": 0,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 1,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.524,
+   "passed": false,
+   "episode": "04_ep01_prior_case_recall_ep01_i04_eval_near",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 8340,
+   "output_tokens": 65,
+   "calls": 4
+  },
+  "injected_chars": 544
+ },
+ "06_ep01_prior_case_recall_ep01_i07_control_shortcut": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 1,
+   "rejected": 0,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "c7b05575f01e59a26b7dfcde124ad691ad0d26fffde3c5a8891c475afba4c4c3",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Before acting on a vendor mentioned in a new session, check if a prior decision exists by ID; if so, cite it directly.",
+     "approved": true,
+     "because": "It provides a general, actionable procedure to check for and cite prior vendor decisions by ID, supported by user instruction.",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nA teammate remembers there may have been some special handling for Vendor X,\\nbut the current session materials are incomplete. If we already settled this\\nin a prior session, answer from that prior decision and cite it.\\nOutput: VENDOR|advice|correct_note_id\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 0,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.422,
+   "passed": false,
+   "episode": "05_ep01_prior_case_recall_ep01_i05_eval_far",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 2,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 6095,
+   "output_tokens": 67,
+   "calls": 3
+  },
+  "injected_chars": 544
+ },
+ "07_ep01_prior_case_recall_ep01_i08_control_wrong_mechanism": {
+  "governance": {
+   "funnel": {
+    "evidence": 1,
+    "proposed": 1,
+    "cited": 1,
+    "dropped_uncited": 0,
+    "dropped_target": 0,
+    "grounded": 1,
+    "ground_verdicts": 1,
+    "ground_call_failed": false,
+    "kept": 1,
+    "stored": 1
+   },
+   "findings": 0,
+   "pending": 1,
+   "applied": 0,
+   "rejected": 1,
+   "reverted": 0,
+   "decisions": [
+    {
+     "hash": "08d3350156378e48d469702570dc3a613f141861fa1c4a1e5693ea6ed6920016",
+     "analyzer": "loop.llm/1",
+     "kind": "lesson",
+     "text": "Store every vendor-specific approval decision with a unique ID, key terms, and expiry; retrieve it by ID in future sessions.",
+     "approved": false,
+     "because": "already in force (restates an approved entry)",
+     "evidence": "{\"object\": \"The user instructed the assistant, in a new session:\\nLegal found a generic vendor policy note, but they need to know whether\\nVendor X had any specific one-off decision or exception beyond the generic\\nrule. Check prior work before answering.\\nOutput: VENDOR|advice|correct_note_id\\n\", \"subject\": \"assistant\"}"
+    }
+   ],
+   "errors": [],
+   "llm": true,
+   "reviewer": true
+  },
+  "tool_calls": 2,
+  "memory_ops": [
+   {
+    "tool": "session_search",
+    "action": null,
+    "ok": true
+   }
+  ],
+  "journaled_outcome": {
+   "task_score": 0.464,
+   "passed": false,
+   "episode": "06_ep01_prior_case_recall_ep01_i07_control_shortcut",
+   "n": 1
+  },
+  "nudge": {
+   "saved": 0,
+   "reply": "nothing to save"
+  },
+  "rendered": {
+   "notes": 1,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 10934,
+   "output_tokens": 116,
+   "calls": 5
+  },
+  "injected_chars": 544
+ },
+ "08_ep01_prior_case_recall_ep01_i06_control_no_persistence": {
+  "governance": null,
+  "tool_calls": 1,
+  "memory_ops": [],
+  "rendered": {
+   "notes": 0,
+   "profile": 0,
+   "skills": 0
+  },
+  "usage": {
+   "input_tokens": 3703,
+   "output_tokens": 47,
+   "calls": 2
+  },
+  "injected_chars": 0
+ }
+}
