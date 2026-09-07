@@ -751,7 +751,7 @@ Predictions, in order of confidence:
 - **Any per-family swing inside the noise floor (0.09–0.13):** not
   interpreted.
 
-Cap for run 4: **$12**. Measured against runs 1–3's key deltas — roughly
+Cap for run 4: **$20** (raised twice, both after the run began and both recorded here: $12 → $15 to pay for the governed re-run §11 #28 forced, → $20 with the run explicitly not to be stopped for budget). Measured against runs 1–3's key deltas — roughly
 $5–6 per full three-arm seed, Hermes the costliest arm at ~$0.35 per family
 against ~$0.25 for either Areev arm — three seeds of all three arms is
 ~$15–18, above the cap. Hermes's code is untouched, so run 4 runs the **two
