@@ -78,8 +78,8 @@ Why each line:
 The subject-rights verbs are on-demand rather than configured:
 
 ```bash
-areev subject-report  --db memory.db --subject "user:pat"          # Art. 15 / 20
-areev forget-subject  --db memory.db "user:pat" --text-mentions --yes   # Art. 17
+areev subject-report  "user:pat" --db memory.db                          # Art. 15 / 20
+areev forget-subject  "user:pat" --db memory.db --text-mentions --yes   # Art. 17
 ```
 
 They share one selector, so a disclosure reports exactly what an erasure
@@ -143,21 +143,36 @@ grain **subjects**, from the policy's own `known` list, or from a Tier-1 NER
 detector you install. A name appearing only in prose is detected by none of
 those, and every rule below that keys on `person` is silent for it:
 
-```bash
+```console
 $ echo "Marion Delacroix has type 2 diabetes." | areev anonymize scan --policy-file clinic-policy.json
-   detections: []            # not a subject, not in `known` -> not a person
+{
+  "text": "Marion Delacroix has type 2 diabetes.\n",
+  "detections": []
+}
 ```
 
-Add the identity and the rule fires, escalated to `phi` by the co-occurrence:
+Nothing: not a grain subject, not in `known`. Add the identity and the rule
+fires, escalated to `phi` by the co-occurrence:
 
-```bash
-# with "known": [{"value": "Marion Delacroix", "category": "person"}]
+```console
+$ # with "known": [{"value": "Marion Delacroix", "category": "person"}]
 $ echo "Marion Delacroix has type 2 diabetes." | areev anonymize scan --policy-file clinic-policy.json
-   detections: [("phi", "tier0.policy_known")]
+{
+  "text": "Marion Delacroix has type 2 diabetes.\n",
+  "detections": [
+    { "start": 0, "end": 16, "category": "phi", "confidence": 1.0, "detector": "tier0.policy_known" }
+  ]
+}
 
 $ echo "Marion Delacroix called about parking." | areev anonymize scan --policy-file clinic-policy.json
-   detections: []            # no condition nearby, and "person": "allow"
+{
+  "text": "Marion Delacroix called about parking.\n",
+  "detections": []
+}
 ```
+
+(One detection abridged onto a line; the binary prints a field per line.) The
+last one is empty because no condition is nearby and `"person"` is `allow`.
 
 Why this shape:
 
@@ -224,7 +239,8 @@ areev retention floor --db ledger.db --ns accounting --min-days 2555 \
   --because "7-year records retention"
 areev retention floors --db ledger.db
 
-# 2. Legal hold: suspends ALL age-based destruction on a namespace.
+# 2. Legal hold: suspends ALL age-based destruction on a namespace. Both ends
+#    take a mandatory --because and land in `areev audit export`.
 areev hold set     --db ledger.db --ns accounting --because "litigation 2026-114"
 areev hold list    --db ledger.db
 areev hold release --db ledger.db --ns accounting --because "matter closed"
@@ -245,16 +261,21 @@ Why each line:
   does not quietly win — the sweep skips it, on the record:
 
   ```
-  accounting: SKIPPED — VAL-E001: cutoff is younger than the 2555-day retention
-  floor on 'accounting' (7-year records retention) — destruction refused
+  accounting: SKIPPED — VAL-E001: validation error: cutoff is younger than the
+  2555-day retention floor on 'accounting' (7-year records retention) —
+  destruction refused
   ```
 
 - **A hold refuses rather than skips silently.** While a hold is live, age-based
   destruction on that namespace refuses with the hold's reason and the principal
-  who placed it.
+  who placed it. The hold row is deleted on release, so both transitions are
+  also written to the Tier-2 trail — releasing is the act an auditor asks
+  about, and it carries the same mandatory `--because` as placing.
 - **`--no-destructive-ops` is a process-wide cap over any grant.** It sits above
   the file's own `mg:permits` grants, so it narrows even a principal the file
-  authorizes. It covers `cal`, `repl`, `serve --mcp`, `ui` and `forget-subject`.
+  authorizes. It covers `cal`, `repl`, `serve --mcp`, `ui`, `forget-subject`,
+  `purge-older-than` and `retention sweep` — the last two being the age-based
+  destruction this profile's floor and hold exist to govern.
 - **Approvals: `--auth`, and never a shared token.** `run.respond` accepts an
   identity in proportion to how it was proven — a per-principal credential or
   native OIDC may approve; a proxy-asserted SSO identity may not unless the

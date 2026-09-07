@@ -70,6 +70,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `retention <set|list|clear|sweep>` and no `hold` line at all — so the two
   controls a records-retention deployment most needs were discoverable only
   by reading the source.
+- **`areev hold release` records why.** `set` has always demanded a
+  `--because` "because a hold with no recorded rationale is not auditable",
+  but `release` — the act an auditor actually asks about — accepted the flag
+  and ignored it, and the hold row that carries the placement reason is
+  *deleted* on release. Both transitions now demand a reason and write a
+  Tier-2 audit record, so `areev audit export` shows `hold.set` and
+  `hold.release` with who and why. **Breaking for scripts**: a bare
+  `areev hold release --ns NS` is now refused.
+- **`areev anonymize scan|test` no longer name a memory they never open.**
+  Both are pure text processing, but they resolved the default memory first —
+  printing `using default memory ~/.areev/default.db` and creating the
+  directory. They now dispatch before `resolve_db`, like `auth`.
 
 ### Added
 

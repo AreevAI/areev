@@ -97,11 +97,13 @@ COMMANDS:
                                       `floor --min-days N` declares a
                                       MINIMUM any sweep must respect —
                                       destruction younger than it refuses
-  hold     <set|release|list> [--ns NS] [--because \"why\"] [--by PRINCIPAL]
+  hold     <set|release|list> [--ns NS] --because \"why\" [--by PRINCIPAL]
                                       legal hold: while one is live on a
                                       namespace, ALL age-based destruction
                                       there refuses with the hold on record.
-                                      Also a file-truth
+                                      A file-truth; `set` and `release` both
+                                      demand a reason and both land in
+                                      `areev audit export`
   trigger  add --type KIND --workflow HASH --because \"why\"
            [--context-query SPEC]     a saved query the evaluator runs at
                                       fire time; its result rides into the
@@ -1300,52 +1302,11 @@ fn run() -> Result<(), String> {
         return run_auth(&flags, &positional);
     }
 
-    // Long-lived / exposed surfaces must name their memory explicitly rather
-    // than silently defaulting to the personal file.
-    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
-    let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
-
-    // print-only verbs never open the store (paths may be untilde-expanded)
-    if cmd == "hook" {
-        let target = positional.first().map(String::as_str).unwrap_or("claude-code");
-        if target != "claude-code" {
-            return Err(format!("unknown hook target '{target}'"));
-        }
-        let exe = std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "areev".into());
-        println!(
-            r#"Add to ~/.claude/settings.json (hooks section) to close the learning
-loop automatically — inject relevant memory before each prompt, and capture
-each exchange (with tool outcomes) when a turn ends:
-
-{{
-  "hooks": {{
-    "UserPromptSubmit": [{{ "hooks": [{{
-      "type": "command",
-      "command": "{exe} recall-hook --db {db} --ns {ns} --with-loop"
-    }}] }}],
-    "Stop": [{{ "hooks": [{{
-      "type": "command",
-      "command": "{exe} capture-stop --db {db} --ns {ns}"
-    }}] }}]
-  }}
-}}
-
-recall-hook reads the prompt and prints matching memories to stdout, which
-Claude Code injects as context — so retrieval no longer depends on the model
-choosing to call a tool. For on-demand reads/writes by the model itself, also
-register the MCP server:
-  claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
-
-Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
-        );
-        return Ok(());
-    }
-
-    // `anonymize scan` is pure text processing: it never opens the store,
-    // so it runs before the open like `hook`. The policy verbs
-    // (set/list/clear/mappings) are store-backed and dispatch below.
+    // `anonymize scan` and `anonymize test` are pure text processing: they
+    // never open the store, so they dispatch BEFORE `resolve_db` for the same
+    // reason `auth` does — resolving a default memory here is wasted work, and
+    // it prints a line naming a database the command never touches. The policy
+    // verbs (set/list/clear/mappings) are store-backed and dispatch below.
     if cmd == "anonymize" && positional.first().map(String::as_str) == Some("scan") {
         let text = match flag(&flags, "text") {
             Some(t) => t,
@@ -1440,6 +1401,49 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             // Non-zero exit is the point: this runs in CI.
             std::process::exit(1);
         }
+        return Ok(());
+    }
+
+    // Long-lived / exposed surfaces must name their memory explicitly rather
+    // than silently defaulting to the personal file.
+    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
+    let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
+
+    // print-only verbs never open the store (paths may be untilde-expanded)
+    if cmd == "hook" {
+        let target = positional.first().map(String::as_str).unwrap_or("claude-code");
+        if target != "claude-code" {
+            return Err(format!("unknown hook target '{target}'"));
+        }
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "areev".into());
+        println!(
+            r#"Add to ~/.claude/settings.json (hooks section) to close the learning
+loop automatically — inject relevant memory before each prompt, and capture
+each exchange (with tool outcomes) when a turn ends:
+
+{{
+  "hooks": {{
+    "UserPromptSubmit": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} recall-hook --db {db} --ns {ns} --with-loop"
+    }}] }}],
+    "Stop": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} capture-stop --db {db} --ns {ns}"
+    }}] }}]
+  }}
+}}
+
+recall-hook reads the prompt and prints matching memories to stdout, which
+Claude Code injects as context — so retrieval no longer depends on the model
+choosing to call a tool. For on-demand reads/writes by the model itself, also
+register the MCP server:
+  claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
+
+Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
+        );
         return Ok(());
     }
 
@@ -4436,6 +4440,30 @@ fn run_eval_case_model(
     }
 }
 
+/// Record a hold transition on the Tier-2 trail `areev audit export` reads.
+///
+/// The hold row itself is a file-truth that is DELETED on release, so without
+/// this the release leaves no trace at all — the placement would be the only
+/// half on record.
+fn audit_hold(
+    m: &mut Areev,
+    verb: &str,
+    ns: &str,
+    because: &str,
+    by: &str,
+    now: i64,
+) -> Result<(), String> {
+    let obs = areev_core::authz::audit_observation(
+        by,
+        verb,
+        &format!("hold ns:{ns}"),
+        Some(because),
+        0,
+        now,
+    );
+    m.add(&obs).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// `areev hold` — legal holds (governed-agents §5.4): while a hold is live on
 /// a namespace, ALL age-based destruction there refuses; sweeps skip it
 /// with the refusal on record. Erasure-vs-hold precedence (D10's
@@ -4454,16 +4482,26 @@ fn run_hold(
                     .to_string()
             })?;
             let by = flag(flags, "by").unwrap_or_else(|| "user:local".into());
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now = now_ms();
             m.place_hold(ns, &because, &by, now).map_err(|e| e.to_string())?;
+            audit_hold(m, "hold.set", ns, &because, &by, now)?;
             println!("hold placed on '{ns}' by {by}: {because}");
         }
+        // Releasing is the act an auditor asks about, so it is held to the
+        // same bar as placing: a reason is mandatory, and both ends land in
+        // `areev audit export` rather than only the placement.
         "release" => {
+            let because = flag(flags, "because").ok_or_else(|| {
+                "usage: areev hold release --because \"matter closed\" [--ns NS] \
+                 [--by PRINCIPAL] — a release with no recorded rationale is the \
+                 half of the trail an auditor actually asks for"
+                    .to_string()
+            })?;
+            let by = flag(flags, "by").unwrap_or_else(|| "user:local".into());
+            let now = now_ms();
             m.release_hold(ns).map_err(|e| e.to_string())?;
-            println!("hold released on '{ns}'");
+            audit_hold(m, "hold.release", ns, &because, &by, now)?;
+            println!("hold released on '{ns}' by {by}: {because}");
         }
         "list" => {
             let holds = m.holds().map_err(|e| e.to_string())?;
