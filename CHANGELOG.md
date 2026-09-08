@@ -152,6 +152,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would publish a number produced from a truncated prompt and never know.
   `RECALL` has announced the same kind of cut as `CAL-W015` since 1.5.1.
 
+- **The console shows CAL warnings.** Every other surface honoured the
+  "silence means the query did what you asked" contract — the bindings and the
+  MCP tool return `warnings`, the CLI prints them to stderr — but the console
+  received them from `POST /api/cal` and dropped them on the floor. That was
+  the worst place for it: this is the surface a person reads an answer from,
+  and a warning is exactly the news that the answer is a window rather than
+  the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
+  result on the Query page, in plain language, with the `CAL-Wnnn` code shown
+  only in Developer mode.
+
 ### Added
 
 - **World-time validity is queryable and renderable** (#206). `valid_from`,

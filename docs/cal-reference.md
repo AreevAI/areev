@@ -947,7 +947,11 @@ Warnings reach you as a `warnings` array of `CAL-Wnnn` strings in the result
 payload from `cal()` in Python and Node and from the MCP `areev_cal` tool, and
 alongside the payload on `POST /api/cal`. The key is present only when there is
 something to report, so a clean query returns the shape it always had. The
-`areev cal` CLI prints them to stderr instead, keeping stdout pure JSON.
+`areev cal` CLI prints them to stderr instead, keeping stdout pure JSON. The
+console shows them above the result on the Query page — in plain language, with
+the `CAL-Wnnn` code itself shown only in Developer mode, because "130 of 200
+memories were left out" is news for whoever is reading the answer while the
+code is developer chrome.
 
 `DESCRIBE`'s `with_options` lists the options that actually change a `RECALL`
 result, so a client can introspect rather than guess.
