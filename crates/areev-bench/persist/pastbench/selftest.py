@@ -126,6 +126,49 @@ def run(root):
     check("Paula Reed" in after["skill_docs"]["weekly_export"]["content"], "skill patch landed")
     it = after["internal_tools"]
     check(it["memory_write_count"] == 3 and it["memory_read_count"] == 1, "memory writes=%d reads=%d counted" % (it["memory_write_count"], it["memory_read_count"]))
+    # The evalset-run summary the governed arm journals must be the shape the
+    # loop's fail-closed reader accepts: a run_id and INTEGER counts. Three
+    # full runs recorded no verdict because this was a boolean (PERSIST.md
+    # §11 #24); the contract is pinned here so it cannot regress silently.
+    s = ab.eval_run_summary({"task_score": 0.234, "passed": False}, "02_x_learn_a")
+    check(s["run_id"] == "02_x_learn_a" and s["passed"] == 0 and s["failed"] == 1
+          and type(s["passed"]) is int and type(s["failed"]) is int and s["task_score"] == 0.234,
+          "journaled eval run is loop-readable: run_id + integer counts (%r)" % (s,))
+    s = ab.eval_run_summary({"task_score": 1.0, "passed": True}, "05_x_eval_far")
+    check(s["passed"] == 1 and s["failed"] == 0, "a passed episode counts as 1/0")
+    # The cold baseline is graded on a different schedule from the rest: its
+    # directory is back-filled into the variant BEFORE the score lands, so a
+    # search that stops at the first directory it finds reads nothing and the
+    # family's first lesson is proposed with no baseline (PERSIST.md §11 #25).
+    # The search must continue into shared_cold until a SCORE is found.
+    import pathlib
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "with_persistence" / "01_cold").mkdir(parents=True)
+    (tmp / "with_persistence" / "01_cold" / "t.jsonl").write_text('{"type":"turn"}\n')  # copied pre-grading
+    (tmp / "shared_cold" / "01_cold").mkdir(parents=True)
+    (tmp / "shared_cold" / "01_cold" / "t.jsonl").write_text('{"task_score":0.772,"passed":false}\n')
+    variant = tmp / "with_persistence"
+    found = None
+    for where in (variant, variant.parent / "shared_cold"):
+        prev = ab._latest_episode_below(where, 2)
+        if prev is None:
+            continue
+        found = ab._episode_score(prev)
+        if found:
+            break
+    check(found is not None and found["task_score"] == 0.772 and found["failed"] == 1,
+          "the cold baseline is found in shared_cold when the variant copy has no score yet (%r)" % (found,))
+    check(ab._episode_score(variant / "01_cold") is None, "an ungraded episode yields no score rather than a guess")
+    # The reviewer's branch for a revert must match the analyzer FAMILY: the
+    # id carries a version (`loop.outcome_review/1`), and comparing it to the
+    # bare name refused all 12 reverts run 4's gate proposed (§11 #28).
+    check(ab.is_family("loop.outcome_review/1", "outcome_review")
+          and ab.is_family("loop.outcome_review/2", "outcome_review")
+          and ab.is_family("outcome_review", "outcome_review"),
+          "a revert is recognised whatever its analyzer version")
+    check(not ab.is_family("loop.tool_failure/1", "outcome_review")
+          and not ab.is_family("", "outcome_review"),
+          "and nothing else is mistaken for one")
     check(it["skill_create_count"] == 1 and it["skill_update_count"] == 1, "skill create/update counted")
     check(it["session_search_calls"] == 1 and it["skill_read_count"] == 1, "session_search and skill_view counted")
 

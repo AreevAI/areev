@@ -1,6 +1,7 @@
 # Governed self-improvement across sessions — PAST-Bench and Horizon
 
-**Status: PAST-Bench complete, 2026-09-07.** Three seeds × three arms ×
+**Status: PAST-Bench complete; run 4 (2026-09-08) re-measured it after the
+Verify gate was found never to have fired.** Three seeds × three arms ×
 26 families, plus mem0 on one seed, plus the tuning leg and a gate audit.
 Evidence: [`results/persist-2026-09-07/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/persist-2026-09-07/).
 The Horizon track ran on its three public tasks only (§4). Budget: **$50**
@@ -293,6 +294,93 @@ retries' backoff, not the box, set the pace — so a run-set is ~12 h, not
 the 5 h first estimated; the mem0 arm is queued behind the Areev arms
 rather than added as a fifth stream, because a rate-limited key gains
 nothing from more streams.
+
+## Run 4 (2026-09-08) — the gate fires; the scores stay inside the noise
+
+**Evidence:** [`results/persist-run4-2026-09-08/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/persist-run4-2026-09-08/).
+Three seeds, 26 families, the two Areev arms. Hermes's rows are runs 1–3's,
+unchanged code and no rerun — stated wherever they are used. Spend $16.23
+against a cap raised twice (§10). Predictions were fixed in §10 before any
+run-4 episode; every one is reported below, met or not.
+
+**The result that is not about scores.** Runs 1–3 recorded **zero** measured
+outcomes across 78 governed arm-seeds and were read as "governance costs and
+gains nothing". That was never a measurement of governance. Seven independent
+defects sat between the harness holding a number and the gate being able to
+use it (§11 #20, #24–#28), each sufficient on its own to produce exactly the
+silence observed. Run 4 records **87 verdicts — 51 held, 28 regressed, 8
+drifted — and applies 16 reverts.** The prior null is retracted as
+uninterpretable, not overturned by a better number.
+
+| arm | mean Δ | s1 | s2 | s3 | mechanism | prompt tok / episode |
+|---|---:|---:|---:|---:|---:|---:|
+| areev-governed | **+0.293** | +0.300 | +0.289 | +0.320 | 0.205 | 18,660 |
+| areev-governed-blindrevert | +0.279 | +0.279 | +0.320 | +0.265 | 0.198 | — |
+| areev-passive | +0.268 | +0.249 | +0.298 | +0.248 | 0.206 | 19,108 |
+| hermes 0.4.0 *(runs 1–3)* | +0.246 | +0.252 | +0.265 | +0.221 | 0.166 | 28,269 |
+
+Noise floor, same arm and family across seeds: **0.078–0.104**. Every gap in
+that table is inside it.
+
+### Against the predictions, in order
+
+| stated in §10 | outcome | |
+|---|---|---|
+| procedural Δ rises from +0.144/+0.112 toward Hermes's +0.169 | governed **+0.112 → +0.158**; passive +0.144 → +0.153 | partly |
+| `sop_bootstrap_04`/`_06` stop scoring below their own no-memory floor | `_04` fixed (Δ +0.137, 0.487 vs 0.350); **`_06` still below** (0.280 vs 0.350) | partly |
+| governed ≥ passive once reverts fire | **−0.025 (p 0.78) → +0.040 (p 0.11)**, 13/10 | direction, not significance |
+| passive − hermes at **p < 0.10** | **+0.016, p 0.84**, 12/12 | **not met** |
+| prompt tokens ≤ +10% | passive +2.5%, governed −3.9% | met |
+
+**The headline contrast moved the wrong way and the bar was missed.** Passive
+fell +0.291 → +0.268 while governed rose +0.266 → +0.293; both moves are
+inside the noise floor, but the paired passive−hermes contrast went from
++0.045 (p 0.21) to +0.016 (p 0.84). Run 4 does not support "level with the
+leading agent framework" any more strongly than runs 1–3 did; it supports it
+less. The cost claim is unchanged and is the one that still clears its bar:
+19,108 tokens per episode against Hermes's 28,269, a third less.
+
+### What reverts buy, isolated
+
+`areev-governed-blindrevert` is the same code with one variable disabled —
+§11 #28 made every revert unreachable — run on the same seeds. It is the
+cleanest contrast this track has produced, and it is small:
+
+| contrast | mean difference | W/L | Wilcoxon p |
+|---|---:|---|---:|
+| governed − blindrevert (all 26) | +0.014 | 11/13 | 0.94 |
+| governed − blindrevert (procedural, 8) | **+0.063** | — | no test at n=8 |
+
+Overall, applying reverts is unreadable against the noise. On procedural
+families — where a harmful rule is a wrong step rather than a wrong fact —
+the fixed arm scores +0.158 against the blind arm's +0.095, and
+`sop_bootstrap_04` separates cleanly: blind **−0.025, below its own
+no-memory floor**; fixed **+0.137**. That is the shape the design predicts,
+at a sample size that cannot carry a claim.
+
+### What run 4 cannot say
+
+- **Nothing about executable plans.** Every `plan` proposal degraded to a
+  skill: the proposer writes edge conditions like `tickets.length > 0`,
+  outside the runtime's frozen v1 grammar, so the plan validator refuses
+  them (§11 #27). Procedure *capture* is tested — 395 of 526 evaluation
+  episodes rendered a skill — the plan grain is not.
+- **Nothing about provider drift.** Hermes was not rerun; its rows are
+  eleven days older than the arms they are paired against.
+- `PC01_sop_bootstrap_06` is missing from run 4's passive arm (it scored
+  −0.005 in runs 1–3, so its absence does not explain the passive decline).
+
+### What to do next, in order
+
+1. **Teach the proposer the condition grammar by example, not by
+   description.** It is the single blocker on the plan grain, and the fix is
+   a prompt change plus the existing validator.
+2. **Rerun Hermes** before any comparative claim is published. ~$7.
+3. `min_evidence: 2` is pre-registered and untested — the audit's
+   over-generalisation finding still has no measurement.
+4. `sop_bootstrap_06` has now scored below its no-memory floor in six
+   consecutive arm-runs. It is a reproducible harm, and nobody has read a
+   transcript of it.
 
 ## Results so far — read against the noise floor
 
@@ -731,7 +819,9 @@ Predictions, in order of confidence:
   scoring below their own no-memory floor. If procedural does not move, the
   writer is not the cause and the proposer's skill/plan drafts are being
   refused — the funnel says where.
-- **Governed vs passive:** runs 1–3 read −0.025 (p 0.78) with zero reverts.
+- **Governed vs passive** (tested by the governed RE-RUN only; §11 #28 made
+  the first governed leg a blind-revert reading, kept as
+  `areev-governed-blindrevert`): runs 1–3 read −0.025 (p 0.78) with zero reverts.
   Prediction: governed ≥ passive once harmful lessons are measured at the
   next episode and reverted, and lessons whose premise was superseded are
   reverted (`rule_migration`, −0.324 in run 3, is the named case). If
@@ -749,9 +839,17 @@ Predictions, in order of confidence:
 - **Any per-family swing inside the noise floor (0.09–0.13):** not
   interpreted.
 
-Cap for run 4: **$12**. The three-seed statistics script and the audit run
+Cap for run 4: **$20** (raised twice, both after the run began and both recorded here: $12 → $15 to pay for the governed re-run §11 #28 forced, → $20 with the run explicitly not to be stopped for budget). Measured against runs 1–3's key deltas — roughly
+$5–6 per full three-arm seed, Hermes the costliest arm at ~$0.35 per family
+against ~$0.25 for either Areev arm — three seeds of all three arms is
+~$15–18, above the cap. Hermes's code is untouched, so run 4 runs the **two
+Areev arms** for three seeds (~$8–10) and pairs them against runs 1–3's
+Hermes rows, stated as such; a Hermes rerun (~$7) is a provider-drift
+control that can be added to the same roots at any time, and is recorded
+here if it is. The three-seed statistics script and the audit run
 unchanged; the harness's configuration is written beside every ledger as
-`loop-policy.json`.
+`loop-policy.json`. Run 4 was preceded by a one-family paid smoke
+(`PC01_sop_bootstrap_04`, both Areev arms, $0.14), which found #24.
 
 ## 11. The defect ledger — what building the harness found (running)
 
@@ -779,7 +877,12 @@ changed a number before it was caught.
 | 17 | 2026-09-07, titled rerun | harness | `PG01_release_decision_followup`'s seeded sessions plus the family's own turns passed the 500-grain scan cap the harness inherited from the receipts rule ("a truncated prompt is a wrong prompt"), the scan raised, the exception's traceback kept the file handle alive, and the next open failed with STO-E002 for both Areev arms | event scans are bounded at CAL's 1000 and never raise (a truncated title list is a bounded answer, not a wrong one); `with_memory` drops the traceback before releasing the handle; PG01 rerun |
 | 18 | 2026-09-07, run 1 audit | harness | the ROOT CAUSE of #7 and #14: the binding's `recommendations()` JSON has no `evidence` field at all (analyzer, summary, target_ref, status, hash, severity, …), so every reviewer call since the pilot was handed "(none)" and the gate refused 75 of 75 proposals in run 1 as unsupported — the governed arm was the passive arm plus the loop's cost, by construction. The cited hashes live in the stored recommendation Fact (`areev-loop` namespace, relation `loop_recommendation`, the record in `object`) | the reviewer reads the evidence from the stored record; run 1's governed arm is the *blind-gate* reading and stays; run 2 is the first sighted run and is labelled so |
 | 19 | 2026-09-07, run 1 audit | harness | `session_search` returned single matching Events out of context: on the three session-search families Hermes (session summaries) beat the Areev arms by 0.13–0.15 even after the titles fix, and the returned turns named the session that mattered without carrying what it said | the top matching sessions are returned as whole threads, in order, bounded — lossless where Hermes summarises |
-| 20 | 2026-09-07, three-seed forensics | engine | the Verify gate never fired: 81 lessons applied across the 78 governed arm-seeds, **0 verdicts, 0 reverts**. The adapter journaled every episode's score as an evalset run and set `outcome_evalset`, but no schedule, so the loop's default applied — the first checkpoint a day after the apply — on families whose median wall time is 6.8 minutes (max 12). The half of governance the receipts harness had just proved end to end was structurally unable to come due; every harmful lesson in #22 stayed live | the loop takes its schedule in the deployment's unit — `checkpoints: [{"after_runs": 1}]` measures at the next graded episode — and the harness sets exactly that; `cadence` is policy too, for the same reason in the other direction |
+| 20 | 2026-09-07, three-seed forensics | engine | the Verify gate never fired: 81 lessons applied across the 78 governed arm-seeds, **0 verdicts, 0 reverts**. The adapter journaled every episode's score as an evalset run and set `outcome_evalset`, but no schedule, so the loop's default applied — the first checkpoint a day after the apply — on families whose median wall time is 6.8 minutes (max 12). The half of governance the receipts harness had just proved end to end was structurally unable to come due; every harmful lesson in #22 stayed live | the loop takes its schedule in the deployment's unit — `checkpoints: [{"after_runs": 1}]` measures at the next graded episode — and the harness sets exactly that; `cadence` is policy too, for the same reason in the other direction. **Necessary, not sufficient**: the run-4 smoke found a second cause (#24) that would have kept every verdict at zero regardless |
 | 21 | 2026-09-07, three-seed forensics | engine | on procedural families 9 of 60 Areev arm-seeds had an EMPTY store at evaluation (Δ −0.033, below no memory); the other 51 scored +0.169 — Hermes's procedural score to the third decimal. In all nine the agent performed the procedure correctly in the learn episode (0.856 on `sop_bootstrap_04`, identical to Hermes) and then answered the session-end nudge "nothing to save". Every skill in the memory depended on the model volunteering one mid-task; Hermes runs a separate review pass that writes for it. Where Areev did write, the skill was thin (`artifact_rule_quality` 0.25 vs 1.0 on `failure_to_rule_01`): five terse lines against trigger / steps / verification / pitfalls | DISCOVER may author a Skill (`skills` policy, default on): description, `when_to_use`, ordered steps, named by the target, superseding a live skill of that name; successful tool calls join the evidence bundle after the failures, and the Tool brief carries the call's input. Gate-governed like every draft; never auto-applied |
 | 22 | 2026-09-07, three-seed forensics | harness + engine | of the 81 applied lessons only 41 came from learn episodes — 25 from control and 15 from evaluation episodes; 61 carry an absolute quantifier; 11 tell the agent to stop or escalate. One, "if a method is not found after three attempts, escalate to human immediately instead of retrying", applied at `eval_near`, took `sop_bootstrap_05` from passive +0.730 to governed −0.010; on `rule_migration` the loop encoded the OLD regime's flag as standing policy (−0.324). The audit's finding — 15 of 28 approvals generalised one instance — has a mechanism | `min_evidence` in the policy (default 1, today's behaviour; the audit argues 2); with #20 fixed, a harmful lesson is now measured at the next episode and reverted. The harness leaves `min_evidence` at its default for comparability and exposes `AREEV_LOOP_POLICY_EXTRA` to set it per run |
+| 24 | 2026-09-07, run-4 smoke | harness | with the schedule fixed, one family of the governed arm still recorded **no verdict** — every stored recommendation carried `metric: null`. The harness journaled each episode's score as `{"task_score": 0.234, "passed": false}`: a **boolean** `passed` and no `failed`. The loop's eval reader is fail-closed by design — a summary missing its counts is dropped, never defaulted (an absent `failed` must never read as zero failures) — so every run ever journaled here was unreadable, no metric ever attached, and the Verify gate had nothing to measure in runs 1–3 for THIS reason as much as for #20. The receipts harness writes integer counts, which is why the same gate works there | the harness writes `passed`/`failed` as integer counts beside `task_score`, through one helper the keyless selftest pins; the run is re-smoked before launch |
 | 23 | 2026-09-07, three-seed forensics | adapter | `constraint_retention`: both systems store the boundary with artifact quality 1.0 and retrieval 1.0; Areev scores a flat 0.664 on every seed, Hermes 0.904 on `eval_far`. Hermes routed it to `USER.md` (a behavioural expectation, always in context); Areev's agent used the profile slot in **0 of 156** arm-seeds. Where the governed loop restated the constraint as a procedure ("verify each recipient is an internal employee before sharing") `eval_far` rose 0.664 → 0.864 on two of three seeds: the same knowledge as a directive is obeyed, as a fact it is not | open — render constraints as in-scope directives and route behavioural rules to the profile section (the paper's E2); not changed before run 4 so the three fixes above can be attributed |
+| 25 | 2026-09-07, run-4 smoke | harness | with the journal readable (#24) the first learn episode still journaled nothing, so the family's first applied lesson was proposed with no run behind it and no metric attached. The cold baseline runs once per family in a shared pre-pass and its directory is back-filled into each variant BEFORE that grading lands: the search found the variant's `01_…`, read no score, and stopped. Looking in one place was the bug, not the place it looked | the search continues until a SCORE is found — variant first, then `shared_cold/` — and the keyless selftest pins both halves. Verified live: `evalset:PC01_sop_bootstrap_04:task_score`, baseline 0.246, checkpoints `[{"after_runs": 1}]` on a stored recommendation |
+| 26 | 2026-09-07, run-4 smoke | harness | a `held` verdict proposes nothing, and only the post-learn ANCHOR memory is archived — so a verdict recorded in an evaluation episode's working memory left no trace anywhere. Runs 1–3's "0 verdicts" was read off the ledgers, which counted reverts and never carried the verdict series at all | `govern()` writes the outcome series and a held/regressed/drifted tally into every ledger, so "did the gate fire" is answerable from the archive |
+| 27 | 2026-09-07, run-4 probe | engine | over ~35 loop passes across five smokes the proposer authored no skill and no plan. Probed directly against a clean successful trajectory it authored a PLAN every time — the benchmark family it was smoked on simply had no successful procedure to capture. But the plan was discarded twice over: its edge conditions (`tickets.length > 0`) are outside the runtime's frozen v1 grammar, and one step of four named `tool` as its tool — a reasoning step that calls nothing, which the grounding rule read as a fabrication and rejected the whole draft for | a graph the runtime refuses is recorded as a SKILL rather than dropped (the procedure is what is worth keeping; the model's own guard survives as prose); a step whose tool the evidence never shows keeps its instruction and loses the attribution, with at least one grounded step still required. Verified live: the same draft now lands as `record skill: "resolve_shared_incident" (4 steps)` |
+| 28 | 2026-09-08, run 4 in flight | harness | the gate fired — 26 measured regressions, 12 revert proposals reaching the reviewer — and the reviewer refused **every one** with "advisory only — asks for no change". Its approve-a-revert branch tests `analyzer == "outcome_review"` against the real id `loop.outcome_review/1`; the comparison is always false, so a revert fell through to the generic path, classified as advisory, and was dismissed. Detection worked and correction never fired, which makes run 4's governed leg a **blind-revert** reading exactly as run 1 was a blind-gate one | matched by analyzer FAMILY, version-insensitive, pinned by the keyless selftest; run 4's governed arm is archived as `areev-governed-blindrevert` and re-run with the fix (cap raised to $15 for it). The passive arm has no loop and is unaffected |

@@ -2327,10 +2327,12 @@ const DISCOVER_LEARNER_INSTRUCTIONS: &str = discover_instructions!(
 propose now is what it will do differently next time — a lesson you withhold \
 is a mistake it repeats. A correct, actionable proposal earns 1; a wrong or \
 trivial one is penalized 1; returning nothing while the evidence holds a \
-recurring failure, two or more rejected outcomes, or an instruction from a \
-person is ALSO penalized 1. Abstain only when the evidence shows none of \
-those. Prefer the one proposal that addresses the most frequent or most costly \
-failure over several speculative ones, and report your confidence honestly — \
+recurring failure, two or more rejected outcomes, an instruction from a \
+person, or a multi-step procedure the agent completed successfully that no \
+saved skill or plan covers, is ALSO penalized 1. Abstain only when the \
+evidence shows none of those. Prefer the one proposal that addresses the most \
+frequent or most costly failure — or, when nothing failed, the procedure that \
+worked — over several speculative ones, and report your confidence honestly — \
 an independent verifier, not you, decides what survives."
 );
 
@@ -2723,28 +2725,44 @@ fn resolve_proposal<S: OmsSubstrate>(
                 derived_plan_fields(sub, target, &description, &when_to_use, &nodes, &edges, cited, ns_by_hash, plans)?;
             args.insert("name".into(), Value::from(name.clone()));
             args.insert("nodes".into(), Value::from(n_nodes as u64));
-            args.insert("edges".into(), Value::from(n_edges as u64));
-            let skill_stmt = match &existing_skill {
+            let mut stmts = vec![match &existing_skill {
                 Some(h) => cal::supersede(h, "skill", &skill),
                 None => cal::add("skill", &skill),
+            }];
+            // A graph the runtime would refuse is not minted as a plan — but
+            // the procedure it describes is still the thing worth keeping, so
+            // it is recorded as a skill. Measured need: a 30B proposer writes
+            // conditions like "tickets.length > 0", outside the frozen v1
+            // grammar, and discarding the draft for that threw away the
+            // captured procedure entirely (PERSIST.md §11 #27).
+            let (summary_key, kind) = match &workflow {
+                Some(wf) => {
+                    stmts.push(match &existing_plan {
+                        Some(h) => cal::supersede(h, "workflow", wf),
+                        None => cal::add("workflow", wf),
+                    });
+                    args.insert("edges".into(), Value::from(n_edges as u64));
+                    ("llm.plan", "plan")
+                }
+                None => {
+                    args.insert("steps".into(), Value::from(n_nodes as u64));
+                    ("llm.skill", "skill")
+                }
             };
-            let plan_stmt = match &existing_plan {
-                Some(h) => cal::supersede(h, "workflow", &workflow),
-                None => cal::add("workflow", &workflow),
-            };
-            let (action, verb) = if existing_skill.is_some() || existing_plan.is_some() {
+            let patched = existing_skill.is_some() || (workflow.is_some() && existing_plan.is_some());
+            let (action, verb) = if patched {
                 (ActionKind::Revise, "revise")
             } else {
                 (ActionKind::Record, "record")
             };
             Some(ResolvedProposal {
                 action,
-                proposal: Proposal::Cal { cal: cal::batch(&[skill_stmt, plan_stmt]) },
+                proposal: Proposal::Cal { cal: cal::batch(&stmts) },
                 rendered: format!(
-                    "Proposed plan to {verb}: \"{name}\" — {n_nodes} steps, {n_edges} edges; when: {}",
+                    "Proposed {kind} to {verb}: \"{name}\" — {n_nodes} steps; when: {}",
                     skill.get("when_to_use").and_then(Value::as_str).unwrap_or("")
                 ),
-                summary_key: "llm.plan",
+                summary_key,
                 summary_args: args,
                 rollbackable: true,
                 evalset_hash: None,
@@ -3111,7 +3129,11 @@ exact format produced), a one-line description, and 'when_to_use' — the situat
 that should trigger it. The skill-name is a short identifier (letters, digits, \
 _ -). If a saved skill already covers this procedure, use ITS name so it is \
 patched rather than duplicated. Do not propose a skill for a procedure that \
-failed, or for one already saved and unchanged.",
+failed, or for one already saved and unchanged. A finding that itself describes \
+two or more steps the agent should carry out in order ('after listing the \
+tickets, fetch each, then …') IS a procedure: propose it as a skill or a plan, \
+never as a lesson — a lesson is one rule, and a procedure written as one is a \
+procedure nobody can open.",
         crate::llm::MAX_SKILL_STEPS
     )
 }
@@ -3144,7 +3166,10 @@ plan already covers this procedure, use ITS name so it is patched.",
 /// live pair of that name (to supersede) if there is one.
 struct PlanFields {
     skill: serde_json::Map<String, Value>,
-    workflow: serde_json::Map<String, Value>,
+    /// `None` when the graph the model wrote would not run — an edge
+    /// condition outside the runtime's frozen grammar, an edge naming no
+    /// step. The procedure is still captured, as a skill.
+    workflow: Option<serde_json::Map<String, Value>>,
     name: String,
     n_nodes: usize,
     n_edges: usize,
@@ -3196,29 +3221,56 @@ fn derived_plan_fields<S: SubstrateRead>(
     let mut ids: Vec<String> = Vec::new();
     let mut steps: Vec<String> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut grounded = 0usize;
     for n in nodes {
         let id = sanitize_skill_name(&n.id)?;
         if !seen.insert(id.clone()) {
             return None; // duplicate step id
         }
-        let tool = sanitize_line(&n.tool, crate::llm::MAX_SKILL_NAME_LEN);
-        if tool.is_empty() || !known_tools.contains(&normalize_ident(&tool)) {
-            return None; // a tool the evidence never shows: not grounded
-        }
         let step = sanitize_line(&n.step, crate::llm::MAX_SKILL_STEP_LEN);
         if step.is_empty() {
             return None;
         }
-        steps.push(format!("{}. {id} [{tool}]: {step}", steps.len() + 1));
+        // A step whose tool the evidence never shows keeps its instruction and
+        // loses the attribution — it is not recorded as calling anything. A
+        // real procedure has steps that call nothing (deciding, grouping,
+        // comparing), and a model writes them with a placeholder tool;
+        // rejecting the whole draft for one of those threw away procedures
+        // that were three-quarters grounded (PERSIST.md §11 #27). Nodes carry
+        // no bindings here, so an unattributed step executes nothing and
+        // claims nothing — but the prose must not tell a later session to
+        // call a tool that does not exist.
+        let tool = sanitize_line(&n.tool, crate::llm::MAX_SKILL_NAME_LEN);
+        if !tool.is_empty() && known_tools.contains(&normalize_ident(&tool)) {
+            grounded += 1;
+            steps.push(format!("{}. {id} [{tool}]: {step}", steps.len() + 1));
+        } else {
+            steps.push(format!("{}. {id}: {step}", steps.len() + 1));
+        }
         ids.push(id);
     }
+    // Anchored in the trajectory: at least one step calls a tool the evidence
+    // actually shows, or this is not a procedure the agent carried out.
+    if grounded == 0 {
+        return None;
+    }
+    // Edges are built leniently: one the runtime could not run costs the
+    // plan, never the procedure. `runnable` goes false and the flow line is
+    // still written into the skill's prose, where it is description rather
+    // than a promise.
     let mut edge_vals: Vec<Value> = Vec::new();
     let mut flow_lines: Vec<String> = Vec::new();
+    let mut runnable = true;
     for e in edges {
-        let src = sanitize_skill_name(&e.src)?;
-        let dst = sanitize_skill_name(&e.dst)?;
+        let (Some(src), Some(dst)) = (sanitize_skill_name(&e.src), sanitize_skill_name(&e.dst)) else {
+            runnable = false;
+            continue;
+        };
         if !seen.contains(&src) || !seen.contains(&dst) {
-            return None;
+            // An edge naming no step — a model's "end" node, typically.
+            flow_lines.push(format!("{} → {}", e.src.trim(), e.dst.trim()));
+            runnable = false;
+            continue;
         }
         let mut ev = serde_json::Map::new();
         ev.insert("src".into(), Value::from(src.clone()));
@@ -3235,16 +3287,17 @@ fn derived_plan_fields<S: SubstrateRead>(
         }
         if let Some(m) = e.max_cycles {
             if m == 0 || m > 100 {
-                return None;
+                runnable = false;
+            } else {
+                label.push_str(&format!(" (at most {m} times)"));
+                ev.insert("max_cycles".into(), Value::from(m));
             }
-            label.push_str(&format!(" (at most {m} times)"));
-            ev.insert("max_cycles".into(), Value::from(m));
         }
         flow_lines.push(label);
         edge_vals.push(Value::Object(ev));
     }
     if edge_vals.len() > 4 * ids.len() {
-        return None;
+        runnable = false;
     }
     // Namespace: where the evidence lives, by majority — a lesson's rule.
     let mut ns_counts: std::collections::BTreeMap<&str, usize> = Default::default();
@@ -3269,7 +3322,11 @@ fn derived_plan_fields<S: SubstrateRead>(
     if let Some(ns) = &ns {
         workflow.insert("namespace".into(), Value::from(ns.clone()));
     }
-    sub.validate_plan(&Value::Object(workflow.clone())).ok()?;
+    // The substrate owns the grammar: the runtime's own validator decides
+    // whether this is a plan (unique and reachable steps, conditions that
+    // parse, every cycle bounded). The engine carries no second opinion.
+    let workflow = (runnable && sub.validate_plan(&Value::Object(workflow.clone())).is_ok())
+        .then_some(workflow);
 
     // The Skill: the same procedure as prose, with the graph's edges spelled
     // out under the steps so a reader sees the branches the plan encodes.
@@ -3294,16 +3351,16 @@ fn derived_plan_fields<S: SubstrateRead>(
             .map(|g| g.hash)
     };
     let existing_skill = live(crate::model::grain_type::SKILL, &|g| g.skill_name() == Some(name.as_str()));
-    let existing_plan = live(crate::model::grain_type::WORKFLOW, &|g| g.str_field("name") == Some(name.as_str()));
-    Some(PlanFields {
-        skill,
-        workflow,
-        name,
-        n_nodes: ids.len(),
-        n_edges: flow_lines.len(),
-        existing_skill,
-        existing_plan,
-    })
+    let existing_plan = workflow
+        .is_some()
+        .then(|| live(crate::model::grain_type::WORKFLOW, &|g| g.str_field("name") == Some(name.as_str())))
+        .flatten();
+    let n_edges = workflow
+        .as_ref()
+        .and_then(|w| w.get("edges"))
+        .and_then(Value::as_array)
+        .map_or(0, |a| a.len());
+    Some(PlanFields { skill, workflow, name, n_nodes: ids.len(), n_edges, existing_skill, existing_plan })
 }
 
 /// The metric name under which the Verify gate records a premise that moved.
