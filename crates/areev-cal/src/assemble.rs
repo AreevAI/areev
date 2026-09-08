@@ -46,7 +46,11 @@ use std::time::Instant;
 
 use super::ast::{AssembleStmt, AssembleWithOption, CalQuery, NamedSource, PrioritySpec};
 use super::errors::CalError;
-use super::executor::{CalExecutor, CalGrainResult, CalResultPayload};
+// `extract_grains` is the executor's, not a local copy. There used to be two,
+// and they had drifted: this module's saw only `Grains`, so an `Assembled`
+// payload from a nested source silently contributed nothing — and #209's
+// group rows would have done the same.
+use super::executor::{extract_grains, CalExecutor, CalGrainResult, CalResultPayload};
 use super::facade::CalStoreFacade;
 
 // ---------------------------------------------------------------------------
@@ -407,7 +411,11 @@ impl<'a> AssembleEngine<'a> {
             let_values: query.let_values.clone(),
             version: query.version,
             statement: *source.query.clone(),
-            pipeline: Vec::new(),
+            // The source's OWN pipeline (#209), written inside its parens.
+            // The enclosing query's pipeline runs on the assembled result and
+            // is a different thing — this one ranks, bounds or summarises the
+            // section, which is what lets a frequency roll-up BE a section.
+            pipeline: source.pipeline.clone(),
             with_options,
             format: None,
             let_bindings: Vec::new(),
@@ -421,6 +429,19 @@ impl<'a> AssembleEngine<'a> {
             &surrogate,
             warnings,
         )?;
+
+        // The source's own pipeline runs here, on this source's grains, before
+        // dedup and budgeting see them. `GROUP BY <field> COUNT` in a source
+        // therefore contributes ONE row per group — a frequency roll-up as a
+        // prompt section, rather than a read the host performs separately and
+        // splices in.
+        let payload = if source.pipeline.is_empty() {
+            payload
+        } else {
+            self.executor
+                .apply_pipeline(payload, &source.pipeline, warnings)?
+                .0
+        };
 
         Ok(extract_grains(payload))
     }
@@ -715,17 +736,6 @@ pub fn estimate_grain_tokens(grain: &CalGrainResult) -> u32 {
         created_at_sec: crate::render::created_at_sec_from_fields(&grain.fields),
     };
     crate::render::estimate_tokens(&view, crate::render::MetadataDetail::None) as u32
-}
-
-// ---------------------------------------------------------------------------
-// Helper: extract grains from a CalResultPayload
-// ---------------------------------------------------------------------------
-
-fn extract_grains(payload: CalResultPayload) -> Vec<CalGrainResult> {
-    match payload {
-        CalResultPayload::Grains { grains, .. } => grains,
-        _ => Vec::new(),
-    }
 }
 
 // ---------------------------------------------------------------------------
