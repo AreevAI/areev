@@ -127,7 +127,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-server` | Web console (see below) | — |
 | `areev` | The `areev` binary (see below) | — |
 | `areev-py` | PyO3 bindings (see below) | — |
-| `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy, and the **self-improvement** A/B/A/B causal proof — `SELFIMPROVE.md`) | — |
+| `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy, and the **self-improvement** A/B/A/B causal proof — `SELFIMPROVE.md`) | yes |
 | `areev-js` | Node (napi) bindings — **standalone package, not a workspace member** (see below) | — |
 
 ## Cross-cutting invariants
