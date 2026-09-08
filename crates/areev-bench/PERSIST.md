@@ -1,6 +1,7 @@
 # Governed self-improvement across sessions — PAST-Bench and Horizon
 
-**Status: PAST-Bench complete, 2026-09-07.** Three seeds × three arms ×
+**Status: PAST-Bench complete; run 4 (2026-09-08) re-measured it after the
+Verify gate was found never to have fired.** Three seeds × three arms ×
 26 families, plus mem0 on one seed, plus the tuning leg and a gate audit.
 Evidence: [`results/persist-2026-09-07/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/persist-2026-09-07/).
 The Horizon track ran on its three public tasks only (§4). Budget: **$50**
@@ -293,6 +294,93 @@ retries' backoff, not the box, set the pace — so a run-set is ~12 h, not
 the 5 h first estimated; the mem0 arm is queued behind the Areev arms
 rather than added as a fifth stream, because a rate-limited key gains
 nothing from more streams.
+
+## Run 4 (2026-09-08) — the gate fires; the scores stay inside the noise
+
+**Evidence:** [`results/persist-run4-2026-09-08/`](https://github.com/AreevAI/areev-benchmark/tree/main/results/persist-run4-2026-09-08/).
+Three seeds, 26 families, the two Areev arms. Hermes's rows are runs 1–3's,
+unchanged code and no rerun — stated wherever they are used. Spend $16.23
+against a cap raised twice (§10). Predictions were fixed in §10 before any
+run-4 episode; every one is reported below, met or not.
+
+**The result that is not about scores.** Runs 1–3 recorded **zero** measured
+outcomes across 78 governed arm-seeds and were read as "governance costs and
+gains nothing". That was never a measurement of governance. Seven independent
+defects sat between the harness holding a number and the gate being able to
+use it (§11 #20, #24–#28), each sufficient on its own to produce exactly the
+silence observed. Run 4 records **87 verdicts — 51 held, 28 regressed, 8
+drifted — and applies 16 reverts.** The prior null is retracted as
+uninterpretable, not overturned by a better number.
+
+| arm | mean Δ | s1 | s2 | s3 | mechanism | prompt tok / episode |
+|---|---:|---:|---:|---:|---:|---:|
+| areev-governed | **+0.293** | +0.300 | +0.289 | +0.320 | 0.205 | 18,660 |
+| areev-governed-blindrevert | +0.279 | +0.279 | +0.320 | +0.265 | 0.198 | — |
+| areev-passive | +0.268 | +0.249 | +0.298 | +0.248 | 0.206 | 19,108 |
+| hermes 0.4.0 *(runs 1–3)* | +0.246 | +0.252 | +0.265 | +0.221 | 0.166 | 28,269 |
+
+Noise floor, same arm and family across seeds: **0.078–0.104**. Every gap in
+that table is inside it.
+
+### Against the predictions, in order
+
+| stated in §10 | outcome | |
+|---|---|---|
+| procedural Δ rises from +0.144/+0.112 toward Hermes's +0.169 | governed **+0.112 → +0.158**; passive +0.144 → +0.153 | partly |
+| `sop_bootstrap_04`/`_06` stop scoring below their own no-memory floor | `_04` fixed (Δ +0.137, 0.487 vs 0.350); **`_06` still below** (0.280 vs 0.350) | partly |
+| governed ≥ passive once reverts fire | **−0.025 (p 0.78) → +0.040 (p 0.11)**, 13/10 | direction, not significance |
+| passive − hermes at **p < 0.10** | **+0.016, p 0.84**, 12/12 | **not met** |
+| prompt tokens ≤ +10% | passive +2.5%, governed −3.9% | met |
+
+**The headline contrast moved the wrong way and the bar was missed.** Passive
+fell +0.291 → +0.268 while governed rose +0.266 → +0.293; both moves are
+inside the noise floor, but the paired passive−hermes contrast went from
++0.045 (p 0.21) to +0.016 (p 0.84). Run 4 does not support "level with the
+leading agent framework" any more strongly than runs 1–3 did; it supports it
+less. The cost claim is unchanged and is the one that still clears its bar:
+19,108 tokens per episode against Hermes's 28,269, a third less.
+
+### What reverts buy, isolated
+
+`areev-governed-blindrevert` is the same code with one variable disabled —
+§11 #28 made every revert unreachable — run on the same seeds. It is the
+cleanest contrast this track has produced, and it is small:
+
+| contrast | mean difference | W/L | Wilcoxon p |
+|---|---:|---|---:|
+| governed − blindrevert (all 26) | +0.014 | 11/13 | 0.94 |
+| governed − blindrevert (procedural, 8) | **+0.063** | — | no test at n=8 |
+
+Overall, applying reverts is unreadable against the noise. On procedural
+families — where a harmful rule is a wrong step rather than a wrong fact —
+the fixed arm scores +0.158 against the blind arm's +0.095, and
+`sop_bootstrap_04` separates cleanly: blind **−0.025, below its own
+no-memory floor**; fixed **+0.137**. That is the shape the design predicts,
+at a sample size that cannot carry a claim.
+
+### What run 4 cannot say
+
+- **Nothing about executable plans.** Every `plan` proposal degraded to a
+  skill: the proposer writes edge conditions like `tickets.length > 0`,
+  outside the runtime's frozen v1 grammar, so the plan validator refuses
+  them (§11 #27). Procedure *capture* is tested — 395 of 526 evaluation
+  episodes rendered a skill — the plan grain is not.
+- **Nothing about provider drift.** Hermes was not rerun; its rows are
+  eleven days older than the arms they are paired against.
+- `PC01_sop_bootstrap_06` is missing from run 4's passive arm (it scored
+  −0.005 in runs 1–3, so its absence does not explain the passive decline).
+
+### What to do next, in order
+
+1. **Teach the proposer the condition grammar by example, not by
+   description.** It is the single blocker on the plan grain, and the fix is
+   a prompt change plus the existing validator.
+2. **Rerun Hermes** before any comparative claim is published. ~$7.
+3. `min_evidence: 2` is pre-registered and untested — the audit's
+   over-generalisation finding still has no measurement.
+4. `sop_bootstrap_06` has now scored below its no-memory floor in six
+   consecutive arm-runs. It is a reproducible harm, and nobody has read a
+   transcript of it.
 
 ## Results so far — read against the noise floor
 
