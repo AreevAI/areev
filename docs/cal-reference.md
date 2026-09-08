@@ -644,6 +644,34 @@ order. Now:
   operators *about* absence and stay definite; `AND`/`OR` use SQL's truth
   tables, so nothing that already matched stops matching.
 
+#### Reaching into a structured field
+
+A field name may be a **dotted path** of up to 8 segments: the first segment
+names the grain field, the rest navigate its JSON. A numeric segment indexes
+an array, so `items.0.name` needs no separate syntax.
+
+```sql
+RECALL tools WHERE input.app = "phone"
+RECALL facts WHERE object.error.code = "rate_limited"
+```
+
+Hosts put structured payloads in grain fields constantly — a tool'"'"'s `input`,
+an eval summary, an error envelope, an API response — and before 1.7.4 CAL
+could not filter on any of them, so a host fetched the whole set and unpacked
+it in application code. A value stored *as a JSON string* navigates
+identically to a parsed one, so the accessor does not depend on how the writer
+happened to type the field.
+
+The base field is validated against the grain type as usual (`CAL-E060`); the
+path is not, because the shape lives in the payload rather than in the schema.
+**A path that does not resolve is UNKNOWN**, so it inherits the fails-closed
+rule above rather than adding one: `input.app = "phone"` matches neither the
+grains whose payload says otherwise nor the ones with no such key, and
+`input.app != "phone"` does not widen to everything. Like every other
+type-specific key it is an executor post-filter over the widened scan, so
+`CAL-W015` still reports a scan that filled. `ORDER BY` on a path is not
+supported. The renderer'"'"'s equivalent is the `get` filter (§6).
+
 #### World-time validity: `valid_from` / `valid_to`
 
 Every grain type carries the OMS §6.1 world-time axis, and since 1.7.4 all four
@@ -765,12 +793,43 @@ Pipeline stages post-process a statement's result set, chained with `|` (up to
 | `\| SUBJECTS` / `\| OBJECTS` | Extract the `subject`/`object` of each Fact |
 | `\| HASHES` | Extract the content hash of each grain |
 | `\| GROUP BY field` | Group results |
+| `\| GROUP BY field \| COUNT` | One row per group with its size, **most frequent first** |
 
 ```sql
 RECALL facts WHERE subject = "john" | SELECT relation, object | LIMIT 5
 RECALL facts WHERE namespace = "caller" | COUNT
 RECALL facts WHERE relation = "knows" | OBJECTS
 ```
+
+#### Frequency: `GROUP BY <field>` then `COUNT`
+
+`GROUP BY` on its own **reorders** rows so same-key grains are contiguous.
+Follow it with `COUNT` and you get one row per group carrying that group'"'"'s
+size, ordered **most frequent first** (ties by key ascending, so the answer is
+reproducible across backends and runs):
+
+```sql
+RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name COUNT
+```
+
+```json
+{"type": "group_counts", "field": "tool_name", "groups": [
+  {"grain_type": "group", "fields": {"key": "simple_note.search_notes", "count": 8}},
+  {"grain_type": "group", "fields": {"key": "phone.search_contacts",    "count": 6}}
+]}
+```
+
+Before 1.7.4 that statement returned the plain total — identical to `COUNT`
+alone, silently discarding the grouping. Frequency is how a memory says what
+*matters* ("which tool fails most", "which topic does this user raise most",
+"which policy is cited most"), and every one of those reads used to be host
+code, which also spent the token budget on the rows being discarded.
+
+A group row is grain-shaped so every renderer works on it unchanged, and its
+**hash is empty** — a group is computed, not stored. Render one with the
+`group.*` template variables (§6), or make an `ASSEMBLE` source out of it so
+"the five errors this agent hits most" is a section of a prompt rather than a
+read the host tallies itself.
 
 `WHERE session_id = "…"` is **pushed into the thread index**
 (`idx_thread(ns, session, seq)`) rather than applied as a post-filter, so
@@ -971,6 +1030,70 @@ open function library cannot promise.
 | `json` | **Serialise** the value as JSON — it does not parse one |
 | `default "<text>"` | Substitute when the value is absent or empty |
 | `join("<sep>")` | Join an array |
+
+Since 1.7.4 the set also contains filters that **take** part of a value rather
+than formatting the whole of one — because memories store text people wrote,
+and titles, ticket ids, error codes and thread keys all live inside it:
+
+| Filter | Effect |
+|---|---|
+| `first_line` | Text up to the first line break |
+| `split("<sep>", n)` | The nth field (0-indexed) after splitting |
+| `strip_prefix("<s>")` / `strip_suffix("<s>")` | Remove a fixed affix if present |
+| `between("<open>", "<close>")` | The text between the first `open` and the next `close` |
+| `match("<pattern>"[, n])` | The whole match, or capture group `n` |
+| `get("<a.b.c>")` | One value out of a JSON payload, by dotted path |
+
+```
+{{grain.object | between("[", "]")}}      → Q3 close handoff
+{{grain.object | get("error.code")}}      → rate_limited
+{{grain.content | first_line | truncate(60)}}
+```
+
+`get` is the one that reaches into structure. `record_tool_call` round-trips a
+tool'"'"'s `input` as parsed JSON, so a Python or Node host gets the shape for
+free — it was specifically the CAL path that could not see inside. (The `json`
+filter does not help despite its name: it *serialises* a value.) A path that
+does not resolve renders empty, and `get` deliberately does **not** transform:
+no wildcards, no predicates, and no "remove a key and re-serialise the rest".
+If you need that, store two fields — which also makes the value *filterable*,
+as no amount of template machinery does.
+
+**Bad arguments are refused when the template is defined, not when it
+renders.** A pattern that does not compile, a `split` index that is not a
+number, a `between` missing a delimiter, a `get` path deeper than 8 segments —
+all `CAL-E049` at `DEFINE TEMPLATE` time. So "what will this saved query show
+me?" stays answerable by reading it, and rendering stays total: at render time
+a filter that finds nothing yields empty, never an error, because one
+unparseable grain must not fail the render of the other 199.
+
+**`match` uses the Rust regex dialect — no backreferences, no lookaround.**
+Those are exactly the constructs that force an engine to backtrack, and a
+template runs over untrusted grain content on every turn, where a backtracking
+regex is a denial-of-service primitive. Patterns are capped at 512 characters
+and compiled through a bounded cache; extractor input is clipped at 64 KiB.
+Note that `]` inside a character class must be escaped: write
+`\[([^\]]+)\]`, not `[[]([^]]+)[]]`.
+
+#### Group variables
+
+A `GROUP BY <field> COUNT` result (§4) renders through a `group.` namespace:
+
+| Variable | Value |
+|---|---|
+| `{{group.key}}` | The group'"'"'s key |
+| `{{group.count}}` | How many grains fall in it |
+
+```
+DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key}}}
+```
+```
+- (8x) simple_note.search_notes
+- (6x) phone.search_contacts
+```
+
+Both resolve null on an ordinary grain, rather than reading a field that
+happens to be called `key`.
 
 **Timestamps are epoch milliseconds.** Every timestamp a template can name —
 `created_at`, `valid_from`, `valid_to`, `deadline`, `expires_at`,

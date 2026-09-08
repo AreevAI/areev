@@ -201,6 +201,31 @@ pub enum CalResultPayload {
     Exists { exists: bool, hash: String },
     /// Result of a `| COUNT` pipeline stage.
     Count { count: usize },
+    /// Result of `GROUP BY <field>` followed by `COUNT` — one row per group,
+    /// **most frequent first** (#209).
+    ///
+    /// "The five errors this agent hits most" is the ordinary summarisation
+    /// read of any agent memory — which tool fails most, which topic a user
+    /// raises most, which policy is cited most — and it used to be host code,
+    /// because `GROUP BY` only *reordered* rows. Worse, `GROUP BY x COUNT`
+    /// answered the plain total, identical to `COUNT` alone: a well-formed
+    /// number that ignored the grouping.
+    ///
+    /// `groups` are `CalGrainResult`s rather than a bespoke row type on
+    /// purpose. Every downstream consumer — the renderers, `extract_grains`,
+    /// an `ASSEMBLE` source — then works unchanged, and a template reaches
+    /// them through `{{group.key}}` / `{{group.count}}`. Each carries
+    /// `grain_type: "group"` and fields `{key, count}`; the hash is empty
+    /// because a group is computed, not stored, and must never be mistaken
+    /// for a grain.
+    GroupCounts {
+        /// The field the rows were grouped by.
+        field: String,
+        /// One synthetic row per group.
+        groups: Vec<CalGrainResult>,
+        /// Number of groups.
+        total_available: Option<usize>,
+    },
     /// Result of `GRANT` (CAL 1.3 §8.15).
     Granted { principal: String, object: String, hash: String },
     /// Result of `REVOKE`.
@@ -3685,6 +3710,15 @@ impl CalExecutor {
                     "max_let_bindings": caps.max_let_bindings,
                     "max_budget_tokens": caps.max_budget_tokens,
                     "tier1_enabled": self.config.tier1_enabled,
+                    // The template filter set (#210/#211). It is a CLOSED
+                    // list, and a client that can read it does not have to
+                    // guess whether this host supports the filter its saved
+                    // template needs — which is the whole reason the set is
+                    // closed rather than open.
+                    "template_filters": super::templates::KNOWN_FILTERS,
+                    // The `group.` namespace (#209) — reported alongside, for
+                    // the same reason.
+                    "template_variable_namespaces": ["grain", "assembly", "budget", "source", "group"],
                     "oms_version": "1.2"
                 })
             }
@@ -4953,7 +4987,10 @@ impl CalExecutor {
         Ok(())
     }
 
-    fn apply_pipeline(
+    /// `pub(crate)` so `AssembleEngine` can run a SOURCE's own pipeline
+    /// (#209) — the enclosing query's pipeline runs on the assembled result,
+    /// which is a different thing.
+    pub(crate) fn apply_pipeline(
         &self,
         payload: CalResultPayload,
         stages: &[PipelineStage],
@@ -4985,10 +5022,29 @@ impl CalExecutor {
                     }
                 }
 
-                // COUNT
+                // COUNT — per group when a GROUP BY came first (#209),
+                // otherwise the plain total.
+                //
+                // `GROUP BY x COUNT` used to answer the same scalar as
+                // `COUNT` alone, silently discarding the grouping. Nothing
+                // could have wanted that number: it is `COUNT` with extra
+                // words. So projecting one row per group here takes no
+                // meaningful answer away from anyone, and needs no new
+                // syntax — which matters, because new CAL syntax is an OMS
+                // conformance decision.
                 (CalResultPayload::Grains { grains, .. }, PipelineStage::Count { .. }) => {
-                    CalResultPayload::Count {
-                        count: grains.len(),
+                    match grouped_by.as_deref() {
+                        Some(field) => {
+                            let groups = count_by_field(&grains, field);
+                            CalResultPayload::GroupCounts {
+                                field: field.to_string(),
+                                total_available: Some(groups.len()),
+                                groups,
+                            }
+                        }
+                        None => CalResultPayload::Count {
+                            count: grains.len(),
+                        },
                     }
                 }
 
@@ -5523,6 +5579,7 @@ fn payload_kind_name(payload: &CalResultPayload) -> &'static str {
     match payload {
         CalResultPayload::Assembled { .. } => "assembled",
         CalResultPayload::Count { .. } => "count",
+        CalResultPayload::GroupCounts { .. } => "group counts",
         CalResultPayload::Formatted { .. } => "formatted",
         CalResultPayload::Exists { .. } => "exists",
         CalResultPayload::History { .. } => "history",
@@ -5546,6 +5603,10 @@ fn inert_stage_reason(payload: &CalResultPayload) -> &'static str {
              that source's sub-query"
         }
         CalResultPayload::Count { .. } => "a count is a scalar; stage it before | COUNT",
+        CalResultPayload::GroupCounts { .. } => {
+            "a grouped count is already one row per group, ordered most \
+             frequent first; stage it before GROUP BY … COUNT"
+        }
         CalResultPayload::Formatted { .. } => {
             "FORMAT has already rendered the grains to text; stage it before FORMAT"
         }
@@ -5585,6 +5646,7 @@ fn count_payload_results(payload: &CalResultPayload) -> usize {
         CalResultPayload::Grains { grains, .. } => grains.len(),
         CalResultPayload::Exists { .. } => 1,
         CalResultPayload::Count { .. } => 1,
+        CalResultPayload::GroupCounts { groups, .. } => groups.len(),
         CalResultPayload::History { versions } => versions.len(),
         CalResultPayload::Describe { .. } => 1,
         CalResultPayload::Explain { .. } => 1,
@@ -5625,10 +5687,15 @@ fn count_payload_results(payload: &CalResultPayload) -> usize {
 }
 
 /// Extract a Vec<CalGrainResult> from a payload (for set operations).
-fn extract_grains(payload: CalResultPayload) -> Vec<CalGrainResult> {
+pub(crate) fn extract_grains(payload: CalResultPayload) -> Vec<CalGrainResult> {
     match payload {
         CalResultPayload::Grains { grains, .. } => grains,
         CalResultPayload::Assembled { grains, .. } => grains,
+        // #209 — an ASSEMBLE source may be a grouped count, so "the five
+        // errors this agent hits most" can be a *section of a prompt* rather
+        // than a separate read the host tallies itself. This is the
+        // `execute_source` discard the issue names.
+        CalResultPayload::GroupCounts { groups, .. } => groups,
         _ => Vec::new(),
     }
 }
@@ -5968,6 +6035,10 @@ fn apply_format_clause(
     // and flattening it here is what previously made them unreachable.
     let (grains, assembled) = match &payload {
         CalResultPayload::Grains { grains, .. } => (grains, None),
+        // Group rows render like any other row (#209) — they ARE
+        // `CalGrainResult`s, so `FORMAT markdown` on a grouped count is the
+        // same code path as `FORMAT markdown` on a recall.
+        CalResultPayload::GroupCounts { groups, .. } => (groups, None),
         CalResultPayload::Assembled {
             grains,
             sources,
@@ -6548,6 +6619,40 @@ fn group_grains_by_field(grains: Vec<CalGrainResult>, field: &str) -> Vec<CalGra
 
 /// Collect already-grouped grains into `(key, members)` pairs by detecting
 /// contiguous runs of the same field value.
+/// Project one row per group, carrying that group's size — the #209
+/// projection.
+///
+/// **Most frequent first**, ties broken by key ascending. Frequency is the
+/// point ("which tool fails most"), and a deterministic tiebreak is what
+/// makes the answer reproducible across backends and across runs — a
+/// conformance property, not a nicety.
+///
+/// Reuses `collect_groups`, so it sees the same groups a grouped render does:
+/// one grouping, one set of keys.
+fn count_by_field(grains: &[CalGrainResult], field: &str) -> Vec<CalGrainResult> {
+    let mut rows: Vec<(String, usize)> = collect_groups(grains, field)
+        .into_iter()
+        .map(|(key, members)| (key, members.len()))
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(|(key, count)| CalGrainResult {
+            // Empty: a group is computed, not stored. Anything that keys on a
+            // content address (dedup above all) must skip it rather than
+            // treat a synthetic row as a grain.
+            hash: String::new(),
+            grain_type: "group".to_string(),
+            score: 0.0,
+            fields: serde_json::json!({ "key": key, "count": count }),
+            score_breakdown: None,
+            explanation: None,
+            relative_time: None,
+            is_deterministic: true,
+            contested_by: None,
+        })
+        .collect()
+}
+
 fn collect_groups<'a>(
     grains: &'a [CalGrainResult],
     field: &str,
@@ -6872,6 +6977,25 @@ fn validate_residual_leaf(
     if field.contains(':') {
         return Ok(());
     }
+    // A dotted path navigates INTO a structured field (#211): `input.app` is
+    // the field `input` and a path within its JSON. Validate the base — the
+    // path itself cannot be validated, because the shape lives in the
+    // payload, not in the schema. Depth is bounded here rather than at the
+    // scan, so an absurd path is refused before it costs anything.
+    let (field, path_depth) = match field.split_once('.') {
+        Some((base, rest)) => (base, 1 + rest.split('.').count()),
+        None => (field, 1),
+    };
+    if path_depth > MAX_FIELD_PATH_DEPTH {
+        return Err(CalError::FieldNotOnGrainType {
+            field: field.to_string(),
+            grain_type: grain_type.as_str().to_string(),
+            span,
+            suggestion: Some(format!(
+                "a field path may be at most {MAX_FIELD_PATH_DEPTH} segments deep"
+            )),
+        });
+    }
     if ENGINE_ONLY_FIELDS.contains(&field) {
         return Err(CalError::EngineFieldNotFilterable {
             field: field.to_string(),
@@ -6948,7 +7072,64 @@ fn resolve_grain_field(grain: &CalGrainResult, field: &str) -> Option<serde_json
         }
         _ => {}
     }
+    // A dotted path navigates into a structured field (#211). `input.app`
+    // reads the Tool grain's parsed `input` payload — which the engine
+    // already round-trips as JSON, so a Python or Node host got the structure
+    // for free while CAL alone could not see inside.
+    //
+    // A path that does not resolve yields None, which since #207 means
+    // UNKNOWN: `WHERE input.app = "phone"` matches neither the grains whose
+    // payload says otherwise nor the ones that have no such key. That is the
+    // fails-closed reading, and it falls out of the two changes composing
+    // rather than needing a rule of its own.
+    if let Some((base, path)) = field.split_once('.') {
+        let root = json_field(&grain.fields, base)?;
+        // Two shapes reach here and both must work. A Tool's `input` is
+        // already a parsed object — `record_tool_call` round-trips it as JSON,
+        // which is exactly why a Python or Node host could see inside it while
+        // CAL could not. A `fails_with` signature is a JSON *document stored
+        // as a string*. Navigating one and not the other would make the
+        // accessor depend on how the writer happened to type the field.
+        let parsed;
+        let root = match root {
+            serde_json::Value::String(text) => {
+                parsed = serde_json::from_str::<serde_json::Value>(text).ok()?;
+                &parsed
+            }
+            other => other,
+        };
+        return navigate_json_path(root, path).cloned();
+    }
     json_field(&grain.fields, field).cloned()
+}
+
+/// Maximum segments in a `WHERE` field path (`input.a.b` is three).
+const MAX_FIELD_PATH_DEPTH: usize = 8;
+
+/// Walk a dotted path into a JSON value. A numeric segment indexes an array,
+/// so `items.0.name` needs no separate syntax.
+///
+/// The `WHERE`-side twin of the template `get` filter — same path grammar
+/// (dotted, no wildcards, no predicates, no arithmetic) and the same bound,
+/// because a caller who can navigate a payload in a render and not in a
+/// filter has to over-fetch anyway, which is the cost the accessor exists to
+/// remove.
+fn navigate_json_path<'a>(
+    root: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut cur = root;
+    for (depth, seg) in path.split('.').enumerate() {
+        if depth >= MAX_FIELD_PATH_DEPTH {
+            return None;
+        }
+        cur = match cur {
+            serde_json::Value::Object(m) => m.get(seg)?,
+            serde_json::Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
 }
 
 /// Does this grain carry `field` at all?
@@ -7155,23 +7336,21 @@ fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Optio
         Condition::IsNull { field, .. } => Some(!grain_carries_field(grain, field)),
         Condition::IsNotNull { field, .. } => Some(grain_carries_field(grain, field)),
         Condition::Contains { field, value, .. } => {
-            if !grain_carries_field(grain, field) {
-                return None;
-            }
+            // Through the ONE resolver, so a dotted path (#211) and the
+            // envelope properties behave the same here as under `=`.
+            let v = resolve_grain_field(grain, field)?;
             Some(
-                json_field(&grain.fields, field)
-                    .and_then(|v| v.as_str())
+                v.as_str()
                     .map(|s| s.contains(value.as_str()))
                     .unwrap_or(false),
             )
         }
         Condition::StartsWith { field, value, .. } => {
-            if !grain_carries_field(grain, field) {
-                return None;
-            }
+            // Through the ONE resolver, so a dotted path (#211) and the
+            // envelope properties behave the same here as under `=`.
+            let v = resolve_grain_field(grain, field)?;
             Some(
-                json_field(&grain.fields, field)
-                    .and_then(|v| v.as_str())
+                v.as_str()
                     .map(|s| s.starts_with(value.as_str()))
                     .unwrap_or(false),
             )
@@ -7179,12 +7358,9 @@ fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Optio
         Condition::IsCategory {
             field, category, ..
         } => {
-            if !grain_carries_field(grain, field) {
-                return None;
-            }
+            let v = resolve_grain_field(grain, field)?;
             Some(
-                json_field(&grain.fields, field)
-                    .and_then(|v| v.as_str())
+                v.as_str()
                     .map(|s| s.eq_ignore_ascii_case(category))
                     .unwrap_or(false),
             )
@@ -11112,6 +11288,7 @@ mod tests {
                 pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
+                pipeline: vec![],
                 span: None,
             }]),
             budget: None,
@@ -11193,6 +11370,7 @@ mod tests {
                 pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
+                pipeline: vec![],
                 span: None,
             }]),
             budget: None,
@@ -11273,6 +11451,7 @@ mod tests {
                 pinned: false,
                 query: Box::new(CalStatement::Recall(recall_facts)),
                 with_options: vec![],
+                pipeline: vec![],
                 span: None,
             }]),
             budget: None,
