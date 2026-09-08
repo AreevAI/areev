@@ -252,7 +252,7 @@ ASSEMBLE "e" FROM e: (RECALL tools WHERE namespace = "appworld.*" LIMIT 400)
 ```
 
 `total_available` is now the **pre**-budget count, so the drop is computable
-rather than announced only in prose; each source'"'"'s `grain_count` still reports
+rather than announced only in prose; each source's `grain_count` still reports
 what survived. The default was kept rather than removed: an unbudgeted
 assembly that returned everything could overflow the context window it is
 being composed for, which is the worse failure. Silence was the defect, not
@@ -684,7 +684,7 @@ RECALL tools WHERE input.app = "phone"
 RECALL facts WHERE object.error.code = "rate_limited"
 ```
 
-Hosts put structured payloads in grain fields constantly — a tool'"'"'s `input`,
+Hosts put structured payloads in grain fields constantly — a tool's `input`,
 an eval summary, an error envelope, an API response — and before 1.7.4 CAL
 could not filter on any of them, so a host fetched the whole set and unpacked
 it in application code. A value stored *as a JSON string* navigates
@@ -699,7 +699,7 @@ grains whose payload says otherwise nor the ones with no such key, and
 `input.app != "phone"` does not widen to everything. Like every other
 type-specific key it is an executor post-filter over the widened scan, so
 `CAL-W015` still reports a scan that filled. `ORDER BY` on a path is not
-supported. The renderer'"'"'s equivalent is the `get` filter (§6).
+supported. The renderer's equivalent is the `get` filter (§6).
 
 #### World-time validity: `valid_from` / `valid_to`
 
@@ -833,7 +833,7 @@ RECALL facts WHERE relation = "knows" | OBJECTS
 #### Frequency: `GROUP BY <field>` then `COUNT`
 
 `GROUP BY` on its own **reorders** rows so same-key grains are contiguous.
-Follow it with `COUNT` and you get one row per group carrying that group'"'"'s
+Follow it with `COUNT` and you get one row per group carrying that group's
 size, ordered **most frequent first** (ties by key ascending, so the answer is
 reproducible across backends and runs):
 
@@ -1084,7 +1084,7 @@ and titles, ticket ids, error codes and thread keys all live inside it:
 ```
 
 `get` is the one that reaches into structure. `record_tool_call` round-trips a
-tool'"'"'s `input` as parsed JSON, so a Python or Node host gets the shape for
+tool's `input` as parsed JSON, so a Python or Node host gets the shape for
 free — it was specifically the CAL path that could not see inside. (The `json`
 filter does not help despite its name: it *serialises* a value.) A path that
 does not resolve renders empty, and `get` deliberately does **not** transform:
@@ -1114,7 +1114,7 @@ A `GROUP BY <field> COUNT` result (§4) renders through a `group.` namespace:
 
 | Variable | Value |
 |---|---|
-| `{{group.key}}` | The group'"'"'s key |
+| `{{group.key}}` | The group's key |
 | `{{group.count}}` | How many grains fall in it |
 
 ```

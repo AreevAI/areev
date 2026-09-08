@@ -50,7 +50,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   RECALL facts WHERE object.error.code = "rate_limited"
   ```
 
-  `record_tool_call` round-trips a tool'"'"'s `input` as parsed JSON, so Python
+  `record_tool_call` round-trips a tool's `input` as parsed JSON, so Python
   and Node hosts already received the structure — it was specifically the CAL
   path that could not see inside. A field name may now be a dotted path of up
   to 8 segments (it accepted one dot before, which did not reach the shape a
@@ -79,17 +79,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   paved road is still to store the shape you want to read: two fields rather
   than one payload, which makes the value filterable as well as renderable.
 
+- **World-time validity is queryable and renderable** (#206). `valid_from`,
+  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
+  fields on every grain type — serialized since 1.0, read by the loop's
+  `staleness` analyzer, and present in every JSON payload — but they were
+  absent from CAL's filterable set, so the one read that makes a validity
+  window worth writing answered `CAL-E060`. They now filter and sort on every
+  type with the usual comparators and `IS NULL`, resolve in templates
+  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
+  currently valid" is a query:
+
+  ```sql
+  RECALL facts WHERE namespace = "desk"
+    AND (valid_to IS NULL OR valid_to > 1788866000000)
+  ```
+
+  This is what a waiver, a delegation, an out-of-office or a price valid until
+  a date needs. Every host previously over-fetched and post-filtered, which
+  also defeated `BUDGET` — the budget was spent on grains about to be
+  discarded.
+
 ### Fixed
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
-  nested assembly'"'"'s grains.** Sources had no pipeline at all, so a source
+  nested assembly's grains.** Sources had no pipeline at all, so a source
   could not be ranked, bounded or summarised in place. Separately,
   `assemble.rs` carried a **second copy** of `extract_grains` that had drifted
-  from the executor'"'"'s: it saw only the `Grains` payload, so a nested
+  from the executor's: it saw only the `Grains` payload, so a nested
   `Assembled` result silently contributed nothing to the enclosing assembly.
   There is now one extractor.
-
-### Fixed
 
 - **A `WHERE` predicate on a field the grain does not carry no longer matches
   everything** (#207). `object` is a real field name in general — Fact,
@@ -138,7 +156,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ```
 
   `total_available` is now the **pre**-budget count, so the drop is computable
-  rather than announced only in prose; each source'"'"'s `grain_count` still
+  rather than announced only in prose; each source's `grain_count` still
   reports what survived. `docs/cal-reference.md` states the default and the
   ceiling where `BUDGET` is documented — neither number appeared there, so "no
   `BUDGET` clause" read as "no budget".
@@ -161,28 +179,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
   result on the Query page, in plain language, with the `CAL-Wnnn` code shown
   only in Developer mode.
-
-### Added
-
-- **World-time validity is queryable and renderable** (#206). `valid_from`,
-  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
-  fields on every grain type — serialized since 1.0, read by the loop's
-  `staleness` analyzer, and present in every JSON payload — but they were
-  absent from CAL's filterable set, so the one read that makes a validity
-  window worth writing answered `CAL-E060`. They now filter and sort on every
-  type with the usual comparators and `IS NULL`, resolve in templates
-  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
-  currently valid" is a query:
-
-  ```sql
-  RECALL facts WHERE namespace = "desk"
-    AND (valid_to IS NULL OR valid_to > 1788866000000)
-  ```
-
-  This is what a waiver, a delegation, an out-of-office or a price valid until
-  a date needs. Every host previously over-fetched and post-filtered, which
-  also defeated `BUDGET` — the budget was spent on grains about to be
-  discarded.
 
 ## [1.7.3] — 2026-09-07
 
