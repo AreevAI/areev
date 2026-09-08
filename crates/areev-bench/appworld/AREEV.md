@@ -82,23 +82,49 @@ Two arms, two blocks.
 The governed block is a plain `ASSEMBLE` with `ORDER BY object ASC`,
 `WITH dedup(object)` and a `{{#if assembly.grain_count}}`-guarded heading.
 
-The passive block is **the one read in this crate that does not finish in
-CAL**, and it is worth understanding before you copy it. That arm is defined as
-the agent's own errors *ranked by frequency* — `- (3x) phone.search_contacts:
-…`. CAL has `GROUP BY`, but it reorders rows rather than projecting a per-group
-count a template could render, so "most frequent first" cannot be expressed.
-The saved query still owns the SELECTION — the namespace scope, the
-`is_error = true` filter pushed into the store, and the bound — and only the
-tally is the harness's, through `cal.rows()`.
+The passive block **was the one read in this crate that did not finish in
+CAL**, and the reason is worth understanding before you copy it. That arm is
+defined as the agent's own errors *ranked by frequency* — `- (3x)
+phone.search_contacts: …`. CAL had `GROUP BY`, but it reordered rows rather
+than projecting a per-group count a template could render, so "most frequent
+first" could not be expressed. The saved query still owned the SELECTION — the
+namespace scope, the `is_error = true` filter pushed into the store, and the
+bound — and only the tally was the harness's, through `cal.rows()`.
+
+**Closed in 1.7.4 ([#209](https://github.com/AreevAI/areev/issues/209)).**
+`GROUP BY <field>` followed by `COUNT` now projects one row per group carrying
+its size, most frequent first, and a `group.` template namespace renders it —
+so the whole block is expressible:
+
+```sql
+RECALL tools WHERE namespace = "appworld.*" AND is_error = true
+  LIMIT 400 GROUP BY tool_name COUNT
+```
+```
+DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key}}}
+```
+
+The run-1 and run-2 numbers in `APPWORLD.md` were produced by the harness
+tally described above, not by this query; **do not restate them as CAL
+output**. Whether to move the block is a decision for the next run, and it is
+an arm-defining change, so it belongs in that run's pre-registration rather
+than in a doc sweep.
 
 **That selection is a saved `RECALL`, not an `ASSEMBLE`, and the difference is
-not cosmetic.** `ASSEMBLE` applies a token budget whether or not you ask for
-one (default 4000, ceiling 16000) and a budget that binds drops grains
-*silently* — no warning, and `total_available` is the post-budget count, so a
-caller cannot tell a full answer from a truncated one. Wrapping this selection
-in an `ASSEMBLE` returned 79 of 229 error grains on run 1's own memory. A read
-that is not composing model-facing text does not belong in `ASSEMBLE`; and a
-read that is, states its budget.
+not cosmetic.** `ASSEMBLE` applies a token budget whether or not you ask for one
+(default 4000, ceiling 16000). Wrapping this selection in an `ASSEMBLE` returned
+79 of 229 error grains on run 1's own memory. A read that is not composing
+model-facing text does not belong in `ASSEMBLE`; and a read that is, states its
+budget.
+
+The *silence* that made this dangerous is fixed
+([#208](https://github.com/AreevAI/areev/issues/208), 1.7.4): a budget that
+drops grains now emits `CAL-W017` naming the sources and the counts, and
+`total_available` reports the **pre**-budget count, so a truncated answer is no
+longer arithmetically indistinguishable from a complete one. The convention
+above still stands on its own terms — the budget still binds, and 79 of 229 is
+still the wrong answer for a selection — but a run that trips it now finds out
+instead of publishing a number produced from a truncated prompt.
 
 Stated here because `CLAUDE.md` requires naming the step you kept, and because
 a reader of `APPWORLD.md`'s token figures should know which budget produced
