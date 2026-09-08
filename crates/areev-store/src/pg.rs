@@ -824,16 +824,44 @@ impl PgDb {
         if let Some(st) = self.cache.borrow().get(sql) {
             return Ok(st.clone());
         }
-        let translated = translate(sql)?;
+        let translated = qualify_tables(&translate(sql)?, &self.schema);
         let client = self.client.borrow().clone();
         let st = self.rt.block_on(client.prepare(&translated)).map_err(|e| {
-            AreevError::Storage(format!("prepare failed: {e} — translated SQL: {translated}"))
+            // Keep the SQLSTATE and server message (`pg_err`), not the
+            // driver's bare "db error", so a failing prepare names its cause.
+            AreevError::Storage(format!(
+                "prepare failed: {} — translated SQL: {translated}",
+                pg_err(e)
+            ))
         })?;
         self.cache.borrow_mut().insert(sql.to_string(), st.clone());
         Ok(st)
     }
 
+    /// Conformance-only: reset the session before a statement, the way a
+    /// transaction-mode pooler's backend switch does between transactions.
+    /// `RESET ALL` drops `search_path` and every GUC, so a suite run under it
+    /// proves no statement resolves through the session. `deallocate` adds
+    /// `DEALLOCATE ALL`, the prepared-statement half, for the one probe that
+    /// exercises the `26000` retry on its own. Never inside a transaction — a
+    /// pooler keeps one backend for its length.
+    fn maybe_discard_session(&self) -> Result<()> {
+        if self.in_txn.get() {
+            return Ok(());
+        }
+        // Read per statement, so a probe can turn the reset on and off
+        // between its own calls; a shipped build compiles this to `None`.
+        let sql = match session_chaos_mode().as_deref() {
+            None => return Ok(()),
+            Some("deallocate") => "RESET ALL; DEALLOCATE ALL",
+            Some(_) => "RESET ALL",
+        };
+        let client = self.client.borrow().clone();
+        self.rt.block_on(client.batch_execute(sql)).map_err(pg_err)
+    }
+
     fn query_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<Vec<Row>> {
+        self.maybe_discard_session()?;
         let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
         let refs: Vec<&(dyn ToSql + Sync)> =
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
@@ -844,7 +872,7 @@ impl PgDb {
         } else {
             // Uncached path: the temporary statement is closed on drop, so
             // dynamic SQL leaves nothing behind on either side.
-            let translated = translate(sql)?;
+            let translated = qualify_tables(&translate(sql)?, &self.schema);
             let client = self.client.borrow().clone();
             self.rt.block_on(client.query(translated.as_str(), &refs))
         }
@@ -861,12 +889,56 @@ impl PgDb {
         match self.query_once(sql, params.clone(), hot) {
             Ok(rows) => Ok(rows),
             Err(e) => {
-                if self.recover(&e, true) {
+                if self.stale_statement(sql, &e, hot) || self.recover(&e, true) {
                     self.query_once(sql, params, hot)
                 } else {
-                    Err(e)
+                    Err(Self::explain_stale(e))
                 }
             }
+        }
+    }
+
+    /// A cached named statement the server no longer knows (SQLSTATE
+    /// `26000`): the session was reset under us, or a transaction-mode
+    /// pooler handed this call to a backend that never prepared it. Evict
+    /// it so the retry re-prepares. Safe for writes too — the server refused
+    /// at Bind, before anything executed.
+    fn stale_statement(&self, sql: &str, e: &AreevError, hot: bool) -> bool {
+        if !hot {
+            return false;
+        }
+        let AreevError::Storage(msg) = e else { return false };
+        if !msg.starts_with("postgres error 26000") {
+            return false;
+        }
+        // The whole cache, not the one entry: a 26000 means this session lost
+        // its statements wholesale (a reset, or a backend switch), so every
+        // cached name is suspect and the next one would trip the same way.
+        let _ = sql;
+        self.cache.borrow_mut().clear();
+        // Inside a transaction the failed Bind has already aborted it;
+        // a retry would only add `25P02`. The caller gets the 26000, with
+        // the remedy named (see `explain_stale`).
+        !self.in_txn.get()
+    }
+
+    /// A `26000` that could not be retried (it happened mid-transaction) is
+    /// a pooler handing transactions to backends that never saw the named
+    /// statement. Say so, and name what fixes it: the driver names every
+    /// parameterized statement, so the pooler must track them or run in
+    /// session mode — no store-side switch can substitute.
+    fn explain_stale(e: AreevError) -> AreevError {
+        match e {
+            AreevError::Storage(msg) if msg.starts_with("postgres error 26000") => {
+                AreevError::Storage(format!(
+                    "{msg} — a prepared statement was unknown to this backend \
+                     mid-transaction, which is what a transaction-mode pooler that does \
+                     not track prepared statements does; use PgBouncer 1.21+ with \
+                     max_prepared_statements > 0 (or another pooler that tracks them), \
+                     or session mode"
+                ))
+            }
+            other => other,
         }
     }
 
@@ -874,16 +946,20 @@ impl PgDb {
     /// [`recover`](Self::recover) for why a possibly-committed write must not
     /// be re-run.
     fn run_execute(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
-        match self.execute_once(sql, params, hot) {
+        match self.execute_once(sql, params.clone(), hot) {
             Ok(n) => Ok(n),
             Err(e) => {
+                if self.stale_statement(sql, &e, hot) {
+                    return self.execute_once(sql, params, hot);
+                }
                 self.recover(&e, false);
-                Err(e)
+                Err(Self::explain_stale(e))
             }
         }
     }
 
     fn execute_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
+        self.maybe_discard_session()?;
         let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
         let refs: Vec<&(dyn ToSql + Sync)> =
             vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
@@ -892,7 +968,7 @@ impl PgDb {
             let client = self.client.borrow().clone();
             self.rt.block_on(client.execute(&st, &refs)).map_err(pg_err)
         } else {
-            let translated = translate(sql)?;
+            let translated = qualify_tables(&translate(sql)?, &self.schema);
             let client = self.client.borrow().clone();
             self.rt
                 .block_on(client.execute(translated.as_str(), &refs))
@@ -920,6 +996,12 @@ impl Db for PgDb {
 
     fn begin(&self) -> Result<()> {
         let client = self.client.borrow().clone();
+        // Conformance-only `deallocate-txn`: a backend switch AT transaction
+        // start, which is what a non-tracking pooler does — the statements
+        // cached so far are unknown to the backend this transaction lands on.
+        if session_chaos_mode().as_deref() == Some("deallocate-txn") {
+            self.rt.block_on(client.batch_execute("DEALLOCATE ALL")).map_err(pg_err)?;
+        }
         let r = self.rt.block_on(client.batch_execute("BEGIN")).map_err(pg_err);
         // Set only on success, so a failed BEGIN does not wedge the handle
         // into "a transaction is open" and block every later recovery.
@@ -1138,7 +1220,8 @@ impl Db for PgDb {
                 .await;
             client
                 .batch_execute(&format!(
-                    "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})"
+                    "ALTER TABLE \"{}\".embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})",
+                    self.schema
                 ))
                 .await
                 .map_err(|e| {
@@ -1153,9 +1236,9 @@ impl Db for PgDb {
                     "SELECT a.atttypmod FROM pg_attribute a
                       JOIN pg_class c ON a.attrelid = c.oid
                       JOIN pg_namespace n ON c.relnamespace = n.oid
-                     WHERE n.nspname = current_schema() AND c.relname = 'embeddings'
+                     WHERE n.nspname = $1 AND c.relname = 'embeddings'
                        AND a.attname = 'vec'",
-                    &[],
+                    &[&self.schema],
                 )
                 .await
                 .map_err(pg_err)?;
@@ -1213,9 +1296,9 @@ impl Db for PgDb {
                     "SELECT count(*) FROM pg_attribute a
                        JOIN pg_class c ON a.attrelid = c.oid
                        JOIN pg_namespace n ON c.relnamespace = n.oid
-                      WHERE n.nspname = current_schema() AND c.relname = 'embeddings'
+                      WHERE n.nspname = $1 AND c.relname = 'embeddings'
                         AND a.attname = 'vec' AND NOT a.attisdropped",
-                    &[],
+                    &[&self.schema],
                 )
                 .await
                 .map_err(pg_err)?
@@ -1229,8 +1312,9 @@ impl Db for PgDb {
             }
             client
                 .batch_execute(&format!(
-                    "CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON embeddings \
-                     USING hnsw (vec vector_cosine_ops) WITH (m = {m}, ef_construction = {ef_construction})"
+                    "CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON \"{}\".embeddings \
+                     USING hnsw (vec vector_cosine_ops) WITH (m = {m}, ef_construction = {ef_construction})",
+                    self.schema
                 ))
                 .await
                 .map_err(|e| {
@@ -1284,7 +1368,7 @@ impl Db for PgDb {
         self.rt.block_on(async {
             let client = self.client.borrow().clone();
             client
-                .batch_execute("DROP INDEX IF EXISTS idx_embeddings_hnsw")
+                .batch_execute(&format!("DROP INDEX IF EXISTS \"{}\".idx_embeddings_hnsw", self.schema))
                 .await
                 .map_err(pg_err)?;
             Ok(())
@@ -1317,9 +1401,9 @@ impl Db for PgDb {
             let rows = client
                 .query(
                     "SELECT indexname FROM pg_indexes
-                      WHERE schemaname = current_schema() AND tablename = 'embeddings'
+                      WHERE schemaname = $1 AND tablename = 'embeddings'
                         AND indexdef LIKE '%hnsw%'",
-                    &[],
+                    &[&self.schema],
                 )
                 .await
                 .map_err(pg_err)?;
@@ -1437,6 +1521,98 @@ fn replace_suffix(table: &str) -> Option<(&'static str, &'static str)> {
 /// Translate one statement from the store's SQLite dialect to Postgres.
 /// Every divergent construct is handled explicitly or the translation FAILS
 /// with the offending SQL — never execute something subtly different.
+/// Every table the Postgres backend creates (`PG_SCHEMA`, `ensure_embeddings`,
+/// and the telemetry sidecar's `TELEM_SCHEMA_PG`). The qualifier rewrites a
+/// reference to any of these; catalog tables (`pg_class`, `information_schema`)
+/// are deliberately absent, since they must resolve globally.
+pub(crate) const PG_TABLES: &[&str] = &[
+    "blobs", "corpus_idx", "counters", "embeddings", "entity_latest", "fts_doc", "fts_post",
+    "fts_vocab", "grains", "heads", "meta", "ns_reg", "oplog", "osp", "prov_idx", "run_idx",
+    "telem_budget_stat", "telem_grain_access", "telem_meta", "telem_query_stat",
+    "telem_recall_log", "terms", "thread_idx", "triples",
+];
+
+/// Schema-qualify every table reference in `sql` (#181): `FROM grains g` →
+/// `FROM "s".grains g`. This is what frees the store from the session's
+/// `search_path` — a transaction-mode pooler hands each transaction to
+/// whichever backend is free, and a statement that relied on `search_path`
+/// would then read another schema's tables or none. Quote-aware (a table name
+/// inside a string literal is data) and idempotent (an already-qualified name
+/// is left alone). Only the keywords a table name can follow trigger it, so
+/// `counters.v` in an `ON CONFLICT … DO UPDATE` stays the target's own name,
+/// which Postgres resolves without a schema.
+pub(crate) fn qualify_tables(sql: &str, schema: &str) -> String {
+    const TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "TABLE", "EXISTS"];
+    let mut out = String::with_capacity(sql.len() + 64);
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    let mut in_str = false;
+    let mut in_ident = false;
+    let mut prev_word_is_trigger = false;
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    while i < n {
+        let c = chars[i];
+        if in_str {
+            out.push(c);
+            if c == '\'' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_ident {
+            out.push(c);
+            if c == '"' {
+                in_ident = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_str = true;
+                prev_word_is_trigger = false;
+                out.push(c);
+                i += 1;
+            }
+            '"' => {
+                in_ident = true;
+                prev_word_is_trigger = false;
+                out.push(c);
+                i += 1;
+            }
+            c if is_word(c) => {
+                let start = i;
+                while i < n && is_word(chars[i]) {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                let preceded_by_dot = start > 0 && chars[start - 1] == '.';
+                if prev_word_is_trigger && !preceded_by_dot && PG_TABLES.contains(&word.as_str()) {
+                    out.push('"');
+                    out.push_str(schema);
+                    out.push_str("\".");
+                }
+                out.push_str(&word);
+                prev_word_is_trigger = TRIGGERS.contains(&word.to_ascii_uppercase().as_str());
+            }
+            c if c.is_whitespace() => {
+                out.push(c);
+                i += 1;
+            }
+            _ => {
+                // Any other punctuation ends the "next word may be a table"
+                // window: `EXISTS (SELECT`, `FOR UPDATE)`, `DO UPDATE SET`.
+                prev_word_is_trigger = false;
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn translate(sql: &str) -> Result<String> {
     let trimmed = sql.trim();
     // Exact-match specials first.
@@ -1682,6 +1858,22 @@ pub fn query_raw_i64(url: &str, sql: &str) -> Result<i64> {
     Ok(row.get::<_, i64>(0))
 }
 
+/// `AREEV_PG_SESSION_CHAOS` under the `conformance` feature: `1`/`reset`
+/// turns on `maybe_discard_session`, `deallocate` its harsher form, and
+/// `deallocate-txn` drops the statements at every `BEGIN` instead (the
+/// backend-switch shape). Read per statement. On a shipped build it is never
+/// consulted.
+fn session_chaos_mode() -> Option<String> {
+    #[cfg(feature = "conformance")]
+    {
+        std::env::var("AREEV_PG_SESSION_CHAOS").ok().filter(|v| !v.is_empty() && v != "0")
+    }
+    #[cfg(not(feature = "conformance"))]
+    {
+        None
+    }
+}
+
 /// Drop a memory schema entirely — the Postgres backend's memory-level
 /// erasure primitive (`DROP SCHEMA … CASCADE`), the analogue of deleting a
 /// memory file. Admin-surface only: not reachable from CAL, and hosts must
@@ -1805,6 +1997,79 @@ mod tests {
         )
         .unwrap();
         assert!(n.contains("(e.vec <=> (($2)::text::vector)) AS dist"), "{n}");
+    }
+
+    #[test]
+    fn a_stale_statement_error_names_both_remedies() {
+        let e = PgDb::explain_stale(AreevError::Storage(
+            "postgres error 26000: prepared statement \"s7\" does not exist".into(),
+        ));
+        let msg = e.to_string();
+        assert!(msg.contains("26000") && msg.contains("max_prepared_statements"), "{msg}");
+        assert!(msg.contains("session mode"), "{msg}");
+        // Anything else passes through untouched.
+        let other = PgDb::explain_stale(AreevError::Storage("postgres error 42P01: relation".into()));
+        assert_eq!(other.to_string(), "STO-E001: storage error: postgres error 42P01: relation");
+    }
+
+    #[test]
+    fn qualifies_every_table_reference_and_nothing_else() {
+        let q = |sql: &str| qualify_tables(sql, "s1");
+        // Aliases, joins, subqueries, and INSERT's column list.
+        assert_eq!(
+            q("SELECT g.hash FROM embeddings e JOIN grains g ON g.seq = e.seq WHERE g.ns = $1"),
+            "SELECT g.hash FROM \"s1\".embeddings e JOIN \"s1\".grains g ON g.seq = e.seq WHERE g.ns = $1"
+        );
+        assert_eq!(
+            q("INSERT INTO terms(term, term_hash) VALUES ($1, $2) ON CONFLICT (term_hash) DO NOTHING RETURNING id"),
+            "INSERT INTO \"s1\".terms(term, term_hash) VALUES ($1, $2) ON CONFLICT (term_hash) DO NOTHING RETURNING id"
+        );
+        assert_eq!(
+            q("DELETE FROM run_idx WHERE seq=$1 AND NOT EXISTS (SELECT 1 FROM triples WHERE s=$1)"),
+            "DELETE FROM \"s1\".run_idx WHERE seq=$1 AND NOT EXISTS (SELECT 1 FROM \"s1\".triples WHERE s=$1)"
+        );
+        assert_eq!(q("UPDATE terms SET term = $2 WHERE id = $1"), "UPDATE \"s1\".terms SET term = $2 WHERE id = $1");
+        assert_eq!(
+            q("ALTER TABLE telem_recall_log ADD COLUMN run_id TEXT"),
+            "ALTER TABLE \"s1\".telem_recall_log ADD COLUMN run_id TEXT"
+        );
+        assert_eq!(q("DROP TABLE IF EXISTS meta"), "DROP TABLE IF EXISTS \"s1\".meta");
+    }
+
+    #[test]
+    fn qualifier_leaves_data_catalogs_and_target_references_alone() {
+        let q = |sql: &str| qualify_tables(sql, "s1");
+        // A table name inside a string literal is data.
+        assert_eq!(q("SELECT k FROM meta WHERE v = 'FROM grains'"), "SELECT k FROM \"s1\".meta WHERE v = 'FROM grains'");
+        // Catalog tables resolve globally and are not ours to move.
+        let cat = "SELECT 1 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid";
+        assert_eq!(q(cat), cat);
+        let info = "SELECT 1 FROM information_schema.columns WHERE table_name = 'terms'";
+        assert_eq!(q(info), info);
+        // The upsert's target reference and FOR UPDATE / DO UPDATE are not
+        // table positions.
+        assert_eq!(
+            q("INSERT INTO counters(name, v) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET v = GREATEST(counters.v, EXCLUDED.v)"),
+            "INSERT INTO \"s1\".counters(name, v) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET v = GREATEST(counters.v, EXCLUDED.v)"
+        );
+        assert_eq!(q("SELECT seq FROM grains WHERE hash=$1 FOR UPDATE"), "SELECT seq FROM \"s1\".grains WHERE hash=$1 FOR UPDATE");
+        // Idempotent: an already-qualified reference is left as it is, and a
+        // column that happens to share a table's name is not a table.
+        let done = "SELECT 1 FROM \"s1\".grains g WHERE g.meta = 1";
+        assert_eq!(q(done), done);
+        assert_eq!(q(&q("SELECT 1 FROM heads")), "SELECT 1 FROM \"s1\".heads");
+    }
+
+    #[test]
+    fn every_translated_special_qualifies_cleanly() {
+        // The integrity probe is emitted by translate itself; it must name
+        // its tables in positions the qualifier recognises, or it would read
+        // another schema's index rows under a pooler.
+        let out = qualify_tables(&translate("PRAGMA integrity_check").unwrap(), "s1");
+        for t in ["heads", "grains", "entity_latest", "triples"] {
+            assert!(out.contains(&format!("\"s1\".{t}")), "{t} unqualified in: {out}");
+        }
+        assert!(!out.contains(" heads h") || out.contains("\"s1\".heads h"), "{out}");
     }
 
     #[test]

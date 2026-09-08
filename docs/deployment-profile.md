@@ -114,36 +114,45 @@ by instances against the server's `max_connections` — cache handles per tenant
 with an LRU and close idle ones (`close()` in Node; drop in Rust/Python). There
 is no built-in pool.
 
-**A pooler must run in session mode, never transaction mode.** The store keeps
-three pieces of state on the session: `search_path`, pinned once at open; the
-bootstrap advisory lock (`pg_advisory_lock`, not the `_xact_` form); and the
-hot-path queries, held as server-side **named prepared statements** cached per
-connection. Transaction pooling hands each transaction to whichever backend is
-free, so none of the three survives.
+**A pooler may run in transaction mode, on one condition and with one
+caveat.** The store no longer keeps anything it needs on the session: every
+statement names its tables schema-qualified (`"tenant_7".grains`, never
+`grains` resolved through `search_path`), runtime DDL and catalog probes bind
+the schema name instead of reading `current_schema()`, the bootstrap lock is
+transaction-scoped (`pg_advisory_xact_lock`), and a cached prepared statement
+the backend no longer knows (`26000`) is re-prepared and retried when it
+happens outside a transaction. The whole two-backend conformance suite runs
+with `RESET ALL` issued before every statement outside a transaction
+(`tests/pg_chaos.rs`), and — measured, not inferred — passes through a real
+PgBouncer in transaction mode (#181, second increment).
 
-The prepared-statement cache is what an operator hits first — a later
-transaction lands on a backend that never prepared the statement, and the
-driver reports `prepared statement "s0" does not exist`. That one is loud. The
-`search_path` failure is the dangerous one: a statement lands on a connection
-whose `search_path` is unset or belongs to a **different schema**, and because
-one schema is one memory, that is not a failed query — it is a query answered
-from another tenant.
+The **condition**: the pooler must track prepared statements across backends.
+The driver names every parameterized statement it sends, one-shot or cached,
+so behind a pooler that does not track them a statement prepared on one
+backend is unknown to the next — and when that happens *inside* a
+transaction the transaction is aborted, which nothing store-side can undo.
+PgBouncer 1.21+ tracks them when `max_prepared_statements` is above zero;
+below 1.21, or with it at zero, use **session mode**. The error you get
+otherwise names both remedies.
 
-The invariant a proxy has to satisfy: **one client connection maps to one
-server session for that connection's whole life.** Check any product against
-that sentence rather than against its marketing.
+The **caveat**: `hnsw.ef_search` is still a session setting (set by
+`ensure_vector_index` / `set_vector_ef_search`). Under transaction pooling it
+does not survive to the next transaction, and the loss is silent — ANN recall
+drops to pgvector's default of 40 with no error. Until the store scopes it
+per transaction, a pooled deployment that tunes `ef_search` must also set it
+at the pooler or database level (`ALTER DATABASE … SET hnsw.ef_search = 100`).
 
-| | |
+pgvector's `vector` type and `<=>` operator are resolved through
+`search_path` by Postgres itself, so the extension must live in a schema on
+the *default* `search_path` (`public`, where the store installs it), not in a
+private one only the store's session-level `search_path` reached.
+
+| | Pooler mode |
 |---|---|
-| Safe | PgBouncer `session` mode; pass-through proxies that are not pooling at all (the Cloud SQL Auth Proxy is a TLS/IAM tunnel); Neon's **direct** endpoint |
-| Not safe | PgBouncer `transaction`/`statement`; Supavisor transaction mode; PgCat transaction mode; Neon's **`-pooler`** endpoint, which is transaction-mode PgBouncer |
-
-Neon deserves the explicit line because the pooled hostname is the one its
-quickstarts hand out, and the two endpoints differ by a substring.
-
-PgBouncer in `session` mode still caps server connections — but it caps by
-**queueing** clients, so the per-tenant handle cache above is what keeps the
-queue short rather than merely moving the contention.
+| Fine | PgBouncer `session` mode; PgBouncer 1.21+ `transaction` mode with `max_prepared_statements > 0`; pass-through proxies (the Cloud SQL Auth Proxy is a TLS/IAM tunnel); Neon's direct endpoint |
+| Session mode only | A transaction-mode pooler that does not track prepared statements: PgBouncer below 1.21 or with `max_prepared_statements = 0` |
+| Check your pooler's docs | Supavisor, PgCat, Neon's `-pooler` endpoint: each has added prepared-statement tracking; the condition above is what to look for |
+| Not yet | Relying on a tuned `ef_search` through a transaction-mode pooler (see the caveat) |
 
 **Open cost: provision schemas ahead of the request path.** First open of a
 NEW schema runs the full DDL bootstrap under an advisory lock — hundreds of

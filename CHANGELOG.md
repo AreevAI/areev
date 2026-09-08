@@ -10,6 +10,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Postgres: the store holds nothing on the session** (#181, second
+  increment). Every statement names its tables schema-qualified, the bootstrap
+  lock is transaction-scoped (first increment), and a cached prepared
+  statement the backend no longer knows (`26000`) is re-prepared and retried.
+  Runtime DDL and catalog probes bind the schema name instead of reading
+  `current_schema()`. So a transaction-mode pooler in front of the store is
+  now correct rather than a documented hazard: the full conformance suite runs
+  with `RESET ALL` issued before every statement outside a transaction
+  (`tests/pg_chaos.rs`), which drops `search_path` and every GUC, and the
+  suite passes through a real PgBouncer in transaction mode. The one thing
+  the pooler must do itself is track prepared statements across backends —
+  the driver names every parameterized statement, so PgBouncer 1.21+ with
+  `max_prepared_statements > 0`, or session mode; a `26000` inside a
+  transaction now says exactly that instead of reading like a driver bug.
+  What is still session-scoped, and documented as such: `hnsw.ef_search`. The
+  in-process pool itself (one pool across N schemas) is the third increment.
+
 - **The vector-at-scale surface reaches the bindings and the CLI** (#141).
   A host that manages memories through Python or Node alone could not build
   the ANN index, could only write embeddings one transaction at a time, and
