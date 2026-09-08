@@ -489,3 +489,60 @@ Evidence — per-task records, governance ledgers, meters, statistical
 workings — goes to
 [`AreevAI/areev-benchmark`](https://github.com/AreevAI/areev-benchmark),
 never here. Only counts travel.
+
+## The harness moved onto Areev's own surfaces (2026-09-08)
+
+Recorded under rule 4 of `CLAUDE.md` — never change a harness after seeing its
+result, and when you must, say what changed and which runs precede it.
+**Run 1, the pre-registered null reported above, precedes all of it.** Nothing
+below revises a number; the counts, the ledger and the gate's reasons stand
+exactly as published.
+
+What changed, and why:
+
+- **Nine per-app namespaces.** Errors are now written to `appworld.<app>` and
+  every read scopes `"appworld.*"`. This is the defect this document already
+  records: the gate approved a rule that scoped itself to `phone.*`, and it
+  then sat in an undifferentiated pile where the scope it named meant nothing
+  at recall time. A prefix scope selects the base namespace **and** its
+  descendants, so run 1's flat memories still read correctly through the new
+  query — verified against them directly, block-for-block.
+- **The run-1 memories were migrated and swapped**, and the flat originals are
+  kept. `appworld/migrate_ns.py --swap` writes a NEW memory (a namespace is
+  part of the content address, so re-namespacing mints new addresses; there is
+  no in-place move), then gives it the source's name and moves the
+  pre-migration memory to `<name>.flat.db`. Nothing is deleted and the swap is
+  reversible by hand; every sibling moves together — the `-wal`, the `.blobs/`
+  and the `.telemetry.db` — since a memory whose WAL was left behind has a torn
+  tail. The migrated memory carries a `migrated_from` record naming the source
+  and the per-namespace counts, so a copy is never mistaken for an original.
+
+  Both forms were checked to render **identical prompt blocks**, governed and
+  passive, which is what a prefix scope buys: `"appworld.*"` selects the base
+  namespace and its descendants alike. The recommendation grains do NOT
+  migrate — they are engine-authored and query-only — so a migrated memory
+  starts with an empty review queue, and run 1's ledger of 100 proposals and
+  44 refusals lives in the `.flat.db` beside it.
+- **API errors are recorded as calls** (`record_tool_call`), keeping the
+  arguments, the status and the failure cause the flattened `add("tool", …)`
+  discarded.
+- **The governed arm's prompt block is a saved `ASSEMBLE`** registered in the
+  memory file. Byte-identical to the renderer it replaced, gated by
+  `scripts/parity_check.py appworld`.
+- **The passive arm's block is not.** It ranks by frequency, and CAL's
+  `GROUP BY` reorders rows without projecting a per-group count a template
+  could render. CAL selects; the harness tallies. `appworld/AREEV.md` says so,
+  and any token or truncation figure quoted here means the harness's cap.
+
+  That selection is a saved **`RECALL`**, not an `ASSEMBLE`, and the
+  distinction cost a bug to learn. `ASSEMBLE` applies a token budget whether or
+  not one is asked for — the default is 4000 — and a budget that binds drops
+  grains **silently**: no warning, and `total_available` reports the
+  post-budget count, so a caller cannot tell a full answer from a truncated
+  one. Wrapping this pure selection in an `ASSEMBLE` returned **79 of 229**
+  error grains on run 1's own memory. Every prompt section in the crate now
+  states its budget explicitly, and `scripts/parity_check.py` seeds 200 grains
+  past the default so the omission cannot come back.
+
+A run 2 under this harness would not be comparable to run 1 on prompt bytes for
+the passive arm alone; the governed arm's bytes are unchanged.

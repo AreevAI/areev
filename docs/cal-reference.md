@@ -271,6 +271,34 @@ cannot reorder sections either and emits `CAL-W016` rather than silently doing
 nothing — to order *within* a section, put the stage on that source's
 sub-query.
 
+**A parenthesised source carries its own pipeline**, which is where per-section
+ordering lives:
+
+```sql
+ASSEMBLE "block" FROM
+  rules: (RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 20),
+  turns: (RECALL events WHERE session_id = "call-42" ORDER BY created_at DESC LIMIT 10)
+BUDGET 900 tokens
+FORMAT markdown
+```
+
+Each source's stages run over that source alone, **before** dedup and before
+the budget allocator — so `ORDER BY object ASC LIMIT 20` chooses *which*
+twenty grains the budget then has to fit, not which twenty survive it. Two
+sections may order opposite ways in one statement, which is the shape a real
+prompt block needs (rules alphabetical, recent turns newest-first) and the
+reason the stage belongs on the source rather than on the statement.
+
+A source's stages are the ordinary ones, so a frequency roll-up is also a
+section: `errors: (RECALL tools WHERE is_error = true GROUP BY tool_name
+COUNT)` renders "what fails most" as one part of a prompt (see
+[§4](#4-the-pipeline)).
+
+The stage must sit **inside the parentheses**. The bare unparenthesised source
+form (`FROM facts WHERE …`) takes no pipeline: with no closing paren to bound
+it, a trailing stage is ambiguous with the enclosing `ASSEMBLE`'s own clauses.
+A `LITERAL` source takes none either — it is host text, not a query.
+
 **`LITERAL` — host text at an authored position.** A production system prompt
 is grains interleaved with fixed text, some of it contractually mandatory. A
 `LITERAL` source renders exactly the text given, at its authored index, and

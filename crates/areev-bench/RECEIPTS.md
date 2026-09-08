@@ -1028,3 +1028,31 @@ mind — and validates the choice the way the streamlake move was validated,
 the same read synchronous and batched, paired trial for trial. Batch
 usage rows carry the tier's discount, or the provider's reported cost
 where it gives one, and `cost.py` uses them.
+
+## The harness moved onto Areev's own surfaces (2026-09-08)
+
+Recorded under rule 4 of `CLAUDE.md`. **Every run reported in this document
+precedes it**, and no number here is revised.
+
+The three prompt blocks — the accountant's instructions, the learned
+conventions, and arm C's record of everything the accountant said — are now
+saved `ASSEMBLE` queries registered in the memory file, rendered by templates
+registered beside them. `receipts/AREEV.md` has the shape.
+
+**The move is byte-for-byte, and that is gated rather than asserted.**
+`scripts/parity_check.py receipts` renders each block through CAL and through
+the retired hand-rolled renderer (kept verbatim in that file, imported by
+nothing) and fails if they differ. The care is warranted: `structure.py`
+measured that CAL's *default* `FORMAT markdown` scores 35 on these grains
+against the hand-assembled prompt's 141, because it prefixes every rule with
+its subject and relation. The registered templates emit the published bytes
+exactly.
+
+Two mechanisms make the parity possible, and both were new:
+
+- `ORDER BY object ASC` **inside the ASSEMBLE source** — the `sorted(...)` the
+  renderer did. That position did not parse before this work: `CAL-W016` named
+  it as the fix while the parser refused it. The engine was fixed.
+- `{{#if assembly.grain_count}}` guarding the heading, so **arm A renders the
+  empty string** rather than a heading announcing rules that were rolled back.
+  Without it the paired evaluation would stop being causal.

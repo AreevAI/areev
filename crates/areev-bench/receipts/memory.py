@@ -16,9 +16,15 @@ import json
 import os
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
 import accountant as acct
+import bench_run
+import cal_assemble as cal
 
+TRACK = "receipts"   # the directory `bench_govern.py --harness` loads
 NS = "ledger"
 RUNNER = "agent:receipt-capture"
 REVIEWER = "user:accountant"
@@ -45,6 +51,105 @@ INTERNAL_RELATIONS = {"reading_result", "correction", "capture_attempt"}
 DOCUMENT_SUBJECT = re.compile(r"^document_\d+$")
 DOCUMENT_SUBJECT_SEQ = re.compile(r"^document_(\d+)$")
 
+# --------------------------------------------------------------------------
+# the prompt, as CAL the file carries
+# --------------------------------------------------------------------------
+#
+# Every model-facing block below is an ASSEMBLE registered in the memory as a
+# saved query, rendered by a template registered in the same file. Nothing
+# here is assembled in Python: the harness runs `RUN "ledger_rules"($ns=…)`
+# and puts the answer in the prompt.
+#
+# The move was made byte-for-byte on purpose. `structure.py` measured what
+# CAL's DEFAULT markdown costs on these grains -- a seven-rule memory scored
+# 35 against the hand-assembled prompt's 141, because `FORMAT markdown`
+# prefixes every rule with its subject and relation and suffixes it with a
+# date. So the templates below emit the published bytes exactly, and
+# `selftest.py` asserts that against the retired hand-rolled renderer. The
+# published numbers stay comparable; the assembly is the engine's.
+
+# Rules the agent must follow. `lesson` comes from the LLM leg, `fails_with`
+# from the deterministic one, and they are one section because the agent has
+# no use for the distinction.
+RULE_RELATIONS = ("lesson", "fails_with")
+
+# LIMIT for each section. Well above any observed run (a 320-document
+# deployment writes ~11 rules) and checked at read time: a section that comes
+# back holding exactly this many has dropped rows, and `cal.section(cap=…)`
+# raises rather than handing the model a prompt missing its oldest rules --
+# the failure this harness hit at 300, and would have hit again at 1000.
+SECTION_CAP = 500
+
+RULES_HEADING = (
+    "## INSTRUCTIONS FROM THE ACCOUNTANT\n"
+    "These come from the person who files these documents and they OVERRIDE "
+    "the day-one instruction above. If a rule names a field to capture, that "
+    "field is REQUIRED: put it in your JSON, in addition to the day-one field."
+)
+SAID_HEADING = (
+    "## WHAT THE ACCOUNTANT HAS TOLD YOU\n"
+    "Everything the person who files these has said, oldest first."
+)
+
+
+def _cal_list(values):
+    return "(%s)" % ", ".join('"%s"' % v for v in values)
+
+
+REGISTRY = list(cal.REVIEW_REGISTRY) + [
+    # -- renderers ---------------------------------------------------------
+    # `{{#if assembly.grain_count}}` is what makes a withdrawn rule set render
+    # to the empty string rather than to a heading announcing rules that are
+    # no longer there. Arm A depends on it.
+    cal.guarded_template("ledger_rules_tpl", RULES_HEADING, "- {{grain.object}}"),
+    cal.guarded_template("ledger_conventions_tpl", "## CONVENTIONS",
+                         "- {{grain.relation | humanize}}: {{grain.object}}"),
+    cal.guarded_template("ledger_said_tpl", SAID_HEADING, "- {{grain.object}}"),
+
+    # -- reads -------------------------------------------------------------
+    # `ORDER BY object ASC` inside the source is the `sorted(set(...))` the
+    # hand-rolled renderer did, and `WITH dedup(object)` is the `set(...)`.
+    cal.saved_query(
+        "ledger_rules", ["ns"],
+        '  ASSEMBLE "operating rules" FOR "the capture agent" FROM\n'
+        '    rules: (RECALL facts WHERE namespace = $ns AND relation IN %s\n'
+        '            ORDER BY object ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE ledger_rules_tpl\n'
+        '  WITH dedup(object)' % (_cal_list(RULE_RELATIONS), SECTION_CAP,
+                                  cal.MAX_BUDGET_TOKENS),
+        "the approved rules, as the capture agent reads them"),
+    # Scoped by SUBJECT, so a long deployment's thousands of per-document
+    # facts never enter the scan. The NOT IN list is the harness's own
+    # evidence relations plus the two rule relations, which have their own
+    # section.
+    cal.saved_query(
+        "ledger_conventions", ["ns", "subject"],
+        '  ASSEMBLE "learned conventions" FOR "the capture agent" FROM\n'
+        '    conventions: (RECALL facts WHERE namespace = $ns AND subject = $subject\n'
+        '                  AND relation NOT IN %s\n'
+        '                  ORDER BY relation ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE ledger_conventions_tpl\n'
+        '  WITH dedup(object)'
+        % (_cal_list(sorted(set(RULE_RELATIONS) | INTERNAL_RELATIONS)), SECTION_CAP,
+           cal.MAX_BUDGET_TOKENS),
+        "conventions learned about the task as a whole"),
+    # Arm C: everything the accountant said, oldest first, deduplicated on the
+    # exact sentence. `observer_type = "human"` is a store-side filter, not a
+    # Python one, so a machine observation can never reach this block.
+    cal.saved_query(
+        "ledger_said", ["ns"],
+        '  ASSEMBLE "what the accountant said" FOR "the capture agent" FROM\n'
+        '    said: (RECALL observations WHERE namespace = $ns\n'
+        '           AND observer_type = "human"\n'
+        '           ORDER BY seq ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE ledger_said_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "the ungoverned baseline's prompt section"),
+]
+
 
 def with_memory(db_path, actor, fn):
     """Open as `actor`, run `fn(db)`, and guarantee the handle is released.
@@ -59,6 +164,12 @@ def with_memory(db_path, actor, fn):
     import areev
     db = areev.Areev(db_path, ns=NS, actor=actor)
     try:
+        # The prompt sections are saved queries in the FILE, not strings in
+        # this module (`../CLAUDE.md`, "Register the read as a saved query").
+        # `DEFINE` is a write, so it happens here, on the one path that holds a
+        # writable handle -- a held-out arm reading a frozen copy finds the
+        # registry already in the file it was handed.
+        cal.install(db, REGISTRY, db_path=db_path, ns=NS)
         return fn(db)
     finally:
         del db
@@ -78,27 +189,6 @@ def _recall(db, where):
             "memory scan hit the %d-grain cap; the prompt would be missing rules. "
             "Narrow the query." % CAP)
     return grains
-
-
-def _facts(db):
-    """Every ledger fact. Kept for callers that want the whole namespace; it
-    raises past 1000 grains (about 250 documents), so the prompt path no
-    longer uses it -- see _conventions and _lessons.
-
-    This scanned with LIMIT 300 until the 160-document drift run: seed 2 wrote
-    432 facts, 11 of them lessons, and the newest 300 held 4 of those — the
-    prompt had quietly lost seven approved rules, the oldest first. Every
-    published 40-document run is under 130 facts and was never affected."""
-    return _recall(db, "")
-
-
-def _conventions(db, profile=None):
-    """Facts on the capture entity that are not lessons: the learned
-    conventions (date_format = ...). Scoped by SUBJECT so a long deployment's
-    thousands of document facts never enter the scan; a 320-document run
-    writes ~1,300 of those and would hit the cap on a whole-namespace read."""
-    return [g for g in _recall(db, ' AND subject = "%s"' % capture_entity(profile))
-            if g.get("fields", {}).get("relation") not in ("lesson", "fails_with")]
 
 
 def document_facts(db, fields):
@@ -123,47 +213,29 @@ def _lessons(db):
 def lessons_markdown(db, profile=None):
     """The LESSONS section, assembled from live memory on every document.
 
-    Reads only what a human approved and applied: rules recorded as Facts
-    (`lesson` from the LLM leg, `fails_with` from the deterministic one).
-    A rolled-back lesson stops rendering, which is what makes the paired
-    evaluation causal rather than a flag flip.
-    """
-    rules, conventions = [], []
-    for g in _lessons(db):
-        obj = (g.get("fields", {}).get("object") or "").strip()
-        if obj:
-            rules.append(obj)
-    for g in _conventions(db, profile):
-        f = g.get("fields", {})
-        rel, obj = f.get("relation"), (f.get("object") or "").strip()
-        if not obj:
-            continue
-        if rel not in INTERNAL_RELATIONS:
-            # An approved `fact` proposal on the capture entity — a learned
-            # convention (date_format = DD/MM/YYYY). The loop proposes these
-            # as readily as it proposes rules; discarding them threw away the
-            # model's own answer to "what format?" while the same question
-            # kept being asked.
-            conventions.append("%s: %s" % (rel.replace("_", " "), obj))
+    Two ASSEMBLE sections, both registered in the file: the approved rules and
+    the learned conventions. Reads only what a human approved and applied --
+    `lesson` from the LLM leg, `fails_with` from the deterministic one, and an
+    approved `fact` proposal on the capture entity (a convention such as
+    `date_format = DD/MM/YYYY`; the loop proposes these as readily as it
+    proposes rules, and discarding them threw away the model's own answer to
+    "what format?" while the same question kept being asked).
 
-    parts = []
-    if rules:
-        # Stated as instructions that OUTRANK the day-one prompt, because an
-        # approved rule that cannot change behaviour breaks the whole chain.
-        # Rendered as mere "rules you have been given", the agent kept
-        # returning the day-one field alone while its own prompt carried
-        # "always capture the Category" — it followed the instruction it was
-        # given on day one and read the rest as background.
-        parts.append("## INSTRUCTIONS FROM THE ACCOUNTANT\n"
-                     "These come from the person who files these documents and "
-                     "they OVERRIDE the day-one instruction above. If a rule "
-                     "names a field to capture, that field is REQUIRED: put it "
-                     "in your JSON, in addition to the day-one field.\n"
-                     + "\n".join("- %s" % o for o in sorted(set(rules))))
-    if conventions:
-        parts.append("## CONVENTIONS\n"
-                     + "\n".join("- %s" % o for o in sorted(set(conventions))))
-    return "\n\n".join(parts)
+    A rolled-back lesson stops rendering -- the templates guard their heading
+    on `assembly.grain_count`, so a withdrawn rule set renders to the EMPTY
+    STRING and not to a heading announcing rules that are gone. That is what
+    makes the paired evaluation causal rather than a flag flip.
+
+    The rules are stated as instructions that OUTRANK the day-one prompt.
+    Rendered as mere "rules you have been given", the agent kept returning the
+    day-one field alone while its own prompt carried "always capture the
+    Category" -- it followed the instruction it was given on day one and read
+    the rest as background.
+    """
+    return cal.block(db, [
+        ("ledger_rules", {"ns": NS}, SECTION_CAP),
+        ("ledger_conventions", {"ns": NS, "subject": capture_entity(profile)}, SECTION_CAP),
+    ])
 
 
 def corrections_markdown(db):
@@ -178,39 +250,19 @@ def corrections_markdown(db):
     the difference is what proposing, reviewing and retracting are worth; if
     it does not, they are worth nothing and that is the result.
 
-    A store-everything memory system is this arm, not arm A."""
-    said = []
-    for g in _observations(db):
-        f = g.get("fields", {})
-        if f.get("observer_type") != "human":
-            continue
-        # The observation grain stores the utterance under `object`
-        # (`content` is the input key the binding maps from).
-        text = (f.get("object") or "").strip()
-        if text:
-            said.append((int(f.get("seq") or 0), text))
-    said.sort()
-    if not said:
-        return ""
-    seen, lines = set(), []
-    for _seq, text in said:
-        # A person repeats themselves; the record keeps every instance, and
-        # so does the prompt, except for byte-identical restatements, which
-        # would only be padding.
-        if text not in seen:
-            seen.add(text)
-            lines.append("- " + text)
-    return ("## WHAT THE ACCOUNTANT HAS TOLD YOU\n"
-            "Everything the person who files these has said, oldest first.\n"
-            + "\n".join(lines) + "\n")
+    A store-everything memory system is this arm, not arm A.
 
-
-def _observations(db):
-    grains = json.loads(db.cal(
-        'RECALL observations WHERE namespace = "%s" LIMIT %d FORMAT json' % (NS, CAP)))["grains"]
-    if len(grains) >= CAP:
-        raise RuntimeError("observation scan hit the %d-grain cap; arm C would be missing corrections" % CAP)
-    return grains
+    A person repeats themselves; the record keeps every instance and so does
+    the prompt, except for byte-identical restatements, which would only be
+    padding -- that is `WITH dedup(object)`, which keeps the FIRST occurrence
+    and so preserves "oldest first".
+    """
+    said = cal.section(db, "ledger_said", {"ns": NS}, cap=SECTION_CAP)
+    # The retired hand-rolled renderer ended this block with a newline and the
+    # agent's prompt was built around that. `cal.section` strips the trailing
+    # newlines every renderer adds, so it is put back here rather than being
+    # left to a template whose braces cannot carry a trailing blank line.
+    return (said + "\n") if said else ""
 
 
 def record_correction(db, seq, message, corrections, profile=None):
@@ -243,9 +295,15 @@ def record_correction(db, seq, message, corrections, profile=None):
 
 
 def current_rules(db):
-    """The rule texts already in force, for the reviewer's dedup check."""
-    return [f["object"] for f in (g.get("fields", {}) for g in _facts(db))
-            if f.get("relation") in ("lesson", "fails_with") and f.get("object")]
+    """The rule texts already in force, for the reviewer's dedup check.
+
+    Relation-scoped, like the section that renders them: a whole-namespace
+    scan raises past 1000 facts (about 250 documents), and the reviewer
+    silently losing its oldest rules would let an already-approved rule be
+    approved a second time.
+    """
+    return [obj for obj in ((g.get("fields", {}).get("object") or "").strip()
+                            for g in _lessons(db)) if obj]
 
 
 def parse_proposal(summary):
@@ -308,80 +366,93 @@ def policy_file(db_path, policy, name="loop-policy.json"):
     return policy
 
 
+def review_pending(profile, db_path, ask, judge=None):
+    """The accountant's decision on each proposed rule — judged, not applied.
+
+    Applying is the run's `apply` node, under `user:accountant`, after the
+    runtime has already refused a self-approval. Splitting the two is what
+    makes the decision auditable: this function reads the memory and answers,
+    and every answer carries its reason, so the ledger shows what was turned
+    down as well as what was taken.
+
+    `ask` is what the run parked on: the pending batch, plus what this
+    reviewer already decided in the last 90 days, plus the held-out outcome
+    series. The prior decisions are consulted BEFORE the judge is: a rule the
+    accountant already declined is declined again with the earlier reason
+    rather than put to a fresh model call that might answer differently. The
+    engine's own cooldown cannot catch that case — a reworded proposal carries
+    a different `dedup_key`.
+    """
+    pending = (ask or {}).get("pending") or []
+    declined = _declined_before(ask)
+    in_force = set(acct.normalize_rule(x) for x in
+                   with_memory(db_path, REVIEWER, current_rules))
+    decisions = []
+    for rec in pending:
+        kind, text = parse_proposal(rec.get("summary") or "")
+        target = rec.get("target_ref") or ""
+        earlier = cal.restates_a_decision(text, declined, acct.normalize_rule,
+                                          acct._content_words)
+        if earlier is not None:
+            ok, why = False, ("already declined: %s" % earlier["text"][:110])
+        elif kind == "lesson":
+            ok, why = acct.review_recommendation(profile, text, in_force, judge)
+        elif kind == "fact" and not DOCUMENT_SUBJECT.match(target.rsplit("/", 1)[-1]):
+            # A convention learned about the task as a whole. Judged on the
+            # same rubric.
+            #
+            # The discriminator is "is this about ONE document", not "does the
+            # subject match a name we picked": the model is never told what the
+            # capture entity is called and reasonably invents one (live:
+            # `entity:invoice_processing`). Gating on an exact match silently
+            # rejected every convention it proposed, which is a fact about this
+            # harness rather than about the model.
+            ok, why = acct.review_recommendation(profile, text, in_force, judge)
+        elif kind == "fact":
+            ok, why = False, ("a fact about one document, not a rule for "
+                              "future ones (%s)" % target)
+        else:
+            ok, why = False, "advisory only — asks for no change"
+        if ok:
+            in_force.add(acct.normalize_rule(text))
+        decisions.append({"hash": rec["hash"], "kind": kind, "text": text,
+                          "approved": bool(ok), "why": why})
+    return any(d["approved"] for d in decisions), decisions
+
+
+def _declined_before(ask):
+    """The proposals this reviewer already turned down, as (text) records.
+
+    Read from the memory by the `bench_review_history` saved query and handed
+    over in the ask, so the reviewer never has to open the memory to know what
+    it already said.
+    """
+    out = []
+    for earlier in (ask or {}).get("prior") or []:
+        if (earlier.get("status") or "").lower() not in ("rejected", "rolled_back"):
+            continue
+        _kind, text = parse_proposal(earlier.get("summary") or "")
+        if text:
+            out.append({"text": text, "status": earlier.get("status")})
+    return out
+
+
 def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True,
           full_sweep=False):
-    """One governed pass: propose under the runner, decide under the reviewer.
+    """One governed pass, executed as a journaled `areev run`.
 
-    Returns a dict: pending, applied, rejected, errors, funnel, decisions.
-    Applying under a different actor is the Review gate's separation of
-    duties — the identity that triggered the finding cannot approve it.
+    propose (the loop's analyzers) → review (the accountant, a client node the
+    run PARKS on) → apply. The runtime refuses a responder equal to the
+    principal that triggered the ask, so the Review gate's separation of
+    duties is enforced and journaled rather than being this module's promise.
+
+    Returns: pending, applied, rejected, errors, funnel, decisions, run_id.
     `policy` is the host policy JSON (e.g. {"discover_objective":"learner"}).
     """
-    policy = policy_file(db_path, policy)
-    rep = json.loads(with_memory(
-        db_path, RUNNER,
-        lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy,
-                               full_sweep=full_sweep)))
-    funnel = rep.get("llm_funnel")
-    if verbose and funnel:
-        print("   funnel:", json.dumps(funnel))
-
-    out = {"pending": 0, "applied": 0, "rejected": 0, "errors": [],
-           "funnel": funnel, "decisions": []}
-
-    def review(rdb):
-        """The human gate: the accountant decides, one rule at a time.
-
-        Every decision is recorded with its reason — an approve through
-        `apply_recommendation`, a reject through `dismiss_recommendation` —
-        so the ledger shows what was turned down as well as what was taken.
-        """
-        in_force = set(acct.normalize_rule(x) for x in current_rules(rdb))
-        pend = json.loads(rdb.recommendations('{"status":"pending"}'))
-        out["pending"] = len(pend)
-        for rec in pend:
-            kind, text = parse_proposal(rec.get("summary") or "")
-            target = rec.get("target_ref") or ""
-            if kind == "lesson":
-                ok, why = acct.review_recommendation(profile, text, in_force, judge)
-            elif kind == "fact" and not DOCUMENT_SUBJECT.match(target.rsplit("/", 1)[-1]):
-                # A convention learned about the task as a whole. Judged on
-                # the same rubric.
-                #
-                # The discriminator is "is this about ONE document", not "does
-                # the subject match a name we picked": the model is never told
-                # what the capture entity is called and reasonably invents one
-                # (live: `entity:invoice_processing`). Gating on an exact match
-                # silently rejected every convention it proposed, which is a
-                # fact about this harness rather than about the model.
-                ok, why = acct.review_recommendation(profile, text, in_force, judge)
-            elif kind == "fact":
-                ok, why = False, ("a fact about one document, not a rule for "
-                                  "future ones (%s)" % target)
-            else:
-                ok, why = False, "advisory only — asks for no change"
-            try:
-                if ok:
-                    rdb.apply_recommendation(rec["hash"], why)
-                    in_force.add(acct.normalize_rule(text))
-                    out["applied"] += 1
-                    if verbose:
-                        print("   APPROVED %s" % text[:100])
-                else:
-                    rdb.dismiss_recommendation(rec["hash"], why)
-                    out["rejected"] += 1
-                    if verbose:
-                        print("   rejected (%s) %s" % (why[:44], (text or "")[:52]))
-                out["decisions"].append({"hash": rec["hash"], "kind": kind,
-                                         "text": text, "approved": bool(ok), "why": why})
-            except ValueError as e:
-                out["errors"].append(str(e)[:110])
-
-    with_memory(db_path, REVIEWER, review)
-    if verbose:
-        for r in out["errors"]:
-            print("   ERROR:", r)
-    return out
+    return bench_run.learn(
+        sys.modules[__name__], db_path, llm_cmd, ground_cmd,
+        decide=lambda ask: review_pending(profile, db_path, ask, judge),
+        policy=policy, verbose=verbose, full_sweep=full_sweep)
 
 
 def rollback_all(db, because="evaluation arm A: withdrawing the learned rules"):

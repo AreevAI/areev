@@ -179,6 +179,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
   result on the Query page, in plain language, with the `CAL-Wnnn` code shown
   only in Developer mode.
+- **`record_tool_call` takes `ns` in both bindings** (Python `ns=`, Node
+  `ns`), exactly as `add()` does. It was the only write on either surface that
+  could not leave the session namespace, so a host recording calls into
+  per-domain child namespaces (`domain.phone`, `domain.spotify`) had to open a
+  second handle — which the single-writer registry refuses (`STO-E002`).
+
+### Changed
+
+- **`areev-bench` harnesses now run on the engine's own surfaces.** Every
+  model-facing prompt block that can be is a saved `ASSEMBLE` query registered
+  in the memory file and rendered by a registered template, so a memory handed
+  to someone else carries how to read it. Tool calls are recorded through
+  `record_tool_call` rather than flattened, AppWorld's evidence lives in
+  per-app child namespaces read through `"appworld.*"`, and the governed
+  learning pass is an `areev run` workflow whose review node parks for a human
+  — so separation of duties is enforced by the runtime (`RUN-E012`) instead of
+  by harness convention. Ordering within a section relies on a source's own pipeline (#209/#215, above). The moves are byte-for-byte against the renderers
+  they replace, gated by `crates/areev-bench/scripts/parity_check.py`; the
+  new-track blueprint is `crates/areev-bench/BENCH-TEMPLATE.md`.
 
 ## [1.7.3] — 2026-09-07
 

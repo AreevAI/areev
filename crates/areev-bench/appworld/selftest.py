@@ -184,7 +184,14 @@ def test_store_round_trip() -> None:
         check("arm A reads nothing at all", memory.block_for(db_path, "none") == "")
 
         # The outcome record must carry the episode's shape and NOT its score.
-        facts = memory.with_memory(db_path, memory.RUNNER, memory._facts)
+        # Scoped `"appworld.*"`, the way every read in the bridge is: the base
+        # namespace plus every per-app child.
+        def read_facts(db):
+            return json.loads(db.cal(
+                'RECALL facts WHERE namespace = "%s" LIMIT 400 FORMAT json'
+                % memory.NS_SCOPE))["grains"]
+
+        facts = memory.with_memory(db_path, memory.RUNNER, read_facts)
         outcome = [f for f in (g.get("fields", {}) for g in facts)
                    if f.get("relation") == "outcome"]
         check("one outcome record per episode", len(outcome) == 1, str(len(outcome)))

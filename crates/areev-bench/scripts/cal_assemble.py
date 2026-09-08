@@ -2,13 +2,44 @@
 """Assemble a prompt block through CAL, and prove it agrees with a hand-rolled one.
 
 Shared by every harness in this crate (see `../CLAUDE.md`, "Use the product's
-own surfaces"). Two entry points:
+own surfaces"). Three entry points:
 
-    from cal_assemble import assemble
+    from cal_assemble import assemble, install, section
+
+    install(db, REGISTRY)                 # DEFINE TEMPLATE / DEFINE QUERY, once per file
+    block = section(db, "lessons", ns="ledger", subject="receipt_capture")
     block = assemble(db, "operating rules", [("rules", 'RECALL facts WHERE relation = "lesson"')],
                      budget_tokens=300, fmt="markdown", dedup="object")
 
     python3 cal_assemble.py --db PATH --ns NS --relation lesson   # the parity smoke
+
+## Why a prompt section is a saved query, not a Python string
+
+A `DEFINE QUERY` persists as a `qry:<name>` meta row: it travels with the
+`.db`, replicates through bundles, and is visible from the CLI, MCP and the
+console. A read that lives as a Python f-string means a memory handed to
+someone else does not carry how to read it -- the knowledge is stranded in
+the harness that happened to write the file. Same for `DEFINE TEMPLATE`
+(`tpl:<name>`): the renderer travels too, so the prompt a published number
+was produced under is IN the artifact rather than in a commit.
+
+## The one shape every section here uses
+
+    DEFINE TEMPLATE <name> HEADER {{{#if assembly.grain_count}}<heading>{{/if}}}
+                           ELEMENT {- {{grain.object}}}
+
+The `{{#if assembly.grain_count}}` guard is load-bearing: a section with no
+grains must render to the EMPTY STRING, because that is what a rolled-back
+lesson set has to look like. Without it a governed arm whose rules were
+withdrawn would still carry the heading that announces them, and the paired
+evaluation would no longer be causal.
+
+Ordering comes from a stage inside the source -- `(RECALL facts WHERE
+relation = "lesson" ORDER BY object ASC LIMIT 50)` -- which is what makes a
+CAL-assembled block byte-identical to the `sorted(set(...))` the harnesses
+hand-rolled. That position did not parse before 2026-09-08; CAL-W016 named it
+as the fix while the parser refused it (see `docs/cal-reference.md`,
+"A parenthesised source carries its own pipeline").
 
 The smoke exists because "we switched to ASSEMBLE" is a claim about output,
 not about intent. It checks four things a harness actually depends on:
@@ -31,12 +62,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 
 
 def _q(text: str) -> str:
     """CAL string literal."""
     return '"%s"' % str(text).replace('"', '\\"')
+
+
+# `ASSEMBLE` applies a token budget whether or not you ask for one: the default
+# is 4000 and the ceiling is 16000 (CAL-E033 above that). A budget that binds
+# DROPS GRAINS SILENTLY -- the payload's `total_available` is the POST-budget
+# count and no warning is emitted, so a caller cannot tell a full answer from a
+# truncated one. That is not theoretical: AppWorld's error selection returned 79
+# of 229 grains under the default before this constant existed.
+#
+# So every prompt section in this crate states its budget, at the ceiling. The
+# budget here is a stated bound, not a squeeze: these tracks' blocks must not
+# lose rows silently, and a binding budget would change published prompt bytes.
+# A track that WANTS progressive disclosure (Full -> Summary -> Omit) sets a
+# lower one deliberately and says so where its numbers are published.
+MAX_BUDGET_TOKENS = 16_000
 
 
 def assemble_statement(topic, sources, budget_tokens=None, fmt="markdown",
@@ -63,6 +108,230 @@ def assemble(db, topic, sources, budget_tokens=None, fmt="markdown",
     """Run it. Returns the parsed result: {"text", "grain_count", ...}."""
     statement = assemble_statement(topic, sources, budget_tokens, fmt, dedup, audience, priority)
     return json.loads(db.cal(statement))
+
+
+# --------------------------------------------------------------------------
+# the registry: templates and saved queries that travel with the file
+# --------------------------------------------------------------------------
+
+# `DEFINE` is a write. A read-only handle (STO-E004) cannot install anything,
+# which is deliberate -- a held-out arm reads a FROZEN memory and must not be
+# able to change how it reads. So installation belongs on the write path, and
+# a reader that finds no registry says so rather than quietly falling back to
+# a hand-rolled read that would no longer be the measured one.
+_INSTALLED: set[tuple[str, str]] = set()
+
+
+def install(db, registry, db_path=None, ns=None, force=False):
+    """Register this harness's templates and saved queries into the memory.
+
+    Idempotent: `DEFINE` overwrites, and the (path, ns) pair is remembered
+    for the process so a per-episode write path can call this unconditionally
+    without re-running a dozen statements every episode. `force=True` skips
+    the memo -- for a smoke that wants the statements actually executed.
+    """
+    key = (str(db_path or ""), str(ns or ""))
+    if not force and key != ("", "") and key in _INSTALLED:
+        return 0
+    for statement in registry:
+        db.cal(statement)
+    if key != ("", ""):
+        _INSTALLED.add(key)
+    return len(registry)
+
+
+def installed_queries(db):
+    """The saved queries this memory carries, by name."""
+    info = json.loads(db.cal("DESCRIBE QUERIES")).get("info", {})
+    return {q.get("name") for q in info.get("queries", [])}
+
+
+def section(db, name, params=None, cap=None):
+    """Run one saved query and return its rendered text.
+
+    Returns the empty string when the section has no grains -- every template
+    here guards its heading with `{{#if assembly.grain_count}}`, so an empty
+    section is empty rather than a bare heading.
+
+    `cap` is the LIMIT the saved query was written with. A section that comes
+    back holding exactly that many grains has silently lost the rest, and the
+    prompt built from it is missing rules -- the failure the receipts harness
+    hit once at 300 and again at 1000. Passing the cap turns that into a
+    raise; omitting it says the section is bounded by construction.
+
+    It does NOT catch a grain dropped by the token budget: `ASSEMBLE` reports
+    no pre-budget count and raises no warning (see `MAX_BUDGET_TOKENS`). The
+    guard against that is stating the budget, and `scripts/parity_check.py`
+    seeds a section past the default to keep it stated.
+    """
+    params = params or {}
+    bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
+    stmt = 'RUN %s(%s)' % (_q(name), bindings)
+    payload = json.loads(db.cal(stmt))
+    text = payload.get("text")
+    if text is None:
+        raise RuntimeError(
+            "saved query %r returned no rendered text (got keys %s); a prompt "
+            "section must FORMAT to text" % (name, sorted(payload)))
+    if cap is not None and int(payload.get("grain_count") or 0) >= cap:
+        raise RuntimeError(
+            "section %r hit its %d-grain cap; the prompt would be missing rows. "
+            "Narrow the saved query." % (name, cap))
+    return text.strip("\n")
+
+
+def rows(db, name, params=None, cap=None):
+    """Run a saved query that renders `FORMAT json` and return its grains.
+
+    For the one read in this crate that CAL cannot finish: AppWorld's passive
+    arm ranks its errors BY FREQUENCY, and CAL has no per-group count to
+    render with (`GROUP BY` reorders; it does not project a count into a
+    template). The SELECTION is still the engine's -- namespace scope, the
+    `is_error = true` filter and the bound all live in the saved query -- and
+    only the tally is the harness's. `../CLAUDE.md` says to name the step you
+    kept; this is it.
+    """
+    params = params or {}
+    bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
+    payload = json.loads(db.cal('RUN %s(%s)' % (_q(name), bindings)))
+    got = payload.get("grains")
+    if got is None and isinstance(payload.get("text"), str):
+        got = json.loads(payload["text"])
+    got = got or []
+    if cap is not None and len(got) >= cap:
+        raise RuntimeError(
+            "saved query %r hit its %d-grain cap; the block would be missing "
+            "rows. Narrow the query." % (name, cap))
+    return got
+
+
+def block(db, sections, sep="\n\n"):
+    """Join the non-empty sections -- the shape every harness's prompt block
+    already had (`"\n\n".join(parts)`, or `"\n"` where the sections are one
+    flat list rather than headed blocks).
+
+    `sections` is a list of (name, params) or (name, params, cap).
+    """
+    out = []
+    for spec in sections:
+        name, params = spec[0], spec[1]
+        cap = spec[2] if len(spec) > 2 else None
+        text = section(db, name, params, cap)
+        if text:
+            out.append(text)
+    return sep.join(out)
+
+
+def guarded_template(name, heading, element, summary=None):
+    """`DEFINE TEMPLATE` for one prompt section.
+
+    `heading` renders only when the section has grains; `element` renders once
+    per grain. Braces are the section delimiters, so a body containing `{` or
+    `}` outside a `{{...}}` expression cannot be expressed here -- which is
+    why every heading in this crate is plain prose.
+    """
+    parts = ["DEFINE TEMPLATE %s" % name]
+    if heading:
+        parts.append("  HEADER {{{#if assembly.grain_count}}%s{{/if}}}" % heading)
+    parts.append("  ELEMENT {%s}" % element)
+    if summary:
+        parts.append("  ELEMENT_SUMMARY {%s}" % summary)
+    return "\n".join(parts)
+
+
+def saved_query(name, params, body, description=None):
+    """`DEFINE QUERY` wrapper. `params` are bare names (no `$`)."""
+    head = 'DEFINE QUERY %s(%s)' % (_q(name), ", ".join("$" + p for p in params))
+    if description:
+        head += "\n  DESCRIPTION %s" % _q(description)
+    return "%s\nAS {\n%s\n}" % (head, body)
+
+
+# --------------------------------------------------------------------------
+# the review context: what the reviewer already decided
+# --------------------------------------------------------------------------
+#
+# The loop's GENERATION side already reads history: `areev-loop` dedupes a
+# candidate against every recommendation already recorded (`dedup_key`), and
+# a REJECTION starts an exponential cooldown on that key — 7d, 14d, 28d, …
+# capped at 90 — so a finding the reviewer turned down stops re-surfacing on
+# a fixed cadence. Harnesses get that for free by dismissing through
+# `dismiss_recommendation`.
+#
+# What the harnesses did NOT read is the same history on the REVIEW side. A
+# reviewer that judges each proposal against only the rules currently in force
+# will happily approve a REWORDING of something it declined last month: the
+# reword carries a different `dedup_key`, so the engine's cooldown never sees
+# it, and nothing else was looking. These two queries close that, and they are
+# saved queries so a memory carries how its own review was conducted.
+#
+# The window is a literal, not a parameter: `SINCE $window` is refused
+# (CAL-E059 → CAL-E002, "expected string literal"), so a caller wanting a
+# different window registers a different query.
+REVIEW_WINDOW = "90d"
+REVIEW_HISTORY_CAP = 300
+
+REVIEW_REGISTRY = [
+    saved_query(
+        "bench_review_history", [],
+        '  RECALL recommendations WHERE rec_status IN ("rejected", "applied")\n'
+        '  SINCE "%s"\n'
+        '  LIMIT %d\n'
+        '  FORMAT json' % (REVIEW_WINDOW, REVIEW_HISTORY_CAP),
+        "what the reviewer already ruled on in the last %s, and how" % REVIEW_WINDOW),
+    saved_query(
+        "bench_outcomes", ["ns"],
+        '  RECALL facts WHERE namespace = $ns AND relation = "mg:eval_run"\n'
+        '  LIMIT 100\n'
+        '  FORMAT json',
+        "the held-out outcome series the Verify gate reads"),
+]
+
+
+def review_history(db):
+    """[{status, summary, analyzer, target_ref}] — decided, newest first."""
+    out = []
+    for g in rows(db, "bench_review_history", cap=REVIEW_HISTORY_CAP):
+        f = g.get("fields", g) if isinstance(g, dict) else {}
+        out.append({"status": f.get("rec_status") or f.get("status") or "",
+                    "summary": f.get("summary") or "",
+                    "analyzer": f.get("analyzer") or "",
+                    "target_ref": f.get("target_ref") or ""})
+    return out
+
+
+def outcomes(db, ns):
+    """The eval-run series, so a reviewer can see whether the last approvals
+    moved anything before approving more."""
+    out = []
+    for g in rows(db, "bench_outcomes", {"ns": ns}):
+        f = g.get("fields", g) if isinstance(g, dict) else {}
+        body = f.get("object")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except ValueError:
+                continue
+        if isinstance(body, dict):
+            out.append(body)
+    return out
+
+
+def restates_a_decision(text, prior, normalize, content_words, threshold=0.6):
+    """The prior decision this proposal restates, if any.
+
+    Same Jaccard-over-content-words test each track already uses for "already
+    in force" — reused rather than reimplemented, so a reviewer's notion of
+    "the same rule" does not depend on which side of the decision it is on.
+    """
+    mine = content_words(normalize(text or ""))
+    if not mine:
+        return None
+    for earlier in prior:
+        theirs = content_words(normalize(earlier.get("text") or ""))
+        if theirs and len(mine & theirs) / len(mine | theirs) >= threshold:
+            return earlier
+    return None
 
 
 # --------------------------------------------------------------------------

@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import uuid
 from datetime import UTC, datetime
@@ -64,6 +65,10 @@ from past_bench.runner.self_evolve import (
 from past_bench.runtime.adapters.base import RuntimeAdapter
 from past_bench.runtime.protocol import StartSessionRequest, StepRequest, StepResponse, ToolCallAction
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 # Not `agent:<x>`: the loop's all-namespace evidence scan deliberately skips
 # every `agent:*` namespace as governance metadata (`read_user_type` in the
 # substrate adapter), so a memory living there is invisible to DISCOVER —
@@ -80,8 +85,24 @@ ENTRY_DELIM = "\n§\n"
 CAP = 500
 MEM_TOOL_NAMES = {"memory", "skill_manage", "skills_list", "skill_view", "session_search"}
 MAX_INTERNAL_ROUNDS = 8
+# The whole injected block's last-resort cap. It is a CHARACTER cap, not a
+# token budget, and PERSIST.md must say so wherever it reports a token effect
+# (`../../CLAUDE.md`, "If you skip one, say so where the number is published").
+# The two sections CAL can select are budgeted in tokens below; this bounds
+# what is left.
 MAX_INJECT_CHARS = 12_000
 RETIRED = "retired"
+
+# The injected prompt block lives in `prompt.py`, which imports no PAST-Bench:
+# the saved queries, the templates and the two documented reads that stay
+# host-composed. See `AREEV.md` in this directory.
+from prompt import (  # noqa: E402
+    empty_profile_block,
+    empty_skills_block,
+    profile_block,
+    skills_block,
+)
+from prompt import install as install_registry  # noqa: E402
 
 
 # ---------------------------------------------------------------- the file
@@ -94,6 +115,7 @@ def with_memory(path, actor, fn):
     db = areev.Areev(str(path), ns=NS, actor=actor)
     err = None
     try:
+        install_registry(db, db_path=str(path))
         return fn(db)
     except Exception as exc:
         # An exception's traceback keeps every frame alive, and `fn`'s
@@ -659,9 +681,19 @@ class AreevAdapter(RuntimeAdapter):
     # -- session start -----------------------------------------------------
 
     def _inject_memory(self):
+        """The block the assistant reads at the top of every session.
+
+        `### User profile` and `### Skills` are assembled by CAL from saved
+        queries in the file, under a token budget. `### Notes` and `### Earlier
+        sessions` are composed here, for the two reasons stated where REGISTRY
+        is defined -- a validity window CAL cannot filter on, and a per-session
+        title CAL cannot extract.
+        """
         def go(db):
-            return live_notes(db), live_profile(db), live_skills(db)
-        notes, profile, skills = with_memory(self.db_path, ACTOR_AGENT, go) if self.db_path.exists() else ([], [], {})
+            return live_notes(db), profile_block(db), skills_block(live_skills(db))
+        notes, profile_text, skills_text = (
+            with_memory(self.db_path, ACTOR_AGENT, go) if self.db_path.exists()
+            else ([], empty_profile_block(), empty_skills_block()))
         lines = ["", "## Persistent memory",
                  "Everything below was saved in earlier sessions; apply it without being asked. "
                  "This session's context is discarded at the end — only what you save through the "
@@ -669,11 +701,9 @@ class AreevAdapter(RuntimeAdapter):
         if self.tool_config.get("memory_enabled") or self.tool_config.get("user_profile_enabled"):
             lines.append("### Notes")
             lines += ["- " + t for _, t in notes] or ["- (none yet)"]
-            lines.append("### User profile")
-            lines += ["- " + t for _, t in profile] or ["- (none yet)"]
+            lines.append(profile_text)
         if self.tool_config.get("skills_enabled"):
-            lines.append("### Skills (call skill_view for the steps)")
-            lines += ["- %s — %s" % (n, f.get("description", "")) for n, (_, f) in skills.items()] or ["- (none yet)"]
+            lines.append(skills_text)
         if self.tool_config.get("session_search_enabled"):
             # What Hermes gets from a zero-cost `session_search` with no
             # query — the recent sessions' titles — and what the first full

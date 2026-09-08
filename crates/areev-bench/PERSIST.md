@@ -886,3 +886,39 @@ changed a number before it was caught.
 | 26 | 2026-09-07, run-4 smoke | harness | a `held` verdict proposes nothing, and only the post-learn ANCHOR memory is archived — so a verdict recorded in an evaluation episode's working memory left no trace anywhere. Runs 1–3's "0 verdicts" was read off the ledgers, which counted reverts and never carried the verdict series at all | `govern()` writes the outcome series and a held/regressed/drifted tally into every ledger, so "did the gate fire" is answerable from the archive |
 | 27 | 2026-09-07, run-4 probe | engine | over ~35 loop passes across five smokes the proposer authored no skill and no plan. Probed directly against a clean successful trajectory it authored a PLAN every time — the benchmark family it was smoked on simply had no successful procedure to capture. But the plan was discarded twice over: its edge conditions (`tickets.length > 0`) are outside the runtime's frozen v1 grammar, and one step of four named `tool` as its tool — a reasoning step that calls nothing, which the grounding rule read as a fabrication and rejected the whole draft for | a graph the runtime refuses is recorded as a SKILL rather than dropped (the procedure is what is worth keeping; the model's own guard survives as prose); a step whose tool the evidence never shows keeps its instruction and loses the attribution, with at least one grounded step still required. Verified live: the same draft now lands as `record skill: "resolve_shared_incident" (4 steps)` |
 | 28 | 2026-09-08, run 4 in flight | harness | the gate fired — 26 measured regressions, 12 revert proposals reaching the reviewer — and the reviewer refused **every one** with "advisory only — asks for no change". Its approve-a-revert branch tests `analyzer == "outcome_review"` against the real id `loop.outcome_review/1`; the comparison is always false, so a revert fell through to the generic path, classified as advisory, and was dismissed. Detection worked and correction never fired, which makes run 4's governed leg a **blind-revert** reading exactly as run 1 was a blind-gate one | matched by analyzer FAMILY, version-insensitive, pinned by the keyless selftest; run 4's governed arm is archived as `areev-governed-blindrevert` and re-run with the fix (cap raised to $15 for it). The passive arm has no loop and is unaffected |
+
+## The harness moved onto Areev's own surfaces (2026-09-08)
+
+Recorded under rule 4 of `CLAUDE.md`. **Runs 1–4 precede it** and no number in
+this document is revised.
+
+PAST-Bench turned out to have the least CAL-expressible prompt of the five
+tracks, and that is the useful finding. Of the four injected sections, one
+moved to a saved `ASSEMBLE` query under a real token budget; three cannot, for
+reasons that are specific and worth knowing before the next bench tries:
+
+- **Notes** need a `valid_to` filter, which is not a queryable field on facts
+  (`CAL-E060`) and not a template variable (`CAL-E042`).
+- **Skills** mark retirement by writing `description: "retired"`, and
+  `description` is not filterable on skills (`CAL-E060`). Filtering on `object`
+  instead does not work *and does not warn*.
+- **Earlier sessions** need one row per session with a regex-extracted title.
+  `GROUP BY` reorders rows rather than projecting one per group, and CAL has no
+  text extraction.
+
+`persist/pastbench/AREEV.md` records all three. The injected block itself moved
+to `persist/pastbench/prompt.py`, which imports no PAST-Bench, so it loads and
+is parity-checked without the benchmark installed.
+
+### Which budget produced the token figures
+
+`CLAUDE.md` requires naming this wherever a token effect is reported, and this
+document reports one. The honest statement:
+
+- the **user-profile** section is bounded by CAL's `BUDGET 1200 tokens`,
+  counted by the engine's own estimator;
+- **everything else** is bounded by `MAX_INJECT_CHARS = 12_000`, a **character**
+  cap applied to the composed block in `_inject_memory`.
+
+A cap counted in characters is not a token budget. Every token claim above
+means the second one unless it says otherwise.

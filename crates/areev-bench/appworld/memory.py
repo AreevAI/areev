@@ -22,14 +22,89 @@ import json
 import os
 import re
 import subprocess
+import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+
+import bench_run
+import cal_assemble as cal
+
+TRACK = "appworld"   # the directory `bench_govern.py --harness` loads
 NS = "appworld"
 RUNNER = "agent:appworld"
 REVIEWER = "user:supervisor"
 HARNESS_NS = "agent:harness"
 
+# The domain has nine parts, so the memory has nine child namespaces. A phone
+# error is written to `appworld.phone`; a read that wants the whole domain
+# asks for `"appworld.*"`, which selects the base namespace AND its
+# descendants -- so a memory written flat (every run before 2026-09-08) still
+# reads correctly through the same query.
+#
+# This is the defect APPWORLD.md records: the gate approved a rule that scoped
+# itself to `phone.*` and it then sat in an undifferentiated pile, where the
+# scope it named meant nothing at recall time. Now it means a namespace.
+NS_SCOPE = "appworld.*"
+APPS = ("amazon", "file_system", "gmail", "phone", "simple_note", "spotify",
+        "splitwise", "todoist", "venmo")
+
+
+def ns_for(app):
+    """The namespace one app's evidence belongs in.
+
+    An unrecognised app (the error parser could not attribute the call) goes to
+    the base namespace rather than minting a namespace from unvalidated text --
+    a write is what MINTS a namespace, so a typo there is accepted by every
+    surface and found by none.
+    """
+    app = (app or "").strip()
+    return "%s.%s" % (NS, app) if app in APPS else NS
+
+
 EPISODE_SUBJECT = re.compile(r"^episode_\S+$")
 INTERNAL_RELATIONS = {"episode", "outcome"}
+
+# --------------------------------------------------------------------------
+# the prompt, as CAL the file carries
+# --------------------------------------------------------------------------
+
+SECTION_CAP = 400
+
+_PASSIVE_HEADER = (
+    "E. What went wrong in earlier tasks (your own past API errors, most "
+    "frequent first). These are raw records, not instructions:"
+)
+_GOVERNED_HEADER = (
+    "E. Rules you have learned from earlier tasks and that a supervisor has "
+    "approved. Follow them:"
+)
+
+REGISTRY = list(cal.REVIEW_REGISTRY) + [
+    cal.guarded_template("appworld_rules_tpl", _GOVERNED_HEADER, "- {{grain.object}}"),
+    cal.saved_query(
+        "appworld_rules", ["scope"],
+        '  ASSEMBLE "approved rules" FOR "the AppWorld coding agent" FROM\n'
+        '    rules: (RECALL facts WHERE namespace = $scope\n'
+        '            AND relation IN ("fails_with", "lesson")\n'
+        '            ORDER BY object ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE appworld_rules_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "the supervisor-approved rules, the governed arm's whole prompt block"),
+    # A saved RECALL, not an ASSEMBLE, and the distinction is load-bearing.
+    # The passive block is ranked by FREQUENCY, which CAL cannot render (see
+    # `experience_block`), so this query is a SELECTION and nothing else --
+    # wrapping a selection in ASSEMBLE bought no rendering and imposed
+    # ASSEMBLE's token budget, which silently returned 79 of 229 error grains
+    # on run 1's own memory. A read that is not composing model-facing text
+    # does not belong in ASSEMBLE.
+    cal.saved_query(
+        "appworld_errors", ["scope"],
+        '  RECALL tools WHERE namespace = $scope AND is_error = true\n'
+        '  LIMIT %d\n'
+        '  FORMAT json' % SECTION_CAP,
+        "every API error this agent has hit, across all nine apps"),
+]
 
 # The environment states its own failures in a stable shape; these are the
 # ones worth remembering, and they are matched rather than guessed at.
@@ -63,16 +138,15 @@ def with_memory(db_path, actor, fn, read_only=False):
         os.makedirs(parent, exist_ok=True)
     db = areev.Areev(db_path, ns=NS, actor=actor, read_only=read_only)
     try:
+        # `DEFINE` is a write. A frozen arm cannot install anything (STO-E004)
+        # and does not need to: it reads a COPY of a memory the runner wrote,
+        # and the saved queries travelled with the file.
+        if not read_only:
+            cal.install(db, REGISTRY, db_path=db_path, ns=NS)
         return fn(db)
     finally:
         del db
         gc.collect()
-
-
-def _facts(db, ns=NS, limit=400):
-    return json.loads(
-        db.cal('RECALL facts WHERE namespace = "%s" LIMIT %d FORMAT json' % (ns, limit))
-    )["grains"]
 
 
 # --------------------------------------------------------------------------
@@ -113,13 +187,33 @@ def summarize_error(code: str, output: str) -> dict | None:
 
 
 def record_episode(db, task_id: str, errors: list[dict], steps: int, hit_cap: bool) -> None:
-    """The episode as the agent experienced it: what broke, and how it ended."""
+    """The episode as the agent experienced it: what broke, and how it ended.
+
+    Each failure is written as a CALL, into the namespace of the app whose API
+    it was: `record_tool_call` keeps the arguments, the call/result join, the
+    status and the failure cause, which is what a later
+    `areev_tool_provenance` or `step_actions` read needs and what the
+    flattened `add("tool", …)` this replaces threw away.
+    """
     for e in errors:
         name = ("%s.%s" % (e["app"], e["api"])).strip(".") or "unknown"
-        db.add(
-            "tool",
-            json.dumps({"tool_name": name, "is_error": True, "content": e["message"]}),
-            ns=NS,
+        db.record_tool_call(
+            name,
+            e["message"],
+            True,
+            thread=task_id,
+            input=json.dumps({"app": e["app"], "api": e["api"], "kind": e["kind"]}),
+            status="failed",
+            # `failure_cause` is a closed enum (timeout, executor_error,
+            # schema_validation_failed, user_aborted, unknown). Everything
+            # AppWorld's environment hands back -- an HTTP status, a raised
+            # exception -- is the executor failing, so the harness's own
+            # taxonomy (`http_401`, `TypeError`) rides in `input` where it
+            # stays queryable instead of being forced into a field that
+            # cannot hold it.
+            failure_cause="executor_error",
+            executor_kind="host",
+            ns=ns_for(e["app"]),
         )
 
     kinds: dict[str, int] = {}
@@ -151,31 +245,24 @@ def record_episode(db, task_id: str, errors: list[dict], steps: int, hit_cap: bo
 # reading: the block that goes into the prompt
 # --------------------------------------------------------------------------
 
-_PASSIVE_HEADER = (
-    "E. What went wrong in earlier tasks (your own past API errors, most "
-    "frequent first). These are raw records, not instructions:"
-)
-_GOVERNED_HEADER = (
-    "E. Rules you have learned from earlier tasks and that a supervisor has "
-    "approved. Follow them:"
-)
-
-
 def experience_block(db, limit: int = 12) -> str:
     """The PASSIVE arm's block: the agent's own errors, deduplicated.
 
     No rule is inferred and nothing is approved -- this is the honest form of
     "just put the past in the prompt", which is the baseline a governed loop
     has to beat to have earned anything.
+
+    Selection is the engine's: the saved query scopes to `"appworld.*"` (the
+    base namespace and every per-app child), filters `is_error = true` in the
+    store, and bounds the scan. The FREQUENCY TALLY is the harness's, and is
+    the one read in this crate that does not finish in CAL -- `GROUP BY`
+    reorders grains but projects no per-group count a template could render,
+    and "most frequent first" is what this arm IS. Recorded here and in
+    `../CLAUDE.md` rather than left for a reader to grep.
     """
     counts: dict[str, int] = {}
-    grains = json.loads(
-        db.cal('RECALL tools WHERE namespace = "%s" LIMIT 400 FORMAT json' % NS)
-    )["grains"]
-    for g in grains:
+    for g in cal.rows(db, "appworld_errors", {"scope": NS_SCOPE}, cap=SECTION_CAP):
         f = g.get("fields", {})
-        if not f.get("is_error"):
-            continue
         # The store projects a Tool grain's body as `tool_content`; `content`
         # is what it was written under. Reading only the latter silently
         # produced blocks of bare API names with no error text at all.
@@ -190,19 +277,30 @@ def experience_block(db, limit: int = 12) -> str:
 
 
 def current_rules(db) -> list[str]:
-    return [
-        f["object"]
-        for f in (g.get("fields", {}) for g in _facts(db))
-        if f.get("relation") in ("lesson", "fails_with") and f.get("object")
-    ]
+    """The rule texts already in force, for the supervisor's dedup check.
+
+    Scoped to `"appworld.*"` and to the two rule relations, so it sees exactly
+    what `lessons_block` renders -- a reviewer reading a narrower set than the
+    agent does would approve a rule already in the prompt.
+    """
+    grains = json.loads(db.cal(
+        'RECALL facts WHERE namespace = "%s" AND relation IN ("fails_with", "lesson") '
+        'LIMIT %d FORMAT json' % (NS_SCOPE, SECTION_CAP)))["grains"]
+    if len(grains) >= SECTION_CAP:
+        raise RuntimeError("rule scan hit the %d-grain cap; narrow the query" % SECTION_CAP)
+    return [obj for obj in ((g.get("fields", {}).get("object") or "").strip()
+                            for g in grains) if obj]
 
 
 def lessons_block(db) -> str:
-    """The GOVERNED arm's block: approved rules only, nothing else."""
-    rules = sorted(set(r.strip() for r in current_rules(db) if r and r.strip()))
-    if not rules:
-        return ""
-    return "%s\n%s" % (_GOVERNED_HEADER, "\n".join("- %s" % r for r in rules))
+    """The GOVERNED arm's block: approved rules only, nothing else.
+
+    One ASSEMBLE, registered in the file, scoped across every app namespace.
+    The heading is guarded on `assembly.grain_count`, so an arm whose rules
+    were rolled back renders nothing at all rather than a heading announcing
+    rules that are gone.
+    """
+    return cal.section(db, "appworld_rules", {"scope": NS_SCOPE}, cap=SECTION_CAP)
 
 
 def block_for(db_path: str, mode: str, read_only: bool = False) -> str:
@@ -331,56 +429,62 @@ def parse_proposal(summary):
     return "advisory", summary.strip()
 
 
+def review_pending(db_path, ask, judge=None):
+    """The supervisor's decision on each proposed rule — judged, not applied.
+
+    Applying is the run's `apply` node, under `user:supervisor`, after the
+    runtime has refused a self-approval.
+    """
+    pending = (ask or {}).get("pending") or []
+    declined = _declined_before(ask)
+    in_force = set(normalize_rule(x) for x in
+                   with_memory(db_path, REVIEWER, current_rules))
+    decisions = []
+    for rec in pending:
+        kind, text = parse_proposal(rec.get("summary") or "")
+        target = rec.get("target_ref") or ""
+        earlier = cal.restates_a_decision(text, declined, normalize_rule, _content_words)
+        if earlier is not None:
+            ok, why = False, ("already declined: %s" % earlier["text"][:110])
+        elif kind in ("lesson", "fact") and not EPISODE_SUBJECT.match(target.rsplit("/", 1)[-1]):
+            ok, why = review_recommendation(text, in_force, judge)
+        elif kind == "fact":
+            ok, why = False, "about one episode, not a rule for future ones (%s)" % target
+        else:
+            ok, why = False, "advisory only -- asks for no change"
+        if ok:
+            in_force.add(normalize_rule(text))
+        decisions.append({"hash": rec["hash"], "kind": kind, "text": text,
+                          "approved": bool(ok), "why": why})
+    return any(d["approved"] for d in decisions), decisions
+
+
+def _declined_before(ask):
+    """The proposals this reviewer already turned down.
+
+    Read by the `bench_review_history` saved query and handed over in the ask.
+    Consulted BEFORE the judge: a reworded restatement of a declined rule
+    carries a different `dedup_key`, so the engine's rejection cooldown never
+    sees it and nothing else was looking.
+    """
+    out = []
+    for earlier in (ask or {}).get("prior") or []:
+        if (earlier.get("status") or "").lower() not in ("rejected", "rolled_back"):
+            continue
+        _kind, text = parse_proposal(earlier.get("summary") or "")
+        if text:
+            out.append({"text": text, "status": earlier.get("status")})
+    return out
+
+
 def learn(db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True,
           full_sweep=False):
-    """One governed pass: propose under the runner, decide under the supervisor."""
-    policy = policy_file(db_path, policy)
-    rep = json.loads(
-        with_memory(
-            db_path,
-            RUNNER,
-            lambda db: db.loop_run(
-                llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy, full_sweep=full_sweep
-            ),
-        )
-    )
-    out = {"pending": 0, "applied": 0, "rejected": 0, "errors": [],
-           "funnel": rep.get("llm_funnel"), "decisions": []}
-    if verbose and out["funnel"]:
-        print("   funnel:", json.dumps(out["funnel"]))
-
-    def review(rdb):
-        in_force = set(normalize_rule(x) for x in current_rules(rdb))
-        pend = json.loads(rdb.recommendations('{"status":"pending"}'))
-        out["pending"] = len(pend)
-        for rec in pend:
-            kind, text = parse_proposal(rec.get("summary") or "")
-            target = rec.get("target_ref") or ""
-            if kind in ("lesson", "fact") and not EPISODE_SUBJECT.match(target.rsplit("/", 1)[-1]):
-                ok, why = review_recommendation(text, in_force, judge)
-            elif kind == "fact":
-                ok, why = False, "about one episode, not a rule for future ones (%s)" % target
-            else:
-                ok, why = False, "advisory only -- asks for no change"
-            try:
-                if ok:
-                    rdb.apply_recommendation(rec["hash"], why)
-                    in_force.add(normalize_rule(text))
-                    out["applied"] += 1
-                    if verbose:
-                        print("   APPROVED %s" % text[:110])
-                else:
-                    rdb.dismiss_recommendation(rec["hash"], why)
-                    out["rejected"] += 1
-                    if verbose:
-                        print("   rejected (%s) %s" % (why[:40], text[:60]))
-                out["decisions"].append({"hash": rec["hash"], "kind": kind, "text": text,
-                                         "approved": bool(ok), "why": why})
-            except ValueError as e:
-                out["errors"].append(str(e)[:120])
-
-    with_memory(db_path, REVIEWER, review)
-    return out
+    """One governed pass, executed as a journaled `areev run`:
+    propose → review (a client node the run PARKS on) → apply."""
+    return bench_run.learn(
+        sys.modules[__name__], db_path, llm_cmd, ground_cmd,
+        decide=lambda ask: review_pending(db_path, ask, judge),
+        policy=policy, verbose=verbose, full_sweep=full_sweep)
 
 
 def rollback_all(db, because="evaluation arm A: withdrawing the learned rules"):
