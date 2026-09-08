@@ -3400,7 +3400,11 @@ fn js_runner_with_llm(
 /// holding a secret. One helper so the connector and the run executors cannot
 /// drift apart.
 fn js_tool_env_policy(names: Option<&str>) -> Option<areev_core::proc::EnvPolicy> {
-    let names = names.map(str::trim).filter(|n| !n.is_empty())?;
+    // Presence is the setting (`docs/run.md`): `toolEnv: ""` clears to the
+    // minimal set, the strictest posture, exactly as the CLI's `--tool-env ""`
+    // does. Only `null` keeps the inherit default. Filtering the empty string
+    // out here used to turn the strictest request into the loosest answer.
+    let names = names.map(str::trim)?;
     let (policy, dropped) = areev_run::env_allow_policy(names);
     if !dropped.is_empty() {
         eprintln!("areev: toolEnv dropped {} — registered as holding a secret", dropped.join(", "));
@@ -3414,10 +3418,10 @@ struct JsExecutorPin {
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
     executor_timeout_secs: Option<i64>,
-    /// Comma list of variables a host tool may keep. Unset (or empty)
-    /// inherits this process's environment minus the registered secrets; a
-    /// list clears it and passes only those, plus the minimal set a command
-    /// needs to start.
+    /// Comma list of variables a host tool may keep. Unset inherits this
+    /// process's environment minus the registered secrets; a list — the
+    /// empty list included — clears it and passes only those, plus the
+    /// minimal set a command needs to start.
     tool_env: Option<String>,
 }
 
