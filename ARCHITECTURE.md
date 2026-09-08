@@ -1768,6 +1768,35 @@ and `areev-loop` keeps its no-Areev-dependency rule. A substrate that
 declares neither degrades those kinds to advisory rather than pretending to
 have checked them. Reference: [docs/loop.md](docs/loop.md) (DISCOVER).
 
+### The Postgres store keeps nothing on the session, because the session is not its to keep
+
+One memory = one schema, and the obvious way to address a schema is
+`SET search_path` once at open and write every statement against bare table
+names. That is what the store did, and it made a documented hazard of every
+transaction-mode pooler (PgBouncer, Supavisor, PgCat, Neon's pooled
+endpoint): each transaction lands on whichever backend is free, whose
+`search_path` belongs to someone else or to nobody, and a bare `grains` then
+reads another tenant's rows — silently, because the query is well-formed.
+Areev Cloud's spec (#181) wants a worker holding thousands of memories over
+one pool, which is the same constraint at a different scale.
+
+The decision: the store assumes every statement may run on a fresh session.
+Table references are schema-qualified by a pass after the dialect translator
+(`qualify_tables`), so nothing resolves through `search_path`; runtime DDL
+and catalog probes bind the schema name instead of `current_schema()`; the
+bootstrap lock is transaction-scoped; and a prepared statement the backend
+does not know is re-prepared rather than reported when that is possible
+(outside a transaction). The proof is a run of the whole conformance suite
+with `RESET ALL` before every statement outside a transaction, and the same
+suite through a real PgBouncer in transaction mode. What the store cannot
+absorb is stated rather than papered over: the driver names every
+parameterized statement, so the pooler must track prepared statements across
+backends (PgBouncer 1.21+ does) or run in session mode — inside a transaction
+a stale statement aborts it, and the error names both remedies. Two things
+stay session-scoped by design for now: `hnsw.ef_search`, whose loss under
+pooling is a silent accuracy regression, and the process-wide pool itself,
+which is the next increment.
+
 ### The dictionary is keyed by digest, because the index must be bounded and the value is not
 
 Every subject, relation and object string is interned into `terms` (§3): a
