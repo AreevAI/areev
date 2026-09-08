@@ -121,6 +121,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   too, so the whole filter surface speaks one unit; `format_epoch` keeps its
   public seconds signature.
 
+- **`ASSEMBLE` says what its budget dropped** (#208). `ASSEMBLE` applies a
+  token budget whether or not the caller writes one — 4000 by default, ceiling
+  16000 — and when it bound it discarded the tail of each source in silence.
+  The payload actively hid it: `total_available` reported the **post**-budget
+  count, so `grains.len() == total_available` held for a truncated assembly
+  exactly as it did for a complete one. Measured on a real memory, 229
+  matching grains came back as 80 with `warnings: None`.
+
+  A budget that drops grains now emits **`CAL-W017`**, naming the sources and
+  the counts, and saying whether the budget was written or defaulted:
+
+  ```
+  CAL-W017: the default BUDGET 4000 tokens dropped 130 of 200 grains from
+  source(s) [e] — this assembly is a window, not the whole match.
+  ```
+
+  `total_available` is now the **pre**-budget count, so the drop is computable
+  rather than announced only in prose; each source'"'"'s `grain_count` still
+  reports what survived. `docs/cal-reference.md` states the default and the
+  ceiling where `BUDGET` is documented — neither number appeared there, so "no
+  `BUDGET` clause" read as "no budget".
+
+  The default itself was kept rather than removed: an unbudgeted assembly that
+  returned everything could overflow the context window it is being composed
+  for, which is the worse failure. Silence was the defect, not the number.
+
+  Why it matters: a host composing a prompt from an assembly had no way to
+  detect that its rules, its policies or its recent turns were trimmed — it
+  would publish a number produced from a truncated prompt and never know.
+  `RECALL` has announced the same kind of cut as `CAL-W015` since 1.5.1.
+
 ### Added
 
 - **World-time validity is queryable and renderable** (#206). `valid_from`,

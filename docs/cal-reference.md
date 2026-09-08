@@ -235,6 +235,35 @@ used to be silently dropped — `… FORMAT markdown BUDGET 900` ran at the
 labels (`a: 0.5, b: 0.3`) or an ordering chain (`a > b > c`, mapped to evenly
 spaced weights).
 
+**`BUDGET` always applies, written or not.** An `ASSEMBLE` with no `BUDGET`
+clause runs at the **4000-token default**; the ceiling is **16000 tokens**
+(`CAL-E033` above it). Neither number used to appear here, so "no `BUDGET`
+clause" read as "no budget" — and when the default bound, grains were dropped
+in silence while `total_available` reported the *post*-budget count, making a
+truncated assembly arithmetically indistinguishable from a complete one.
+
+Since 1.7.4 a budget that drops grains says so:
+
+```
+ASSEMBLE "e" FROM e: (RECALL tools WHERE namespace = "appworld.*" LIMIT 400)
+→ 70 grains, total_available: 200
+  CAL-W017: the default BUDGET 4000 tokens dropped 130 of 200 grains from
+  source(s) [e] — this assembly is a window, not the whole match.
+```
+
+`total_available` is now the **pre**-budget count, so the drop is computable
+rather than announced only in prose; each source'"'"'s `grain_count` still reports
+what survived. The default was kept rather than removed: an unbudgeted
+assembly that returned everything could overflow the context window it is
+being composed for, which is the worse failure. Silence was the defect, not
+the number.
+
+This matters most where it is least visible. A host composing a prompt from an
+assembly has no other way to detect that its rules, its policies or its recent
+turns were trimmed — it will publish a number produced from a truncated prompt
+and never know. `RECALL` has announced the same kind of cut as `CAL-W015` since
+1.5.1.
+
 **Render order is FROM-clause order, and nothing else changes it.** Sections
 appear in the order their labels are written. `PRIORITY` weights how the token
 budget is *shared*; it does not reorder. A pipeline `ORDER BY` on an assembly

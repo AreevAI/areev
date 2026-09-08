@@ -1488,6 +1488,35 @@ pub enum CalWarning {
         payload: &'static str,
         why: &'static str,
     },
+
+    /// CAL-W017 — An `ASSEMBLE` token budget dropped grains a source had
+    /// already retrieved.
+    ///
+    /// `ASSEMBLE` applies a budget whether or not the caller wrote one
+    /// (`DEFAULT_BUDGET_TOKENS`, 4000), and when it binds it discards the
+    /// tail of each source in silence. The payload actively hid it:
+    /// `total_available` reported the *post*-budget count, so a truncated
+    /// answer was indistinguishable from a full one. The same cut on
+    /// `RECALL` has announced itself as `CAL-W015` since 1.5.1 — a host
+    /// composing a prompt from an assembly has to be able to tell that its
+    /// rules, its policies or its recent turns were trimmed, or it will
+    /// publish a number produced from a truncated prompt and never know.
+    ///
+    /// `defaulted` distinguishes the two cases the caller cares about most:
+    /// a budget they wrote (raise it) from one they never asked for (write
+    /// one, or narrow the source).
+    AssembleBudgetDropped {
+        /// Source labels the budget cut, in FROM-clause order.
+        labels: Vec<String>,
+        /// Grains discarded across those sources.
+        dropped: usize,
+        /// Grains the sources retrieved before the budget was applied.
+        available: usize,
+        /// The budget that bound, in tokens.
+        budget: u32,
+        /// True when no `BUDGET` clause was written and the default applied.
+        defaulted: bool,
+    },
 }
 
 impl CalWarning {
@@ -1509,6 +1538,7 @@ impl CalWarning {
             Self::WithOptionInert { .. } => "CAL-W014",
             Self::ScanBounded { .. } => "CAL-W015",
             Self::PipelineStageInert { .. } => "CAL-W016",
+            Self::AssembleBudgetDropped { .. } => "CAL-W017",
         }
     }
 
@@ -1529,7 +1559,8 @@ impl CalWarning {
             | Self::ContradictionScanBounded { .. }
             | Self::WithOptionInert { .. }
             | Self::ScanBounded { .. }
-            | Self::PipelineStageInert { .. } => None,
+            | Self::PipelineStageInert { .. }
+            | Self::AssembleBudgetDropped { .. } => None,
         }
     }
 }
@@ -1636,6 +1667,29 @@ impl std::fmt::Display for CalWarning {
                 write!(
                     f,
                     "CAL-W016: {stage} has no effect on a {payload} result — {why}. The stage was skipped; the result is the same as without it."
+                )
+            }
+            Self::AssembleBudgetDropped {
+                labels,
+                dropped,
+                available,
+                budget,
+                defaulted,
+            } => {
+                let clause = if *defaulted {
+                    "the default BUDGET"
+                } else {
+                    "BUDGET"
+                };
+                let advice = if *defaulted {
+                    " No BUDGET clause was written, so the 4000-token default applied — write one (ceiling 16000 tokens), or narrow the source."
+                } else {
+                    " Raise the budget (ceiling 16000 tokens), or narrow the source."
+                };
+                write!(
+                    f,
+                    "CAL-W017: {clause} {budget} tokens dropped {dropped} of {available} grains from source(s) [{}] — this assembly is a window, not the whole match.{advice}",
+                    labels.join(", ")
                 )
             }
         }

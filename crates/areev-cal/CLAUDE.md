@@ -172,7 +172,13 @@ the audit hash.
   `*`-bearing namespaces except `*` itself (`parse_grant_parts`). E2E:
   `tests/ns_scope_cal_tests.rs`.
 - `assemble.rs` — `AssembleEngine`: multi-source ASSEMBLE, dedup, 2000-grain
-  cap, per-source budget weights, chars/4 token estimate.
+  cap, per-source budget weights, chars/4 token estimate. **The budget applies
+  written or not** (`DEFAULT_BUDGET_TOKENS` 4000, parser ceiling 16000), and a
+  budget that drops grains emits `CAL-W017` naming the sources, the counts, and
+  whether the default applied (#208). `total_available` is the PRE-budget
+  count — reporting the trimmed one made a truncated assembly arithmetically
+  indistinguishable from a complete one. If you add a path that discards grains
+  here, it warns or it is the same bug again.
 - `render.rs` — THE per-grain renderer every surface shares: semantic
   `sml`, the documented `markdown` assertion line, `text`, registry-driven
   `toon`, the `json` envelope, per-type summaries, and the one `chars/4`

@@ -229,11 +229,24 @@ impl<'a> AssembleEngine<'a> {
         };
 
         // 4. Allocate budget.
+        //
+        // Note the default: an ASSEMBLE with no BUDGET clause is still
+        // budgeted. That stays (an unbudgeted assembly could otherwise
+        // overflow the context window it is being composed for — the worse
+        // failure), but it is now *reported*, because "no BUDGET clause"
+        // reads as "no budget" and used to behave as neither.
+        let budget_defaulted = stmt.budget.is_none();
         let budget_tokens = stmt
             .budget
             .as_ref()
             .map(|b| b.tokens)
             .unwrap_or(DEFAULT_BUDGET_TOKENS);
+
+        // How many grains the sources actually retrieved, before any of this
+        // spends them. `total_available` is reported from here rather than
+        // from the trimmed set: a caller cannot compute what a budget removed
+        // from a number the budget already reduced.
+        let available_pre_budget: usize = source_results.iter().map(|(_, g)| g.len()).sum();
 
         let labels: Vec<&str> = source_results.iter().map(|(l, _)| l.as_str()).collect();
 
@@ -296,6 +309,9 @@ impl<'a> AssembleEngine<'a> {
         let mut meta: Vec<SourceMeta> = Vec::new();
         let mut remaining_budget = budget_tokens;
         let mut dropped = 0usize; // grains the budget forced us to omit
+        // The labels behind that number: "149 grains went" is not actionable
+        // on a four-source assembly without knowing which section lost them.
+        let mut dropped_labels: Vec<String> = Vec::new();
 
         for (i, (label, mut grains)) in source_results.into_iter().enumerate() {
             // A pinned source was already costed in full and reserved off the
@@ -327,9 +343,14 @@ impl<'a> AssembleEngine<'a> {
             // — which is the opposite of what a budget is for.
             let (keep, tokens_used) = self.budget_prefix(&grains, effective_allocation);
             let budget_omitted = grains.split_off(keep);
+            if !budget_omitted.is_empty() {
+                dropped_labels.push(label.clone());
+            }
             dropped += budget_omitted.len();
             let mut omitted = budget_omitted;
             if let Some(cap_tail) = capped_omitted.remove(&label) {
+                // The post-dedup cap already warned for itself above; this
+                // only folds its tail into the omitted set for ELEMENT_OMIT.
                 dropped += cap_tail.len();
                 omitted.extend(cap_tail);
             }
@@ -352,15 +373,36 @@ impl<'a> AssembleEngine<'a> {
         // §8): overflow = the token budget forced grains to be dropped.
         store.note_assembly_budget(dropped > 0);
 
+        // Say what the budget cut. RECALL has announced the same kind of cut
+        // as CAL-W015 since 1.5.1 — an assembly making it silently is how a
+        // host ends up composing a prompt from 79 of 229 grains and
+        // publishing a number it produced.
+        if !dropped_labels.is_empty() {
+            warnings.push(
+                super::errors::CalWarning::AssembleBudgetDropped {
+                    labels: dropped_labels,
+                    dropped,
+                    available: available_pre_budget,
+                    budget: budget_tokens,
+                    defaulted: budget_defaulted,
+                }
+                .to_string(),
+            );
+        }
+
         // 6. Build result.
-        let count = final_grains.len();
         Ok(CalResultPayload::Assembled {
             grains: final_grains,
             sources: meta,
             total_tokens,
             budget_limit: Some(budget_tokens),
             progressive: false,
-            total_available: Some(count),
+            // PRE-budget (#208). This used to report the trimmed count, which
+            // made a truncated assembly arithmetically indistinguishable from
+            // a complete one — `grains.len() == total_available` held either
+            // way. The per-source `grain_count` still reports what survived,
+            // so the drop is computable rather than announced only in prose.
+            total_available: Some(available_pre_budget),
         })
     }
 
