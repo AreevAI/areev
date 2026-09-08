@@ -47,6 +47,10 @@ def main():
     ap.add_argument("--learned-db", required=True, help="memory left by the experience phase")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--arms", default="B,B2,A")
+    ap.add_argument("--append", action="store_true",
+                    help="add these arms to the trials already in --workdir instead of "
+                         "starting it over — how a Postgres run takes arm A last, after "
+                         "regress has verified the memory arm A rolls back")
     ap.add_argument("--upto-seq", type=int, default=0, help="with --holdout train: only documents up to this seq; with next: the window starts after it")
     ap.add_argument("--rows", type=int, default=int(os.environ.get("EVAL_ROWS", "0") or 0),
                     help="with --holdout train/next: how many documents (the split itself keeps --eval); env EVAL_ROWS")
@@ -87,22 +91,51 @@ def main():
     print("held-out documents: %d (seq %d..%d) evalset %s"
           % (len(rows), rows[0]["seq"], rows[-1]["seq"], evalset))
 
-    # Two independent copies: the arms must not disturb each other, and the
-    # experience-phase memory itself is never written to by an arm.
-    db_b = os.path.join(args.workdir, "arm_b.db")
-    db_a = os.path.join(args.workdir, "arm_a.db")
-    mem.copy_memory(args.learned_db, db_b)
-    mem.copy_memory(args.learned_db, db_a)
-    rolled = mem.with_memory(db_a, mem.REVIEWER, mem.rollback_all)
-    print("arm A: rolled back %d recommendation(s)" % len(rolled))
+    learned = mem.bench_db(args.learned_db)
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    rolled = []
+    if mem.is_dsn(learned):
+        # A schema is not a file to copy, so every arm reads the ONE memory,
+        # and arm A is produced by rolling the applied recommendations back
+        # on it — after the other arms have read it, because that rollback
+        # is real and destructive: when this evaluation ends the memory holds
+        # no applied lessons. Said out loud, since it is the only place the
+        # Postgres run differs from the published file-backed one.
+        db_b = db_a = learned
+        if "A" in arms and arms[-1] != "A":
+            arms = [a for a in arms if a != "A"] + ["A"]
+        print("memory: %s — one Postgres memory for every arm%s" % (
+            mem.redact(learned),
+            "; arm A runs last, by rollback on that memory (destructive)" if "A" in arms else ""))
+    else:
+        # Two independent copies: the arms must not disturb each other, and the
+        # experience-phase memory itself is never written to by an arm.
+        db_b = os.path.join(args.workdir, "arm_b.db")
+        db_a = os.path.join(args.workdir, "arm_a.db")
+        mem.copy_memory(learned, db_b)
+        mem.copy_memory(learned, db_a)
+        rolled = mem.with_memory(db_a, mem.REVIEWER, mem.rollback_all)
+        print("arm A: rolled back %d recommendation(s)" % len(rolled))
 
     batch_argv = None
     if args.batch:
         batch_argv = os.environ.get("AGENT_BATCH_CMD", "").split() or sys.exit("--batch needs AGENT_BATCH_CMD (e.g. '$PY scripts/batch_toolcall.py --base-url ... --model ...')")
-    journal = open(os.path.join(args.workdir, "eval.jsonl"), "w", encoding="utf-8")
-    trials, usage, journaled = [], {}, {}
-    for arm in [a.strip() for a in args.arms.split(",") if a.strip()]:
+    trials, usage, journaled, prior = [], {}, {}, {}
+    if args.append:
+        trials_path = os.path.join(args.workdir, "trials.json")
+        if os.path.exists(trials_path):
+            trials = json.load(open(trials_path, encoding="utf-8"))
+        summary_path = os.path.join(args.workdir, "eval.summary.json")
+        if os.path.exists(summary_path):
+            prior = json.load(open(summary_path, encoding="utf-8"))
+            usage, journaled = dict(prior.get("usage") or {}), dict(prior.get("journaled") or {})
+            rolled = list(prior.get("rolled_back") or []) + rolled
+    journal = open(os.path.join(args.workdir, "eval.jsonl"), "a" if args.append else "w", encoding="utf-8")
+    for arm in arms:
         db = db_a if arm == "A" else db_b
+        if arm == "A" and mem.is_dsn(learned):
+            rolled = mem.with_memory(db_a, mem.REVIEWER, mem.rollback_all)
+            print("arm A: rolled back %d recommendation(s) on %s" % (len(rolled), mem.redact(learned)))
         # Arm C reads the same memory and renders it UNGOVERNED — every
         # correction verbatim, nothing proposed, reviewed or retracted. It is
         # the store-everything baseline, and it is deliberately generous: it
@@ -115,7 +148,7 @@ def main():
         usage[arm] = u
         if arm in journal_as:
             journaled[arm] = evalrun.journal_eval_run(
-                args.journal_into or args.learned_db, evalset, journal_as[arm], t)
+                args.journal_into or learned, evalset, journal_as[arm], t)
             print("  journaled arm %s as %s: %s" % (arm, journal_as[arm], json.dumps(journaled[arm])))
 
     with open(os.path.join(args.workdir, "trials.json"), "w", encoding="utf-8") as fh:

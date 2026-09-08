@@ -46,6 +46,28 @@ DOCUMENT_SUBJECT = re.compile(r"^document_\d+$")
 DOCUMENT_SUBJECT_SEQ = re.compile(r"^document_(\d+)$")
 
 
+def is_dsn(path):
+    """A `postgres://` memory (one schema), as opposed to a file."""
+    return str(path).startswith(("postgres://", "postgresql://"))
+
+
+def redact(path):
+    """A memory reference safe to print or record: a DSN loses its password.
+    A file path is returned unchanged."""
+    s = str(path)
+    if not is_dsn(s):
+        return s
+    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", s)
+
+
+def bench_db(default_path, override=None):
+    """The memory a harness opens (#200): `--db` / `AREEV_BENCH_DB` when set —
+    a file path or a `postgres://…?schema=…` DSN, handed to `areev.Areev`
+    verbatim — else the file the harness derives. Unset, every published
+    file-backed run is unchanged."""
+    return override or os.environ.get("AREEV_BENCH_DB") or default_path
+
+
 def with_memory(db_path, actor, fn):
     """Open as `actor`, run `fn(db)`, and guarantee the handle is released.
 
@@ -288,7 +310,7 @@ def make_judge(review_cmd):
     return judge
 
 
-def policy_file(db_path, policy, name="loop-policy.json"):
+def policy_file(db_path, policy, name="loop-policy.json", policy_dir=None):
     """The binding takes the host policy as a FILE (host config lives outside
     the memory, like the CLI's --policy). A JSON string is written beside the
     memory so the run directory records the policy it ran under; a path is
@@ -301,7 +323,11 @@ def policy_file(db_path, policy, name="loop-policy.json"):
     different one. `run.config.json` was the only honest record. Each leg now
     writes its own file."""
     if policy and policy.lstrip().startswith("{"):
-        path = os.path.join(os.path.dirname(os.path.abspath(db_path)), name)
+        # Beside the memory for a file. A Postgres memory has no "beside", so
+        # the caller's work dir takes it (the run's own record directory).
+        if policy_dir is None:
+            policy_dir = os.getcwd() if is_dsn(db_path) else os.path.dirname(os.path.abspath(db_path))
+        path = os.path.join(policy_dir, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(policy)
         return path
@@ -309,7 +335,7 @@ def policy_file(db_path, policy, name="loop-policy.json"):
 
 
 def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True,
-          full_sweep=False):
+          full_sweep=False, policy_dir=None):
     """One governed pass: propose under the runner, decide under the reviewer.
 
     Returns a dict: pending, applied, rejected, errors, funnel, decisions.
@@ -317,7 +343,7 @@ def learn(profile, db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbos
     duties — the identity that triggered the finding cannot approve it.
     `policy` is the host policy JSON (e.g. {"discover_objective":"learner"}).
     """
-    policy = policy_file(db_path, policy)
+    policy = policy_file(db_path, policy, policy_dir=policy_dir)
     rep = json.loads(with_memory(
         db_path, RUNNER,
         lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy,
@@ -397,8 +423,18 @@ def rollback_all(db, because="evaluation arm A: withdrawing the learned rules"):
 
 
 def copy_memory(src_db, dst_db):
-    """Copy a memory file with its WAL, so an arm mutates its own copy."""
+    """Copy a memory file with its WAL, so an arm mutates its own copy.
+
+    A Postgres memory is a schema, not a file, and cannot be copied from here:
+    the callers that need a second memory say plainly what they do instead
+    (`evaluate.py` rolls back on the one memory for arm A; snapshots and
+    per-pass learner copies are refused)."""
     import shutil
+    if is_dsn(src_db) or is_dsn(dst_db):
+        raise SystemExit(
+            "cannot copy %s: a Postgres memory is a schema, not a file. Provision a "
+            "second schema and point AREEV_BENCH_DB at it, or run this step against a "
+            "file memory." % redact(src_db))
     for suffix in ("", "-wal"):
         if os.path.exists(src_db + suffix):
             shutil.copy(src_db + suffix, dst_db + suffix)

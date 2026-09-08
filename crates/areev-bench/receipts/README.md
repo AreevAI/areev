@@ -32,3 +32,37 @@ which one it is running.
 
 Python 3 stdlib plus the `areev` binding built from this tree. No SDKs: the
 model legs are the bench's JSON-on-stdio adapters in `../scripts/`.
+
+## Running against a Postgres memory
+
+Every phase opens its memory through `areev.Areev(...)`, which takes a file
+path or a `postgres://…?schema=…` DSN. `AREEV_BENCH_DB` (or `run.py --db`)
+names the memory and is passed through **verbatim**, so a Cloud-provisioned
+schema — owner role with no `CREATE`, `?provision=never` on the DSN — runs the
+same harness the file-backed results were produced with. Unset, nothing
+changes: the published file-backed runs are unaffected.
+
+What a schema cannot do is be copied, and three things copy the file:
+
+- **`evaluate.py`'s arms.** On a file, arms B and A each get their own copy
+  and A is produced by `rollback_all` on its copy. On a DSN every arm reads
+  the **one** memory, and arm A is produced by rolling the applied
+  recommendations back on that memory — so A runs last, whatever `--arms`
+  says, and the rollback is real: when the evaluation ends the memory holds
+  no applied lessons. The harness prints this before it starts. It is also
+  why `dryrun.sh` reorders the legs on a DSN: B and B2 (journaling B, which
+  regress's verify needs), then regress, then arm A alone with
+  `evaluate.py --append` — added to the trials already taken, last of all,
+  because after it there is nothing applied left to verify.
+- **`run.py --snapshot-every` / `--snapshot-at`** copy the memory aside for
+  the learning curve. Refused on a DSN; run the curve on a file.
+- **`learners.py`** copies the memory once per pass. Refused on a DSN.
+
+`run.py` refuses a DSN whose schema already holds grains (the file-path rule,
+"a stale memory would poison the run", asked of the schema). The loop policy
+each leg records (`loop-policy.json`, `regress-policy.json`) lands in that
+leg's `--workdir`, since a DSN has no "beside", and `regress.py` reads the
+run's `run.config.json` from the parent of its work dir (`--run-config` to
+say otherwise). A DSN is printed and recorded
+(`run.config.json` → `memory`) with its password redacted, and only when one
+was given.
