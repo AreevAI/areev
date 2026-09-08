@@ -45,6 +45,32 @@ jobs:
           [ "$v" = "$s" ] || { echo "::error::areev $v vs areev-sandbox $s"; exit 1; }
           docker run --rm --entrypoint sh areev -c 'command -v areev-sandbox'
 
+      - name: a wasm32-areev plan dispatches to the sandbox
+        run: |
+          docker run --rm --entrypoint sh areev -c '
+            set -eu
+            DB=/data/wasm.db
+            rpc() {
+              { printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"s\",\"version\":\"1\"}}}\n"
+                printf "%s\n" "$1"
+              } | areev serve --mcp --db "$DB" | tail -1 | grep -oE "[0-9a-f]{64}" | head -1
+            }
+            printf "not wasm" > /tmp/bad.wasm
+            HEX=$(areev blob put /tmp/bad.wasm --db "$DB" | tail -1 | grep -oE "[0-9a-f]{64}")
+            TOOL=$(rpc "$(printf "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"areev_add\",\"arguments\":{\"type\":\"tool\",\"fields\":{\"tool_name\":\"w\",\"kind\":\"definition\",\"tool_description\":\"w\",\"executor_uri\":\"cas://sha256:%s\",\"runtime\":\"wasm32-areev\",\"created_at\":500}}}}" "$HEX")")
+            WF=$(rpc "$(printf "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"areev_add\",\"arguments\":{\"type\":\"workflow\",\"fields\":{\"name\":\"p\",\"nodes\":[\"w\"],\"edges\":[],\"bindings\":{\"w\":\"%s\"},\"created_at\":501}}}}" "$TOOL")")
+            out=$(areev run start --db "$DB" --workflow "$WF" --run-id wasm --input "{}" \
+                    --allow-executor "$HEX" --sandbox-cmd areev-sandbox 2>&1)
+            printf "%s\n" "$out"
+            case "$out" in
+              *"cannot dispatch"*|*"spawn areev-sandbox"*)
+                echo "::error::the image cannot dispatch wasm32-areev"; exit 1 ;;
+              *"areev-sandbox: module rejected"*)
+                echo "the sandbox ran: the plan reached it and it judged the bytes" ;;
+              *) echo "::error::unrecognised dispatch outcome"; exit 1 ;;
+            esac
+          '
+
       - name: the CLI works with zero flags ($AREEV_DB default)
         run: |
           docker volume create areev-smoke

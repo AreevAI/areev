@@ -681,6 +681,7 @@ impl HostToolExecutor for CodeExecutor {
         // same pool-worker reason as the pin.
         use areev_core::proc::{self, EnvPolicy, SpawnPolicy};
         let sandboxed = matches!(code.runtime.as_deref(), Some(rt) if rt != "native");
+        let mut spawned = path.display().to_string();
         let cmd = match code.runtime.as_deref() {
             None | Some("native") => std::process::Command::new(&path),
             Some(rt) => {
@@ -694,6 +695,7 @@ impl HostToolExecutor for CodeExecutor {
                         ),
                     };
                 };
+                spawned.clone_from(&argv[0]);
                 let mut c = std::process::Command::new(&argv[0]);
                 c.args(&argv[1..]);
                 c.arg("--module").arg(&path);
@@ -803,7 +805,7 @@ impl HostToolExecutor for CodeExecutor {
             Err(e) => {
                 return ExecResult::Err {
                     cause: FailCause::ExecutorError,
-                    detail: format!("spawn {}: {e}", path.display()),
+                    detail: format!("spawn {spawned}: {e}"),
                 }
             }
         };
