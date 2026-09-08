@@ -50,7 +50,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   RECALL facts WHERE object.error.code = "rate_limited"
   ```
 
-  `record_tool_call` round-trips a tool'"'"'s `input` as parsed JSON, so Python
+  `record_tool_call` round-trips a tool's `input` as parsed JSON, so Python
   and Node hosts already received the structure — it was specifically the CAL
   path that could not see inside. A field name may now be a dotted path of up
   to 8 segments (it accepted one dot before, which did not reach the shape a
@@ -79,17 +79,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   paved road is still to store the shape you want to read: two fields rather
   than one payload, which makes the value filterable as well as renderable.
 
+- **World-time validity is queryable and renderable** (#206). `valid_from`,
+  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
+  fields on every grain type — serialized since 1.0, read by the loop's
+  `staleness` analyzer, and present in every JSON payload — but they were
+  absent from CAL's filterable set, so the one read that makes a validity
+  window worth writing answered `CAL-E060`. They now filter and sort on every
+  type with the usual comparators and `IS NULL`, resolve in templates
+  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
+  currently valid" is a query:
+
+  ```sql
+  RECALL facts WHERE namespace = "desk"
+    AND (valid_to IS NULL OR valid_to > 1788866000000)
+  ```
+
+  This is what a waiver, a delegation, an out-of-office or a price valid until
+  a date needs. Every host previously over-fetched and post-filtered, which
+  also defeated `BUDGET` — the budget was spent on grains about to be
+  discarded.
+
 ### Fixed
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
-  nested assembly'"'"'s grains.** Sources had no pipeline at all, so a source
+  nested assembly's grains.** Sources had no pipeline at all, so a source
   could not be ranked, bounded or summarised in place. Separately,
   `assemble.rs` carried a **second copy** of `extract_grains` that had drifted
-  from the executor'"'"'s: it saw only the `Grains` payload, so a nested
+  from the executor's: it saw only the `Grains` payload, so a nested
   `Assembled` result silently contributed nothing to the enclosing assembly.
   There is now one extractor.
-
-### Fixed
 
 - **A `WHERE` predicate on a field the grain does not carry no longer matches
   everything** (#207). `object` is a real field name in general — Fact,
@@ -121,27 +139,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   too, so the whole filter surface speaks one unit; `format_epoch` keeps its
   public seconds signature.
 
-### Added
+- **`ASSEMBLE` says what its budget dropped** (#208). `ASSEMBLE` applies a
+  token budget whether or not the caller writes one — 4000 by default, ceiling
+  16000 — and when it bound it discarded the tail of each source in silence.
+  The payload actively hid it: `total_available` reported the **post**-budget
+  count, so `grains.len() == total_available` held for a truncated assembly
+  exactly as it did for a complete one. Measured on a real memory, 229
+  matching grains came back as 80 with `warnings: None`.
 
-- **World-time validity is queryable and renderable** (#206). `valid_from`,
-  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
-  fields on every grain type — serialized since 1.0, read by the loop's
-  `staleness` analyzer, and present in every JSON payload — but they were
-  absent from CAL's filterable set, so the one read that makes a validity
-  window worth writing answered `CAL-E060`. They now filter and sort on every
-  type with the usual comparators and `IS NULL`, resolve in templates
-  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
-  currently valid" is a query:
+  A budget that drops grains now emits **`CAL-W017`**, naming the sources and
+  the counts, and saying whether the budget was written or defaulted:
 
-  ```sql
-  RECALL facts WHERE namespace = "desk"
-    AND (valid_to IS NULL OR valid_to > 1788866000000)
+  ```
+  CAL-W017: the default BUDGET 4000 tokens dropped 130 of 200 grains from
+  source(s) [e] — this assembly is a window, not the whole match.
   ```
 
-  This is what a waiver, a delegation, an out-of-office or a price valid until
-  a date needs. Every host previously over-fetched and post-filtered, which
-  also defeated `BUDGET` — the budget was spent on grains about to be
-  discarded.
+  `total_available` is now the **pre**-budget count, so the drop is computable
+  rather than announced only in prose; each source's `grain_count` still
+  reports what survived. `docs/cal-reference.md` states the default and the
+  ceiling where `BUDGET` is documented — neither number appeared there, so "no
+  `BUDGET` clause" read as "no budget".
+
+  The default itself was kept rather than removed: an unbudgeted assembly that
+  returned everything could overflow the context window it is being composed
+  for, which is the worse failure. Silence was the defect, not the number.
+
+  Why it matters: a host composing a prompt from an assembly had no way to
+  detect that its rules, its policies or its recent turns were trimmed — it
+  would publish a number produced from a truncated prompt and never know.
+  `RECALL` has announced the same kind of cut as `CAL-W015` since 1.5.1.
+
+- **The console shows CAL warnings.** Every other surface honoured the
+  "silence means the query did what you asked" contract — the bindings and the
+  MCP tool return `warnings`, the CLI prints them to stderr — but the console
+  received them from `POST /api/cal` and dropped them on the floor. That was
+  the worst place for it: this is the surface a person reads an answer from,
+  and a warning is exactly the news that the answer is a window rather than
+  the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
+  result on the Query page, in plain language, with the `CAL-Wnnn` code shown
+  only in Developer mode.
 
 ## [1.7.3] — 2026-09-07
 

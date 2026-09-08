@@ -5965,6 +5965,36 @@ function renderQuerySummary() {
   const h = el('div', 'h', head + ' ');
   h.appendChild(el('em', '', describeQuery(Q.text)));
   box.appendChild(h);
+  /* Warnings, above everything else the summary says.
+
+     CAL's contract is that silence means the query did what you asked
+     (docs/cal-reference.md §5), and every other surface honours it — the
+     bindings and the MCP tool return `warnings`, the CLI prints them to
+     stderr. The console was the one place that received them from
+     /api/cal and dropped them on the floor, which is worst here: this is
+     the surface a person reads an answer from, and a warning is precisely
+     the news that the answer is a window rather than the whole match.
+
+     Shown in plain language by default — the code prefix is developer
+     chrome, but "149 of 229 memories were left out" is not. */
+  const warns = (res.warnings || []).filter(Boolean);
+  if (warns.length) {
+    const dev = document.documentElement.classList.contains('dev');
+    const b = el('div', 'banner');
+    b.style.margin = '10px 0 2px';
+    const body = el('div', 'grow');
+    warns.forEach((w, i) => {
+      /* `CAL-W017: text` → keep the code only in developer mode. */
+      const m = /^([A-Z]{3}-W\d{3}):\s*(.*)$/s.exec(w);
+      const line = el('div', i ? 'tiny' : '');
+      if (m && !dev) line.textContent = m[2];
+      else line.textContent = w;
+      if (i) line.style.marginTop = '4px';
+      body.appendChild(line);
+    });
+    b.appendChild(body);
+    box.appendChild(b);
+  }
   const sup = gs.filter(g => g.superseded_by || rgFields(g).superseded_by).length;
   if (sup) box.appendChild(el('div', 'tiny', sup + (sup === 1 ? ' has' : ' have')
     + ' been superseded since it was written — the older wording is kept so the change stays auditable'));

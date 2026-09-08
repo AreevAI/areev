@@ -235,6 +235,35 @@ used to be silently dropped — `… FORMAT markdown BUDGET 900` ran at the
 labels (`a: 0.5, b: 0.3`) or an ordering chain (`a > b > c`, mapped to evenly
 spaced weights).
 
+**`BUDGET` always applies, written or not.** An `ASSEMBLE` with no `BUDGET`
+clause runs at the **4000-token default**; the ceiling is **16000 tokens**
+(`CAL-E033` above it). Neither number used to appear here, so "no `BUDGET`
+clause" read as "no budget" — and when the default bound, grains were dropped
+in silence while `total_available` reported the *post*-budget count, making a
+truncated assembly arithmetically indistinguishable from a complete one.
+
+Since 1.7.4 a budget that drops grains says so:
+
+```
+ASSEMBLE "e" FROM e: (RECALL tools WHERE namespace = "appworld.*" LIMIT 400)
+→ 70 grains, total_available: 200
+  CAL-W017: the default BUDGET 4000 tokens dropped 130 of 200 grains from
+  source(s) [e] — this assembly is a window, not the whole match.
+```
+
+`total_available` is now the **pre**-budget count, so the drop is computable
+rather than announced only in prose; each source's `grain_count` still reports
+what survived. The default was kept rather than removed: an unbudgeted
+assembly that returned everything could overflow the context window it is
+being composed for, which is the worse failure. Silence was the defect, not
+the number.
+
+This matters most where it is least visible. A host composing a prompt from an
+assembly has no other way to detect that its rules, its policies or its recent
+turns were trimmed — it will publish a number produced from a truncated prompt
+and never know. `RECALL` has announced the same kind of cut as `CAL-W015` since
+1.5.1.
+
 **Render order is FROM-clause order, and nothing else changes it.** Sections
 appear in the order their labels are written. `PRIORITY` weights how the token
 budget is *shared*; it does not reorder. A pipeline `ORDER BY` on an assembly
@@ -655,7 +684,7 @@ RECALL tools WHERE input.app = "phone"
 RECALL facts WHERE object.error.code = "rate_limited"
 ```
 
-Hosts put structured payloads in grain fields constantly — a tool'"'"'s `input`,
+Hosts put structured payloads in grain fields constantly — a tool's `input`,
 an eval summary, an error envelope, an API response — and before 1.7.4 CAL
 could not filter on any of them, so a host fetched the whole set and unpacked
 it in application code. A value stored *as a JSON string* navigates
@@ -670,7 +699,7 @@ grains whose payload says otherwise nor the ones with no such key, and
 `input.app != "phone"` does not widen to everything. Like every other
 type-specific key it is an executor post-filter over the widened scan, so
 `CAL-W015` still reports a scan that filled. `ORDER BY` on a path is not
-supported. The renderer'"'"'s equivalent is the `get` filter (§6).
+supported. The renderer's equivalent is the `get` filter (§6).
 
 #### World-time validity: `valid_from` / `valid_to`
 
@@ -804,7 +833,7 @@ RECALL facts WHERE relation = "knows" | OBJECTS
 #### Frequency: `GROUP BY <field>` then `COUNT`
 
 `GROUP BY` on its own **reorders** rows so same-key grains are contiguous.
-Follow it with `COUNT` and you get one row per group carrying that group'"'"'s
+Follow it with `COUNT` and you get one row per group carrying that group's
 size, ordered **most frequent first** (ties by key ascending, so the answer is
 reproducible across backends and runs):
 
@@ -918,7 +947,11 @@ Warnings reach you as a `warnings` array of `CAL-Wnnn` strings in the result
 payload from `cal()` in Python and Node and from the MCP `areev_cal` tool, and
 alongside the payload on `POST /api/cal`. The key is present only when there is
 something to report, so a clean query returns the shape it always had. The
-`areev cal` CLI prints them to stderr instead, keeping stdout pure JSON.
+`areev cal` CLI prints them to stderr instead, keeping stdout pure JSON. The
+console shows them above the result on the Query page — in plain language, with
+the `CAL-Wnnn` code itself shown only in Developer mode, because "130 of 200
+memories were left out" is news for whoever is reading the answer while the
+code is developer chrome.
 
 `DESCRIBE`'s `with_options` lists the options that actually change a `RECALL`
 result, so a client can introspect rather than guess.
@@ -1051,7 +1084,7 @@ and titles, ticket ids, error codes and thread keys all live inside it:
 ```
 
 `get` is the one that reaches into structure. `record_tool_call` round-trips a
-tool'"'"'s `input` as parsed JSON, so a Python or Node host gets the shape for
+tool's `input` as parsed JSON, so a Python or Node host gets the shape for
 free — it was specifically the CAL path that could not see inside. (The `json`
 filter does not help despite its name: it *serialises* a value.) A path that
 does not resolve renders empty, and `get` deliberately does **not** transform:
@@ -1081,7 +1114,7 @@ A `GROUP BY <field> COUNT` result (§4) renders through a `group.` namespace:
 
 | Variable | Value |
 |---|---|
-| `{{group.key}}` | The group'"'"'s key |
+| `{{group.key}}` | The group's key |
 | `{{group.count}}` | How many grains fall in it |
 
 ```
