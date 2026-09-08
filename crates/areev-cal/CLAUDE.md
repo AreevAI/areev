@@ -28,6 +28,32 @@ scope/scope_path/tags) in a position it cannot be honoured is CAL-E061. A
 filter is pushed, evaluated, or refused — NEVER dropped. If you add a
 push-down arm, extend the truth table and its pin test in the same change.
 
+**…and absence is UNKNOWN, not FALSE (#207, 1.7.4).** The per-grain walk is
+three-valued (`grain_condition_truth`): a leaf whose field the grain does not
+carry is UNKNOWN, `AND`/`OR` combine by SQL's truth tables, `NOT UNKNOWN` is
+UNKNOWN, and `grain_matches_condition_tree` treats UNKNOWN as no-match. Two-
+valued evaluation cannot express "fails closed" under negation — reading
+absence as `false` made every negation of it `true`, so `object != "retired"`,
+`NOT (object = "retired")` and `object NOT IN ("retired")` each matched every
+grain of a type that has no `object`. Only negation moved; `T ∧ U` and `F ∧ U`
+already collapsed to no-match and `T ∨ U` already matched. `resolve_grain_field`
+is the ONE answer to "does this grain carry the field" — envelope properties
+(`hash`, `type`, `score`) and the omit-default discriminators (`kind`,
+`status` on tools) resolve there, so a materialized default reads as *present*
+and `kind != "definition"` keeps matching legacy execution grains.
+
+Note the shared-evaluator hazard: `areev-trigger` uses the same tree for
+composite gates, where an absent field means "this member has not fired" — a
+definite FALSE, not UNKNOWN. `gate_satisfied` therefore materializes every
+`referenced_members` name rather than projecting only the fired ones.
+
+**World-time validity is queryable (#206, 1.7.4).** `valid_from`/`valid_to`/
+`system_valid_from`/`system_valid_to` are `GrainCommon` fields on every type,
+already serialized and expanded back into `fields` — they were simply missing
+from `COMMON_FIELDS` and `GRAIN_EVALUABLE_COMMON`, so the one read that makes a
+validity window worth writing refused with CAL-E060. No push-down: they
+post-filter over the widened scan like any other in-blob key.
+
 **LET eval writes its results onto `CalQuery::let_values`** (`#[serde(skip)]` —
 execution state, not query text); `apply_where_clause` expands `IN $var` from
 it, and surrogate/nested queries plus ASSEMBLE sources inherit it. The scope

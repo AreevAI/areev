@@ -66,6 +66,14 @@ const ALLOWED_FIELDS: &[&str] = &[
     "confidence",
     "importance",
     "created_at",
+    // §6.1 world-time validity, carried by every grain type (#206).
+    // `{{valid_to | date}}` is the label half of "what is currently valid";
+    // the filter half is the WHERE clause, and a render that can drop an
+    // expired note but not say when the others lapse is half an answer.
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
     "tags",
     "session_id",
     "content",
@@ -203,6 +211,14 @@ const ALL_VALID_VARIABLES: &[&str] = &[
     "confidence",
     "importance",
     "created_at",
+    // §6.1 world-time validity, carried by every grain type (#206).
+    // `{{valid_to | date}}` is the label half of "what is currently valid";
+    // the filter half is the WHERE clause, and a render that can drop an
+    // expired note but not say when the others lapse is half an answer.
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
     "tags",
     "session_id",
     "content",
@@ -1546,7 +1562,11 @@ fn resolve_variable(
         "_count" => return ResolvedValue::Integer(ctx.total_count as i64),
         "_first" => return ResolvedValue::Bool(index == Some(0)),
         "_last" => return ResolvedValue::Bool(index.is_some_and(|i| i + 1 == ctx.total_count)),
-        "_now" => return ResolvedValue::Integer(ctx.now_secs),
+        // Epoch **milliseconds**, matching every grain timestamp and what the
+        // `date`/`relative` filters take. `ctx.now_secs` stays seconds — it is
+        // the *now* argument of `humanize_time(created_ms, now_secs)`, a
+        // different role than the value a template renders.
+        "_now" => return ResolvedValue::Integer(ctx.now_secs.saturating_mul(1_000)),
         _ => {}
     }
 
@@ -1690,14 +1710,31 @@ pub fn apply_filter(
                 _ => Ok(ResolvedValue::Str(value.to_display())),
             }
         }
+        // `date` takes epoch **milliseconds**, because that is the unit of
+        // every timestamp a template can name: `created_at`, `valid_from`,
+        // `valid_to`, `deadline`, `expires_at`, `last_practiced_at`. It used
+        // to hand the value to `format_epoch` unconverted — and that function
+        // takes seconds — so `{{created_at | date}}` rendered the year 58657
+        // for a grain written today. `relative` never had the bug because
+        // `humanize_time(created_ms, now_secs)` names its units.
+        //
+        // `format_epoch` keeps its seconds signature: it is public, and the
+        // conversion belongs at the one place that knows the input is a grain
+        // timestamp.
         "date" => match value {
-            ResolvedValue::Integer(epoch) => {
+            ResolvedValue::Integer(epoch_ms) => {
                 let fmt = filter.arg.as_deref().unwrap_or("%Y-%m-%d");
-                Ok(ResolvedValue::Str(format_epoch(*epoch, fmt)))
+                Ok(ResolvedValue::Str(format_epoch(
+                    epoch_ms.div_euclid(1_000),
+                    fmt,
+                )))
             }
             ResolvedValue::Number(n) => {
                 let fmt = filter.arg.as_deref().unwrap_or("%Y-%m-%d");
-                Ok(ResolvedValue::Str(format_epoch(*n as i64, fmt)))
+                Ok(ResolvedValue::Str(format_epoch(
+                    (*n as i64).div_euclid(1_000),
+                    fmt,
+                )))
             }
             _ => Ok(ResolvedValue::Str(value.to_display())),
         },
@@ -3456,7 +3493,10 @@ mod tests {
     #[test]
     fn test_filter_date() {
         let ctx = test_ctx();
-        let val = ResolvedValue::Integer(1700000000);
+        // Epoch MILLISECONDS — the unit of every grain timestamp the filter
+        // is pointed at. Passing seconds here is what hid the bug that made
+        // `{{created_at | date}}` render the year 58657.
+        let val = ResolvedValue::Integer(1_700_000_000_000);
         let filter = Filter {
             name: "date".into(),
             arg: Some("%Y-%m-%d".into()),

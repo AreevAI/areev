@@ -633,6 +633,45 @@ order. Now:
   support, they refuse with **`CAL-E061`** instead of widening.
 - Comparators the push-down alone never honoured (`confidence < 0.5`,
   `subject != "x"`, `deadline IS NULL`) are now applied per grain.
+- **A field the grain does not carry answers no predicate** (1.7.4, #206/#207).
+  Evaluation is three-valued: absence is UNKNOWN, and UNKNOWN does not match.
+  So a grain with no `object` matches neither `object = "x"` nor `object !=
+  "x"`, `NOT (object = "x")`, or `object NOT IN ("x")`. Before 1.7.4 the
+  negations read absence as "differs from your value" and matched **every**
+  row — `RECALL skills WHERE object != "retired"` returned the retired skill
+  too, with nothing in the payload to distinguish "the filter ran and matched
+  everything" from "the filter did not run". `IS NULL` / `IS NOT NULL` are the
+  operators *about* absence and stay definite; `AND`/`OR` use SQL's truth
+  tables, so nothing that already matched stops matching.
+
+#### World-time validity: `valid_from` / `valid_to`
+
+Every grain type carries the OMS §6.1 world-time axis, and since 1.7.4 all four
+fields (`valid_from`, `valid_to`, `system_valid_from`, `system_valid_to`) are
+**filterable and sortable** on every type, with the usual comparators and `IS
+NULL`. They live inside the immutable blob, so they post-filter over the widened
+scan like any other type-specific key — `CAL-W015` still reports a scan that
+filled.
+
+"What is currently valid" is therefore a query rather than host code:
+
+```sql
+RECALL facts WHERE namespace = "desk"
+  AND (valid_to IS NULL OR valid_to > 1788866000000)
+```
+
+`IS NULL` is load-bearing: a fact with no declared expiry never lapses, and
+dropping that leg would silently return only the facts that *do* expire. The
+label half lives in templates — `{{grain.valid_to | date}}` — so a render can
+say *(until 2026-10-01)* rather than the host re-deriving it. `DESCRIBE FIELDS
+<type>` lists all four.
+
+This is what makes a waiver, a delegation, an out-of-office, or a price valid
+until a date expressible without over-fetching: previously every host read the
+whole set and filtered in application code, which also defeated `BUDGET` — the
+budget was spent on grains the host was about to discard. The loop's `staleness`
+analyzer still proposes a tombstone eventually, but "eventually" is not the same
+as "not in this prompt".
 
 `EXISTS`, `HISTORY … WHERE`, and the ASSEMBLE-level `WHERE` share the same
 contract. `DESCRIBE FIELDS <type>` lists exactly the fields that filter for
@@ -912,6 +951,33 @@ Sections you do not define are inherited from `EXTENDS <parent>`, defaulting
 to `readable`. The three preset parents (`structured`, `readable`, `compact`)
 define element-level sections only, so inheriting never adds a header you did
 not ask for. `data` cannot be extended (`CAL-E119`).
+
+#### Filters
+
+A template variable may be piped through a **closed** list of filters, chained
+left to right: `{{relation | humanize | uppercase}}`. The set is closed on
+purpose — `DESCRIBE CAPABILITIES` reports what this host supports, and OMS
+conformance means two implementations must render a grain identically, which an
+open function library cannot promise.
+
+| Filter | Effect |
+|---|---|
+| `truncate(n)` | Clip to `n` characters |
+| `date` / `date "<fmt>"` | Format an epoch timestamp (default `%Y-%m-%d`) |
+| `relative` | "2 weeks ago"-style label |
+| `humanize` | Turn a relation name into prose (`lives_in` → "lives in") |
+| `percent` | Render `0.9` as `90%` |
+| `uppercase` / `lowercase` | Case |
+| `json` | **Serialise** the value as JSON — it does not parse one |
+| `default "<text>"` | Substitute when the value is absent or empty |
+| `join("<sep>")` | Join an array |
+
+**Timestamps are epoch milliseconds.** Every timestamp a template can name —
+`created_at`, `valid_from`, `valid_to`, `deadline`, `expires_at`,
+`last_practiced_at`, and `_now` — is epoch ms, and `date` and `relative` both
+read them that way. Before 1.7.4 `date` treated its input as *seconds*, so
+`{{created_at | date}}` rendered the year 58657 for a grain written today;
+`relative` never had the bug.
 
 | Limit (OMS CAL §10.8) | Value |
 |---|---|

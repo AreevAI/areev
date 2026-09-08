@@ -87,10 +87,22 @@ pub fn grain_matches(grain: &DeserializedGrain, condition: &Condition) -> bool {
 /// The condition's field names are member ids; a member that has fired is
 /// `true`. Reusing the same `Condition` shape means `(a AND b) OR c` over
 /// triggers is written and evaluated exactly like a predicate over grains.
+///
+/// **Every referenced member is materialized**, `false` when it has not fired.
+/// The two callers of the shared evaluator mean opposite things by an absent
+/// field: over a *grain* absence is UNKNOWN (the type does not carry the
+/// field, so the predicate has no answer — #207), while over a *gate* absence
+/// is a definite "has not fired". Projecting only the fired members left the
+/// evaluator to guess between them, and `NOT (a = true)` — "fire when `a` did
+/// not" — is exactly where the two readings diverge. Naming every member
+/// makes the gate's meaning explicit instead of encoding it in a gap.
 pub fn gate_satisfied(condition: &Condition, fired: &[String]) -> bool {
-    let fields: serde_json::Map<String, serde_json::Value> = fired
-        .iter()
-        .map(|m| (m.clone(), serde_json::Value::Bool(true)))
+    let fields: serde_json::Map<String, serde_json::Value> = referenced_members(condition)
+        .into_iter()
+        .map(|m| {
+            let has_fired = fired.contains(&m);
+            (m, serde_json::Value::Bool(has_fired))
+        })
         .collect();
     let projected = CalGrainResult {
         hash: String::new(),
