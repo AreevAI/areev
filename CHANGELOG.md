@@ -114,6 +114,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the bytes rather than the host failing to reach one
   ([#203](https://github.com/AreevAI/areev/issues/203)).
 
+- **A preview channel for unreleased changes.** npm and PyPI published only on
+  a published GitHub Release, so proving a Core change against a downstream's
+  test suite cost a full release cycle — and the only alternative, pointing a
+  consumer at a local checkout, cannot run in CI. `release-npm` and
+  `release-pypi` now take a `preview: true` dispatch from any branch and
+  publish `X.Y.Z-preview.<run number>` under npm's `preview` dist-tag and as a
+  PyPI pre-release, so `npm install @areev/areev` and `pip install areev` are
+  unaffected. Nothing is committed: `scripts/stamp_preview.py` stamps at build
+  time, and `check_versions.py --preview` still refuses a tree whose two
+  published sites disagree ([#204](https://github.com/AreevAI/areev/issues/204)).
+
+  Two things constrained the shape. The version had to be
+  `-preview.<number>`, not the `-preview.<sha>` first proposed: PEP 440
+  numbers its pre-releases and PyPI rejects the `+local` segment a sha would
+  need, so a sha is publishable to npm and not to PyPI. And only
+  `package.json` and `pyproject.toml` may be stamped — crates depend on each
+  other as `version = "1.7.0"`, and Cargo does not match a prerelease against
+  `^1.7.0`, so stamping the workspace makes every inter-crate requirement
+  unsatisfiable and nothing builds at all.
+
 ### Fixed
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a

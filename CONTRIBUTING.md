@@ -108,6 +108,25 @@ merged without a design discussion first:
 By submitting a pull request, you confirm your commits are signed off (DCO) and
 your work is your own (or you have the right to contribute it).
 
+## Testing an unreleased change downstream
+
+Both registries publish only on a published GitHub Release, so proving a Core
+change against a consumer's own test suite would otherwise cost a full release
+cycle. A maintainer can dispatch `release-npm` or `release-pypi` with
+**preview: true** from any branch, which publishes
+`X.Y.Z-preview.<run number>` — under npm's `preview` dist-tag and as a PEP 440
+pre-release on PyPI, so neither is what `npm install @areev/areev` or
+`pip install areev` resolves to.
+
+```bash
+npm  install @areev/areev@preview
+pip  install --pre areev
+```
+
+A preview is **not supported**: it may be withdrawn, and it is cut from a
+branch that has not passed a release. Pin the exact version if you depend on
+one, and move off it when the change ships.
+
 ## Questions?
 
 Open a [Discussion](https://github.com/AreevAI/areev/discussions) or read

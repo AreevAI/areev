@@ -1,0 +1,15 @@
+name: Stamp the preview version
+description: >
+  Stamp X.Y.Z-preview.<run number> onto the two files the registries read, when
+  this run is a preview dispatch. Every job checks out fresh, so each one that
+  builds or publishes has to stamp again or it ships the release version.
+inputs:
+  preview:
+    description: whether this run is a preview dispatch
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: inputs.preview == 'true'
+      shell: bash
+      run: python3 scripts/stamp_preview.py --build "$GITHUB_RUN_NUMBER"
