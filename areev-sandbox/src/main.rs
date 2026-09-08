@@ -40,9 +40,14 @@ fn run() -> Result<String, String> {
         i += 1;
     }
 
+    if flags.contains_key("version") || args.iter().any(|a| a == "-V") {
+        return Ok(format!("areev-sandbox {}", env!("CARGO_PKG_VERSION")));
+    }
+
     let path = flags.get("module").ok_or(
         "usage: areev-sandbox --module <FILE.wasm> [--fuel N] [--max-pages N] \
-         [--allow-fetch] [--max-response-bytes N] [--allow-blob] [--max-blob-bytes N]",
+         [--allow-fetch] [--max-response-bytes N] [--allow-blob] [--max-blob-bytes N] \
+         | --version",
     )?;
     let wasm = std::fs::read(path).map_err(|e| format!("reading {path}: {e}"))?;
 

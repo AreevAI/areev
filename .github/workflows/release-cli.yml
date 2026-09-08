@@ -119,6 +119,12 @@ jobs:
             --target ${{ matrix.target }} \
             ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }}
 
+      - name: Build areev-sandbox
+        shell: bash
+        run: |
+          cargo build --release --locked --manifest-path areev-sandbox/Cargo.toml \
+            --target ${{ matrix.target }}
+
       # Fail here rather than shipping a binary that cannot start. A release
       # asset nobody ran is worth less than no asset at all.
       #
@@ -130,7 +136,11 @@ jobs:
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/areev${{ matrix.ext }}"
+          SBX="areev-sandbox/target/${{ matrix.target }}/release/areev-sandbox${{ matrix.ext }}"
           "$BIN" --version
+          "$SBX" --version
+          [ "$("$BIN" --version | cut -d' ' -f2)" = "$("$SBX" --version | cut -d' ' -f2)" ] \
+            || { echo "::error::areev and areev-sandbox versions disagree"; exit 1; }
           "$BIN" add --db "$RUNNER_TEMP/smoke.db" --ns caller john prefers tea
           "$BIN" recall --db "$RUNNER_TEMP/smoke.db" --ns caller --subject john | grep -q tea
 
@@ -188,6 +198,8 @@ jobs:
           NAME="areev-${VERSION}-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/areev${{ matrix.ext }}" "dist/$NAME/"
+          cp "areev-sandbox/target/${{ matrix.target }}/release/areev-sandbox${{ matrix.ext }}" \
+            "dist/$NAME/"
           cp README.md LICENSE-MIT LICENSE-APACHE "dist/$NAME/"
           cd dist
           if [ "${{ matrix.ext }}" = ".exe" ]; then
