@@ -6,6 +6,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `WHERE` predicate on a field the grain does not carry no longer matches
+  everything** (#207). `object` is a real field name in general — Fact,
+  Observation and Goal all declare it — but means nothing for a Skill, and the
+  per-grain evaluator read that absence as `false`, which made every *negation*
+  of it `true`. So `RECALL skills WHERE object != "retired"` returned every
+  skill, the retired one included, with nothing in the payload to distinguish
+  "the filter ran and matched everything" from "the filter did not run" — the
+  opposite of the fails-closed contract §3.4 states. Evaluation is now
+  three-valued: absence is UNKNOWN, `AND`/`OR` combine by SQL's truth tables,
+  and UNKNOWN does not match. `!=`, `NOT (… = …)` and `NOT IN` all narrow.
+  Nothing that already matched stops matching (`T ∧ U` and `F ∧ U` already
+  collapsed to no-match, `T ∨ U` already matched), and the omit-default
+  discriminators still resolve their defaults, so `kind != "definition"` keeps
+  returning legacy execution grains. `areev-trigger`'s composite gates share
+  the evaluator and mean the opposite by an absent field — "this member has not
+  fired" is definite, not unknown — so `gate_satisfied` now materializes every
+  referenced member instead of encoding the answer in a gap.
+
+- **`description` is queryable on skills** (#207). Required on the Skill struct
+  since 1.4 but absent from the registry's `queryable_fields`, so the one field
+  every Skill must carry was the one `WHERE` refused with `CAL-E060`.
+
+- **`{{… | date}}` renders the right year** (#206). Every timestamp a template
+  can name is epoch milliseconds, but the filter handed its input to a
+  seconds-based formatter, so `{{created_at | date}}` rendered *58657-02-23*
+  for a grain written today. `relative` never had the bug because
+  `humanize_time(created_ms, now_secs)` names its units. `_now` is milliseconds
+  too, so the whole filter surface speaks one unit; `format_epoch` keeps its
+  public seconds signature.
+
+### Added
+
+- **World-time validity is queryable and renderable** (#206). `valid_from`,
+  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
+  fields on every grain type — serialized since 1.0, read by the loop's
+  `staleness` analyzer, and present in every JSON payload — but they were
+  absent from CAL's filterable set, so the one read that makes a validity
+  window worth writing answered `CAL-E060`. They now filter and sort on every
+  type with the usual comparators and `IS NULL`, resolve in templates
+  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
+  currently valid" is a query:
+
+  ```sql
+  RECALL facts WHERE namespace = "desk"
+    AND (valid_to IS NULL OR valid_to > 1788866000000)
+  ```
+
+  This is what a waiver, a delegation, an out-of-office or a price valid until
+  a date needs. Every host previously over-fetched and post-filtered, which
+  also defeated `BUDGET` — the budget was spent on grains about to be
+  discarded.
+
 ## [1.7.3] — 2026-09-07
 
 ### Added

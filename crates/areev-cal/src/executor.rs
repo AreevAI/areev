@@ -3739,6 +3739,14 @@ impl CalExecutor {
                         serde_json::json!({"name": "confidence", "type": "number", "filterable": true, "sortable": true}),
                         serde_json::json!({"name": "importance", "type": "number", "filterable": true, "sortable": true}),
                         serde_json::json!({"name": "tags", "type": "array", "filterable": true, "sortable": false}),
+                        // §6.1 world-time validity — filterable and sortable
+                        // on every type (#206). `DESCRIBE FIELDS` is the
+                        // source of truth for what filters, so a field the
+                        // executor honours has to appear here.
+                        serde_json::json!({"name": "valid_from", "type": "timestamp", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "valid_to", "type": "timestamp", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "system_valid_from", "type": "timestamp", "filterable": true, "sortable": true}),
+                        serde_json::json!({"name": "system_valid_to", "type": "timestamp", "filterable": true, "sortable": true}),
                     ];
                     // …plus, for a typed DESCRIBE, exactly the registry's
                     // queryable set for that type (#91): every advertised
@@ -6602,6 +6610,16 @@ const COMMON_FIELDS: &[&str] = &[
     "scope_path",
     "priority",
     "status",
+    // §6.1 world-time validity. These are `GrainCommon` fields on EVERY type,
+    // serialized into the blob and expanded back into `fields` on read — the
+    // engine has carried them since 1.0 and the loop's `staleness` analyzer
+    // reads them. They were simply absent from this list, so the one read
+    // that makes a validity window worth writing ("what is currently valid")
+    // refused with CAL-E060 (#206).
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
 ];
 
 /// Return the known type-specific fields for a grain type plural name.
@@ -6691,6 +6709,14 @@ const GRAIN_EVALUABLE_COMMON: &[&str] = &[
     "grain_type",
     "type",
     "score",
+    // §6.1 world-time validity (#206). No push-down: they live inside the
+    // immutable blob like every other type-specific sort key, so they are
+    // post-filtered over the widened scan — the shape `ORDER BY confidence`
+    // already uses, and `CAL-W015` still reports a scan that filled.
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
 ];
 
 /// Does `apply_where_clause` consume this leaf into `RecallParams`?
@@ -6883,6 +6909,60 @@ fn validate_residual_leaf(
     Ok(())
 }
 
+/// Resolve one field on a grain, envelope properties included.
+///
+/// The ONE answer to "does this grain carry `field`, and with what value?".
+/// Both the comparator ([`grain_matches_condition`]) and the tri-state
+/// evaluator ([`grain_leaf_truth`]) resolve through it, because a predicate
+/// that reads a value and a predicate that decides whether the value exists
+/// must not disagree about what exists.
+///
+/// Returns an owned value: envelope properties are synthesized, not borrowed.
+fn resolve_grain_field(grain: &CalGrainResult, field: &str) -> Option<serde_json::Value> {
+    // Envelope fields are not in `fields` — a grain's content address is a
+    // property *of* the blob, so it cannot be inside it. Looking `hash` up in
+    // `fields` therefore always missed, which is why `hash IN ("<real hash>")`
+    // matched nothing. A `sha256:` prefix is accepted because that is how the
+    // rest of CAL spells an address.
+    match field {
+        "hash" => return Some(serde_json::Value::String(grain.hash.clone())),
+        // `type` is the OMS §5.2 spelling of the same envelope property.
+        "grain_type" | "type" => {
+            return Some(serde_json::Value::String(grain.grain_type.clone()))
+        }
+        // The fused relevance score lives on the envelope, not in `fields`.
+        "score" => return serde_json::Number::from_f64(grain.score).map(serde_json::Value::Number),
+        // Omit-default discriminators (#91): canonical serialization omits
+        // the default value to keep legacy blobs byte-identical, so an
+        // absent field MEANS the default and a filter must see it that way
+        // (`kind = "execution"` has to match a grain that never wrote
+        // `kind`). This is also why the omit-default arms must live HERE and
+        // not only in the comparator: `kind != "definition"` has to see the
+        // materialized default as *present*, or the fails-closed rule below
+        // would drop every legacy execution grain.
+        "kind" if grain.grain_type == "tool" && json_field(&grain.fields, "kind").is_none() => {
+            return Some(serde_json::Value::String("execution".into()))
+        }
+        "status" if grain.grain_type == "tool" && json_field(&grain.fields, "status").is_none() => {
+            return Some(serde_json::Value::String("completed".into()))
+        }
+        _ => {}
+    }
+    json_field(&grain.fields, field).cloned()
+}
+
+/// Does this grain carry `field` at all?
+///
+/// A JSON `null` counts as *absent*: `IS NULL` already treats the two the
+/// same, and a filter must not read "the field is explicitly null" as "the
+/// field holds a value that differs from yours".
+fn grain_carries_field(grain: &CalGrainResult, field: &str) -> bool {
+    !matches!(
+        resolve_grain_field(grain, field),
+        None | Some(serde_json::Value::Null)
+    )
+}
+
 /// Apply a type-specific field condition to a single grain result.
 ///
 /// Returns `true` if the grain matches the condition.
@@ -6892,34 +6972,8 @@ pub fn grain_matches_condition(
     comparator: &Comparator,
     value: &Value,
 ) -> bool {
-    // Envelope fields are not in `fields` — a grain's content address is a
-    // property *of* the blob, so it cannot be inside it. Looking `hash` up in
-    // `fields` therefore always missed, which is why `hash IN ("<real hash>")`
-    // matched nothing. A `sha256:` prefix is accepted because that is how the
-    // rest of CAL spells an address.
-    let envelope: Option<serde_json::Value> = match field {
-        "hash" => Some(serde_json::Value::String(grain.hash.clone())),
-        // `type` is the OMS §5.2 spelling of the same envelope property.
-        "grain_type" | "type" => Some(serde_json::Value::String(grain.grain_type.clone())),
-        // The fused relevance score lives on the envelope, not in `fields`.
-        "score" => serde_json::Number::from_f64(grain.score).map(serde_json::Value::Number),
-        // Omit-default discriminators (#91): canonical serialization omits
-        // the default value to keep legacy blobs byte-identical, so an
-        // absent field MEANS the default and a filter must see it that way
-        // (`kind = "execution"` has to match a grain that never wrote
-        // `kind`).
-        "kind" if grain.grain_type == "tool" && json_field(&grain.fields, "kind").is_none() => {
-            Some(serde_json::Value::String("execution".into()))
-        }
-        "status" if grain.grain_type == "tool" && json_field(&grain.fields, "status").is_none() => {
-            Some(serde_json::Value::String("completed".into()))
-        }
-        _ => None,
-    };
-    let grain_value = match &envelope {
-        Some(v) => Some(v),
-        None => json_field(&grain.fields, field),
-    };
+    let resolved = resolve_grain_field(grain, field);
+    let grain_value = resolved.as_ref();
     let value = &match (field, value) {
         ("hash", Value::String { value: v }) => Value::String {
             value: v.strip_prefix("sha256:").unwrap_or(v).to_string(),
@@ -6943,7 +6997,18 @@ pub fn grain_matches_condition(
                 .unwrap_or(false),
             _ => false,
         },
-        Comparator::NotEq => !grain_matches_condition(grain, field, &Comparator::Eq, value),
+        // Fails closed on absence (#207). `!Eq` alone read a missing field as
+        // "differs from your value", so `RECALL skills WHERE object !=
+        // "retired"` returned every skill — a filter that silently no-ops is
+        // worse than one that errors, because the caller believes they
+        // narrowed the set. A grain that does not carry the field matches
+        // neither `= x` nor `!= x`, which is what SQL means by `NULL != 'x'`
+        // being UNKNOWN and what this module's own contract already promised:
+        // "narrowing, never widening".
+        Comparator::NotEq => {
+            grain_carries_field(grain, field)
+                && !grain_matches_condition(grain, field, &Comparator::Eq, value)
+        }
         Comparator::Gte => match value {
             Value::Number { value: target } => grain_value
                 .and_then(|v| v.as_f64())
@@ -6993,48 +7058,137 @@ pub fn grain_matches_condition(
 ///
 /// Used by `PipelineStage::Filter` (post-pipeline WHERE) to filter grains
 /// by conditions after pipeline stages like SELECT have been applied.
+///
+/// **Totality is preserved and UNKNOWN never escapes**: internally the walk
+/// is three-valued ([`grain_condition_truth`]), but a leaf whose field the
+/// grain does not carry resolves to UNKNOWN and UNKNOWN does not match. See
+/// that function for why the negations need it.
 pub fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {
+    // UNKNOWN does not match: the whole point of #207 is that a predicate the
+    // grain cannot answer must not widen the result.
+    grain_condition_truth(grain, condition).unwrap_or(false)
+}
+
+/// Three-valued (Kleene) evaluation of a condition tree: `Some(true)`,
+/// `Some(false)`, or `None` for UNKNOWN — the grain does not carry the field
+/// the leaf names.
+///
+/// Two-valued evaluation cannot express "fails closed" under negation, which
+/// is the #207 bug. Reading an absent field as `false` makes every negation
+/// of it `true`, so `object != "retired"`, `subject NOT IN (…)` and `NOT
+/// (object = "retired")` each matched **every** grain of a type that has no
+/// `object` — silently, with nothing in the payload to distinguish "the
+/// filter ran and matched everything" from "the filter did not run". Fixing
+/// only `!=` would leave the identical widening one rewrite away, so absence
+/// is modelled where it belongs: at the leaf, as UNKNOWN, propagated by the
+/// standard truth tables.
+///
+/// The tables are SQL's, and they keep every non-negated result identical to
+/// before: `T ∧ U = U` and `F ∧ U = F` both collapse to no-match at the top,
+/// and `T ∨ U = T` already matched. Only negation changes — which is the bug.
+///
+/// `IS NULL` / `IS NOT NULL` are never UNKNOWN: they are the operators *about*
+/// absence, so they are always a definite answer.
+fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Option<bool> {
     match condition {
         Condition::Comparison {
             field,
             comparator,
             value,
             ..
-        } => grain_matches_condition(grain, field, comparator, value),
+        } => {
+            // `!=` fails closed inside `grain_matches_condition` too (the
+            // comparator is public and callers reach it directly), so this
+            // arm only has to surface absence as UNKNOWN for the tree.
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(grain_matches_condition(grain, field, comparator, value))
+        }
         Condition::And { left, right, .. } => {
-            grain_matches_condition_tree(grain, left) && grain_matches_condition_tree(grain, right)
+            match (
+                grain_condition_truth(grain, left),
+                grain_condition_truth(grain, right),
+            ) {
+                // A definite FALSE decides the conjunction whatever the other
+                // side turns out to be.
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            }
         }
         Condition::Or { left, right, .. } => {
-            grain_matches_condition_tree(grain, left) || grain_matches_condition_tree(grain, right)
+            match (
+                grain_condition_truth(grain, left),
+                grain_condition_truth(grain, right),
+            ) {
+                // A definite TRUE decides the disjunction.
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
         }
-        Condition::Not { inner, .. } => !grain_matches_condition_tree(grain, inner),
-        Condition::In { field, values, .. } => values
-            .iter()
-            .any(|v| grain_matches_condition(grain, field, &Comparator::Eq, v)),
-        Condition::NotIn { field, values, .. } => !values
-            .iter()
-            .any(|v| grain_matches_condition(grain, field, &Comparator::Eq, v)),
-        Condition::IsNull { field, .. } => {
-            json_field(&grain.fields, field).is_none()
-                || json_field(&grain.fields, field) == Some(&serde_json::Value::Null)
+        // NOT UNKNOWN is UNKNOWN — this is the arm that stops `NOT (object =
+        // "x")` from being the widening route `!=` used to be.
+        Condition::Not { inner, .. } => grain_condition_truth(grain, inner).map(|b| !b),
+        Condition::In { field, values, .. } => {
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(
+                values
+                    .iter()
+                    .any(|v| grain_matches_condition(grain, field, &Comparator::Eq, v)),
+            )
         }
-        Condition::IsNotNull { field, .. } => {
-            matches!(json_field(&grain.fields, field), Some(v) if !v.is_null())
+        Condition::NotIn { field, values, .. } => {
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(
+                !values
+                    .iter()
+                    .any(|v| grain_matches_condition(grain, field, &Comparator::Eq, v)),
+            )
         }
-        Condition::Contains { field, value, .. } => json_field(&grain.fields, field)
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains(value.as_str()))
-            .unwrap_or(false),
-        Condition::StartsWith { field, value, .. } => json_field(&grain.fields, field)
-            .and_then(|v| v.as_str())
-            .map(|s| s.starts_with(value.as_str()))
-            .unwrap_or(false),
+        // The two operators that ask about absence always answer definitely.
+        Condition::IsNull { field, .. } => Some(!grain_carries_field(grain, field)),
+        Condition::IsNotNull { field, .. } => Some(grain_carries_field(grain, field)),
+        Condition::Contains { field, value, .. } => {
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(
+                json_field(&grain.fields, field)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.contains(value.as_str()))
+                    .unwrap_or(false),
+            )
+        }
+        Condition::StartsWith { field, value, .. } => {
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(
+                json_field(&grain.fields, field)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.starts_with(value.as_str()))
+                    .unwrap_or(false),
+            )
+        }
         Condition::IsCategory {
             field, category, ..
-        } => json_field(&grain.fields, field)
-            .and_then(|v| v.as_str())
-            .map(|s| s.eq_ignore_ascii_case(category))
-            .unwrap_or(false),
+        } => {
+            if !grain_carries_field(grain, field) {
+                return None;
+            }
+            Some(
+                json_field(&grain.fields, field)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.eq_ignore_ascii_case(category))
+                    .unwrap_or(false),
+            )
+        }
     }
 }
 
@@ -9746,8 +9900,11 @@ mod tests {
                 value: "anything".into()
             }
         ));
-        // Missing field DOES match NotEq (since !false = true).
-        assert!(super::grain_matches_condition(
+        // …and does not match NotEq either (#207). `!Eq` used to read absence
+        // as "differs from your value", which is how `RECALL skills WHERE
+        // object != "retired"` came back with every skill. A grain that
+        // cannot answer the predicate must not widen the result.
+        assert!(!super::grain_matches_condition(
             &grain,
             "tool",
             &super::super::ast::Comparator::NotEq,
@@ -9755,6 +9912,199 @@ mod tests {
                 value: "anything".into()
             }
         ));
+    }
+
+    /// #207 — the case that shipped: `object` is a real field name in
+    /// general (Fact, Observation and Goal all declare it) but means nothing
+    /// for a Skill, so the leaf resolved to absent and every negation of it
+    /// matched. The whole point is that a caller who writes a filter and
+    /// gets back the unfiltered set cannot tell the difference.
+    #[test]
+    fn test_207_negations_fail_closed_on_a_field_the_grain_lacks() {
+        use super::super::ast::{Comparator, Condition, Value};
+        let skill = CalGrainResult {
+            hash: "abc".into(),
+            grain_type: "skill".into(),
+            score: 1.0,
+            fields: serde_json::json!({ "name": "beta", "description": "retired" }),
+            score_breakdown: None,
+            explanation: None,
+            relative_time: None,
+            is_deterministic: false,
+            contested_by: None,
+        };
+        let retired = || Value::String {
+            value: "retired".into(),
+        };
+        let object_ne = Condition::Comparison {
+            field: "object".into(),
+            comparator: Comparator::NotEq,
+            value: retired(),
+            span: None,
+        };
+        // `object != "retired"` — the reported form.
+        assert!(!super::grain_matches_condition_tree(&skill, &object_ne));
+        // `NOT (object = "retired")` — the same widening, one rewrite away.
+        assert!(!super::grain_matches_condition_tree(
+            &skill,
+            &Condition::Not {
+                inner: Box::new(Condition::Comparison {
+                    field: "object".into(),
+                    comparator: Comparator::Eq,
+                    value: retired(),
+                    span: None,
+                }),
+                span: None,
+            }
+        ));
+        // `object NOT IN ("retired")` — and the membership form.
+        assert!(!super::grain_matches_condition_tree(
+            &skill,
+            &Condition::NotIn {
+                field: "object".into(),
+                values: vec![retired()],
+                span: None,
+            }
+        ));
+        // A field the grain DOES carry still negates normally — the fix
+        // narrows on absence, it does not disable `!=`.
+        assert!(super::grain_matches_condition_tree(
+            &skill,
+            &Condition::Comparison {
+                field: "description".into(),
+                comparator: Comparator::NotEq,
+                value: Value::String {
+                    value: "active".into()
+                },
+                span: None,
+            }
+        ));
+    }
+
+    /// Kleene propagation: UNKNOWN must not flip a conjunction or a
+    /// disjunction that a definite value already decides, or the fix for
+    /// #207 would narrow queries it has no business touching.
+    #[test]
+    fn test_207_unknown_propagates_by_the_sql_truth_tables() {
+        use super::super::ast::{Comparator, Condition, Value};
+        let skill = CalGrainResult {
+            hash: "abc".into(),
+            grain_type: "skill".into(),
+            score: 1.0,
+            fields: serde_json::json!({ "name": "beta" }),
+            score_breakdown: None,
+            explanation: None,
+            relative_time: None,
+            is_deterministic: false,
+            contested_by: None,
+        };
+        let known_true = Condition::Comparison {
+            field: "name".into(),
+            comparator: Comparator::Eq,
+            value: Value::String {
+                value: "beta".into(),
+            },
+            span: None,
+        };
+        let unknown = Condition::Comparison {
+            field: "object".into(),
+            comparator: Comparator::Eq,
+            value: Value::String {
+                value: "anything".into(),
+            },
+            span: None,
+        };
+        // T ∨ U = T — a disjunction a present field already satisfied.
+        assert!(super::grain_matches_condition_tree(
+            &skill,
+            &Condition::Or {
+                left: Box::new(known_true.clone()),
+                right: Box::new(unknown.clone()),
+                span: None,
+            }
+        ));
+        // T ∧ U = U → no match at the top. Unchanged from before the fix
+        // (it was T ∧ F), which is why non-negated queries do not move.
+        assert!(!super::grain_matches_condition_tree(
+            &skill,
+            &Condition::And {
+                left: Box::new(known_true),
+                right: Box::new(unknown),
+                span: None,
+            }
+        ));
+        // IS NULL / IS NOT NULL are the operators *about* absence, so they
+        // stay definite — UNKNOWN would make them unanswerable.
+        assert!(super::grain_matches_condition_tree(
+            &skill,
+            &Condition::IsNull {
+                field: "object".into(),
+                span: None,
+            }
+        ));
+        assert!(super::grain_matches_condition_tree(
+            &skill,
+            &Condition::IsNotNull {
+                field: "name".into(),
+                span: None,
+            }
+        ));
+    }
+
+    /// The omit-default discriminators must keep matching after #207: an
+    /// absent `kind` MEANS `"execution"`, so the fails-closed rule has to see
+    /// the materialized default as present or `kind != "definition"` — the
+    /// documented results-without-definitions query — would return nothing.
+    #[test]
+    fn test_207_omit_default_discriminators_survive_fails_closed() {
+        use super::super::ast::{Comparator, Condition, Value};
+        let legacy_execution = CalGrainResult {
+            hash: "abc".into(),
+            grain_type: "tool".into(),
+            score: 1.0,
+            fields: serde_json::json!({ "tool_name": "db_query" }),
+            score_breakdown: None,
+            explanation: None,
+            relative_time: None,
+            is_deterministic: false,
+            contested_by: None,
+        };
+        assert!(super::grain_matches_condition_tree(
+            &legacy_execution,
+            &Condition::Comparison {
+                field: "kind".into(),
+                comparator: Comparator::NotEq,
+                value: Value::String {
+                    value: "definition".into()
+                },
+                span: None,
+            }
+        ));
+    }
+
+    /// #206 — the world-time validity axis is queryable on every type. These
+    /// are `GrainCommon` fields the engine has serialized since 1.0; the only
+    /// thing missing was their presence in the filterable set.
+    #[test]
+    fn test_206_validity_fields_are_filterable_and_sortable() {
+        for f in [
+            "valid_from",
+            "valid_to",
+            "system_valid_from",
+            "system_valid_to",
+        ] {
+            assert!(
+                super::COMMON_FIELDS.contains(&f),
+                "{f} must be pipeline-valid (ORDER BY / SELECT / GROUP BY)"
+            );
+            assert!(
+                super::GRAIN_EVALUABLE_COMMON.contains(&f),
+                "{f} must be evaluable per grain (WHERE residual)"
+            );
+            // Never engine-only: they have a per-grain value, so a NOT/OR
+            // subtree over them must post-filter rather than refuse E061.
+            assert!(!super::ENGINE_ONLY_FIELDS.contains(&f));
+        }
     }
 
     #[test]

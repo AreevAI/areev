@@ -1443,6 +1443,34 @@ Leniency was deliberately NOT kept behind an opt-in: a filter that cannot be
 honoured has no honest lenient reading, and the safe direction must be the
 default direction.
 
+**Amendment (2026-09-08, issue #207): absence is UNKNOWN, not FALSE.** The
+planning pass above routes a predicate to the per-grain evaluator; the
+evaluator itself was two-valued, and read "this grain has no such field" as
+`false`. That is correct for a bare comparison and wrong for every negation
+of one — `!false` is `true`, so `object != "retired"`, `NOT (object =
+"retired")` and `object NOT IN ("retired")` each matched **every** grain of a
+type with no `object`. The same widening #91 retired, reached one rewrite
+later.
+
+The evaluator is now three-valued (Kleene): a leaf whose field the grain does
+not carry is UNKNOWN, `AND`/`OR` combine by SQL's truth tables, `NOT UNKNOWN`
+is UNKNOWN, and UNKNOWN does not match at the top. This is the smallest model
+that can express "fails closed" under negation — fixing only `!=` would leave
+the identical bug in `NOT`, and refusing the predicate outright (the other
+candidate) would reject queries against fields the grain genuinely holds,
+since `subject`/`object` are declared by Fact, Observation *and* Goal and any
+type may carry them in `extra_fields`. Nothing that already matched stops
+matching: `T ∧ U` and `F ∧ U` both collapsed to no-match before, and `T ∨ U`
+already matched.
+
+Two consequences worth stating. `IS NULL`/`IS NOT NULL` are the operators
+*about* absence and stay definite, or they would become unanswerable. And the
+evaluator is shared: `areev-trigger`'s composite gates project fired members
+into the same tree, where an absent field means "has not fired" — a definite
+FALSE, not UNKNOWN. That gate now materializes every referenced member rather
+than encoding its answer in a gap, because one evaluator serving two meanings
+of absence has to be told which one it is looking at.
+
 ### Framework adapters live outside the repo
 
 **Decision (2026-08-23):** the ecosystem adapters that put Areev underneath
