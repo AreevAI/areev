@@ -53,24 +53,38 @@ sections.
 
 **State the budget, and only use `ASSEMBLE` for text a model reads.**
 `ASSEMBLE` applies a token budget whether or not you ask for one — default
-4000, ceiling 16000 (`CAL-E033`) — and a budget that binds drops grains
-**silently**: no warning, and `total_available` reports the POST-budget count,
-so a caller cannot tell a full answer from a truncated one. That is not
-theoretical: wrapping AppWorld's error SELECTION in an `ASSEMBLE` returned 79
-of 229 grains on run 1's own memory. A pure selection belongs in a saved
-`RECALL`; a rendered block states `BUDGET n tokens`
-(`cal_assemble.MAX_BUDGET_TOKENS` is the ceiling, used as a stated bound
-rather than a squeeze, because a binding budget would change published prompt
-bytes). `scripts/parity_check.py` seeds a section past the default so the
-omission cannot come back.
+4000, ceiling 16000 (`CAL-E033`). It used to drop grains to that budget in
+silence, which is how wrapping AppWorld's error SELECTION in an `ASSEMBLE`
+returned 79 of 229 grains on run 1's own memory; since 1.7.4 the drop
+announces itself as `CAL-W017` (#208).
 
-*Adherence today: **adopted** (2026-09-08).* Every model-facing block in
-`receipts`, `tau2` and `appworld` is an `ASSEMBLE`; `persist` is one section of
-four, and the three that are not are named with their error codes in
-`persist/pastbench/AREEV.md`. Two reads do not finish in CAL and say so where
-they live: AppWorld's passive arm ranks by FREQUENCY, which `GROUP BY` cannot
-project; persist's notes need a `valid_to` filter that is not a queryable
-field. The shared helpers are `scripts/cal_assemble.py`.
+Two rules follow. A pure selection belongs in a saved `RECALL` — it is not
+composing model-facing text, so it should not carry budget semantics at all.
+A rendered block states `BUDGET n tokens` (`cal_assemble.MAX_BUDGET_TOKENS` is
+the ceiling, used as a stated bound rather than a squeeze, because a binding
+budget would change published prompt bytes) — and the ceiling is not a
+guarantee of no trimming, so `cal.section` / `cal.rows` **raise** on
+`CAL-W017`: a prompt section that lost rows is a wrong prompt, not a warning.
+`scripts/parity_check.py` seeds a section past the default and asserts both
+halves.
+
+*Adherence today: **adopted** (2026-09-08; revisited 2026-09-09).* Every
+model-facing block in `receipts`, `tau2` and `appworld` is an `ASSEMBLE`;
+`persist` is two sections of four. The gaps this sweep found were filed and
+**four of them were fixed in 1.7.4** (#206–#209), so what is still
+harness-composed is a much shorter list, and for reasons that are now about
+the PROMPT rather than about CAL:
+
+- AppWorld's passive arm and persist's notes are both *expressible* now, and
+  both are deliberately **not moved**: each would change the prompt an arm was
+  measured under, which belongs in a run's pre-registration rather than in a
+  refactor (rule 4). Their queries are written out in the two `AREEV.md` files,
+  ready.
+- persist's session titles need FIRST-of-group, which #209 did not land.
+- `selfimprove` needs to reshape a JSON payload — parse, remove a key,
+  re-serialise — which was declined on purpose (#211), not left undone.
+
+The shared helpers are `scripts/cal_assemble.py`.
 
 Ordering *within* a section is a stage inside the source parentheses --
 `(RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 50)`. That

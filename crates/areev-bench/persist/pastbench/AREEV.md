@@ -29,7 +29,7 @@ loop passes saw zero evidence for exactly this reason.
 | `event` | one per session turn, `session_id`-threaded |
 | Tool | `record_tool_call` — already correct before this change |
 
-## The prompt: one section of four is CAL
+## The prompt: two sections of four are CAL
 
 `prompt.py` holds the whole injected block and imports **no PAST-Bench**, so it
 loads (and is parity-checked) without the benchmark installed.
@@ -37,17 +37,26 @@ loads (and is parity-checked) without the benchmark installed.
 
 | section | assembled by | why |
 |---|---|---|
-| `### User profile` | **CAL** — `persist_profile($ns)`, `BUDGET 1200 tokens` | expressible |
-| `### Notes` | the harness | `valid_to` — **closed in 1.7.4 (#206)**, movable |
-| `### Skills` | the harness | `description` — **closed in 1.7.4 (#207)**, movable |
+| `### User profile` | **CAL** — `persist_profile($ns)` | expressible |
+| `### Skills` | **CAL** — `persist_skills($ns)`, **moved once #207 landed** | `description` is filterable |
+| `### Notes` | the harness | the *selection* is expressible since #206; the *render* is not — see below |
 | `### Earlier sessions` | the harness | first-of-group — still open |
 
-The three, precisely — **two of them are closed as of 1.7.4**, and the table
-above is what the harness did before that. Filing them is what got them fixed;
-they are kept here because the reasoning is the record of why the harness looks
-the way it does, and because the third is still open.
+The three, precisely. Filing them is what got them fixed; the reasoning is kept
+because it is the record of why the harness looks the way it does — and because
+one of the three is closed but still has not moved, for a reason that is about
+the *prompt*, not about CAL.
 
-- **`valid_to` — CLOSED ([#206](https://github.com/AreevAI/areev/issues/206)).**
+- **`valid_to` — CLOSED ([#206](https://github.com/AreevAI/areev/issues/206)),
+  but the Notes section has NOT moved, and the remaining reason is the
+  prompt rather than the query.** A note or lesson renders as its bare object
+  while any other durable fact renders as `subject relation: object`, and the
+  retired reader interleaved both shapes in ONE recall-ordered list. CAL orders
+  *within* a section and a template branches only on truthiness — there is no
+  value comparison — so two sources would emit two runs of lines instead of one
+  interleaved run. That changes the prompt, and this track has published runs
+  1–4, so it belongs in the next run's pre-registration exactly as AppWorld's
+  passive block does. The selection itself is ready:
   A note may declare an expiry, and an expired note must not render. `valid_to`
   *was* neither a queryable field on facts (`CAL-E060`) nor a template variable
   (`CAL-E042`), so neither the filter nor the `(until 2026-10-01)` label could
@@ -70,6 +79,11 @@ the way it does, and because the third is still open.
   the filter down would have put retired skills back in the prompt silently.
   Negations now fail closed on a field the grain does not carry, so that
   cannot happen on any type or any field.
+
+  **This section has moved** (`persist_skills($ns)`): the retired-skill filter
+  is a `WHERE` clause in the file, and `scripts/parity_check.py persist`
+  asserts the block is byte-identical to the renderer it replaced and that a
+  retired skill does not render.
 - **Session titles — STILL OPEN.** One line per *session*, whose title is a
   regex over that session's first event. The reason narrowed but did not
   vanish. CAL now has text extraction

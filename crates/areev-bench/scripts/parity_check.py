@@ -450,6 +450,29 @@ def appworld_case(root):
     check("appworld: 200 approved rules all reach the prompt",
           rules_block.count("\n- "), 200)
 
+    # And when a budget DOES bind, the read refuses rather than quietly
+    # handing back a short prompt. Since 1.7.4 the engine says so (CAL-W017,
+    # #208) and `cal.raise_on_truncation` turns that into an exception —
+    # before it, this was the failure that returned 79 of 229 grains in
+    # silence. The ceiling is not a guarantee of no trimming, only a stated
+    # bound, which is exactly why the warning is checked.
+    ca = __import__("cal_assemble")
+    raised = {}
+
+    def squeeze(db):
+        db.cal('DEFINE QUERY "tiny" AS { ASSEMBLE "r" FROM '
+               'r: (RECALL facts WHERE namespace = "appworld" '
+               'AND relation = "lesson" LIMIT 400) '
+               'BUDGET 60 tokens FORMAT TEMPLATE appworld_rules_tpl }')
+        try:
+            ca.section(db, "tiny")
+        except RuntimeError as exc:
+            raised["why"] = str(exc)
+
+    mem.with_memory(big, mem.RUNNER, squeeze)
+    check("appworld: a budget that binds raises instead of shortening the prompt",
+          "CAL-W017" in (raised.get("why") or ""), True)
+
     # A frozen arm reads a copy read-only: the saved queries must have
     # travelled with the file, because a read-only handle cannot install them.
     frozen = fresh(root, "appworld-frozen.db")
@@ -481,8 +504,9 @@ def persist_case(root):
     db = areev.Areev(path, ns=prompt.NS, actor="agent:assistant")
     try:
         prompt.install(db, db_path=path)
-        check("persist: an empty memory still shows the heading",
-              prompt.profile_block(db), prompt.empty_profile_block())
+        check("persist: an empty memory still shows both headings",
+              (prompt.profile_block(db), prompt.skills_block(db)),
+              (prompt.empty_profile_block(), prompt.empty_skills_block()))
 
         db.add("fact", json.dumps({"subject": "user", "relation": "profile",
                                    "object": "prefers bullet summaries"}), ns=prompt.NS)
@@ -499,16 +523,24 @@ def persist_case(root):
               prompt.PROFILE_HEADING + "\n- is in Chennai, UTC+5:30\n- prefers bullet summaries")
         check("persist: a note is not a profile entry",
               "escalate refunds" in prompt.profile_block(db), False)
-        # The skills section is host-composed (CAL-E060: `description` is not
-        # filterable on skills), so what is checked here is that shape, not a
-        # query.
+        # The skills section is CAL again since #207 made `description`
+        # filterable on skills. The retired skill must not render, and this is
+        # the check that would have caught the silent version: before #207,
+        # pushing the filter down on `object` matched every row without
+        # warning.
+        db.add("skill", json.dumps({"name": "close_month",
+                                    "description": "the month-end close",
+                                    "instructions": "1. reconcile"}), ns=prompt.NS)
+        db.add("skill", json.dumps({"name": "old_flow", "description": prompt.RETIRED,
+                                    "instructions": ""}), ns=prompt.NS)
         check("persist: the skills block",
-              prompt.skills_block({"close_month": ("h", {"description": "the month-end close"})}),
+              prompt.skills_block(db),
               prompt.SKILLS_HEADING + "\n- close_month — the month-end close")
-        check("persist: an empty skills map still shows the heading",
-              prompt.skills_block({}), prompt.empty_skills_block())
+        check("persist: a retired skill does not render",
+              "old_flow" in prompt.skills_block(db), False)
         print("       block:\n" + "\n".join(
-            "       | " + l for l in prompt.profile_block(db).split("\n")))
+            "       | " + l for l in (prompt.profile_block(db) + "\n"
+                                      + prompt.skills_block(db)).split("\n")))
     finally:
         del db
         __import__("gc").collect()

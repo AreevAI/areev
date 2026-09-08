@@ -70,18 +70,37 @@ def _q(text: str) -> str:
 
 
 # `ASSEMBLE` applies a token budget whether or not you ask for one: the default
-# is 4000 and the ceiling is 16000 (CAL-E033 above that). A budget that binds
-# DROPS GRAINS SILENTLY -- the payload's `total_available` is the POST-budget
-# count and no warning is emitted, so a caller cannot tell a full answer from a
-# truncated one. That is not theoretical: AppWorld's error selection returned 79
-# of 229 grains under the default before this constant existed.
+# is 4000 and the ceiling is 16000 (CAL-E033 above that). It used to drop grains
+# to that budget SILENTLY -- AppWorld's error selection returned 79 of 229 under
+# the default -- which is what #208 was filed for. As of 1.7.4 the drop
+# announces itself as `CAL-W017`, and `raise_on_truncation` below turns that
+# warning into an exception rather than a line nobody reads.
 #
-# So every prompt section in this crate states its budget, at the ceiling. The
-# budget here is a stated bound, not a squeeze: these tracks' blocks must not
-# lose rows silently, and a binding budget would change published prompt bytes.
-# A track that WANTS progressive disclosure (Full -> Summary -> Omit) sets a
-# lower one deliberately and says so where its numbers are published.
+# Every prompt section in this crate still states its budget, at the ceiling,
+# because a stated bound is the point: these blocks must not lose rows, and a
+# binding budget would change published prompt bytes. The ceiling is not a
+# guarantee of no trimming -- 300 long grains still trip it -- which is exactly
+# why the warning is now checked. A track that WANTS progressive disclosure
+# (Full -> Summary -> Omit) sets a lower budget deliberately and says so where
+# its numbers are published.
 MAX_BUDGET_TOKENS = 16_000
+
+# The warnings that mean "this answer is a window, not the whole match". For a
+# prompt section that is data loss, not news, so it raises.
+TRUNCATION_WARNINGS = ("CAL-W015", "CAL-W017")
+
+
+def raise_on_truncation(payload, name):
+    """Refuse an answer the engine has told us is incomplete.
+
+    `CAL-W017` (the budget dropped grains) and `CAL-W015` (the widened scan
+    came back full) both mean the block is missing rows. A harness that
+    printed these and carried on would be publishing a number produced from a
+    truncated prompt -- the failure #208 was filed for.
+    """
+    for w in payload.get("warnings") or []:
+        if any(w.startswith(code) for code in TRUNCATION_WARNINGS):
+            raise RuntimeError("%s: %s" % (name, w))
 
 
 def assemble_statement(topic, sources, budget_tokens=None, fmt="markdown",
@@ -159,15 +178,15 @@ def section(db, name, params=None, cap=None):
     hit once at 300 and again at 1000. Passing the cap turns that into a
     raise; omitting it says the section is bounded by construction.
 
-    It does NOT catch a grain dropped by the token budget: `ASSEMBLE` reports
-    no pre-budget count and raises no warning (see `MAX_BUDGET_TOKENS`). The
-    guard against that is stating the budget, and `scripts/parity_check.py`
-    seeds a section past the default to keep it stated.
+    A grain dropped by the token budget is caught separately, by
+    `raise_on_truncation`: since 1.7.4 the engine says so as `CAL-W017`, and a
+    prompt section that lost rows is a wrong prompt, not a warning.
     """
     params = params or {}
     bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
     stmt = 'RUN %s(%s)' % (_q(name), bindings)
     payload = json.loads(db.cal(stmt))
+    raise_on_truncation(payload, "section %r" % name)
     text = payload.get("text")
     if text is None:
         raise RuntimeError(
@@ -194,6 +213,7 @@ def rows(db, name, params=None, cap=None):
     params = params or {}
     bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
     payload = json.loads(db.cal('RUN %s(%s)' % (_q(name), bindings)))
+    raise_on_truncation(payload, "saved query %r" % name)
     got = payload.get("grains")
     if got is None and isinstance(payload.get("text"), str):
         got = json.loads(payload["text"])

@@ -6,33 +6,35 @@ so it cannot be loaded without the benchmark installed, and the prompt is the
 part a reader (or a keyless CI check) most wants to look at. Nothing here
 imports PAST-Bench.
 
-ONE of the four injected sections is a saved ASSEMBLE query registered in the
-memory, rendered by a template registered beside it, under a real token
-budget. Three are not, and this is the most interesting result of moving this
-crate onto the product's own surfaces: PAST-Bench's prompt is the least
-CAL-expressible of the five harnesses, for three specific reasons rather than
-a shrug.
+TWO of the four injected sections are saved ASSEMBLE queries registered in the
+memory, rendered by templates registered beside them, under a stated token
+budget. Two are not, and the reasons are specific rather than a shrug.
 
-  Notes             a note may declare a `valid_to`, and an expired one must
-                    not render. `valid_to` is not a queryable field on facts
-                    (CAL-E060) and not a template variable (CAL-E042), so
-                    neither the filter nor the "(until 2026-10-01)" label can
-                    move into the query.
-  Skills            a retired skill is marked by writing `description:
-                    "retired"`, and `description` is not filterable on skills
-                    (CAL-E060; `DESCRIBE FIELDS skills` lists `instructions`
-                    and `when_to_use` but not `description`). Filtering on
-                    `object` instead does not work and does not warn -- it
-                    returns every row -- so pushing the filter down would
-                    silently put retired skills back in the prompt.
+The Skills section moved once #207 landed in 1.7.4: `description` is now
+filterable on skills, so the retired-skill filter that had to live in Python
+is a `WHERE` clause. Notes and Earlier sessions stay here, each for a reason
+below.
+
+  Notes             the SELECTION is now expressible -- `valid_to` filters and
+                    renders since #206 -- but the RENDER is not. A note or
+                    lesson renders as its bare object while any other durable
+                    fact renders as "subject relation: object", and the retired
+                    reader interleaved both shapes in one recall-ordered list.
+                    CAL orders within a section, and a template branches only
+                    on truthiness (there is no value comparison), so two
+                    sources would emit two runs of lines instead of one
+                    interleaved run. That is a change to the prompt, not a
+                    refactor of it, and this track has published runs 1-4 --
+                    so it belongs in the next run's pre-registration, exactly
+                    as AppWorld's passive block does.
   Earlier sessions  one line per SESSION, whose title is a regex over that
-                    session's first event. CAL has `GROUP BY`, but it reorders
-                    rows rather than projecting one row per group, and it has
-                    no text extraction.
+                    session's first event. Text extraction landed (#210) and
+                    per-group counts landed (#209), but FIRST-of-group did not,
+                    so the row this needs still cannot be projected.
 
-All three stay host-composed in `areev_backend.py`. `AREEV.md` in this
-directory records them as the reads a new bench should not expect to express
-in CAL, which is worth more to the next harness than a half-converted one.
+Both stay host-composed in `areev_backend.py`. `AREEV.md` in this directory
+records the reasoning, which is the record of why the harness looks the way it
+does -- and of what a new bench should not expect to express in CAL.
 """
 from __future__ import annotations
 
@@ -49,10 +51,13 @@ import cal_assemble as cal  # noqa: E402
 NS = "desk:persist"
 
 SECTION_CAP = 300
-# The CAL ceiling, not a squeeze: this block must not lose rows silently,
-# and a binding budget would change published prompt bytes. See
+# The CAL ceiling, stated rather than defaulted: these blocks must not lose
+# rows, and a binding budget would change published prompt bytes. A drop is no
+# longer silent either -- `cal.section` raises on CAL-W017. See
 # `cal_assemble.MAX_BUDGET_TOKENS`.
-PROFILE_BUDGET_TOKENS = cal.MAX_BUDGET_TOKENS
+SECTION_BUDGET_TOKENS = cal.MAX_BUDGET_TOKENS
+PROFILE_BUDGET_TOKENS = SECTION_BUDGET_TOKENS
+RETIRED = "retired"
 
 PROFILE_HEADING = "### User profile"
 SKILLS_HEADING = "### Skills (call skill_view for the steps)"
@@ -70,6 +75,10 @@ REGISTRY = [
     "  FOOTER {%s}" % (PROFILE_HEADING, NONE_YET),
     # No ORDER BY: recall order (newest first) is the order this section has
     # always rendered in, and this move is byte-for-byte.
+    "DEFINE TEMPLATE persist_skills_tpl\n"
+    "  HEADER {%s}\n"
+    "  ELEMENT {- {{grain.name}} — {{grain.description}}}\n"
+    "  FOOTER {%s}" % (SKILLS_HEADING, NONE_YET),
     cal.saved_query(
         "persist_profile", ["ns"],
         '  ASSEMBLE "user profile" FOR "the assistant" FROM\n'
@@ -77,6 +86,19 @@ REGISTRY = [
         '  BUDGET %d tokens\n'
         '  FORMAT TEMPLATE persist_profile_tpl' % (SECTION_CAP, PROFILE_BUDGET_TOKENS),
         "what the assistant has learned about the user"),
+    # `description != "retired"` is the filter that had to live in Python
+    # until #207 made `description` filterable on skills. `WITH dedup(name)`
+    # keeps the first occurrence, which is the newest -- the same row the
+    # retired reader's dict kept.
+    cal.saved_query(
+        "persist_skills", ["ns"],
+        '  ASSEMBLE "skills" FOR "the assistant" FROM\n'
+        '    skills: (RECALL skills WHERE namespace = $ns\n'
+        '             AND description != "%s" LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE persist_skills_tpl\n'
+        '  WITH dedup(name)' % (RETIRED, SECTION_CAP, SECTION_BUDGET_TOKENS),
+        "the procedures the assistant has written for itself"),
 ]
 
 
@@ -88,17 +110,14 @@ def profile_block(db, ns=NS):
     return cal.section(db, "persist_profile", {"ns": ns}, cap=SECTION_CAP)
 
 
-def skills_block(names_and_fields):
-    """The skills section, composed here rather than by CAL.
+def skills_block(db, ns=NS):
+    """The skills section, assembled by CAL since #207.
 
-    `names_and_fields` is `live_skills(db)`'s mapping -- the retired ones are
-    already gone, because `description` is not filterable on skills and the
-    filter cannot be pushed into the query (see the module docstring). Kept in
-    this file anyway so the whole injected block reads from one place.
+    `live_skills` is still the reader the in-process memory TOOLS use, because
+    they need the hash and the fields; this is the prompt's read, and the two
+    select the same set -- a retired skill renders in neither.
     """
-    lines = ["- %s — %s" % (n, f.get("description", ""))
-             for n, (_, f) in names_and_fields.items()]
-    return SKILLS_HEADING + "\n" + ("\n".join(lines) if lines else "- (none yet)")
+    return cal.section(db, "persist_skills", {"ns": ns}, cap=SECTION_CAP)
 
 
 def empty_profile_block():

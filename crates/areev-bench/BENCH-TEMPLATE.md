@@ -129,6 +129,19 @@ if not read_only:
 
 The queries travel with the file, so a read-only arm finds them already there.
 
+### State the budget
+
+`ASSEMBLE` applies a token budget whether or not you ask for one — default
+4000, ceiling 16000 — so write `BUDGET n tokens` rather than inheriting the
+default. A budget that binds announces itself as `CAL-W017` (since 1.7.4), and
+`cal.section` / `cal.rows` **raise** on it: a prompt section that lost rows is
+a wrong prompt, not a warning.
+
+And use `ASSEMBLE` only for text a model reads. A pure selection — one your
+harness will post-process anyway — belongs in a saved `RECALL`, which carries
+no budget semantics. Wrapping one in an `ASSEMBLE` is how AppWorld's error
+read returned 79 of 229 grains.
+
 ### Pick the format deliberately
 
 `markdown`, `sml`, `toon`, `json`, or a registered `TEMPLATE`. Which is

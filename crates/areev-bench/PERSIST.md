@@ -893,18 +893,21 @@ Recorded under rule 4 of `CLAUDE.md`. **Runs 1–4 precede it** and no number in
 this document is revised.
 
 PAST-Bench turned out to have the least CAL-expressible prompt of the five
-tracks, and that is the useful finding. Of the four injected sections, one
-moved to a saved `ASSEMBLE` query under a real token budget; three cannot, for
-reasons that are specific and worth knowing before the next bench tries:
+tracks, and that is the useful finding — it is what got the gaps filed, and
+`#206`, `#207` and `#208` were fixed in 1.7.4 as a result. Of the four injected
+sections, **two are now saved `ASSEMBLE` queries** (`### User profile`, and
+`### Skills` once `description` became filterable). Two are still harness-
+composed, for reasons worth knowing before the next bench tries:
 
-- **Notes** need a `valid_to` filter, which is not a queryable field on facts
-  (`CAL-E060`) and not a template variable (`CAL-E042`).
-- **Skills** mark retirement by writing `description: "retired"`, and
-  `description` is not filterable on skills (`CAL-E060`). Filtering on `object`
-  instead does not work *and does not warn*.
+- **Notes**: the SELECTION is expressible since #206 (`valid_to` filters and
+  renders), but the RENDER is not. Two shapes — a bare object for a note or
+  lesson, `subject relation: object` for anything else — were interleaved in
+  one recall-ordered list, and CAL orders *within* a section with no value
+  comparison in templates. Moving it changes the prompt, so it belongs in the
+  next run's pre-registration, not in a refactor.
 - **Earlier sessions** need one row per session with a regex-extracted title.
-  `GROUP BY` reorders rows rather than projecting one per group, and CAL has no
-  text extraction.
+  Text extraction landed (#210) and per-group counts landed (#209), but
+  FIRST-of-group did not, so the row this needs still cannot be projected.
 
 `persist/pastbench/AREEV.md` records all three. The injected block itself moved
 to `persist/pastbench/prompt.py`, which imports no PAST-Bench, so it loads and
@@ -915,8 +918,10 @@ is parity-checked without the benchmark installed.
 `CLAUDE.md` requires naming this wherever a token effect is reported, and this
 document reports one. The honest statement:
 
-- the **user-profile** section is bounded by CAL's `BUDGET 1200 tokens`,
-  counted by the engine's own estimator;
+- the **user-profile** and **skills** sections are bounded by an explicit
+  `BUDGET` in tokens, counted by the engine's own estimator — and since #208 a
+  budget that binds announces itself as `CAL-W017`, which the harness turns
+  into a raise rather than a shorter prompt;
 - **everything else** is bounded by `MAX_INJECT_CHARS = 12_000`, a **character**
   cap applied to the composed block in `_inject_memory`.
 

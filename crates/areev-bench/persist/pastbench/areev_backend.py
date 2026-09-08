@@ -690,7 +690,7 @@ class AreevAdapter(RuntimeAdapter):
         title CAL cannot extract.
         """
         def go(db):
-            return live_notes(db), profile_block(db), skills_block(live_skills(db))
+            return live_notes(db), profile_block(db), skills_block(db)
         notes, profile_text, skills_text = (
             with_memory(self.db_path, ACTOR_AGENT, go) if self.db_path.exists()
             else ([], empty_profile_block(), empty_skills_block()))
