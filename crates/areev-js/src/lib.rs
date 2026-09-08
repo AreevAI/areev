@@ -202,6 +202,7 @@ fn js_read_only_evaluator(
 #[allow(clippy::too_many_arguments)]
 fn js_evaluator(
     facade: std::sync::Arc<AreevFacade>,
+    path: &str,
     ns: String,
     principal: String,
     connector_cmd: Option<String>,
@@ -209,6 +210,7 @@ fn js_evaluator(
     credentials_json: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     pin: JsExecutorPin,
+    egress: JsEgressPin,
     opts: areev_run::RunOptions,
 ) -> napi::Result<areev_trigger::Evaluator> {
     // A connector IS a tool — JSON in, JSON out, one process per invocation —
@@ -236,6 +238,9 @@ fn js_evaluator(
     // gating on one meant such a plan was ingested, recorded as fired, and
     // never started.
     let can_execute = tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+    // The runs a firing starts get the broker `runStart` would build (#201)
+    // — distinct from the connector-poll credentials below.
+    let handle = if can_execute { js_egress_handle(path, &egress)? } else { None };
     let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(|| {
         std::sync::Arc::new(RunnerStarter {
             runner: js_runner_pinned(
@@ -248,6 +253,7 @@ fn js_evaluator(
                 // starts a real run, so this is a knowable asymmetry with
                 // `runStart`, not an oversight.
                 pin,
+                handle,
                 None,
             ),
             opts,
@@ -275,6 +281,9 @@ fn js_evaluator(
             credentials.insert(name, source);
         }
     }
+    // `credentials` (the CLI's `--credential` spelling) configures the
+    // connector too, exactly as one `--credential` flag does both.
+    credentials.extend(egress.spec().map_err(err)?.unowned_credentials().map_err(err)?);
 
     Ok(areev_trigger::Evaluator {
         facade,
@@ -612,6 +621,9 @@ pub struct Areev {
     /// Shared so a queued job can hold the store open independently of the JS
     /// object that started it.
     facade: FacadeSlot,
+    /// The memory's path or DSN — the credential broker's blob door reads
+    /// stored bytes from it by path (#106), lock-free.
+    path: String,
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
     actor: String,
@@ -641,6 +653,7 @@ impl Areev {
         anon_key: Option<String>,
         read_only: Option<bool>,
     ) -> napi::Result<Self> {
+        let memory_path = path.clone();
         let ns = ns.unwrap_or_else(|| "shared".to_string());
         let actor = actor.unwrap_or_else(|| "user:local".to_string());
         // `readOnly` refuses every write (STO-E004), creates nothing, and
@@ -785,6 +798,7 @@ impl Areev {
         let facade = std::sync::Arc::new(std::sync::Mutex::new(Some(std::sync::Arc::new(session))));
         Ok(Areev {
             facade,
+            path: memory_path,
             ns,
             actor,
             executor: std::sync::Arc::new(CalExecutor::new(CalExecutorConfig::default())),
@@ -2728,15 +2742,24 @@ impl Areev {
         executor_timeout_secs: Option<i64>,
         tool_env: Option<String>,
         on_event: Option<napi::bindgen_prelude::Function<String, ()>>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<i64>,
+        resolver_env: Option<String>,
     ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
         // Built HERE, on the JS thread, before the job is queued — see
         // [`JsEvents`] for why a plain function cannot reach the event bus.
         let observer = js_observer(on_event)?;
         let slot = self.facade.clone();
+        let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
+            let egress = js_egress_handle(&path, &JsEgressPin {
+                credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
+            })?;
             let input: serde_json::Value = match input_json {
                 Some(raw) => serde_json::from_str(&raw)
                     .map_err(|e| err(AreevError::Validation(format!("inputJson: {e}"))))?,
@@ -2753,6 +2776,7 @@ impl Areev {
                 tool_cmd,
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+                egress,
                 observer,
             );
             let opts = js_run_options_full(
@@ -2791,13 +2815,22 @@ impl Areev {
         executor_timeout_secs: Option<i64>,
         tool_env: Option<String>,
         on_event: Option<napi::bindgen_prelude::Function<String, ()>>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<i64>,
+        resolver_env: Option<String>,
     ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
         let observer = js_observer(on_event)?;
         let slot = self.facade.clone();
+        let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
+            let egress = js_egress_handle(&path, &JsEgressPin {
+                credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
+            })?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let runner = js_runner_pinned(
                 facade,
@@ -2806,6 +2839,7 @@ impl Areev {
                 tool_cmd,
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+                egress,
                 observer,
             );
             let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
@@ -3157,8 +3191,14 @@ impl Areev {
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
         tool_env: Option<String>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<i64>,
+        resolver_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
+        let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
@@ -3166,6 +3206,7 @@ impl Areev {
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let ev = js_evaluator(
                 facade,
+                &path,
                 ns,
                 actor,
                 connector_cmd,
@@ -3173,6 +3214,7 @@ impl Areev {
                 credentials_json,
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+                JsEgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -3222,8 +3264,14 @@ impl Areev {
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<i64>,
         tool_env: Option<String>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<i64>,
+        resolver_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
+        let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
@@ -3233,6 +3281,7 @@ impl Areev {
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
             let ev = js_evaluator(
                 facade,
+                &path,
                 ns,
                 actor,
                 connector_cmd,
@@ -3240,6 +3289,7 @@ impl Areev {
                 credentials_json,
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+                JsEgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
                 js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
                                     ask_ttl_sec, llm_max_tokens)?,
             )?;
@@ -3390,7 +3440,7 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    js_runner_pinned(facade, ns, principal, tool_cmd, llm, JsExecutorPin::default(), None)
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, JsExecutorPin::default(), None, None)
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
@@ -3430,6 +3480,53 @@ struct JsExecutorPin {
 /// `observer` is the §6.10 event sink (#182) — `None` for the verbs that do
 /// not advance a run, since they emit nothing to watch.
 #[allow(clippy::too_many_arguments)]
+/// The credential broker's settings (#201): the CLI's `--credential`,
+/// `--allow-host`, `--tool-egress`, `--credential-ttl` and `--resolver-env`
+/// spec strings, verbatim, parsed by `areev_run::EgressSpec`.
+#[derive(Default)]
+struct JsEgressPin {
+    credentials: Option<String>,
+    allow_hosts: Option<String>,
+    tool_egress: Option<String>,
+    credential_ttl_secs: Option<i64>,
+    resolver_env: Option<String>,
+}
+
+impl JsEgressPin {
+    fn spec(&self) -> Result<areev_run::EgressSpec, String> {
+        let some = |v: &Option<String>| {
+            v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+        };
+        let ttl = match self.credential_ttl_secs {
+            None => None,
+            Some(n) if n >= 0 => Some(n as u64),
+            Some(n) => return Err(format!("credentialTtlSecs: expected whole seconds, got {n}")),
+        };
+        Ok(areev_run::EgressSpec {
+            credentials: some(&self.credentials),
+            allow_hosts: some(&self.allow_hosts),
+            tool_egress: some(&self.tool_egress),
+            credential_ttl_secs: ttl,
+            resolver_env: some(&self.resolver_env),
+        })
+    }
+}
+
+/// The broker `egress` describes — serving the memory at `path`'s blobs on
+/// the same token — or None when nothing was configured.
+fn js_egress_handle(
+    path: &str,
+    egress: &JsEgressPin,
+) -> napi::Result<Option<areev_run::EgressHandle>> {
+    match egress.spec().map_err(err)?.build().map_err(err)? {
+        None => Ok(None),
+        Some(broker) => {
+            broker.serve_blobs(path);
+            Ok(Some(areev_run::EgressHandle::new(std::sync::Arc::new(broker))))
+        }
+    }
+}
+
 fn js_runner_pinned(
     facade: std::sync::Arc<AreevFacade>,
     ns: String,
@@ -3437,6 +3534,7 @@ fn js_runner_pinned(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     pin: JsExecutorPin,
+    egress: Option<areev_run::EgressHandle>,
     observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
 ) -> areev_run::Runner {
     let timeout = pin.executor_timeout_secs.map(|secs| {
@@ -3451,6 +3549,9 @@ fn js_runner_pinned(
             }
             if let Some(p) = env.clone() {
                 ce = ce.with_env_policy(p);
+            }
+            if let Some(h) = &egress {
+                ce = ce.with_egress(h.clone());
             }
             std::sync::Arc::new(ce)
         }
@@ -3491,6 +3592,9 @@ fn js_runner_pinned(
             }
             if let Some(p) = env {
                 ce = ce.with_env_policy(p);
+            }
+            if let Some(h) = egress {
+                ce = ce.with_egress(h);
             }
             std::sync::Arc::new(ce)
         }

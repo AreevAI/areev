@@ -784,7 +784,8 @@ Each of the following is worth stating because it closes a specific hole:
 - **A host tool's environment can be an allow list instead of a deny list**
   (#188). The default is `InheritExcept`: a tool sees every
   variable this process holds minus the ones Areev was *told* hold secrets
-  (`--passphrase-env`, `--token-env`, `--credential` and the rest above). That
+  (`--passphrase-env`, `--token-env`, `--credential` — spelled as a flag, a
+  binding's `credentials`, or `$AREEV_RUN_CREDENTIAL` — and the rest above). That
   is the right default for a deployed `--tool-cmd` that legitimately reads an
   API key out of the environment, but it means a host whose own environment
   carries secrets Areev never named has to keep those out of the process

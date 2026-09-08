@@ -361,8 +361,15 @@ jobs:
         working-directory: crates/areev-js
         run: cargo metadata --locked --format-version 1 > /dev/null
 
+      # The #201 parity test drives one capability tool from the binding AND
+      # from the CLI with the same declaration and grants, so the binary has
+      # to exist here; without it that leg is skipped with a diagnostic.
+      - name: Build the areev binary for the CLI parity leg
+        run: cargo build -p areev --locked
       - name: Build the native addon + run smoke test
         working-directory: crates/areev-js
+        env:
+          AREEV_BIN: ${{ github.workspace }}/target/debug/areev
         run: |
           npm ci
           npx napi build --platform --release -- --locked
