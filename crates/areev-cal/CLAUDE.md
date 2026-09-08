@@ -47,6 +47,40 @@ composite gates, where an absent field means "this member has not fired" — a
 definite FALSE, not UNKNOWN. `gate_satisfied` therefore materializes every
 `referenced_members` name rather than projecting only the fired ones.
 
+**Summarise / extract / navigate (#209/#210/#211, 1.7.4).** Three additions,
+one spec decision, recorded in
+[`docs/oms-1.7-amendments-cal-expressiveness.md`](../../docs/oms-1.7-amendments-cal-expressiveness.md):
+
+- `GROUP BY <field>` then `COUNT` projects one row per group
+  (`CalResultPayload::GroupCounts`, most frequent first, ties by key asc). The
+  rows are `CalGrainResult`s with `grain_type "group"`, fields `{key, count}`
+  and an **empty hash** — a group is computed, not stored, and anything keying
+  on a content address must skip it. **No new syntax**: that combination used
+  to answer the plain total, which is `COUNT` with extra words. Rendered via
+  the `group.` template namespace (`GROUP_VARIABLES`, closed at `key`/`count`,
+  bound only on a group row).
+- `KNOWN_FILTERS` grows by seven: six extractors and `get` (a dotted JSON
+  path). The list stays **closed** — `DESCRIBE CAPABILITIES` reports it. Bad
+  arguments are refused in `parse_single_filter` (define time, `CAL-E049`), not
+  at render time, so rendering stays total and a saved template stays readable.
+  `match` compiles through `cached_pattern` (bounded LRU, `regex` — a
+  finite-automaton engine, so no backtracking and therefore no backreferences
+  or lookaround). Bounds: `MAX_EXTRACT_INPUT`, `MAX_PATTERN_LEN`,
+  `MAX_GET_PATH_DEPTH`.
+- `WHERE` accepts a dotted field path up to `MAX_FIELD_PATH_SEGMENTS` (8),
+  resolved in `resolve_grain_field`. A field holding JSON **as a string**
+  navigates identically to a parsed one. An unresolvable path is `None` →
+  UNKNOWN → no match, so navigation inherits the fails-closed rule above
+  rather than adding one. Keep the three depth constants (parser, executor,
+  templates) equal: a path that parses must be one the executor walks and a
+  template can express.
+
+An `ASSEMBLE` **source** now carries its own `pipeline` (`NamedSource`), run in
+`execute_source` before dedup and budgeting — that is what lets a frequency
+roll-up be a prompt section. `extract_grains` lives in `executor.rs` and is
+`pub(crate)`; `assemble.rs` used to keep a second copy that had drifted (it saw
+only `Grains`, so a nested `Assembled` contributed nothing). One extractor.
+
 **World-time validity is queryable (#206, 1.7.4).** `valid_from`/`valid_to`/
 `system_valid_from`/`system_valid_to` are `GrainCommon` fields on every type,
 already serialized and expanded back into `fields` — they were simply missing

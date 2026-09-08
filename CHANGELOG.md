@@ -6,6 +6,89 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **CAL can summarise by frequency, extract from text, and navigate a JSON
+  payload** (#209, #210, #211) — three reads that could only be done by
+  over-fetching and finishing the job in host code, which also defeated
+  `BUDGET` (the budget was spent on the rows about to be discarded). The
+  spec-level decisions are recorded in
+  [`docs/oms-1.7-amendments-cal-expressiveness.md`](docs/oms-1.7-amendments-cal-expressiveness.md).
+
+  **Per-group counts** (#209). `GROUP BY <field>` followed by `COUNT` now
+  projects one row per group carrying its size, **most frequent first** (ties
+  by key ascending, so the answer is reproducible across backends and runs):
+
+  ```sql
+  RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name COUNT
+  ```
+
+  That combination previously returned the plain total — identical to `COUNT`
+  alone, silently discarding the grouping — so **no new syntax was needed**
+  and no meaningful answer is taken away. Frequency is how a memory says what
+  *matters*: "which tool fails most", "which topic does this user raise most",
+  "which policy is cited most". Render it with the new `group.*` template
+  variables (`{{group.count}}x {{group.key}}`), or make an `ASSEMBLE` source
+  of it so a frequency roll-up is a *section of a prompt*.
+
+  **Extracting filters** (#210): `first_line`, `split("<sep>", n)`,
+  `strip_prefix`, `strip_suffix`, `between("<open>", "<close>")`, and
+  `match("<pattern>"[, n])`. Memories store text people wrote, and titles,
+  ticket ids, error codes and thread keys all live inside it:
+
+  ```
+  {{grain.object | between("[", "]")}}     → Q3 close handoff
+  ```
+
+  **A JSON path accessor** (#211), in both a render and a filter:
+
+  ```
+  {{grain.object | get("error.code")}}     → rate_limited
+  ```
+  ```sql
+  RECALL tools WHERE input.app = "phone"
+  RECALL facts WHERE object.error.code = "rate_limited"
+  ```
+
+  `record_tool_call` round-trips a tool'"'"'s `input` as parsed JSON, so Python
+  and Node hosts already received the structure — it was specifically the CAL
+  path that could not see inside. A field name may now be a dotted path of up
+  to 8 segments (it accepted one dot before, which did not reach the shape a
+  stored error envelope actually has), and a value stored *as a JSON string*
+  navigates identically to a parsed one. **A path that does not resolve is
+  UNKNOWN**, so navigation inherits the fails-closed rule rather than adding
+  one: `input.app != "phone"` does not widen to everything.
+
+  The filter set stays **closed** — `DESCRIBE CAPABILITIES` reports it, and
+  OMS conformance means two implementations must render a grain identically.
+  Bad arguments are refused when the template is *defined* (`CAL-E049`), not
+  when it renders, so "what will this saved query show me?" stays answerable
+  by reading it; rendering itself stays total, because one unparseable grain
+  must not fail the render of the other 199. `match` uses a non-backtracking
+  engine — no backreferences, no lookaround — because a template runs over
+  untrusted grain content on every turn, where a backtracking regex is a
+  denial-of-service primitive. Patterns are length-capped and compiled through
+  a bounded cache; extractor input is clipped at 64 KiB; paths are
+  depth-capped.
+
+  Deliberately **not** added: host-registered functions (a template calling
+  one would render differently depending on who opened the file, breaking the
+  property that makes saved queries worth having — the registry travels *with*
+  the memory), a general expression language in templates, and any
+  transformation that parses, mutates and re-serialises. For new corpora the
+  paved road is still to store the shape you want to read: two fields rather
+  than one payload, which makes the value filterable as well as renderable.
+
+### Fixed
+
+- **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
+  nested assembly'"'"'s grains.** Sources had no pipeline at all, so a source
+  could not be ranked, bounded or summarised in place. Separately,
+  `assemble.rs` carried a **second copy** of `extract_grains` that had drifted
+  from the executor'"'"'s: it saw only the `Grains` payload, so a nested
+  `Assembled` result silently contributed nothing to the enclosing assembly.
+  There is now one extractor.
+
 ### Fixed
 
 - **A `WHERE` predicate on a field the grain does not carry no longer matches

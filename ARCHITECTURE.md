@@ -1856,6 +1856,64 @@ the first read-write open; a `--read-only` open of a schema that predates it
 refuses by name (`STO-E005`) rather than keying lookups on a column that is
 not there. Reference: `crates/areev-store/CLAUDE.md` ("Schema").
 
+### CAL grows by closed sets, because conformance is what makes it portable
+
+**Decision (2026-09-08, issues #209/#210/#211):** CAL gains the ability to
+summarise by frequency, to extract part of a value, and to navigate into a
+structured payload — and it gains all three by **extending closed sets**, never
+by opening one. The spec record is
+[`docs/oms-1.7-amendments-cal-expressiveness.md`](docs/oms-1.7-amendments-cal-expressiveness.md).
+
+Each addition was a read a host could only perform by over-fetching and
+finishing the job in application code — which also defeats `BUDGET`, because
+the budget is spent on the rows the host is about to discard. "Which tool fails
+most" is the ordinary summarisation read of any agent memory; titles and error
+codes live inside the free text a memory stores; and `record_tool_call` already
+round-trips a tool's `input` as parsed JSON, so Python and Node hosts received a
+structure the *query language* alone could not see inside.
+
+What is refused, and stays refused, is the general version of each:
+
+- **Host-registered functions.** A saved template calling one would render
+  differently — or fail — depending on who opened the memory, because the
+  registry travels *with the file*. That portability is the property that makes
+  saved queries worth having; a function library trades it away.
+- **A general expression language in templates.** It needs its own sandbox and
+  its own spec, and it makes "what will this saved query show me?" a
+  program-analysis question rather than a reading comprehension one. Saved-query
+  bodies get an extra read-only verification pass precisely because the surface
+  is narrow, and those bodies are handed to unattended agents.
+- **Parse → mutate → re-serialise.** The tempting shape in #211 ("read
+  `error.code`, drop that key, re-emit the rest") is a program. Its real use is
+  reshaping on the way out, which is better served by writing the right shape
+  in — two fields rather than one payload — because that also makes the value
+  **filterable**, which no amount of render machinery does.
+
+So the additions are enumerable and introspectable: `DESCRIBE CAPABILITIES`
+reports the filter set and the variable namespaces, and a client can ask rather
+than guess. Two properties fall out and are load-bearing:
+
+**Authoring-time validation, render-time totality.** A pattern that does not
+compile, a `split` index that is not a number, a path past its depth bound —
+refused when the template is *defined*. At render time every filter is total: a
+filter that finds nothing yields empty, never an error, because one unparseable
+grain must not fail the render of the other 199. The two rules are complements,
+not a compromise: unreadable queries never get stored, so the render path never
+needs to fail.
+
+**Patterns run on a non-backtracking engine.** A template renders on every turn
+over host- and model-supplied text; a backtracking regex there is a
+denial-of-service primitive. Areev uses `regex`, a finite-automaton engine —
+which is *why* the dialect has no backreferences and no lookaround, those being
+exactly the constructs that force backtracking. That is a capability the safety
+argument depends on, not a limitation to apologise for.
+
+One thing this batch deliberately did not need: new syntax for the common case.
+`GROUP BY <field>` followed by `COUNT` already parsed — it just answered the
+plain total, discarding the grouping, which is `COUNT` with extra words. Giving
+that combination the meaning it should always have had costs no caller anything
+and asks nothing of the spec beyond a semantic note.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves
