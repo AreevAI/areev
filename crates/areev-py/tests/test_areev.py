@@ -585,6 +585,10 @@ def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
 
     assert seen("py-env-inherit") == "leaked"
     assert seen("py-env-cleared", tool_env="AREEV_TEST_OTHER") == ""
+    # Presence is the setting (#197): an EMPTY tool_env clears to the minimal
+    # set, the strictest posture — exactly as the CLI's `--tool-env ""` does.
+    # It used to be read as "not configured" and inherit everything.
+    assert seen("py-env-empty", tool_env="") == ""
 
 
 def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
@@ -620,9 +624,20 @@ def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
     assert poll()["items"] == 1
     assert saw_so_far() == ["leaked"], "without tool_env the connector inherits"
 
+    # Items dedup on `/saw`, so every phase below must make the connector see
+    # something new. The EMPTY list clears to the minimal set (#197 — presence
+    # is the setting, exactly as the CLI's `--tool-env ""`): the planted
+    # variable is gone.
     time.sleep(1.1)
-    assert poll(tool_env="AREEV_TEST_OTHER")["items"] == 1
-    assert saw_so_far() == ["", "leaked"], "a cleared connector must not carry it"
+    assert poll(tool_env="")["items"] == 1
+    assert saw_so_far() == ["", "leaked"], "an empty tool_env must clear, not inherit"
+
+    # A named list passes exactly the names given: re-admit the planted
+    # variable under a new value and the connector sees that value.
+    monkeypatch.setenv("AREEV_TEST_PLANTED", "readmitted")
+    time.sleep(1.1)
+    assert poll(tool_env="AREEV_TEST_PLANTED")["items"] == 1
+    assert saw_so_far() == ["", "leaked", "readmitted"], "a named list re-admits only what it names"
 
 
 def test_tool_env_refuses_to_re_admit_a_registered_secret(tmp_path, monkeypatch):

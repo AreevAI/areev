@@ -299,6 +299,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `scripts/check_versions.py` asserts, alongside the other detached package
   (`areev-js`), and it gained the `--version` flag that makes the pairing
   checkable at all.
+- **An empty `tool_env` / `toolEnv` in the bindings now means "clear to the
+  minimal set", as the CLI's `--tool-env ""` does** (#197). Both bindings
+  filtered the empty string out before building the policy, so the strictest
+  request — clear the environment, admit nothing beyond what a command needs
+  to start — was answered with the loosest posture, inherit everything. A host
+  wanting the clear-only policy had to name a variable already in the minimal
+  set just to select it. `None` / `null` keep the inherit default, unchanged.
+  Pinned in both bindings' tests, on the run executors and the trigger
+  connector.
 
 ## [1.7.3] — 2026-09-07
 

@@ -766,6 +766,10 @@ test('toolEnv clears a host tool environment down to what it names', async () =>
 
   assert.equal(await seen('js-env-inherit', null), 'leaked')
   assert.equal(await seen('js-env-cleared', 'AREEV_TEST_OTHER'), '')
+  // Presence is the setting (#197): an EMPTY toolEnv clears to the minimal
+  // set, the strictest posture — exactly as the CLI's `--tool-env ""` does.
+  // It used to be read as "not configured" and inherit everything.
+  assert.equal(await seen('js-env-empty', ''), '')
   await m.close()
 })
 
@@ -813,11 +817,25 @@ test('toolEnv reaches the trigger connector, not just the run executors', async 
   assert.deepEqual(await sawSoFar(), ['leaked'],
     'without toolEnv the connector inherits, as the default promises')
 
+  // Items dedup on `/saw`, so every phase below must make the connector see
+  // something new. The EMPTY list clears to the minimal set (#197 —
+  // presence is the setting, exactly as the CLI's `--tool-env ""`): the
+  // planted variable is gone.
   await wait()
-  const cleared = await poll('AREEV_TEST_OTHER')
-  assert.equal(cleared.items, 1, `the connector still runs: ${JSON.stringify(cleared)}`)
+  const emptied = await poll('')
+  assert.equal(emptied.items, 1, `the connector still runs: ${JSON.stringify(emptied)}`)
   assert.deepEqual((await sawSoFar()).sort(), ['', 'leaked'],
-    'a cleared connector environment must not carry the planted variable')
+    'an empty toolEnv must clear, not inherit')
+
+  // A named list passes exactly the names given: re-admit the planted
+  // variable under a new value and the connector sees that value, nothing
+  // it was not handed.
+  process.env.AREEV_TEST_PLANTED = 'readmitted'
+  await wait()
+  const named = await poll('AREEV_TEST_PLANTED')
+  assert.equal(named.items, 1, JSON.stringify(named))
+  assert.deepEqual((await sawSoFar()).sort(), ['', 'leaked', 'readmitted'],
+    'a named list re-admits only what it names')
   await m.close()
 })
 

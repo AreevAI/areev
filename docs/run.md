@@ -191,7 +191,10 @@ posture — and are honored as such. Every other `$AREEV_RUN_*` variable reads a
 empty value as "not configured", which is right for them (`AREEV_RUN_SANDBOX_CMD=""`
 means "no sandbox") and would be exactly backwards here: it would take an
 operator asking for the strictest environment and silently hand them the
-loosest. Only an **absent** flag and variable keep the inherit default.
+loosest. Only an **absent** flag and variable keep the inherit default. The
+bindings follow the same rule: `tool_env=""` (Python) and `toolEnv: ""`
+(Node) clear to the minimal set, on the run executors, a pinned native blob
+and the trigger connector alike; `None` / `null` keep the inherit default.
 
 ### The model boundary (anonymization)
 
