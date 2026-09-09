@@ -94,9 +94,18 @@ evidence. Responding and resuming are separate acts.
   executor says Abstract; journaling the node-level one would rename the
   result `mg:llm`.
 - **Subgraphs** run INLINE on the driver thread (the child needs the store);
-  child id = `{parent}~{tool_call_id[..16]}` — deterministic, so replays and
-  permutations agree. A child that parks fails the parent node (v1: no ask
-  bubbling). Parallel subgraph siblings serialize (documented bound).
+  child id = `{parent}~{sha256(parent, node, attempt)[..16]}`. Attempts are
+  monotonic across re-entry generations, so a bounded cycle re-running the
+  node gets a FRESH child, while a park and its forwarded answer (which
+  advance `effect_seq`, not `attempt`) address the same one and resume it.
+  A parked child **bubbles**: the effect completes with a `$parked_asks`
+  result, `step` re-parks the parent under a pre-allocated next-ROUND key, and
+  `respond`/`resume` on the parent route to the child (SoD judged against the
+  parent's principal first). Journaling the bubble as the effect's result is
+  what makes replay reproduce the park without re-running the child. Only
+  `run_subgraph_effect` may mint the marker — a completed child's context is
+  stripped of it, or a tool inside the child could park its parent on asks it
+  invented. Parallel subgraph siblings serialize (documented bound).
 - **Typed reducers** (§6.5): Workflow grain `reducers: {key: name}` →
   validated at resolve → FROZEN in the manifest; builtins in `reducers.rs`
   (append-only names). Undeclared keys LWW.
@@ -357,8 +366,8 @@ Neither replaces the other — see `docs/security-model.md` and
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
   detection + explicit forks only.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.
-- Subgraph ask-bubbling; `run_trace` fork splicing (the `mg:fork_of` Fact is
-  the index; the CLI splice view is not built yet).
+- `run_trace` fork splicing (the `mg:fork_of` Fact is the index; the CLI
+  splice view is not built yet).
 - #112 does not reach the TRIGGER CONNECTOR path. `Evaluator::poll` builds its
   grant with `g.credential(name)` for every configured credential (unpaired,
   any host) and a connector has no `Declaration`, so neither half of the

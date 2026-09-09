@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A subgraph child that parks on a human gate now bubbles its asks to the
+  parent** (#187). The gate used to fail the parent node with "subgraph run
+  parked" — a HITL step had to live in the top-level graph, which is exactly
+  the composition a subgraph exists to allow. The child's open asks travel as
+  the subgraph effect's own journaled result, so the parent parks on the same
+  `tool_call_id`s and `respond`/`resume` on the *parent* route down to the
+  child: you answer the run you started, however deep the gate sits. Because
+  the bubble is a journaled result, `verify` reproduces the park from the
+  parent's journal alone and never re-runs the child. Two consequences worth
+  stating: a child run id is now derived from the parent and the NODE
+  (`parent~sha256(parent, node, attempt)[..16]`), which a bounded cycle still
+  varies per generation while a park and its answer reach the same child; and
+  a bubble round advances `effect_seq` rather than `attempt`, so parking never
+  spends the node's retry budget.
+
 - **The benchmark harnesses can run against a Postgres memory** (#200).
   `AREEV_BENCH_DB` (or `receipts/run.py --db`) names the memory — a file path
   or a `postgres://…?schema=…` DSN, handed to `areev.Areev` verbatim — for the

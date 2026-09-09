@@ -140,6 +140,8 @@ impl FailCause {
     }
 }
 
+pub const PARKED_ASKS: &str = "$parked_asks";
+
 /// Events the driver feeds into `step`. Every invocation that may open or
 /// close a superstep must include a fresh `ClockReading` — the ONLY time the
 /// scheduler ever sees, journaled in the decision record.
@@ -157,6 +159,7 @@ pub enum EventIn {
     ResponseSettled { tool_call_id: String, outcome: EffectOutcome },
     /// A cancel marker was seen.
     CancelSeen { principal: String, reason: String },
+    AskForwarded { tool_call_id: String },
 }
 
 /// One tool offered to an abstract node's model, pinned by the manifest.

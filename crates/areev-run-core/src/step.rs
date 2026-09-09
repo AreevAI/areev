@@ -93,13 +93,18 @@ pub struct StepOutcome {
 pub fn step(env: &StepEnv<'_>, mut st: SchedulerState, events: &[EventIn]) -> StepOutcome {
     let mut out: Vec<Command> = Vec::new();
     for ev in events {
-        apply_event(env, &mut st, ev);
+        apply_event(env, &mut st, ev, &mut out);
     }
     progress(env, &mut st, &mut out);
     StepOutcome { commands: out, state: st }
 }
 
-fn apply_event(env: &StepEnv<'_>, st: &mut SchedulerState, ev: &EventIn) {
+fn apply_event(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    ev: &EventIn,
+    out: &mut Vec<Command>,
+) {
     match ev {
         EventIn::ClockReading { unix_ms } => {
             st.clock_ms = (*unix_ms).max(st.clock_ms);
@@ -128,6 +133,24 @@ fn apply_event(env: &StepEnv<'_>, st: &mut SchedulerState, ev: &EventIn) {
         }
         EventIn::EffectResolved { key, outcome } => {
             resolve_effect(env, st, key, outcome);
+        }
+        EventIn::AskForwarded { tool_call_id } => {
+            let Some(pending) = st.pending_asks.get(tool_call_id).cloned() else {
+                return;
+            };
+            drop_bubble(st, &pending.key);
+            st.node_state[pending.node_idx] = NodeState::Dispatched;
+            let executor = env.executors[pending.node_idx].clone();
+            let input = st.context.clone();
+            let (superstep, clock_ms) = (st.superstep, st.clock_ms);
+            out.push(Command::WriteIntent {
+                key: pending.key.clone(),
+                executor: executor.clone(),
+                input: input.clone(),
+                superstep,
+                clock_ms,
+            });
+            out.push(Command::Dispatch { key: pending.key, executor, input });
         }
         EventIn::ResponseSettled { tool_call_id, outcome } => {
             let Some(pending) = st.pending_asks.remove(tool_call_id) else {
@@ -229,6 +252,19 @@ fn resolve_effect(
         return;
     }
 
+    if let EffectOutcome::Completed { result, .. } = outcome {
+        if matches!(env.executors[node_idx], NodeExecutor::Subgraph { .. }) {
+            if let Some(asks) = result
+                .get(crate::types::PARKED_ASKS)
+                .and_then(|v| serde_json::from_value::<Vec<Ask>>(v.clone()).ok())
+                .filter(|a| !a.is_empty())
+            {
+                park_bubbled(st, node_idx, key, asks);
+                return;
+            }
+        }
+    }
+
     let attempts_used = st.attempt[node_idx] - st.attempt_base[node_idx];
     let retry_budget = env.plan.retries[node_idx];
     let canceling = st.cancel.is_some();
@@ -254,6 +290,49 @@ fn resolve_effect(
                 }
             }
         }
+    }
+}
+
+fn drop_bubble(st: &mut SchedulerState, key: &JournalKey) {
+    let ids: Vec<String> = st
+        .pending_asks
+        .iter()
+        .filter(|(_, p)| p.key == *key)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        st.pending_asks.remove(&id);
+        st.announced_asks.remove(&id);
+    }
+}
+
+fn park_bubbled(st: &mut SchedulerState, i: usize, resolved: &JournalKey, asks: Vec<Ask>) {
+    if !matches!(st.phase, Phase::Open { .. }) {
+        return;
+    }
+    let stale: Vec<JournalKey> = st
+        .pending_asks
+        .values()
+        .filter(|p| p.node_idx == i)
+        .map(|p| p.key.clone())
+        .collect();
+    for key in stale {
+        drop_bubble(st, &key);
+    }
+    // The next ROUND of the same attempt, never the next attempt: the child
+    // run id is derived from the attempt, so bumping it here would forward
+    // the answered ask into a brand-new child. Holding `attempt` still also
+    // means a park costs no retry budget without touching `attempt_base`.
+    let key = JournalKey { effect_seq: resolved.effect_seq + 1, ..resolved.clone() };
+    if let Phase::Open { outstanding, .. } = &mut st.phase {
+        outstanding.insert(key.clone());
+    }
+    st.node_state[i] = NodeState::AwaitingClient;
+    for ask in asks {
+        st.pending_asks.insert(
+            ask.tool_call_id.clone(),
+            PendingAsk { key: key.clone(), node_idx: i, ask },
+        );
     }
 }
 

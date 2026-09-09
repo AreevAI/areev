@@ -82,6 +82,15 @@ journaled events back, assert the same commands come out.
   while its batch runs and completes with a Null contribution when the
   batch drains — the join below a fan-out. Task retries are per-task
   attempts against the target's retry budget.
+- **Bubbled asks**: a Subgraph effect whose result carries `PARKED_ASKS`
+  parks the parent instead of resolving it. The asks are booked under a
+  PRE-ALLOCATED next-ROUND key that stays outstanding (so the superstep
+  holds open) and is what `EventIn::AskForwarded` dispatches — the child
+  resumes under a journal entry of its own, which is also replay's evidence
+  that the ask was forwarded. The pre-allocated key advances `effect_seq`,
+  NEVER `attempt`: the driver derives the child run id from the attempt, so
+  bumping it would forward the answer into a brand-new child — and holding
+  the attempt still is also what keeps a park off the retry budget.
 - **Reducers**: injected via `StepEnv.reduce` (the driver freezes the table
   in the manifest); merge order is static results by node index, then Send
   results by task path.

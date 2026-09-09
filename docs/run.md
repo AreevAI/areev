@@ -104,7 +104,10 @@ What each piece means:
     parks and waits for `respond`;
   - a binding to another **Workflow grain** is a **subgraph** — it executes
     inline as a child run with its own journal (child run id is
-    deterministic: `parent~<tool_call_id prefix>`).
+    deterministic: `parent~sha256(parent, node, attempt)[..16]`, so a bounded
+    cycle re-running the node gets a fresh child while a park and its answer
+    reach the same one). A child that parks on a human gate **bubbles** its
+    asks to the parent — see below.
   - an **unbound** node (no binding, no same-named Definition grain) is an
     **abstract node** — a journaled LLM tool-calling loop; see below.
 - **`retries`** — `retries: {node: n}` means *n re-attempts* after the
@@ -734,6 +737,17 @@ resume:
 - `--ask-ttl <sec>` on start bounds how long an ask may sit unanswered.
 - Refusing an ask is a first-class answer: `--is-error true` journals the
   refusal and fails the node as user-aborted.
+- A **subgraph child that parks bubbles its asks to the parent**: the parent
+  node parks on the same `tool_call_id`s, and `respond`/`resume` on the
+  *parent* route to the child. You answer the run you started, however deep
+  the gate sits. The bubble is journaled as the subgraph effect's own result,
+  so `verify` reproduces the park from the parent's journal alone — it never
+  re-runs the child. A bubble round advances the effect's `effect_seq`, not
+  the node's `attempt` — which is what sends the answer back to the *same*
+  child, and what keeps a park off the node's retry budget. Separation of
+  duties is judged against the parent's triggering principal before the
+  answer is forwarded. `--ask-ttl` still applies: an expired bubbled ask is
+  forwarded anyway, and the child's own resume settles it as `Timeout`.
 
 The web console (`areev ui`) surfaces pending asks in its **Runs tab**, which
 groups runs as *Waiting on you* / *In flight* / *Finished* so an ask cannot be
@@ -1047,9 +1061,8 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
-- Subgraphs run inline on the driver thread; a child that parks on a human
-  gate fails its parent node (ask *bubbling* is not in v1), and parallel
-  subgraph siblings serialize.
+- Subgraphs run inline on the driver thread, so parallel subgraph siblings
+  serialize.
 - `Send` targets host-bound nodes only in v1.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
