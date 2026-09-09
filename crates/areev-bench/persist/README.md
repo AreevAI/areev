@@ -38,3 +38,15 @@ python pastbench/summarize.py ~/mg/local/areev-runs/persist/pilot
 # Horizon: Harbor 0.22 with the areev wheel, agents/areev_agent linked into the checkout
 AGENT=areev-governed OUT=~/mg/local/areev-runs/persist/hz sh horizon/run.sh
 ```
+
+## Running against a Postgres memory
+
+The PAST-Bench backend (`pastbench/areev_backend.py`) derives each family's
+memory as `<state_root>/areev_state/memory.db`. With `AREEV_BENCH_DB` set to a
+`postgres://…?schema=…` DSN it opens that instead, verbatim — the Cloud leg,
+one provisioned schema per family. Two consequences, stated because they are
+the only places the run differs: the benchmark's own file operations on the
+state root (`reset_state`, `clone_state`) do not touch a Postgres memory, so
+provisioning and resetting the schema between families is the caller's job;
+and the loop policy the governed close records goes to the run's artifacts
+directory rather than beside the file. A DSN is never written unredacted.

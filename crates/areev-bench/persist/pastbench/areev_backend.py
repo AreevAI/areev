@@ -109,6 +109,30 @@ from prompt import install as install_registry  # noqa: E402
 
 # ---------------------------------------------------------------- the file
 
+def is_dsn(path):
+    """A `postgres://` memory (one schema), as opposed to a file."""
+    return str(path).startswith(("postgres://", "postgresql://"))
+
+
+def redact(path):
+    """A memory reference safe to print or record: a DSN loses its password."""
+    s = str(path)
+    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", s) if is_dsn(s) else s
+
+
+def memory_present(path):
+    """Whether there is a memory to read. A file: it exists. A DSN: yes —
+    a Postgres memory is provisioned by whoever hands the DSN over, and an
+    absent schema surfaces from the open as `STO-E008`, never as "empty"."""
+    return True if is_dsn(path) else Path(path).exists()
+
+
+def memory_ref(value):
+    """`Path` for a file, `str` for a DSN — the one place the two are told
+    apart on the way in, so `with_memory` can hand either to `areev.Areev`."""
+    return str(value) if is_dsn(value) else Path(value)
+
+
 def with_memory(path, actor, fn):
     """Open as `actor`, run `fn(db)`, and guarantee the handle is released —
     the embedded backend is single-writer per process, and a handle that
@@ -378,7 +402,7 @@ def render_home(db_path, out_dir):
         d = out_dir / sub
         if d.exists():
             shutil.rmtree(d)
-    if not Path(db_path).exists():
+    if not memory_present(db_path):
         return {"notes": 0, "profile": 0, "skills": 0}
 
     def go(db):
@@ -642,7 +666,7 @@ class AreevAdapter(RuntimeAdapter):
         super().__init__(spec, request)
         cfg = (request.model.extra_body or {}).get("areev") or {}
         self.cfg = cfg
-        self.db_path = Path(cfg["db_path"]) if cfg.get("db_path") else None
+        self.db_path = memory_ref(cfg["db_path"]) if cfg.get("db_path") else None
         self.artifacts_dir = Path(cfg["artifacts_dir"]) if cfg.get("artifacts_dir") else None
         self.persist = bool(cfg.get("persistence_enabled")) and self.db_path is not None
         self.governed = bool(cfg.get("governed"))
@@ -674,7 +698,8 @@ class AreevAdapter(RuntimeAdapter):
         self._task_tools = [t.model_copy(deep=True) for t in request.tools]
         self._mem_tools = persistence_tools(self.tool_config) if self.persist else []
         if self.persist:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            if not is_dsn(self.db_path):
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
             if self.governed:
                 self._journal_previous_outcome()
             self._inject_memory()
@@ -696,7 +721,7 @@ class AreevAdapter(RuntimeAdapter):
         def go(db):
             return notes_block(db, now), profile_block(db), skills_block(db)
         notes_text, profile_text, skills_text = (
-            with_memory(self.db_path, ACTOR_AGENT, go) if self.db_path.exists()
+            with_memory(self.db_path, ACTOR_AGENT, go) if memory_present(self.db_path)
             else (empty_notes_block(), empty_profile_block(), empty_skills_block()))
         lines = ["", "## Persistent memory",
                  "Everything below was saved in earlier sessions; apply it without being asked. "
@@ -714,7 +739,7 @@ class AreevAdapter(RuntimeAdapter):
             # "searchable", it never searched once in the three families
             # whose answer lived in one (defect #16). The memory knows its
             # sessions; list them, most recent first.
-            titles = with_memory(self.db_path, ACTOR_AGENT, session_titles) if self.db_path.exists() else []
+            titles = with_memory(self.db_path, ACTOR_AGENT, session_titles) if memory_present(self.db_path) else []
             lines.append("### Earlier sessions (%d) — records this task may depend on; call session_search "
                          "BEFORE acting when the task refers to anything from before" % len(titles))
             lines += ["- " + t for t in titles[:30]] or ["- (none yet)"]
@@ -782,7 +807,7 @@ class AreevAdapter(RuntimeAdapter):
             if score:
                 source = prev.name
                 break
-        if not score or not self.db_path.exists():
+        if not score or not memory_present(self.db_path):
             return
 
         def go(db):
@@ -1103,7 +1128,7 @@ class AreevAdapter(RuntimeAdapter):
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         if self.persist and self.governed:
             try:
-                self._ledger["governance"] = govern(self.db_path, self.family_id, self.seed)
+                self._ledger["governance"] = govern(self.db_path, self.family_id, self.seed, policy_dir=self.artifacts_dir)
             except Exception as exc:  # a governance failure is a finding, not a crash
                 self._ledger["governance"] = {"error": "%s: %s" % (type(exc).__name__, str(exc)[:300])}
         session = {"session_id": self.session_id, "task_id": self.task_id, "started_at": self._started,
@@ -1153,7 +1178,7 @@ def parse_proposal(summary):
     return "advisory", s.strip()
 
 
-def govern(db_path, family_id, seed):
+def govern(db_path, family_id, seed, policy_dir=None):
     """One governed pass at episode close: propose under the runner, decide
     under the reviewer, both recorded. Returns the ledger entry."""
     import reviewer as rv  # persist/reviewer.py, on sys.path via run.py
@@ -1177,7 +1202,10 @@ def govern(db_path, family_id, seed):
     extra = os.environ.get("AREEV_LOOP_POLICY_EXTRA")
     if extra:
         policy.update(json.loads(extra))
-    policy_path = Path(db_path).parent / "loop-policy.json"
+    # Beside the ledger for a file; a DSN has no "beside", so the run's
+    # artifacts dir (or the working directory) takes it.
+    policy_dir = Path(db_path).parent if not is_dsn(db_path) else Path(policy_dir or ".")
+    policy_path = policy_dir / "loop-policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
 
     rep = json.loads(with_memory(
@@ -1302,8 +1330,15 @@ class AreevPersistenceBackend(PersistenceBackend):
         self.agent_name = agent_name
         self.governed = agent_name.endswith("governed")
 
-    def db_path(self, state_root: Path) -> Path:
-        return Path(state_root) / DB_NAME
+    def db_path(self, state_root: Path):
+        """The memory for a family: `AREEV_BENCH_DB` when set (#200) — a
+        `postgres://…?schema=…` DSN handed to `areev.Areev` verbatim — else
+        the file under the state root. With a DSN, `reset_state` /
+        `clone_state` (the harness's file operations on the state root) do
+        not touch the memory: provisioning and resetting a schema is the
+        caller's job, which is what a Cloud run does."""
+        dsn = os.environ.get("AREEV_BENCH_DB")
+        return dsn if dsn else Path(state_root) / DB_NAME
 
     def materialize_inputs(self, *, state_root, initial_home_fixture_dir, preseed_artifacts_dir) -> None:
         state_root = Path(state_root)
@@ -1329,7 +1364,7 @@ class AreevPersistenceBackend(PersistenceBackend):
     def snapshot_before(self, state_root, *, include_contents: bool = False) -> dict[str, Any]:
         state_root = Path(state_root)
         db = self.db_path(state_root)
-        if not db.exists():
+        if not memory_present(db):
             return _empty_artifact_summary(state_root)
         rendered = state_root / "rendered"
         render_home(db, rendered)

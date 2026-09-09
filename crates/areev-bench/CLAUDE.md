@@ -328,6 +328,16 @@ and a reader should not have to grep to learn that.
   memory the arm must not change with `read_only=True`: writes then fail
   `STO-E004` and the freeze is the store's guarantee rather than the
   harness's intention.
+- **A memory is a file path or a DSN.** `AREEV_BENCH_DB` (receipts also takes
+  `run.py --db`) names it, and it is handed to `areev.Areev` verbatim, so a
+  harness must not derive anything from it with `os.path` — `is_dsn` /
+  `memory_ref` / `memory_present` / `redact` in the track's bridge are the one
+  place the two are told apart. What a schema cannot do is be COPIED: an arm
+  built by copying a memory (snapshots, per-pass learner copies) is refused on
+  a DSN rather than silently ignored, and `evaluate.py` produces its rollback
+  arm on the one memory instead. On Postgres a schema is the isolation unit
+  and `STO-E002` never arises; the single-writer rule above is the embedded
+  backend's.
 - **Statistics have one source of truth.** `scripts/aba_stats.py`'s
   `mcnemar_exact` is imported, not reimplemented; `aba_arm_stats.py
   --selftest` gates it in CI.

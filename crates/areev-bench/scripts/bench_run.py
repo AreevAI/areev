@@ -40,6 +40,11 @@ agent memory while the driver held it would fail `STO-E002`. Two files also
 keep the separation the harnesses already have: an eval score in the agent's
 namespace is an agent that can read its own grade.
 
+The journal stays a local file even when the AGENT memory is a Postgres
+schema: the Cloud leg's role has no CREATE, so a second schema is not
+available to journal into, and the separation is the point rather than the
+backend. `learn(policy_dir=...)` says which directory holds it.
+
 ## Keyless
 
 `propose` with no `llm_cmd` runs the deterministic analyzers only, so the
@@ -230,7 +235,8 @@ def node_results(db, run_id, limit=80):
 
 
 def learn(mem, db_path, llm_cmd, ground_cmd, decide, policy=None, verbose=True,
-          full_sweep=False, runs_db=None, run_id=None, every_episodes=None):
+          full_sweep=False, runs_db=None, run_id=None, every_episodes=None,
+          policy_dir=None):
     """One governed learning pass, executed as an `areev run`.
 
     THE path every harness's `learn()` takes -- there is no second,
@@ -243,8 +249,15 @@ def learn(mem, db_path, llm_cmd, ground_cmd, decide, policy=None, verbose=True,
     Returns the report shape every harness already returned -- pending,
     applied, rejected, errors, funnel, decisions -- plus the `run_id` that
     produced it, so a published count can be traced to a journal.
+
+    `db_path` is the agent memory: a file path, or a Postgres DSN on a track
+    that supports one. A DSN has no directory, so what would have sat BESIDE
+    the file -- the run journal and the policy the pass ran under -- goes to
+    `policy_dir`, the leg's own work dir, and the process's cwd without one.
     """
-    workdir = os.path.dirname(os.path.abspath(db_path))
+    dsn = bool(getattr(mem, "is_dsn", None) and mem.is_dsn(db_path))
+    workdir = policy_dir or (os.getcwd() if dsn
+                             else os.path.dirname(os.path.abspath(db_path)))
     runs_db = runs_db or os.path.join(workdir, "runs.db")
     run_id = run_id or _next_run_id(runs_db)
     track = getattr(mem, "TRACK", None)
@@ -252,9 +265,13 @@ def learn(mem, db_path, llm_cmd, ground_cmd, decide, policy=None, verbose=True,
         raise RuntimeError("%s must declare TRACK (its directory name) to name "
                            "the --tool-cmd's harness" % getattr(mem, "__name__", mem))
 
+    # `policy_dir` is passed only when the caller named one: a track that
+    # never sees a DSN has no reason to widen its `policy_file` for it, and
+    # beside-the-file remains the right answer there.
     payload = {
         "llm_cmd": llm_cmd, "ground_cmd": ground_cmd, "full_sweep": bool(full_sweep),
-        "policy": mem.policy_file(db_path, policy),
+        "policy": mem.policy_file(db_path, policy,
+                                  **({"policy_dir": policy_dir} if policy_dir else {})),
     }
 
     captured = {"decisions": [], "approved": 0}
@@ -278,8 +295,8 @@ def learn(mem, db_path, llm_cmd, ground_cmd, decide, policy=None, verbose=True,
         if every_episodes:
             author_trigger(db, author_plan(db), every_episodes)
         report = govern(db, run_id, tool_cmd(track), gate, responder=mem.REVIEWER,
-                        agent_db=os.path.abspath(db_path), workdir=workdir,
-                        input_extra=payload)
+                        agent_db=db_path if dsn else os.path.abspath(db_path),
+                        workdir=workdir, input_extra=payload)
         return report, node_results(db, run_id)
 
     report, nodes = with_runs(runs_db, mem.RUNNER, drive)

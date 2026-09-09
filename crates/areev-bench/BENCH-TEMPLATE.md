@@ -251,7 +251,10 @@ on its own cadence, and a node that skipped itself every pass is furniture.
 **Two files.** The journal lives in `runs.db`, the agent's memory in its own
 file. The driver holds the journal's writer handle for the whole run, and the
 host tools are subprocesses that open the agent memory; one file for both is
-`STO-E002`.
+`STO-E002`. When the agent memory is a Postgres schema (`AREEV_BENCH_DB`), the
+journal stays a local file — the provisioned role has no CREATE for a second
+schema — and `learn(policy_dir=…)` names the directory it and the pass's
+policy file go to, since a DSN has no "beside".
 
 Declare the cadence as a Trigger grain (`bench_run.author_trigger`) even when
 the harness is its evaluator: a reader of the memory can then see what was

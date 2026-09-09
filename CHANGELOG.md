@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The benchmark harnesses can run against a Postgres memory** (#200).
+  `AREEV_BENCH_DB` (or `receipts/run.py --db`) names the memory — a file path
+  or a `postgres://…?schema=…` DSN, handed to `areev.Areev` verbatim — for the
+  receipts experience/evaluation/regress legs and the PAST-Bench backend,
+  which had both hard-coded a file under their work directory. What a schema
+  cannot do is be copied, and the harnesses now say so: `evaluate.py` runs
+  every arm on the one memory and produces arm A by rolling back on it
+  (last, and for real — `dryrun.sh` takes arm A after the regress leg, with
+  the new `--append`, since that rollback ends the state regress verifies);
+  snapshots and per-pass learner copies are refused on
+  a DSN; the loop policy a leg records goes to that leg's work dir. A DSN is
+  printed and recorded only redacted. Unset, the published file-backed runs
+  are unchanged — the keyless dry run's summaries match the baseline.
 - **`areev::blob_get` works on the Postgres tier** — the whole class of
   attachment-parsing capability tools was unavailable on the backend the
   server tier actually runs on. `{"blob": {"read": true}}` (#106) is what lets
