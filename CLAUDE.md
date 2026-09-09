@@ -101,9 +101,11 @@ docker build -t areev .             # the container image (postgres+tls features
   metric (a test-heavy repo's smallest growing denominator, so ~1,100 new
   lines is already 2%), and the branch that trips the gate is usually not the
   branch that caused the drift. CI also warns at 1% before failing at 2%.
-- **The version lives in five places**, only one of which is inherited. The
+- **The version lives in six places**, only one of which is inherited. The
   `versions` job runs `scripts/check_versions.py`; the release runbook
-  (`.claude/skills/areev-release`) is the source of truth for the order.
+  (`.claude/skills/areev-release`) is the source of truth for the order. Two of
+  the six are detached packages that cannot inherit: `areev-js` and
+  `areev-sandbox`.
 
 ## Workspace (dependency order)
 

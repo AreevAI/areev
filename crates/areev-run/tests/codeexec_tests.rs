@@ -357,6 +357,36 @@ fn a_wasm_runtime_without_a_sandbox_refuses_at_start() {
 }
 
 /// The full dispatch: the blob is materialized and handed to the sandbox
+/// A host with no sandbox installed must be told WHICH command it is missing.
+/// The executor used to format every spawn failure as `spawn <materialized
+/// blob path>` — a path that exists, is not the problem, and sends the reader
+/// looking at the blob instead of at `--sandbox-cmd`.
+#[cfg(unix)]
+#[test]
+fn a_missing_sandbox_binary_is_named_in_the_spawn_error() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-module-bytes");
+    let plan = plan_with_runtime(&rig, &uri, "wasm32-areev", None);
+
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd("areev-sandbox-that-is-not-installed");
+    let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+
+    let detail = format!("{outcome:?}");
+    assert!(
+        detail.contains("spawn areev-sandbox-that-is-not-installed"),
+        "the failure must name the sandbox, not the blob: {detail}"
+    );
+    let hex = uri.rsplit(':').next().unwrap();
+    assert!(
+        !detail.contains(hex),
+        "naming the blob path sends the reader to a file that is not missing: {detail}"
+    );
+}
+
 /// command as `--module`, with the declared limits as flags — the sandbox is
 /// the program, the blob is data. The fake sandbox echoes its argv.
 #[cfg(unix)]
