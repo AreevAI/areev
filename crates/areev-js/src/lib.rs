@@ -2876,6 +2876,25 @@ impl Areev {
         })
     }
 
+    /// Queue a steering message: the next superstep hands it to its nodes
+    /// under `$inbox`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_input(
+        &self,
+        run_id: String,
+        message: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let runner = js_runner(facade, ns, actor.clone(), None);
+            runner.input(&run_id, &message, &actor).map_err(run_err)?;
+            Ok(json!({"queued": run_id, "by": actor}).to_string())
+        })
+    }
+
     /// Write the kill-switch marker (the lowest-privilege run verb).
     #[napi(ts_return_type = "Promise<string>")]
     pub fn run_cancel(

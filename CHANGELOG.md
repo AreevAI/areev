@@ -8,6 +8,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`$send` can fan out to an abstract node** (#187). A spawn target had to
+  be a host tool node, so a plan that wanted N documents classified by an
+  agent had to enumerate N nodes or drop to a single tool call. Each task now
+  gets its OWN LLM loop, journaled under its own task path, and the loop's
+  answer settles that task — the batch joins before the target's downstream
+  edges fire, exactly as a host fan-out does. `abstract_flows` is keyed by
+  node-and-task rather than node; a node's own loop keeps the bare-index key,
+  so existing journals replay byte-identically.
+
+- **A person can steer a running run** (#187). `areev run input --run-id ID
+  --message TEXT` — also `areev_run_input` (MCP), `db.run_input` (Python),
+  `m.runInput` (Node) — queues a message on the run. The next superstep hands
+  every node it dispatches the queued messages, in order, under the reserved
+  `$inbox` key in their input. A chat-style plan no longer has to misuse a
+  human-gate ask to receive a message. Steering is journaled as a Fact on the
+  run and is applied only while a superstep is open, so it stays inert for the
+  whole superstep that observed it. That is what keeps `verify` exact: replay
+  counts the journaled messages against the checkpoint's `inputs_seen`, never
+  against when the driver happened to poll. A message queued before the run
+  starts therefore reaches the second superstep — the first one's input is
+  `--input`. `run.execute` is the verb: steering advances a run rather than
+  braking it.
+
+- **A subgraph child that parks on a human gate now bubbles its asks to the
+  parent** (#187). The gate used to fail the parent node with "subgraph run
+  parked" — a HITL step had to live in the top-level graph, which is exactly
+  the composition a subgraph exists to allow. The child's open asks travel as
+  the subgraph effect's own journaled result, so the parent parks on the same
+  `tool_call_id`s and `respond`/`resume` on the *parent* route down to the
+  child: you answer the run you started, however deep the gate sits. Because
+  the bubble is a journaled result, `verify` reproduces the park from the
+  parent's journal alone and never re-runs the child. Two consequences worth
+  stating: a child run id is now derived from the parent and the NODE
+  (`parent~sha256(parent, node, attempt)[..16]`), which a bounded cycle still
+  varies per generation while a park and its answer reach the same child; and
+  a bubble round advances `effect_seq` rather than `attempt`, so parking never
+  spends the node's retry budget.
+
 - **The benchmark harnesses can run against a Postgres memory** (#200).
   `AREEV_BENCH_DB` (or `receipts/run.py --db`) names the memory — a file path
   or a `postgres://…?schema=…` DSN, handed to `areev.Areev` verbatim — for the

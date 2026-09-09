@@ -104,7 +104,7 @@ fn mcp_round_trip() {
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 25);
+    assert_eq!(tools.len(), 26);
     for memory_tool in ["areev_search", "areev_nearest"] {
         assert!(
             tools.iter().any(|t| t["name"] == memory_tool),
@@ -115,6 +115,7 @@ fn mcp_round_trip() {
         "areev_run_start",
         "areev_run_resume",
         "areev_run_respond",
+        "areev_run_input",
         "areev_run_cancel",
         "areev_run_verify",
         "areev_run_list",
@@ -717,7 +718,7 @@ fn mcp_supersede_runs_touching_and_recommendations() {
 /// and a client that calls one anyway (stale tool cache, hand-rolled request)
 /// gets a named refusal, not a crash or a silent no-op. `--profile full`
 /// (the default) is unaffected, so this only checks the narrowed side —
-/// `mcp_round_trip` above already exercises the full 25-tool surface.
+/// `mcp_round_trip` above already exercises the full 26-tool surface.
 #[test]
 fn mcp_profile_memory_hides_run_tools() {
     let dir = TempDir::new().unwrap();
@@ -760,7 +761,7 @@ fn mcp_profile_memory_hides_run_tools() {
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12, "memory profile: 25 minus the 13-tool run/loop family");
+    assert_eq!(tools.len(), 12, "memory profile: 26 minus the 14-tool run/loop family");
     for run_tool in ["areev_run_start", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
         assert!(
             !tools.iter().any(|t| t["name"] == run_tool),

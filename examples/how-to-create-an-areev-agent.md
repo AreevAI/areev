@@ -345,17 +345,19 @@ How much the LLM decides is expressed in the plan, node by node:
    keyless floor; and an attempt is capped at **16 effects**, so a node that
    needs more must be split.
 4. **`$send` fan-out** — a node's result spawns tasks at runtime: dynamic
-   width the plan didn't enumerate, joined by declared reducers. A reducer's
+   width the plan didn't enumerate, joined by declared reducers. A target is
+   a host tool node or an abstract node (never a gate, a subgraph, or the
+   spawner), and an abstract target gets one LLM loop per task. A reducer's
    value is a **bare string** — `lww` (the default), `append`, `sum`, `max`,
    `min` — and it is read at *run start*, never validated on the write path,
    so a mistyped reducer name stores cleanly and then refuses every run.
 5. **Subgraph bindings** — bind a node to another **Workflow** hash and it
    runs inline as a child with its own journal. Compose vetted sub-plans
-   rather than raw tools. **But a child that parks on a client gate fails
-   the parent node** — v1 does not bubble asks through subgraphs, so
-   subgraphs and human gates do not compose. Keep every gate in the parent
-   and every child fully automated. There is also no depth limit and no
-   self-reference guard: a self-binding plan recurses until the stack ends.
+   rather than raw tools. A child that parks on a client gate **bubbles** its
+   asks to the parent, so gates compose: you `respond` to the run you
+   started, however deep the gate sits. There is no depth limit and no
+   self-reference guard, though: a self-binding plan recurses until the stack
+   ends.
 6. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
 
 **One structural rule underneath all of them: a plan needs a dead end.**

@@ -138,6 +138,7 @@ areev run-trace --run-id demo-1               # the full journal, in order
 areev runs-touching --hash <HASH>             # which runs produced/refined this grain (the reverse join)
 areev run oversight-report --run-id demo-1    # the EU AI Act Art. 14 answers: gates, budgets,
                                               # responders, MEASURED kill-switch drain time
+areev run input --run-id demo-1 --message "use the express carrier"   # steer it mid-flight
 areev run cancel --run-id demo-1              # the kill switch (lowest-privilege verb)
 areev run fork --run-id demo-1 --as-run demo-1b --at 1   # time-travel: branch from superstep 1
 areev run shadow --runs demo-1                # re-execute from the journal with ZERO side effects

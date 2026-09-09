@@ -1827,6 +1827,15 @@ impl Areev {
         Ok(json!({"responded": tool_call_id, "run_id": run_id}).to_string())
     }
 
+    /// Queue a steering message: the next superstep hands it to its nodes
+    /// under `$inbox`.
+    fn run_input(&self, py: Python<'_>, run_id: String, message: String) -> PyResult<String> {
+        let runner = self.runner(None, None);
+        let actor = self.actor.clone();
+        py.detach(|| runner.input(&run_id, &message, &actor)).map_err(err)?;
+        Ok(json!({"queued": run_id, "by": actor}).to_string())
+    }
+
     /// Write the kill-switch marker (the lowest-privilege run verb).
     #[pyo3(signature = (run_id, because = "canceled".to_string()))]
     fn run_cancel(&self, py: Python<'_>, run_id: String, because: String) -> PyResult<String> {

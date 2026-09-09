@@ -14,8 +14,8 @@ use areev_core::authz::HARNESS_NS;
 use areev_core::error::Hash;
 use areev_core::types::{Fact, Grain, Observation};
 use areev_run_core::{
-    step, Command, DecisionRecord, EffectOutcome, EventIn, FailCause, JournalKey, PlanGraph,
-    RunError, RunOutcome, SchedulerState, StepEnv,
+    flow_key, step, Ask, Command, DecisionRecord, EffectOutcome, EventIn, FailCause, JournalKey,
+    NodeExecutor, PlanGraph, RunError, RunOutcome, SchedulerState, StepEnv, PARKED_ASKS,
 };
 use serde_json::{json, Value};
 use sha2::Digest;
@@ -161,6 +161,26 @@ pub fn ns_in_scope(scope: &str, ns: &str) -> bool {
         Some(prefix) => ns == prefix || ns.strip_prefix(prefix).is_some_and(|r| r.starts_with('.')),
         None => ns == scope,
     }
+}
+
+/// A subgraph node's child run id. Derived from the parent, the node and the
+/// node's ATTEMPT — attempts are monotonic across re-entry generations, so a
+/// bounded cycle re-running the node gets a fresh child while a park and its
+/// forwarded answer (which advance `effect_seq`, not `attempt`) address the
+/// same one and resume it.
+pub fn subgraph_run_id(parent_run_id: &str, node: &str, attempt: u32) -> String {
+    let mut h = sha2::Sha256::new();
+    h.update(parent_run_id.as_bytes());
+    h.update([0u8]);
+    h.update(node.as_bytes());
+    h.update([0u8]);
+    h.update(attempt.to_be_bytes());
+    let mut s = String::with_capacity(16);
+    for b in &h.finalize()[..8] {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    format!("{parent_run_id}~{s}")
 }
 
 /// The runtime driver: a host over one facade.
@@ -649,6 +669,22 @@ impl Runner {
         // never silently eternal).
         let executors = manifest.executors();
         for (id, pending) in st.pending_asks.clone() {
+            if matches!(executors.get(pending.node_idx), Some(NodeExecutor::Subgraph { .. })) {
+                // A bubbled ask settles — or expires — in the CHILD. Either
+                // way the parent's move is the same: forward, and let the
+                // child's own resume decide what the answer was.
+                let child =
+                    subgraph_run_id(run_id, &pending.key.node, pending.key.attempt);
+                let open = self.child_asks(&child)?.iter().any(|a| a.tool_call_id == id);
+                let expired = pending
+                    .ask
+                    .expires_at_sec
+                    .is_some_and(|exp| (now / 1000) as i64 > exp);
+                if !open || expired {
+                    events.push(EventIn::AskForwarded { tool_call_id: id });
+                }
+                continue;
+            }
             if let Some(entry) = view.entries.get(&pending.key) {
                 if let Some((_, outcome)) = &entry.result {
                     events.push(EventIn::ResponseSettled {
@@ -839,6 +875,7 @@ impl Runner {
                 // verbatim — never re-resolves. Budgets/TTL are the fork's
                 // own knobs.
                 st.run_id = new_run_id.to_string();
+                st.inputs_seen = 0;
                 RunManifest {
                     run_id: new_run_id.to_string(),
                     // The FORKER triggers this run — separation of duties
@@ -947,10 +984,15 @@ impl Runner {
             journal_rejection("no such pending ask (settled, expired, or never asked)");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
         };
-        if view
-            .entries
-            .get(&pending.key)
-            .is_some_and(|e| e.result.is_some())
+        let bubbled = matches!(
+            manifest.executors().get(pending.node_idx),
+            Some(NodeExecutor::Subgraph { .. })
+        );
+        if !bubbled
+            && view
+                .entries
+                .get(&pending.key)
+                .is_some_and(|e| e.result.is_some())
         {
             journal_rejection("already settled — first commit won");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
@@ -973,6 +1015,14 @@ impl Runner {
                     manifest.principal
                 ),
             });
+        }
+        // A bubbled ask settles in the child, but it is judged HERE first:
+        // the child's manifest names whichever principal happened to drive
+        // the subgraph's dispatch, and separation of duties has to hold
+        // against the principal who triggered the run the operator answered.
+        if bubbled {
+            let child = subgraph_run_id(run_id, &pending.key.node, pending.key.attempt);
+            return self.respond(&child, tool_call_id, result, is_error, responder);
         }
 
         let outcome = if is_error {
@@ -1037,6 +1087,19 @@ impl Runner {
         Ok(())
     }
 
+    /// Queue a steering message for a running run. It is consumed by the
+    /// nodes the NEXT superstep dispatches, arriving in their input under
+    /// `$inbox` — an in-band channel, so a chat-style plan does not have to
+    /// misuse a human-gate ask to receive one.
+    pub fn input(&self, run_id: &str, message: &str, principal: &str) -> Result<(), RunError> {
+        self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
+        let now = self.clock.now_ms();
+        self.facade
+            .with_store(|m| journal::write_input(m, &self.ns, run_id, message, now, principal))
+            .map_err(err_run)?;
+        Ok(())
+    }
+
     fn cancel_marker(&self, run_id: &str) -> Option<(String, String)> {
         // A cancel on ANY ancestor stops the whole subtree: child run ids
         // are `{parent}~{16-hex}` by construction, so walking suffix-strips
@@ -1065,16 +1128,32 @@ impl Runner {
         }
     }
 
+    fn child_asks(&self, child_run_id: &str) -> Result<Vec<Ask>, RunError> {
+        let view = self
+            .facade
+            .with_store(|m| journal::load(m, &self.ns, child_run_id))
+            .map_err(err_run)?;
+        let Some(last) = view.checkpoints.last() else {
+            return Ok(Vec::new());
+        };
+        let st: SchedulerState = serde_json::from_value(last.scheduler.clone())
+            .map_err(|e| RunError::ManifestMismatch { why: format!("child state: {e}") })?;
+        Ok(st
+            .pending_asks
+            .into_values()
+            .filter(|p| view.entries.get(&p.key).is_none_or(|e| e.result.is_none()))
+            .map(|p| p.ask)
+            .collect())
+    }
+
     /// Execute a subgraph node as a CHILD RUN: own run id (deterministic —
-    /// derived from the journal key, so replays and permutations agree),
-    /// own journal, linked by content on the parent's effect grains. The
-    /// child's final context becomes the node's result, merging into the
-    /// parent state through the reducers like any other node result.
-    ///
-    /// v1 limitation, stated: a child that PARKS on a Client ask fails the
-    /// parent node with a clear message — HITL nodes belong in the parent
-    /// graph until ask-bubbling ships. A terminally failed child is never
-    /// retried (resuming a terminal run returns the same outcome forever).
+    /// derived from the parent and the node, so replays and permutations
+    /// agree and a parked child resumes rather than restarting), own
+    /// journal, linked by content on the parent's effect grains. The child's
+    /// final context becomes the node's result, merging into the parent
+    /// state through the reducers like any other node result; a child parked
+    /// on a Client ask completes with a `$parked_asks` result instead, which
+    /// parks the parent on the same asks.
     fn run_subgraph_effect(
         &self,
         parent_run_id: &str,
@@ -1083,7 +1162,7 @@ impl Runner {
         input: &Value,
         opts: &RunOptions,
     ) -> EffectOutcome {
-        let child_run_id = format!("{parent_run_id}~{}", &key.tool_call_id()[..16]);
+        let child_run_id = subgraph_run_id(parent_run_id, &key.node, key.attempt);
         let fail = |cause: FailCause, detail: String| EffectOutcome::Failed {
             journal_bytes: detail.len() as u64,
             cause,
@@ -1103,14 +1182,22 @@ impl Runner {
         };
         match child_session {
             Ok(RunSession::Finished { outcome: RunOutcome::Completed, .. }) => {
-                // The child's final context is the node's contribution.
-                let context = self
+                // The child's final context is the node's contribution —
+                // minus the bubble marker, which only THIS function may
+                // mint. A tool inside the child could otherwise write
+                // `$parked_asks` into the child's state and park the parent
+                // on asks it invented, putting a forged approval in front of
+                // a human.
+                let mut context = self
                     .facade
                     .with_store(|m| journal::load(m, &self.ns, &child_run_id))
                     .ok()
                     .and_then(|v| v.checkpoints.last().cloned())
                     .and_then(|c| c.scheduler.get("context").cloned())
                     .unwrap_or(Value::Null);
+                if let Value::Object(o) = &mut context {
+                    o.remove(PARKED_ASKS);
+                }
                 EffectOutcome::Completed {
                     journal_bytes: context.to_string().len() as u64,
                     result: context,
@@ -1123,14 +1210,23 @@ impl Runner {
                 FailCause::Unknown,
                 format!("subgraph run '{child_run_id}' finished {outcome:?}"),
             ),
-            Ok(RunSession::Parked { .. }) => fail(
-                FailCause::Unknown,
-                format!(
-                    "subgraph run '{child_run_id}' parked on a Client ask — v1 \
-                     does not bubble asks through subgraphs; move HITL nodes \
-                     into the parent graph"
+            Ok(RunSession::Parked { .. }) => match self.child_asks(&child_run_id) {
+                Ok(asks) if !asks.is_empty() => {
+                    let result = json!({ PARKED_ASKS: asks });
+                    EffectOutcome::Completed {
+                        journal_bytes: result.to_string().len() as u64,
+                        result,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        usd_micros: 0,
+                    }
+                }
+                Ok(_) => fail(
+                    FailCause::Unknown,
+                    format!("subgraph run '{child_run_id}' parked with no ask to answer"),
                 ),
-            ),
+                Err(e) => fail(FailCause::Unknown, format!("subgraph asks: {e}")),
+            },
             Err(e) => fail(FailCause::Unknown, format!("subgraph: {e}")),
         }
     }
@@ -1221,6 +1317,15 @@ impl Runner {
             .filter_map(|(k, e)| e.result.as_ref().map(|(_, o)| (k.clone(), o.clone())))
             .collect();
         let mut prev_ckpt: Option<Hash> = view.checkpoints.last().map(|c| c.hash);
+        let mut input_cursor = view.cursor;
+        // Steering messages the journal already holds but this state has not
+        // applied. They wait in `steer` with everything polled later: an
+        // input is fed ONLY while a superstep is open, which is what makes it
+        // inert until the next one and lets replay place it from the
+        // checkpoint's `inputs_seen` alone.
+        let mut steer: Vec<Value> =
+            view.inputs.iter().skip(st.inputs_seen as usize).cloned().collect();
+        let mut events = initial_events;
         // Distinct refusals already journaled for this drive, so a retry loop
         // against one blocked host records one fact rather than many.
         let mut refusals_seen: std::collections::BTreeSet<(String, String, String)> =
@@ -1242,7 +1347,6 @@ impl Runner {
         let mut blob_reads_journaled: usize = self.executor.blob_reads().len();
         let mut in_flight: usize = 0;
         let mut st = st;
-        let mut events = initial_events;
         let mut intents_written: u32 = 0;
         let mut results_seen: u32 = 0;
 
@@ -1284,6 +1388,24 @@ impl Runner {
                     // same batch) — this is the live counterpart.
                     events.push(EventIn::ClockReading { unix_ms: self.clock.now_ms() });
                     events.push(EventIn::CancelSeen { principal: by, reason });
+                }
+            }
+            // Steering, polled at the same wave boundary as the cancel
+            // marker. A failed read is not fatal: the cursor stays put, so
+            // the next wave picks the same messages up rather than losing
+            // them to a transient store error.
+            if !st.is_terminal() {
+                if let Ok((queued, at)) = self
+                    .facade
+                    .with_store(|m| journal::poll_inputs(m, &self.ns, &run_id, input_cursor))
+                {
+                    input_cursor = at;
+                    steer.extend(queued);
+                }
+                if !steer.is_empty() && matches!(st.phase, areev_run_core::Phase::Open { .. }) {
+                    events.extend(
+                        steer.drain(..).map(|message| EventIn::InputSeen { message }),
+                    );
                 }
             }
 
@@ -1355,12 +1477,13 @@ impl Runner {
                         // by the same step() pass that emitted this WriteIntent
                         // (step.rs inserts before pushing the command), so the
                         // model's own call id is readable now.
-                        let pending = node_idx
-                            .and_then(|i| st.abstract_flows.get(&i))
+                        let flow = node_idx.map(|i| flow_key(i, &key.task_path));
+                        let pending = flow
+                            .as_ref()
+                            .and_then(|f| st.abstract_flows.get(f))
                             .and_then(|f| f.pending_tools.get(&key.effect_seq));
-                        let in_agent = node_idx
-                            .map(|i| st.abstract_flows.contains_key(&i))
-                            .unwrap_or(false);
+                        let in_agent =
+                            flow.as_ref().is_some_and(|f| st.abstract_flows.contains_key(f));
                         let is_llm = key.kind == areev_run_core::EffectKind::Llm;
                         emit(crate::stream::RunEvent::NodeDispatched {
                             superstep,
@@ -2328,6 +2451,26 @@ impl Runner {
                 reason: c.get(1)?.as_str()?.to_string(),
             })
         };
+        // The live driver feeds a steering message only while a superstep is
+        // open, and an open is the only thing that drains `inbox` — so a
+        // message is inert for the whole superstep that observed it. Replay
+        // therefore never needs to know WHICH wave saw one: feeding them with
+        // the batch that closes a checkpoint, bounded by that checkpoint's
+        // own `inputs_seen`, reproduces the state exactly.
+        let input_peek = |ckpt_idx: usize, st: &SchedulerState| -> Vec<EventIn> {
+            let want = view
+                .checkpoints
+                .get(ckpt_idx)
+                .and_then(|c| c.scheduler.get("inputs_seen"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            view.inputs
+                .iter()
+                .take(want as usize)
+                .skip(st.inputs_seen as usize)
+                .map(|m| EventIn::InputSeen { message: m.clone() })
+                .collect()
+        };
         let mut guard = 0;
         'replay: loop {
             guard += 1;
@@ -2468,6 +2611,7 @@ impl Runner {
                 if let Some(cancel_ev) = cancel_peek(ckpt_idx, &st) {
                     events.push(cancel_ev);
                 }
+                events.extend(input_peek(ckpt_idx, &st));
                 continue;
             }
             if parked {
@@ -2483,6 +2627,16 @@ impl Runner {
                     .map(|c| c.decisions.clock_close_ms)
                     .unwrap_or(st.clock_ms);
                 for (id, pending) in st.pending_asks.clone() {
+                    if matches!(
+                        executors.get(pending.node_idx),
+                        Some(NodeExecutor::Subgraph { .. })
+                    ) {
+                        if view.entries.contains_key(&pending.key) {
+                            events.push(EventIn::AskForwarded { tool_call_id: id });
+                            settled_any = true;
+                        }
+                        continue;
+                    }
                     if let Some(entry) = view.entries.get(&pending.key) {
                         if let Some((_, outcome)) = &entry.result {
                             if !settled_any {
@@ -2496,6 +2650,10 @@ impl Runner {
                         }
                     }
                 }
+                // Queued steering rides the SAME batch as whatever settles
+                // this park — never a continue of its own, which would leave
+                // a cancel-while-parked unfed and spin the replay loop.
+                events.extend(input_peek(ckpt_idx, &st));
                 if settled_any {
                     continue;
                 }

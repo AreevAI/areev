@@ -320,6 +320,131 @@ fn hitl_parks_enforces_separation_and_completes_on_resume() {
 }
 
 #[test]
+fn a_queued_input_steers_the_next_superstep_and_replays() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["gate", "act"], &[("gate", "act")], &["gate"]);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let sink = Arc::clone(&seen);
+    rig.exec.on("act", move |input, _| {
+        sink.lock().unwrap().push(input.clone());
+        ExecResult::Ok(json!({"acted": true}))
+    });
+    let runner = rig.runner(clocks());
+
+    let session = runner.start(&plan, "run-in", json!({}), &opts()).unwrap();
+    let RunSession::Parked { envelope, .. } = session else { panic!("expected park") };
+    let ask_id = envelope["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+
+    runner.input("run-in", "use the express carrier", "user:officer").unwrap();
+    runner.input("run-in", "and cap it at 200", "user:officer").unwrap();
+    runner
+        .respond("run-in", &ask_id, json!({"gate": "open"}), false, "user:officer")
+        .unwrap();
+
+    let session = runner.resume("run-in", &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let inputs = seen.lock().unwrap().clone();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(
+        inputs[0]["$inbox"],
+        json!(["use the express carrier", "and cap it at 200"]),
+        "queued messages reach the next node in order"
+    );
+
+    let report = runner.verify("run-in").unwrap();
+    assert!(report.verified, "{report:?}");
+}
+
+/// The normal case: a person steers while the first node is still running.
+/// The message must land in `inbox` for that superstep and only reach
+/// `context` at the NEXT open — a checkpoint that recorded it as already
+/// drained could never be re-derived from the journal.
+#[test]
+fn input_queued_mid_superstep_is_inert_until_the_next_open_and_verifies() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["a", "b"], &[("a", "b")], &[]);
+    let runner = Arc::new(rig.runner(clocks()));
+    let steering = Arc::new(runner.clone());
+    // `a` queues the message from inside its own execution, so it arrives
+    // strictly after superstep 1 opened and before it closed.
+    rig.exec.on("a", move |_, _| {
+        steering.input("run-mid", "steer me", "user:officer").unwrap();
+        ExecResult::Ok(json!({"a": true}))
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Value::Null));
+    let sink = Arc::clone(&seen);
+    rig.exec.on("b", move |input, _| {
+        *sink.lock().unwrap() = input.clone();
+        ExecResult::Ok(json!({"b": true}))
+    });
+
+    let session = runner.start(&plan, "run-mid", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        seen.lock().unwrap()["$inbox"],
+        json!(["steer me"]),
+        "the message reached the next superstep's node"
+    );
+
+    let report = runner.verify("run-mid").unwrap();
+    assert!(report.verified, "{report:?}");
+}
+
+/// Queued before the run exists: the message waits for a superstep to be
+/// open, so it reaches the SECOND one. Applying it before the first open
+/// would drain it into that superstep's own context, and no checkpoint can
+/// record whether that happened — the run's first input is `--input`.
+#[test]
+fn input_queued_before_start_lands_on_the_second_superstep_and_verifies() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["a", "b"], &[("a", "b")], &[]);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    for node in ["a", "b"] {
+        let sink = Arc::clone(&seen);
+        rig.exec.on(node, move |input, _| {
+            sink.lock().unwrap().push(input.clone());
+            ExecResult::Ok(json!({node: true}))
+        });
+    }
+    let runner = rig.runner(clocks());
+
+    runner.input("run-pre", "queued early", "user:officer").unwrap();
+    let session = runner.start(&plan, "run-pre", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let inputs = seen.lock().unwrap().clone();
+    assert!(inputs[0].get("$inbox").is_none(), "not the first superstep: {}", inputs[0]);
+    assert_eq!(inputs[1]["$inbox"], json!(["queued early"]));
+
+    let report = runner.verify("run-pre").unwrap();
+    assert!(report.verified, "{report:?}");
+}
+
+#[test]
+fn cancel_while_parked_with_queued_input_still_verifies() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["gate", "act"], &[("gate", "act")], &["gate"]);
+    let runner = rig.runner(clocks());
+
+    let session = runner.start(&plan, "run-inc", json!({}), &opts()).unwrap();
+    assert!(matches!(session, RunSession::Parked { .. }), "expected a park");
+
+    runner.input("run-inc", "never consumed", "user:officer").unwrap();
+    runner.cancel("run-inc", "user:officer", "operator abort").unwrap();
+
+    let session = runner.resume("run-inc", &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert!(matches!(outcome, RunOutcome::Canceled { .. }), "{outcome:?}");
+
+    let report = runner.verify("run-inc").unwrap();
+    assert!(report.verified, "{report:?}");
+}
+
+#[test]
 fn cancel_drains_a_parked_run() {
     let rig = Rig::new();
     let plan = rig.plan(&["auto", "approve"], &[("auto", "approve")], &["approve"]);
@@ -581,3 +706,4 @@ fn a_parked_run_releases_its_lease_for_the_next_driver() {
     RunLease::acquire(&rig.facade, "run-parks", "some-other-driver", 2_000, 600_000)
         .expect("a parked run must not hold its lease");
 }
+

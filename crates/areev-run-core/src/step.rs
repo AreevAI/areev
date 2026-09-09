@@ -93,13 +93,18 @@ pub struct StepOutcome {
 pub fn step(env: &StepEnv<'_>, mut st: SchedulerState, events: &[EventIn]) -> StepOutcome {
     let mut out: Vec<Command> = Vec::new();
     for ev in events {
-        apply_event(env, &mut st, ev);
+        apply_event(env, &mut st, ev, &mut out);
     }
     progress(env, &mut st, &mut out);
     StepOutcome { commands: out, state: st }
 }
 
-fn apply_event(env: &StepEnv<'_>, st: &mut SchedulerState, ev: &EventIn) {
+fn apply_event(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    ev: &EventIn,
+    out: &mut Vec<Command>,
+) {
     match ev {
         EventIn::ClockReading { unix_ms } => {
             st.clock_ms = (*unix_ms).max(st.clock_ms);
@@ -128,6 +133,28 @@ fn apply_event(env: &StepEnv<'_>, st: &mut SchedulerState, ev: &EventIn) {
         }
         EventIn::EffectResolved { key, outcome } => {
             resolve_effect(env, st, key, outcome);
+        }
+        EventIn::InputSeen { message } => {
+            st.inputs_seen += 1;
+            st.inbox.push(message.clone());
+        }
+        EventIn::AskForwarded { tool_call_id } => {
+            let Some(pending) = st.pending_asks.get(tool_call_id).cloned() else {
+                return;
+            };
+            drop_bubble(st, &pending.key);
+            st.node_state[pending.node_idx] = NodeState::Dispatched;
+            let executor = env.executors[pending.node_idx].clone();
+            let input = st.context.clone();
+            let (superstep, clock_ms) = (st.superstep, st.clock_ms);
+            out.push(Command::WriteIntent {
+                key: pending.key.clone(),
+                executor: executor.clone(),
+                input: input.clone(),
+                superstep,
+                clock_ms,
+            });
+            out.push(Command::Dispatch { key: pending.key, executor, input });
         }
         EventIn::ResponseSettled { tool_call_id, outcome } => {
             let Some(pending) = st.pending_asks.remove(tool_call_id) else {
@@ -193,31 +220,30 @@ fn resolve_effect(
         }
     }
 
+    // Abstract-flow effects continue the LOOP rather than resolving what
+    // owns it — a node, or one Send task against an abstract target.
+    let flow = flow_key(node_idx, &key.task_path);
+    if st.abstract_flows.contains_key(&flow) {
+        match key.kind {
+            EffectKind::Llm => {
+                handle_llm_outcome(env, st, node_idx, &key.task_path, outcome);
+                return;
+            }
+            EffectKind::Tool
+                if st.abstract_flows[&flow].pending_tools.contains_key(&key.effect_seq) =>
+            {
+                handle_flow_tool_outcome(st, node_idx, &key.task_path, key.effect_seq, outcome);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // Send-task effects resolve the TASK, never the target node directly —
     // the node completes when its batch drains.
     if !key.task_path.is_empty() {
         handle_send_task_outcome(env, st, key, outcome);
         return;
-    }
-
-    // Abstract-flow effects continue the node's LLM loop rather than
-    // resolving the node.
-    if st.abstract_flows.contains_key(&node_idx) {
-        match key.kind {
-            EffectKind::Llm => {
-                handle_llm_outcome(env, st, node_idx, outcome);
-                return;
-            }
-            EffectKind::Tool
-                if st.abstract_flows[&node_idx]
-                    .pending_tools
-                    .contains_key(&key.effect_seq) =>
-            {
-                handle_flow_tool_outcome(st, node_idx, key.effect_seq, outcome);
-                return;
-            }
-            _ => {}
-        }
     }
     // A resolved node's straggler (a flow-tool result landing after
     // `fail_abstract` tore its flow down mid-round): accounted above, but it
@@ -227,6 +253,19 @@ fn resolve_effect(
         NodeState::DoneOk | NodeState::DoneFailed | NodeState::Dead
     ) {
         return;
+    }
+
+    if let EffectOutcome::Completed { result, .. } = outcome {
+        if matches!(env.executors[node_idx], NodeExecutor::Subgraph { .. }) {
+            if let Some(asks) = result
+                .get(crate::types::PARKED_ASKS)
+                .and_then(|v| serde_json::from_value::<Vec<Ask>>(v.clone()).ok())
+                .filter(|a| !a.is_empty())
+            {
+                park_bubbled(st, node_idx, key, asks);
+                return;
+            }
+        }
     }
 
     let attempts_used = st.attempt[node_idx] - st.attempt_base[node_idx];
@@ -257,6 +296,115 @@ fn resolve_effect(
     }
 }
 
+/// The `abstract_flows` key. A node's own loop keys on its index alone, so
+/// the serialized shape is exactly what it was before Send could target an
+/// abstract node; a task's loop qualifies that with its path.
+pub fn flow_key(node_idx: usize, task_path: &str) -> String {
+    if task_path.is_empty() {
+        node_idx.to_string()
+    } else {
+        format!("{node_idx}@{task_path}")
+    }
+}
+
+fn flow_attempt(st: &SchedulerState, i: usize, path: &str) -> u32 {
+    match st.send_tasks.get(path) {
+        Some(task) => task.attempt,
+        None => st.attempt[i],
+    }
+}
+
+/// Open a fresh LLM loop for a node or one Send task against an abstract
+/// node, and emit its first turn.
+fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, input: Value, out: &mut Vec<Command>) {
+    st.abstract_flows.insert(
+        flow_key(i, path),
+        crate::state::AbstractFlow {
+            messages: vec![serde_json::json!({
+                "role": "user",
+                "content": {
+                    "instruction": env.plan.nodes[i],
+                    "state": input,
+                }
+            })],
+            next_effect_seq: 0,
+            pending_tools: BTreeMap::new(),
+            round_results: BTreeMap::new(),
+            need: None,
+            unknown_strikes: 0,
+        },
+    );
+    dispatch_llm_turn(env, st, i, path, out);
+}
+
+fn flow_owners(st: &SchedulerState) -> Vec<(usize, String)> {
+    let mut owners: Vec<(usize, String)> = st
+        .abstract_flows
+        .iter()
+        .filter(|(_, f)| f.need.is_some())
+        .filter_map(|(k, _)| match k.split_once('@') {
+            Some((i, path)) => Some((i.parse().ok()?, path.to_string())),
+            None => Some((k.parse().ok()?, String::new())),
+        })
+        .collect();
+    owners.sort();
+    owners
+}
+
+fn apply_inbox(st: &mut SchedulerState) {
+    let Value::Object(o) = &mut st.context else {
+        return;
+    };
+    if st.inbox.is_empty() {
+        o.remove(crate::types::INBOX);
+    } else {
+        o.insert(crate::types::INBOX.into(), Value::Array(std::mem::take(&mut st.inbox)));
+    }
+}
+
+fn drop_bubble(st: &mut SchedulerState, key: &JournalKey) {
+    let ids: Vec<String> = st
+        .pending_asks
+        .iter()
+        .filter(|(_, p)| p.key == *key)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        st.pending_asks.remove(&id);
+        st.announced_asks.remove(&id);
+    }
+}
+
+fn park_bubbled(st: &mut SchedulerState, i: usize, resolved: &JournalKey, asks: Vec<Ask>) {
+    if !matches!(st.phase, Phase::Open { .. }) {
+        return;
+    }
+    let stale: Vec<JournalKey> = st
+        .pending_asks
+        .values()
+        .filter(|p| p.node_idx == i)
+        .map(|p| p.key.clone())
+        .collect();
+    for key in stale {
+        drop_bubble(st, &key);
+    }
+    // The next ROUND of the same attempt, never the next attempt: the child
+    // run id is derived from the attempt, so bumping it here would forward
+    // the answered ask into a brand-new child. Holding `attempt` still also
+    // means a park costs no retry budget without touching `attempt_base`.
+    let key = JournalKey { effect_seq: resolved.effect_seq + 1, ..resolved.clone() };
+    if let Phase::Open { outstanding, .. } = &mut st.phase {
+        outstanding.insert(key.clone());
+    }
+    st.node_state[i] = NodeState::AwaitingClient;
+    for ask in asks {
+        st.pending_asks.insert(
+            ask.tool_call_id.clone(),
+            PendingAsk { key: key.clone(), node_idx: i, ask },
+        );
+    }
+}
+
 /// A Send task's effect resolved: buffer the result (or retry / fail per
 /// the same §6.3 table nodes use), and complete the target node when its
 /// batch has drained — the join below a fan-out.
@@ -267,13 +415,17 @@ fn handle_send_task_outcome(
     outcome: &EffectOutcome,
 ) {
     let Some(task) = st.send_tasks.get_mut(&key.task_path) else { return };
+    // A settled task's straggler — an abstract target's flow tool landing
+    // after `fail_abstract` tore the loop down. Accounted above, but it must
+    // not overwrite the task's contribution with a raw tool result the model
+    // never saw. The node-level guard below does the same job for nodes.
+    if task.state == crate::state::SendTaskState::Done {
+        return;
+    }
     let target = task.node_idx;
     match outcome {
         EffectOutcome::Completed { result, .. } => {
-            task.state = crate::state::SendTaskState::Done;
-            if let Phase::Open { send_results, .. } = &mut st.phase {
-                send_results.insert(key.task_path.clone(), result.clone());
-            }
+            settle_send_task(st, &key.task_path, result.clone());
         }
         EffectOutcome::Failed { cause, detail, .. } => {
             let can_retry = cause.retryable(key.kind)
@@ -292,13 +444,19 @@ fn handle_send_task_outcome(
                     format!("{cause:?}: {detail} (task {})", key.task_path),
                 ));
             }
-            return;
         }
     }
-    // Batch drain check: every task targeting this node settled, none
-    // permanently failed → the node completes with a Null contribution (the
-    // tasks' results already merged individually), and its out-edges
-    // evaluate at this close.
+}
+
+/// One task settled with a result: buffer it, then complete the target node
+/// if its whole batch has drained — the join below a fan-out.
+fn settle_send_task(st: &mut SchedulerState, path: &str, result: Value) {
+    let Some(task) = st.send_tasks.get_mut(path) else { return };
+    let target = task.node_idx;
+    task.state = crate::state::SendTaskState::Done;
+    if let Phase::Open { send_results, .. } = &mut st.phase {
+        send_results.insert(path.to_string(), result);
+    }
     let all_done = st
         .send_tasks
         .values()
@@ -317,9 +475,11 @@ fn handle_llm_outcome(
     env: &StepEnv<'_>,
     st: &mut SchedulerState,
     i: usize,
+    path: &str,
     outcome: &EffectOutcome,
 ) {
     let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let flow_id = flow_key(i, path);
     let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
     match outcome {
         EffectOutcome::Failed { cause, detail, .. } => match cause {
@@ -328,12 +488,12 @@ fn handle_llm_outcome(
             // failures re-prompt with the error appended (§6.11). Both are
             // bounded by max_effects_per_attempt.
             FailCause::Timeout | FailCause::ExecutorError => {
-                if let Some(flow) = st.abstract_flows.get_mut(&i) {
+                if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
                     flow.need = Some(crate::state::FlowNeed::NextTurn);
                 }
             }
             FailCause::SchemaValidationFailed => {
-                if let Some(flow) = st.abstract_flows.get_mut(&i) {
+                if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
                     flow.messages.push(serde_json::json!({
                         "role": "user",
                         "content": format!(
@@ -345,7 +505,7 @@ fn handle_llm_outcome(
                 }
             }
             FailCause::UserAborted | FailCause::Unknown => {
-                fail_abstract(env, st, i, detail);
+                fail_abstract(env, st, i, path, detail);
             }
         },
         EffectOutcome::Completed { result, .. } => {
@@ -383,7 +543,7 @@ fn handle_llm_outcome(
             if !unknown.is_empty() {
                 let strikes = st
                     .abstract_flows
-                    .get(&i)
+                    .get(&flow_id)
                     .map(|f| f.unknown_strikes)
                     .unwrap_or(0);
                 if strikes >= 1 {
@@ -391,11 +551,12 @@ fn handle_llm_outcome(
                         env,
                         st,
                         i,
+                        path,
                         &format!("model called unknown tool(s) {unknown:?} after a corrective re-prompt"),
                     );
                     return;
                 }
-                let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+                let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
                 flow.unknown_strikes += 1;
                 flow.messages.push(serde_json::json!({
                     "role": "user",
@@ -422,7 +583,7 @@ fn handle_llm_outcome(
                     .err()
                     .map(|e| (c.tool_name.clone(), e))
             });
-            let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+            let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
             if let Some((tool, why)) = invalid {
                 flow.messages.push(serde_json::json!({
                     "role": "user",
@@ -445,10 +606,14 @@ fn handle_llm_outcome(
                     .unwrap_or_else(|| {
                         serde_json::json!({ env.plan.nodes[i].clone(): final_text })
                     });
-                st.abstract_flows.remove(&i);
-                st.node_state[i] = NodeState::DoneOk;
-                if let Phase::Open { results, .. } = &mut st.phase {
-                    results.insert(i, value);
+                st.abstract_flows.remove(&flow_id);
+                if path.is_empty() {
+                    st.node_state[i] = NodeState::DoneOk;
+                    if let Phase::Open { results, .. } = &mut st.phase {
+                        results.insert(i, value);
+                    }
+                } else {
+                    settle_send_task(st, path, value);
                 }
                 return;
             }
@@ -475,10 +640,11 @@ fn handle_llm_outcome(
 fn handle_flow_tool_outcome(
     st: &mut SchedulerState,
     i: usize,
+    path: &str,
     effect_seq: u32,
     outcome: &EffectOutcome,
 ) {
-    let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_key(i, path)) else { return };
     let Some(call) = flow.pending_tools.remove(&effect_seq) else { return };
     let entry = match outcome {
         EffectOutcome::Completed { result, .. } => serde_json::json!({
@@ -530,22 +696,18 @@ fn progress_open(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
     // Abstract flows with settled needs: emit their next effects in
     // canonical node order (never emission-time order).
     if !draining {
-        let needy: Vec<usize> = st
-            .abstract_flows
-            .iter()
-            .filter(|(_, f)| f.need.is_some())
-            .map(|(i, _)| *i)
-            .collect();
+        let needy = flow_owners(st);
         if !needy.is_empty() {
-            for i in needy {
-                let need = st.abstract_flows.get_mut(&i).and_then(|f| f.need.take());
+            for (i, path) in needy {
+                let need =
+                    st.abstract_flows.get_mut(&flow_key(i, &path)).and_then(|f| f.need.take());
                 match need {
                     Some(crate::state::FlowNeed::NextTurn) => {
-                        dispatch_llm_turn(env, st, i, out);
+                        dispatch_llm_turn(env, st, i, &path, out);
                     }
                     Some(crate::state::FlowNeed::Tools(calls)) => {
                         for call in calls {
-                            dispatch_flow_tool(env, st, i, call, out);
+                            dispatch_flow_tool(env, st, i, &path, call, out);
                         }
                     }
                     None => {}
@@ -643,12 +805,7 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
         .collect();
     // Abstract flows whose next turn survived a reservation refusal: a
     // fork with raised budgets resumes exactly here (the pinned promise).
-    let needy_flows: Vec<usize> = st
-        .abstract_flows
-        .iter()
-        .filter(|(_, fl)| fl.need.is_some())
-        .map(|(i, _)| *i)
-        .collect();
+    let needy_flows = flow_owners(st);
     if ready.is_empty() && queued_tasks.is_empty() && needy_flows.is_empty() {
         // A step call before any Start is a driver protocol slip, not a
         // stall — yield; terminalizing would brick the run id.
@@ -713,19 +870,20 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
             ..DecisionRecord::default()
         },
     };
+    apply_inbox(st);
     for i in ready {
         dispatch_node(env, st, i, out);
     }
     for p in queued_tasks {
         dispatch_send_task(env, st, &p, out);
     }
-    for i in needy_flows {
-        let need = st.abstract_flows.get_mut(&i).and_then(|fl| fl.need.take());
+    for (i, path) in needy_flows {
+        let need = st.abstract_flows.get_mut(&flow_key(i, &path)).and_then(|fl| fl.need.take());
         match need {
-            Some(crate::state::FlowNeed::NextTurn) => dispatch_llm_turn(env, st, i, out),
+            Some(crate::state::FlowNeed::NextTurn) => dispatch_llm_turn(env, st, i, &path, out),
             Some(crate::state::FlowNeed::Tools(calls)) => {
                 for call in calls {
-                    dispatch_flow_tool(env, st, i, call, out);
+                    dispatch_flow_tool(env, st, i, &path, call, out);
                 }
             }
             None => {}
@@ -747,6 +905,10 @@ fn dispatch_send_task(
     task.state = crate::state::SendTaskState::Running;
     let (target, attempt, input) = (task.node_idx, task.attempt, task.input.clone());
     let executor = env.executors[target].clone();
+    if let NodeExecutor::Abstract { .. } = &executor {
+        start_flow(env, st, target, path, input, out);
+        return;
+    }
     let key = JournalKey {
         run_id: st.run_id.clone(),
         task_path: path.to_string(),
@@ -780,25 +942,9 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
 
     // Abstract nodes run as an LLM loop: fresh flow, then the first turn.
     if let NodeExecutor::Abstract { .. } = &executor {
-        st.abstract_flows.insert(
-            i,
-            crate::state::AbstractFlow {
-                messages: vec![serde_json::json!({
-                    "role": "user",
-                    "content": {
-                        "instruction": env.plan.nodes[i],
-                        "state": st.context,
-                    }
-                })],
-                next_effect_seq: 0,
-                pending_tools: BTreeMap::new(),
-                round_results: BTreeMap::new(),
-                need: None,
-                unknown_strikes: 0,
-            },
-        );
         st.node_state[i] = NodeState::Dispatched;
-        dispatch_llm_turn(env, st, i, out);
+        let input = st.context.clone();
+        start_flow(env, st, i, "", input, out);
         return;
     }
 
@@ -860,22 +1006,29 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
 /// per-dispatch token reservation: `spent + reserve` must fit BEFORE the
 /// effect is emitted — the refinement pre-flight-only checking could not
 /// give, now that LLM effects carry a reservable `max_tokens`.
-fn dispatch_llm_turn(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut Vec<Command>) {
+fn dispatch_llm_turn(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    out: &mut Vec<Command>,
+) {
+    let flow_id = flow_key(i, path);
     if let Some(max) = env.budgets.max_tokens {
         let spent = st.spent.input_tokens + st.spent.output_tokens;
         if spent + env.llm_reserve_tokens > max {
             st.exhausted = Some(crate::error::BudgetAxis::Tokens);
             // The un-dispatched turn survives as a need, so a resume with a
             // raised ceiling picks the loop up exactly here.
-            if let Some(flow) = st.abstract_flows.get_mut(&i) {
+            if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
                 flow.need = Some(crate::state::FlowNeed::NextTurn);
             }
             return;
         }
     }
-    let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
     if flow.next_effect_seq >= env.max_effects_per_attempt {
-        fail_abstract(env, st, i, "llm loop exceeded max_effects_per_attempt");
+        fail_abstract(env, st, i, path, "llm loop exceeded max_effects_per_attempt");
         return;
     }
     let effect_seq = flow.next_effect_seq;
@@ -884,14 +1037,14 @@ fn dispatch_llm_turn(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: 
     let messages = flow.messages.clone();
     let key = JournalKey {
         run_id: st.run_id.clone(),
-        task_path: String::new(),
+        task_path: path.to_string(),
         node: env.plan.nodes[i].clone(),
-        attempt: st.attempt[i],
+        attempt: flow_attempt(st, i, path),
         effect_seq,
         kind: EffectKind::Llm,
     };
     let input = serde_json::json!({ "messages": messages });
-    emit_effect(env, st, i, key, input, out);
+    emit_effect(env, st, i, path, key, input, out);
 }
 
 /// Emit one model-issued tool call from node `i`'s flow.
@@ -899,13 +1052,15 @@ fn dispatch_flow_tool(
     env: &StepEnv<'_>,
     st: &mut SchedulerState,
     i: usize,
+    path: &str,
     call: crate::state::PendingToolCall,
     out: &mut Vec<Command>,
 ) {
+    let flow_id = flow_key(i, path);
     // Draining (exhausted mid-pass): preserve the call as a need instead of
     // emitting new work — state.rs pins "no new work is emitted".
     if st.exhausted.is_some() {
-        if let Some(flow) = st.abstract_flows.get_mut(&i) {
+        if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
             match &mut flow.need {
                 Some(crate::state::FlowNeed::Tools(calls)) => calls.push(call),
                 other => *other = Some(crate::state::FlowNeed::Tools(vec![call])),
@@ -913,9 +1068,9 @@ fn dispatch_flow_tool(
         }
         return;
     }
-    let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
     if flow.next_effect_seq >= env.max_effects_per_attempt {
-        fail_abstract(env, st, i, "llm loop exceeded max_effects_per_attempt");
+        fail_abstract(env, st, i, path, "llm loop exceeded max_effects_per_attempt");
         return;
     }
     // Resolve the offered tool BEFORE booking anything: a resolution set
@@ -927,20 +1082,21 @@ fn dispatch_flow_tool(
             env,
             st,
             i,
+            path,
             &format!("offered tool '{}' missing from the manifest's executors", call.tool_name),
         );
         return;
     };
-    let Some(flow) = st.abstract_flows.get_mut(&i) else { return };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
     let effect_seq = flow.next_effect_seq;
     flow.next_effect_seq += 1;
     let arguments = call.arguments.clone();
     flow.pending_tools.insert(effect_seq, call.clone());
     let key = JournalKey {
         run_id: st.run_id.clone(),
-        task_path: String::new(),
+        task_path: path.to_string(),
         node: env.plan.nodes[i].clone(),
-        attempt: st.attempt[i],
+        attempt: flow_attempt(st, i, path),
         effect_seq,
         kind: EffectKind::Tool,
     };
@@ -968,6 +1124,7 @@ fn emit_effect(
     env: &StepEnv<'_>,
     st: &mut SchedulerState,
     i: usize,
+    path: &str,
     key: JournalKey,
     input: Value,
     out: &mut Vec<Command>,
@@ -978,7 +1135,11 @@ fn emit_effect(
     if let Phase::Open { outstanding, record, .. } = &mut st.phase {
         outstanding.insert(key.clone());
         if key.effect_seq == 0 {
-            record.dispatched.push((i, st.attempt[i]));
+            if path.is_empty() {
+                record.dispatched.push((i, key.attempt));
+            } else {
+                record.task_dispatched.push((path.to_string(), key.attempt));
+            }
         }
     }
     out.push(Command::WriteIntent {
@@ -993,12 +1154,22 @@ fn emit_effect(
 
 /// Fail an abstract node (loop bound, terminal model failure): fail-fast
 /// semantics, the same path a Host node's retry exhaustion takes.
-fn fail_abstract(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, detail: &str) {
-    st.abstract_flows.remove(&i);
+fn fail_abstract(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    detail: &str,
+) {
+    st.abstract_flows.remove(&flow_key(i, path));
+    if let Some(task) = st.send_tasks.get_mut(path) {
+        task.state = crate::state::SendTaskState::Done;
+    }
     st.node_state[i] = NodeState::DoneFailed;
     let named = st.failed.as_ref().map(|(n, _)| *n).unwrap_or(usize::MAX);
     if i < named {
-        st.failed = Some((i, format!("ExecutorError: {detail}")));
+        let at = if path.is_empty() { String::new() } else { format!(" (task {path})") };
+        st.failed = Some((i, format!("ExecutorError: {detail}{at}")));
     }
     let _ = env;
 }
@@ -1207,11 +1378,14 @@ fn apply_spawns(
                 fail(st, spawner, format!("$send targets unknown node '{target_name}'"));
                 return;
             };
-            if !matches!(env.executors[target], NodeExecutor::Host { .. }) {
+            if !matches!(
+                env.executors[target],
+                NodeExecutor::Host { .. } | NodeExecutor::Abstract { .. }
+            ) {
                 fail(
                     st,
                     spawner,
-                    format!("$send target '{target_name}' is not a Host tool node (v1)"),
+                    format!("$send target '{target_name}' is not a Host tool or abstract node"),
                 );
                 return;
             }
