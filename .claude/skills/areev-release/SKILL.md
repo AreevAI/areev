@@ -12,6 +12,14 @@ must publish bottom-up.
 ## 1. Pre-flight
 
 - Working tree clean; on an up-to-date `main`.
+Before a release, an unreleased change can be proven against a downstream:
+dispatch `release-npm` / `release-pypi` with **preview: true** to publish
+`X.Y.Z-preview.<run>` off any branch. It stamps only the two files the
+registries read — the Cargo versions cannot move, because crates depend on
+each other as `^X.Y` and Cargo does not match a prerelease against that — and
+it goes out under npm's `preview` dist-tag and as a PyPI pre-release, so
+`latest` is untouched. Nothing is committed. See CONTRIBUTING.md.
+
 - `python3 scripts/check_versions.py` — every version site agrees (CI runs
   this too, as the `versions` job).
 - `python3 scripts/repo_stats.py --check` — the quality figures in README.md
