@@ -673,8 +673,78 @@ def horizon_case(root):
         __import__("gc").collect()
 
 
+# ==========================================================================
+# the host seam: modules this repo cannot import, checked statically
+# ==========================================================================
+
+def host_contract_case(root):
+    """Do the harness modules still match the prompt API they call?
+
+    `persist/pastbench/areev_backend.py` imports PAST-Bench and
+    `persist/horizon/areev_agent/agent.py` imports `harbor`; neither is a
+    dependency of this repo, so nothing here can import them and a rename or
+    an arity change in `prompt.py` would be found only by a paid run on
+    somebody else's machine. That is the most expensive place to find it.
+
+    So: parse them, resolve what they import from the prompt module, and check
+    every call site's arity against the real signature. Not a substitute for
+    running the benchmark — it cannot catch a wrong VALUE — but it does catch
+    the class of break this crate's own refactors keep creating.
+    """
+    import ast
+    import inspect
+
+    print("\n=== host seam (static)")
+    sys.path.insert(0, os.path.join(ROOT, "persist", "pastbench"))
+    import prompt  # noqa: PLC0415
+
+    src = open(os.path.join(ROOT, "persist", "pastbench", "areev_backend.py"),
+               encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    imported = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "prompt":
+            imported += [(a.name, a.asname) for a in n.names]
+    check("persist: the backend imports names prompt.py actually defines",
+          [nm for nm, _ in imported if not hasattr(prompt, nm)], [])
+
+    alias = {(asn or nm): nm for nm, asn in imported}
+    problems = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in alias:
+            fn = getattr(prompt, alias[n.func.id])
+            try:
+                sig = inspect.signature(fn)
+            except (TypeError, ValueError):
+                continue
+            required = sum(1 for prm in sig.parameters.values()
+                           if prm.default is inspect._empty
+                           and prm.kind in (prm.POSITIONAL_ONLY, prm.POSITIONAL_OR_KEYWORD))
+            given = len(n.args) + len(n.keywords)
+            if given < required or given > len(sig.parameters):
+                problems.append("%s line %d: %d args vs %s" % (n.func.id, n.lineno, given, sig))
+    check("persist: every backend call site matches the prompt signature",
+          problems, [])
+    print("       checked %d imported names, %d call sites"
+          % (len(imported), sum(1 for n in ast.walk(tree)
+                                if isinstance(n, ast.Call)
+                                and isinstance(n.func, ast.Name)
+                                and n.func.id in alias)))
+
+    # horizon defines its readers in the same module it uses them from, so the
+    # check there is that the module still parses and still defines them.
+    hz = os.path.join(ROOT, "persist", "horizon", "areev_agent", "agent.py")
+    if os.path.exists(hz):
+        htree = ast.parse(open(hz, encoding="utf-8").read())
+        defined = {n.name for n in ast.walk(htree) if isinstance(n, ast.FunctionDef)}
+        check("horizon: the prompt readers are still defined",
+              {"lessons_block", "live_lessons", "_with_memory"} <= defined, True)
+
+
 CASES = {"receipts": receipts_case, "tau2": tau2_case, "appworld": appworld_case,
-         "persist": persist_case, "horizon": horizon_case}
+         "persist": persist_case, "horizon": horizon_case,
+         "host-contract": host_contract_case}
 
 
 def main(argv):
