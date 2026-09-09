@@ -175,6 +175,31 @@ def test_record_tool_call_records_occurrences(tmp_path):
     m.set_run_id(None)
 
 
+def test_record_tool_call_targets_a_namespace(tmp_path):
+    """`ns` sends a call to a namespace other than the session's.
+
+    Without it this was the ONE write on this surface that could not leave the
+    session namespace, so a host recording calls into per-domain child
+    namespaces (`caller.phone`, `caller.spotify`) had to open a second handle
+    — which the single-writer registry refuses (STO-E002).
+    """
+    m = make_db(tmp_path)
+    m.record_tool_call("phone.search", "401 expired", True, ns="caller.phone")
+    m.record_tool_call("spotify.show", "404", True, ns="caller.spotify")
+    m.record_tool_call("unattributed", "boom", True)  # session namespace
+
+    child = json.loads(m.cal('RECALL tools WHERE namespace = "caller.phone"'))
+    assert len(child["grains"]) == 1
+    assert child["grains"][0]["fields"]["tool_name"] == "phone.search"
+
+    # A prefix scope selects the base namespace AND its descendants, which is
+    # what lets an existing flat memory keep reading through the same query.
+    every = json.loads(m.cal('RECALL tools WHERE namespace = "caller.*" | COUNT'))
+    assert every["count"] == 3
+    base = json.loads(m.cal('RECALL tools WHERE namespace = "caller" | COUNT'))
+    assert base["count"] == 1
+
+
 def test_add_explains_engine_authored_types(tmp_path):
     """A type that exists but may not be host-authored says why (#67).
 

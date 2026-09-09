@@ -97,6 +97,15 @@ const MAX_IN_SET_SIZE: usize = 100;
 /// Maximum pipeline stages in a single query.
 const MAX_PIPELINE_STAGES: usize = 5;
 
+/// Maximum fields in one `GROUP BY` key (#217).
+///
+/// A composite key is what lets a ranking name the endpoint *and* the message
+/// it failed with; four is enough for every ranking anyone has asked for and
+/// keeps the joined key short enough to read in a prompt. Shared with the
+/// template `{{group.key.<n>}}` accessor, so a key part that can be grouped
+/// on is a key part a template can render.
+pub(crate) const MAX_GROUP_BY_KEYS: usize = 4;
+
 /// Maximum segments in a dotted field path (`input.error.code` is three).
 ///
 /// Matches the executor's `MAX_FIELD_PATH_DEPTH` and the template `get`
@@ -2580,9 +2589,19 @@ impl Parser {
             }) => {
                 self.advance();
                 self.expect_exact(&Token::By)?;
-                let field = self.parse_identifier()?;
+                let mut fields = vec![self.parse_identifier()?];
+                while self.eat_exact(&Token::Comma) {
+                    fields.push(self.parse_identifier()?);
+                }
+                if fields.len() > MAX_GROUP_BY_KEYS {
+                    return Err(CalError::TooManyGroupKeys {
+                        count: fields.len(),
+                        max: MAX_GROUP_BY_KEYS,
+                        span: Some(span),
+                    });
+                }
                 Ok(PipelineStage::GroupBy {
-                    field,
+                    fields,
                     span: Some(span),
                 })
             }

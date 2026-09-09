@@ -154,6 +154,21 @@ test('recordToolCall records occurrences, not values', async () => {
   assert.equal(byId.grains.length, 1)
   assert.equal(byId.grains[0].fields.input.amount, 42)
 
+  // `ns` targets a namespace other than the session's, exactly as `add()`
+  // does. Without it this was the one write on this surface that could not
+  // leave the session namespace, so a host recording calls into per-domain
+  // child namespaces had to open a second handle -- which the single-writer
+  // registry refuses (STO-E002).
+  await m.recordToolCall('phone.search', '401', true, null, 'call_ns', '{"app":"phone"}',
+    null, null, null, 'failed', 'executor_error', 'host', null, 'caller.phone')
+  const child = JSON.parse(await m.cal('RECALL tools WHERE namespace = "caller.phone"'))
+  assert.equal(child.grains.length, 1, 'the call landed in the child namespace')
+  assert.equal(child.grains[0].fields.tool_name, 'phone.search')
+  // A prefix scope sees the session namespace AND its descendants, which is
+  // what lets an existing flat memory keep reading through one query.
+  const scoped = JSON.parse(await m.cal('RECALL tools WHERE namespace = "caller.*" | COUNT'))
+  assert.equal(scoped.count, 5, 'the prefix scope sees base and child alike')
+
   const manifest = JSON.parse(await m.recordRunManifest(
     'run-js', '{"model":{"base":"test"},"sampling":{"seed":7}}'))
   assert.equal(manifest.config_hash.length, 64)

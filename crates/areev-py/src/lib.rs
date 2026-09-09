@@ -1973,9 +1973,16 @@ impl Areev {
     /// carry the async lifecycle. Enum strings validate strictly — an unknown
     /// value raises naming the accepted set.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// `ns` targets a namespace other than the session's, exactly as `add()`
+    /// does. Without it this was the one write on this surface that could not
+    /// leave the session namespace, so a host recording calls into per-domain
+    /// child namespaces (`domain.phone`, `domain.spotify`) had to open a
+    /// second handle — which the single-writer registry refuses (`STO-E002`).
     #[pyo3(signature = (name, result, is_error = false, thread = None, call_id = None, input = None,
                         run_id = None, workflow_hash = None, node_id = None, status = None,
-                        failure_cause = None, executor_kind = None, correlation_id = None))]
+                        failure_cause = None, executor_kind = None, correlation_id = None,
+                        ns = None))]
     fn record_tool_call(
         &self,
         py: Python<'_>,
@@ -1992,11 +1999,13 @@ impl Areev {
         failure_cause: Option<String>,
         executor_kind: Option<String>,
         correlation_id: Option<String>,
+        ns: Option<String>,
     ) -> PyResult<String> {
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
         py.detach(|| {
             self.facade
                 .record_tool_call(
-                    &self.ns,
+                    &ns,
                     &name,
                     input.as_deref(),
                     &result,

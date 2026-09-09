@@ -1470,6 +1470,28 @@ impl std::fmt::Display for Value {
 // Pipeline stages
 // ---------------------------------------------------------------------------
 
+/// Accept either one field name or a list of them.
+///
+/// `GROUP BY` took exactly one field until 1.7.4, and the JSON wire form
+/// spelled it `"field": "tool_name"`. That spelling keeps working: a wire
+/// form is a contract with clients we do not ship, and a composite key is no
+/// reason to break the singular one.
+fn one_or_many<'de, D>(de: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(de)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
+
 /// A pipeline stage following `|`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
@@ -1533,9 +1555,16 @@ pub enum PipelineStage {
         span: Option<Span>,
     },
 
-    /// `| GROUP BY field`
+    /// `| GROUP BY field [, field ...]`
+    ///
+    /// More than one field makes a **composite** key (#217): a ranking of
+    /// tool failures that names only the endpoint tells an agent where it is
+    /// failing but not what to do about it, and the message is the half that
+    /// says. The JSON wire form still accepts the pre-1.7.4 singular
+    /// `"field": "x"` spelling.
     GroupBy {
-        field: String,
+        #[serde(alias = "field", deserialize_with = "one_or_many")]
+        fields: Vec<String>,
         #[serde(skip)]
         span: Option<Span>,
     },

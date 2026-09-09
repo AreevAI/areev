@@ -2101,9 +2101,12 @@ impl Areev {
         failure_cause: Option<String>,
         executor_kind: Option<String>,
         correlation_id: Option<String>,
+        ns: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
-        let ns = self.ns.clone();
+        // `ns` targets a namespace other than the session's, exactly as
+        // `add()` does — kept in lockstep with the Python binding.
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             Ok(facade

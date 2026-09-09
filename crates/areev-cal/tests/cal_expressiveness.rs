@@ -441,3 +441,360 @@ fn a_parsed_object_and_a_json_string_navigate_the_same() {
     assert_eq!(count(r#"RECALL facts WHERE namespace = "k" AND object.app = "phone""#), 1);
     assert_eq!(count(r#"RECALL tools WHERE namespace = "k" AND input.app = "phone""#), 1);
 }
+
+// ---------------------------------------------------------------------------
+// #217 — a failure ranking that names the endpoint AND the message
+// ---------------------------------------------------------------------------
+
+/// Six failed calls across three endpoints, two of which fail with two
+/// different messages. That second axis is the whole point: ranking by
+/// endpoint alone tells an agent where it is failing, never what to do about
+/// it, and a `(endpoint, message)` ranking is the read the harness this issue
+/// came from had to do in host code.
+fn seeded_tool_failures(d: &TempDir) -> Areev {
+    use areev_core::types::Tool;
+    let mut m = mem(d);
+    let calls = [
+        ("phone.login", "Response status code is 401"),
+        ("phone.login", "Response status code is 401"),
+        ("phone.login", "Response status code is 401"),
+        ("phone.login", "Missing required parameter: password"),
+        ("spotify.play", "Response status code is 401"),
+        ("simple_note.search_notes", "Response status code is 422"),
+    ];
+    for (i, (tool, body)) in calls.iter().enumerate() {
+        let mut t = Tool::new(tool).content(body).is_error(true);
+        t.common.namespace = Some("t".to_string());
+        t.tool_call_id = Some(format!("call-{i}"));
+        m.add(&t).unwrap();
+    }
+    m
+}
+
+fn group_rows(res: &CalResultPayload) -> Vec<(String, i64)> {
+    let CalResultPayload::GroupCounts { groups, .. } = res else {
+        panic!("expected GroupCounts, got {res:?}");
+    };
+    groups
+        .iter()
+        .map(|g| {
+            (
+                g.fields["key"].as_str().unwrap().to_string(),
+                g.fields["count"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The body is in the grain and every built-in format prints it; only the
+/// template path could not see it, which is what made a CAL-rendered block
+/// unable to say what a call returned.
+#[test]
+fn a_tool_body_renders_in_a_template() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    ex.execute(
+        r#"DEFINE TEMPLATE toolbody ELEMENT {- {{grain.tool_name}}: {{grain.tool_content}}
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"RECALL tools WHERE namespace = "t" AND tool_name = "spotify.play" LIMIT 10 FORMAT TEMPLATE toolbody"#,
+    );
+    assert!(
+        out.contains("- spotify.play: Response status code is 401"),
+        "{out}"
+    );
+
+    // `{{grain.content}}` is the §10.3.2 content projection, and on a Tool it
+    // used to project the empty string while `FORMAT markdown` printed the
+    // body happily.
+    ex.execute(
+        r#"DEFINE TEMPLATE toolprojection ELEMENT {[{{grain.content}}]
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"RECALL tools WHERE namespace = "t" AND tool_name = "spotify.play" LIMIT 10 FORMAT TEMPLATE toolprojection"#,
+    );
+    assert!(out.contains("[Response status code is 401]"), "{out}");
+}
+
+#[test]
+fn a_tool_body_is_a_group_key() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_content COUNT"#,
+            &facade,
+        )
+        .unwrap();
+    assert!(res.warnings.is_empty(), "{:?}", res.warnings);
+    assert_eq!(
+        group_rows(&res.result),
+        vec![
+            ("Response status code is 401".to_string(), 4),
+            ("Missing required parameter: password".to_string(), 1),
+            ("Response status code is 422".to_string(), 1),
+        ]
+    );
+}
+
+/// The headline: one ranking naming both halves, and the composite key's
+/// parts reachable individually so the render is not a string-splitting
+/// exercise.
+#[test]
+fn a_composite_key_ranks_the_endpoint_and_the_message_together() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name, tool_content COUNT"#,
+            &facade,
+        )
+        .unwrap();
+    let CalResultPayload::GroupCounts { field, groups, total_available } = &res.result else {
+        panic!("expected GroupCounts");
+    };
+    assert_eq!(field, "tool_name, tool_content");
+    assert_eq!(*total_available, Some(4));
+    assert_eq!(
+        group_rows(&res.result),
+        vec![
+            ("phone.login · Response status code is 401".to_string(), 3),
+            // Ties break by the joined key ascending, so a composite ranking
+            // is as reproducible as a single-key one.
+            ("phone.login · Missing required parameter: password".to_string(), 1),
+            ("simple_note.search_notes · Response status code is 422".to_string(), 1),
+            ("spotify.play · Response status code is 401".to_string(), 1),
+        ]
+    );
+    // The parts ride on the row, so a machine consumer never has to split the
+    // label back apart.
+    assert_eq!(
+        groups[0].fields["keys"],
+        serde_json::json!(["phone.login", "Response status code is 401"])
+    );
+    assert!(groups.iter().all(|g| g.hash.is_empty() && g.grain_type == "group"));
+
+    ex.execute(
+        r#"DEFINE TEMPLATE topfail2 ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name, tool_content COUNT FORMAT TEMPLATE topfail2"#,
+    );
+    assert!(
+        out.contains("- (3x) phone.login: Response status code is 401"),
+        "{out}"
+    );
+}
+
+/// A single-key ranking keeps the row shape 1.7.4 documented, and
+/// `{{group.key.0}}` reads it — so one template serves both arities.
+#[test]
+fn a_single_key_row_keeps_its_shape_and_still_answers_key_0() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT"#,
+            &facade,
+        )
+        .unwrap();
+    let CalResultPayload::GroupCounts { groups, .. } = &res.result else {
+        panic!("expected GroupCounts");
+    };
+    assert!(
+        groups.iter().all(|g| g.fields.get("keys").is_none()),
+        "a single-key row carries no parts array"
+    );
+
+    ex.execute(
+        r#"DEFINE TEMPLATE onekey ELEMENT {- ({{group.count}}x) {{group.key.0}}
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT FORMAT TEMPLATE onekey"#,
+    );
+    assert!(out.contains("- (4x) phone.login"), "{out}");
+    // There is no second part to name.
+    ex.execute(
+        r#"DEFINE TEMPLATE onekey2 ELEMENT {[{{group.key.1}}]
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT FORMAT TEMPLATE onekey2"#,
+    );
+    assert!(out.lines().all(|l| l.trim().is_empty() || l.trim() == "[]"), "{out}");
+}
+
+/// A bound written after `COUNT` is a top-N of the ranking. It used to be
+/// discarded, so a block asking for the worst three listed everything.
+#[test]
+fn a_limit_after_count_bounds_the_ranking() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT LIMIT 2"#,
+            &facade,
+        )
+        .unwrap();
+    let rows = group_rows(&res.result);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0], ("phone.login".to_string(), 4));
+    let CalResultPayload::GroupCounts { total_available, .. } = &res.result else {
+        unreachable!()
+    };
+    // The ranking has three groups; two were returned. A page that reported
+    // its own length would be a truncated answer that looks whole.
+    assert_eq!(*total_available, Some(3));
+    assert!(res.warnings.is_empty(), "{:?}", res.warnings);
+
+    // OFFSET pages the same ranking.
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT OFFSET 2"#,
+            &facade,
+        )
+        .unwrap();
+    assert_eq!(group_rows(&res.result).len(), 1);
+}
+
+/// `GROUP BY` on a field no grain carries produced one group under the empty
+/// key and said nothing — the shape a real ranking has when one value
+/// dominates. `WHERE` has failed closed and announced it since #207.
+#[test]
+fn a_group_key_no_grain_carries_says_so() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool COUNT"#,
+            &facade,
+        )
+        .unwrap();
+    assert_eq!(group_rows(&res.result), vec![(String::new(), 6)]);
+    assert!(
+        res.warnings.iter().any(|w| w.starts_with("CAL-W018") && w.contains("tool")),
+        "{:?}",
+        res.warnings
+    );
+
+    // A key that IS carried warns about nothing.
+    let res = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name COUNT"#,
+            &facade,
+        )
+        .unwrap();
+    assert!(res.warnings.is_empty(), "{:?}", res.warnings);
+}
+
+#[test]
+fn a_composite_key_is_bounded() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let err = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name, tool_content, kind, status, is_error COUNT"#,
+            &facade,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "CAL-E123");
+
+    // Every part is still validated against the grain type, one by one.
+    let err = ex
+        .execute(
+            r#"RECALL tools WHERE namespace = "t" LIMIT 400 GROUP BY tool_name, nonesuch COUNT"#,
+            &facade,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "CAL-E060");
+}
+
+/// `DESCRIBE FIELDS` is the source of truth for what can be filtered and
+/// grouped, so a groupable field that it does not list is undiscoverable.
+#[test]
+fn describe_fields_lists_the_tool_body() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    let out = format!(
+        "{:?}",
+        ex.execute("DESCRIBE FIELDS tools", &facade).unwrap().result
+    );
+    assert!(out.contains("tool_content"), "{out}");
+}
+
+/// The shape a prompt section actually has: a bounded composite ranking as an
+/// `ASSEMBLE` source, rendered by a registered template. This is the block
+/// `areev-bench`'s AppWorld passive arm assembles, and it is the reason the
+/// three halves of #217 had to land together — any one of them missing puts
+/// the tally back in host code.
+#[test]
+fn a_bounded_composite_ranking_is_a_prompt_section() {
+    let d = TempDir::new().unwrap();
+    let facade = AreevFacade::with_session(seeded_tool_failures(&d), Some("t".into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    ex.execute(
+        r#"DEFINE TEMPLATE past_errors ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}
+}"#,
+        &facade,
+    )
+    .unwrap();
+    let out = text(
+        &ex,
+        &facade,
+        r#"ASSEMBLE "past API errors" FOR "an agent" FROM
+             ranked: (RECALL tools WHERE namespace = "t" AND is_error = true
+                      LIMIT 400 GROUP BY tool_name, tool_content COUNT LIMIT 2)
+           BUDGET 16000 tokens
+           FORMAT TEMPLATE past_errors"#,
+    );
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "- (3x) phone.login: Response status code is 401",
+            "- (1x) phone.login: Missing required parameter: password",
+        ],
+        "{out}"
+    );
+}

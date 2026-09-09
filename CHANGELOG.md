@@ -35,7 +35,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#202](https://github.com/AreevAI/areev/issues/202)).
 
 - **CAL can summarise by frequency, extract from text, and navigate a JSON
-  payload** (#209, #210, #211) — three reads that could only be done by
+  payload** (#209, #210, #211, #217) — three reads that could only be done by
   over-fetching and finishing the job in host code, which also defeated
   `BUDGET` (the budget was spent on the rows about to be discarded). The
   spec-level decisions are recorded in
@@ -56,6 +56,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "which policy is cited most". Render it with the new `group.*` template
   variables (`{{group.count}}x {{group.key}}`), or make an `ASSEMBLE` source
   of it so a frequency roll-up is a *section of a prompt*.
+
+  **The key can name two things at once** (#217). "Which tool fails most" is
+  the first question anyone asks a memory of tool calls; "and with what" is
+  the half that says what to do about it — an agent told `phone.login` failed
+  six times learns less than one told it failed with a 401. `GROUP BY` takes
+  up to four fields, joined into one key with ` · ` (`CAL-E123` past that),
+  and the parts render individually:
+
+  ```sql
+  RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name, tool_content COUNT
+  ```
+  ```
+  DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}}
+  → - (6x) phone.login: Response status code is 401
+  ```
+
+  Three related gaps close with it. **A Tool's body is reachable from a
+  template**: it is projected as `tool_content` (the compact key `cnt` expands
+  to it), which every built-in format printed and no template variable named,
+  so a CAL-rendered block could say which call failed but never how —
+  `{{grain.tool_content}}` resolves, `{{grain.content}}` projects the same
+  text on a Tool, and `tool_content` is queryable and groupable.
+  **A `LIMIT` after `COUNT` binds**, so a top-N of a ranking is a top-N
+  (`total_available` still reports the whole ranking's size, so a page never
+  reads as the whole answer). And **`CAL-W018`** now announces a `GROUP BY`
+  key no grain carries, which used to return a single empty-key group —
+  indistinguishable from a ranking with one dominant value.
 
   **Extracting filters** (#210): `first_line`, `split("<sep>", n)`,
   `strip_prefix`, `strip_suffix`, `between("<open>", "<close>")`, and
@@ -220,6 +247,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
   result on the Query page, in plain language, with the `CAL-Wnnn` code shown
   only in Developer mode.
+- **`record_tool_call` takes `ns` in both bindings** (Python `ns=`, Node
+  `ns`), exactly as `add()` does. It was the only write on either surface that
+  could not leave the session namespace, so a host recording calls into
+  per-domain child namespaces (`domain.phone`, `domain.spotify`) had to open a
+  second handle — which the single-writer registry refuses (`STO-E002`).
+
+### Changed
+
+- **`areev-bench` harnesses now run on the engine's own surfaces.** Every
+  model-facing prompt block that can be is a saved `ASSEMBLE` query registered
+  in the memory file and rendered by a registered template, so a memory handed
+  to someone else carries how to read it. Tool calls are recorded through
+  `record_tool_call` rather than flattened, AppWorld's evidence lives in
+  per-app child namespaces read through `"appworld.*"`, and the governed
+  learning pass is an `areev run` workflow whose review node parks for a human
+  — so separation of duties is enforced by the runtime (`RUN-E012`) instead of
+  by harness convention. Ordering within a section relies on a source's own pipeline (#209/#215, above). The moves are byte-for-byte against the renderers
+  they replace, gated by `crates/areev-bench/scripts/parity_check.py`; the
+  new-track blueprint is `crates/areev-bench/BENCH-TEMPLATE.md`.
 
 - **A failed spawn names the command that failed, not the blob.** The
   code executor formatted every spawn error as `spawn <materialized blob

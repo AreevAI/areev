@@ -105,6 +105,11 @@ const ALLOWED_FIELDS: &[&str] = &[
     "status",
     // Tool
     "tool_name",
+    // What the call returned. The built-in renderers have always printed it
+    // (`render.rs` reads `tool_content` before `content`); only the template
+    // path could not see it, so a rendered block could name the endpoint but
+    // never the message it failed with (#217).
+    "tool_content",
     "input",
     "is_error",
     "duration_ms",
@@ -187,7 +192,29 @@ const SPEC_BUDGET_VARIABLES: &[&str] =
 
 /// Group-level variables (the `group.` namespace, #209) — bound on the rows
 /// `GROUP BY <field> COUNT` projects, and nowhere else.
+///
+/// `{{group.key.<n>}}` joins the set (#217): on a composite key it names part
+/// `n`, numbered the way `split(sep, n)` numbers its fields. The set stays
+/// closed — `n` is bounded by `MAX_GROUP_BY_KEYS`, and anything else under
+/// `group.` is still refused at DEFINE time.
 const GROUP_VARIABLES: &[&str] = &["key", "count"];
+
+/// `key.<n>` → `n`, for the one composite-key part it names.
+///
+/// Canonical form only: `key.0`, never `key.00`. A template that could spell
+/// the same part two ways is a template two implementations could disagree
+/// about, and the whole point of the closed set is that they cannot.
+fn group_key_index(field: &str) -> Option<usize> {
+    let digits = field.strip_prefix("key.")?;
+    if digits.is_empty()
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    let n: usize = digits.parse().ok()?;
+    (n < crate::parser::MAX_GROUP_BY_KEYS).then_some(n)
+}
 
 /// CAL §10.5 source-level variables (the `source.` namespace).
 const SPEC_SOURCE_VARIABLES: &[&str] = &[
@@ -259,6 +286,11 @@ const ALL_VALID_VARIABLES: &[&str] = &[
     "status",
     // Tool
     "tool_name",
+    // What the call returned. The built-in renderers have always printed it
+    // (`render.rs` reads `tool_content` before `content`); only the template
+    // path could not see it, so a rendered block could name the endpoint but
+    // never the message it failed with (#217).
+    "tool_content",
     "input",
     "is_error",
     "duration_ms",
@@ -1553,7 +1585,7 @@ fn validate_variable_name(name: &str, _grain_type_ctx: Option<&str>) -> CalResul
         }
     }
     if let Some(field) = name.strip_prefix("group.") {
-        if GROUP_VARIABLES.contains(&field) {
+        if GROUP_VARIABLES.contains(&field) || group_key_index(field).is_some() {
             return Ok(());
         }
     }
@@ -1654,7 +1686,16 @@ fn project_content(grain: &CalGrainResult) -> ResolvedValue {
             }
         }
         "event" => get("content").unwrap_or_default(),
-        "goal" | "tool" | "observation" | "consensus" => get("object").unwrap_or_default(),
+        "goal" | "observation" | "consensus" => get("object").unwrap_or_default(),
+        // A Tool's body is `tool_content` (the compact key `cnt` expands to
+        // it), NOT `content` and not `object` — so `{{grain.content}}` on a
+        // tool call used to project the empty string while `FORMAT markdown`
+        // printed the result happily (#217). Same cascade the built-in
+        // renderers use, so the two surfaces agree on what a tool call says.
+        "tool" => get("tool_content")
+            .or_else(|| get("content"))
+            .or_else(|| get("object"))
+            .unwrap_or_default(),
         "reasoning" => get("conclusion").unwrap_or_default(),
         "state" => get("plan").or_else(|| get("state_value")).unwrap_or_default(),
         "workflow" => match f.get("nodes").and_then(|v| v.as_array()) {
@@ -1810,9 +1851,7 @@ fn resolve_variable(
     // rather than silently reading a field that happens to be called `key`.
     if let Some(field) = name.strip_prefix("group.") {
         return match grain {
-            Some(g) if g.grain_type == "group" && GROUP_VARIABLES.contains(&field) => {
-                resolve_from_fields(&g.fields, field)
-            }
+            Some(g) if g.grain_type == "group" => resolve_group_var(field, g),
             _ => ResolvedValue::Null,
         };
     }
@@ -1850,6 +1889,31 @@ fn resolve_variable(
 
     // 4. Lookup in grain.fields.
     resolve_from_fields(&grain.fields, name)
+}
+
+/// The `group.` namespace on a group projection row (#209, #217).
+///
+/// `key`/`count` are read straight off the row. `key.<n>` is part `n` of a
+/// composite key: the row carries the parts in `keys` when it was grouped by
+/// more than one field, and on a single-key row `key.0` is the key itself —
+/// so one template renders both shapes rather than the arity of the GROUP BY
+/// deciding which variables exist.
+fn resolve_group_var(field: &str, grain: &CalGrainResult) -> ResolvedValue {
+    if GROUP_VARIABLES.contains(&field) {
+        return resolve_from_fields(&grain.fields, field);
+    }
+    let Some(idx) = group_key_index(field) else {
+        return ResolvedValue::Null;
+    };
+    match grain.fields.get("keys").and_then(|v| v.as_array()) {
+        Some(parts) => match parts.get(idx) {
+            Some(serde_json::Value::String(s)) => ResolvedValue::Str(s.clone()),
+            Some(serde_json::Value::Null) | None => ResolvedValue::Null,
+            Some(other) => ResolvedValue::Str(other.to_string()),
+        },
+        None if idx == 0 => resolve_from_fields(&grain.fields, "key"),
+        None => ResolvedValue::Null,
+    }
 }
 
 /// Extract a value from a serde_json::Value object by field name.

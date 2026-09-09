@@ -210,3 +210,27 @@ the floor any claimed effect has to clear. Scoring is DB-only
 (`EvaluationType.ENV`): no LLM judge, so nothing in the score depends on a
 grader's opinion, and an episode that ends at `max_steps` scores zero by
 τ²'s own rule regardless of DB state.
+
+## The harness moved onto Areev's own surfaces (2026-09-08)
+
+Recorded under rule 4 of `../CLAUDE.md`. **No τ² learning number is
+published** (see "Result" above), so nothing published moves with this; the
+ceiling-probe numbers precede it.
+
+- The LESSONS block is two saved `ASSEMBLE` queries registered in the memory
+  file. `tau2/AREEV.md` has the shape.
+- **One deliberate difference.** The retired renderer sorted rules and
+  conventions into ONE alphabetical list, interleaving "always confirm before
+  cancelling" with "refund window: 30 days". CAL orders *within* a section, not
+  across sections, so the two shapes are now two runs of lines. The same grains
+  reach the model in the same per-section order; only the interleaving changed.
+  `scripts/parity_check.py tau2` asserts the line set is identical.
+- **A correlation defect was fixed.** `episode.py` paired a `ToolMessage` with
+  the **last** call in the turn, so a turn issuing several tool calls
+  attributed every result to one of them — and that is the evidence the
+  proposer reads. It now joins on the `tool_call_id` the environment echoes
+  back, and the calls are written through `record_tool_call`, which keeps the
+  arguments, the status and the failure cause.
+
+A re-run of the ceiling probe under this harness should not be compared
+byte-for-byte with the numbers above.

@@ -17,7 +17,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+
+import bench_run
+import cal_assemble as cal
+
+TRACK = "tau2"   # the directory `bench_govern.py --harness` loads
 NS = "retail"
 RUNNER = "agent:retail-desk"
 REVIEWER = "user:supervisor"
@@ -26,6 +33,58 @@ HARNESS_NS = "agent:harness"
 
 INTERNAL_RELATIONS = {"episode", "outcome"}
 EPISODE_SUBJECT = re.compile(r"^episode_\S+$")
+
+# --------------------------------------------------------------------------
+# the prompt, as CAL the file carries
+# --------------------------------------------------------------------------
+#
+# The LESSONS block is two ASSEMBLE sections registered in the memory as saved
+# queries: the approved rules, then the conventions learned about the desk as
+# a whole. Both render through templates registered in the same file, so a
+# memory handed to someone else carries how to read it.
+#
+# One deliberate difference from the renderer this replaced, recorded in
+# `README.md` under "The harness moved to ASSEMBLE": the retired version
+# sorted rules and conventions into ONE alphabetical list, mixing "always
+# confirm before cancelling" with "refund window: 30 days". CAL orders WITHIN
+# a section, not across sections, so the two shapes are now two runs of lines
+# instead of one interleaved run. The same grains reach the model, in the same
+# per-section order; only the interleaving changed. No τ² learning number is
+# published (see README, "Result"), so nothing published moves with it.
+
+RULE_RELATIONS = ("lesson", "fails_with")
+SECTION_CAP = 500
+
+REGISTRY = list(cal.REVIEW_REGISTRY) + [
+    cal.guarded_template("retail_rules_tpl", None, "- {{grain.object}}"),
+    cal.guarded_template("retail_conventions_tpl", None,
+                         "- {{grain.relation | humanize}}: {{grain.object}}"),
+    cal.saved_query(
+        "retail_rules", ["ns"],
+        '  ASSEMBLE "operating rules" FOR "the retail desk agent" FROM\n'
+        '    rules: (RECALL facts WHERE namespace = $ns\n'
+        '            AND relation IN ("lesson", "fails_with")\n'
+        '            ORDER BY object ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE retail_rules_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "the approved rules the desk agent follows"),
+    # Everything the loop approved ABOUT THE DESK rather than about one
+    # episode. `NOT subject STARTS WITH "episode_"` is the store-side form of
+    # the EPISODE_SUBJECT check -- an episode's own record is evidence for the
+    # loop, never an instruction for the agent.
+    cal.saved_query(
+        "retail_conventions", ["ns"],
+        '  ASSEMBLE "learned conventions" FOR "the retail desk agent" FROM\n'
+        '    conventions: (RECALL facts WHERE namespace = $ns\n'
+        '                  AND relation NOT IN ("episode", "fails_with", "lesson", "outcome")\n'
+        '                  AND NOT subject STARTS WITH "episode_"\n'
+        '                  ORDER BY relation ASC LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE retail_conventions_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "conventions learned about the desk as a whole"),
+]
 
 
 def with_memory(db_path, actor, fn):
@@ -38,31 +97,24 @@ def with_memory(db_path, actor, fn):
     import areev
     db = areev.Areev(db_path, ns=NS, actor=actor)
     try:
+        cal.install(db, REGISTRY, db_path=db_path, ns=NS)
         return fn(db)
     finally:
         del db
         gc.collect()
 
 
-def _facts(db, ns=NS, limit=400):
-    return json.loads(db.cal('RECALL facts WHERE namespace = "%s" LIMIT %d FORMAT json'
-                             % (ns, limit)))["grains"]
-
-
 def lessons_markdown(db):
-    """The LESSONS block, from live grains, on every episode."""
-    rules = []
-    for g in _facts(db):
-        f = g.get("fields", {})
-        rel, obj = f.get("relation"), (f.get("object") or "").strip()
-        if not obj:
-            continue
-        if rel in ("lesson", "fails_with"):
-            rules.append(obj)
-        elif (not EPISODE_SUBJECT.match(f.get("subject") or "")
-              and rel not in INTERNAL_RELATIONS):
-            rules.append("%s: %s" % (rel.replace("_", " "), obj))
-    return "\n".join("- %s" % r for r in sorted(set(rules)))
+    """The LESSONS block, from live grains, on every episode.
+
+    Two ASSEMBLE sections joined into one list of lines: the approved rules,
+    then the conventions learned about the desk. Assembled on every episode,
+    so Areev's own apply/rollback is the only lever on the prompt.
+    """
+    return cal.block(db, [
+        ("retail_rules", {"ns": NS}, SECTION_CAP),
+        ("retail_conventions", {"ns": NS}, SECTION_CAP),
+    ], sep="\n")
 
 
 def record_episode(db, rec, calls):
@@ -71,12 +123,27 @@ def record_episode(db, rec, calls):
     for c in calls:
         if not (c.get("tool") or "").strip():
             continue  # a nameless call is a malformed reply, not an action
-        body = json.dumps(c.get("error") and {"error": c["error"]} or c.get("args") or {})
-        db.add("tool", json.dumps({
-            "tool_name": c["tool"],
-            "is_error": bool(c.get("error")),
-            "content": (c.get("error") or body)[:600],
-        }), ns=NS)
+        error = c.get("error")
+        args = json.dumps(c.get("args") or {})
+        # A Tool grain has a call/result lifecycle, and `record_tool_call`
+        # writes it as one: the arguments that produced the result, the id
+        # joining the two halves, the status and the failure cause. The
+        # flattened `add("tool", {...})` this replaces kept only the result
+        # text -- so `areev_tool_provenance` and `step_actions`, which exist
+        # to answer "what was this call given?", had nothing to answer with.
+        db.record_tool_call(
+            c["tool"],
+            (c.get("result") or error or args)[:600],
+            bool(error),
+            thread=rec.get("task_id"),
+            call_id=c.get("id") or None,
+            input=args[:2000],
+            status="failed" if error else "completed",
+            # A closed enum: the environment refusing the call is the executor
+            # failing. The refusal TEXT is the result, where it is readable.
+            failure_cause=("executor_error" if error else None),
+            executor_kind="host",
+        )
 
     # The customer's own words, when they are a complaint rather than a
     # request. One sentence a person said is the rarest and most valuable
@@ -220,55 +287,78 @@ def parse_proposal(summary):
 
 
 def current_rules(db):
-    return [f["object"] for f in (g.get("fields", {}) for g in _facts(db))
-            if f.get("relation") in ("lesson", "fails_with") and f.get("object")]
+    """The rule texts already in force, for the supervisor's dedup check.
+
+    Relation-scoped like the section that renders them: the whole-namespace
+    scan this replaced was capped at 400, so a long experience phase would
+    have hidden its oldest rules from the reviewer and let one be approved
+    twice."""
+    grains = json.loads(db.cal(
+        'RECALL facts WHERE namespace = "%s" AND relation IN ("lesson", "fails_with") '
+        'LIMIT %d FORMAT json' % (NS, SECTION_CAP)))["grains"]
+    if len(grains) >= SECTION_CAP:
+        raise RuntimeError("rule scan hit the %d-grain cap; narrow the query" % SECTION_CAP)
+    return [obj for obj in ((g.get("fields", {}).get("object") or "").strip()
+                            for g in grains) if obj]
+
+
+def review_pending(db_path, ask, judge=None):
+    """The supervisor's decision on each proposed rule — judged, not applied.
+
+    Applying is the run's `apply` node, under `user:supervisor`, after the
+    runtime has refused a self-approval. Every answer carries its reason, so
+    the ledger shows what was turned down as well as what was taken.
+    """
+    pending = (ask or {}).get("pending") or []
+    declined = _declined_before(ask)
+    in_force = set(normalize_rule(x) for x in
+                   with_memory(db_path, REVIEWER, current_rules))
+    decisions = []
+    for rec in pending:
+        kind, text = parse_proposal(rec.get("summary") or "")
+        target = rec.get("target_ref") or ""
+        earlier = cal.restates_a_decision(text, declined, normalize_rule, _content_words)
+        if earlier is not None:
+            ok, why = False, ("already declined: %s" % earlier["text"][:110])
+        elif kind in ("lesson", "fact") and not EPISODE_SUBJECT.match(target.rsplit("/", 1)[-1]):
+            ok, why = review_recommendation(text, in_force, judge)
+        elif kind == "fact":
+            ok, why = False, "about one episode, not a rule for future ones (%s)" % target
+        else:
+            ok, why = False, "advisory only — asks for no change"
+        if ok:
+            in_force.add(normalize_rule(text))
+        decisions.append({"hash": rec["hash"], "kind": kind, "text": text,
+                          "approved": bool(ok), "why": why})
+    return any(d["approved"] for d in decisions), decisions
+
+
+def _declined_before(ask):
+    """The proposals this reviewer already turned down.
+
+    Read by the `bench_review_history` saved query and handed over in the ask.
+    Consulted BEFORE the judge: a reworded restatement of a declined rule
+    carries a different `dedup_key`, so the engine's rejection cooldown never
+    sees it and nothing else was looking.
+    """
+    out = []
+    for earlier in (ask or {}).get("prior") or []:
+        if (earlier.get("status") or "").lower() not in ("rejected", "rolled_back"):
+            continue
+        _kind, text = parse_proposal(earlier.get("summary") or "")
+        if text:
+            out.append({"text": text, "status": earlier.get("status")})
+    return out
 
 
 def learn(db_path, llm_cmd, ground_cmd, judge=None, policy=None, verbose=True,
           full_sweep=False):
-    """One governed pass: propose under the runner, decide under the supervisor."""
-    policy = policy_file(db_path, policy)
-    rep = json.loads(with_memory(
-        db_path, RUNNER,
-        lambda db: db.loop_run(llm_cmd=llm_cmd, ground_cmd=ground_cmd, policy=policy,
-                               full_sweep=full_sweep)))
-    out = {"pending": 0, "applied": 0, "rejected": 0, "errors": [],
-           "funnel": rep.get("llm_funnel"), "decisions": []}
-    if verbose and out["funnel"]:
-        print("   funnel:", json.dumps(out["funnel"]))
-
-    def review(rdb):
-        in_force = set(normalize_rule(x) for x in current_rules(rdb))
-        pend = json.loads(rdb.recommendations('{"status":"pending"}'))
-        out["pending"] = len(pend)
-        for rec in pend:
-            kind, text = parse_proposal(rec.get("summary") or "")
-            target = rec.get("target_ref") or ""
-            if kind in ("lesson", "fact") and not EPISODE_SUBJECT.match(target.rsplit("/", 1)[-1]):
-                ok, why = review_recommendation(text, in_force, judge)
-            elif kind == "fact":
-                ok, why = False, "about one episode, not a rule for future ones (%s)" % target
-            else:
-                ok, why = False, "advisory only — asks for no change"
-            try:
-                if ok:
-                    rdb.apply_recommendation(rec["hash"], why)
-                    in_force.add(normalize_rule(text))
-                    out["applied"] += 1
-                    if verbose:
-                        print("   APPROVED %s" % text[:110])
-                else:
-                    rdb.dismiss_recommendation(rec["hash"], why)
-                    out["rejected"] += 1
-                    if verbose:
-                        print("   rejected (%s) %s" % (why[:40], text[:60]))
-                out["decisions"].append({"hash": rec["hash"], "kind": kind, "text": text,
-                                         "approved": bool(ok), "why": why})
-            except ValueError as e:
-                out["errors"].append(str(e)[:120])
-
-    with_memory(db_path, REVIEWER, review)
-    return out
+    """One governed pass, executed as a journaled `areev run`:
+    propose → review (a client node the run PARKS on) → apply."""
+    return bench_run.learn(
+        sys.modules[__name__], db_path, llm_cmd, ground_cmd,
+        decide=lambda ask: review_pending(db_path, ask, judge),
+        policy=policy, verbose=verbose, full_sweep=full_sweep)
 
 
 def rollback_all(db, because="evaluation arm A: withdrawing the learned rules"):

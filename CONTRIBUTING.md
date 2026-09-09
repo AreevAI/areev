@@ -48,7 +48,16 @@ git clone https://github.com/AreevAI/areev
 cd areev
 cargo build --workspace
 cargo test  --workspace        # full suite, fast
+scripts/install-hooks.sh       # optional, but it saves you a red CI run
 ```
+
+The hook keeps the README's generated figures current. CI fails when
+`docs/repo-stats.*` drift more than 2% from the tree, and the metric that gets
+there first is `test_code` — in a test-heavy repo ~1,100 new lines of test is
+already 2%, so a couple of merged PRs can leave the gate red for whoever
+branches next. The hook regenerates at 1%, in the commit that moved the
+numbers. Undo it with `git config --unset core.hooksPath`; skip it once with
+`git commit --no-verify`.
 
 Per-crate iteration:
 

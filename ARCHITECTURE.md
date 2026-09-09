@@ -1914,6 +1914,23 @@ plain total, discarding the grouping, which is `COUNT` with extra words. Giving
 that combination the meaning it should always have had costs no caller anything
 and asks nothing of the spec beyond a semantic note.
 
+**Amendment (2026-09-09, issue #217): a group key may name more than one
+thing.** A frequency ranking answers "which tool fails most"; the message it
+failed with is the half that says what to *do* about it, and an agent told
+`phone.login` failed six times learns less than one told it failed with a 401.
+Keyed on the message instead, the endpoint is lost — so the key has to be able
+to be both, and `GROUP BY` now takes up to four fields joined into one, with
+`{{group.key.<n>}}` reaching a part. Two smaller gaps closed with it, and both
+are instances of rules this document already states rather than new ones: a
+Tool's body (`tool_content`) joins the closed template-variable and queryable
+sets, so the surface that renders a grain and the surface that filters it agree
+about what a tool call *says*; and a `LIMIT` written after `COUNT` binds to the
+ranking, because a bound that parses and does nothing is the silent-no-op
+failure the `CAL-W014`/`CAL-W016` warnings exist to prevent. Grouping by a
+field no grain carries is now `CAL-W018` — the same "absence is UNKNOWN, and
+the answer says so" rule the #207 amendment above applies to `WHERE`, applied
+to the grouping path.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves
