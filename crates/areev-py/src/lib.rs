@@ -409,6 +409,9 @@ fn py_observer(on_event: Option<Py<PyAny>>) -> Option<std::sync::Arc<dyn areev_r
 #[pyclass]
 struct Areev {
     facade: std::sync::Arc<AreevFacade>,
+    /// The memory's path or DSN — the credential broker's blob door reads
+    /// stored bytes from it by path (#106), lock-free.
+    path: String,
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
     actor: String,
@@ -436,6 +439,7 @@ impl Areev {
         anon_key: Option<String>,
         read_only: bool,
     ) -> PyResult<Self> {
+        let memory_path = path.clone();
         // `read_only=True` refuses every write (STO-E004), creates nothing,
         // and issues no DDL on postgres — SELECT-only verification instead,
         // which is what makes a USAGE+SELECT role a workable identity.
@@ -551,6 +555,7 @@ impl Areev {
         };
         Ok(Areev {
             facade: std::sync::Arc::new(facade),
+            path: memory_path,
             ns,
             actor,
             executor: std::sync::Arc::new(CalExecutor::new(CalExecutorConfig::default())),
@@ -1693,7 +1698,8 @@ impl Areev {
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
                         llm_max_tokens = None, allow_executor = None, executor_cache = None,
                         sandbox_cmd = None, executor_timeout_secs = None, tool_env = None,
-                        on_event = None))]
+                        on_event = None, credentials = None, allow_hosts = None,
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1716,6 +1722,11 @@ impl Areev {
         executor_timeout_secs: Option<u64>,
         tool_env: Option<String>,
         on_event: Option<Py<PyAny>>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<u64>,
+        resolver_env: Option<String>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1725,10 +1736,14 @@ impl Areev {
         // Resolved before the run starts, so a bad model spec or a missing key
         // fails without journaling a run that cannot advance.
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+        let egress = self.egress_handle(&EgressPin {
+            credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
+        })?;
         let runner = self.runner_pinned(
             tool_cmd,
             llm,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+            egress,
             py_observer(on_event),
         );
         let opts =
@@ -1750,7 +1765,8 @@ impl Areev {
     #[pyo3(signature = (run_id, tool_cmd = None, model = None, base_url = None,
                         key_env = None, llm_max_tokens = None, allow_executor = None,
                         executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
-                        tool_env = None, on_event = None))]
+                        tool_env = None, on_event = None, credentials = None, allow_hosts = None,
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     fn run_resume(
         &self,
@@ -1767,12 +1783,21 @@ impl Areev {
         executor_timeout_secs: Option<u64>,
         tool_env: Option<String>,
         on_event: Option<Py<PyAny>>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<u64>,
+        resolver_env: Option<String>,
     ) -> PyResult<String> {
         let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+        let egress = self.egress_handle(&EgressPin {
+            credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
+        })?;
         let runner = self.runner_pinned(
             tool_cmd,
             llm,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+            egress,
             py_observer(on_event),
         );
         let opts = run_options(None, None, None, None, llm_max_tokens);
@@ -2649,7 +2674,8 @@ impl Areev {
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
                         executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
-                        tool_env = None))]
+                        tool_env = None, credentials = None, allow_hosts = None,
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2675,10 +2701,16 @@ impl Areev {
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
         tool_env: Option<String>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<u64>,
+        resolver_env: Option<String>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+            EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
@@ -2705,7 +2737,8 @@ impl Areev {
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
                         executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
-                        tool_env = None))]
+                        tool_env = None, credentials = None, allow_hosts = None,
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2728,12 +2761,18 @@ impl Areev {
         sandbox_cmd: Option<String>,
         executor_timeout_secs: Option<u64>,
         tool_env: Option<String>,
+        credentials: Option<String>,
+        allow_hosts: Option<String>,
+        tool_egress: Option<String>,
+        credential_ttl_secs: Option<u64>,
+        resolver_env: Option<String>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
+            EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
@@ -2846,6 +2885,7 @@ impl Areev {
         base_url: Option<String>,
         key_env: Option<String>,
         pin: ExecutorPin,
+        egress: EgressPin,
         opts: areev_run::RunOptions,
     ) -> PyResult<areev_trigger::Evaluator> {
         // A connector IS a tool — JSON in, JSON out, one process per
@@ -2875,13 +2915,16 @@ impl Areev {
         // recorded as fired, and never started.
         let can_execute =
             tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+        // The runs a firing starts get the broker `run_start` would build
+        // (#201) — distinct from the connector-poll credentials below.
+        let handle = if can_execute { self.egress_handle(&egress)? } else { None };
         let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(
             || {
                 std::sync::Arc::new(RunnerStarter {
                     // The trigger surface takes no `on_event` (#182): a
                     // firing starts a real run, so this is a knowable
                     // asymmetry with `run_start`, not an oversight.
-                    runner: self.runner_pinned(tool_cmd, llm, pin, None),
+                    runner: self.runner_pinned(tool_cmd, llm, pin, handle, None),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
             },
@@ -2910,6 +2953,9 @@ impl Areev {
                 credentials.insert(name, source);
             }
         }
+        // `credentials` (the CLI's `--credential` spelling) configures the
+        // connector too, exactly as one `--credential` flag does both.
+        credentials.extend(egress.spec().unowned_credentials().map_err(err)?);
 
         Ok(areev_trigger::Evaluator {
             facade: std::sync::Arc::clone(&self.facade),
@@ -2972,7 +3018,19 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        self.runner_pinned(tool_cmd, llm, ExecutorPin::default(), None)
+        self.runner_pinned(tool_cmd, llm, ExecutorPin::default(), None, None)
+    }
+
+    /// The broker `egress` describes — serving this memory's blobs on the
+    /// same token — or None when nothing was configured.
+    fn egress_handle(&self, egress: &EgressPin) -> PyResult<Option<areev_run::EgressHandle>> {
+        match egress.spec().build().map_err(err)? {
+            None => Ok(None),
+            Some(broker) => {
+                broker.serve_blobs(&self.path);
+                Ok(Some(areev_run::EgressHandle::new(std::sync::Arc::new(broker))))
+            }
+        }
     }
 
     /// The pin-aware factory (#87): `allow_executor` is the same comma list
@@ -2989,6 +3047,7 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
         pin: ExecutorPin,
+        egress: Option<areev_run::EgressHandle>,
         observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
     ) -> areev_run::Runner {
         let timeout = pin
@@ -3003,6 +3062,9 @@ impl Areev {
                 }
                 if let Some(p) = env.clone() {
                     ce = ce.with_env_policy(p);
+                }
+                if let Some(h) = &egress {
+                    ce = ce.with_egress(h.clone());
                 }
                 std::sync::Arc::new(ce)
             }
@@ -3046,6 +3108,9 @@ impl Areev {
                 if let Some(p) = env {
                     ce = ce.with_env_policy(p);
                 }
+                if let Some(h) = egress {
+                    ce = ce.with_egress(h);
+                }
                 std::sync::Arc::new(ce)
             }
         };
@@ -3075,6 +3140,33 @@ struct ExecutorPin {
     /// empty list included — clears it and passes only those, plus the
     /// minimal set a command needs to start.
     tool_env: Option<String>,
+}
+
+/// The credential broker's settings (#201): the CLI's `--credential`,
+/// `--allow-host`, `--tool-egress`, `--credential-ttl` and `--resolver-env`
+/// spec strings, verbatim, parsed by `areev_run::EgressSpec`.
+#[derive(Default)]
+struct EgressPin {
+    credentials: Option<String>,
+    allow_hosts: Option<String>,
+    tool_egress: Option<String>,
+    credential_ttl_secs: Option<u64>,
+    resolver_env: Option<String>,
+}
+
+impl EgressPin {
+    fn spec(&self) -> areev_run::EgressSpec {
+        let some = |v: &Option<String>| {
+            v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+        };
+        areev_run::EgressSpec {
+            credentials: some(&self.credentials),
+            allow_hosts: some(&self.allow_hosts),
+            tool_egress: some(&self.tool_egress),
+            credential_ttl_secs: self.credential_ttl_secs,
+            resolver_env: some(&self.resolver_env),
+        }
+    }
 }
 
 /// `tool_env` → an allow-list policy, warning on any name already registered

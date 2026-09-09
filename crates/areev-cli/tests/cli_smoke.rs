@@ -1574,3 +1574,78 @@ fn vector_index_verb_reports_refuses_and_grades() {
     assert!(!ok);
     assert!(err.contains("usage: areev vector-index"), "{err}");
 }
+
+// ---- #201: the credential broker, from the CLI and from `areev serve` ------
+
+#[cfg(unix)]
+#[path = "common/egress201.rs"]
+mod egress201;
+
+#[cfg(unix)]
+#[test]
+fn a_capability_tool_reaches_the_broker_from_the_flags_and_from_their_variables() {
+    // #201: the broker is built by `areev_run::EgressSpec` for every surface,
+    // so the CLI's flags and the `$AREEV_RUN_*` spellings must reach the same
+    // verdicts — asserted here against the fixture the binding suites drive.
+    let up = egress201::upstream();
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let sandbox = egress201::sandbox_cmd();
+    let (wf, addr) = egress201::declare(db, &up.url);
+    let (creds, hosts, egress) = egress201::grants(&up.url);
+
+    // Without the grants nothing answers `areev::fetch`.
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "bare",
+               "--allow-executor", &addr, "--executor-cache", cache.to_str().unwrap(),
+               "--sandbox-cmd", &sandbox])
+        .output()
+        .unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("Failed") || !out.status.success(), "{text}");
+
+    // Flags.
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "flags",
+               "--allow-executor", &addr, "--executor-cache", cache.to_str().unwrap(),
+               "--sandbox-cmd", &sandbox,
+               "--credential", &creds, "--allow-host", &hosts, "--tool-egress", &egress])
+        .envs(egress201::SECRETS)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (via_flags, refusals) = egress201::outcome(db, "flags");
+    egress201::assert_outcome(&via_flags, &refusals, "flags");
+    // The refusals are also reported to the operator, as before.
+    assert!(String::from_utf8_lossy(&out.stderr).contains("RUN-E022"), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Variables: the same spec strings out of band, the way a heartbeat sets them.
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "vars",
+               "--allow-executor", &addr, "--executor-cache", cache.to_str().unwrap(),
+               "--sandbox-cmd", &sandbox])
+        .envs(egress201::SECRETS)
+        .env("AREEV_RUN_CREDENTIAL", &creds)
+        .env("AREEV_RUN_ALLOW_HOST", &hosts)
+        .env("AREEV_RUN_TOOL_EGRESS", &egress)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (via_vars, refusals) = egress201::outcome(db, "vars");
+    egress201::assert_outcome(&via_vars, &refusals, "vars");
+    for k in ["admitted", "wrong_host", "wrong_method", "undeclared_credential", "unpaired"] {
+        assert_eq!(via_flags[k], via_vars[k], "{k}");
+    }
+
+    // A bad spec is refused before anything is journaled.
+    let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "bad",
+               "--allow-executor", &addr, "--sandbox-cmd", &sandbox,
+               "--credential", "gmail", "--allow-host", &hosts, "--tool-egress", &egress])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--credential: expected name=ENV_VAR"));
+}

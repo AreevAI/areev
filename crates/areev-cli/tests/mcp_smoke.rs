@@ -1026,3 +1026,66 @@ fn mcp_mount_of_a_missing_file_is_refused_not_created() {
         "and it must not have created the file"
     );
 }
+
+// ---- #201: the broker from `areev serve`, configured out of band ----------
+
+#[cfg(unix)]
+#[path = "common/egress201.rs"]
+mod egress201;
+
+/// `$AREEV_RUN_CREDENTIAL` / `$AREEV_RUN_ALLOW_HOST` / `$AREEV_RUN_TOOL_EGRESS`
+/// at server start are the CLI flags' grammar, server-bound like
+/// `$AREEV_RUN_TOOL_CMD`: an MCP client cannot hand itself a credential.
+#[cfg(unix)]
+#[test]
+fn a_capability_tool_reaches_the_broker_the_server_was_started_with() {
+    let up = egress201::upstream();
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let sandbox = egress201::sandbox_cmd();
+    let (wf, addr) = egress201::declare(db, &up.url);
+    let (creds, hosts, egress) = egress201::grants(&up.url);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", db, "--ns", "ops"])
+        .envs(egress201::SECRETS)
+        .env("AREEV_RUN_ALLOW_EXECUTOR", &addr)
+        .env("AREEV_RUN_EXECUTOR_CACHE", cache.to_str().unwrap())
+        .env("AREEV_RUN_SANDBOX_CMD", &sandbox)
+        .env("AREEV_RUN_CREDENTIAL", &creds)
+        .env("AREEV_RUN_ALLOW_HOST", &hosts)
+        .env("AREEV_RUN_TOOL_EGRESS", &egress)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let script = [
+        rpc(1, "initialize", serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})),
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+        rpc(2, "tools/call", serde_json::json!({"name": "areev_run_start", "arguments": {
+            "workflow": wf, "run_id": "mcp-1"}})),
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in &script {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let started = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["id"] == 2)
+        .unwrap_or_else(|| panic!("no reply to run_start: {stdout}"));
+    let text = started["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("Completed"), "{started}");
+
+    let (result, refusals) = egress201::outcome(db, "mcp-1");
+    egress201::assert_outcome(&result, &refusals, "mcp");
+}

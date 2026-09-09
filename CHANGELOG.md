@@ -285,6 +285,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   could not leave the session namespace, so a host recording calls into
   per-domain child namespaces (`domain.phone`, `domain.spotify`) had to open a
   second handle — which the single-writer registry refuses (`STO-E002`).
+- **An empty `tool_env` / `toolEnv` in the bindings now means "clear to the
+  minimal set", as the CLI's `--tool-env ""` does** (#197). Both bindings
+  filtered the empty string out before building the policy, so the strictest
+  request — clear the environment, admit nothing beyond what a command needs
+  to start — was answered with the loosest posture, inherit everything. A host
+  wanting the clear-only policy had to name a variable already in the minimal
+  set just to select it. `None` / `null` keep the inherit default, unchanged.
+  Pinned in both bindings' tests, on the run executors and the trigger
+  connector.
+- **The credential broker reaches the bindings and `areev serve`** (#201).
+  A `wasm32-areev-io` tool's `areev::fetch` is answered by the broker, and
+  the broker was built only from CLI flags — so a host driving runs through
+  Python or Node, which is what a service does, could persist a capability
+  tool, pin it, point at the sandbox, and still have every fetch fail. The
+  parser moved into `areev-run` as `EgressSpec`, the one behind
+  `--credential`/`--allow-host`/`--tool-egress`/`--credential-ttl`/
+  `--resolver-env`, and every surface calls it: the same-named parameters on
+  `run_start`, `run_resume`, `trigger_run` and `trigger_deliver` in both
+  bindings (`credentials`, `allow_hosts`, `tool_egress`, `credential_ttl_secs`,
+  `resolver_env`; camelCase in Node) take the flags' spec strings verbatim,
+  and `$AREEV_RUN_CREDENTIAL`, `$AREEV_RUN_ALLOW_HOST`,
+  `$AREEV_RUN_TOOL_EGRESS`, `$AREEV_RUN_CREDENTIAL_TTL` and
+  `$AREEV_RUN_RESOLVER_ENV` are the server-bound spellings for `areev serve`
+  — and the out-of-band fallbacks for the CLI, like the rest of the family.
+  The blob door (`{"blob": {"read": true}}`) is wired on the same path, a
+  refusal from a binding-driven run is journaled exactly as from the CLI
+  (`403` + `RUN-E022`, an Observation in `agent:harness`), and a parity test
+  drives one capability tool from Node, Python, the CLI and the MCP server
+  with one declaration and one set of grants.
 
 ### Changed
 
@@ -312,15 +341,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `scripts/check_versions.py` asserts, alongside the other detached package
   (`areev-js`), and it gained the `--version` flag that makes the pairing
   checkable at all.
-- **An empty `tool_env` / `toolEnv` in the bindings now means "clear to the
-  minimal set", as the CLI's `--tool-env ""` does** (#197). Both bindings
-  filtered the empty string out before building the policy, so the strictest
-  request — clear the environment, admit nothing beyond what a command needs
-  to start — was answered with the loosest posture, inherit everything. A host
-  wanting the clear-only policy had to name a variable already in the minimal
-  set just to select it. `None` / `null` keep the inherit default, unchanged.
-  Pinned in both bindings' tests, on the run executors and the trigger
-  connector.
 
 ## [1.7.3] — 2026-09-07
 

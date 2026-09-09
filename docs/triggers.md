@@ -314,7 +314,7 @@ plan by hand executes it on a heartbeat:
 | Prepared-code cache | `--executor-cache` | `executor_cache` | `$AREEV_RUN_EXECUTOR_CACHE` |
 | Executor ceiling (#133) | `--executor-timeout` | `executor_timeout_secs` | `$AREEV_RUN_EXECUTOR_TIMEOUT` |
 | Abstract nodes | `--model` / `--base-url` / `--key-env` | `model` / `base_url` / `key_env` | `$AREEV_RUN_MODEL` / `…_BASE_URL` / `…_KEY_ENV` |
-| Outbound credentials | `--credential` / `--allow-host` / `--tool-egress` | `credentials_json` | — |
+| Outbound credentials (#201) | `--credential` / `--allow-host` / `--tool-egress` | `credentials` / `allow_hosts` / `tool_egress` (the flags' spec strings; `credentials_json` still feeds the connector) | `$AREEV_RUN_CREDENTIAL` / `…_ALLOW_HOST` / `…_TOOL_EGRESS` |
 | Ceilings | the budget flags above | the budget arguments above | — |
 
 Every one of these also reads its `$AREEV_RUN_*` variable, with the flag

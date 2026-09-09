@@ -18,6 +18,7 @@
 pub mod broker;
 pub mod clock;
 pub mod egress;
+pub mod egress_spec;
 pub mod executor;
 pub mod journal;
 pub mod lease;
@@ -42,6 +43,7 @@ pub use areev_core::types::capability::AllowedHost;
 // driver does not have to know that.
 pub use areev_core::types::capability::{CapabilityDenied, Declaration};
 pub use egress::{EgressDenied, EgressPolicy};
+pub use egress_spec::EgressSpec;
 pub use executor::{
     env_allow_policy, is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor,
     CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,

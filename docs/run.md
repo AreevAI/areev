@@ -263,6 +263,27 @@ credential against that tool's grant, attaches the credential, and makes the
 request. The token never enters the tool's process, so a compromised tool has
 nothing to exfiltrate.
 
+The broker is on every surface that starts a run, not only the CLI (#201).
+The five settings are the same spec strings everywhere, parsed by one parser
+(`areev_run::EgressSpec`), so a spec that works on the CLI works verbatim
+from a binding — and a refusal from a binding-driven run is journaled exactly
+as from the CLI: `403` carrying `RUN-E022` to the tool, an Observation in
+`agent:harness`:
+
+| CLI | Python (`run_start`/`run_resume`/`trigger_run`/`trigger_deliver`) | Node | Environment (`areev serve`, and any surface out of band) |
+|---|---|---|---|
+| `--credential` | `credentials=` | `credentials` | `$AREEV_RUN_CREDENTIAL` |
+| `--allow-host` | `allow_hosts=` | `allowHosts` | `$AREEV_RUN_ALLOW_HOST` |
+| `--tool-egress` | `tool_egress=` | `toolEgress` | `$AREEV_RUN_TOOL_EGRESS` |
+| `--credential-ttl` | `credential_ttl_secs=` | `credentialTtlSecs` | `$AREEV_RUN_CREDENTIAL_TTL` |
+| `--resolver-env` | `resolver_env=` | `resolverEnv` | `$AREEV_RUN_RESOLVER_ENV` |
+
+The variables are server-bound in the sense `$AREEV_RUN_TOOL_CMD` is: read
+at `areev serve` start, never from an MCP client, because the grant IS the
+authorization. A flag wins over its variable. On the trigger surface
+`credentials` configures the connector-poll broker too (owners dropped, as
+one `--credential` flag does both), beside the older `credentials_json`.
+
 `headers` is optional and carries **non-credential** request headers — the
 ones enterprise APIs require and no credential expresses: `X-Goog-User-Project`
 on Google calls made with user credentials, `anthropic-version`, `x-ms-version`,
@@ -568,6 +589,24 @@ areev run start --db m.db --workflow <plan-hash> \
   --allow-host https://gmail.googleapis.com \
   --tool-egress 'send_ask:gmail:POST'
 ```
+
+The same run from a binding takes the same spec strings (#201):
+
+```python
+m.run_start(plan, "r1", allow_executor="<64 hex>", sandbox_cmd="areev-sandbox",
+            credentials="gmail=GMAIL_TOKEN",
+            allow_hosts="https://gmail.googleapis.com",
+            tool_egress="send_ask:gmail:POST")
+```
+
+```js
+await m.runStart(plan, 'r1', null, null, null, null, null, null, null, null, null, null,
+  '<64 hex>', null, 'areev-sandbox', null, null, null,
+  'gmail=GMAIL_TOKEN', 'https://gmail.googleapis.com', 'send_ask:gmail:POST')
+```
+
+and `areev serve` reads them from `$AREEV_RUN_CREDENTIAL`,
+`$AREEV_RUN_ALLOW_HOST` and `$AREEV_RUN_TOOL_EGRESS` at start.
 
 What is enforced, and where:
 

@@ -462,6 +462,11 @@ the CLI:
 - **Host tools execute only via `$AREEV_RUN_TOOL_CMD`** (the same subprocess
   seam as the CLI's `--tool-cmd`: input JSON on stdin, result JSON on
   stdout). Without it, host-tool nodes fail loudly rather than silently.
+  The credential broker follows the same posture (#201):
+  `$AREEV_RUN_CREDENTIAL`, `$AREEV_RUN_ALLOW_HOST`, `$AREEV_RUN_TOOL_EGRESS`,
+  `$AREEV_RUN_CREDENTIAL_TTL` and `$AREEV_RUN_RESOLVER_ENV` take the CLI
+  flags' spec strings verbatim at server start, so a `wasm32-areev-io` tool's
+  `areev::fetch` is answered here too — and never configurable by a client.
 - **The acting principal is server-bound** — the identity the server was
   started with (`--as`, else `agent:mcp`). `principal`/`responder` are
   **not** parameters; a client-supplied name would let an agent approve
