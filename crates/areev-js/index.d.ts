@@ -515,6 +515,11 @@ export declare class Areev {
    * separation of duties (responder ≠ triggering principal) is structural.
    */
   runRespond(runId: string, toolCallId: string, resultJson: string, responder: string, isError?: boolean | undefined | null): Promise<string>
+  /**
+   * Queue a steering message: the next superstep hands it to its nodes
+   * under `$inbox`.
+   */
+  runInput(runId: string, message: string): Promise<string>
   /** Write the kill-switch marker (the lowest-privilege run verb). */
   runCancel(runId: string, because?: string | undefined | null): Promise<string>
   /** Journal-consistent replay; writes nothing. JSON report. */

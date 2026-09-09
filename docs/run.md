@@ -768,6 +768,39 @@ and review; it loses only this verb. Approvers should hold a per-principal
 credential (`areev ui --auth <map>`), whose grants are the same either way —
 what differs is the strength of the proof, not the rights.
 
+## Steering a running run (the input queue)
+
+A person can redirect a run without stopping it, and without a plan having to
+model a human gate just to *receive* a message:
+
+```bash
+areev run input --run-id demo-1 --message "use the express carrier"
+```
+
+Each message is a Fact on the run, journaled in the run's own namespace. The
+run's driver picks it up at its next wave boundary and the **next superstep**
+hands every node it dispatches the queued messages, in order, in their input
+under the reserved key `$inbox`.
+
+The driver applies a message only while a superstep is **open**, and an open
+is the only thing that drains the queue — so a message is inert for the whole
+superstep that observed it. That is what makes `verify` exact: which wave the
+driver happened to poll on cannot show up in a checkpoint, so replay places
+messages by counting the journal against the checkpoint's own `inputs_seen`,
+never against a timestamp.
+
+Three bounds, stated. A message queued *while a node is running* is seen by
+the next superstep, not by the node in flight — an abstract node's LLM loop
+lives inside one superstep, so steering lands after its turn ends. A message
+queued *before the run starts* reaches the second superstep, not the first;
+the first superstep's input is `--input`. And a fork does not inherit the base
+run's queue.
+
+`run.execute` is the verb — steering advances a run, so it is granted like
+starting one, not like the brake. The same surface exists as
+`areev_run_input` (MCP), `db.run_input(run_id, message)` (Python) and
+`m.runInput(runId, message)` (Node).
+
 ## Budgets
 
 `--max-tokens`, `--max-usd`, `--max-wall-ms`, `--max-supersteps`. Spend is
@@ -1023,10 +1056,10 @@ The same runtime on every surface — one journal, one set of rules:
 
 | Surface | Shape |
 |---|---|
-| CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
-| MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
-| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
+| CLI | `areev run start/resume/respond/input/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
+| MCP | the seven `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other

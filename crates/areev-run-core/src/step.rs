@@ -134,6 +134,10 @@ fn apply_event(
         EventIn::EffectResolved { key, outcome } => {
             resolve_effect(env, st, key, outcome);
         }
+        EventIn::InputSeen { message } => {
+            st.inputs_seen += 1;
+            st.inbox.push(message.clone());
+        }
         EventIn::AskForwarded { tool_call_id } => {
             let Some(pending) = st.pending_asks.get(tool_call_id).cloned() else {
                 return;
@@ -290,6 +294,17 @@ fn resolve_effect(
                 }
             }
         }
+    }
+}
+
+fn apply_inbox(st: &mut SchedulerState) {
+    let Value::Object(o) = &mut st.context else {
+        return;
+    };
+    if st.inbox.is_empty() {
+        o.remove(crate::types::INBOX);
+    } else {
+        o.insert(crate::types::INBOX.into(), Value::Array(std::mem::take(&mut st.inbox)));
     }
 }
 
@@ -792,6 +807,7 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
             ..DecisionRecord::default()
         },
     };
+    apply_inbox(st);
     for i in ready {
         dispatch_node(env, st, i, out);
     }

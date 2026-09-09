@@ -927,6 +927,12 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.equal(seed.length, HEX64)
   assert.ok(JSON.parse(await m.runList()).includes('js-1-fork'))
 
+  // Steering: a queued message is receipted as JSON (py/js parity).
+  assert.equal(
+    JSON.parse(await m.runInput('js-1', 'use the express carrier')).queued,
+    'js-1',
+  )
+
   // Kill switch returns its receipt as JSON (py/js parity).
   assert.deepEqual(JSON.parse(await m.runCancel('js-1-fork', 'drill')),
     { canceled: 'js-1-fork' })

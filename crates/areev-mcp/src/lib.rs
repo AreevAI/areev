@@ -59,7 +59,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Latest MCP protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Which slice of the 25-tool surface a session advertises and accepts.
+/// Which slice of the 26-tool surface a session advertises and accepts.
 /// `Full` (the default — unchanged prior behavior) is every tool; `Memory`
 /// drops the workflow-runtime family (`run_*`, `areev_loop`,
 /// `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
@@ -93,6 +93,7 @@ const RUN_FAMILY: &[&str] = &[
     "areev_run_start",
     "areev_run_resume",
     "areev_run_respond",
+    "areev_run_input",
     "areev_run_cancel",
     "areev_run_verify",
     "areev_run_list",
@@ -801,6 +802,18 @@ impl McpServer {
                 Ok(json!({"responded": ask, "run_id": run_id, "responder": responder,
                           "note": "resume the run to spend the compute"}).to_string())
             }
+            "areev_run_input" => {
+                let run_id = args.get("run_id").and_then(Value::as_str)
+                    .ok_or("areev_run_input requires 'run_id'")?;
+                let message = args.get("message").and_then(Value::as_str)
+                    .ok_or("areev_run_input requires 'message'")?;
+                let who = self.run_identity();
+                self.runner(&who)
+                    .input(run_id, message, &who)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"queued": run_id, "by": who,
+                          "note": "the next superstep hands it to its nodes under $inbox"}).to_string())
+            }
             "areev_run_cancel" => {
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_cancel requires 'run_id'")?;
@@ -1241,6 +1254,14 @@ fn all_tool_defs() -> Vec<Value> {
                 "result": {"description": "the response value as any JSON value"},
                 "is_error": {"type": "boolean", "description": "true = refuse the ask (journaled as UserAborted)"}
             }, "required": ["run_id", "tool_call_id"]}
+        }),
+        json!({
+            "name": "areev_run_input",
+            "description": "Queue a steering message for a running run. The next superstep hands it to its nodes in their input under `$inbox` — an in-band channel, so a chat-style plan does not have to misuse a human-gate ask to receive one.",
+            "inputSchema": {"type": "object", "properties": {
+                "run_id": s("the run to steer"),
+                "message": s("the message text")
+            }, "required": ["run_id", "message"]}
         }),
         json!({
             "name": "areev_run_cancel",

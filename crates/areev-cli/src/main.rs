@@ -248,7 +248,7 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|cancel|list|inspect|verify|fork|shadow|
+  run      <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|
            oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
@@ -312,6 +312,10 @@ COMMANDS:
            rather than name what it must not. A bare --tool-env passes nothing
            but that minimal set. Naming a variable already registered as
            holding a secret does NOT re-admit it: it is dropped and reported;
+           input --run-id ID --message TEXT [--as PRINCIPAL] queues a
+           steering message: the next superstep hands it to its nodes under
+           `$inbox`, so a person redirects a running run in band instead of
+           through a human-gate ask;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof
@@ -4059,6 +4063,15 @@ fn run_run(
                 .map_err(|e| e.to_string())?;
             println!("response recorded — `areev run resume --run-id {run_id}` to continue");
         }
+        "input" => {
+            let run_id = need("run-id", "areev run input --run-id ID --message TEXT")?;
+            let message = need("message", "areev run input --run-id ID --message TEXT")?;
+            runner.input(&run_id, &message, &principal).map_err(|e| e.to_string())?;
+            println!(
+                "steering message queued for '{run_id}' — the next superstep hands it \
+                 to its nodes under `$inbox`"
+            );
+        }
         "cancel" => {
             let run_id = need("run-id", "areev run cancel --run-id ID [--because \"why\"]")?;
             let because = flag(flags, "because").unwrap_or_else(|| "canceled".into());
@@ -4250,7 +4263,7 @@ fn run_run(
         other => {
             return Err(format!(
                 "unknown run subcommand '{other}' — usage: areev run \
-                 <start|resume|respond|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
+                 <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
             ))
         }
     }

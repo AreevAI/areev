@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 /// Journal grains carry these extra fields so the key is reconstructible
 /// from content alone (§5.1 mandatory content fields).
 const F_TASK_PATH: &str = "task_path";
+const P_RUN_INPUT: &str = "mg:run_input";
 const F_NODE: &str = "node";
 const F_ATTEMPT: &str = "attempt";
 const F_EFFECT_SEQ: &str = "effect_seq";
@@ -289,6 +290,54 @@ pub fn write_blob_read(
     m.add(&obs)
 }
 
+/// Write one steering message: a Fact on the run, in the run's own
+/// namespace so it rides the run index the journal reads.
+pub fn write_input(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    message: &str,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let mut f = areev_core::types::Fact::new(&format!("run:{run_id}"), P_RUN_INPUT, message)
+        .namespace(ns)
+        .created_at(clock_ms as i64);
+    f.common.author_did = Some(principal.to_string());
+    f.common.extra_fields.insert("run_id".into(), json!(run_id));
+    m.add(&f)
+}
+
+/// Steering messages written since `cursor`, with the cursor advanced —
+/// what a live driver polls at each wave boundary.
+pub fn poll_inputs(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    cursor: i64,
+) -> Result<(Vec<Value>, i64)> {
+    // The cursor advances only on success: a page read that fails midway
+    // would otherwise leave it past messages this call is dropping, and the
+    // next poll would never see them again.
+    let mut out = Vec::new();
+    let mut at = cursor;
+    loop {
+        let page = m.run_grains(ns, run_id, at, 512)?;
+        let exhausted = page.len() < 512;
+        for (seq, g) in page {
+            at = seq;
+            if g.get_str("relation") == Some(P_RUN_INPUT) {
+                if let Some(msg) = g.fields.get("object") {
+                    out.push(msg.clone());
+                }
+            }
+        }
+        if exhausted {
+            return Ok((out, at));
+        }
+    }
+}
+
 /// Write a checkpoint State grain, chained by `derived_from`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_checkpoint(
@@ -347,6 +396,12 @@ pub struct CheckpointRow {
 pub struct JournalView {
     pub entries: BTreeMap<JournalKey, JournalEntry>,
     pub checkpoints: Vec<CheckpointRow>,
+    /// Steering messages in journal order — the sequence `inputs_seen`
+    /// counts against.
+    pub inputs: Vec<Value>,
+    /// The run-index cursor this view was read to, so a live driver can
+    /// poll forward for new steering messages without reloading.
+    pub cursor: i64,
 }
 
 impl JournalView {
@@ -377,6 +432,7 @@ pub fn load(m: &mut Areev, ns: &str, run_id: &str) -> Result<JournalView> {
             break;
         }
     }
+    view.cursor = cursor;
     view.checkpoints.sort_by_key(|c| c.superstep);
     Ok(view)
 }
@@ -416,6 +472,12 @@ fn ingest(
             scheduler: sched,
             decisions,
         });
+        return Ok(());
+    }
+    if g.get_str("relation") == Some(P_RUN_INPUT) {
+        if let Some(msg) = g.fields.get("object") {
+            view.inputs.push(msg.clone());
+        }
         return Ok(());
     }
     // Journal entries: Tool grains carrying the key fields.

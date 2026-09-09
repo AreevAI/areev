@@ -82,6 +82,10 @@ journaled events back, assert the same commands come out.
   while its batch runs and completes with a Null contribution when the
   batch drains — the join below a fan-out. Task retries are per-task
   attempts against the target's retry budget.
+- **Steering inputs**: `EventIn::InputSeen` only appends to `inbox`. The
+  queue is drained at superstep OPEN (`apply_inbox`), into `context` under
+  `$inbox` — never at `dispatch_node`, or a mid-superstep retry would consume
+  it and replay could no longer place the message from the checkpoint alone.
 - **Bubbled asks**: a Subgraph effect whose result carries `PARKED_ASKS`
   parks the parent instead of resolving it. The asks are booked under a
   PRE-ALLOCATED next-ROUND key that stays outstanding (so the superstep

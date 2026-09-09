@@ -444,7 +444,7 @@ How each number is produced, and the benchmark receipts:
 | [`docs/triggers.md`](docs/triggers.md) | Standing rules that start workflows — the cadence as data |
 | [`docs/eu-ai-act.md`](docs/eu-ai-act.md) · [`docs/procurement.md`](docs/procurement.md) | EU AI Act article→capability→command map; procurement questionnaire answers |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
-| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 25 tools |
+| [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 26 tools |
 | [`docs/migrate.md`](docs/migrate.md) | Importing an existing corpus, with its edit history |
 | [`docs/memory-tool.md`](docs/memory-tool.md) | The Anthropic memory-tool backend (Python / Node / CLI) |
 | [`docs/cookbook.md`](docs/cookbook.md) | Task-oriented recipes |

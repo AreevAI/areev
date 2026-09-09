@@ -875,6 +875,7 @@ impl Runner {
                 // verbatim — never re-resolves. Budgets/TTL are the fork's
                 // own knobs.
                 st.run_id = new_run_id.to_string();
+                st.inputs_seen = 0;
                 RunManifest {
                     run_id: new_run_id.to_string(),
                     // The FORKER triggers this run — separation of duties
@@ -1083,6 +1084,19 @@ impl Runner {
         f.common.author_did = Some(principal.to_string());
         f.common.extra_fields.insert("run_id".into(), json!(run_id));
         self.facade.with_store(|m| m.add(&f)).map_err(err_run)?;
+        Ok(())
+    }
+
+    /// Queue a steering message for a running run. It is consumed by the
+    /// nodes the NEXT superstep dispatches, arriving in their input under
+    /// `$inbox` — an in-band channel, so a chat-style plan does not have to
+    /// misuse a human-gate ask to receive one.
+    pub fn input(&self, run_id: &str, message: &str, principal: &str) -> Result<(), RunError> {
+        self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
+        let now = self.clock.now_ms();
+        self.facade
+            .with_store(|m| journal::write_input(m, &self.ns, run_id, message, now, principal))
+            .map_err(err_run)?;
         Ok(())
     }
 
@@ -1303,6 +1317,15 @@ impl Runner {
             .filter_map(|(k, e)| e.result.as_ref().map(|(_, o)| (k.clone(), o.clone())))
             .collect();
         let mut prev_ckpt: Option<Hash> = view.checkpoints.last().map(|c| c.hash);
+        let mut input_cursor = view.cursor;
+        // Steering messages the journal already holds but this state has not
+        // applied. They wait in `steer` with everything polled later: an
+        // input is fed ONLY while a superstep is open, which is what makes it
+        // inert until the next one and lets replay place it from the
+        // checkpoint's `inputs_seen` alone.
+        let mut steer: Vec<Value> =
+            view.inputs.iter().skip(st.inputs_seen as usize).cloned().collect();
+        let mut events = initial_events;
         // Distinct refusals already journaled for this drive, so a retry loop
         // against one blocked host records one fact rather than many.
         let mut refusals_seen: std::collections::BTreeSet<(String, String, String)> =
@@ -1324,7 +1347,6 @@ impl Runner {
         let mut blob_reads_journaled: usize = self.executor.blob_reads().len();
         let mut in_flight: usize = 0;
         let mut st = st;
-        let mut events = initial_events;
         let mut intents_written: u32 = 0;
         let mut results_seen: u32 = 0;
 
@@ -1366,6 +1388,24 @@ impl Runner {
                     // same batch) — this is the live counterpart.
                     events.push(EventIn::ClockReading { unix_ms: self.clock.now_ms() });
                     events.push(EventIn::CancelSeen { principal: by, reason });
+                }
+            }
+            // Steering, polled at the same wave boundary as the cancel
+            // marker. A failed read is not fatal: the cursor stays put, so
+            // the next wave picks the same messages up rather than losing
+            // them to a transient store error.
+            if !st.is_terminal() {
+                if let Ok((queued, at)) = self
+                    .facade
+                    .with_store(|m| journal::poll_inputs(m, &self.ns, &run_id, input_cursor))
+                {
+                    input_cursor = at;
+                    steer.extend(queued);
+                }
+                if !steer.is_empty() && matches!(st.phase, areev_run_core::Phase::Open { .. }) {
+                    events.extend(
+                        steer.drain(..).map(|message| EventIn::InputSeen { message }),
+                    );
                 }
             }
 
@@ -2410,6 +2450,26 @@ impl Runner {
                 reason: c.get(1)?.as_str()?.to_string(),
             })
         };
+        // The live driver feeds a steering message only while a superstep is
+        // open, and an open is the only thing that drains `inbox` — so a
+        // message is inert for the whole superstep that observed it. Replay
+        // therefore never needs to know WHICH wave saw one: feeding them with
+        // the batch that closes a checkpoint, bounded by that checkpoint's
+        // own `inputs_seen`, reproduces the state exactly.
+        let input_peek = |ckpt_idx: usize, st: &SchedulerState| -> Vec<EventIn> {
+            let want = view
+                .checkpoints
+                .get(ckpt_idx)
+                .and_then(|c| c.scheduler.get("inputs_seen"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            view.inputs
+                .iter()
+                .take(want as usize)
+                .skip(st.inputs_seen as usize)
+                .map(|m| EventIn::InputSeen { message: m.clone() })
+                .collect()
+        };
         let mut guard = 0;
         'replay: loop {
             guard += 1;
@@ -2550,6 +2610,7 @@ impl Runner {
                 if let Some(cancel_ev) = cancel_peek(ckpt_idx, &st) {
                     events.push(cancel_ev);
                 }
+                events.extend(input_peek(ckpt_idx, &st));
                 continue;
             }
             if parked {
@@ -2588,6 +2649,10 @@ impl Runner {
                         }
                     }
                 }
+                // Queued steering rides the SAME batch as whatever settles
+                // this park — never a continue of its own, which would leave
+                // a cancel-while-parked unfed and spin the replay loop.
+                events.extend(input_peek(ckpt_idx, &st));
                 if settled_any {
                     continue;
                 }

@@ -93,6 +93,17 @@ evidence. Responding and resuming are separate acts.
   — a flow tool inside an abstract node runs as Host while the node-level
   executor says Abstract; journaling the node-level one would rename the
   result `mg:llm`.
+- **Steering** (`Runner::input`): a `mg:run_input` Fact in the RUN's namespace
+  (not `HARNESS_NS` — it must ride the run index `journal::load` reads).
+  `drive` polls it forward from `JournalView::cursor` at each wave boundary
+  and feeds `EventIn::InputSeen` ONLY while `Phase::Open` (otherwise it holds
+  the message in `steer` for the next wave); `verify` replays from
+  `view.inputs` bounded by the next checkpoint's `inputs_seen`, and feeds them
+  only in batches that CLOSE a checkpoint. Both halves of that rule are
+  load-bearing: apply a message before an open and the same open drains it
+  into `context`, which no checkpoint can distinguish from the inert case —
+  `RUN-E009` on the next verify. A fork resets `inputs_seen` — its journal has
+  none. A failed poll is not fatal and does not advance the cursor.
 - **Subgraphs** run INLINE on the driver thread (the child needs the store);
   child id = `{parent}~{sha256(parent, node, attempt)[..16]}`. Attempts are
   monotonic across re-entry generations, so a bounded cycle re-running the

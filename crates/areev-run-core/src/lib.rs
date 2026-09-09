@@ -27,5 +27,5 @@ pub use state::{EdgeRes, NodeState, PendingAsk, Phase, SchedulerState, Spent};
 pub use step::{step, StepEnv, StepOutcome};
 pub use types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, JournalKey, NodeExecutor, OfferedTool, RunOutcome, PARKED_ASKS,
+    FailCause, JournalKey, NodeExecutor, OfferedTool, RunOutcome, INBOX, PARKED_ASKS,
 };

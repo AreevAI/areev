@@ -8,6 +8,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A person can steer a running run** (#187). `areev run input --run-id ID
+  --message TEXT` — also `areev_run_input` (MCP), `db.run_input` (Python),
+  `m.runInput` (Node) — queues a message on the run. The next superstep hands
+  every node it dispatches the queued messages, in order, under the reserved
+  `$inbox` key in their input. A chat-style plan no longer has to misuse a
+  human-gate ask to receive a message. Steering is journaled as a Fact on the
+  run and is applied only while a superstep is open, so it stays inert for the
+  whole superstep that observed it. That is what keeps `verify` exact: replay
+  counts the journaled messages against the checkpoint's `inputs_seen`, never
+  against when the driver happened to poll. A message queued before the run
+  starts therefore reaches the second superstep — the first one's input is
+  `--input`. `run.execute` is the verb: steering advances a run rather than
+  braking it.
+
 - **A subgraph child that parks on a human gate now bubbles its asks to the
   parent** (#187). The gate used to fail the parent node with "subgraph run
   parked" — a HITL step had to live in the top-level graph, which is exactly
