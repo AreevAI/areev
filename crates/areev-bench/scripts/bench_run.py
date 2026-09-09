@@ -330,8 +330,12 @@ def _next_run_id(runs_db):
                              lambda db: json.loads(db.run_list(500)))
     except Exception:  # noqa: BLE001 -- a fresh or unreadable journal starts at 1
         return "learn-1"
-    used = {r.get("run_id") for r in (existing if isinstance(existing, list)
-                                      else existing.get("runs", []))}
+    rows = existing if isinstance(existing, list) else existing.get("runs", [])
+    # `run_list` answers `recent_runs` -- a list of run ID STRINGS, not row
+    # objects. Reading it as objects raised AttributeError on the second
+    # learn of a pass (the first has no journal and returns early), which is
+    # why every dryrun with two checkpoints died here.
+    used = {r if isinstance(r, str) else r.get("run_id") for r in rows}
     n = 1
     while ("learn-%d" % n) in used:
         n += 1
