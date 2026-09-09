@@ -453,7 +453,12 @@ refuses at start (`RUN-E018`, naming the missing flag), and the runtime is
 cannot re-route a blob from the sandbox to native exec. An unknown runtime
 string refuses at resolve rather than falling back to native, which would run
 foreign bytes as a program. (`areev-sandbox` is a separate `publish = false`
-binary — build it from the repo and point `--sandbox-cmd` at it.)
+binary, so it is not on crates.io — but it ships: the container image carries
+it at `/usr/local/bin/areev-sandbox`, and every CLI release archive carries it
+beside `areev`. Both are built from one tree, and `areev-sandbox --version`
+agrees with `areev --version` — a sandbox from a different tree than the
+engine it bounds is the pairing that shipping them together prevents. On the
+image, `--sandbox-cmd areev-sandbox` resolves on `PATH`.)
 
 ### Capability tools — persisting an I/O tool as a grain (`wasm32-areev-io`)
 

@@ -195,6 +195,7 @@ and are the source of truth. Ranges:
 | `CAL-W014` | A `WITH` option parsed and ran but cannot change the result on this statement (e.g. `score_breakdown` on `RECALL`) |
 | `CAL-W015` | A post-retrieval stage (`ORDER BY`, a type-specific `WHERE` filter, `COUNT`) widened its scan to `max_limit` and still filled it — the answer is the top-k of a window, not of the memory |
 | `CAL-W016` | A pipeline stage was attached to a payload it cannot act on (e.g. `ORDER BY` on a multi-source `ASSEMBLE`) and was skipped |
+| `CAL-W017` | An `ASSEMBLE` token budget dropped grains its sources had already retrieved, naming the sources and the counts — including when the 4000-token default applied because no `BUDGET` clause was written |
 
 `CAL-E116` is the "needs an external LLM, not implemented" error for
 `WITH hyde` / `WITH llm_rerank` — Areev takes no LLM dependency by policy.

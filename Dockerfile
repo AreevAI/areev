@@ -1,4 +1,6 @@
-# The areev container image: the one `areev` binary, built with the three
+# The areev container image: the `areev` binary and the `areev-sandbox` it
+# dispatches `wasm32-areev` plans to, built from one tree so the pair a plan
+# relies on is version-matched. `areev` carries the three
 # non-default features a container deployment wants — `postgres` (the server
 # tier, --db postgres://…?schema=<name>), `postgres-tls` (encryption on that
 # DSN, which every managed Postgres requires) and `tls` (native rustls for
@@ -19,14 +21,18 @@ COPY . .
 # binary is copied out because the target dir does not survive the RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/src/areev-sandbox/target \
     cargo build --release --locked -p areev --bin areev --features postgres,postgres-tls,tls \
-    && cp target/release/areev /usr/local/bin/areev
+    && cp target/release/areev /usr/local/bin/areev \
+    && cargo build --release --locked --manifest-path areev-sandbox/Cargo.toml \
+    && cp areev-sandbox/target/release/areev-sandbox /usr/local/bin/areev-sandbox
 
 FROM debian:bookworm-slim
 # Nothing to apt-install: TLS is rustls with compiled-in webpki roots, and
 # turso's C pieces are statically linked — the runtime needs glibc and /bin/sh
 # (for --tool-cmd / --connector-cmd subprocesses), both already here.
 COPY --from=build /usr/local/bin/areev /usr/local/bin/areev
+COPY --from=build /usr/local/bin/areev-sandbox /usr/local/bin/areev-sandbox
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --chmod=755 docker/heartbeat.sh  /usr/local/bin/areev-heartbeat
 

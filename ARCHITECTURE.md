@@ -1443,6 +1443,34 @@ Leniency was deliberately NOT kept behind an opt-in: a filter that cannot be
 honoured has no honest lenient reading, and the safe direction must be the
 default direction.
 
+**Amendment (2026-09-08, issue #207): absence is UNKNOWN, not FALSE.** The
+planning pass above routes a predicate to the per-grain evaluator; the
+evaluator itself was two-valued, and read "this grain has no such field" as
+`false`. That is correct for a bare comparison and wrong for every negation
+of one — `!false` is `true`, so `object != "retired"`, `NOT (object =
+"retired")` and `object NOT IN ("retired")` each matched **every** grain of a
+type with no `object`. The same widening #91 retired, reached one rewrite
+later.
+
+The evaluator is now three-valued (Kleene): a leaf whose field the grain does
+not carry is UNKNOWN, `AND`/`OR` combine by SQL's truth tables, `NOT UNKNOWN`
+is UNKNOWN, and UNKNOWN does not match at the top. This is the smallest model
+that can express "fails closed" under negation — fixing only `!=` would leave
+the identical bug in `NOT`, and refusing the predicate outright (the other
+candidate) would reject queries against fields the grain genuinely holds,
+since `subject`/`object` are declared by Fact, Observation *and* Goal and any
+type may carry them in `extra_fields`. Nothing that already matched stops
+matching: `T ∧ U` and `F ∧ U` both collapsed to no-match before, and `T ∨ U`
+already matched.
+
+Two consequences worth stating. `IS NULL`/`IS NOT NULL` are the operators
+*about* absence and stay definite, or they would become unanswerable. And the
+evaluator is shared: `areev-trigger`'s composite gates project fired members
+into the same tree, where an absent field means "has not fired" — a definite
+FALSE, not UNKNOWN. That gate now materializes every referenced member rather
+than encoding its answer in a gap, because one evaluator serving two meanings
+of absence has to be told which one it is looking at.
+
 ### Framework adapters live outside the repo
 
 **Decision (2026-08-23):** the ecosystem adapters that put Areev underneath
@@ -1768,6 +1796,35 @@ and `areev-loop` keeps its no-Areev-dependency rule. A substrate that
 declares neither degrades those kinds to advisory rather than pretending to
 have checked them. Reference: [docs/loop.md](docs/loop.md) (DISCOVER).
 
+### The Postgres store keeps nothing on the session, because the session is not its to keep
+
+One memory = one schema, and the obvious way to address a schema is
+`SET search_path` once at open and write every statement against bare table
+names. That is what the store did, and it made a documented hazard of every
+transaction-mode pooler (PgBouncer, Supavisor, PgCat, Neon's pooled
+endpoint): each transaction lands on whichever backend is free, whose
+`search_path` belongs to someone else or to nobody, and a bare `grains` then
+reads another tenant's rows — silently, because the query is well-formed.
+Areev Cloud's spec (#181) wants a worker holding thousands of memories over
+one pool, which is the same constraint at a different scale.
+
+The decision: the store assumes every statement may run on a fresh session.
+Table references are schema-qualified by a pass after the dialect translator
+(`qualify_tables`), so nothing resolves through `search_path`; runtime DDL
+and catalog probes bind the schema name instead of `current_schema()`; the
+bootstrap lock is transaction-scoped; and a prepared statement the backend
+does not know is re-prepared rather than reported when that is possible
+(outside a transaction). The proof is a run of the whole conformance suite
+with `RESET ALL` before every statement outside a transaction, and the same
+suite through a real PgBouncer in transaction mode. What the store cannot
+absorb is stated rather than papered over: the driver names every
+parameterized statement, so the pooler must track prepared statements across
+backends (PgBouncer 1.21+ does) or run in session mode — inside a transaction
+a stale statement aborts it, and the error names both remedies. Two things
+stay session-scoped by design for now: `hnsw.ef_search`, whose loss under
+pooling is a silent accuracy regression, and the process-wide pool itself,
+which is the next increment.
+
 ### The dictionary is keyed by digest, because the index must be bounded and the value is not
 
 Every subject, relation and object string is interned into `terms` (§3): a
@@ -1798,6 +1855,64 @@ content address. The migration runs under the bootstrap advisory lock on
 the first read-write open; a `--read-only` open of a schema that predates it
 refuses by name (`STO-E005`) rather than keying lookups on a column that is
 not there. Reference: `crates/areev-store/CLAUDE.md` ("Schema").
+
+### CAL grows by closed sets, because conformance is what makes it portable
+
+**Decision (2026-09-08, issues #209/#210/#211):** CAL gains the ability to
+summarise by frequency, to extract part of a value, and to navigate into a
+structured payload — and it gains all three by **extending closed sets**, never
+by opening one. The spec record is
+[`docs/oms-1.7-amendments-cal-expressiveness.md`](docs/oms-1.7-amendments-cal-expressiveness.md).
+
+Each addition was a read a host could only perform by over-fetching and
+finishing the job in application code — which also defeats `BUDGET`, because
+the budget is spent on the rows the host is about to discard. "Which tool fails
+most" is the ordinary summarisation read of any agent memory; titles and error
+codes live inside the free text a memory stores; and `record_tool_call` already
+round-trips a tool's `input` as parsed JSON, so Python and Node hosts received a
+structure the *query language* alone could not see inside.
+
+What is refused, and stays refused, is the general version of each:
+
+- **Host-registered functions.** A saved template calling one would render
+  differently — or fail — depending on who opened the memory, because the
+  registry travels *with the file*. That portability is the property that makes
+  saved queries worth having; a function library trades it away.
+- **A general expression language in templates.** It needs its own sandbox and
+  its own spec, and it makes "what will this saved query show me?" a
+  program-analysis question rather than a reading comprehension one. Saved-query
+  bodies get an extra read-only verification pass precisely because the surface
+  is narrow, and those bodies are handed to unattended agents.
+- **Parse → mutate → re-serialise.** The tempting shape in #211 ("read
+  `error.code`, drop that key, re-emit the rest") is a program. Its real use is
+  reshaping on the way out, which is better served by writing the right shape
+  in — two fields rather than one payload — because that also makes the value
+  **filterable**, which no amount of render machinery does.
+
+So the additions are enumerable and introspectable: `DESCRIBE CAPABILITIES`
+reports the filter set and the variable namespaces, and a client can ask rather
+than guess. Two properties fall out and are load-bearing:
+
+**Authoring-time validation, render-time totality.** A pattern that does not
+compile, a `split` index that is not a number, a path past its depth bound —
+refused when the template is *defined*. At render time every filter is total: a
+filter that finds nothing yields empty, never an error, because one unparseable
+grain must not fail the render of the other 199. The two rules are complements,
+not a compromise: unreadable queries never get stored, so the render path never
+needs to fail.
+
+**Patterns run on a non-backtracking engine.** A template renders on every turn
+over host- and model-supplied text; a backtracking regex there is a
+denial-of-service primitive. Areev uses `regex`, a finite-automaton engine —
+which is *why* the dialect has no backreferences and no lookaround, those being
+exactly the constructs that force backtracking. That is a capability the safety
+argument depends on, not a limitation to apologise for.
+
+One thing this batch deliberately did not need: new syntax for the common case.
+`GROUP BY <field>` followed by `COUNT` already parsed — it just answered the
+plain total, discarding the grouping, which is `COUNT` with extra words. Giving
+that combination the meaning it should always have had costs no caller anything
+and asks nothing of the spec beyond a semantic note.
 
 ### Portability and provenance over lock-in
 
