@@ -82,53 +82,54 @@ Two arms, two blocks.
 The governed block is a plain `ASSEMBLE` with `ORDER BY object ASC`,
 `WITH dedup(object)` and a `{{#if assembly.grain_count}}`-guarded heading.
 
-The passive block **was the one read in this crate that did not finish in
-CAL**, and the reason is worth understanding before you copy it. That arm is
-defined as the agent's own errors *ranked by frequency* — `- (3x)
-phone.search_contacts: …`. CAL had `GROUP BY`, but it reordered rows rather
-than projecting a per-group count a template could render, so "most frequent
-first" could not be expressed. The saved query still owned the SELECTION — the
-namespace scope, the `is_error = true` filter pushed into the store, and the
-bound — and only the tally was the harness's, through `cal.rows()`.
-
-**Closed in 1.7.4 ([#209](https://github.com/AreevAI/areev/issues/209)).**
-`GROUP BY <field>` followed by `COUNT` now projects one row per group carrying
-its size, most frequent first, and a `group.` template namespace renders it —
-so the whole block is expressible:
+The passive block **moved into CAL on 2026-09-09**, once #209 landed
+`GROUP BY <field> COUNT` and the `group.*` template variables:
 
 ```sql
-RECALL tools WHERE namespace = "appworld.*" AND is_error = true
-  LIMIT 400 GROUP BY tool_name COUNT
+ASSEMBLE "past API errors" FOR "the AppWorld coding agent" FROM
+  ranked: (RECALL tools WHERE namespace = $scope AND is_error = true
+           LIMIT 400 GROUP BY tool_name COUNT)
+BUDGET 16000 tokens
+FORMAT TEMPLATE appworld_errors_tpl     -- - ({{group.count}}x) {{group.key}}
 ```
+
+### The block changed, and in which direction
+
+This is not a refactor. It ranks **endpoints**; it used to rank
+`(endpoint, message)` pairs and print the message:
+
 ```
-DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key}}}
+was:  - (6x) phone.login: Response status code is 401:
+now:  - (6x) phone.login
 ```
 
-The run-1 and run-2 numbers in `APPWORLD.md` were produced by the harness
-tally described above, not by this query; **do not restate them as CAL
-output**. Whether to move the block is a decision for the next run, and it is
-an arm-defining change, so it belongs in that run's pre-registration rather
-than in a doc sweep.
+Two engine limits force it, and neither is a matter of effort:
 
-**That selection is a saved `RECALL`, not an `ASSEMBLE`, and the difference is
-not cosmetic.** `ASSEMBLE` applies a token budget whether or not you ask for one
-(default 4000, ceiling 16000). Wrapping this selection in an `ASSEMBLE` returned
-79 of 229 error grains on run 1's own memory. A read that is not composing
-model-facing text does not belong in `ASSEMBLE`; and a read that is, states its
-budget.
+- **A template cannot render a Tool grain's body.** `tool_content` is rejected
+  as a template variable (`CAL-E042`), and `content` / `object` / `summary`
+  resolve empty on a Tool — while the built-in `markdown` renderer prints it
+  happily. So the message cannot appear in any CAL-rendered block.
+- **`GROUP BY` takes one field**, so `(tool_name, message)` cannot be a key,
+  and `tool_content` is not groupable either (`CAL-E060`). A composite key is
+  the only shape that would preserve the old line.
 
-The *silence* that made this dangerous is fixed
-([#208](https://github.com/AreevAI/areev/issues/208), 1.7.4): a budget that
-drops grains now emits `CAL-W017` naming the sources and the counts, and
-`total_available` reports the **pre**-budget count, so a truncated answer is no
-longer arithmetically indistinguishable from a complete one. The convention
-above still stands on its own terms — the budget still binds, and 79 of 229 is
-still the wrong answer for a selection — but a run that trips it now finds out
-instead of publishing a number produced from a truncated prompt.
+Filed as [#217](https://github.com/AreevAI/areev/issues/217). Also noted there:
+a `LIMIT` after `COUNT` does not bind, so
+the block now lists every endpoint rather than the harness's old top twelve.
 
-Stated here because `CLAUDE.md` requires naming the step you kept, and because
-a reader of `APPWORLD.md`'s token figures should know which budget produced
-them.
+**Say this wherever a number produced under it is published.** The passive arm
+is the BASELINE the governed arm has to beat. Dropping the error message makes
+that baseline *weaker*, which flatters the governed arm — a bias in the
+direction that would make the loop look better. Runs 1 and 2 precede this
+block and were produced with the message present; they are not comparable to a
+run under it, and the change belongs in the next run's pre-registration.
+
+The selection had been a saved `RECALL` rather than an `ASSEMBLE` for a while,
+which is worth keeping in the record: `ASSEMBLE` applies a token budget whether
+or not one is asked for (default 4000), and wrapping a pure selection in one
+returned **79 of 229** grains. Since #208 that drop announces itself as
+`CAL-W017`, and `cal.section` raises on it.
+
 
 ## The governed pass, and what the reviewer reads
 
@@ -148,8 +149,8 @@ reworded restatement.
 
 | surface | status |
 |---|---|
-| ASSEMBLE | adopted for the governed arm; selection-only for the passive arm (frequency ranking, above) |
+| ASSEMBLE | adopted for both arms — the passive arm's frequency ranking moved once #209 landed, at the cost recorded above |
 | saved queries | adopted, both arms |
-| CAL rendering | adopted for the governed arm; the passive arm has no template, because nothing would render through it |
+| CAL rendering | adopted for both, via `DEFINE TEMPLATE` |
 | tool-call lifecycle | adopted |
 | prefix namespaces | **adopted — this is the reference track for it** |

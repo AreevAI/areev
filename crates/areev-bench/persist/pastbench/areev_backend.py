@@ -97,8 +97,10 @@ RETIRED = "retired"
 # the saved queries, the templates and the two documented reads that stay
 # host-composed. See `AREEV.md` in this directory.
 from prompt import (  # noqa: E402
+    empty_notes_block,
     empty_profile_block,
     empty_skills_block,
+    notes_block,
     profile_block,
     skills_block,
 )
@@ -689,18 +691,19 @@ class AreevAdapter(RuntimeAdapter):
         is defined -- a validity window CAL cannot filter on, and a per-session
         title CAL cannot extract.
         """
+        now = _now()
+
         def go(db):
-            return live_notes(db), profile_block(db), skills_block(db)
-        notes, profile_text, skills_text = (
+            return notes_block(db, now), profile_block(db), skills_block(db)
+        notes_text, profile_text, skills_text = (
             with_memory(self.db_path, ACTOR_AGENT, go) if self.db_path.exists()
-            else ([], empty_profile_block(), empty_skills_block()))
+            else (empty_notes_block(), empty_profile_block(), empty_skills_block()))
         lines = ["", "## Persistent memory",
                  "Everything below was saved in earlier sessions; apply it without being asked. "
                  "This session's context is discarded at the end — only what you save through the "
                  "memory and skill tools carries forward."]
         if self.tool_config.get("memory_enabled") or self.tool_config.get("user_profile_enabled"):
-            lines.append("### Notes")
-            lines += ["- " + t for _, t in notes] or ["- (none yet)"]
+            lines.append(notes_text)
             lines.append(profile_text)
         if self.tool_config.get("skills_enabled"):
             lines.append(skills_text)

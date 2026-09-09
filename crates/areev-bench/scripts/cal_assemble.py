@@ -69,6 +69,23 @@ def _q(text: str) -> str:
     return '"%s"' % str(text).replace('"', '\\"')
 
 
+def _lit(value) -> str:
+    """A CAL literal of the right TYPE.
+
+    Quoting everything is wrong and fails quietly: a saved query bound with
+    `$now = "1788922013848"` compares a string against a numeric field, so
+    `valid_to > $now` silently selects the wrong rows rather than erroring.
+    Booleans and numbers are literals in CAL; everything else is a string.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    return _q(value)
+
+
 # `ASSEMBLE` applies a token budget whether or not you ask for one: the default
 # is 4000 and the ceiling is 16000 (CAL-E033 above that). It used to drop grains
 # to that budget SILENTLY -- AppWorld's error selection returned 79 of 229 under
@@ -183,7 +200,7 @@ def section(db, name, params=None, cap=None):
     prompt section that lost rows is a wrong prompt, not a warning.
     """
     params = params or {}
-    bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
+    bindings = ", ".join("$%s = %s" % (k, _lit(v)) for k, v in sorted(params.items()))
     stmt = 'RUN %s(%s)' % (_q(name), bindings)
     payload = json.loads(db.cal(stmt))
     raise_on_truncation(payload, "section %r" % name)
@@ -211,7 +228,7 @@ def rows(db, name, params=None, cap=None):
     kept; this is it.
     """
     params = params or {}
-    bindings = ", ".join("$%s = %s" % (k, _q(v)) for k, v in sorted(params.items()))
+    bindings = ", ".join("$%s = %s" % (k, _lit(v)) for k, v in sorted(params.items()))
     payload = json.loads(db.cal('RUN %s(%s)' % (_q(name), bindings)))
     raise_on_truncation(payload, "saved query %r" % name)
     got = payload.get("grains")

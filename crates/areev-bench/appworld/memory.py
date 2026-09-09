@@ -91,19 +91,24 @@ REGISTRY = list(cal.REVIEW_REGISTRY) + [
         '  FORMAT TEMPLATE appworld_rules_tpl\n'
         '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
         "the supervisor-approved rules, the governed arm's whole prompt block"),
-    # A saved RECALL, not an ASSEMBLE, and the distinction is load-bearing.
-    # The passive block is ranked by FREQUENCY, which CAL cannot render (see
-    # `experience_block`), so this query is a SELECTION and nothing else --
-    # wrapping a selection in ASSEMBLE bought no rendering and imposed
-    # ASSEMBLE's token budget, which silently returned 79 of 229 error grains
-    # on run 1's own memory. A read that is not composing model-facing text
-    # does not belong in ASSEMBLE.
+    # The passive block, ranked by frequency -- `GROUP BY tool_name COUNT`
+    # since #209 landed in 1.7.4. `group.*` renders the ranking; the guarded
+    # header means an agent with no errors yet sees nothing at all.
+    #
+    # This block CHANGED when it moved. See `AREEV.md`: the error MESSAGE is
+    # gone, because a template cannot render a Tool grain's body and CAL has
+    # no composite group key. It is a pre-registered change for the next run,
+    # not a refactor.
+    cal.guarded_template("appworld_errors_tpl", _PASSIVE_HEADER,
+                         "- ({{group.count}}x) {{group.key}}"),
     cal.saved_query(
         "appworld_errors", ["scope"],
-        '  RECALL tools WHERE namespace = $scope AND is_error = true\n'
-        '  LIMIT %d\n'
-        '  FORMAT json' % SECTION_CAP,
-        "every API error this agent has hit, across all nine apps"),
+        '  ASSEMBLE "past API errors" FOR "the AppWorld coding agent" FROM\n'
+        '    ranked: (RECALL tools WHERE namespace = $scope AND is_error = true\n'
+        '             LIMIT %d GROUP BY tool_name COUNT)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE appworld_errors_tpl' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "every endpoint this agent has failed on, most frequent first"),
 ]
 
 # The environment states its own failures in a stable shape; these are the
@@ -245,35 +250,30 @@ def record_episode(db, task_id: str, errors: list[dict], steps: int, hit_cap: bo
 # reading: the block that goes into the prompt
 # --------------------------------------------------------------------------
 
-def experience_block(db, limit: int = 12) -> str:
-    """The PASSIVE arm's block: the agent's own errors, deduplicated.
+def experience_block(db) -> str:
+    """The PASSIVE arm's block: the agent's own failures, most frequent first.
 
     No rule is inferred and nothing is approved -- this is the honest form of
     "just put the past in the prompt", which is the baseline a governed loop
     has to beat to have earned anything.
 
-    Selection is the engine's: the saved query scopes to `"appworld.*"` (the
-    base namespace and every per-app child), filters `is_error = true` in the
-    store, and bounds the scan. The FREQUENCY TALLY is the harness's, and is
-    the one read in this crate that does not finish in CAL -- `GROUP BY`
-    reorders grains but projects no per-group count a template could render,
-    and "most frequent first" is what this arm IS. Recorded here and in
-    `../CLAUDE.md` rather than left for a reader to grep.
+    Assembled entirely by CAL since #209 landed `GROUP BY <field> COUNT` and
+    the `group.*` template variables. **The block changed when it moved**, and
+    the change is not cosmetic: it now ranks ENDPOINTS, where it used to rank
+    (endpoint, message) pairs and print the message. Two engine limits force
+    that, both recorded in `AREEV.md`:
+
+      * a template cannot render a Tool grain's body -- `tool_content` is
+        rejected as a template variable (CAL-E042) and `content`/`object`
+        resolve empty, though the built-in `markdown` renderer prints it;
+      * `GROUP BY` takes one field, so `(tool_name, message)` cannot be a key,
+        and `tool_content` is not groupable either (CAL-E060).
+
+    The direction of the change matters more than its size: this is the
+    BASELINE arm, and dropping the message makes it weaker, which flatters the
+    governed arm it is compared against. Any run under this block must say so.
     """
-    counts: dict[str, int] = {}
-    for g in cal.rows(db, "appworld_errors", {"scope": NS_SCOPE}, cap=SECTION_CAP):
-        f = g.get("fields", {})
-        # The store projects a Tool grain's body as `tool_content`; `content`
-        # is what it was written under. Reading only the latter silently
-        # produced blocks of bare API names with no error text at all.
-        body = (f.get("tool_content") or f.get("content") or "").strip()
-        line = "%s: %s" % (f.get("tool_name") or "?", body)
-        counts[line] = counts.get(line, 0) + 1
-    if not counts:
-        return ""
-    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
-    body = "\n".join("- (%dx) %s" % (n, line[:300]) for line, n in top)
-    return "%s\n%s" % (_PASSIVE_HEADER, body)
+    return cal.section(db, "appworld_errors", {"scope": NS_SCOPE})
 
 
 def current_rules(db) -> list[str]:

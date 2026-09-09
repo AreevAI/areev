@@ -375,10 +375,17 @@ def appworld_case(root):
         check("appworld: governed block",
               mem.lessons_block(db), retired_appworld_lessons(db, mem))
         passive = mem.experience_block(db)
-        check("appworld: the passive block ranks by frequency",
-              passive.split("\n")[1], "- (2x) phone.search_contacts: Response status code is 401: token expired")
+        # CHANGED when the block moved into CAL (#209). It ranks ENDPOINTS
+        # now, most frequent first; the error MESSAGE is gone because a
+        # template cannot render a Tool grain's body and `GROUP BY` takes one
+        # field. Asserted as the new shape, not as parity — the old bytes are
+        # not recoverable and pretending otherwise would hide the change.
+        check("appworld: the passive block ranks endpoints by frequency",
+              passive.split("\n")[1], "- (2x) phone.search_contacts")
+        check("appworld: the error message is no longer in the block",
+              "401" in passive, False)
         check("appworld: an unattributed error still reaches the block",
-              "unknown: TypeError: unhashable type" in passive, True)
+              "- (1x) unknown" in passive, True)
         print("       passive:\n" + "\n".join("       | " + l for l in passive.split("\n")))
 
     mem.with_memory(path, mem.REVIEWER, compare)
@@ -428,14 +435,13 @@ def appworld_case(root):
     mem.with_memory(big, mem.RUNNER, seed_many)
 
     def all_rows(db):
-        rows = __import__("cal_assemble").rows(
-            db, "appworld_errors", {"scope": mem.NS_SCOPE}, cap=mem.SECTION_CAP)
-        return len(rows), mem.experience_block(db)
+        return mem.experience_block(db)
 
-    n_rows, block = mem.with_memory(big, mem.RUNNER, all_rows)
-    check("appworld: 200 error grains all survive the read", n_rows, 200)
-    check("appworld: and the block is built from all of them",
-          block.count("\n- "), 12)  # the arm's own top-N, not a truncation
+    block = mem.with_memory(big, mem.RUNNER, all_rows)
+    # 200 distinct endpoints, one line each: the ranking is over all of them,
+    # not over whatever the default budget happened to leave.
+    check("appworld: 200 distinct endpoints all reach the ranking",
+          block.count("\n- "), 200)
 
     def many_rules(db):
         for i in range(200):
@@ -504,12 +510,33 @@ def persist_case(root):
     db = areev.Areev(path, ns=prompt.NS, actor="agent:assistant")
     try:
         prompt.install(db, db_path=path)
-        check("persist: an empty memory still shows both headings",
-              (prompt.profile_block(db), prompt.skills_block(db)),
-              (prompt.empty_profile_block(), prompt.empty_skills_block()))
+        empty_now = int(__import__("time").time() * 1000)
+        check("persist: an empty memory still shows all three headings",
+              (prompt.notes_block(db, empty_now), prompt.profile_block(db),
+               prompt.skills_block(db)),
+              (prompt.empty_notes_block(), prompt.empty_profile_block(),
+               prompt.empty_skills_block()))
 
         db.add("fact", json.dumps({"subject": "user", "relation": "profile",
                                    "object": "prefers bullet summaries"}), ns=prompt.NS)
+        # Notes: a live one, an expired one that must NOT render, and one with
+        # a declared expiry still in force that must carry its own label.
+        now = int(__import__("time").time() * 1000)
+        day = 86_400_000
+        db.add("fact", json.dumps({"subject": "assistant", "relation": "note",
+                                   "object": "the Q3 waiver has lapsed",
+                                   "valid_to": now - day}), ns=prompt.NS)
+        db.add("fact", json.dumps({"subject": "assistant", "relation": "lesson",
+                                   "object": "confirm the vendor before paying",
+                                   "valid_to": now + day}), ns=prompt.NS)
+        # A durable fact that is neither: renders as "subject relation: object".
+        db.add("fact", json.dumps({"subject": "vendor", "relation": "sla",
+                                   "object": "48 hours"}), ns=prompt.NS)
+        # The harness's own bookkeeping, which must never reach the prompt.
+        db.add("fact", json.dumps({"subject": "session:s1", "relation": "title",
+                                   "object": "an earlier session"}), ns=prompt.NS)
+        db.add("fact", json.dumps({"subject": "evalset:h", "relation": "mg:eval_run",
+                                   "object": json.dumps({"passed": 3})}), ns=prompt.NS)
         db.add("fact", json.dumps({"subject": "user", "relation": "profile",
                                    "object": "is in Chennai, UTC+5:30"}), ns=prompt.NS)
         # A fact that is NOT a profile entry must not reach the profile block.
@@ -538,8 +565,24 @@ def persist_case(root):
               prompt.SKILLS_HEADING + "\n- close_month — the month-end close")
         check("persist: a retired skill does not render",
               "old_flow" in prompt.skills_block(db), False)
+
+        # Notes moved into CAL with #206. NOT byte-identical: the two line
+        # shapes are two sections now, where the retired reader interleaved
+        # them in one recall-ordered list. Asserted as the new shape.
+        notes = prompt.notes_block(db, now)
+        check("persist: an expired note does not render",
+              "lapsed" in notes, False)
+        check("persist: a live note with an expiry carries its label",
+              "confirm the vendor before paying (until " in notes, True)
+        check("persist: a durable fact renders as subject relation: object",
+              "- vendor sla: 48 hours" in notes, True)
+        check("persist: session and evalset bookkeeping never render",
+              ("session:" in notes) or ("evalset" in notes), False)
+        check("persist: an empty notes section still shows the heading",
+              prompt.notes_block(db, now).startswith(prompt.NOTES_HEADING), True)
         print("       block:\n" + "\n".join(
-            "       | " + l for l in (prompt.profile_block(db) + "\n"
+            "       | " + l for l in (prompt.notes_block(db, now) + "\n"
+                                      + prompt.profile_block(db) + "\n"
                                       + prompt.skills_block(db)).split("\n")))
     finally:
         del db

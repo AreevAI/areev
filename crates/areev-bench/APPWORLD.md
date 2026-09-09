@@ -529,20 +529,13 @@ What changed, and why:
 - **The governed arm's prompt block is a saved `ASSEMBLE`** registered in the
   memory file. Byte-identical to the renderer it replaced, gated by
   `scripts/parity_check.py appworld`.
-- **The passive arm's block is not.** It ranks by frequency, and CAL's
-  `GROUP BY` reorders rows without projecting a per-group count a template
-  could render. CAL selects; the harness tallies. `appworld/AREEV.md` says so,
-  and any token or truncation figure quoted here means the harness's cap.
+- **The passive arm's block moved too, on 2026-09-09** (#209), and it
+  **changed**: it ranks endpoints, where it used to rank (endpoint, message)
+  pairs and print the message. A template cannot render a Tool grain's body
+  (`CAL-E042`) and `GROUP BY` takes one field, so the old line is not
+  expressible. The direction matters: this is the BASELINE arm, so a weaker
+  block flatters the governed arm it is compared against. **Run 1 above
+  precedes it and is not comparable to a run under it.**
 
-  That selection is a saved **`RECALL`**, not an `ASSEMBLE`, and the
-  distinction cost a bug to learn. `ASSEMBLE` applies a token budget whether or
-  not one is asked for — the default is 4000 — and a budget that binds drops
-  grains **silently**: no warning, and `total_available` reports the
-  post-budget count, so a caller cannot tell a full answer from a truncated
-  one. Wrapping this pure selection in an `ASSEMBLE` returned **79 of 229**
-  error grains on run 1's own memory. Every prompt section in the crate now
-  states its budget explicitly, and `scripts/parity_check.py` seeds 200 grains
-  past the default so the omission cannot come back.
-
-A run 2 under this harness would not be comparable to run 1 on prompt bytes for
-the passive arm alone; the governed arm's bytes are unchanged.
+A run 2 under this harness is not comparable to run 1 on the passive arm's
+prompt; the governed arm's bytes are unchanged.

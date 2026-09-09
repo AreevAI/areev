@@ -94,7 +94,13 @@ docker build -t areev .             # the container image (postgres+tls features
   measured; raise one when real work lands, and lower one only with a reason.
   `areev-cli` and `areev-mcp` are the known-lowest and the next testing work.
   If CI flags either script, run it and commit the result — do not hand-edit
-  the artifacts.
+  the artifacts. Better, run `scripts/install-hooks.sh` once: the pre-commit
+  hook regenerates them when the tree has drifted past **1%**, half the gate's
+  tolerance, so the numbers refresh in the commit that moved them. The drift
+  is a timing problem, not a tolerance one — `test_code` is the fastest-moving
+  metric (a test-heavy repo's smallest growing denominator, so ~1,100 new
+  lines is already 2%), and the branch that trips the gate is usually not the
+  branch that caused the drift. CI also warns at 1% before failing at 2%.
 - **The version lives in five places**, only one of which is inherited. The
   `versions` job runs `scripts/check_versions.py`; the release runbook
   (`.claude/skills/areev-release`) is the source of truth for the order.
