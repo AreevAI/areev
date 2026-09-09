@@ -375,17 +375,15 @@ def appworld_case(root):
         check("appworld: governed block",
               mem.lessons_block(db), retired_appworld_lessons(db, mem))
         passive = mem.experience_block(db)
-        # CHANGED when the block moved into CAL (#209). It ranks ENDPOINTS
-        # now, most frequent first; the error MESSAGE is gone because a
-        # template cannot render a Tool grain's body and `GROUP BY` takes one
-        # field. Asserted as the new shape, not as parity — the old bytes are
-        # not recoverable and pretending otherwise would hide the change.
-        check("appworld: the passive block ranks endpoints by frequency",
-              passive.split("\n")[1], "- (2x) phone.search_contacts")
-        check("appworld: the error message is no longer in the block",
-              "401" in passive, False)
+        # The block moved into CAL (#209, #217) and ranks what it always
+        # ranked: `(endpoint, message)` pairs, most frequent first. Asserted
+        # as the shape rather than as byte parity with the retired renderer,
+        # because the ordering contract is the engine's now.
+        check("appworld: the passive block ranks (endpoint, message) by frequency",
+              passive.split("\n")[1],
+              "- (2x) phone.search_contacts: Response status code is 401: token expired")
         check("appworld: an unattributed error still reaches the block",
-              "- (1x) unknown" in passive, True)
+              "- (1x) unknown: TypeError: unhashable type" in passive, True)
         print("       passive:\n" + "\n".join("       | " + l for l in passive.split("\n")))
 
     mem.with_memory(path, mem.REVIEWER, compare)
@@ -430,6 +428,9 @@ def appworld_case(root):
                    "message": "Response status code is 401: token expired on endpoint %03d "
                               "with a message long enough to cost real tokens" % i}
                   for i in range(200)]
+        # One endpoint fails repeatedly, and it sorts LAST by key — so it can
+        # only lead the block if the ranking really is by frequency.
+        errors += [errors[199]] * 4
         mem.record_episode(db, "task_big", errors, steps=200, hit_cap=False)
 
     mem.with_memory(big, mem.RUNNER, seed_many)
@@ -438,10 +439,15 @@ def appworld_case(root):
         return mem.experience_block(db)
 
     block = mem.with_memory(big, mem.RUNNER, all_rows)
-    # 200 distinct endpoints, one line each: the ranking is over all of them,
-    # not over whatever the default budget happened to leave.
-    check("appworld: 200 distinct endpoints all reach the ranking",
-          block.count("\n- "), 200)
+    # The cut is the engine's `LIMIT` after `COUNT` (#217), applied to the
+    # ranking before the budget ever sees it — so this asserts a bound the
+    # block ASKED for, not whatever the default budget happened to leave. The
+    # silent-drop case the comment above describes is still covered, by the
+    # 200-rule check below and by `cal.section` raising on `CAL-W017`.
+    check("appworld: the ranking is cut at the top N, not by the budget",
+          block.count("\n- "), mem.PASSIVE_TOP_N)
+    check("appworld: the most frequent pair leads the ranking",
+          block.split("\n")[1].split(":")[0], "- (5x) phone.api_199")
 
     def many_rules(db):
         for i in range(200):

@@ -58,7 +58,7 @@ the transferable lesson, not the table:
 
 | gap | where | status |
 |---|---|---|
-| no per-group count to render (`GROUP BY` reorders only) | appworld's passive arm | **closed** — [#209](https://github.com/AreevAI/areev/issues/209) |
+| no per-group count to render (`GROUP BY` reorders only) | appworld's passive arm | **closed** — [#209](https://github.com/AreevAI/areev/issues/209); the composite key, the renderable Tool body and the bound that binds after `COUNT` followed in [#217](https://github.com/AreevAI/areev/issues/217) |
 | `valid_to` not queryable on facts (`CAL-E060`) or a template variable (`CAL-E042`) | persist notes | **closed** — [#206](https://github.com/AreevAI/areev/issues/206) |
 | `description` not filterable on skills (`CAL-E060`); filtering on `object` silently matches everything | persist skills | **closed** — [#207](https://github.com/AreevAI/areev/issues/207), both halves |
 | no text extraction, no one-row-per-group projection | persist session titles | **partly** — extraction landed ([#210](https://github.com/AreevAI/areev/issues/210)); first-of-group is still open |

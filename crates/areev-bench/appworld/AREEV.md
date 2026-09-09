@@ -83,46 +83,43 @@ The governed block is a plain `ASSEMBLE` with `ORDER BY object ASC`,
 `WITH dedup(object)` and a `{{#if assembly.grain_count}}`-guarded heading.
 
 The passive block **moved into CAL on 2026-09-09**, once #209 landed
-`GROUP BY <field> COUNT` and the `group.*` template variables:
+`GROUP BY … COUNT` and the `group.*` template variables:
 
 ```sql
 ASSEMBLE "past API errors" FOR "the AppWorld coding agent" FROM
   ranked: (RECALL tools WHERE namespace = $scope AND is_error = true
-           LIMIT 400 GROUP BY tool_name COUNT)
+           LIMIT 400 GROUP BY tool_name, tool_content COUNT LIMIT 12)
 BUDGET 16000 tokens
-FORMAT TEMPLATE appworld_errors_tpl     -- - ({{group.count}}x) {{group.key}}
+FORMAT TEMPLATE appworld_errors_tpl
+--  - ({{group.count}}x) {{group.key.0}}: {{group.key.1}}
 ```
 
-### The block changed, and in which direction
+### What the block ranks, and why that is the whole question
 
-This is not a refactor. It ranks **endpoints**; it used to rank
-`(endpoint, message)` pairs and print the message:
+`(endpoint, message)` pairs, most frequent first, cut at twelve — the same
+ranking the harness used to compute in Python, and the one runs 1 and 2 were
+produced under:
 
 ```
-was:  - (6x) phone.login: Response status code is 401:
-now:  - (6x) phone.login
+- (6x) phone.login: Response status code is 401
 ```
 
-Two engine limits force it, and neither is a matter of effort:
-
-- **A template cannot render a Tool grain's body.** `tool_content` is rejected
-  as a template variable (`CAL-E042`), and `content` / `object` / `summary`
-  resolve empty on a Tool — while the built-in `markdown` renderer prints it
-  happily. So the message cannot appear in any CAL-rendered block.
-- **`GROUP BY` takes one field**, so `(tool_name, message)` cannot be a key,
-  and `tool_content` is not groupable either (`CAL-E060`). A composite key is
-  the only shape that would preserve the old line.
-
-Filed as [#217](https://github.com/AreevAI/areev/issues/217). Also noted there:
-a `LIMIT` after `COUNT` does not bind, so
-the block now lists every endpoint rather than the harness's old top twelve.
+For one day it ranked **endpoints only**. #209 gave CAL a per-group count but
+not a composite key, and three engine gaps stood between that block and this
+one — a template could not render a Tool grain's body (`tool_content` was
+`CAL-E042` and `content` resolved empty, though `FORMAT markdown` printed it
+happily), `GROUP BY` took one field, and a `LIMIT` after `COUNT` did not bind,
+so the block listed every endpoint rather than the top twelve. All three were
+filed as [#217](https://github.com/AreevAI/areev/issues/217) and all three are
+closed; the block is CAL end to end and ranks what it always ranked.
 
 **Say this wherever a number produced under it is published.** The passive arm
-is the BASELINE the governed arm has to beat. Dropping the error message makes
-that baseline *weaker*, which flatters the governed arm — a bias in the
-direction that would make the loop look better. Runs 1 and 2 precede this
-block and were produced with the message present; they are not comparable to a
-run under it, and the change belongs in the next run's pre-registration.
+is the BASELINE the governed arm has to beat, so the direction of any change
+to it matters more than its size: dropping the error message would make that
+baseline *weaker*, which flatters the governed arm — a bias in exactly the
+direction that would make the loop look better. No run was produced under the
+endpoint-only block. If one ever is, it is not comparable to runs 1 and 2 and
+must say so.
 
 The selection had been a saved `RECALL` rather than an `ASSEMBLE` for a while,
 which is worth keeping in the record: `ASSEMBLE` applies a token budget whether
@@ -149,7 +146,7 @@ reworded restatement.
 
 | surface | status |
 |---|---|
-| ASSEMBLE | adopted for both arms — the passive arm's frequency ranking moved once #209 landed, at the cost recorded above |
+| ASSEMBLE | adopted for both arms — the passive arm's frequency ranking moved once #209 and #217 landed, and lost nothing on the way |
 | saved queries | adopted, both arms |
 | CAL rendering | adopted for both, via `DEFINE TEMPLATE` |
 | tool-call lifecycle | adopted |

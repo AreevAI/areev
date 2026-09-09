@@ -70,6 +70,11 @@ INTERNAL_RELATIONS = {"episode", "outcome"}
 
 SECTION_CAP = 400
 
+# How many (endpoint, message) pairs the passive block lists. The harness
+# tallied and cut at twelve before the block moved into CAL; the cut is the
+# engine's again since #217 made a `LIMIT` after `COUNT` bind.
+PASSIVE_TOP_N = 12
+
 _PASSIVE_HEADER = (
     "E. What went wrong in earlier tasks (your own past API errors, most "
     "frequent first). These are raw records, not instructions:"
@@ -91,24 +96,27 @@ REGISTRY = list(cal.REVIEW_REGISTRY) + [
         '  FORMAT TEMPLATE appworld_rules_tpl\n'
         '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
         "the supervisor-approved rules, the governed arm's whole prompt block"),
-    # The passive block, ranked by frequency -- `GROUP BY tool_name COUNT`
-    # since #209 landed in 1.7.4. `group.*` renders the ranking; the guarded
-    # header means an agent with no errors yet sees nothing at all.
+    # The passive block, ranked by frequency -- `GROUP BY <keys> COUNT` since
+    # #209 landed in 1.7.4. `group.*` renders the ranking; the guarded header
+    # means an agent with no errors yet sees nothing at all.
     #
-    # This block CHANGED when it moved. See `AREEV.md`: the error MESSAGE is
-    # gone, because a template cannot render a Tool grain's body and CAL has
-    # no composite group key. It is a pre-registered change for the next run,
-    # not a refactor.
+    # The key is COMPOSITE (#217): `(endpoint, message)`, which is the ranking
+    # the harness used to tally in Python and the one runs 1 and 2 were
+    # produced under. Ranking endpoints alone tells the agent where it fails
+    # and not what to do about it -- and this is the BASELINE arm, so a weaker
+    # block here flatters the governed arm it is compared against.
     cal.guarded_template("appworld_errors_tpl", _PASSIVE_HEADER,
-                         "- ({{group.count}}x) {{group.key}}"),
+                         "- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}"),
     cal.saved_query(
         "appworld_errors", ["scope"],
         '  ASSEMBLE "past API errors" FOR "the AppWorld coding agent" FROM\n'
         '    ranked: (RECALL tools WHERE namespace = $scope AND is_error = true\n'
-        '             LIMIT %d GROUP BY tool_name COUNT)\n'
+        '             LIMIT %d GROUP BY tool_name, tool_content COUNT LIMIT %d)\n'
         '  BUDGET %d tokens\n'
-        '  FORMAT TEMPLATE appworld_errors_tpl' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
-        "every endpoint this agent has failed on, most frequent first"),
+        '  FORMAT TEMPLATE appworld_errors_tpl'
+        % (SECTION_CAP, PASSIVE_TOP_N, cal.MAX_BUDGET_TOKENS),
+        "every endpoint this agent has failed on and what it failed with, "
+        "most frequent first"),
 ]
 
 # The environment states its own failures in a stable shape; these are the
@@ -257,21 +265,16 @@ def experience_block(db) -> str:
     "just put the past in the prompt", which is the baseline a governed loop
     has to beat to have earned anything.
 
-    Assembled entirely by CAL since #209 landed `GROUP BY <field> COUNT` and
-    the `group.*` template variables. **The block changed when it moved**, and
-    the change is not cosmetic: it now ranks ENDPOINTS, where it used to rank
-    (endpoint, message) pairs and print the message. Two engine limits force
-    that, both recorded in `AREEV.md`:
+    Assembled entirely by CAL since #209 landed `GROUP BY … COUNT` and the
+    `group.*` template variables, and it ranks what it has always ranked:
+    (endpoint, message) pairs, most frequent first, cut at the top twelve.
 
-      * a template cannot render a Tool grain's body -- `tool_content` is
-        rejected as a template variable (CAL-E042) and `content`/`object`
-        resolve empty, though the built-in `markdown` renderer prints it;
-      * `GROUP BY` takes one field, so `(tool_name, message)` cannot be a key,
-        and `tool_content` is not groupable either (CAL-E060).
-
-    The direction of the change matters more than its size: this is the
-    BASELINE arm, and dropping the message makes it weaker, which flatters the
-    governed arm it is compared against. Any run under this block must say so.
+    Restoring the message needed #217 -- a composite group key, a Tool body
+    that a template can render, and a `LIMIT` after `COUNT` that binds. For
+    one day (2026-09-09) the block ranked endpoints only, which `AREEV.md`
+    records: this is the BASELINE arm, and a weaker block here flatters the
+    governed arm it is compared against, so the direction of any change to it
+    is worth more than its size.
     """
     return cal.section(db, "appworld_errors", {"scope": NS_SCOPE})
 

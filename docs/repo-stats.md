@@ -6,20 +6,20 @@ v1.7.3 · 17 crates · 299 Rust files
 
 | | |
 |---|---|
-| Source code | **93,449** lines |
-| Test code | **55,463** lines (37.2% of all code) |
-| Test functions | **2,681** |
+| Source code | **93,605** lines |
+| Test code | **55,755** lines (37.3% of all code) |
+| Test functions | **2,690** |
 | Line coverage | **81.1%** of 57,966 instrumented source lines |
-| Stable error codes | **97** |
-| Reference docs | 59 files, 28,425 lines |
+| Stable error codes | **98** |
+| Reference docs | 59 files, 28,620 lines |
 
 ## By crate
 
 | Crate | Files | Source | Test | Tests |
 |---|---:|---:|---:|---:|
-| `areev-cal` | 41 | 24,409 | 19,112 | 1,012 |
+| `areev-cal` | 41 | 24,564 | 19,404 | 1,021 |
 | `areev-store` | 40 | 10,840 | 5,718 | 289 |
-| `areev-core` | 51 | 8,852 | 4,514 | 301 |
+| `areev-core` | 51 | 8,853 | 4,514 | 301 |
 | `areev-loop` | 34 | 11,604 | 1,527 | 192 |
 | `areev-run` | 21 | 6,001 | 5,875 | 173 |
 | `areev-cli` | 19 | 6,657 | 6,126 | 185 |
@@ -39,12 +39,12 @@ v1.7.3 · 17 crates · 299 Rust files
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 196,671 |
-| Source code (no blanks or comments) | 93,449 |
+| Physical lines (all Rust) | 197,296 |
+| Source code (no blanks or comments) | 93,605 |
 | Unit test code (`#[cfg(test)]` blocks) | 26,697 |
-| Integration test code (`tests/`, `benches/`) | 28,766 |
+| Integration test code (`tests/`, `benches/`) | 29,058 |
 | Example code (`examples/`) | 669 |
-| Test functions | 2,681 |
+| Test functions | 2,690 |
 
 ## Coverage
 

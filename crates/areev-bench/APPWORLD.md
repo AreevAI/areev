@@ -529,13 +529,15 @@ What changed, and why:
 - **The governed arm's prompt block is a saved `ASSEMBLE`** registered in the
   memory file. Byte-identical to the renderer it replaced, gated by
   `scripts/parity_check.py appworld`.
-- **The passive arm's block moved too, on 2026-09-09** (#209), and it
-  **changed**: it ranks endpoints, where it used to rank (endpoint, message)
-  pairs and print the message. A template cannot render a Tool grain's body
-  (`CAL-E042`) and `GROUP BY` takes one field, so the old line is not
-  expressible. The direction matters: this is the BASELINE arm, so a weaker
-  block flatters the governed arm it is compared against. **Run 1 above
-  precedes it and is not comparable to a run under it.**
+- **The passive arm's block moved too, on 2026-09-09** (#209, then #217), and
+  it ranks what it always ranked: (endpoint, message) pairs, most frequent
+  first, cut at twelve. Keeping the message needed three CAL gaps closed — a
+  Tool grain's body was unrenderable in a template (`CAL-E042`), `GROUP BY`
+  took one field, and a `LIMIT` after `COUNT` did not bind — all filed as #217
+  and all closed. The direction is what matters here: this is the BASELINE
+  arm, so a weaker block flatters the governed arm it is compared against, and
+  the block that briefly ranked endpoints alone never produced a run.
 
-A run 2 under this harness is not comparable to run 1 on the passive arm's
-prompt; the governed arm's bytes are unchanged.
+A run 2 under this harness stays comparable to run 1 on both arms' prompts:
+the governed arm's bytes are unchanged, and the passive arm's block ranks the
+same pairs it did, now assembled by CAL rather than tallied in Python.

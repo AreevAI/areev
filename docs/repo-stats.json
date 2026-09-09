@@ -3,24 +3,24 @@
   "crates": 17,
   "rust": {
     "files": 299,
-    "physical_lines": 196671,
-    "source_code": 93449,
-    "test_code": 55463,
+    "physical_lines": 197296,
+    "source_code": 93605,
+    "test_code": 55755,
     "unit_test_code": 26697,
-    "integration_test_code": 28766,
+    "integration_test_code": 29058,
     "example_code": 669,
-    "test_functions": 2681,
-    "test_ratio": 0.59,
-    "test_share": 37.2
+    "test_functions": 2690,
+    "test_ratio": 0.6,
+    "test_share": 37.3
   },
   "per_crate": [
     {
       "name": "areev-cal",
       "files": 41,
-      "physical": 56387,
-      "source_code": 24409,
-      "test_code": 19112,
-      "tests": 1012
+      "physical": 57005,
+      "source_code": 24564,
+      "test_code": 19404,
+      "tests": 1021
     },
     {
       "name": "areev-store",
@@ -33,8 +33,8 @@
     {
       "name": "areev-core",
       "files": 51,
-      "physical": 17775,
-      "source_code": 8852,
+      "physical": 17782,
+      "source_code": 8853,
       "test_code": 4514,
       "tests": 301
     },
@@ -153,9 +153,9 @@
   ],
   "docs": {
     "files": 59,
-    "lines": 28425
+    "lines": 28620
   },
-  "error_codes": 97,
+  "error_codes": 98,
   "bindings": {
     "python_files": 91,
     "node_test_files": 4

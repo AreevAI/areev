@@ -174,13 +174,15 @@ def test_store_round_trip() -> None:
         check("passive block is written", bool(block), repr(block[:80]))
         check("a memory opens in a directory that does not exist yet",
               os.path.exists(db_path))
-        # The block ranks ENDPOINTS since it moved into CAL (#209). The error
-        # MESSAGE is no longer in it: a template cannot render a Tool grain's
-        # body, and `GROUP BY` takes one field so `(endpoint, message)` cannot
-        # be a key. `AREEV.md` records the change and its direction.
+        # The block ranks `(endpoint, message)` pairs by frequency, assembled
+        # by CAL since #209 and #217 (composite group key, a renderable Tool
+        # body, a `LIMIT` that binds after `COUNT`). The MESSAGE is the half
+        # that says what to do about the failure, and this is the BASELINE
+        # arm -- a block without it flatters the arm it is compared against.
         check("passive block names the api",
               "phone.show_contact_relationships" in block, block[:200])
         check("passive block ranks by frequency", "(1x)" in block, block[:200])
+        check("passive block carries the error message", "401" in block, block[:200])
 
         governed = memory.block_for(db_path, "governed")
         check("governed block is empty with no approved rule", governed == "", repr(governed))

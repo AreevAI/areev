@@ -71,15 +71,19 @@ halves.
 *Adherence today: **adopted** (2026-09-08; revisited 2026-09-09).* Every
 model-facing block in `receipts`, `tau2` and `appworld` is an `ASSEMBLE`;
 `persist` is two sections of four. The gaps this sweep found were filed and
-**four of them were fixed in 1.7.4** (#206–#209), so what is still
-harness-composed is a much shorter list, and for reasons that are now about
-the PROMPT rather than about CAL:
+**four of them were fixed in 1.7.4** (#206–#209), plus the three #217 names,
+so what is still harness-composed is a much shorter list, and for reasons that
+are now about the PROMPT rather than about CAL:
 
-- AppWorld's passive arm and persist's notes are both *expressible* now, and
-  both are deliberately **not moved**: each would change the prompt an arm was
-  measured under, which belongs in a run's pre-registration rather than in a
-  refactor (rule 4). Their queries are written out in the two `AREEV.md` files,
-  ready.
+- AppWorld's passive arm **has moved** (2026-09-09), and its block ranks the
+  same `(endpoint, message)` pairs the harness used to tally in Python — which
+  took a second round of engine work, [#217](https://github.com/AreevAI/areev/issues/217):
+  a composite `GROUP BY` key, a Tool body a template can render, and a `LIMIT`
+  that binds after `COUNT`. Moving it without those would have changed the
+  prompt an arm was measured under, which is rule 4's case for
+  pre-registration rather than a refactor.
+- persist's notes are *expressible* and deliberately **not moved**, for that
+  same reason. The query is written out in its `AREEV.md`, ready.
 - persist's session titles need FIRST-of-group, which #209 did not land.
 - `selfimprove` needs to reshape a JSON payload — parse, remove a key,
   re-serialise — which was declined on purpose (#211), not left undone.

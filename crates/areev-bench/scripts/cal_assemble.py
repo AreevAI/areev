@@ -219,13 +219,12 @@ def section(db, name, params=None, cap=None):
 def rows(db, name, params=None, cap=None):
     """Run a saved query that renders `FORMAT json` and return its grains.
 
-    For the one read in this crate that CAL cannot finish: AppWorld's passive
-    arm ranks its errors BY FREQUENCY, and CAL has no per-group count to
-    render with (`GROUP BY` reorders; it does not project a count into a
-    template). The SELECTION is still the engine's -- namespace scope, the
-    `is_error = true` filter and the bound all live in the saved query -- and
-    only the tally is the harness's. `../CLAUDE.md` says to name the step you
-    kept; this is it.
+    For the reads whose ROWS the harness needs rather than a rendered block:
+    the reviewer's prior decisions and the held-out outcome series, both of
+    which are Python inputs, not prompt sections. The frequency ranking that
+    used to be here is gone -- `GROUP BY … COUNT` (#209) and a composite key
+    (#217) put it back in the engine, where the ordering is a contract rather
+    than a loop in this file.
     """
     params = params or {}
     bindings = ", ".join("$%s = %s" % (k, _lit(v)) for k, v in sorted(params.items()))
