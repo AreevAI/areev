@@ -45,7 +45,7 @@ HOUR = 3_600_000
 
 
 def loop_pass(db_path, now_ms, llm_cmd=None, ground_cmd=None, policy=None, fixture=None,
-              full_sweep=False):
+              full_sweep=False, policy_dir=None):
     """One loop pass under the runner at a pinned engine time.
 
     A pass reflects over what is NEW since the last pass (the watermark); the
@@ -56,7 +56,7 @@ def loop_pass(db_path, now_ms, llm_cmd=None, ground_cmd=None, policy=None, fixtu
     os.environ["AREEV_LOOP_NOW_MS"] = str(now_ms)
     if fixture:
         os.environ["AREEV_MOCK_LLM_FIXTURE"] = fixture
-    policy = mem.policy_file(db_path, policy, name="regress-policy.json")
+    policy = mem.policy_file(db_path, policy, name="regress-policy.json", policy_dir=policy_dir)
     try:
         return json.loads(mem.with_memory(
             db_path, mem.RUNNER,
@@ -86,11 +86,11 @@ def applied_lessons(db_path):
     reporting under a name that claims something else. Zero applied lessons
     and zero verdicts is a pass — there was nothing to verify — and the gate
     still has to handle the planted rule, which is a separate check."""
-    def count(db):
-        return sum(1 for g in mem._facts(db)
-                   if g.get("fields", {}).get("relation") in ("lesson", "fails_with")
-                   and (g["fields"].get("object") or "").strip())
-    return mem.with_memory(db_path, mem.REVIEWER, count)
+    # `current_rules` is the same relation-scoped read the prompt's rules
+    # section uses, so this counts exactly what the agent can see. The
+    # whole-namespace scan it replaced raised past 1000 facts, which a long
+    # deployment reaches at about 250 documents.
+    return mem.with_memory(db_path, mem.REVIEWER, lambda db: len(mem.current_rules(db)))
 
 
 def pending(db_path):
@@ -114,6 +114,10 @@ def main():
     ap.add_argument("--learned-db", required=True,
                     help="the experience memory, with A0 and B already journaled")
     ap.add_argument("--workdir", required=True)
+    ap.add_argument("--run-config", default=None,
+                    help="the run's run.config.json, whose host policy this leg "
+                         "inherits (default: beside the file memory; for a DSN, "
+                         "the parent of --workdir)")
     ap.add_argument("--harmful", default=os.path.join(here, "fixtures", "lesson_harmful.json"))
     ap.add_argument("--mock-llm", default=os.path.join(repo, "examples", "llm", "mock.py"))
     ap.add_argument("--no-plant", action="store_true",
@@ -131,7 +135,9 @@ def main():
     agent_argv = os.environ["AGENT_CMD"].split()
     _, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval)
     evalset = evalrun.evalset_hash(heldout)
-    db = args.learned_db
+    db = mem.bench_db(args.learned_db)
+    if mem.is_dsn(db):
+        print("memory: %s" % mem.redact(db))
     # Inherit the run's host policy rather than assuming one. The leg that
     # verifies a run should not quietly differ from it: cell C ran its
     # experience phase with `evidence_attribution: anonymous` and its regress
@@ -140,7 +146,13 @@ def main():
     # run and the thing checking it is the kind that goes unnoticed.
     # `outcome_evalset` is always ours: regress recomputes the evalset hash.
     policy = {"discover_objective": "learner"}
-    cfg = os.path.join(os.path.dirname(os.path.abspath(db)), "run.config.json")
+    cfg = args.run_config
+    if not cfg:
+        # Beside a file memory; a DSN has no beside, so the parent of this
+        # leg's work dir — where dryrun.sh puts the run's.
+        base = os.path.dirname(os.path.abspath(args.workdir)) if mem.is_dsn(db) \
+            else os.path.dirname(os.path.abspath(db))
+        cfg = os.path.join(base, "run.config.json")
     if os.path.exists(cfg):
         ran_under = json.load(open(cfg)).get("policy")
         if ran_under:
@@ -160,7 +172,7 @@ def main():
 
     # 1. Verify the good lessons: a pass a day after the last apply. B was
     #    journaled after every apply and A0 before every proposal.
-    rep = loop_pass(db, t0 + 2 * DAY, policy=policy)
+    rep = loop_pass(db, t0 + 2 * DAY, policy=policy, policy_dir=args.workdir)
     verdicts = outcomes(db)
     report["steps"].append({"step": "verify", "loop": rep, "outcomes": verdicts})
     n_lessons = len({o["rec_hash"] for o in verdicts})
@@ -184,7 +196,7 @@ def main():
 
     # 2. Admit the harmful lesson through the governed path.
     t_h = t0 + 2 * DAY + HOUR
-    rep = loop_pass(db, t_h, llm_cmd=mock_cmd, ground_cmd=mock_cmd, policy=policy, fixture=args.harmful,
+    rep = loop_pass(db, t_h, llm_cmd=mock_cmd, ground_cmd=mock_cmd, policy=policy, fixture=args.harmful, policy_dir=args.workdir,
                     full_sweep=True)
     cand = [r for r in pending(db) if harmful_text in (r.get("summary") or "")]
     check("the harmful lesson reached the queue", len(cand) == 1, json.dumps(rep.get("llm_funnel")))
@@ -208,7 +220,7 @@ def main():
 
     # 4. A day later: regressed → revert proposed → approved → applied.
     t_r = t_h + DAY + HOUR
-    rep = loop_pass(db, t_r, policy=policy)
+    rep = loop_pass(db, t_r, policy=policy, policy_dir=args.workdir)
     verdicts = [o for o in outcomes(db) if o["rec_hash"] == harmful["hash"]]
     check("it was measured against the evalset (the metric the policy attached)",
           any(o["metric"] == "evalset:%s:exact" % evalset for o in verdicts), json.dumps(verdicts))
@@ -238,7 +250,7 @@ def main():
           "H %d → R %d exact" % (sum_h["exact"], sum_r["exact"]))
 
     # 6. The same fixture model, the next pass: not re-proposed.
-    rep = loop_pass(db, t_r + 3 * HOUR, llm_cmd=mock_cmd, ground_cmd=mock_cmd, policy=policy,
+    rep = loop_pass(db, t_r + 3 * HOUR, llm_cmd=mock_cmd, ground_cmd=mock_cmd, policy=policy, policy_dir=args.workdir,
                     fixture=args.harmful, full_sweep=True)
     again = [r for r in pending(db) if harmful_text in (r.get("summary") or "")]
     check("the reverted lesson is not re-proposed", len(again) == 0,

@@ -195,6 +195,11 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   instead of mixing vector spaces. Host config is never persisted here —
   the file describes itself, the host supplies capabilities.
   `tests/meta_tests.rs` covers persistence/reconciliation.
+- `read_blob_offline(locator, uri)` reads a blob by ADDRESS without opening the
+  memory, on either backend (#202): the sidecar on embedded, a short-lived
+  connection and a schema-qualified `SELECT blobs` on postgres. It takes no
+  lock and no session state, which is what lets a sandboxed tool — or
+  `areev blob get` — read an attachment while a run holds the memory.
 - CAS blob sidecar at `"{path}.blobs"`, git-style `hex[..2]/hex[2..]` fan-out:
   `put_blob` (idempotent, tmp+rename), `get_blob` (re-verifies sha256),
   `gc_blobs` (ref-count from live grains' `content_refs`). Free fn

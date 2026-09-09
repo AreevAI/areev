@@ -485,6 +485,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Early warning at half the gate's tolerance. `test_code` is the metric
+      # that drifts fastest — it is the smallest fast-growing denominator in a
+      # test-heavy repo, so ~1,100 new lines of test is already 2% — and the
+      # branch that trips the gate is usually not the branch that caused the
+      # drift. Warning at 1% puts the news on the PR that added the code.
+      - name: Warn when the stats are drifting toward the gate
+        continue-on-error: true
+        run: |
+          python3 scripts/repo_stats.py --check --tolerance 1.0 && exit 0
+          echo "::warning::repo stats are over 1% drift - regenerate and commit (scripts/install-hooks.sh does it automatically); the gate below fails at 2%"
       - name: Verify the committed stats match the tree
         run: python3 scripts/repo_stats.py --check
       - uses: actions/upload-artifact@v7

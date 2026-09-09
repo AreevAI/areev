@@ -89,7 +89,7 @@ def main():
                 profile, db,
                 "%s %s %s --provider %s --seed %d" % (py, loop, model, pin, p),
                 "%s %s %s --provider %s --seed %d" % (py, loop, gm, gp, p),
-                judge, policy, verbose=False,
+                judge, policy, verbose=False, policy_dir=work,
                 # A full sweep, because every pass reflects over the same
                 # already-seen history: without it the watermark leaves the
                 # bundle empty and every model scores zero for the same

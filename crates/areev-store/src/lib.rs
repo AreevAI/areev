@@ -1714,9 +1714,13 @@ fn projected_text(view: &DeserializedGrain) -> Option<String> {
 pub fn read_blob_offline(db_path: &str, uri: &str) -> Result<Option<Vec<u8>>> {
     use sha2::{Digest, Sha256};
     let hex = Areev::cas_hex(uri)?;
-    let dir = std::path::PathBuf::from(format!("{db_path}.blobs"));
-    let raw = std::fs::read(fs_blob_path(&dir, hex))
-        .map_err(|_| AreevError::Storage(format!("blob missing: {uri}")))?;
+    let raw = if is_pg_dsn(db_path) {
+        read_blob_pg(db_path, hex, uri)?
+    } else {
+        let dir = std::path::PathBuf::from(format!("{db_path}.blobs"));
+        std::fs::read(fs_blob_path(&dir, hex))
+            .map_err(|_| AreevError::Storage(format!("blob missing: {uri}")))?
+    };
     if blobcrypt::is_sealed(&raw) {
         return Ok(None);
     }
@@ -1724,6 +1728,46 @@ pub fn read_blob_offline(db_path: &str, uri: &str) -> Result<Option<Vec<u8>>> {
         return Err(AreevError::Storage(format!("blob corrupt: {uri}")));
     }
     Ok(Some(raw))
+}
+
+/// Whether a memory locator names the postgres backend rather than a file.
+///
+/// One spelling, because every surface that takes a `--db`-shaped string has
+/// to make this decision: the CLI, both bindings, and the blob read below.
+pub fn is_pg_dsn(locator: &str) -> bool {
+    locator.starts_with("postgres://") || locator.starts_with("postgresql://")
+}
+
+/// The postgres half of [`read_blob_offline`]: its own short-lived connection,
+/// one schema-qualified `SELECT`, closed on return.
+///
+/// No lock and no session state, so it cannot contend with the run holding the
+/// schema. Qualifying the table (#181) is what keeps it independent of
+/// `search_path`, so it is safe behind a pooler too.
+#[cfg(feature = "postgres")]
+fn read_blob_pg(dsn: &str, hex: &str, uri: &str) -> Result<Vec<u8>> {
+    let (url, schema) = pg::split_schema_url(dsn)?;
+    let raw = hex::decode(hex).map_err(|e| AreevError::Storage(e.to_string()))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AreevError::Storage(e.to_string()))?;
+    let client = pgtls::connect(&rt, &url)?;
+    let sql = pg::qualify_tables("SELECT body FROM blobs WHERE hash = $1", &schema);
+    let rows = rt
+        .block_on(client.query(sql.as_str(), &[&raw]))
+        .map_err(pg::pg_err)?;
+    let row = rows
+        .first()
+        .ok_or_else(|| AreevError::Storage(format!("blob missing: {uri}")))?;
+    row.try_get::<_, Vec<u8>>(0).map_err(pg::pg_err)
+}
+
+#[cfg(not(feature = "postgres"))]
+fn read_blob_pg(_dsn: &str, _hex: &str, _uri: &str) -> Result<Vec<u8>> {
+    Err(AreevError::Storage(
+        "this build lacks the postgres backend — rebuild with --features postgres-tls".into(),
+    ))
 }
 
 /// Where the CAS blob payloads live: a `.blobs` fan-out directory next to

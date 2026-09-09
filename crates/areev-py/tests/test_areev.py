@@ -175,6 +175,31 @@ def test_record_tool_call_records_occurrences(tmp_path):
     m.set_run_id(None)
 
 
+def test_record_tool_call_targets_a_namespace(tmp_path):
+    """`ns` sends a call to a namespace other than the session's.
+
+    Without it this was the ONE write on this surface that could not leave the
+    session namespace, so a host recording calls into per-domain child
+    namespaces (`caller.phone`, `caller.spotify`) had to open a second handle
+    — which the single-writer registry refuses (STO-E002).
+    """
+    m = make_db(tmp_path)
+    m.record_tool_call("phone.search", "401 expired", True, ns="caller.phone")
+    m.record_tool_call("spotify.show", "404", True, ns="caller.spotify")
+    m.record_tool_call("unattributed", "boom", True)  # session namespace
+
+    child = json.loads(m.cal('RECALL tools WHERE namespace = "caller.phone"'))
+    assert len(child["grains"]) == 1
+    assert child["grains"][0]["fields"]["tool_name"] == "phone.search"
+
+    # A prefix scope selects the base namespace AND its descendants, which is
+    # what lets an existing flat memory keep reading through the same query.
+    every = json.loads(m.cal('RECALL tools WHERE namespace = "caller.*" | COUNT'))
+    assert every["count"] == 3
+    base = json.loads(m.cal('RECALL tools WHERE namespace = "caller" | COUNT'))
+    assert base["count"] == 1
+
+
 def test_add_explains_engine_authored_types(tmp_path):
     """A type that exists but may not be host-authored says why (#67).
 
@@ -560,6 +585,10 @@ def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
 
     assert seen("py-env-inherit") == "leaked"
     assert seen("py-env-cleared", tool_env="AREEV_TEST_OTHER") == ""
+    # Presence is the setting (#197): an EMPTY tool_env clears to the minimal
+    # set, the strictest posture — exactly as the CLI's `--tool-env ""` does.
+    # It used to be read as "not configured" and inherit everything.
+    assert seen("py-env-empty", tool_env="") == ""
 
 
 def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
@@ -595,9 +624,20 @@ def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
     assert poll()["items"] == 1
     assert saw_so_far() == ["leaked"], "without tool_env the connector inherits"
 
+    # Items dedup on `/saw`, so every phase below must make the connector see
+    # something new. The EMPTY list clears to the minimal set (#197 — presence
+    # is the setting, exactly as the CLI's `--tool-env ""`): the planted
+    # variable is gone.
     time.sleep(1.1)
-    assert poll(tool_env="AREEV_TEST_OTHER")["items"] == 1
-    assert saw_so_far() == ["", "leaked"], "a cleared connector must not carry it"
+    assert poll(tool_env="")["items"] == 1
+    assert saw_so_far() == ["", "leaked"], "an empty tool_env must clear, not inherit"
+
+    # A named list passes exactly the names given: re-admit the planted
+    # variable under a new value and the connector sees that value.
+    monkeypatch.setenv("AREEV_TEST_PLANTED", "readmitted")
+    time.sleep(1.1)
+    assert poll(tool_env="AREEV_TEST_PLANTED")["items"] == 1
+    assert saw_so_far() == ["", "leaked", "readmitted"], "a named list re-admits only what it names"
 
 
 def test_tool_env_refuses_to_re_admit_a_registered_secret(tmp_path, monkeypatch):

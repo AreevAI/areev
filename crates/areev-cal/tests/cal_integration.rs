@@ -2883,3 +2883,165 @@ fn exists_honours_type_specific_filters() {
         other => panic!("expected Exists, got {other:?}"),
     }
 }
+
+/// A pipeline stage written INSIDE an `ASSEMBLE` source orders that section.
+///
+/// CAL-W016 — raised when the same stage sits at the statement level — has
+/// always told the caller to "put the stage on that source's sub-query". The
+/// parser refused it (`CAL-E002: expected ), found ORDER`), so the warning
+/// named a fix that did not exist. These pin the fix: ordering is per section,
+/// it runs BEFORE the budget, and the statement-level stage still warns.
+#[test]
+fn a_stage_inside_an_assemble_source_orders_that_section() {
+    let (ex, facade, _d) = setup();
+    // Added newest-last, so recall order (newest first) is the REVERSE of
+    // alphabetical — an assertion that passes under either would prove nothing.
+    for rule in ["always capture the category", "dates are DD/MM/YYYY", "park anything with no total"] {
+        ex.execute(
+            &format!(
+                r#"ADD fact SET subject = "capture" SET relation = "lesson" SET object = "{rule}" SET namespace = "caller" REASON "t""#
+            ),
+            &facade,
+        )
+        .unwrap();
+    }
+    ex.execute(r#"DEFINE TEMPLATE rules_only AS "- {{grain.object}}""#, &facade)
+        .unwrap();
+
+    let text = |q: &str| -> String {
+        match ex.execute(q, &facade).unwrap().result {
+            CalResultPayload::Formatted { text, .. } => text,
+            other => panic!("expected Formatted, got {other:?}"),
+        }
+    };
+
+    let asc = text(
+        r#"ASSEMBLE "rules" FROM r: (RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 50) FORMAT TEMPLATE rules_only"#,
+    );
+    assert_eq!(
+        asc,
+        "- always capture the category\n- dates are DD/MM/YYYY\n- park anything with no total"
+    );
+
+    let desc = text(
+        r#"ASSEMBLE "rules" FROM r: (RECALL facts WHERE relation = "lesson" ORDER BY object DESC LIMIT 50) FORMAT TEMPLATE rules_only"#,
+    );
+    assert_eq!(
+        desc,
+        "- park anything with no total\n- dates are DD/MM/YYYY\n- always capture the category"
+    );
+}
+
+/// The stage runs before the budget, so `ORDER BY … LIMIT n` chooses WHICH
+/// grains the budget then has to fit — not which ones survive it.
+#[test]
+fn a_source_stage_runs_before_the_budget_not_after() {
+    let (ex, facade, _d) = setup();
+    for rule in ["aaa first", "bbb second", "ccc third", "ddd fourth"] {
+        ex.execute(
+            &format!(
+                r#"ADD fact SET subject = "capture" SET relation = "lesson" SET object = "{rule}" SET namespace = "caller" REASON "t""#
+            ),
+            &facade,
+        )
+        .unwrap();
+    }
+    ex.execute(r#"DEFINE TEMPLATE rules2 AS "- {{grain.object}}""#, &facade)
+        .unwrap();
+    let out = ex
+        .execute(
+            r#"ASSEMBLE "rules" FROM r: (RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 2) BUDGET 4000 tokens FORMAT TEMPLATE rules2"#,
+            &facade,
+        )
+        .unwrap();
+    match out.result {
+        CalResultPayload::Formatted { text, .. } => {
+            assert_eq!(text, "- aaa first\n- bbb second");
+        }
+        other => panic!("expected Formatted, got {other:?}"),
+    }
+}
+
+/// Each source keeps its OWN stage: two sections, ordered opposite ways, in
+/// one statement. This is the shape a prompt block actually needs — rules
+/// alphabetical, recent turns newest-first — and the reason the stage belongs
+/// on the source rather than on the statement.
+#[test]
+fn each_assemble_source_carries_its_own_stage() {
+    let (ex, facade, _d) = setup();
+    for rule in ["zeta rule", "alpha rule"] {
+        ex.execute(
+            &format!(
+                r#"ADD fact SET subject = "capture" SET relation = "lesson" SET object = "{rule}" SET namespace = "caller" REASON "t""#
+            ),
+            &facade,
+        )
+        .unwrap();
+    }
+    for note in ["zeta note", "alpha note"] {
+        ex.execute(
+            &format!(
+                r#"ADD fact SET subject = "capture" SET relation = "note" SET object = "{note}" SET namespace = "caller" REASON "t""#
+            ),
+            &facade,
+        )
+        .unwrap();
+    }
+    ex.execute(r#"DEFINE TEMPLATE rules3 AS "- {{grain.object}}""#, &facade)
+        .unwrap();
+    let out = ex
+        .execute(
+            r#"ASSEMBLE "block" FROM
+                 rules: (RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 50),
+                 notes: (RECALL facts WHERE relation = "note" ORDER BY object DESC LIMIT 50)
+               FORMAT TEMPLATE rules3"#,
+            &facade,
+        )
+        .unwrap();
+    match out.result {
+        CalResultPayload::Formatted { text, .. } => {
+            assert_eq!(
+                text,
+                "- alpha rule\n- zeta rule\n- zeta note\n- alpha note"
+            );
+        }
+        other => panic!("expected Formatted, got {other:?}"),
+    }
+}
+
+/// A `LITERAL` source is host text, never a query — and a stage cannot be
+/// attached to one. The `PIN LITERAL` form still parses and still renders at
+/// its authored position beside a stage-carrying query source.
+#[test]
+fn a_literal_source_still_renders_beside_a_staged_source() {
+    let (ex, facade, _d) = setup();
+    for rule in ["b rule", "a rule"] {
+        ex.execute(
+            &format!(
+                r#"ADD fact SET subject = "capture" SET relation = "lesson" SET object = "{rule}" SET namespace = "caller" REASON "t""#
+            ),
+            &facade,
+        )
+        .unwrap();
+    }
+    ex.execute(
+        r#"DEFINE TEMPLATE mixed AS "{{#if grain.object}}- {{grain.object}}{{else}}{{grain.content}}{{/if}}""#,
+        &facade,
+    )
+    .unwrap();
+    let out = ex
+        .execute(
+            r###"ASSEMBLE "block" FROM
+                 head: PIN LITERAL "## RULES",
+                 rules: (RECALL facts WHERE relation = "lesson" ORDER BY object ASC LIMIT 50)
+               FORMAT TEMPLATE mixed"###,
+            &facade,
+        )
+        .unwrap();
+    match out.result {
+        CalResultPayload::Formatted { text, .. } => {
+            assert_eq!(text, "## RULES\n- a rule\n- b rule");
+        }
+        other => panic!("expected Formatted, got {other:?}"),
+    }
+}

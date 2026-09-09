@@ -191,7 +191,10 @@ posture — and are honored as such. Every other `$AREEV_RUN_*` variable reads a
 empty value as "not configured", which is right for them (`AREEV_RUN_SANDBOX_CMD=""`
 means "no sandbox") and would be exactly backwards here: it would take an
 operator asking for the strictest environment and silently hand them the
-loosest. Only an **absent** flag and variable keep the inherit default.
+loosest. Only an **absent** flag and variable keep the inherit default. The
+bindings follow the same rule: `tool_env=""` (Python) and `toolEnv: ""`
+(Node) clear to the minimal set, on the run executors, a pinned native blob
+and the trigger connector alike; `None` / `null` keep the inherit default.
 
 ### The model boundary (anonymization)
 
@@ -521,13 +524,13 @@ A blob-only module still needs a grant, because the token is what identifies
 the caller: `--tool-egress 'parse_attachments::'` names neither a credential
 nor a method, minting a token and authorizing no egress whatsoever.
 
-⚠️ **Embedded backend only.** The read is lock-free precisely because it goes
-to the `.blobs` sidecar without opening the database — and that sidecar is an
-embedded-backend thing. On PostgreSQL a blob lives in-schema, so
-`areev::blob_get` returns a `501` naming the limitation rather than reporting
-the attachment as missing. On that backend a tool can open the memory
-directly anyway (see [Backend divergence](#backend-divergence-reading-the-memory-mid-run-85)),
-so the capability is closing an embedded-tier gap.
+**Both backends** (#202). The read never opens the memory, so serving a blob
+cannot contend with the run holding it. On the embedded backend that means the
+`.blobs` sidecar beside the file, which avoids the driver's exclusive write
+lock; on PostgreSQL it means one short-lived connection of the broker's own and
+a schema-qualified `SELECT` against the in-schema `blobs` table — no lock at
+all, and independent of `search_path`, so it is safe behind a pooler. A
+conformance case runs the same module against both.
 
 `headers` names the non-credential request headers the module may set, and is
 deny-by-default like `credentials`: declaring none permits none. A name the

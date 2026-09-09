@@ -21,6 +21,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      preview:
+        description: publish a prerelease from this branch under the preview channel
+        type: boolean
+        default: false
 
 defaults:
   run:
@@ -48,9 +53,13 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - name: Check every version site agrees
         run: |
           python3 scripts/check_versions.py \
+            ${{ inputs.preview && '--preview' || '' }} \
             ${{ github.event_name == 'release' && format('--tag {0}', github.ref_name) || '' }}
 
   build:
@@ -91,6 +100,9 @@ jobs:
             build: npx napi build --platform --release --target x86_64-pc-windows-msvc -- --locked
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - uses: actions/setup-node@v7
         if: ${{ !matrix.settings.container }}
         with:
@@ -151,7 +163,7 @@ jobs:
     # Only a real release publishes — see the same guard in release-cli.yml.
     # Without it a `workflow_dispatch` ships whatever version is in
     # package.json to the registry, from any branch.
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || inputs.preview
     runs-on: ubuntu-latest
     permissions:
       # Build provenance + the SBOM asset (#81).
@@ -160,6 +172,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - uses: actions/setup-node@v7
         with:
           node-version: 20
@@ -201,6 +216,11 @@ jobs:
         # `require()` on that platform (the pre-1.2.3 Windows incident).
         run: |
           set -euo pipefail
+          NPM_TAG=""
+          if [ "${{ inputs.preview }}" = "true" ]; then
+            NPM_TAG="--tag preview"
+            echo "preview build of $GITHUB_SHA — publishing under the 'preview' dist-tag"
+          fi
           publish_if_absent() { # $1 = package name, $2 = version, $3 = dir
             if [ "$(npm view "$1@$2" version 2>/dev/null || true)" = "$2" ]; then
               echo "$1@$2 already on npm — skipping"
@@ -211,7 +231,7 @@ jobs:
               # from the GitHub attestation above and worth having both — this
               # is the one a consumer sees on the package page, and the one
               # `npm audit signatures` checks.
-              (cd "$3" && npm publish --access public --provenance)
+              (cd "$3" && npm publish --access public --provenance $NPM_TAG)
             fi
           }
           mapfile -t DIRS < <(node scripts/prepare-npm.mjs)

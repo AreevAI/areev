@@ -14,6 +14,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      preview:
+        description: publish a prerelease from this branch under the preview channel
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,9 +39,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - name: Check every version site agrees
         run: |
           python3 scripts/check_versions.py \
+            ${{ inputs.preview && '--preview' || '' }} \
             ${{ github.event_name == 'release' && format('--tag {0}', github.ref_name) || '' }}
 
   wheels:
@@ -57,6 +66,9 @@ jobs:
           - { runner: windows-latest,   target: x64,     manylinux: auto }
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
@@ -81,6 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/stamp-preview
+        with:
+          preview: ${{ inputs.preview }}
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -96,8 +111,10 @@ jobs:
     needs: [wheels, sdist]
     # Only a real release publishes. release-cli.yml already guards this way;
     # without it a `workflow_dispatch` from any branch uploads to PyPI for
-    # real, which makes the dispatch unusable as a dry run.
-    if: github.event_name == 'release'
+    # real, which makes the dispatch unusable as a dry run. A preview dispatch
+    # is the deliberate exception: it publishes a PEP 440 pre-release, which
+    # `pip install areev` skips unless the caller asks for it.
+    if: github.event_name == 'release' || inputs.preview
     runs-on: ubuntu-latest
     # For Trusted Publishing, tie this to a `pypi` environment on the repo.
     permissions:

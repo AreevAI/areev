@@ -95,11 +95,21 @@ def run_task(task, policy, tools_for_agent, agent_cmd, lessons_md, user_llm, use
             rec.update({"reward": 0.0, "db_match": None,
                         "eval_error": "%s: %s" % (type(e).__name__, str(e)[:200])})
 
-    calls, errors, texts = [], 0, []
+    # A tool call and its result are ONE thing with two halves, and the halves
+    # are joined by the id the environment echoes back -- not by position.
+    # Position was the only link here before, so a turn issuing several calls
+    # attributed every result to the LAST of them, which is the wrong evidence
+    # to hand a proposer. `memory.record_episode` writes these through
+    # `record_tool_call`, which stores the pair as a pair.
+    calls, by_id, errors, texts = [], {}, 0, []
     for m in sim.messages or []:
         if isinstance(m, AssistantMessage):
             for tc in m.tool_calls or []:
-                calls.append({"tool": tc.name, "args": tc.arguments})
+                call = {"tool": tc.name, "args": tc.arguments,
+                        "id": getattr(tc, "id", "") or ""}
+                calls.append(call)
+                if call["id"]:
+                    by_id[call["id"]] = call
             if m.content:
                 texts.append(("agent", m.content))
         elif isinstance(m, UserMessage) and m.content:
@@ -108,10 +118,15 @@ def run_task(task, policy, tools_for_agent, agent_cmd, lessons_md, user_llm, use
             subs = [m] if isinstance(m, ToolMessage) else (
                 getattr(m, "tool_messages", []) if isinstance(m, MultiToolMessage) else [])
             for sub in subs:
+                call = by_id.get(getattr(sub, "id", "") or "")
+                if call is None:
+                    call = calls[-1] if calls else None
+                if call is None:
+                    continue
+                call["result"] = (sub.content or "")[:600]
                 if getattr(sub, "error", False):
                     errors += 1
-                    if calls:
-                        calls[-1]["error"] = (sub.content or "")[:200]
+                    call["error"] = (sub.content or "")[:200]
     rec["tool_errors"] = errors
     rec["tools_called"] = [c["tool"] for c in calls]
     rec["transcript"] = texts

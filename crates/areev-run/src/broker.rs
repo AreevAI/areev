@@ -983,11 +983,13 @@ impl Broker {
 
     /// Serve `POST /blob` from this memory's CAS store (#106).
     ///
-    /// The path, not a handle: [`areev_store::read_blob_offline`] reads the
-    /// `.blobs` sidecar without opening the database, so serving a blob never
-    /// contends with the driver's exclusive write lock on the same file. That
-    /// is the same property that lets a `--tool-cmd` subprocess run
-    /// `areev blob get` mid-run.
+    /// The path, not a handle: [`areev_store::read_blob_offline`] never opens
+    /// the memory, so serving a blob cannot contend with the run holding it.
+    /// On the embedded backend it reads the `.blobs` sidecar beside the file,
+    /// avoiding the driver's exclusive write lock; on postgres it opens its
+    /// own short-lived connection and reads the in-schema `blobs` table, which
+    /// takes no lock at all. That is the same property that lets a
+    /// `--tool-cmd` subprocess run `areev blob get` mid-run.
     ///
     /// Until a host calls this, blob reads are refused whatever a module
     /// declared — declaring is not granting here either.
@@ -1228,24 +1230,6 @@ fn serve_blob(
             .to_string(),
         );
     };
-
-    // The lock-free door is the `.blobs` sidecar, which is an EMBEDDED-backend
-    // thing: on Postgres a blob lives in-schema and reaching it means opening
-    // the memory. Said plainly and up front rather than letting the sidecar
-    // read miss and report "blob missing", which would send someone hunting
-    // for an attachment that is present and simply not reachable this way.
-    if db_path.starts_with("postgres://") || db_path.starts_with("postgresql://") {
-        return respond(
-            stream,
-            501,
-            &serde_json::json!({
-                "error": "blob reads from a sandboxed tool are not supported on the postgres \
-                          backend: the lock-free path is the .blobs sidecar, which only the \
-                          embedded backend has"
-            })
-            .to_string(),
-        );
-    }
 
     match areev_store::read_blob_offline(&db_path, &req.uri) {
         Ok(Some(bytes)) => {

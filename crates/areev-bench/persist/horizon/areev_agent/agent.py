@@ -88,10 +88,60 @@ MAX_STEPS = 12
 DEFAULT_CHAT_MODEL = "qwen/qwen3-30b-a3b-instruct-2507"
 ATIF_VERSION = "ATIF-v1.4"
 MAX_EXEC_OUTPUT_CHARS = 12_000
+_SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))), "scripts")
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+import cal_assemble as cal  # noqa: E402
+
 NS = "desk:horizon"
 ACTOR_AGENT = "agent:assistant"
 ACTOR_RUNNER = "loop:runner"
 ACTOR_REVIEWER = "user:reviewer"
+
+# --------------------------------------------------------------------------
+# the prompt, as CAL the file carries
+# --------------------------------------------------------------------------
+#
+# Two ASSEMBLE sections registered in the memory as saved queries: the
+# approved lessons and notes, then everything else the loop stored as a
+# durable fact. Both render through templates registered in the same file, so
+# a memory handed to someone else carries how to read it.
+#
+# The header is a PIN LITERAL: it is the sentence that tells the assistant
+# these OUTRANK its own judgement, and a compliance-shaped instruction belongs
+# in the statement (i.e. in code) rather than as a mutable grain. `PIN` means
+# the budget allocator never trims it.
+SECTION_CAP = 500
+LESSONS_HEADER = ("Learned from the earlier sessions (proposed by review of the memory, "
+                  "approved by a reviewer) — apply these without being asked:")
+
+REGISTRY = [
+    cal.guarded_template("horizon_lessons_tpl", None, "  - {{grain.object}}"),
+    cal.guarded_template("horizon_other_tpl", None,
+                         "  - {{grain.subject}} {{grain.relation}}: {{grain.object}}"),
+    cal.saved_query(
+        "horizon_lessons", ["ns"],
+        '  ASSEMBLE "approved lessons" FOR "the assistant" FROM\n'
+        '    lessons: (RECALL facts WHERE namespace = $ns\n'
+        '              AND relation IN ("lesson", "note")\n'
+        '              LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE horizon_lessons_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "the lessons and notes a reviewer approved"),
+    cal.saved_query(
+        "horizon_other", ["ns"],
+        '  ASSEMBLE "other durable facts" FOR "the assistant" FROM\n'
+        '    other: (RECALL facts WHERE namespace = $ns\n'
+        '            AND relation NOT IN ("lesson", "mg:eval_run", "note")\n'
+        '            LIMIT %d)\n'
+        '  BUDGET %d tokens\n'
+        '  FORMAT TEMPLATE horizon_other_tpl\n'
+        '  WITH dedup(object)' % (SECTION_CAP, cal.MAX_BUDGET_TOKENS),
+        "everything else the loop stored as a durable fact"),
+]
 MAX_GRAIN_TEXT = 4000
 SEARCH_K = 8
 _ERROR_RE = re.compile(
@@ -174,6 +224,9 @@ def _with_memory(path, actor, fn):
     import areev
     db = areev.Areev(str(path), ns=NS, actor=actor)
     try:
+        # The prompt's sections are saved queries in the FILE, not strings in
+        # this module. `DEFINE` is a write, so it happens on this path.
+        cal.install(db, REGISTRY, db_path=str(path), ns=NS)
         return fn(db)
     finally:
         del db
@@ -256,15 +309,43 @@ def ingest_trace(db_path: Path, trace_text: str) -> dict[str, int]:
 
 
 def live_lessons(db) -> list[str]:
-    payload = json.loads(db.cal('RECALL facts WHERE namespace = "%s" LIMIT 500 FORMAT json' % NS))
+    """The lesson texts in force, for the REVIEWER's dedup check.
+
+    Kept as a list because the reviewer needs the individual strings. What the
+    ASSISTANT reads is `lessons_block`, which assembles the same grains through
+    CAL -- the two must select the same set, so the relations excluded here are
+    the relations excluded there.
+    """
+    payload = json.loads(db.cal(
+        'RECALL facts WHERE namespace = "%s" AND relation != "mg:eval_run" '
+        'LIMIT %d FORMAT json' % (NS, SECTION_CAP)))
+    grains = payload.get("grains", [])
+    if len(grains) >= SECTION_CAP:
+        raise RuntimeError("lesson scan hit the %d-grain cap; narrow the query" % SECTION_CAP)
     out = []
-    for g in payload.get("grains", []):
+    for g in grains:
         f = g.get("fields") or {}
         rel, obj = f.get("relation") or "", f.get("object") or ""
-        if not obj or rel == "mg:eval_run":
+        if not obj:
             continue
         out.append(obj if rel in ("lesson", "note") else "%s %s: %s" % (f.get("subject") or "", rel, obj))
     return out
+
+
+def lessons_block(db) -> str:
+    """What the assistant reads: the header, then the approved lessons, then
+    every other durable fact the loop stored.
+
+    Two ASSEMBLE sections registered in the memory. Empty when nothing is
+    approved -- both templates guard on `assembly.grain_count`, so a memory
+    with no lessons contributes nothing to the system prompt rather than a
+    header promising lessons that are not there.
+    """
+    body = cal.block(db, [
+        ("horizon_lessons", {"ns": NS}, SECTION_CAP),
+        ("horizon_other", {"ns": NS}, SECTION_CAP),
+    ], sep="\n")
+    return (LESSONS_HEADER + "\n" + body + "\n\n") if body else ""
 
 
 def govern(db_path: Path, seed: int) -> dict[str, Any]:
@@ -522,13 +603,14 @@ class AreevAgentBase(BaseAgent):
                 lessons = await asyncio.to_thread(lambda: _with_memory(db_path, ACTOR_AGENT, live_lessons))
             t_learn_done = time.monotonic()
 
-            lessons_block = ""
-            if lessons:
-                lessons_block = ("Learned from the earlier sessions (proposed by review of the memory, approved "
-                                 "by a reviewer) — apply these without being asked:\n"
-                                 + "\n".join("  - " + x for x in lessons) + "\n\n")
+            # Assembled from live grains on every run, so the reviewer's
+            # apply/rollback is the only lever on the prompt.
+            block = ""
+            if db_path is not None and Path(db_path).exists():
+                block = await asyncio.to_thread(
+                    lambda: _with_memory(db_path, ACTOR_AGENT, lessons_block))
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-                tool_names=", ".join(f"`{n}`" for n in tool_registry.names) or "(none)", lessons=lessons_block)
+                tool_names=", ".join(f"`{n}`" for n in tool_registry.names) or "(none)", lessons=block)
             user_message = (f"Task:\n\n{instruction}\n\nYou have no direct view of the earlier sessions. "
                             "Call `session_search` to recall what matters before acting.")
             messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt},

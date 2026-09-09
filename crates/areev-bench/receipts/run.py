@@ -37,6 +37,10 @@ def main():
     ap.add_argument("--profile", default="sroie")
     ap.add_argument("--dataset", required=True, help="the corpus JSONL a builder emitted")
     ap.add_argument("--workdir", required=True)
+    ap.add_argument("--db", default="",
+                    help="the memory to run against: a file path or a postgres://…?schema=… "
+                         "DSN, passed to areev.Areev verbatim (also AREEV_BENCH_DB); "
+                         "default WORKDIR/ledger.db")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--experience", type=int, default=40)
     ap.add_argument("--eval", type=int, default=60,
@@ -67,8 +71,19 @@ def main():
 
     profile = ledger_profile.get(args.profile)
     os.makedirs(args.workdir, exist_ok=True)
-    db_path = os.path.join(args.workdir, "ledger.db")
-    if os.path.exists(db_path):
+    db_path = mem.bench_db(os.path.join(args.workdir, "ledger.db"), args.db or None)
+    if mem.is_dsn(db_path):
+        # A schema cannot be copied, so the memory checkpoints are a file-only
+        # feature; and "stale" is asked of the schema, not the filesystem.
+        if args.snapshot_every or snapshot_at:
+            raise SystemExit("--snapshot-every/--snapshot-at copy the memory file; a Postgres "
+                             "memory cannot be copied — drop them, or run the curve on a file")
+        held = mem.with_memory(db_path, mem.REVIEWER, lambda db: json.loads(db.stats())["grains"])
+        if held:
+            raise SystemExit("%s already holds %d grain(s) — a stale memory would poison the "
+                             "run; provision a fresh schema" % (mem.redact(db_path), held))
+        print("memory: %s" % mem.redact(db_path))
+    elif os.path.exists(db_path):
         raise SystemExit("%s already exists — a stale memory would poison the run; "
                          "use a fresh --workdir" % db_path)
     agent_argv = os.environ["AGENT_CMD"].split()
@@ -94,6 +109,10 @@ def main():
                    "eval": args.eval, "evalset": evalset, "policy": policy,
                    "learn_every": args.learn_every, "measure": args.measure,
                    "journal_baseline": args.journal_baseline,
+                   # Only when the memory is not the derived file, so the
+                   # published file-backed records are byte-identical; and
+                   # redacted, so a DSN's password never lands in a record.
+                   **({"memory": mem.redact(db_path)} if (args.db or os.environ.get("AREEV_BENCH_DB")) else {}),
                    "agent_cmd": os.environ.get("AGENT_CMD"),
                    "loop_llm_cmd": llm_cmd, "loop_ground_cmd": ground_cmd,
                    "review_cmd": os.environ.get("REVIEW_CMD")}, fh, indent=1)
@@ -202,7 +221,8 @@ def main():
                 # provider rate-limited past its eight retries; agent calls
                 # already survived that (park-on-failure), the loop did not.
                 try:
-                    res = mem.learn(profile, db_path, llm_cmd, ground_cmd, judge, policy)
+                    res = mem.learn(profile, db_path, llm_cmd, ground_cmd, judge, policy,
+                                    policy_dir=args.workdir)
                 except (ValueError, RuntimeError) as e:
                     res = None
                     totals["learn_failures"] += 1

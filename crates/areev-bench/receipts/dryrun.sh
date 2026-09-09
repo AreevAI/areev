@@ -43,12 +43,38 @@ echo "######## 1. experience (A0 journaled first, every lesson measured)"
   --seed 1 --experience "$N" --eval "$HELD" --learn-every "$EVERY" \
   --measure --journal-baseline
 
-echo "######## 2. paired evaluation (B journaled)"
-"$PY" "$HERE/evaluate.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
-  --workdir "$WORKDIR/eval" --seed 1 --experience "$N" --eval "$HELD" --journal B=eval-b
-"$PY" "$HERE/stats.py" "$WORKDIR/eval/trials.json"
+step_eval() {
+  # $1: the arms; $2: "--append" to add them to the trials already taken
+  "$PY" "$HERE/evaluate.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
+    --workdir "$WORKDIR/eval" --seed 1 --experience "$N" --eval "$HELD" \
+    --journal B=eval-b --arms "$1" ${2:-}
+}
 
-echo "######## 3. verify → forced regression → revert"
-unset AREEV_MOCK_LLM_FIXTURE
-"$PY" "$HERE/regress.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
-  --workdir "$WORKDIR/regress" --seed 1 --experience "$N" --eval "$HELD"
+step_regress() {
+  echo "######## 3. verify → forced regression → revert"
+  unset AREEV_MOCK_LLM_FIXTURE
+  "$PY" "$HERE/regress.py" --dataset "$DATASET" --learned-db "$WORKDIR/ledger.db" \
+    --workdir "$WORKDIR/regress" --seed 1 --experience "$N" --eval "$HELD"
+}
+
+case "${AREEV_BENCH_DB:-}" in
+  postgres://*|postgresql://*)
+    # One Postgres memory, no copies, so evaluate's arm A is a real rollback
+    # on it, after which nothing is applied for regress to verify — and
+    # regress's verify needs arm B's pass journaled first. So: B and B2,
+    # then regress (which leaves the good lesson in force and the planted
+    # one reverted), then arm A appended to the same trials, last of all.
+    echo "######## 2. paired evaluation (B journaled; arm A after regress — the memory is a DSN)"
+    step_eval B,B2
+    step_regress
+    echo "######## 2b. paired evaluation, arm A (rollback on the DSN memory)"
+    step_eval A --append
+    "$PY" "$HERE/stats.py" "$WORKDIR/eval/trials.json"
+    ;;
+  *)
+    echo "######## 2. paired evaluation (B journaled)"
+    step_eval B,B2,A
+    "$PY" "$HERE/stats.py" "$WORKDIR/eval/trials.json"
+    step_regress
+    ;;
+esac
