@@ -8,6 +8,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`areev::blob_get` works on the Postgres tier** — the whole class of
+  attachment-parsing capability tools was unavailable on the backend the
+  server tier actually runs on. `{"blob": {"read": true}}` (#106) is what lets
+  a `wasm32-areev-io` module read the attachment a trigger's connector already
+  filed, by address, read-only, every read journaled as a `blob_read`
+  Observation. On PostgreSQL the broker answered `501`: the read is lock-free
+  because it goes to the `.blobs` sidecar without opening the database, and
+  that sidecar is an embedded-backend thing. The documented alternative — the
+  tool opens the memory itself — needs handing the tool a credential to the
+  memory, which is exactly what a capability tool exists to avoid.
+
+  `read_blob_offline` now serves a `postgres://…?schema=…` locator too: one
+  short-lived connection of its own, one schema-qualified `SELECT` against the
+  in-schema `blobs` table, closed on return. It still never opens the memory,
+  so it cannot contend with the run holding it — and on this backend there is
+  no exclusive lock to avoid in the first place, which makes it cheaper than
+  the embedded case rather than harder. Qualifying the table (#181) keeps it
+  independent of `search_path`, so it is safe behind a pooler. Blobs are never
+  sealed here (the blob key derives from the page cipher, which Postgres
+  refuses), so the sealed branch cannot arise.
+
+  `areev blob get` lifts the same restriction: it skipped the lock-free path
+  for a DSN, a workaround for the limitation this removes, so the two
+  blob-reading surfaces now behave identically
+  ([#202](https://github.com/AreevAI/areev/issues/202)).
+
 - **CAL can summarise by frequency, extract from text, and navigate a JSON
   payload** (#209, #210, #211) — three reads that could only be done by
   over-fetching and finishing the job in host code, which also defeated
