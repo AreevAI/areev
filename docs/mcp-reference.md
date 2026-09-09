@@ -533,8 +533,9 @@ media is referenced rather than carried.
 
 A tool that needs the bytes should take the `cas://` URI from the grain's
 `content_refs` (which `areev_recall` already returns) and fetch them out of
-band with `areev blob get`, which reads the sidecar without opening the memory
-and therefore works even while a run holds the writer. See
+band with `areev blob get`, which reads the blob by address without opening the
+memory — the `.blobs` sidecar on the embedded backend, one short-lived
+connection on postgres — and therefore works even while a run holds the writer. See
 [cookbook §17](cookbook.md).
 
 ---

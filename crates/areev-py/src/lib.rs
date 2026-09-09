@@ -488,7 +488,7 @@ impl Areev {
             .detach(|| {
                 // A postgres://…?schema=<name> DSN selects the server-tier
                 // backend — same API, the memory lives in a Postgres schema.
-                if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+                if areev_store::is_pg_dsn(&path) {
                     return open_postgres_from_dsn(
                         &path,
                         tel,

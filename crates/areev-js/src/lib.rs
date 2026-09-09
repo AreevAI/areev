@@ -692,7 +692,7 @@ impl Areev {
         // leaving a handle behind — which on Node would need an explicit
         // close() nobody has a reference to.
         let anon = anon_key.as_deref().map(parse_anon_key).transpose()?;
-        let is_pg = path.starts_with("postgres://") || path.starts_with("postgresql://");
+        let is_pg = areev_store::is_pg_dsn(&path);
         let store = match (is_pg, passphrase) {
             (true, Some(_)) => {
                 return Err(err(

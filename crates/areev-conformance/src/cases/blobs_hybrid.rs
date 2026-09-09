@@ -23,6 +23,27 @@ pub fn cas_blob_roundtrip_and_gc(b: &dyn Backend) {
     assert!(m.get_blob(&uri).is_err(), "reclaimed blob is gone");
 }
 
+/// `read_blob_offline` reaches a blob by address without opening the memory,
+/// on either backend (#202) — which is what lets a sandboxed tool read the
+/// attachment its own run filed while that run still holds the memory.
+pub fn blob_reads_without_opening_the_memory(b: &dyn Backend) {
+    let uri = {
+        let mut m = b.open_named("offline_blob");
+        m.put_blob(b"attachment bytes").unwrap()
+    };
+    let locator = b.locator("offline_blob");
+    let _held_open_throughout = b.open_named("offline_blob");
+
+    let got = areev_store::read_blob_offline(&locator, &uri)
+        .expect("a stored blob is readable by address")
+        .expect("a plaintext blob is not sealed");
+    assert_eq!(got, b"attachment bytes");
+
+    let absent = format!("cas://sha256:{}", "b".repeat(64));
+    assert!(areev_store::read_blob_offline(&locator, &absent).is_err());
+    assert!(areev_store::read_blob_offline(&locator, "cas://sha256:zz").is_err());
+}
+
 pub fn bm25_leg_finds_text(b: &dyn Backend) {
     let mut m = b.open();
     m.add(&fact("caller", "john", "allergic_to", "peanuts")).unwrap();

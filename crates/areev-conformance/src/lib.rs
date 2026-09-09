@@ -52,6 +52,11 @@ pub trait Backend {
         self.try_open_named_with(name, opts).expect("open store")
     }
 
+    /// What a host names this memory by: a file path on the embedded backend,
+    /// a `postgres://…?schema=<name>` DSN on postgres. For cases exercising an
+    /// API that takes the memory's address rather than a handle.
+    fn locator(&self, name: &str) -> String;
+
     /// A scratch directory for interchange files (bundles). Backend-neutral:
     /// bundles are files regardless of where the store lives.
     fn scratch(&self) -> &Path;
@@ -96,6 +101,10 @@ impl Backend for TursoBackend {
     ) -> areev_core::error::Result<Areev> {
         let path = self.dir.path().join(format!("{name}.db"));
         Areev::open_with(path.to_str().expect("utf8 path"), opts)
+    }
+
+    fn locator(&self, name: &str) -> String {
+        self.path_for(name).to_str().expect("utf8 path").to_string()
     }
 
     fn scratch(&self) -> &Path {
@@ -161,6 +170,10 @@ impl Backend for PgBackend {
         let schema = format!("{}_{}", self.prefix, name);
         self.opened.borrow_mut().insert(schema.clone());
         Areev::open_postgres_with(&self.url, &schema, opts)
+    }
+
+    fn locator(&self, name: &str) -> String {
+        format!("{}?schema={}_{}", self.url, self.prefix, name)
     }
 
     fn scratch(&self) -> &Path {
@@ -239,6 +252,7 @@ macro_rules! for_each_conformance_case {
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(forget_reclaims_sole_referenced_blob);
+        $per_case!(blob_reads_without_opening_the_memory);
         $per_case!(bm25_leg_finds_text);
         $per_case!(vector_leg_roundtrip);
         $per_case!(external_vectors_need_no_embedder);

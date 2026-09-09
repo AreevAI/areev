@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use areev_cal::{CalExecutor, CalExecutorConfig, AreevFacade};
 use areev_core::error::Hash;
 use areev_core::types::{ContentBlock, Event, Fact, Grain, TokenUsage, Tool};
-use areev_store::{Axis, Areev, Direction};
+use areev_store::{is_pg_dsn, Axis, Areev, Direction};
 use areev_loop_adapter::{now_ms, AreevSubstrate};
 use areev_loop::{Decision, Engine, ObserverType, Policy, RecStatus, RunOptions, ScopeSet, Severity};
 
@@ -809,11 +809,6 @@ fn report_meta_warnings(facade: &areev_cal::AreevFacade) {
     for w in facade.meta_warnings() {
         eprintln!("areev: warning: {w}");
     }
-}
-
-/// A `--mount` target is a postgres DSN rather than a file path.
-fn is_pg_dsn(target: &str) -> bool {
-    target.starts_with("postgres://") || target.starts_with("postgresql://")
 }
 
 /// Would this mount point at the SAME memory as the primary?
@@ -1773,12 +1768,13 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // attachment out of reach of the very `--tool-cmd` subprocess the run
     // spawned to process it. Blobs are immutable, live beside the file, and
     // carry their checksum as their address, so reading one needs neither the
-    // database nor a lock. A sealed blob still needs the memory's derived key,
-    // so that case falls through to the normal open below.
-    if cmd == "blob" && positional.first().map(String::as_str) == Some("get") && !is_pg_url {
+    // database nor a lock — on postgres, one connection of its own and a
+    // schema-qualified SELECT. A sealed blob still needs the memory's derived
+    // key, so that case falls through to the normal open below.
+    if cmd == "blob" && positional.first().map(String::as_str) == Some("get") {
         let uri = positional
             .get(1)
-            .ok_or("usage: areev blob get <cas-uri> --db <file>")?;
+            .ok_or("usage: areev blob get <cas-uri> --db <file|dsn>")?;
         if let Some(bytes) = areev_store::read_blob_offline(&db, uri).map_err(|e| e.to_string())? {
             use std::io::Write;
             std::io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
