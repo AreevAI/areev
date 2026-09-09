@@ -771,6 +771,12 @@ for. (`status` is the *async* lifecycle — sync success/failure remains
 `is_error`. The phantom `tool_phase` field, which parsed and matched
 nothing, is gone.)
 
+`tool_content` — what the call returned — is queryable since 1.7.4, and
+`{{grain.tool_content}}` renders it. It is the name the body is projected
+under everywhere (the compact key `cnt` expands to it), so `{{grain.content}}`
+on a Tool projects the same text; before 1.7.4 the built-in formats printed
+the body while a template could neither render nor group by it.
+
 ```sql
 RECALL tools WHERE NOT tool_name = "validate_rows" RECENT 200
 ```
@@ -849,7 +855,7 @@ Pipeline stages post-process a statement's result set, chained with `|` (up to
 | `\| FIRST` | Return only the first result |
 | `\| SUBJECTS` / `\| OBJECTS` | Extract the `subject`/`object` of each Fact |
 | `\| HASHES` | Extract the content hash of each grain |
-| `\| GROUP BY field` | Group results |
+| `\| GROUP BY field [, field …]` | Group results (up to 4 fields make one composite key) |
 | `\| GROUP BY field \| COUNT` | One row per group with its size, **most frequent first** |
 
 ```sql
@@ -887,6 +893,38 @@ A group row is grain-shaped so every renderer works on it unchanged, and its
 `group.*` template variables (§6), or make an `ASSEMBLE` source out of it so
 "the five errors this agent hits most" is a section of a prompt rather than a
 read the host tallies itself.
+
+**A `LIMIT` after `COUNT` is a top-N of the ranking**, and `OFFSET` pages it.
+`total_available` keeps reporting how many groups the ranking *has*, so a page
+never reads as the whole answer.
+
+##### A composite key: `GROUP BY a, b`
+
+Up to **four** fields make one key, joined with ` · ` (`CAL-E123` past that):
+
+```sql
+RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name, tool_content COUNT
+```
+
+```json
+{"type": "group_counts", "field": "tool_name, tool_content", "groups": [
+  {"grain_type": "group", "fields": {
+     "key": "phone.login · Response status code is 401",
+     "keys": ["phone.login", "Response status code is 401"], "count": 6}}
+]}
+```
+
+"Which tool fails most" is the first question anyone asks a memory of tool
+calls; "and with what" is the half that says what to do about it. A ranking by
+endpoint alone tells an agent where it is failing and not why, and one keyed
+on the message alone loses the endpoint — so the key has to be able to be
+both. The parts ride on the row as `keys` and render individually as
+`{{group.key.<n>}}` (§6), so nothing has to split the label back apart.
+
+**A key no grain carries is `CAL-W018`.** Every row then falls into one group
+under the empty key, which is exactly the shape a ranking has when one value
+dominates — indistinguishable unless the answer says so. `DESCRIBE FIELDS
+<type>` is the list of fields that group.
 
 `WHERE session_id = "…"` is **pushed into the thread index**
 (`idx_thread(ns, session, seq)`) rather than applied as a post-filter, so
@@ -1142,7 +1180,8 @@ A `GROUP BY <field> COUNT` result (§4) renders through a `group.` namespace:
 
 | Variable | Value |
 |---|---|
-| `{{group.key}}` | The group's key |
+| `{{group.key}}` | The group's key — the joined label when it is composite |
+| `{{group.key.<n>}}` | Part `n` of a composite key, numbered as `split` numbers its fields |
 | `{{group.count}}` | How many grains fall in it |
 
 ```
@@ -1153,8 +1192,17 @@ DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key}}}
 - (6x) phone.search_contacts
 ```
 
-Both resolve null on an ordinary grain, rather than reading a field that
-happens to be called `key`.
+```
+DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}}
+```
+```
+- (6x) phone.login: Response status code is 401
+- (3x) spotify.play: Response status code is 401
+```
+
+All three resolve null on an ordinary grain, rather than reading a field that
+happens to be called `key`. On a single-key ranking `{{group.key.0}}` is the
+key itself and there is no part 1, so one template renders both arities.
 
 **Timestamps are epoch milliseconds.** Every timestamp a template can name —
 `created_at`, `valid_from`, `valid_to`, `deadline`, `expires_at`,

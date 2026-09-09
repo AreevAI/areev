@@ -151,6 +151,19 @@ pub enum CalError {
         span: Option<Span>,
     },
 
+    /// CAL-E123 — A `GROUP BY` names more fields than one key may have.
+    ///
+    /// A composite key exists so a ranking can say *what* as well as *where*
+    /// (#217); past a handful of parts the joined key stops being a label a
+    /// model can read and the ranking stops being a ranking — nearly every
+    /// group holds one row.
+    #[error("CAL-E123: Too many GROUP BY keys ({count}, max {max})")]
+    TooManyGroupKeys {
+        count: usize,
+        max: usize,
+        span: Option<Span>,
+    },
+
     /// CAL-E013 — A set operation (UNION / INTERSECT / EXCEPT) has more
     /// operands than allowed.
     #[error("CAL-E013: Too many set operands ({count}, max {max})")]
@@ -670,6 +683,7 @@ impl CalError {
             Self::LimitExceeded { .. } => "CAL-E010",
             Self::InSetTooLarge { .. } => "CAL-E011",
             Self::TooManyPipelineStages { .. } => "CAL-E012",
+            Self::TooManyGroupKeys { .. } => "CAL-E123",
             Self::TooManySetOperands { .. } => "CAL-E013",
             Self::EmptyQuery { .. } => "CAL-E014",
             Self::InvalidHash { .. } => "CAL-E015",
@@ -755,6 +769,7 @@ impl CalError {
             | Self::LimitExceeded { span, .. }
             | Self::InSetTooLarge { span, .. }
             | Self::TooManyPipelineStages { span, .. }
+            | Self::TooManyGroupKeys { span, .. }
             | Self::TooManySetOperands { span, .. }
             | Self::EmptyQuery { span, .. }
             | Self::InvalidHash { span, .. }
@@ -953,6 +968,11 @@ impl CalError {
                 span: s,
             },
             Self::TooManyPipelineStages { count, max, .. } => Self::TooManyPipelineStages {
+                count,
+                max,
+                span: s,
+            },
+            Self::TooManyGroupKeys { count, max, .. } => Self::TooManyGroupKeys {
                 count,
                 max,
                 span: s,
@@ -1517,6 +1537,21 @@ pub enum CalWarning {
         /// True when no `BUDGET` clause was written and the default applied.
         defaulted: bool,
     },
+
+    /// CAL-W018 — A `GROUP BY` key names a field no grain in the result
+    /// carries, so every row falls into one group under the empty key.
+    ///
+    /// The field validates (it is queryable on the type) and the query
+    /// succeeds, so the answer looks like a ranking with a single
+    /// unanimous winner — the shape a real ranking has when one key
+    /// dominates. `WHERE` has failed closed and said so since #207; the
+    /// grouping path had the same silence and no warning.
+    GroupKeyAbsent {
+        /// The field named in the GROUP BY.
+        field: String,
+        /// Grains that were grouped.
+        grains: usize,
+    },
 }
 
 impl CalWarning {
@@ -1539,6 +1574,7 @@ impl CalWarning {
             Self::ScanBounded { .. } => "CAL-W015",
             Self::PipelineStageInert { .. } => "CAL-W016",
             Self::AssembleBudgetDropped { .. } => "CAL-W017",
+            Self::GroupKeyAbsent { .. } => "CAL-W018",
         }
     }
 
@@ -1560,7 +1596,8 @@ impl CalWarning {
             | Self::WithOptionInert { .. }
             | Self::ScanBounded { .. }
             | Self::PipelineStageInert { .. }
-            | Self::AssembleBudgetDropped { .. } => None,
+            | Self::AssembleBudgetDropped { .. }
+            | Self::GroupKeyAbsent { .. } => None,
         }
     }
 }
@@ -1690,6 +1727,12 @@ impl std::fmt::Display for CalWarning {
                     f,
                     "CAL-W017: {clause} {budget} tokens dropped {dropped} of {available} grains from source(s) [{}] — this assembly is a window, not the whole match.{advice}",
                     labels.join(", ")
+                )
+            }
+            Self::GroupKeyAbsent { field, grains } => {
+                write!(
+                    f,
+                    "CAL-W018: none of the {grains} grains carries \"{field}\", so they were all grouped under the empty key — this ranking has one group because the key is absent, not because one value dominates. Check the field name against DESCRIBE FIELDS."
                 )
             }
         }

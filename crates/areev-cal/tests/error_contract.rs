@@ -87,6 +87,10 @@ fn the_size_caps_report_their_own_codes() {
     let unioned = vec!["RECALL facts"; 50].join(" UNION ");
     assert_eq!(parse(&unioned).unwrap_err().code(), "CAL-E013", "too many set operands");
 
+    let keys = (0..9).map(|i| format!("f{i}")).collect::<Vec<_>>().join(", ");
+    let grouped = format!("RECALL facts GROUP BY {keys} COUNT");
+    assert_eq!(parse(&grouped).unwrap_err().code(), "CAL-E123", "too many GROUP BY keys");
+
     let nested = format!(
         "RECALL facts WHERE {}subject = \"a\"{}",
         "(".repeat(40),

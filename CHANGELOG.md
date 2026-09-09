@@ -9,7 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **CAL can summarise by frequency, extract from text, and navigate a JSON
-  payload** (#209, #210, #211) — three reads that could only be done by
+  payload** (#209, #210, #211, #217) — three reads that could only be done by
   over-fetching and finishing the job in host code, which also defeated
   `BUDGET` (the budget was spent on the rows about to be discarded). The
   spec-level decisions are recorded in
@@ -30,6 +30,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "which policy is cited most". Render it with the new `group.*` template
   variables (`{{group.count}}x {{group.key}}`), or make an `ASSEMBLE` source
   of it so a frequency roll-up is a *section of a prompt*.
+
+  **The key can name two things at once** (#217). "Which tool fails most" is
+  the first question anyone asks a memory of tool calls; "and with what" is
+  the half that says what to do about it — an agent told `phone.login` failed
+  six times learns less than one told it failed with a 401. `GROUP BY` takes
+  up to four fields, joined into one key with ` · ` (`CAL-E123` past that),
+  and the parts render individually:
+
+  ```sql
+  RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name, tool_content COUNT
+  ```
+  ```
+  DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}}
+  → - (6x) phone.login: Response status code is 401
+  ```
+
+  Three related gaps close with it. **A Tool's body is reachable from a
+  template**: it is projected as `tool_content` (the compact key `cnt` expands
+  to it), which every built-in format printed and no template variable named,
+  so a CAL-rendered block could say which call failed but never how —
+  `{{grain.tool_content}}` resolves, `{{grain.content}}` projects the same
+  text on a Tool, and `tool_content` is queryable and groupable.
+  **A `LIMIT` after `COUNT` binds**, so a top-N of a ranking is a top-N
+  (`total_available` still reports the whole ranking's size, so a page never
+  reads as the whole answer). And **`CAL-W018`** now announces a `GROUP BY`
+  key no grain carries, which used to return a single empty-key group —
+  indistinguishable from a ranking with one dominant value.
 
   **Extracting filters** (#210): `first_line`, `split("<sep>", n)`,
   `strip_prefix`, `strip_suffix`, `between("<open>", "<close>")`, and
