@@ -2,7 +2,9 @@
 
 > Companion: [`oms-1.6-amendments-triggers.md`](oms-1.6-amendments-triggers.md)
 > covers the trigger batch (new grain type, the §27.6 removal, the execution
-> contract).
+> contract); [`oms-1.7-amendments-cal-expressiveness.md`](oms-1.7-amendments-cal-expressiveness.md)
+> covers the CAL expressiveness batch (per-group counts, the `group.`
+> namespace, the extracting filters, dotted field paths).
 
 **Status:** amendment proposal, written 2026-08-11. One revision covering
 every spec-level change the GDPR compliance work needs, so conformance moves

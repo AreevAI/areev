@@ -28,6 +28,66 @@ scope/scope_path/tags) in a position it cannot be honoured is CAL-E061. A
 filter is pushed, evaluated, or refused — NEVER dropped. If you add a
 push-down arm, extend the truth table and its pin test in the same change.
 
+**…and absence is UNKNOWN, not FALSE (#207, 1.7.4).** The per-grain walk is
+three-valued (`grain_condition_truth`): a leaf whose field the grain does not
+carry is UNKNOWN, `AND`/`OR` combine by SQL's truth tables, `NOT UNKNOWN` is
+UNKNOWN, and `grain_matches_condition_tree` treats UNKNOWN as no-match. Two-
+valued evaluation cannot express "fails closed" under negation — reading
+absence as `false` made every negation of it `true`, so `object != "retired"`,
+`NOT (object = "retired")` and `object NOT IN ("retired")` each matched every
+grain of a type that has no `object`. Only negation moved; `T ∧ U` and `F ∧ U`
+already collapsed to no-match and `T ∨ U` already matched. `resolve_grain_field`
+is the ONE answer to "does this grain carry the field" — envelope properties
+(`hash`, `type`, `score`) and the omit-default discriminators (`kind`,
+`status` on tools) resolve there, so a materialized default reads as *present*
+and `kind != "definition"` keeps matching legacy execution grains.
+
+Note the shared-evaluator hazard: `areev-trigger` uses the same tree for
+composite gates, where an absent field means "this member has not fired" — a
+definite FALSE, not UNKNOWN. `gate_satisfied` therefore materializes every
+`referenced_members` name rather than projecting only the fired ones.
+
+**Summarise / extract / navigate (#209/#210/#211, 1.7.4).** Three additions,
+one spec decision, recorded in
+[`docs/oms-1.7-amendments-cal-expressiveness.md`](../../docs/oms-1.7-amendments-cal-expressiveness.md):
+
+- `GROUP BY <field>` then `COUNT` projects one row per group
+  (`CalResultPayload::GroupCounts`, most frequent first, ties by key asc). The
+  rows are `CalGrainResult`s with `grain_type "group"`, fields `{key, count}`
+  and an **empty hash** — a group is computed, not stored, and anything keying
+  on a content address must skip it. **No new syntax**: that combination used
+  to answer the plain total, which is `COUNT` with extra words. Rendered via
+  the `group.` template namespace (`GROUP_VARIABLES`, closed at `key`/`count`,
+  bound only on a group row).
+- `KNOWN_FILTERS` grows by seven: six extractors and `get` (a dotted JSON
+  path). The list stays **closed** — `DESCRIBE CAPABILITIES` reports it. Bad
+  arguments are refused in `parse_single_filter` (define time, `CAL-E049`), not
+  at render time, so rendering stays total and a saved template stays readable.
+  `match` compiles through `cached_pattern` (bounded LRU, `regex` — a
+  finite-automaton engine, so no backtracking and therefore no backreferences
+  or lookaround). Bounds: `MAX_EXTRACT_INPUT`, `MAX_PATTERN_LEN`,
+  `MAX_GET_PATH_DEPTH`.
+- `WHERE` accepts a dotted field path up to `MAX_FIELD_PATH_SEGMENTS` (8),
+  resolved in `resolve_grain_field`. A field holding JSON **as a string**
+  navigates identically to a parsed one. An unresolvable path is `None` →
+  UNKNOWN → no match, so navigation inherits the fails-closed rule above
+  rather than adding one. Keep the three depth constants (parser, executor,
+  templates) equal: a path that parses must be one the executor walks and a
+  template can express.
+
+An `ASSEMBLE` **source** now carries its own `pipeline` (`NamedSource`), run in
+`execute_source` before dedup and budgeting — that is what lets a frequency
+roll-up be a prompt section. `extract_grains` lives in `executor.rs` and is
+`pub(crate)`; `assemble.rs` used to keep a second copy that had drifted (it saw
+only `Grains`, so a nested `Assembled` contributed nothing). One extractor.
+
+**World-time validity is queryable (#206, 1.7.4).** `valid_from`/`valid_to`/
+`system_valid_from`/`system_valid_to` are `GrainCommon` fields on every type,
+already serialized and expanded back into `fields` — they were simply missing
+from `COMMON_FIELDS` and `GRAIN_EVALUABLE_COMMON`, so the one read that makes a
+validity window worth writing refused with CAL-E060. No push-down: they
+post-filter over the widened scan like any other in-blob key.
+
 **LET eval writes its results onto `CalQuery::let_values`** (`#[serde(skip)]` —
 execution state, not query text); `apply_where_clause` expands `IN $var` from
 it, and surrogate/nested queries plus ASSEMBLE sources inherit it. The scope
@@ -112,7 +172,13 @@ the audit hash.
   `*`-bearing namespaces except `*` itself (`parse_grant_parts`). E2E:
   `tests/ns_scope_cal_tests.rs`.
 - `assemble.rs` — `AssembleEngine`: multi-source ASSEMBLE, dedup, 2000-grain
-  cap, per-source budget weights, chars/4 token estimate.
+  cap, per-source budget weights, chars/4 token estimate. **The budget applies
+  written or not** (`DEFAULT_BUDGET_TOKENS` 4000, parser ceiling 16000), and a
+  budget that drops grains emits `CAL-W017` naming the sources, the counts, and
+  whether the default applied (#208). `total_available` is the PRE-budget
+  count — reporting the trimmed one made a truncated assembly arithmetically
+  indistinguishable from a complete one. If you add a path that discards grains
+  here, it warns or it is the same bug again.
 - `render.rs` — THE per-grain renderer every surface shares: semantic
   `sml`, the documented `markdown` assertion line, `text`, registry-driven
   `toon`, the `json` envelope, per-type summaries, and the one `chars/4`

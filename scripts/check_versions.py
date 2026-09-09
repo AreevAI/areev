@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Assert that every version the release touches agrees.
 
-The version lives in five places and only one of them is inherited:
+The version lives in six places and only one of them is inherited:
 
     Cargo.toml                     [workspace.package] version   (the source)
     crates/areev-py/pyproject.toml [project] version             maturin reads THIS
     crates/areev-js/package.json   "version"                     npm reads THIS
     crates/areev-js/Cargo.toml     [package] version             detached workspace
     crates/areev-js/index.js       ~54 hardcoded literals        GENERATED
+    areev-sandbox/Cargo.toml       [package] version             detached package
+
+The sandbox is checked because it is a security boundary shipped beside the
+engine it bounds: a sandbox built from a different tree than the `areev` it
+enforces limits for is the pairing the image and the release exist to prevent.
 
 Both drift modes have shipped before, and both are silent:
 
@@ -71,6 +76,14 @@ def js_cargo_version() -> str:
     return m.group(1)
 
 
+def sandbox_cargo_version() -> str:
+    txt = (REPO / "areev-sandbox/Cargo.toml").read_text(encoding="utf-8")
+    m = re.search(r'^\s*version\s*=\s*"([^"]+)"', txt, re.M)
+    if not m:
+        sys.exit("could not read version from areev-sandbox/Cargo.toml")
+    return m.group(1)
+
+
 def js_index_versions() -> set[str]:
     """Every version literal napi baked into the generated loader."""
     idx = REPO / "crates/areev-js/index.js"
@@ -91,6 +104,7 @@ def main() -> int:
         "crates/areev-py/pyproject.toml": pyproject_version(),
         "crates/areev-js/package.json": js_package_version(),
         "crates/areev-js/Cargo.toml": js_cargo_version(),
+        "areev-sandbox/Cargo.toml": sandbox_cargo_version(),
     }
 
     problems = []

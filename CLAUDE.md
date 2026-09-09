@@ -95,9 +95,11 @@ docker build -t areev .             # the container image (postgres+tls features
   `areev-cli` and `areev-mcp` are the known-lowest and the next testing work.
   If CI flags either script, run it and commit the result — do not hand-edit
   the artifacts.
-- **The version lives in five places**, only one of which is inherited. The
+- **The version lives in six places**, only one of which is inherited. The
   `versions` job runs `scripts/check_versions.py`; the release runbook
-  (`.claude/skills/areev-release`) is the source of truth for the order.
+  (`.claude/skills/areev-release`) is the source of truth for the order. Two of
+  the six are detached packages that cannot inherit: `areev-js` and
+  `areev-sandbox`.
 
 ## Workspace (dependency order)
 

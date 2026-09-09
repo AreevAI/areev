@@ -249,6 +249,12 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         required_add_fields: &["name", "description"],
         queryable_fields: &[
             "name",
+            // Required on the struct since 1.4 but absent here, so the field
+            // every Skill MUST carry was the one `WHERE` refused (#207):
+            // `RECALL skills WHERE description != "retired"` answered
+            // CAL-E060 about a field that is right there in the blob. Goal
+            // has declared it since it shipped; Skill shares the `desc` key.
+            "description",
             "version",
             "domain",
             "holder_did",

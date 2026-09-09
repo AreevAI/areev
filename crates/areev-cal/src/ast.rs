@@ -417,6 +417,17 @@ pub struct NamedSource {
     /// these override the parent query's with_options for this source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub with_options: Vec<WithOption>,
+    /// Pipeline stages written INSIDE the source's parens, applied to that
+    /// source's grains before dedup and budgeting.
+    ///
+    /// A source is a query, and a query's answer may need ranking, bounding
+    /// or summarising — `ORDER BY`, `LIMIT`, and above all `GROUP BY <field>
+    /// COUNT` (#209), so "the five errors this agent hits most" can be a
+    /// *section of a prompt* rather than a separate read the host tallies and
+    /// splices in itself. The enclosing query's own pipeline still runs on
+    /// the assembled result and is a different thing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipeline: Vec<PipelineStage>,
     #[serde(skip)]
     pub span: Option<Span>,
 }

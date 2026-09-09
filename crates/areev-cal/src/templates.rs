@@ -66,12 +66,25 @@ const ALLOWED_FIELDS: &[&str] = &[
     "confidence",
     "importance",
     "created_at",
+    // §6.1 world-time validity, carried by every grain type (#206).
+    // `{{valid_to | date}}` is the label half of "what is currently valid";
+    // the filter half is the WHERE clause, and a render that can drop an
+    // expired note but not say when the others lapse is half an answer.
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
     "tags",
     "session_id",
     "content",
     "summary",
     "source_hash",
     "source_hashes",
+    // Group projection rows (#209) — `GROUP BY <field> COUNT`. Reachable as
+    // `{{group.key}}`/`{{group.count}}`; listed here because the resolver
+    // reads them out of the row's fields like any other.
+    "key",
+    "count",
     // Event
     "actor",
     "action",
@@ -172,6 +185,10 @@ const SPEC_ASSEMBLY_VARIABLES: &[&str] = &["name", "intent", "source_count", "gr
 const SPEC_BUDGET_VARIABLES: &[&str] =
     &["total", "used", "remaining", "unit", "utilization"];
 
+/// Group-level variables (the `group.` namespace, #209) — bound on the rows
+/// `GROUP BY <field> COUNT` projects, and nowhere else.
+const GROUP_VARIABLES: &[&str] = &["key", "count"];
+
 /// CAL §10.5 source-level variables (the `source.` namespace).
 const SPEC_SOURCE_VARIABLES: &[&str] = &[
     "label",
@@ -203,12 +220,25 @@ const ALL_VALID_VARIABLES: &[&str] = &[
     "confidence",
     "importance",
     "created_at",
+    // §6.1 world-time validity, carried by every grain type (#206).
+    // `{{valid_to | date}}` is the label half of "what is currently valid";
+    // the filter half is the WHERE clause, and a render that can drop an
+    // expired note but not say when the others lapse is half an answer.
+    "valid_from",
+    "valid_to",
+    "system_valid_from",
+    "system_valid_to",
     "tags",
     "session_id",
     "content",
     "summary",
     "source_hash",
     "source_hashes",
+    // Group projection rows (#209) — `GROUP BY <field> COUNT`. Reachable as
+    // `{{group.key}}`/`{{group.count}}`; listed here because the resolver
+    // reads them out of the row's fields like any other.
+    "key",
+    "count",
     // Event
     "actor",
     "action",
@@ -281,7 +311,24 @@ const ALL_VALID_VARIABLES: &[&str] = &[
 ];
 
 /// Known filter names.
-const KNOWN_FILTERS: &[&str] = &[
+///
+/// **Closed on purpose.** OMS conformance means two implementations render a
+/// grain identically, which an open function library cannot promise — so the
+/// set is enumerable and `DESCRIBE CAPABILITIES` reports it. The first ten
+/// *format* a value; the rest **take** part of one (#210/#211), which is what
+/// a memory storing text people wrote actually needs: titles, ticket ids,
+/// error codes and thread keys all live inside free text or a JSON payload,
+/// and every host that wanted one used to over-fetch and slice it in
+/// application code — spending the token budget on text it was about to throw
+/// away.
+///
+/// What is deliberately NOT here: anything that transforms and re-serialises
+/// (parse → mutate → emit). That is a program, it needs its own sandbox and
+/// its own spec, and its main use — reshaping on the way out — is better
+/// served by storing the right shape in. See `docs/oms-1.7-amendments-cal-
+/// expressiveness.md`.
+pub(crate) const KNOWN_FILTERS: &[&str] = &[
+    // Formatters.
     "truncate",
     "date",
     "relative",
@@ -292,7 +339,62 @@ const KNOWN_FILTERS: &[&str] = &[
     "json",
     "default",
     "join",
+    // Extractors (#210) — text in, part of that text out.
+    "first_line",
+    "split",
+    "strip_prefix",
+    "strip_suffix",
+    "between",
+    "match",
+    // Navigation (#211) — one scalar out of a structured payload.
+    "get",
 ];
+
+/// Longest input any extracting filter will look at, in bytes.
+///
+/// Templates already bound themselves (`MAX_TEMPLATE_SIZE`,
+/// `MAX_EACH_ITERATIONS`) because a template renders on every turn over
+/// host- and model-supplied text; an extractor needs the equivalent. A grain
+/// body longer than this is truncated before matching rather than refused —
+/// template resolution is total, and a render that errors on one long grain
+/// is worse than one that clips it.
+const MAX_EXTRACT_INPUT: usize = 64 * 1024;
+
+/// Maximum depth a `get("a.b.c")` path may walk.
+const MAX_GET_PATH_DEPTH: usize = 8;
+
+/// Compiled-pattern cache for the `match` filter.
+///
+/// `regex` is a finite-automaton engine with no backtracking, so a pattern
+/// over untrusted grain content cannot be a ReDoS primitive the way a
+/// backtracking engine would be — that property, plus this cache, is why a
+/// pattern filter is safe to render on every turn. The cache is bounded: an
+/// unbounded one is itself a memory leak driven by query text.
+static PATTERN_CACHE: std::sync::LazyLock<
+    parking_lot::Mutex<lru::LruCache<String, Option<std::sync::Arc<regex::Regex>>>>,
+> = std::sync::LazyLock::new(|| {
+    parking_lot::Mutex::new(lru::LruCache::new(
+        std::num::NonZeroUsize::new(128).expect("128 > 0"),
+    ))
+});
+
+/// Compile (or fetch) a pattern. `None` for a pattern that does not compile —
+/// the filter then yields empty, because template resolution is total.
+fn cached_pattern(pat: &str) -> Option<std::sync::Arc<regex::Regex>> {
+    let mut cache = PATTERN_CACHE.lock();
+    if let Some(hit) = cache.get(pat) {
+        return hit.clone();
+    }
+    let compiled = regex::RegexBuilder::new(pat)
+        // Bound the compiled program too: a pattern can be pathological in
+        // size even when it cannot be pathological in time.
+        .size_limit(1 << 20)
+        .build()
+        .ok()
+        .map(std::sync::Arc::new);
+    cache.put(pat.to_string(), compiled.clone());
+    compiled
+}
 
 // ---------------------------------------------------------------------------
 // Template AST types
@@ -354,8 +456,17 @@ pub enum TemplateNode {
 pub struct Filter {
     /// Filter name (e.g. "truncate", "date", "relative").
     pub name: String,
-    /// Optional argument (e.g. "80" for truncate, "%Y-%m-%d" for date).
+    /// The first argument, unquoted (e.g. "80" for truncate, "%Y-%m-%d" for
+    /// date). What every single-argument filter reads.
     pub arg: Option<String>,
+    /// Every argument, unquoted, in order — for the filters that take more
+    /// than one (`split(",", 2)`, `between("[", "]")`, `match("re", 1)`).
+    ///
+    /// Kept beside `arg` rather than replacing it because unquoting a
+    /// multi-argument list cannot be done by stripping outer quotes:
+    /// `between("[", "]")` would come back as `[", "]`. Splitting happens
+    /// once, at parse time, quote-aware.
+    pub args: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,23 +1198,26 @@ fn parse_single_filter(segment: &str, tag_start: usize, tag_end: usize) -> CalRe
 
     // Split on first whitespace or opening paren to get name and optional argument.
     // Supports both `truncate 5` (space-separated) and `truncate(5)` (parenthesized).
-    let (name, arg) = if let Some(paren_idx) = segment.find('(') {
-        // Parenthesized syntax: name(arg)
+    let (name, arg, args) = if let Some(paren_idx) = segment.find('(') {
+        // Parenthesized syntax: name(arg) — and name(a, b) for the filters
+        // that take two.
         let name = segment[..paren_idx].trim();
         let rest = &segment[paren_idx + 1..];
         let close = rest.rfind(')').unwrap_or(rest.len());
         let raw_arg = rest[..close].trim();
+        let args = split_filter_args(raw_arg);
         let arg = unquote(raw_arg).unwrap_or_else(|| raw_arg.to_string());
-        (name, Some(arg))
+        (name, Some(arg), args)
     } else {
         match segment.find(|c: char| c.is_whitespace()) {
             Some(idx) => {
                 let name = &segment[..idx];
                 let raw_arg = segment[idx..].trim();
+                let args = split_filter_args(raw_arg);
                 let arg = unquote(raw_arg).unwrap_or_else(|| raw_arg.to_string());
-                (name, Some(arg))
+                (name, Some(arg), args)
             }
-            None => (segment, None),
+            None => (segment, None, Vec::new()),
         }
     };
 
@@ -1146,13 +1260,156 @@ fn parse_single_filter(segment: &str, tag_start: usize, tag_end: usize) -> CalRe
                 }
             }
         }
+        // A pattern that does not compile is an authoring mistake, not data,
+        // so it is refused HERE — when the template is defined — rather than
+        // rendering empty on every grain forever. That also makes the render
+        // path total by construction: by the time a pattern reaches
+        // `cached_pattern` it is known to compile.
+        //
+        // This is the auditability half of the bargain: "what will this saved
+        // query show me?" stays answerable by reading it, because an
+        // unreadable pattern never gets stored.
+        "match" => {
+            let parts = &args;
+            let Some(pat) = parts.first().filter(|p| !p.is_empty()) else {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: "match requires a pattern, e.g. match(\"[A-Z]+-[0-9]+\")".into(),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            };
+            if pat.len() > MAX_PATTERN_LEN {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: format!(
+                        "match pattern too long ({} chars, max {MAX_PATTERN_LEN})",
+                        pat.len()
+                    ),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+            if cached_pattern(pat).is_none() {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: format!(
+                        "match pattern {pat:?} does not compile. Note this is the Rust \
+                         regex dialect: no backreferences and no lookaround (they are what \
+                         make a pattern engine backtrack, and a template runs over \
+                         untrusted grain text on every turn), and `]` inside a class must \
+                         be escaped — write \\[([^\\]]+)\\] rather than [[]([^]]+)[]]"
+                    ),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+            if let Some(g) = parts.get(1) {
+                if g.parse::<usize>().is_err() {
+                    return Err(CalError::TemplateSyntaxError {
+                        detail: format!("match capture group {g:?} is not a number"),
+                        span: Some(make_span(tag_start, tag_end)),
+                    });
+                }
+            }
+        }
+        "split" => {
+            let parts = &args;
+            if parts.first().map(String::as_str).unwrap_or("").is_empty() {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: "split requires a separator, e.g. split(\"]\", 0)".into(),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+            if let Some(n) = parts.get(1) {
+                if n.parse::<usize>().is_err() {
+                    return Err(CalError::TemplateSyntaxError {
+                        detail: format!("split index {n:?} is not a number"),
+                        span: Some(make_span(tag_start, tag_end)),
+                    });
+                }
+            }
+        }
+        "between" => {
+            let parts = &args;
+            if parts.len() != 2 || parts.iter().any(String::is_empty) {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: "between requires two delimiters, e.g. between(\"[\", \"]\")"
+                        .into(),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+        }
+        "get" => {
+            let path = args.first().map(String::as_str).unwrap_or("");
+            if path.is_empty() {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: "get requires a dotted path, e.g. get(\"error.code\")".into(),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+            let depth = path.split('.').count();
+            if depth > MAX_GET_PATH_DEPTH {
+                return Err(CalError::TemplateSyntaxError {
+                    detail: format!(
+                        "get path {path:?} is {depth} segments deep (max {MAX_GET_PATH_DEPTH})"
+                    ),
+                    span: Some(make_span(tag_start, tag_end)),
+                });
+            }
+        }
         _ => {}
     }
 
     Ok(Filter {
         name: name.to_string(),
         arg,
+        args,
     })
+}
+
+/// Longest pattern the `match` filter will compile.
+const MAX_PATTERN_LEN: usize = 512;
+
+/// Split a filter's raw argument text on top-level commas, respecting quotes,
+/// and unquote each part.
+///
+/// `"[", "]"` is two arguments, `"a, b"` is one — which is the whole reason
+/// this cannot be `raw.split(',')`, and why it cannot run over the already-
+/// unquoted `arg` either.
+fn split_filter_args(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut quote_char = '"';
+    let mut escaped = false;
+    for ch in raw.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quote => {
+                current.push(ch);
+                escaped = true;
+            }
+            '"' | '\'' => {
+                if in_quote && ch == quote_char {
+                    in_quote = false;
+                } else if !in_quote {
+                    in_quote = true;
+                    quote_char = ch;
+                }
+                current.push(ch);
+            }
+            ',' if !in_quote => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() || !out.is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out.into_iter()
+        .map(|a| unquote(&a).unwrap_or_default())
+        .collect()
 }
 
 /// Split an expression on `|` characters, respecting quoted strings.
@@ -1292,6 +1549,11 @@ fn validate_variable_name(name: &str, _grain_type_ctx: Option<&str>) -> CalResul
     }
     if let Some(field) = name.strip_prefix("source.") {
         if SPEC_SOURCE_VARIABLES.contains(&field) {
+            return Ok(());
+        }
+    }
+    if let Some(field) = name.strip_prefix("group.") {
+        if GROUP_VARIABLES.contains(&field) {
             return Ok(());
         }
     }
@@ -1540,13 +1802,32 @@ fn resolve_variable(
         };
     }
 
+    // The `group.` namespace (#209): the current row when it is a group
+    // projection from `GROUP BY <field> COUNT`. `{{group.count}}x
+    // {{group.key}}` is the whole "most frequent first" render.
+    //
+    // Bound only on a group row — on an ordinary grain it resolves Null
+    // rather than silently reading a field that happens to be called `key`.
+    if let Some(field) = name.strip_prefix("group.") {
+        return match grain {
+            Some(g) if g.grain_type == "group" && GROUP_VARIABLES.contains(&field) => {
+                resolve_from_fields(&g.fields, field)
+            }
+            _ => ResolvedValue::Null,
+        };
+    }
+
     // 1. Metadata variables (_prefix).
     match name {
         "_index" => return ResolvedValue::Integer(index.unwrap_or(0) as i64),
         "_count" => return ResolvedValue::Integer(ctx.total_count as i64),
         "_first" => return ResolvedValue::Bool(index == Some(0)),
         "_last" => return ResolvedValue::Bool(index.is_some_and(|i| i + 1 == ctx.total_count)),
-        "_now" => return ResolvedValue::Integer(ctx.now_secs),
+        // Epoch **milliseconds**, matching every grain timestamp and what the
+        // `date`/`relative` filters take. `ctx.now_secs` stays seconds — it is
+        // the *now* argument of `humanize_time(created_ms, now_secs)`, a
+        // different role than the value a template renders.
+        "_now" => return ResolvedValue::Integer(ctx.now_secs.saturating_mul(1_000)),
         _ => {}
     }
 
@@ -1690,21 +1971,193 @@ pub fn apply_filter(
                 _ => Ok(ResolvedValue::Str(value.to_display())),
             }
         }
+        // `date` takes epoch **milliseconds**, because that is the unit of
+        // every timestamp a template can name: `created_at`, `valid_from`,
+        // `valid_to`, `deadline`, `expires_at`, `last_practiced_at`. It used
+        // to hand the value to `format_epoch` unconverted — and that function
+        // takes seconds — so `{{created_at | date}}` rendered the year 58657
+        // for a grain written today. `relative` never had the bug because
+        // `humanize_time(created_ms, now_secs)` names its units.
+        //
+        // `format_epoch` keeps its seconds signature: it is public, and the
+        // conversion belongs at the one place that knows the input is a grain
+        // timestamp.
         "date" => match value {
-            ResolvedValue::Integer(epoch) => {
+            ResolvedValue::Integer(epoch_ms) => {
                 let fmt = filter.arg.as_deref().unwrap_or("%Y-%m-%d");
-                Ok(ResolvedValue::Str(format_epoch(*epoch, fmt)))
+                Ok(ResolvedValue::Str(format_epoch(
+                    epoch_ms.div_euclid(1_000),
+                    fmt,
+                )))
             }
             ResolvedValue::Number(n) => {
                 let fmt = filter.arg.as_deref().unwrap_or("%Y-%m-%d");
-                Ok(ResolvedValue::Str(format_epoch(*n as i64, fmt)))
+                Ok(ResolvedValue::Str(format_epoch(
+                    (*n as i64).div_euclid(1_000),
+                    fmt,
+                )))
             }
             _ => Ok(ResolvedValue::Str(value.to_display())),
         },
+        // ── Extractors (#210). Each TAKES part of a value rather than
+        // formatting the whole of it. All of them are total: a filter that
+        // finds nothing yields empty, never an error, because template
+        // resolution is total and one unparseable grain must not fail the
+        // render of the other 199.
+        "first_line" => {
+            let s = extract_input(value);
+            Ok(ResolvedValue::Str(
+                s.split(['\n', '\r']).next().unwrap_or("").to_string(),
+            ))
+        }
+        "split" => {
+            let s = extract_input(value);
+            let sep = filter.args.first().map(String::as_str).unwrap_or("");
+            let n: usize = filter
+                .args
+                .get(1)
+                .and_then(|a| a.parse().ok())
+                .unwrap_or(0);
+            if sep.is_empty() {
+                return Ok(ResolvedValue::Str(String::new()));
+            }
+            Ok(ResolvedValue::Str(
+                s.split(sep).nth(n).unwrap_or("").trim().to_string(),
+            ))
+        }
+        "strip_prefix" => {
+            let s = extract_input(value);
+            let p = filter.args.first().map(String::as_str).unwrap_or("");
+            Ok(ResolvedValue::Str(
+                s.strip_prefix(p).unwrap_or(&s).to_string(),
+            ))
+        }
+        "strip_suffix" => {
+            let s = extract_input(value);
+            let p = filter.args.first().map(String::as_str).unwrap_or("");
+            Ok(ResolvedValue::Str(
+                s.strip_suffix(p).unwrap_or(&s).to_string(),
+            ))
+        }
+        // The motivating case, and the one that needs no pattern language:
+        // `[Q3 close handoff] the ops team flagged…` → `Q3 close handoff`.
+        "between" => {
+            let s = extract_input(value);
+            let open = filter.args.first().map(String::as_str).unwrap_or("");
+            let close = filter.args.get(1).map(String::as_str).unwrap_or("");
+            if open.is_empty() || close.is_empty() {
+                return Ok(ResolvedValue::Str(String::new()));
+            }
+            let found = s.find(open).and_then(|i| {
+                let after = i + open.len();
+                s[after..].find(close).map(|j| s[after..after + j].to_string())
+            });
+            Ok(ResolvedValue::Str(found.unwrap_or_default()))
+        }
+        // `match("pattern")` yields the whole match; `match("pattern", n)`
+        // yields capture group n. A pattern that does not compile, does not
+        // match, or names a group that did not participate yields empty.
+        "match" => {
+            let s = extract_input(value);
+            let pat = filter.args.first().map(String::as_str).unwrap_or("");
+            let group: usize = filter
+                .args
+                .get(1)
+                .and_then(|a| a.parse().ok())
+                .unwrap_or(0);
+            if pat.is_empty() {
+                return Ok(ResolvedValue::Str(String::new()));
+            }
+            let out = cached_pattern(pat)
+                .and_then(|re| re.captures(&s))
+                .and_then(|c| c.get(group).map(|m| m.as_str().to_string()))
+                .unwrap_or_default();
+            Ok(ResolvedValue::Str(out))
+        }
+        // ── Navigation (#211). One scalar out of a structured payload.
+        //
+        // Note the asymmetry this closes: `record_tool_call` round-trips
+        // `input` as parsed JSON, so a Python or Node host gets the structure
+        // for free — it was specifically the CAL path that could not see
+        // inside. A dotted path only: no wildcards, no predicates, no
+        // arithmetic, and explicitly no "remove a key and re-serialise the
+        // rest", which is a transformation. If a caller needs that, the write
+        // should have stored two fields — which also makes the value
+        // *filterable*, as no amount of template machinery does.
+        "get" => {
+            let Some(path) = filter.args.first().map(String::as_str).filter(|p| !p.is_empty())
+            else {
+                return Ok(ResolvedValue::Null);
+            };
+            // Both shapes arrive here as text: a structured field (a Tool
+            // `input`, an eval summary) resolves to its JSON serialization,
+            // and a JSON document stored *as* a string (a `fails_with`
+            // signature in `object`) is already one. Parsing is what makes
+            // the existing `json` filter's name misleading — that one
+            // *serialises*, which is why it never helped here.
+            let Ok(root) = serde_json::from_str::<serde_json::Value>(&extract_input(value)) else {
+                return Ok(ResolvedValue::Null);
+            };
+            Ok(json_to_resolved(navigate_json(&root, path)))
+        }
         unknown => Err(CalError::TemplateUnknownFilter {
             name: unknown.to_string(),
             span: None,
         }),
+    }
+}
+
+/// The string an extracting filter looks at, bounded.
+fn extract_input(value: &ResolvedValue) -> String {
+    let s = value.to_display();
+    if s.len() <= MAX_EXTRACT_INPUT {
+        return s;
+    }
+    // Clip on a char boundary — grain bodies are UTF-8 and slicing mid-code-
+    // point would panic.
+    let mut end = MAX_EXTRACT_INPUT;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Walk a dotted path into a JSON value. Depth-bounded; a missing segment
+/// yields `None` (rendered empty), never an error.
+///
+/// A numeric segment indexes an array, so `items.0.name` works without a
+/// separate syntax for it.
+fn navigate_json<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = root;
+    for (depth, seg) in path.split('.').enumerate() {
+        if depth >= MAX_GET_PATH_DEPTH {
+            return None;
+        }
+        cur = match cur {
+            serde_json::Value::Object(m) => m.get(seg)?,
+            serde_json::Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+/// A navigated JSON value as a template value. A container comes back
+/// serialised — the path reached a subtree rather than a scalar, and showing
+/// it is more useful than showing nothing.
+fn json_to_resolved(v: Option<&serde_json::Value>) -> ResolvedValue {
+    match v {
+        None | Some(serde_json::Value::Null) => ResolvedValue::Null,
+        Some(serde_json::Value::String(s)) => ResolvedValue::Str(s.clone()),
+        Some(serde_json::Value::Bool(b)) => ResolvedValue::Bool(*b),
+        Some(serde_json::Value::Number(n)) => match n.as_i64() {
+            Some(i) => ResolvedValue::Integer(i),
+            None => n
+                .as_f64()
+                .map(ResolvedValue::Number)
+                .unwrap_or(ResolvedValue::Null),
+        },
+        Some(other) => ResolvedValue::Str(other.to_string()),
     }
 }
 
@@ -3326,6 +3779,7 @@ mod tests {
         let filter = Filter {
             name: "truncate".into(),
             arg: Some("13".into()),
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "Hello, world!...");
@@ -3338,6 +3792,7 @@ mod tests {
         let filter = Filter {
             name: "truncate".into(),
             arg: Some("80".into()),
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "short");
@@ -3355,6 +3810,7 @@ mod tests {
         let filter = Filter {
             name: "relative".into(),
             arg: None,
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "1m ago");
@@ -3367,6 +3823,7 @@ mod tests {
         let filter = Filter {
             name: "humanize".into(),
             arg: None,
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "likes");
@@ -3379,6 +3836,7 @@ mod tests {
         let filter = Filter {
             name: "percent".into(),
             arg: None,
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "94%");
@@ -3394,6 +3852,7 @@ mod tests {
             &Filter {
                 name: "uppercase".into(),
                 arg: None,
+                args: Vec::new(),
             },
             &ctx,
         )
@@ -3405,6 +3864,7 @@ mod tests {
             &Filter {
                 name: "lowercase".into(),
                 arg: None,
+                args: Vec::new(),
             },
             &ctx,
         )
@@ -3422,6 +3882,7 @@ mod tests {
             &Filter {
                 name: "default".into(),
                 arg: Some("fallback".into()),
+                args: Vec::new(),
             },
             &ctx,
         )
@@ -3434,6 +3895,7 @@ mod tests {
             &Filter {
                 name: "default".into(),
                 arg: Some("fallback".into()),
+                args: Vec::new(),
             },
             &ctx,
         )
@@ -3448,6 +3910,7 @@ mod tests {
         let filter = Filter {
             name: "join".into(),
             arg: Some(", ".into()),
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "a, b, c");
@@ -3456,10 +3919,14 @@ mod tests {
     #[test]
     fn test_filter_date() {
         let ctx = test_ctx();
-        let val = ResolvedValue::Integer(1700000000);
+        // Epoch MILLISECONDS — the unit of every grain timestamp the filter
+        // is pointed at. Passing seconds here is what hid the bug that made
+        // `{{created_at | date}}` render the year 58657.
+        let val = ResolvedValue::Integer(1_700_000_000_000);
         let filter = Filter {
             name: "date".into(),
             arg: Some("%Y-%m-%d".into()),
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "2023-11-14");
@@ -3472,6 +3939,7 @@ mod tests {
         let filter = Filter {
             name: "date".into(),
             arg: None,
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "<invalid date>");
@@ -3484,6 +3952,7 @@ mod tests {
         let filter = Filter {
             name: "json".into(),
             arg: None,
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         assert_eq!(result.to_display(), "\"hello\"");
@@ -4114,6 +4583,7 @@ mod tests {
         let filter = Filter {
             name: "truncate".into(),
             arg: Some("3".into()),
+            args: Vec::new(),
         };
         let result = apply_filter(&val, &filter, &ctx).unwrap();
         let display = result.to_display();

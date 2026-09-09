@@ -24,7 +24,20 @@ transports implement it:
   `collection_stats` hooks); in-txn rechecks use `Db::for_update`. An
   explicit statement translator handles the divergent dialect (per-table
   `ON CONFLICT` upserts, pgvector `<=>`/casts, `?N`→`$N`) and FAILS FAST on
-  anything unmapped, the `vector(dim)` column is added at the first
+  anything unmapped, then `qualify_tables` schema-qualifies every table
+  reference (#181) so nothing depends on the session's `search_path` — a
+  transaction-mode pooler may hand each transaction to a different backend.
+  Runtime DDL and catalog probes bind `self.schema` rather than reading
+  `current_schema()` for the same reason, and a `26000` (prepared statement
+  unknown to this backend) evicts the cache entry and retries once outside a
+  transaction; inside one it cannot (the Bind aborted it) and the error says
+  the pooler must track prepared statements or run session mode — the driver
+  names every parameterized statement, so no store-side switch substitutes.
+  Proven by the conformance suite run with `AREEV_PG_SESSION_CHAOS=1`
+  (`conformance` feature: `RESET ALL` before every statement outside a
+  transaction; `=deallocate` adds `DEALLOCATE ALL` there and `=deallocate-txn`
+  drops the statements at every `BEGIN` instead, the two halves `pg_stale.rs`
+  pins) and through a real transaction-mode PgBouncer, the `vector(dim)` column is added at the first
   `set_embedder` (dim mismatch = hard refusal), CAS blobs live in an
   in-schema table, and `prefers_batched_reads = true`. Page cipher and the
   telemetry sidecar are file-backend-only and rejected at open.
