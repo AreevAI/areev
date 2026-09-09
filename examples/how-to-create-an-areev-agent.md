@@ -345,7 +345,9 @@ How much the LLM decides is expressed in the plan, node by node:
    keyless floor; and an attempt is capped at **16 effects**, so a node that
    needs more must be split.
 4. **`$send` fan-out** — a node's result spawns tasks at runtime: dynamic
-   width the plan didn't enumerate, joined by declared reducers. A reducer's
+   width the plan didn't enumerate, joined by declared reducers. A target is
+   a host tool node or an abstract node (never a gate, a subgraph, or the
+   spawner), and an abstract target gets one LLM loop per task. A reducer's
    value is a **bare string** — `lww` (the default), `append`, `sum`, `max`,
    `min` — and it is read at *run start*, never validated on the write path,
    so a mistyped reducer name stores cleanly and then refuses every run.

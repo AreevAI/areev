@@ -14,7 +14,7 @@ use areev_core::authz::HARNESS_NS;
 use areev_core::error::Hash;
 use areev_core::types::{Fact, Grain, Observation};
 use areev_run_core::{
-    step, Ask, Command, DecisionRecord, EffectOutcome, EventIn, FailCause, JournalKey,
+    flow_key, step, Ask, Command, DecisionRecord, EffectOutcome, EventIn, FailCause, JournalKey,
     NodeExecutor, PlanGraph, RunError, RunOutcome, SchedulerState, StepEnv, PARKED_ASKS,
 };
 use serde_json::{json, Value};
@@ -1477,12 +1477,13 @@ impl Runner {
                         // by the same step() pass that emitted this WriteIntent
                         // (step.rs inserts before pushing the command), so the
                         // model's own call id is readable now.
-                        let pending = node_idx
-                            .and_then(|i| st.abstract_flows.get(&i))
+                        let flow = node_idx.map(|i| flow_key(i, &key.task_path));
+                        let pending = flow
+                            .as_ref()
+                            .and_then(|f| st.abstract_flows.get(f))
                             .and_then(|f| f.pending_tools.get(&key.effect_seq));
-                        let in_agent = node_idx
-                            .map(|i| st.abstract_flows.contains_key(&i))
-                            .unwrap_or(false);
+                        let in_agent =
+                            flow.as_ref().is_some_and(|f| st.abstract_flows.contains_key(f));
                         let is_llm = key.kind == areev_run_core::EffectKind::Llm;
                         emit(crate::stream::RunEvent::NodeDispatched {
                             superstep,

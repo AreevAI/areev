@@ -59,7 +59,12 @@ journaled events back, assert the same commands come out.
 ## Wave 2 semantics (pinned)
 
 - **Abstract flows** (`AbstractFlow` in state): one LLM loop per node
-  attempt; turns and model-issued tool calls share `effect_seq`. Effect
+  attempt — or per Send task against an abstract target. `abstract_flows` is
+  keyed by `flow_key(node_idx, task_path)`: the bare index for a node's own
+  loop (so the serialized shape never changed), `"<i>@<path>"` for a task's.
+  Iterate it through `flow_owners`, which sorts by (node, path) — a
+  BTreeMap<String> orders "10" before "2", and emission order is canonical
+  node order; turns and model-issued tool calls share `effect_seq`. Effect
   resolution sets `FlowNeed`; `progress_open` EMITS in canonical node order
   (resolution has no command sink — emitting there would be arrival-order).
   Tool failures inside a flow are MODEL-VISIBLE error results, never
@@ -78,7 +83,8 @@ journaled events back, assert the same commands come out.
   `parent/NNNN` with a MONOTONIC per-parent counter (`spawn_counter`) —
   re-entered spawners mint fresh paths, so keys never collide across
   generations; zero-padding makes lexicographic order spawn order. Targets
-  must be Host nodes (v1), never the spawner. The target shows `Dispatched`
+  must be Host or Abstract nodes, never the spawner; an Abstract target
+  gets ONE LLM loop PER TASK, keyed `flow_key(node, task_path)`. The target shows `Dispatched`
   while its batch runs and completes with a Null contribution when the
   batch drains — the join below a fan-out. Task retries are per-task
   attempts against the target's retry budget.

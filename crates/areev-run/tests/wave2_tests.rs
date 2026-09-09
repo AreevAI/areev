@@ -729,6 +729,112 @@ fn fork_onto_new_plan_migrates_with_inherited_context() {
 // ---- Send fan-out ----------------------------------------------------------
 
 #[test]
+fn send_fans_out_to_an_abstract_node_one_llm_loop_per_task() {
+    let rig = Rig::new();
+    let plan = rig.plan(
+        &["seed", "classify", "collect"],
+        &[("seed", "classify"), ("classify", "collect")],
+        &["classify"],
+    );
+    rig.exec.on("seed", |_, _| {
+        ExecResult::Ok(json!({
+            "$send": [
+                {"node": "classify", "input": {"v": 1}},
+                {"node": "classify", "input": {"v": 2}},
+            ],
+        }))
+    });
+    let seen_by_collect = Arc::new(Mutex::new(Value::Null));
+    let seen = Arc::clone(&seen_by_collect);
+    rig.exec.on("collect", move |input, _| {
+        *seen.lock().unwrap() = input.clone();
+        ExecResult::Ok(json!({"collected": true}))
+    });
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_final(r#"{"first": "one"}"#),
+        turn_final(r#"{"second": "two"}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+
+    // One worker: the tasks dispatch in canonical path order, so the
+    // scripted responses pair with the tasks deterministically.
+    let opts = RunOptions { workers: 1, ..opts() };
+    let session = runner.start(&plan, "absend-1", json!({}), &opts).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(llm.calls(), 2, "one LLM loop per task, not one for the node");
+
+    let joined = seen_by_collect.lock().unwrap().clone();
+    assert_eq!(joined["first"], "one", "both loops merged before the join: {joined}");
+    assert_eq!(joined["second"], "two");
+
+    // Each task's loop journaled under ITS path, never the bare node.
+    let paths: Vec<String> = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "absend-1"))
+        .unwrap()
+        .entries
+        .keys()
+        .filter(|k| k.node == "classify" && k.kind == EffectKind::Llm)
+        .map(|k| k.task_path.clone())
+        .collect();
+    assert_eq!(paths, vec!["/0000".to_string(), "/0001".to_string()]);
+
+    assert!(runner.verify("absend-1").unwrap().verified);
+}
+
+/// A fanned-out abstract task whose loop is torn down mid-round: the effect
+/// cap trips on the second call of a round, so the FIRST call is already in
+/// flight when the flow is dropped. Its result is accounted, but it must not
+/// become the task's contribution — that would merge a raw tool result the
+/// model never saw into the failed run's state.
+#[test]
+fn a_torn_down_task_flow_does_not_merge_its_straggler_tool_results() {
+    let rig = Rig::new();
+    let plan = rig.plan(
+        &["seed", "classify", "collect"],
+        &[("seed", "classify"), ("classify", "collect")],
+        &["classify"],
+    );
+    // Call 1 is the static node's own execution; every later call is the
+    // model reaching for the same tool from inside the task's loop.
+    rig.exec.on("seed", |_, n| {
+        if n == 1 {
+            ExecResult::Ok(json!({"$send": [{"node": "classify", "input": {"v": 1}}]}))
+        } else {
+            ExecResult::Ok(json!({"straggler": "raw"}))
+        }
+    });
+    // Turns land on even effect_seq, tool calls on odd. Seven single-call
+    // rounds bring `next_effect_seq` to 15; the eighth turn asks for two, so
+    // the first is dispatched at 15 and the second trips the cap of 16.
+    let mut script: Vec<ToolCallResponse> =
+        (0..7).map(|i| turn_tools(vec![(&format!("c{i}"), "seed", json!({}))])).collect();
+    script.push(turn_tools(vec![
+        ("last_a", "seed", json!({})),
+        ("last_b", "seed", json!({})),
+    ]));
+    let llm = Arc::new(ScriptedLlm::new(script));
+    let runner = rig.runner(Some(llm.clone()));
+
+    let opts = RunOptions { workers: 1, ..opts() };
+    let session = runner.start(&plan, "torn-1", json!({}), &opts).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert!(matches!(outcome, RunOutcome::Failed { .. }), "{outcome:?}");
+
+    let sched = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "torn-1"))
+        .unwrap();
+    let last = sched.checkpoints.last().unwrap().scheduler.clone();
+    assert!(
+        !last.to_string().contains("straggler"),
+        "a torn-down flow's tool result never becomes the task's contribution: {last}"
+    );
+    assert!(runner.verify("torn-1").unwrap().verified);
+}
+
+#[test]
 fn send_fan_out_spawns_tasks_and_joins_before_downstream() {
     let rig = Rig::new();
     // seed → worker → collect; seed's RESULT spawns three worker tasks with

@@ -196,7 +196,7 @@ pub struct SchedulerState {
     /// by index).
     pub pending_asks: BTreeMap<String, PendingAsk>,
     /// In-flight abstract-node LLM loops, by node index.
-    pub abstract_flows: BTreeMap<usize, AbstractFlow>,
+    pub abstract_flows: BTreeMap<String, AbstractFlow>,
     /// Send-spawned tasks by `task_path`. A target node shows `Dispatched`
     /// while its batch is unresolved and completes when the batch drains.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

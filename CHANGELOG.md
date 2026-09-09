@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`$send` can fan out to an abstract node** (#187). A spawn target had to
+  be a host tool node, so a plan that wanted N documents classified by an
+  agent had to enumerate N nodes or drop to a single tool call. Each task now
+  gets its OWN LLM loop, journaled under its own task path, and the loop's
+  answer settles that task — the batch joins before the target's downstream
+  edges fire, exactly as a host fan-out does. `abstract_flows` is keyed by
+  node-and-task rather than node; a node's own loop keeps the bare-index key,
+  so existing journals replay byte-identically.
+
 - **A person can steer a running run** (#187). `areev run input --run-id ID
   --message TEXT` — also `areev_run_input` (MCP), `db.run_input` (Python),
   `m.runInput` (Node) — queues a message on the run. The next superstep hands

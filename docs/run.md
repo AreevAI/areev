@@ -914,8 +914,13 @@ Each spawn executes the target node with its own input under a task path
 (`parent/0000`, `parent/0001`, …); the batch joins before the target's
 downstream edges fire. Validation is all-or-nothing (one malformed spawn
 fails the batch, not half of it), and declared reducers (`append`, `sum`, …)
-make the merged results order-independent. Spawn targets are host-bound
-nodes in v1.
+make the merged results order-independent.
+
+A spawn target is a **host tool node or an abstract node** — never a client
+gate, a subgraph, or the spawner itself. Fanning out to an abstract node
+gives each task its own LLM loop, journaled under its own task path
+(`node@parent/0000`), so N documents get N independent agent loops from one
+plan instead of N nodes.
 
 ## Watching a run
 
@@ -1096,7 +1101,6 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
-- `Send` targets host-bound nodes only in v1.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
 - One memory = one writer: while a driver holds the file, another process

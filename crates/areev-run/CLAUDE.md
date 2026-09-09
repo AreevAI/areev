@@ -117,6 +117,10 @@ evidence. Responding and resuming are separate acts.
   `run_subgraph_effect` may mint the marker — a completed child's context is
   stripped of it, or a tool inside the child could park its parent on asks it
   invented. Parallel subgraph siblings serialize (documented bound).
+- **Send to an abstract node**: `dispatch_send_task` opens a per-task flow
+  instead of dispatching a Host effect; the loop's final text settles the
+  TASK (`settle_send_task`), not the node, and the node completes when the
+  batch drains like any other fan-out.
 - **Typed reducers** (§6.5): Workflow grain `reducers: {key: name}` →
   validated at resolve → FROZEN in the manifest; builtins in `reducers.rs`
   (append-only names). Undeclared keys LWW.
