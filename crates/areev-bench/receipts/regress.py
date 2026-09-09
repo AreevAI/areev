@@ -86,11 +86,11 @@ def applied_lessons(db_path):
     reporting under a name that claims something else. Zero applied lessons
     and zero verdicts is a pass — there was nothing to verify — and the gate
     still has to handle the planted rule, which is a separate check."""
-    def count(db):
-        return sum(1 for g in mem._facts(db)
-                   if g.get("fields", {}).get("relation") in ("lesson", "fails_with")
-                   and (g["fields"].get("object") or "").strip())
-    return mem.with_memory(db_path, mem.REVIEWER, count)
+    # `current_rules` is the same relation-scoped read the prompt's rules
+    # section uses, so this counts exactly what the agent can see. The
+    # whole-namespace scan it replaced raised past 1000 facts, which a long
+    # deployment reaches at about 250 documents.
+    return mem.with_memory(db_path, mem.REVIEWER, lambda db: len(mem.current_rules(db)))
 
 
 def pending(db_path):

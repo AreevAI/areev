@@ -488,7 +488,7 @@ impl Areev {
             .detach(|| {
                 // A postgres://…?schema=<name> DSN selects the server-tier
                 // backend — same API, the memory lives in a Postgres schema.
-                if path.starts_with("postgres://") || path.starts_with("postgresql://") {
+                if areev_store::is_pg_dsn(&path) {
                     return open_postgres_from_dsn(
                         &path,
                         tel,
@@ -1973,9 +1973,16 @@ impl Areev {
     /// carry the async lifecycle. Enum strings validate strictly — an unknown
     /// value raises naming the accepted set.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// `ns` targets a namespace other than the session's, exactly as `add()`
+    /// does. Without it this was the one write on this surface that could not
+    /// leave the session namespace, so a host recording calls into per-domain
+    /// child namespaces (`domain.phone`, `domain.spotify`) had to open a
+    /// second handle — which the single-writer registry refuses (`STO-E002`).
     #[pyo3(signature = (name, result, is_error = false, thread = None, call_id = None, input = None,
                         run_id = None, workflow_hash = None, node_id = None, status = None,
-                        failure_cause = None, executor_kind = None, correlation_id = None))]
+                        failure_cause = None, executor_kind = None, correlation_id = None,
+                        ns = None))]
     fn record_tool_call(
         &self,
         py: Python<'_>,
@@ -1992,11 +1999,13 @@ impl Areev {
         failure_cause: Option<String>,
         executor_kind: Option<String>,
         correlation_id: Option<String>,
+        ns: Option<String>,
     ) -> PyResult<String> {
+        let ns = ns.unwrap_or_else(|| self.ns.clone());
         py.detach(|| {
             self.facade
                 .record_tool_call(
-                    &self.ns,
+                    &ns,
                     &name,
                     input.as_deref(),
                     &result,
@@ -3061,10 +3070,10 @@ struct ExecutorPin {
     executor_cache: Option<String>,
     sandbox_cmd: Option<String>,
     executor_timeout_secs: Option<u64>,
-    /// Comma list of variables a host tool may keep. Unset (or empty)
-    /// inherits this process's environment minus the registered secrets; a
-    /// list clears it and passes only those, plus the minimal set a command
-    /// needs to start.
+    /// Comma list of variables a host tool may keep. Unset inherits this
+    /// process's environment minus the registered secrets; a list — the
+    /// empty list included — clears it and passes only those, plus the
+    /// minimal set a command needs to start.
     tool_env: Option<String>,
 }
 
@@ -3072,7 +3081,11 @@ struct ExecutorPin {
 /// as holding a secret. One helper so the connector and the run executors
 /// cannot drift apart.
 fn tool_env_policy(names: Option<&str>) -> Option<areev_core::proc::EnvPolicy> {
-    let names = names.map(str::trim).filter(|n| !n.is_empty())?;
+    // Presence is the setting (`docs/run.md`): `tool_env=""` clears to the
+    // minimal set, the strictest posture, exactly as the CLI's `--tool-env ""`
+    // does. Only `None` keeps the inherit default. Filtering the empty string
+    // out here used to turn the strictest request into the loosest answer.
+    let names = names.map(str::trim)?;
     let (policy, dropped) = areev_run::env_allow_policy(names);
     if !dropped.is_empty() {
         eprintln!(

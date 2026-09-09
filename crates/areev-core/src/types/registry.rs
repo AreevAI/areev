@@ -164,6 +164,13 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
             "tool",
             "input",
             "duration_ms",
+            // What the call returned. Serialized under the compact key `cnt`,
+            // which expands to `tool_content` — so this is the name the body
+            // is projected under everywhere, and it was absent here, which
+            // made it ungroupable (#217). "Which tool fails most, and with
+            // what" is the first question anyone asks a memory of tool calls,
+            // and the second half of it needs this field to be a key.
+            "tool_content",
         ],
         toon_columns: &["tool", "phase", "content"],
     },

@@ -21,8 +21,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a DSN; the loop policy a leg records goes to that leg's work dir. A DSN is
   printed and recorded only redacted. Unset, the published file-backed runs
   are unchanged — the keyless dry run's summaries match the baseline.
+- **`areev::blob_get` works on the Postgres tier** — the whole class of
+  attachment-parsing capability tools was unavailable on the backend the
+  server tier actually runs on. `{"blob": {"read": true}}` (#106) is what lets
+  a `wasm32-areev-io` module read the attachment a trigger's connector already
+  filed, by address, read-only, every read journaled as a `blob_read`
+  Observation. On PostgreSQL the broker answered `501`: the read is lock-free
+  because it goes to the `.blobs` sidecar without opening the database, and
+  that sidecar is an embedded-backend thing. The documented alternative — the
+  tool opens the memory itself — needs handing the tool a credential to the
+  memory, which is exactly what a capability tool exists to avoid.
+
+  `read_blob_offline` now serves a `postgres://…?schema=…` locator too: one
+  short-lived connection of its own, one schema-qualified `SELECT` against the
+  in-schema `blobs` table, closed on return. It still never opens the memory,
+  so it cannot contend with the run holding it — and on this backend there is
+  no exclusive lock to avoid in the first place, which makes it cheaper than
+  the embedded case rather than harder. Qualifying the table (#181) keeps it
+  independent of `search_path`, so it is safe behind a pooler. Blobs are never
+  sealed here (the blob key derives from the page cipher, which Postgres
+  refuses), so the sealed branch cannot arise.
+
+  `areev blob get` lifts the same restriction: it skipped the lock-free path
+  for a DSN, a workaround for the limitation this removes, so the two
+  blob-reading surfaces now behave identically
+  ([#202](https://github.com/AreevAI/areev/issues/202)).
+
 - **CAL can summarise by frequency, extract from text, and navigate a JSON
-  payload** (#209, #210, #211) — three reads that could only be done by
+  payload** (#209, #210, #211, #217) — three reads that could only be done by
   over-fetching and finishing the job in host code, which also defeated
   `BUDGET` (the budget was spent on the rows about to be discarded). The
   spec-level decisions are recorded in
@@ -43,6 +69,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "which policy is cited most". Render it with the new `group.*` template
   variables (`{{group.count}}x {{group.key}}`), or make an `ASSEMBLE` source
   of it so a frequency roll-up is a *section of a prompt*.
+
+  **The key can name two things at once** (#217). "Which tool fails most" is
+  the first question anyone asks a memory of tool calls; "and with what" is
+  the half that says what to do about it — an agent told `phone.login` failed
+  six times learns less than one told it failed with a 401. `GROUP BY` takes
+  up to four fields, joined into one key with ` · ` (`CAL-E123` past that),
+  and the parts render individually:
+
+  ```sql
+  RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name, tool_content COUNT
+  ```
+  ```
+  DEFINE TEMPLATE top_failures ELEMENT {- ({{group.count}}x) {{group.key.0}}: {{group.key.1}}}
+  → - (6x) phone.login: Response status code is 401
+  ```
+
+  Three related gaps close with it. **A Tool's body is reachable from a
+  template**: it is projected as `tool_content` (the compact key `cnt` expands
+  to it), which every built-in format printed and no template variable named,
+  so a CAL-rendered block could say which call failed but never how —
+  `{{grain.tool_content}}` resolves, `{{grain.content}}` projects the same
+  text on a Tool, and `tool_content` is queryable and groupable.
+  **A `LIMIT` after `COUNT` binds**, so a top-N of a ranking is a top-N
+  (`total_available` still reports the whole ranking's size, so a page never
+  reads as the whole answer). And **`CAL-W018`** now announces a `GROUP BY`
+  key no grain carries, which used to return a single empty-key group —
+  indistinguishable from a ranking with one dominant value.
 
   **Extracting filters** (#210): `first_line`, `split("<sep>", n)`,
   `strip_prefix`, `strip_suffix`, `between("<open>", "<close>")`, and
@@ -127,6 +180,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the bytes rather than the host failing to reach one
   ([#203](https://github.com/AreevAI/areev/issues/203)).
 
+- **A preview channel for unreleased changes.** npm and PyPI published only on
+  a published GitHub Release, so proving a Core change against a downstream's
+  test suite cost a full release cycle — and the only alternative, pointing a
+  consumer at a local checkout, cannot run in CI. `release-npm` and
+  `release-pypi` now take a `preview: true` dispatch from any branch and
+  publish `X.Y.Z-preview.<run number>` under npm's `preview` dist-tag and as a
+  PyPI pre-release, so `npm install @areev/areev` and `pip install areev` are
+  unaffected. Nothing is committed: `scripts/stamp_preview.py` stamps at build
+  time, and `check_versions.py --preview` still refuses a tree whose two
+  published sites disagree ([#204](https://github.com/AreevAI/areev/issues/204)).
+
+  Two things constrained the shape. The version had to be
+  `-preview.<number>`, not the `-preview.<sha>` first proposed: PEP 440
+  numbers its pre-releases and PyPI rejects the `+local` segment a sha would
+  need, so a sha is publishable to npm and not to PyPI. And only
+  `package.json` and `pyproject.toml` may be stamped — crates depend on each
+  other as `version = "1.7.0"`, and Cargo does not match a prerelease against
+  `^1.7.0`, so stamping the workspace makes every inter-crate requirement
+  unsatisfiable and nothing builds at all.
+
 ### Fixed
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
@@ -207,6 +280,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
   result on the Query page, in plain language, with the `CAL-Wnnn` code shown
   only in Developer mode.
+- **`record_tool_call` takes `ns` in both bindings** (Python `ns=`, Node
+  `ns`), exactly as `add()` does. It was the only write on either surface that
+  could not leave the session namespace, so a host recording calls into
+  per-domain child namespaces (`domain.phone`, `domain.spotify`) had to open a
+  second handle — which the single-writer registry refuses (`STO-E002`).
+
+### Changed
+
+- **`areev-bench` harnesses now run on the engine's own surfaces.** Every
+  model-facing prompt block that can be is a saved `ASSEMBLE` query registered
+  in the memory file and rendered by a registered template, so a memory handed
+  to someone else carries how to read it. Tool calls are recorded through
+  `record_tool_call` rather than flattened, AppWorld's evidence lives in
+  per-app child namespaces read through `"appworld.*"`, and the governed
+  learning pass is an `areev run` workflow whose review node parks for a human
+  — so separation of duties is enforced by the runtime (`RUN-E012`) instead of
+  by harness convention. Ordering within a section relies on a source's own pipeline (#209/#215, above). The moves are byte-for-byte against the renderers
+  they replace, gated by `crates/areev-bench/scripts/parity_check.py`; the
+  new-track blueprint is `crates/areev-bench/BENCH-TEMPLATE.md`.
 
 - **A failed spawn names the command that failed, not the blob.** The
   code executor formatted every spawn error as `spawn <materialized blob
@@ -220,6 +312,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `scripts/check_versions.py` asserts, alongside the other detached package
   (`areev-js`), and it gained the `--version` flag that makes the pairing
   checkable at all.
+- **An empty `tool_env` / `toolEnv` in the bindings now means "clear to the
+  minimal set", as the CLI's `--tool-env ""` does** (#197). Both bindings
+  filtered the empty string out before building the policy, so the strictest
+  request — clear the environment, admit nothing beyond what a command needs
+  to start — was answered with the loosest posture, inherit everything. A host
+  wanting the clear-only policy had to name a variable already in the minimal
+  set just to select it. `None` / `null` keep the inherit default, unchanged.
+  Pinned in both bindings' tests, on the run executors and the trigger
+  connector.
 
 ## [1.7.3] — 2026-09-07
 

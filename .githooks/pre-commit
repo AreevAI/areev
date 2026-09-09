@@ -1,0 +1,37 @@
+#!/bin/sh
+# Keep the README's generated numbers current, so `repo_stats.py --check`
+# never reaches CI over its tolerance.
+#
+# The drift is not a tolerance problem, it is a timing one. The gate fails at
+# 2%, and `test_code` is the metric that gets there first: it is the smallest
+# fast-growing denominator in a test-heavy repo, so ~1,100 new lines of test
+# is already 2%. Three merged PRs did exactly that in one afternoon
+# (1.7.4's #212/#213/#215 added 1,090 lines of test code between them), and
+# the next branch to touch the tree inherited a red gate it did not cause.
+#
+# So: regenerate at HALF the gate's tolerance. Most commits do nothing — the
+# check is a few hundred milliseconds and prints nothing when it passes — and
+# the artifacts refresh roughly once per 1% of growth, which keeps churn low
+# and CI green.
+#
+# Install with `scripts/install-hooks.sh`. Skip once with `--no-verify`.
+set -e
+
+# Only files that can move the numbers are worth a check. `repo_stats.py`
+# counts Rust source and tests; the doc/binding figures move with .md, .py
+# and .ts too.
+if ! git diff --cached --name-only --diff-filter=ACMR \
+     | grep -qE '\.(rs|py|ts|mjs|md)$'; then
+  exit 0
+fi
+
+if python3 scripts/repo_stats.py --check --tolerance 1.0 >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "repo-stats drifted past 1% — regenerating (the CI gate fails at 2%)"
+python3 scripts/repo_stats.py >/dev/null
+git add docs/repo-stats.json docs/repo-stats.md docs/repo-stats.html \
+        docs/assets/repo-stats-light.svg docs/assets/repo-stats-dark.svg \
+        docs/assets/coverage-light.svg docs/assets/coverage-dark.svg 2>/dev/null || true
+echo "  staged the regenerated artifacts with this commit"

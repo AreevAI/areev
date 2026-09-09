@@ -4975,7 +4975,11 @@ impl CalExecutor {
                     }
                 }
                 PipelineStage::OrderBy { field, span, .. } => check(field, *span)?,
-                PipelineStage::GroupBy { field, span } => check(field, *span)?,
+                PipelineStage::GroupBy { fields, span } => {
+                    for f in fields {
+                        check(f, *span)?;
+                    }
+                }
                 PipelineStage::Project { fields, span } => {
                     for pf in fields {
                         check(&pf.field, *span)?;
@@ -4995,9 +4999,9 @@ impl CalExecutor {
         payload: CalResultPayload,
         stages: &[PipelineStage],
         exec_warnings: &mut Vec<String>,
-    ) -> std::result::Result<(CalResultPayload, Option<String>), CalError> {
+    ) -> std::result::Result<(CalResultPayload, Option<Vec<String>>), CalError> {
         let mut current = payload;
-        let mut grouped_by: Option<String> = None;
+        let mut grouped_by: Option<Vec<String>> = None;
 
         for stage in stages {
             current = match (current, stage) {
@@ -5034,10 +5038,10 @@ impl CalExecutor {
                 // conformance decision.
                 (CalResultPayload::Grains { grains, .. }, PipelineStage::Count { .. }) => {
                     match grouped_by.as_deref() {
-                        Some(field) => {
-                            let groups = count_by_field(&grains, field);
+                        Some(fields) => {
+                            let groups = count_by_fields(&grains, fields);
                             CalResultPayload::GroupCounts {
-                                field: field.to_string(),
+                                field: fields.join(", "),
                                 total_available: Some(groups.len()),
                                 groups,
                             }
@@ -5047,6 +5051,54 @@ impl CalExecutor {
                         },
                     }
                 }
+
+                // A bound written after `GROUP BY … COUNT` is a top-N of the
+                // ranking — the ordinary want, and the reading the clause
+                // invites. It used to fall through to the inert-stage arm and
+                // return every group (#217).
+                (
+                    CalResultPayload::GroupCounts {
+                        field,
+                        groups,
+                        total_available,
+                    },
+                    PipelineStage::Limit { value, .. },
+                ) => {
+                    let capped = (*value).min(self.config.max_limit) as usize;
+                    CalResultPayload::GroupCounts {
+                        field,
+                        groups: groups.into_iter().take(capped).collect(),
+                        // How many groups the ranking HAS, not how many were
+                        // returned — a top-3 of nine that reported three
+                        // would be a truncated answer indistinguishable from
+                        // a whole one.
+                        total_available,
+                    }
+                }
+                (
+                    CalResultPayload::GroupCounts {
+                        field,
+                        groups,
+                        total_available,
+                    },
+                    PipelineStage::Offset { value, .. },
+                ) => CalResultPayload::GroupCounts {
+                    field,
+                    groups: groups.into_iter().skip(*value as usize).collect(),
+                    total_available,
+                },
+                (
+                    CalResultPayload::GroupCounts {
+                        field,
+                        groups,
+                        total_available,
+                    },
+                    PipelineStage::First { .. },
+                ) => CalResultPayload::GroupCounts {
+                    field,
+                    groups: groups.into_iter().take(1).collect(),
+                    total_available,
+                },
 
                 // FIRST
                 (CalResultPayload::Grains { grains, .. }, PipelineStage::First { .. }) => {
@@ -5215,10 +5267,28 @@ impl CalExecutor {
                         grains,
                         total_available,
                     },
-                    PipelineStage::GroupBy { field, .. },
+                    PipelineStage::GroupBy { fields, .. },
                 ) => {
-                    grouped_by = Some(field.clone());
-                    let grouped = group_grains_by_field(grains, field);
+                    // A key no grain carries produces one group under the
+                    // empty key — indistinguishable from a ranking with one
+                    // dominant value unless it says so (#217).
+                    for f in fields {
+                        if !grains.is_empty()
+                            && !grains
+                                .iter()
+                                .any(|g| json_field(&g.fields, f).is_some())
+                        {
+                            exec_warnings.push(
+                                super::errors::CalWarning::GroupKeyAbsent {
+                                    field: f.clone(),
+                                    grains: grains.len(),
+                                }
+                                .to_string(),
+                            );
+                        }
+                    }
+                    grouped_by = Some(fields.clone());
+                    let grouped = group_grains_by_field(grains, fields);
                     CalResultPayload::Grains {
                         grains: grouped,
                         total_available,
@@ -5634,7 +5704,7 @@ fn pipeline_stage_name(stage: &PipelineStage) -> String {
         PipelineStage::Subjects { .. } => "SUBJECTS".to_string(),
         PipelineStage::Objects { .. } => "OBJECTS".to_string(),
         PipelineStage::Hashes { .. } => "HASHES".to_string(),
-        PipelineStage::GroupBy { field, .. } => format!("GROUP BY {}", field),
+        PipelineStage::GroupBy { fields, .. } => format!("GROUP BY {}", fields.join(", ")),
         PipelineStage::Project { .. } => "PROJECT".to_string(),
         PipelineStage::Filter { .. } => "WHERE (post-pipeline)".to_string(),
     }
@@ -6018,7 +6088,7 @@ fn disclosure_of(opts: &[super::ast::WithOption]) -> Option<crate::render::Discl
 fn apply_format_clause(
     payload: CalResultPayload,
     format: &Option<FormatClause>,
-    grouped_by: Option<&str>,
+    grouped_by: Option<&[String]>,
     inputs: RenderInputs<'_>,
     // `(context name, FOR intent)` — only an ASSEMBLE has them, and they feed
     // `{{assembly.name}}` / `{{assembly.intent}}`.
@@ -6102,7 +6172,7 @@ fn apply_format_clause(
 fn apply_format_clause_to_grains(
     grains: &[CalGrainResult],
     clause: &FormatClause,
-    grouped_by: Option<&str>,
+    grouped_by: Option<&[String]>,
     inputs: RenderInputs<'_>,
     plan: &super::templates::RenderPlan<'_>,
     warnings: &mut Vec<String>,
@@ -6181,7 +6251,7 @@ fn template_tier(
 fn format_grain_results(
     grains: &[CalGrainResult],
     format: &super::ast::FormatSpec,
-    grouped_by: Option<&str>,
+    grouped_by: Option<&[String]>,
     inputs: RenderInputs<'_>,
     plan: &super::templates::RenderPlan<'_>,
     warnings: &mut Vec<String>,
@@ -6189,8 +6259,8 @@ fn format_grain_results(
     let RenderInputs { user_vars, store, disclosure } = inputs;
     let (text, format_name) = match format {
         super::ast::FormatSpec::Json => {
-            if let Some(field) = grouped_by {
-                let groups = collect_groups(grains, field);
+            if let Some(fields) = grouped_by {
+                let groups = collect_groups(grains, fields);
                 let json_groups: Vec<serde_json::Value> = groups
                     .iter()
                     .map(|(key, members)| {
@@ -6210,8 +6280,8 @@ fn format_grain_results(
         }
         super::ast::FormatSpec::Markdown => {
             let mut md = String::new();
-            if let Some(field) = grouped_by {
-                let groups = collect_groups(grains, field);
+            if let Some(fields) = grouped_by {
+                let groups = collect_groups(grains, fields);
                 for (key, members) in &groups {
                     md.push_str(&format!(
                         "### {} ({} {})\n\n",
@@ -6265,8 +6335,8 @@ fn format_grain_results(
         }
         super::ast::FormatSpec::Text => {
             let mut text = String::new();
-            if let Some(field) = grouped_by {
-                let groups = collect_groups(grains, field);
+            if let Some(fields) = grouped_by {
+                let groups = collect_groups(grains, fields);
                 let total_groups = groups.len();
                 for (idx, (key, members)) in groups.iter().enumerate() {
                     text.push_str(&format!(
@@ -6308,8 +6378,8 @@ fn format_grain_results(
             // `<grains>` / `<group>` envelope is this surface's own.
             let level = crate::render::MetadataDetail::Minimal;
             let mut sml = String::from("<grains>\n");
-            if let Some(field) = grouped_by {
-                let groups = collect_groups(grains, field);
+            if let Some(fields) = grouped_by {
+                let groups = collect_groups(grains, fields);
                 for (key, members) in &groups {
                     let escaped_key = crate::render::sml_escape(key);
                     sml.push_str(&format!(
@@ -6565,19 +6635,22 @@ fn format_grain_results(
 // GROUP BY helpers
 // ---------------------------------------------------------------------------
 
+/// What joins the parts of a composite `GROUP BY` key (#217).
+///
+/// Conformance, not cosmetics: a group's name has to be the same on every
+/// implementation, so the separator is written down. A middle dot with spaces
+/// reads as a separator in a prompt and is rare enough inside tool names,
+/// endpoints and error messages that a key stays legible.
+pub const GROUP_KEY_JOINER: &str = " · ";
+
 /// Group grains by field value, reorder so same-value grains are contiguous,
 /// sorted chronologically within each group. Groups ordered by earliest
 /// `created_at_sec`.
-fn group_grains_by_field(grains: Vec<CalGrainResult>, field: &str) -> Vec<CalGrainResult> {
+fn group_grains_by_field(grains: Vec<CalGrainResult>, fields: &[String]) -> Vec<CalGrainResult> {
     // Collect grains into groups keyed by the field value.
     let mut groups: BTreeMap<String, Vec<CalGrainResult>> = BTreeMap::new();
     for grain in grains {
-        let key = json_field(&grain.fields, field)
-            .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                _ => v.to_string(),
-            })
-            .unwrap_or_default();
+        let key = group_key_of(&grain, fields);
         groups.entry(key).or_default().push(grain);
     }
 
@@ -6629,42 +6702,71 @@ fn group_grains_by_field(grains: Vec<CalGrainResult>, field: &str) -> Vec<CalGra
 ///
 /// Reuses `collect_groups`, so it sees the same groups a grouped render does:
 /// one grouping, one set of keys.
-fn count_by_field(grains: &[CalGrainResult], field: &str) -> Vec<CalGrainResult> {
-    let mut rows: Vec<(String, usize)> = collect_groups(grains, field)
+fn count_by_fields(grains: &[CalGrainResult], fields: &[String]) -> Vec<CalGrainResult> {
+    let mut rows: Vec<(String, Vec<String>, usize)> = collect_groups(grains, fields)
         .into_iter()
-        .map(|(key, members)| (key, members.len()))
+        .map(|(key, members)| (key, group_key_parts(members[0], fields), members.len()))
         .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     rows.into_iter()
-        .map(|(key, count)| CalGrainResult {
-            // Empty: a group is computed, not stored. Anything that keys on a
-            // content address (dedup above all) must skip it rather than
-            // treat a synthetic row as a grain.
-            hash: String::new(),
-            grain_type: "group".to_string(),
-            score: 0.0,
-            fields: serde_json::json!({ "key": key, "count": count }),
-            score_breakdown: None,
-            explanation: None,
-            relative_time: None,
-            is_deterministic: true,
-            contested_by: None,
+        .map(|(key, parts, count)| {
+            let mut row = serde_json::json!({ "key": key, "count": count });
+            // Only a composite key carries its parts. A single-key row keeps
+            // exactly the shape it had in 1.7.4, and `{{group.key.0}}` reads
+            // `key` there — so one template renders both arities.
+            if fields.len() > 1 {
+                row["keys"] = serde_json::json!(parts);
+            }
+            CalGrainResult {
+                // Empty: a group is computed, not stored. Anything that keys on a
+                // content address (dedup above all) must skip it rather than
+                // treat a synthetic row as a grain.
+                hash: String::new(),
+                grain_type: "group".to_string(),
+                score: 0.0,
+                fields: row,
+                score_breakdown: None,
+                explanation: None,
+                relative_time: None,
+                is_deterministic: true,
+                contested_by: None,
+            }
+        })
+        .collect()
+}
+
+/// The joined display key for one grain — the value a group is named by.
+///
+/// A composite key joins its parts with [`GROUP_KEY_JOINER`]. The separator
+/// is part of the contract rather than a formatting choice: two
+/// implementations must name the same group identically, and a template that
+/// wants the parts back reads `{{group.key.<n>}}` rather than splitting the
+/// label.
+fn group_key_of(grain: &CalGrainResult, fields: &[String]) -> String {
+    group_key_parts(grain, fields).join(GROUP_KEY_JOINER)
+}
+
+fn group_key_parts(grain: &CalGrainResult, fields: &[String]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|f| {
+            json_field(&grain.fields, f)
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                })
+                .unwrap_or_default()
         })
         .collect()
 }
 
 fn collect_groups<'a>(
     grains: &'a [CalGrainResult],
-    field: &str,
+    fields: &[String],
 ) -> Vec<(String, Vec<&'a CalGrainResult>)> {
     let mut groups: Vec<(String, Vec<&CalGrainResult>)> = Vec::new();
     for grain in grains {
-        let key = json_field(&grain.fields, field)
-            .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                _ => v.to_string(),
-            })
-            .unwrap_or_default();
+        let key = group_key_of(grain, fields);
         if let Some(last) = groups.last_mut() {
             if last.0 == key {
                 last.1.push(grain);
