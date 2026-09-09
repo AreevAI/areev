@@ -99,6 +99,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   also defeated `BUDGET` — the budget was spent on grains about to be
   discarded.
 
+- **The container image and the release archives carry `areev-sandbox`.**
+  `runtime: "wasm32-areev"` and `"wasm32-areev-io"` dispatch a pinned blob to
+  the sandbox, but the sandbox is `publish = false` and shipped in nothing: the
+  image built only `areev`, and the release attached only `areev`. So a
+  container deployment could install a capability tool and never run one — the
+  tier was unreachable from the deployment shape it most obviously exists for.
+  Both binaries are now built from one tree in one stage, `areev-sandbox
+  --version` agrees with `areev --version`, and `--sandbox-cmd areev-sandbox`
+  resolves on the image's `PATH`. The sandbox travels **inside** each release
+  archive rather than as a separate asset, so the pair cannot be mixed across
+  versions. `docker.yml` proves the whole path: it authors a code-carrying
+  Definition over MCP, starts a run against it, and asserts the sandbox judged
+  the bytes rather than the host failing to reach one
+  ([#203](https://github.com/AreevAI/areev/issues/203)).
+
 ### Fixed
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
@@ -179,6 +194,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
   result on the Query page, in plain language, with the `CAL-Wnnn` code shown
   only in Developer mode.
+
+- **A failed spawn names the command that failed, not the blob.** The
+  code executor formatted every spawn error as `spawn <materialized blob
+  path>`, including when the thing that could not be spawned was the **sandbox
+  binary** — so a missing `--sandbox-cmd` reported a path that exists and is
+  not the problem, which is exactly the diagnosis a host without a sandbox
+  needs to make.
+- **`areev-sandbox` joins the version lockstep.** It sat at 1.6.0 against a
+  1.7.3 workspace — two minors of silent drift on a binary whose whole job is
+  to be the security boundary paired with the engine. It is now the sixth site
+  `scripts/check_versions.py` asserts, alongside the other detached package
+  (`areev-js`), and it gained the `--version` flag that makes the pairing
+  checkable at all.
 
 ## [1.7.3] — 2026-09-07
 

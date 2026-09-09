@@ -17,6 +17,16 @@ Build it as `areev:latest` deliberately: that is the image name
 `areev trigger render --target k8s-cronjob` has always emitted — this image
 is what that CronJob template runs.
 
+The image carries two binaries: `areev`, and the `areev-sandbox` it dispatches
+`wasm32-areev` / `wasm32-areev-io` plans to. They are built from one tree in
+one stage, so `areev-sandbox --version` agrees with `areev --version`, and
+`--sandbox-cmd areev-sandbox` resolves on `PATH` — a plan declaring either
+runtime runs here without the operator supplying a path or building anything.
+
+```bash
+docker run --rm areev areev-sandbox --version
+```
+
 ## Sixty seconds, containerized
 
 No Rust toolchain, no `cargo install` — a named volume is the memory:

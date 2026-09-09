@@ -25,15 +25,18 @@ must publish bottom-up.
 
 - Bump `version` in `[workspace.package]` in the root `Cargo.toml` (all crates
   inherit it via `version.workspace = true`).
-- **Also bump the two bindings' OWN version files** — they do NOT inherit the
-  workspace version, and a workspace-only bump makes the npm/PyPI publish
-  workflows silently no-op over the already-published version (a "successful"
-  run that ships nothing):
+- **Also bump the files that do NOT inherit the workspace version.** A
+  workspace-only bump makes the npm/PyPI publish workflows silently no-op over
+  the already-published version (a "successful" run that ships nothing), and
+  leaves the sandbox paired with an engine it was not built beside:
   - `crates/areev-js/package.json` → `"version"` (standalone npm package).
+  - `crates/areev-js/Cargo.toml` → `[package] version` (detached workspace).
   - `crates/areev-py/pyproject.toml` → `[project] version` (maturin reads this,
     NOT Cargo's `version.workspace`).
+  - `areev-sandbox/Cargo.toml` → `[package] version` (detached package; it
+    ships in the image and in every release archive beside `areev`).
   `scripts/check_versions.py` asserts all of this mechanically — run it
-  instead of eyeballing the four files. After a release, verify the registries
+  instead of eyeballing the files. After a release, verify the registries
   actually flipped:
   `npm view areev version`, `curl -s https://pypi.org/pypi/areev/json | jq -r .info.version` —
   a green workflow is not proof the version changed. **PyPI's JSON API is
@@ -52,13 +55,14 @@ must publish bottom-up.
   (cd crates/areev-js && ./node_modules/.bin/napi build --platform --release)
   git diff crates/areev-js/index.js   # must be version lines ONLY
   ```
-- **Refresh BOTH lockfiles in the same commit — the root one and areev-js's.**
-  A lockfile pins every workspace crate by version, so the moment
-  `[workspace.package]` moves, both locks still say the previous one.
+- **Refresh ALL THREE lockfiles in the same commit** — the root one,
+  areev-js's, and areev-sandbox's. A lockfile pins every crate by version, so
+  the moment `[workspace.package]` moves, all three still say the previous one.
   ```bash
-  cargo metadata --format-version 1 >/dev/null                      # root
-  (cd crates/areev-js && cargo metadata --format-version 1 >/dev/null)  # detached
-  git add Cargo.lock crates/areev-js/Cargo.lock
+  cargo metadata --format-version 1 >/dev/null                           # root
+  (cd crates/areev-js && cargo metadata --format-version 1 >/dev/null)   # detached
+  (cd areev-sandbox && cargo metadata --format-version 1 >/dev/null)     # detached
+  git add Cargo.lock crates/areev-js/Cargo.lock areev-sandbox/Cargo.lock
   ```
   - **Root `Cargo.lock`.** CI's `msrv` job runs `cargo build --workspace
     --locked` and fails in ~20 seconds — fast enough to look like a toolchain
@@ -73,8 +77,11 @@ must publish bottom-up.
     `node` job asserts it (`cargo metadata --locked`) and `release-npm.yml`
     builds `--locked` — so left alone it surfaces as a failed RELEASE, not a
     failed build. 1.6.1 hit exactly this.
+  - **`areev-sandbox/Cargo.lock`.** Also detached, and also built `--locked` —
+    by the `Dockerfile` and by every `release-cli.yml` matrix leg. Left alone
+    it fails the image build and the release assets, not the test suite.
 
-  Both share a failure signature worth recognising: `--locked` rejects the
+  All three share a failure signature worth recognising: `--locked` rejects the
   tree, the job dies before compiling anything, and the error names the
   lockfile rather than the version you changed.
 - **Regenerate the repo-stats artifacts after the bump** — they embed the
