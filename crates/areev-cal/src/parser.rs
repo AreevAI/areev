@@ -97,6 +97,14 @@ const MAX_IN_SET_SIZE: usize = 100;
 /// Maximum pipeline stages in a single query.
 const MAX_PIPELINE_STAGES: usize = 5;
 
+/// Maximum segments in a dotted field path (`input.error.code` is three).
+///
+/// Matches the executor's `MAX_FIELD_PATH_DEPTH` and the template `get`
+/// filter's `MAX_GET_PATH_DEPTH`: a path that parses must be a path the
+/// executor will walk, and a path a template can render must be one a filter
+/// can express.
+const MAX_FIELD_PATH_SEGMENTS: usize = 8;
+
 /// Maximum operands in a UNION / INTERSECT / EXCEPT chain.
 const MAX_SET_OPERANDS: usize = 4;
 
@@ -1505,12 +1513,19 @@ impl Parser {
     ///
     /// Scoped to the assemble-source path only — `parse_paren_statement` is
     /// shared with the set-op operand path and must NOT change.
-    fn parse_assemble_source_query(&mut self) -> CalResult<(CalStatement, Vec<WithOption>)> {
+    fn parse_assemble_source_query(
+        &mut self,
+    ) -> CalResult<(CalStatement, Vec<WithOption>, Vec<PipelineStage>)> {
         if self.at_exact(&Token::LParen) {
             self.expect_exact(&Token::LParen)?;
             self.enter_nesting()?;
             // parse_statement already consumes any UNION/INTERSECT/EXCEPT set-op tail.
             let stmt = self.parse_statement()?;
+            // Pipeline stages INSIDE the parens belong to this source (#209),
+            // not to the assembly: `(RECALL tools … GROUP BY tool_name COUNT)`
+            // is a frequency summary rendered as one section. The enclosing
+            // query's own pipeline still runs on the assembled result.
+            let pipeline = self.parse_pipeline()?;
             self.leave_nesting();
             // Optional inside-paren WITH (not WITH VARS).
             let inside_with = if self.at_exact(&Token::With) && !self.peek_next_is_vars() {
@@ -1519,11 +1534,13 @@ impl Parser {
                 vec![]
             };
             self.expect_exact(&Token::RParen)?;
-            Ok((stmt, inside_with))
+            Ok((stmt, inside_with, pipeline))
         } else {
-            // Bare RECALL with no parens — no inside-paren WITH possible.
+            // Bare RECALL with no parens — no inside-paren WITH possible, and
+            // no pipeline either: without the parens there is nothing to say
+            // whether a trailing stage binds to the source or to the assembly.
             let stmt = self.parse_recall_stmt()?;
-            Ok((CalStatement::Recall(stmt), vec![]))
+            Ok((CalStatement::Recall(stmt), vec![], vec![]))
         }
     }
 
@@ -2355,16 +2372,38 @@ impl Parser {
 
     /// Parse a field name — either an `Ident` token or a dotted path.
     ///
-    /// Returns the field as a string (e.g. `"subject"`, `"metadata.source"`).
+    /// Returns the field as a string (e.g. `"subject"`, `"metadata.source"`,
+    /// `"input.error.code"`).
+    ///
+    /// The path may be up to [`MAX_FIELD_PATH_SEGMENTS`] segments (#211): a
+    /// structured payload nests, and one dot only reached the first level of
+    /// it — `object.error.code`, the shape a stored error envelope actually
+    /// has, did not parse. The bound is a bound, not a shape: no wildcards,
+    /// no predicates, no arithmetic. The executor resolves the path against
+    /// the field's JSON, and a segment that does not resolve is UNKNOWN, so
+    /// navigation inherits the fails-closed rule rather than adding one.
     fn parse_field_name(&mut self) -> CalResult<String> {
-        let first = self.parse_identifier()?;
-        if self.at_exact(&Token::Dot) {
+        let mut path = self.parse_identifier()?;
+        let mut segments = 1usize;
+        while self.at_exact(&Token::Dot) {
+            if segments >= MAX_FIELD_PATH_SEGMENTS {
+                let found = self.peek();
+                return Err(CalError::UnexpectedToken {
+                    expected: format!(
+                        "at most {MAX_FIELD_PATH_SEGMENTS} segments in a field path                          (got {path:?})"
+                    ),
+                    found: ".".into(),
+                    span: found.map(|t| t.span),
+                    suggestion: None,
+                });
+            }
             self.advance();
-            let second = self.parse_identifier()?;
-            Ok(format!("{}.{}", first, second))
-        } else {
-            Ok(first)
+            let next = self.parse_identifier()?;
+            path.push('.');
+            path.push_str(&next);
+            segments += 1;
         }
+        Ok(path)
     }
 
     // -- PIPELINE ---------------------------------------------------------
@@ -3885,6 +3924,9 @@ impl Parser {
                         })),
                         literal: Some(text),
                         pinned,
+                        // A literal is host text, not a query — nothing to
+                        // rank, bound or summarise.
+                        pipeline: Vec::new(),
                         with_options: Vec::new(),
                         span: Some(sspan),
                     });
@@ -3895,7 +3937,7 @@ impl Parser {
                 }
                 // Parse the sub-query (in parentheses or bare RECALL),
                 // accepting an optional WITH clause INSIDE the parens.
-                let (query, inside_with) = self.parse_assemble_source_query()?;
+                let (query, inside_with, pipeline) = self.parse_assemble_source_query()?;
                 // Parse optional outside-paren WITH options (back-compat).
                 let mut with_options = inside_with;
                 let outside_with = if self.at_exact(&Token::With) && !self.peek_next_is_vars() {
@@ -3910,6 +3952,7 @@ impl Parser {
                     literal: None,
                     pinned,
                     with_options,
+                    pipeline,
                     span: Some(sspan),
                 });
                 if !self.eat_exact(&Token::Comma) {

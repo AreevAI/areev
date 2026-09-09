@@ -6,8 +6,207 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **CAL can summarise by frequency, extract from text, and navigate a JSON
+  payload** (#209, #210, #211) — three reads that could only be done by
+  over-fetching and finishing the job in host code, which also defeated
+  `BUDGET` (the budget was spent on the rows about to be discarded). The
+  spec-level decisions are recorded in
+  [`docs/oms-1.7-amendments-cal-expressiveness.md`](docs/oms-1.7-amendments-cal-expressiveness.md).
+
+  **Per-group counts** (#209). `GROUP BY <field>` followed by `COUNT` now
+  projects one row per group carrying its size, **most frequent first** (ties
+  by key ascending, so the answer is reproducible across backends and runs):
+
+  ```sql
+  RECALL tools WHERE is_error = true LIMIT 400 GROUP BY tool_name COUNT
+  ```
+
+  That combination previously returned the plain total — identical to `COUNT`
+  alone, silently discarding the grouping — so **no new syntax was needed**
+  and no meaningful answer is taken away. Frequency is how a memory says what
+  *matters*: "which tool fails most", "which topic does this user raise most",
+  "which policy is cited most". Render it with the new `group.*` template
+  variables (`{{group.count}}x {{group.key}}`), or make an `ASSEMBLE` source
+  of it so a frequency roll-up is a *section of a prompt*.
+
+  **Extracting filters** (#210): `first_line`, `split("<sep>", n)`,
+  `strip_prefix`, `strip_suffix`, `between("<open>", "<close>")`, and
+  `match("<pattern>"[, n])`. Memories store text people wrote, and titles,
+  ticket ids, error codes and thread keys all live inside it:
+
+  ```
+  {{grain.object | between("[", "]")}}     → Q3 close handoff
+  ```
+
+  **A JSON path accessor** (#211), in both a render and a filter:
+
+  ```
+  {{grain.object | get("error.code")}}     → rate_limited
+  ```
+  ```sql
+  RECALL tools WHERE input.app = "phone"
+  RECALL facts WHERE object.error.code = "rate_limited"
+  ```
+
+  `record_tool_call` round-trips a tool's `input` as parsed JSON, so Python
+  and Node hosts already received the structure — it was specifically the CAL
+  path that could not see inside. A field name may now be a dotted path of up
+  to 8 segments (it accepted one dot before, which did not reach the shape a
+  stored error envelope actually has), and a value stored *as a JSON string*
+  navigates identically to a parsed one. **A path that does not resolve is
+  UNKNOWN**, so navigation inherits the fails-closed rule rather than adding
+  one: `input.app != "phone"` does not widen to everything.
+
+  The filter set stays **closed** — `DESCRIBE CAPABILITIES` reports it, and
+  OMS conformance means two implementations must render a grain identically.
+  Bad arguments are refused when the template is *defined* (`CAL-E049`), not
+  when it renders, so "what will this saved query show me?" stays answerable
+  by reading it; rendering itself stays total, because one unparseable grain
+  must not fail the render of the other 199. `match` uses a non-backtracking
+  engine — no backreferences, no lookaround — because a template runs over
+  untrusted grain content on every turn, where a backtracking regex is a
+  denial-of-service primitive. Patterns are length-capped and compiled through
+  a bounded cache; extractor input is clipped at 64 KiB; paths are
+  depth-capped.
+
+  Deliberately **not** added: host-registered functions (a template calling
+  one would render differently depending on who opened the file, breaking the
+  property that makes saved queries worth having — the registry travels *with*
+  the memory), a general expression language in templates, and any
+  transformation that parses, mutates and re-serialises. For new corpora the
+  paved road is still to store the shape you want to read: two fields rather
+  than one payload, which makes the value filterable as well as renderable.
+
+- **World-time validity is queryable and renderable** (#206). `valid_from`,
+  `valid_to`, `system_valid_from` and `system_valid_to` are `GrainCommon`
+  fields on every grain type — serialized since 1.0, read by the loop's
+  `staleness` analyzer, and present in every JSON payload — but they were
+  absent from CAL's filterable set, so the one read that makes a validity
+  window worth writing answered `CAL-E060`. They now filter and sort on every
+  type with the usual comparators and `IS NULL`, resolve in templates
+  (`{{grain.valid_to | date}}`), and appear in `DESCRIBE FIELDS`. "What is
+  currently valid" is a query:
+
+  ```sql
+  RECALL facts WHERE namespace = "desk"
+    AND (valid_to IS NULL OR valid_to > 1788866000000)
+  ```
+
+  This is what a waiver, a delegation, an out-of-office or a price valid until
+  a date needs. Every host previously over-fetched and post-filtered, which
+  also defeated `BUDGET` — the budget was spent on grains about to be
+  discarded.
+
+- **The container image and the release archives carry `areev-sandbox`.**
+  `runtime: "wasm32-areev"` and `"wasm32-areev-io"` dispatch a pinned blob to
+  the sandbox, but the sandbox is `publish = false` and shipped in nothing: the
+  image built only `areev`, and the release attached only `areev`. So a
+  container deployment could install a capability tool and never run one — the
+  tier was unreachable from the deployment shape it most obviously exists for.
+  Both binaries are now built from one tree in one stage, `areev-sandbox
+  --version` agrees with `areev --version`, and `--sandbox-cmd areev-sandbox`
+  resolves on the image's `PATH`. The sandbox travels **inside** each release
+  archive rather than as a separate asset, so the pair cannot be mixed across
+  versions. `docker.yml` proves the whole path: it authors a code-carrying
+  Definition over MCP, starts a run against it, and asserts the sandbox judged
+  the bytes rather than the host failing to reach one
+  ([#203](https://github.com/AreevAI/areev/issues/203)).
+
 ### Fixed
 
+- **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
+  nested assembly's grains.** Sources had no pipeline at all, so a source
+  could not be ranked, bounded or summarised in place. Separately,
+  `assemble.rs` carried a **second copy** of `extract_grains` that had drifted
+  from the executor's: it saw only the `Grains` payload, so a nested
+  `Assembled` result silently contributed nothing to the enclosing assembly.
+  There is now one extractor.
+
+- **A `WHERE` predicate on a field the grain does not carry no longer matches
+  everything** (#207). `object` is a real field name in general — Fact,
+  Observation and Goal all declare it — but means nothing for a Skill, and the
+  per-grain evaluator read that absence as `false`, which made every *negation*
+  of it `true`. So `RECALL skills WHERE object != "retired"` returned every
+  skill, the retired one included, with nothing in the payload to distinguish
+  "the filter ran and matched everything" from "the filter did not run" — the
+  opposite of the fails-closed contract §3.4 states. Evaluation is now
+  three-valued: absence is UNKNOWN, `AND`/`OR` combine by SQL's truth tables,
+  and UNKNOWN does not match. `!=`, `NOT (… = …)` and `NOT IN` all narrow.
+  Nothing that already matched stops matching (`T ∧ U` and `F ∧ U` already
+  collapsed to no-match, `T ∨ U` already matched), and the omit-default
+  discriminators still resolve their defaults, so `kind != "definition"` keeps
+  returning legacy execution grains. `areev-trigger`'s composite gates share
+  the evaluator and mean the opposite by an absent field — "this member has not
+  fired" is definite, not unknown — so `gate_satisfied` now materializes every
+  referenced member instead of encoding the answer in a gap.
+
+- **`description` is queryable on skills** (#207). Required on the Skill struct
+  since 1.4 but absent from the registry's `queryable_fields`, so the one field
+  every Skill must carry was the one `WHERE` refused with `CAL-E060`.
+
+- **`{{… | date}}` renders the right year** (#206). Every timestamp a template
+  can name is epoch milliseconds, but the filter handed its input to a
+  seconds-based formatter, so `{{created_at | date}}` rendered *58657-02-23*
+  for a grain written today. `relative` never had the bug because
+  `humanize_time(created_ms, now_secs)` names its units. `_now` is milliseconds
+  too, so the whole filter surface speaks one unit; `format_epoch` keeps its
+  public seconds signature.
+
+- **`ASSEMBLE` says what its budget dropped** (#208). `ASSEMBLE` applies a
+  token budget whether or not the caller writes one — 4000 by default, ceiling
+  16000 — and when it bound it discarded the tail of each source in silence.
+  The payload actively hid it: `total_available` reported the **post**-budget
+  count, so `grains.len() == total_available` held for a truncated assembly
+  exactly as it did for a complete one. Measured on a real memory, 229
+  matching grains came back as 80 with `warnings: None`.
+
+  A budget that drops grains now emits **`CAL-W017`**, naming the sources and
+  the counts, and saying whether the budget was written or defaulted:
+
+  ```
+  CAL-W017: the default BUDGET 4000 tokens dropped 130 of 200 grains from
+  source(s) [e] — this assembly is a window, not the whole match.
+  ```
+
+  `total_available` is now the **pre**-budget count, so the drop is computable
+  rather than announced only in prose; each source's `grain_count` still
+  reports what survived. `docs/cal-reference.md` states the default and the
+  ceiling where `BUDGET` is documented — neither number appeared there, so "no
+  `BUDGET` clause" read as "no budget".
+
+  The default itself was kept rather than removed: an unbudgeted assembly that
+  returned everything could overflow the context window it is being composed
+  for, which is the worse failure. Silence was the defect, not the number.
+
+  Why it matters: a host composing a prompt from an assembly had no way to
+  detect that its rules, its policies or its recent turns were trimmed — it
+  would publish a number produced from a truncated prompt and never know.
+  `RECALL` has announced the same kind of cut as `CAL-W015` since 1.5.1.
+
+- **The console shows CAL warnings.** Every other surface honoured the
+  "silence means the query did what you asked" contract — the bindings and the
+  MCP tool return `warnings`, the CLI prints them to stderr — but the console
+  received them from `POST /api/cal` and dropped them on the floor. That was
+  the worst place for it: this is the surface a person reads an answer from,
+  and a warning is exactly the news that the answer is a window rather than
+  the whole match. All seventeen (`CAL-W001`–`W017`) now appear above the
+  result on the Query page, in plain language, with the `CAL-Wnnn` code shown
+  only in Developer mode.
+
+- **A failed spawn names the command that failed, not the blob.** The
+  code executor formatted every spawn error as `spawn <materialized blob
+  path>`, including when the thing that could not be spawned was the **sandbox
+  binary** — so a missing `--sandbox-cmd` reported a path that exists and is
+  not the problem, which is exactly the diagnosis a host without a sandbox
+  needs to make.
+- **`areev-sandbox` joins the version lockstep.** It sat at 1.6.0 against a
+  1.7.3 workspace — two minors of silent drift on a binary whose whole job is
+  to be the security boundary paired with the engine. It is now the sixth site
+  `scripts/check_versions.py` asserts, alongside the other detached package
+  (`areev-js`), and it gained the `--version` flag that makes the pairing
+  checkable at all.
 - **The credential broker reaches the bindings and `areev serve`** (#201).
   A `wasm32-areev-io` tool's `areev::fetch` is answered by the broker, and
   the broker was built only from CLI flags — so a host driving runs through
@@ -32,6 +231,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.7.3] — 2026-09-07
 
 ### Added
+
+- **Postgres: the store holds nothing on the session** (#181, second
+  increment). Every statement names its tables schema-qualified, the bootstrap
+  lock is transaction-scoped (first increment), and a cached prepared
+  statement the backend no longer knows (`26000`) is re-prepared and retried.
+  Runtime DDL and catalog probes bind the schema name instead of reading
+  `current_schema()`. So a transaction-mode pooler in front of the store is
+  now correct rather than a documented hazard: the full conformance suite runs
+  with `RESET ALL` issued before every statement outside a transaction
+  (`tests/pg_chaos.rs`), which drops `search_path` and every GUC, and the
+  suite passes through a real PgBouncer in transaction mode. The one thing
+  the pooler must do itself is track prepared statements across backends —
+  the driver names every parameterized statement, so PgBouncer 1.21+ with
+  `max_prepared_statements > 0`, or session mode; a `26000` inside a
+  transaction now says exactly that instead of reading like a driver bug.
+  What is still session-scoped, and documented as such: `hnsw.ef_search`. The
+  in-process pool itself (one pool across N schemas) is the third increment.
 
 - **The vector-at-scale surface reaches the bindings and the CLI** (#141).
   A host that manages memories through Python or Node alone could not build

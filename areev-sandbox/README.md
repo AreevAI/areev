@@ -186,6 +186,23 @@ so there is no TLS — no certificates, no roots, no negotiation — which makes
 HTTP client a poor trade for the part you trust to hold a line. Same reasoning
 as `areev-server`'s std-only console.
 
+## How it ships
+
+`publish = false`, so it is not on crates.io — but it is distributed, always
+beside the `areev` it bounds:
+
+- the container image carries it at `/usr/local/bin/areev-sandbox`, so
+  `--sandbox-cmd areev-sandbox` resolves on `PATH`;
+- every CLI release archive carries it beside `areev`, in the same archive
+  rather than as a separate asset, so the two cannot be downloaded at
+  different versions.
+
+Both are built from one tree in one step, and `areev-sandbox --version` agrees
+with `areev --version` — a sandbox compiled from a different tree than the
+engine it enforces limits for is the pairing that shipping them together
+prevents. `scripts/check_versions.py` asserts the version here against the
+workspace, the way it does for the other detached package.
+
 ## Build and test
 
 ```bash
