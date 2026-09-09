@@ -39,9 +39,9 @@ jobs:
 
       - name: the sandbox ships beside the engine, version-matched
         run: |
-          docker run --rm areev areev-sandbox --version
-          v=$(docker run --rm areev areev --version | cut -d' ' -f2)
-          s=$(docker run --rm areev areev-sandbox --version | cut -d' ' -f2)
+          v=$(docker run --rm areev --version | cut -d' ' -f2)
+          s=$(docker run --rm --entrypoint areev-sandbox areev --version | cut -d' ' -f2)
+          echo "areev $v / areev-sandbox $s"
           [ "$v" = "$s" ] || { echo "::error::areev $v vs areev-sandbox $s"; exit 1; }
           docker run --rm --entrypoint sh areev -c 'command -v areev-sandbox'
 
