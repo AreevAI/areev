@@ -527,14 +527,6 @@ def improve():
     # configuration, not a fork.
     db.set_analyzer_config("loop.run_outcome/1", True,
                            json.dumps({"min_failure_ratio": 0.3}))
-    # This desk's facts are REFERENCE data: the screening rule's evalset is
-    # read by Rule E1's gate at review time, not by recall, so "never
-    # recalled in 30 days" measures the wrong thing for it -- retiring the
-    # evalset would remove the gate a code revision has to pass. The window
-    # is widened rather than the analyzer turned off, and it is recorded in
-    # the memory where an examiner can see the judgement and who made it.
-    db.set_analyzer_config("loop.cold_grains/1", True,
-                           json.dumps({"min_age_days": 3650}))
     report = json.loads(db.loop_run(llm_cmd=os.environ.get("LOOP_LLM_CMD")))
     recs = json.loads(db.recommendations('{"status": "pending"}'))
     emit({"loop": report,

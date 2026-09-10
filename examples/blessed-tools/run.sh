@@ -134,9 +134,16 @@ grep -q "$PIN" "$OUT/provenance.json" \
   || fail "provenance does not chain the blob: $(cat "$OUT/provenance.json")"
 grep -q '"blob_present": true' "$OUT/provenance.json" \
   || fail "the blob this Definition names is not in the memory: $(cat "$OUT/provenance.json")"
+# Both runs, including the refused one: a request that was refused is still a
+# run that touched this code, and an audit trail that showed only the
+# successful call would be the wrong record.
+python3 -c 'import json,sys
+runs = sorted(json.load(open(sys.argv[1]))["runs_touching"])
+assert runs == ["declared", "undeclared"], runs' "$OUT/provenance.json" \
+  || fail "provenance does not name the runs that executed it: $(cat "$OUT/provenance.json")"
 echo "   areev tool provenance $(echo "$TOOL" | cut -c1-12)… → $(echo "$PIN" | cut -c1-12)…,"
-echo "   present, 2,598 bytes — the code that ran is IN the memory, addressable,"
-echo "   and it would travel to anyone this file is synced to"
+echo "   present, 2,598 bytes, and the two runs that executed it —"
+echo "   the code that ran is IN the memory, addressable, and travels with it"
 
 printf '\n\033[32mOK\033[0m — one blessed blob, two calls, one refusal:\n'
 printf '     the tool made no policy decision; the declaration and the grant did.\n'

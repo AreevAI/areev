@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::manifest::*;
 use crate::model::{ActionKind, Severity};
 use crate::recommendation::{Proposal, RecDraft, Summary};
+use crate::substrate::ReadOpts;
 use serde_json::{json, Map};
 use std::collections::HashSet;
 
@@ -83,10 +84,31 @@ impl Analyzer for ColdGrains {
             .map(|a| a.hash.as_str())
             .collect();
 
+        // The IN-USE set: a fact a live Tool Definition pins as its evalset is
+        // load-bearing whatever recall says. Rule E1 reads that pin at review
+        // time — it is what a `code_revision` has to pass — so it is never
+        // fetched by recall and would look cold forever, and retiring it would
+        // remove the gate rather than free anything. Recall counts measure
+        // whether a fact informs *answers*; this one's job is to judge *code*,
+        // and the analyzer would otherwise be answering a question nobody
+        // asked about it.
+        //
+        // Deliberately this one reference and not a general "any hash a grain
+        // mentions": a broad sweep would also swallow the evidence a pending
+        // recommendation cites, and since this analyzer's own findings cite
+        // the fact they flag, that would make every cold finding suppress
+        // itself on the next run.
+        let pinned: HashSet<String> = ctx
+            .grains_of_type(crate::model::grain_type::TOOL, ReadOpts::default())?
+            .iter()
+            .filter(|t| t.str_field("kind") == Some("definition"))
+            .filter_map(|t| t.str_field("evalset_hash").map(str::to_string))
+            .collect();
+
         let mut drafts = Vec::new();
         for f in ctx.facts()? {
             let age = now - f.created_at_ms;
-            if age < min_age_ms || warm.contains(f.hash.as_str()) {
+            if age < min_age_ms || warm.contains(f.hash.as_str()) || pinned.contains(&f.hash) {
                 continue;
             }
             let subject = f.fact_subject().unwrap_or("").to_string();
@@ -138,6 +160,45 @@ mod tests {
         assert_eq!(drafts.len(), 1, "only the never-recalled grain is cold");
         assert_eq!(drafts[0].action_kind, ActionKind::Flag);
         assert!(drafts[0].summary.render().contains("acme"));
+    }
+
+    /// The regression that motivated the in-use set: an evalset a live
+    /// Definition pins is read by Rule E1's gate at review time, never by
+    /// recall, so it looked cold forever — and the "retire candidate" it
+    /// produced named the one grain that must not be retired, since removing
+    /// it removes the gate a `code_revision` has to pass.
+    #[test]
+    fn an_evalset_a_live_definition_pins_is_never_cold() {
+        let mut sub = TestSubstrate::new();
+        let evalset = sub.add_fact("evalset:screen", "mg:evalset", "{\"cases\": []}");
+        let ordinary = sub.add_fact("acme", "tier", "gold");
+        sub.add_tool_def("screen", Some(&evalset));
+        // The capability this analyzer requires; zero recalls is what makes
+        // both facts candidates in the first place.
+        sub.telemetry_recall(&ordinary, 0);
+
+        let drafts = sub.analyze_with(&ColdGrains::new(), 10_000_000, &[("min_age_days", json!(0))]);
+        assert_eq!(drafts.len(), 1, "only the unreferenced fact is cold: {drafts:?}");
+        assert!(drafts[0].summary.render().contains("acme"));
+        assert!(
+            !drafts[0].summary.render().contains("evalset"),
+            "the pinned gate must not be proposed for retirement"
+        );
+    }
+
+    /// And the pin has to be LIVE and a definition: a tool call that merely
+    /// mentions a hash is not a gate, and neither is a superseded tool.
+    #[test]
+    fn only_a_definitions_pin_protects_a_fact() {
+        let mut sub = TestSubstrate::new();
+        let evalset = sub.add_fact("evalset:screen", "mg:evalset", "{}");
+        // An execution record, not a definition.
+        sub.add_tool_call("screen", false, &evalset);
+        sub.telemetry_recall(&evalset, 0);
+
+        let drafts = sub.analyze_with(&ColdGrains::new(), 10_000_000, &[("min_age_days", json!(0))]);
+        assert_eq!(drafts.len(), 1, "nothing pinned it, so it is still cold");
+        assert!(drafts[0].summary.render().contains("evalset:screen"));
     }
 
     #[test]

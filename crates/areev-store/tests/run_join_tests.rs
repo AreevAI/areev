@@ -378,3 +378,85 @@ fn run_grains_handles_unknown_runs_and_exhausted_cursors() {
     let last = page.last().unwrap().0;
     assert!(m.run_grains("ops", "run-a", last, 10).unwrap().is_empty());
 }
+
+/// The join a code-forensics question actually asks: **which runs executed
+/// this tool?**
+///
+/// It is not a provenance question, which is why the lineage walk alone
+/// answered "none". A journal's result grain supersedes its intent, and
+/// neither supersedes the Definition — the only thing connecting a run to the
+/// code it ran is §8.4's `spec_hash`, read backwards.
+#[test]
+fn runs_touching_finds_the_runs_that_executed_a_definition() {
+    let (mut m, _d) = open_mem();
+    let def = m
+        .add(
+            &Tool::new("screen")
+                .kind(ToolKind::Definition)
+                .tool_description("match a counterparty against the list")
+                .created_at(1_700_000_000_000)
+                .namespace("ops"),
+        )
+        .unwrap();
+    let other = m
+        .add(
+            &Tool::new("post")
+                .kind(ToolKind::Definition)
+                .tool_description("post the row")
+                .created_at(1_700_000_000_001)
+                .namespace("ops"),
+        )
+        .unwrap();
+
+    // Two runs of `screen`, one of `post`. A journal entry is a Tool grain
+    // naming the Definition it is about to execute.
+    for (run, spec, at) in [
+        ("run-a", &def, 1_700_000_001_000),
+        ("run-b", &def, 1_700_000_002_000),
+        ("run-c", &other, 1_700_000_003_000),
+    ] {
+        let mut entry = Tool::new("screen")
+            .spec_hash(&spec.to_hex())
+            .created_at(at)
+            .namespace("ops");
+        entry
+            .common_mut()
+            .extra_fields
+            .insert("run_id".into(), serde_json::json!(run));
+        m.add(&entry).unwrap();
+    }
+
+    let mut runs = m.runs_touching("ops", &def, 4).unwrap();
+    runs.sort();
+    assert_eq!(
+        runs,
+        vec!["run-a".to_string(), "run-b".to_string()],
+        "the runs that ran THIS definition, and not the one that ran another"
+    );
+
+    // And the narrow read on its own, which is what makes the cost skippable.
+    let executing = m.runs_executing("ops", &other).unwrap();
+    assert_eq!(executing, vec!["run-c".to_string()]);
+}
+
+/// The scan exists for Definitions only: nothing else can be named by a
+/// `spec_hash`, so every other caller of the walk pays nothing for it.
+#[test]
+fn the_execution_edge_is_not_walked_for_grains_that_cannot_be_executed() {
+    let (mut m, _d) = open_mem();
+    let (_e1, _e2, fact) = a_run(&mut m, "run-a", 1_700_000_000_000);
+    assert!(
+        m.runs_executing("ops", &fact).unwrap().is_empty(),
+        "a fact is not a tool definition"
+    );
+
+    // An execution RECORD is not a definition either — a journal entry naming
+    // itself would be a cycle, and `kind` is what tells the two apart.
+    let mut entry = Tool::new("screen").spec_hash(&fact.to_hex()).created_at(2).namespace("ops");
+    entry
+        .common_mut()
+        .extra_fields
+        .insert("run_id".into(), serde_json::json!("run-z"));
+    let record = m.add(&entry).unwrap();
+    assert!(m.runs_executing("ops", &record).unwrap().is_empty());
+}

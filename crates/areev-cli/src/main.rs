@@ -346,7 +346,8 @@ COMMANDS:
            10-minute proof
   run-trace --run-id ID [--limit N]   what a run recorded, and what it
                                       produced downstream (facts/lessons)
-  runs-touching --hash H [--depth N]  which runs produced or refined a grain
+  runs-touching --hash H [--depth N]  which runs produced or refined a grain —
+                                      and, for a tool definition, which ran it
                                       (walks provenance both ways)
   verify                              integrity + content-address recheck
   stats                               store counters
