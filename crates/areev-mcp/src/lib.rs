@@ -839,7 +839,7 @@ impl McpServer {
                 let message = args.get("message").and_then(Value::as_str)
                     .ok_or("areev_run_input requires 'message'")?;
                 let who = self.run_identity();
-                self.runner(&who)
+                self.runner(&who)?
                     .input(run_id, message, &who)
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"queued": run_id, "by": who,
