@@ -1,0 +1,57 @@
+{
+  "bindings": {
+    "build_report": "3b1448cb63a6c739b5d6f0271eb9fab222b53809faec0c6563dbb830a3450ae4",
+    "close": "a7d78075c140dbb15800a8442a8a6a7e738358cc65c25aecb7a4bbf0966b28d6",
+    "disclose_only": "4f0dc9b3d8050a0ddb9f922654240f0378974560a0a3aec08489545861b928c9",
+    "dpo_review": "6cff5d5a3bb141b9b29ed7769eda568bcd99ca740e3776d04bbead29dc06bf2a",
+    "erase": "361956703cbdb4a0fd03caa05cd3bcce0b753cb3a10e14d473a692640f429062",
+    "identify_subject": "623ebcc3f5665b30f81c5242fe1bf738ee9dc1c2b07d387d1dadc2e50d7ea01f"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "build_report",
+      "src": "identify_subject"
+    },
+    {
+      "cond": "nothing_on_file == true",
+      "dst": "close",
+      "src": "build_report"
+    },
+    {
+      "cond": "nothing_on_file == false",
+      "dst": "dpo_review",
+      "src": "build_report"
+    },
+    {
+      "cond": "decision == \"erase\"",
+      "dst": "erase",
+      "src": "dpo_review"
+    },
+    {
+      "cond": "decision == \"disclose\"",
+      "dst": "disclose_only",
+      "src": "dpo_review"
+    },
+    {
+      "dst": "close",
+      "src": "erase"
+    },
+    {
+      "dst": "close",
+      "src": "disclose_only"
+    }
+  ],
+  "name": "data-subject-request",
+  "namespace": "org.ops",
+  "nodes": [
+    "identify_subject",
+    "build_report",
+    "dpo_review",
+    "erase",
+    "disclose_only",
+    "close"
+  ],
+  "type": "workflow"
+}

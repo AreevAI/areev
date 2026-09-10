@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk reads a possible list match",
+  "instructions": "A false clear is the expensive failure; a stopped payment is the cheap one. Never screen a name you cannot read. A disposition an officer signed applies to that counterparty only, never to the whole list entry.",
+  "name": "screening-judgment",
+  "namespace": "org.ops",
+  "type": "skill"
+}

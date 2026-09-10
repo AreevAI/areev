@@ -1,0 +1,62 @@
+{
+  "grains": [
+    {
+      "expected_hash": "6587360b4dff8e46a83b15a713b96ab0fcd5ae68fbf4df11b31a6075ed5372b8",
+      "file": "grains/010-tool-record_change.json"
+    },
+    {
+      "expected_hash": "688bfd5ad27bc9fa2b5b827a805de010e7318c061a2444321f5f990b0e84fdc7",
+      "file": "grains/020-tool-refer_back.json"
+    },
+    {
+      "expected_hash": "b2a78be2e2d1125071b9cfecaddfeff4ff5aae4b72a97a34b18f6a8bd58966d8",
+      "file": "grains/030-tool-issue_determination.json"
+    },
+    {
+      "expected_hash": "dd7ba63bac34598040c949dea2b741c848f8ea8170b504c32c4ff424eed6d99e",
+      "file": "grains/040-tool-underwriter_review.json"
+    },
+    {
+      "expected_hash": "5a09ca39c981da099a77dc290763523e9e7bcc355abe09cf0733bccdc66de009",
+      "file": "grains/050-tool-accumulation.json"
+    },
+    {
+      "expected_hash": "a4e07934bc43cec1726dd53a341315fc8adef9b13f08c2ee1c859ff157642a50",
+      "file": "grains/060-tool-assess_cover.json"
+    },
+    {
+      "expected_hash": "989db181494516484393893cbbeac18f8977e93df0b29584836e7a194c34ea15",
+      "file": "grains/070-tool-extract.json"
+    },
+    {
+      "expected_hash": "a4071ae0a3c43af1523311e7f5a6379fbb59b8c309b15d877165a50092576872",
+      "file": "grains/080-skill-coverage-judgment.json"
+    },
+    {
+      "expected_hash": "7bac068e769391d042c1af1e3fe82ab5c73e86ffdd6f9c5d2fb16574275e6566",
+      "file": "grains/090-workflow-policy-servicing.json"
+    }
+  ],
+  "namespace": "org.uw",
+  "pack": "insurance-documents",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), judgment: (RECALL skills LIMIT 2), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), cover: (RECALL facts WHERE namespace = \"org.uw.policies\" LIMIT 40), rulings: (RECALL facts WHERE namespace = \"org.uw.wordings\" LIMIT 20) BUDGET 3000 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, coverage, rulings",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "cover_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

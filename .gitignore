@@ -27,6 +27,12 @@ examples/agents/*/rust/Cargo.lock
 __pycache__/
 *.pyc
 
+# The coverage trace. The `coverage` CI job produces one at the repo root and
+# `scripts/coverage.py` turns it into the small committed artifact
+# (docs/coverage.json) that the README chart reads — the 5 MB trace itself is
+# never the repo's to carry.
+lcov.info
+
 # cargo-mutants output
 mutants.out/
 mutants.out.old/

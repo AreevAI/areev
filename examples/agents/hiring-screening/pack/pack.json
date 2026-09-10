@@ -1,0 +1,73 @@
+{
+  "grains": [
+    {
+      "expected_hash": "e2425362b1f1c91a67318ad34b7c4a959573c8b1d277c1705448f1244784a5cc",
+      "file": "grains/010-tool-close_case.json"
+    },
+    {
+      "expected_hash": "b755238e15fe97e8950c590b8293d947f17ecd26c6749d21910c2119594a9efd",
+      "file": "grains/020-tool-reject.json"
+    },
+    {
+      "expected_hash": "825e37db682eda9c6ded2c9afbea0e28ed90a64c25ad46f5a536f2ad4794d1eb",
+      "file": "grains/030-tool-advance.json"
+    },
+    {
+      "expected_hash": "be98837c9e2697ab8bb5ada23ec8f2db48f244cc2f2e20338c4ecae71a1b720d",
+      "file": "grains/040-tool-recruiter_review.json"
+    },
+    {
+      "expected_hash": "ae8d5d68f4f52cb216cc9fbdb65da72a07c06e032f417041222693f7b3bf95e0",
+      "file": "grains/050-tool-check_criteria.json"
+    },
+    {
+      "expected_hash": "5413b4a8e9ada0af48c06b4240ae65cb0846fd0ce8f72273d839702cf7ef5edf",
+      "file": "grains/060-tool-parse_application.json"
+    },
+    {
+      "expected_hash": "6dae92d57b5ede192ce9714caa97718101673bad4681e0f96efcefb94118786e",
+      "file": "grains/070-skill-screening-judgment.json"
+    },
+    {
+      "expected_hash": "6adaafd898188707e3d61146bd02bc2f769b793b2aec401f4a2d0f2619aa4607",
+      "file": "grains/080-workflow-hiring-screening.json"
+    },
+    {
+      "expected_hash": "ec154ec9e2b4e0f5ff27f1e9ee81d3db1718067da2a526fcec8a30bd946183f1",
+      "file": "grains/090-trigger-mock.json"
+    }
+  ],
+  "namespace": "org.talent",
+  "pack": "hiring-screening",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), requisition: (RECALL facts WHERE namespace = \"org.talent.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, gate, criteria, precedents",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    },
+    "screen_ctx": {
+      "body": "ASSEMBLE \"screen_ctx\" FROM policy: (RECALL skills LIMIT 2), requisition: (RECALL facts WHERE namespace = \"org.talent.*\" LIMIT 200) BUDGET 4000 tokens FORMAT json",
+      "description": "what the criteria check is allowed to know",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "session"
+        }
+      ],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "precedent_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}}: {{object}}\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

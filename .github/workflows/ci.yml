@@ -289,7 +289,9 @@ jobs:
     # the hashes). `invoice-to-accounting` ships Python + TypeScript + Rust;
     # the other agents are Python, and run-smokes.sh skips a stack an agent
     # does not have before it ever consults REQUIRE, so adding a language is
-    # a wrapper plus an agent file and needs no edit here.
+    # a wrapper plus an agent file and needs no edit here. Since #178 each
+    # agent also ships an installable `pack/`, and the pack lane asserts it
+    # installs that same plan.
     # An untested example in the flagship repo is wrong at exactly the
     # moment somebody is evaluating, so the promise is a job, not a README
     # claim — the SAME entry point a developer runs locally before pushing
@@ -314,15 +316,38 @@ jobs:
           maturin develop --release -m crates/areev-py/Cargo.toml
       - name: Build the Node binding (napi)
         run: cd crates/areev-js && npm ci && npm run build
+      # The pack lane needs the binary (the language stacks do not). It
+      # installs each agent's `pack/` into a scratch memory and asserts it
+      # carries the plan the stacks mint — which is what goes stale when a
+      # seeder changes and `export-packs.sh` was not re-run.
+      - name: Build the areev binary (for the pack lane)
+        run: cargo build -p areev
       # Both acts of every agent, in all three stacks, plus the
-      # cross-language plan-hash comparison. CARGO_TARGET_DIR points the
-      # detached Rust stack at the cached workspace target so its path deps
-      # do not recompile from scratch.
-      - name: Every agent, every language — smoke + improve
+      # cross-language plan-hash comparison and the pack lane.
+      # CARGO_TARGET_DIR points the detached Rust stack at the cached
+      # workspace target so its path deps do not recompile from scratch.
+      - name: Every agent, every language — smoke + improve + pack
         run: |
           . .venv/bin/activate
-          CARGO_TARGET_DIR="$PWD/target" REQUIRE="python typescript rust" \
+          CARGO_TARGET_DIR="$PWD/target" REQUIRE="python typescript rust pack" \
             examples/agents/run-smokes.sh
+      # The grain-connector example is the keyless proof that a trigger can
+      # run code that lives in the memory (#185) — pin, sandbox, capability,
+      # cursor, dedup, run start, with no host connector script. It needs the
+      # sandbox binary, which no other example does.
+      - name: Build the sandbox (for the grain-connector example)
+        run: cargo build --manifest-path areev-sandbox/Cargo.toml
+      - name: A connector that is a grain, end to end
+        run: |
+          AREEV_SANDBOX="$PWD/areev-sandbox/target/debug/areev-sandbox" \
+            examples/grain-connector/run.sh
+      # And the other half of the same tier: a pack binding the blessed
+      # http.call blob, one permitted call and one refused by the broker
+      # (#179). Loopback only — the "upstream" is a stub in the example.
+      - name: The blessed http.call blob, permitted and refused
+        run: |
+          AREEV_SANDBOX="$PWD/areev-sandbox/target/debug/areev-sandbox" \
+            examples/blessed-tools/run.sh
 
   tls:
     # The non-default native-TLS feature (the recorded rustls exception):
@@ -386,18 +411,35 @@ jobs:
   # (it carries wasmi). `cargo test --workspace` never touches it, so it needs
   # its own job or a change here can break it silently — the same reason
   # areev-js has one.
+  #
+  # The blessed tools (areev-tools) ride along: their tests ARE sandbox tests
+  # (`tests/blessed_tools.rs` runs the committed blobs under the real engine),
+  # and the manifest check asserts that what dist/blessed.json publishes is the
+  # address of the file beside it — a pack pins that address, so a drifted
+  # manifest is a pack pinning bytes nobody reviewed.
   sandbox:
-    name: sandbox (wasm tier C)
+    name: sandbox (wasm tier C) + blessed tools
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - name: build
         run: cargo build --manifest-path areev-sandbox/Cargo.toml
-      - name: test
+      - name: the published addresses are the addresses of the committed blobs
+        run: python3 areev-tools/manifest.py --check
+      - name: test (includes the blessed blobs, run under the real engine)
         run: cargo test --manifest-path areev-sandbox/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path areev-sandbox/Cargo.toml --all-targets -- -D warnings
+      # The SOURCE still has to compile and lint — a blob nobody can rebuild is
+      # a blob nobody can revise, which is the whole point of putting connector
+      # code in the memory (#179, #185).
+      - name: the tool sources still build for wasm32
+        run: cd areev-tools && cargo build --release --target wasm32-unknown-unknown
+      - name: clippy (tool sources)
+        run: cd areev-tools && cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
 
   # The version lives in five places and only one of them is inherited
   # (`version.workspace`). maturin reads pyproject.toml, npm reads

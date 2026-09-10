@@ -1,0 +1,17 @@
+{
+  "because": "poll the brightco AP mailbox for invoices",
+  "confidence": 1.0,
+  "connector": "mock",
+  "context_query": "extract_ctx($session = /thread)",
+  "created_at": 1788977862513,
+  "dedup_key": [
+    "/message_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.ops",
+  "scope": "mailbox:ap-brightco@desk.example",
+  "type": "trigger",
+  "workflow": "3da2300c12969e725444cef1270f5c9574e8e7a191b016ac7effee323ce47091"
+}

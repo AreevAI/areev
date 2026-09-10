@@ -441,7 +441,9 @@ How each number is produced, and the benchmark receipts:
 | [`docs/loop.md`](docs/loop.md) | Areev Loop — governed self-improvement (analyzers, four gates, policy, every surface) |
 | [`docs/run.md`](docs/run.md) | `areev run` — the governed runtime: plans, the journal, verify, HITL, budgets, forks |
 | [`examples/how-to-create-an-areev-agent.md`](examples/how-to-create-an-areev-agent.md) | Building an agent on Areev: architecture, grain selection, the autonomy spectrum, dynamic planning, do/don't |
-| [`docs/triggers.md`](docs/triggers.md) | Standing rules that start workflows — the cadence as data |
+| [`docs/triggers.md`](docs/triggers.md) | Standing rules that start workflows — the cadence as data, and connectors that are grains |
+| [`docs/pack.md`](docs/pack.md) | Packs — shipping an agent as an installable unit (`areev pack validate/install/export`) |
+| [`docs/blessed-tools.md`](docs/blessed-tools.md) | The shared `http.call` / `mcp.call` / `a2a.call` wasm blobs, and their addresses |
 | [`docs/eu-ai-act.md`](docs/eu-ai-act.md) · [`docs/procurement.md`](docs/procurement.md) | EU AI Act article→capability→command map; procurement questionnaire answers |
 | [`docs/cal-reference.md`](docs/cal-reference.md) | The CAL query language reference |
 | [`docs/mcp-reference.md`](docs/mcp-reference.md) | The MCP server + its 25 tools |

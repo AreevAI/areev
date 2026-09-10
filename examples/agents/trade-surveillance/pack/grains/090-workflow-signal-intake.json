@@ -1,0 +1,13 @@
+{
+  "bindings": {
+    "normalize_signal": "ef60c7b970e2dd323bd056fa70891b3e64a31d72b61a29c049d0cc0d2ed6949e"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "name": "signal-intake",
+  "namespace": "org.ops",
+  "nodes": [
+    "normalize_signal"
+  ],
+  "type": "workflow"
+}

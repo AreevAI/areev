@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk reads a data-subject request",
+  "instructions": "Verify before you act: disclosing to the wrong person is a breach, erasing the wrong person cannot be undone. Price the request with the erasure selector, never with a search. Never write an identity into an audit record -- a replicating grain naming the erased person would undo the erasure it records. A wildcard namespace is a reading convention, never a destruction target.",
+  "name": "dsar-judgment",
+  "namespace": "org.ops",
+  "type": "skill"
+}

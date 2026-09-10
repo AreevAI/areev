@@ -1,0 +1,8 @@
+{
+  "id": "plan",
+  "type": "workflow",
+  "name": "mailbox-triage",
+  "nodes": ["triage"],
+  "bindings": { "triage": "grain:triage" },
+  "created_at": 1788134400000
+}

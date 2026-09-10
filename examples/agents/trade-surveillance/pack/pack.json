@@ -1,0 +1,85 @@
+{
+  "grains": [
+    {
+      "expected_hash": "7c1d30d1d46af0aae1d317ab170268597cfa2a87d6f8c0112acec61d412f354f",
+      "file": "grains/010-tool-record_dismissal.json"
+    },
+    {
+      "expected_hash": "a8e4a3122d4e7cb7c93dec2dfdfa03b84f9d88f925c9028df6b2739a7a5bdde8",
+      "file": "grains/020-tool-file_alert.json"
+    },
+    {
+      "expected_hash": "52b5706ad8b56f66e548bb97d601df2d7fb76f91214124d8bc22d9941637a182",
+      "file": "grains/030-tool-analyst_review.json"
+    },
+    {
+      "expected_hash": "109789cd02dff4c5004c14abb94c8f742b93f3f985b0656919bf07d55a4a07e1",
+      "file": "grains/040-tool-prior_art.json"
+    },
+    {
+      "expected_hash": "bca18829d99406d41005b78c1fd19cc3d39c0fb66ba88f8bf8aae88eb536428b",
+      "file": "grains/050-tool-assemble_case.json"
+    },
+    {
+      "expected_hash": "ef60c7b970e2dd323bd056fa70891b3e64a31d72b61a29c049d0cc0d2ed6949e",
+      "file": "grains/060-tool-normalize_signal.json"
+    },
+    {
+      "expected_hash": "f012bd1c1cc5ff92e0bbac2ca1f54445fef042448b18429cdaafa1edb6e73143",
+      "file": "grains/070-skill-surveillance-judgment.json"
+    },
+    {
+      "expected_hash": "4c99bb1046bf76dcb5c6fd69e1996a6d44264d4a7da69abcb77baeca4a9e359a",
+      "file": "grains/080-workflow-surveillance-case.json"
+    },
+    {
+      "expected_hash": "60684d27cd0aaa2e571ef528994561813cb373b297ea7a758b5c9b51252ac648",
+      "file": "grains/090-workflow-signal-intake.json"
+    },
+    {
+      "expected_hash": "5c6ec66e21a175f55d8bfe81965da120e78ee8741b84ac2a5cfa392e4d01e14f",
+      "file": "grains/100-trigger-trigger.json"
+    },
+    {
+      "expected_hash": "20d783c3ff9450fb64955d586f115193bd013f6da972599e388ef3bb03341abb",
+      "file": "grains/110-trigger-mock.json"
+    },
+    {
+      "expected_hash": "c418c5e229cc3de216b274243bab9defb3d13ef2940bfb32a0cfe40a1e35aab9",
+      "file": "grains/120-trigger-mock-c418c5e2.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "trade-surveillance",
+  "queries": {
+    "case_ctx": {
+      "body": "ASSEMBLE \"case_ctx\" FROM book: (RECALL facts WHERE namespace = \"org.surv.book\" AND subject = $symbol LIMIT 10), precedents: (RECALL facts WHERE namespace = \"org.surv.precedents\" LIMIT 50), judgment: (RECALL skills LIMIT 2) BUDGET 4000 tokens FORMAT json",
+      "description": "what an analyst should have in front of them",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "symbol"
+        }
+      ],
+      "updated_at": 1788977862
+    },
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plans: (RECALL workflows LIMIT 4), gates: (RECALL triggers LIMIT 6), precedents: (RECALL facts WHERE namespace = \"org.surv.precedents\" LIMIT 20), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plans, gates, precedents",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "precedent_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

@@ -1931,6 +1931,76 @@ field no grain carries is now `CAL-W018` — the same "absence is UNKNOWN, and
 the answer says so" rule the #207 amendment above applies to `WHERE`, applied
 to the grouping path.
 
+### A connector is a grain, a pack is how it arrives, and three blobs are shared
+
+**Decision (2026-09-09, issues #185/#178/#179):** three changes that only make
+sense together — the code an agent runs, how it is installed, and what it does
+not have to be written from scratch.
+
+**A trigger may name its connector by content address** (`connector_tool`,
+#185). Until now the one piece of code most likely to be wrong — cursors,
+pagination, a provider's quirks — was the one piece that lived *outside* the
+memory, as a `--connector-cmd` host script: it did not travel in a bundle,
+`tool provenance` could not chase it, and the loop could not propose a
+`code_revision` against it. A trigger now names a Tool **Definition** (never a
+`cas://` blob directly: the runtime, the limits and the `capabilities`
+declaration live on the Definition, and a second place to write them would be a
+second place for them to disagree), and the evaluator resolves it through
+`areev_run::pin_from_definition` — the same reader `RunManifest::resolve` uses,
+because a connector running under different rules than a node binding the same
+grain would be a second implementation of the pin, and the one that drifts
+silently is the heartbeat nobody watches.
+
+The authorization does not travel with the code. `--allow-executor` on the
+evaluating host is what runs it, exactly as on the run path; `TRG-E012` refuses
+by name before a broker starts. `connector` (the name) stays required beside
+it, because the run id is derived from `(trigger, connector, dedup value)` and
+revising the code must not renumber the runs.
+
+**A pack is the installable unit** (`areev pack validate|install|export`,
+#178). Everyone deploying an agent was writing the same installer: blobs into
+the CAS, each `executor_uri` rewritten to the address the bytes turned out to
+have, grains seeded in dependency order, plan hashes checked. Two properties
+make it more than a script. References are **symbolic** — `blob:<name>`,
+`grain:<id>` — because an address is a measurement of bytes and not something
+an author can write down, which also means editing a connector's wasm changes
+the plan's hash. And `expected_hash` is **refused, not warned**, with nothing
+written: a plan that installed at a different address than the deployment
+expected has changed what runs, and every trigger pointing at the old hash is
+now pointing elsewhere (triggers do not follow heads). Install is validate plus
+a destination — every grain is built and addressed with no store at all, since
+content addressing is a pure function of the serialized grain — so a CI check
+and a deployment cannot disagree about what a pack contains.
+
+**Three blessed `wasm32-areev-io` blobs ship in the repository** (`http.call`,
+`mcp.call`, `a2a.call`, #179), content-addressed, with their addresses
+published in `areev-tools/dist/blessed.json`. The point is not convenience: a
+tool gateway that decides *where a request may go* is code that everyone
+installing it has to trust, and `http.call` makes no such decision — it hands
+the request to the broker and the answer back, verbatim, both ways. Where it
+may go, which method, which credential, which headers are the Definition's
+`capabilities` and the host's grant: data, in the memory, replicated with the
+tool, auditable without reading any code. The gateway becomes configuration.
+Two Definitions may name the same blob with different declarations, which is
+the shape a fleet wants — one address to pin, one blob to review, a per-service
+policy the memory states out loud.
+
+They are `no_std`, dependency-free and small (`http.call` is 2.6 KB) because a
+blessed blob is reviewed as bytes; their JSON handling is a *slicer* that
+copies a caller's `arguments` object into the request byte for byte rather than
+a parser that round-trips it. `areev-tools/` is a standalone workspace for the
+same reason `areev-sandbox` and `areev-js` are, and the blobs are tested where
+the engine is: `areev-sandbox/tests/blessed_tools.rs` runs the **committed
+bytes** under real wasmi against a loopback broker stand-in, asserting the
+import gate holds — a tool that declared no network does not get `areev::fetch`
+linked at all.
+
+**What this deliberately does not do.** No registry, no resolver, no version
+ranges: a pack names blobs by address and grains by the address they build to,
+and "which pack is installed" is answered by asking the memory what it holds. A
+package manager would put a mutable name in front of an immutable address,
+which is the one thing this data model exists not to do.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

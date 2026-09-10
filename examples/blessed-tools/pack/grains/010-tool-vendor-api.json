@@ -1,0 +1,18 @@
+{
+  "id": "vendor_api",
+  "type": "tool",
+  "tool_name": "vendor_api",
+  "kind": "definition",
+  "tool_description": "Read one invoice from the vendor API.",
+  "created_at": 1788134400000,
+  "executor_uri": "blob:http_call",
+  "runtime": "wasm32-areev-io",
+  "runtime_limits": { "fuel": 200000000, "max_pages": 256, "max_calls": 4, "max_response_bytes": 262144 },
+  "capabilities": [
+    { "http": { "hosts": ["http://127.0.0.1:7788"],
+                "methods": ["GET"],
+                "path_prefixes": ["/v1/invoices/"],
+                "credentials": ["vendor"],
+                "headers": ["X-Api-Version"] } }
+  ]
+}

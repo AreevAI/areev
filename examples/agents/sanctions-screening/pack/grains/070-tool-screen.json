@@ -1,0 +1,12 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "evalset_hash": "60ca59702b57326e6471564bef4b50f9ceb8ea2e023bf15bf86f4079ee4f56fa",
+  "executor_uri": "blob:screen",
+  "kind": "definition",
+  "namespace": "org.ops",
+  "runtime": "native",
+  "tool_description": "match the counterparty against the list",
+  "tool_name": "screen",
+  "type": "tool"
+}

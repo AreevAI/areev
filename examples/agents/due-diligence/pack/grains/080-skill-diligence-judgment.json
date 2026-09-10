@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk spends a research budget",
+  "instructions": "Research is unbounded; the budget is not. Read the legs most likely to change the conclusion first. A leg that returns nothing material three files running is a leg to run last, never a leg to drop -- nobody signed off on not looking. An unread leg is a gap that must be written into the report, and a gap nobody has a rule for stops the file.",
+  "name": "diligence-judgment",
+  "namespace": "org.ops",
+  "type": "skill"
+}

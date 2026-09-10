@@ -265,14 +265,22 @@ def seed():
     #     off the proposal -- a proposer that could name its own grader is
     #     not gated. The cases are the desk's own regression bar: names it
     #     must match and names it must not.
-    evalset = db.add_fact(
-        "evalset:screen", "mg:evalset",
-        json.dumps({"name": "screen", "cases": [
+    #     `created_at` is pinned like every other grain this seeder writes, and
+    #     for the same reason: the plan binds `screen` by hash, `screen` names
+    #     this evalset by hash, so an evalset stamped with the wall clock made
+    #     the DESK's plan hash different on every seed -- and a plan hash that
+    #     moves cannot be pinned by a pack, quoted in a README, or pointed at
+    #     by a trigger.
+    evalset = db.add("fact", json.dumps({
+        "subject": "evalset:screen", "relation": "mg:evalset",
+        "object": json.dumps({"name": "screen", "cases": [
             {"name": "exact list hit", "input": {"name": "Kestrel Marine Ltd"},
              "expect": {"contains": "Kestrel Marine"}},
             {"name": "clean counterparty", "input": {"name": "Harbour Freight Co"},
              "expect": {"equals": {"matches": []}}},
-        ]}), ns=NS, idempotent=True)
+        ]}),
+        "created_at": EPOCH_MS,
+    }), ns=NS)
 
     # 2. the definitions. `screen` is code-carrying; the rest are host tools.
     screen = tool_def("screen", "match the counterparty against the list",
@@ -519,6 +527,14 @@ def improve():
     # configuration, not a fork.
     db.set_analyzer_config("loop.run_outcome/1", True,
                            json.dumps({"min_failure_ratio": 0.3}))
+    # This desk's facts are REFERENCE data: the screening rule's evalset is
+    # read by Rule E1's gate at review time, not by recall, so "never
+    # recalled in 30 days" measures the wrong thing for it -- retiring the
+    # evalset would remove the gate a code revision has to pass. The window
+    # is widened rather than the analyzer turned off, and it is recorded in
+    # the memory where an examiner can see the judgement and who made it.
+    db.set_analyzer_config("loop.cold_grains/1", True,
+                           json.dumps({"min_age_days": 3650}))
     report = json.loads(db.loop_run(llm_cmd=os.environ.get("LOOP_LLM_CMD")))
     recs = json.loads(db.recommendations('{"status": "pending"}'))
     emit({"loop": report,

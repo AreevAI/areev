@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk reads a referral letter",
+  "instructions": "Triage decides urgency, not identity. Nothing about who the patient IS belongs in a request that leaves the clinic. A missing required identifier stops the referral at the desk -- never triage a letter you cannot pin to a patient. The coding service suggests; a clinician decides, and signs.",
+  "name": "referral-triage-judgment",
+  "namespace": "org.ops",
+  "type": "skill"
+}

@@ -1,0 +1,10 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "executor_kind": "client",
+  "kind": "definition",
+  "namespace": "org.ops",
+  "tool_description": "an on-call engineer decides: apply the remediation, or record it and touch nothing",
+  "tool_name": "oncall_review",
+  "type": "tool"
+}

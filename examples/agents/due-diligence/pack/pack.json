@@ -1,0 +1,69 @@
+{
+  "grains": [
+    {
+      "expected_hash": "c5d56ca866d0e272b726be7ea5caff64d72d7b157f856dc1a4bbbcee6de73566",
+      "file": "grains/010-tool-shelve.json"
+    },
+    {
+      "expected_hash": "de7af0f3ee96941dcd50c8abe69fe0950204bc298090339a5ee76a5849f306c6",
+      "file": "grains/020-tool-issue_report.json"
+    },
+    {
+      "expected_hash": "d3dd7aa224fd6c6d71bfe76e009bb0bdd08ae03e6f70fffb258b908a5070ae39",
+      "file": "grains/030-tool-partner_review.json"
+    },
+    {
+      "expected_hash": "e5d6a8dd6ff622937e0b4089a449bfe932fca45cad0b3b06c88c8f187090b3ab",
+      "file": "grains/040-tool-assemble.json"
+    },
+    {
+      "expected_hash": "00ac0d84f1b3bf6d85855ad0fca95375a1e7750222ebc00a84fd770f6aafac64",
+      "file": "grains/050-tool-research.json"
+    },
+    {
+      "expected_hash": "1b284bea505406b731226a1cf25b00c9962742d3875c474ac2e8cf670e535515",
+      "file": "grains/060-tool-next_leg.json"
+    },
+    {
+      "expected_hash": "0e3353eafc0af48d4fa30870cb75eaf039752e9a30951243f1a6822c2e02c5f0",
+      "file": "grains/070-tool-intake.json"
+    },
+    {
+      "expected_hash": "b843f7cca977cb84d885a6fb0cec1e710a0af34fddb60a4bd8041d73566183d0",
+      "file": "grains/080-skill-diligence-judgment.json"
+    },
+    {
+      "expected_hash": "3034df95f6c4f982ee0fbddbf544a6658a210dce247e52f76fab823cebb8f075",
+      "file": "grains/090-workflow-due-diligence.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "due-diligence",
+  "queries": {
+    "desk_notes": {
+      "body": "RECALL facts WHERE namespace = \"org.diligence.*\" LIMIT 200 FORMAT json",
+      "description": "what memory has to say about how to work a file",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977861
+    },
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), checklist: (RECALL tools WHERE kind = \"definition\" LIMIT 12), judgment: (RECALL skills LIMIT 2), lessons: (RECALL facts WHERE namespace = \"org.diligence.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, checklist, lessons",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977861
+    }
+  },
+  "templates": {
+    "note_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977861
+    }
+  },
+  "version": "1.0.0"
+}

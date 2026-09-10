@@ -1,0 +1,84 @@
+{
+  "blobs": {
+    "screen": "blobs/screen.wasm"
+  },
+  "grains": [
+    {
+      "expected_hash": "f43cad255e31f072ccc74f7451f09e19cce55ea964e52c4112fa901ea682754a",
+      "file": "grains/010-tool-block.json"
+    },
+    {
+      "expected_hash": "d9cbe9c8fe0006dc7dddaa7cabcea312db127c3e12114cc23047a66d21ce2990",
+      "file": "grains/020-tool-release.json"
+    },
+    {
+      "expected_hash": "e1927a2c7ccb8ac884b8e3900fdef5e8cee07c42ab637644dccc045db9618dd5",
+      "file": "grains/030-tool-record_disposition.json"
+    },
+    {
+      "expected_hash": "5fe2609ea0e10253adc02e1f7b3e2976f7c637ca06f99864ac44710df6629836",
+      "file": "grains/040-tool-officer_review.json"
+    },
+    {
+      "expected_hash": "72339275f9f826f9aa6dfe29098380549089d79493e21fb0bece5b0721864bbf",
+      "file": "grains/050-tool-open_case.json"
+    },
+    {
+      "expected_hash": "151b00d40708efa76acc9eb9f04a69f2c8db58afa6c00c963b4f846b32bd981c",
+      "file": "grains/060-tool-triage.json"
+    },
+    {
+      "expected_hash": "d7bc80a6e5be5ea205f1263648f157efbcd10bb20bfa96d5dcd3c80413a8c570",
+      "file": "grains/070-tool-screen.json"
+    },
+    {
+      "expected_hash": "238315cbe6e6765e91cc61141bb4a00278f0d0d70ba840ff1c9a3c80b207a6ce",
+      "file": "grains/080-skill-screening-judgment.json"
+    },
+    {
+      "expected_hash": "60ca59702b57326e6471564bef4b50f9ceb8ea2e023bf15bf86f4079ee4f56fa",
+      "file": "grains/090-fact-fact.json"
+    },
+    {
+      "expected_hash": "924795a19e9a626d6c0db8e08e246a16a94950cd8c4529b8a1384b9f8f4d86cc",
+      "file": "grains/100-workflow-sanctions-screening.json"
+    },
+    {
+      "expected_hash": "85541e571d5383200342d33dfbf25eb6d79d63b0b86de5af8cf34288dca520fe",
+      "file": "grains/110-trigger-mock.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "sanctions-screening",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), lessons: (RECALL facts WHERE namespace = \"org.psp.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, rule, dispositions",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788980193
+    },
+    "screen_ctx": {
+      "body": "ASSEMBLE \"screen_ctx\" FROM judgment: (RECALL skills LIMIT 2), desk: (RECALL facts WHERE namespace = \"org.psp.*\" LIMIT 200) BUDGET 4000 tokens FORMAT json",
+      "description": "what the screening rule should know before it runs",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "session"
+        }
+      ],
+      "updated_at": 1788980193
+    }
+  },
+  "templates": {
+    "case_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}} ({{confidence}})\n}\n",
+      "updated_at": 1788980193
+    }
+  },
+  "version": "1.0.0"
+}

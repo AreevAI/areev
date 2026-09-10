@@ -1,0 +1,11 @@
+{
+  "pack": "vendor-gateway",
+  "version": "1.0.0",
+  "description": "One outbound leg, built from the blessed http.call blob. The pack declares where it may reach; the code decides nothing.",
+  "namespace": "ap",
+  "blobs": { "http_call": "blobs/http.call.wasm" },
+  "grains": [
+    "grains/010-tool-vendor-api.json",
+    "grains/020-workflow.json"
+  ]
+}

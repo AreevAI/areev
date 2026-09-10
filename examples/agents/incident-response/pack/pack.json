@@ -1,0 +1,81 @@
+{
+  "grains": [
+    {
+      "expected_hash": "0119da86fe2767b652d181bf53dd22775a2ec902e0bc89c95bd2fe16e73dbc7f",
+      "file": "grains/010-tool-close.json"
+    },
+    {
+      "expected_hash": "9ff6b84cc02bd645224b8fd1fb9dbd0af04d031cbd619df4f15ee05848371b11",
+      "file": "grains/020-tool-record_only.json"
+    },
+    {
+      "expected_hash": "578a1eca9d05fb794b84504168164d8a589a3f56529128c52dd77fec0ca85003",
+      "file": "grains/030-tool-apply_remediation.json"
+    },
+    {
+      "expected_hash": "5ca10e54076a8b8f8d251820a307fa79586587f03fefe28c82b1df918d048616",
+      "file": "grains/040-tool-oncall_review.json"
+    },
+    {
+      "expected_hash": "bf7a6ca7d4260329377942e279da2a4a5a24c9f4c3baecbd09745ba77cb9d5c2",
+      "file": "grains/050-tool-propose_action.json"
+    },
+    {
+      "expected_hash": "8b1d475f0a3b7caab7b43dfe1a5830bd67a2947024905c0b9e292f3a6908e28e",
+      "file": "grains/060-tool-recall_runbook.json"
+    },
+    {
+      "expected_hash": "4dd2dde4687717e496823499c318ea8bd6710efc5505e98069fe0fd9b2d69a78",
+      "file": "grains/070-tool-classify.json"
+    },
+    {
+      "expected_hash": "6bc80c47b7f0ffd0b9a8a722fd064bb357bc4cda83cab590d00232e1c4234364",
+      "file": "grains/080-skill-oncall-judgment.json"
+    },
+    {
+      "expected_hash": "fe5f922214b704985c9fa4532d1742f1f9dbba6df9892308d5258cf8fe82fecd",
+      "file": "grains/090-workflow-incident-response.json"
+    },
+    {
+      "expected_hash": "fb4a7428653863902c87e797fb4ad4446d6c9decd3a51f4ada107d8c4041bea9",
+      "file": "grains/100-trigger-trigger.json"
+    },
+    {
+      "expected_hash": "c87b1f5515e3ffa44083d3d7d708eb67af761e1846af3237497e37b92ddcdb94",
+      "file": "grains/110-trigger-trigger-c87b1f55.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "incident-response",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), lessons: (RECALL facts WHERE namespace = \"org.sre.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, what it learned",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    },
+    "incident_ctx": {
+      "body": "ASSEMBLE \"incident_ctx\" FROM judgment: (RECALL skills LIMIT 2), desk: (RECALL facts WHERE namespace = \"org.sre.*\" LIMIT 200) BUDGET 4000 tokens FORMAT json",
+      "description": "what the desk knows before it proposes anything",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "service"
+        }
+      ],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "incident_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

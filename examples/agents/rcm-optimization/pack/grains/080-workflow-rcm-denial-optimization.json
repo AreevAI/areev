@@ -1,0 +1,66 @@
+{
+  "bindings": {
+    "apply_fix": "b9677cd966fd0682ad42deca1c16d34d5dbfe065357b70cc8049f0bd0fafe5ff",
+    "classify_denial": "95fce5448edc44eb35ce8972ade5c98475f9d41de6243aa476ec42cdeade2f0e",
+    "cluster": "c34e3ffab586648df9caa5f47f3014bc9e52f0239c737aa36ed443e42da258fa",
+    "file_report": "3ee16b81dcd342909724e37ac3b21d7e92d89197dda1c193644130b7fd5f7e64",
+    "lead_review": "bc1f3660243f758971271ab147c13a875ff4904f4e55d72a97d90da121d6fc12",
+    "split_denials": "9641825cace6ff446b2883b072d5d76e93d1ea7bac03213776579c550980d0b7"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "classify_denial",
+      "src": "split_denials"
+    },
+    {
+      "dst": "cluster",
+      "src": "classify_denial"
+    },
+    {
+      "cond": "actionable == true",
+      "dst": "lead_review",
+      "src": "cluster"
+    },
+    {
+      "cond": "actionable == false",
+      "dst": "file_report",
+      "src": "cluster"
+    },
+    {
+      "cond": "decision == \"approve\"",
+      "dst": "apply_fix",
+      "src": "lead_review"
+    },
+    {
+      "cond": "decision == \"reject\"",
+      "dst": "file_report",
+      "src": "lead_review"
+    },
+    {
+      "dst": "file_report",
+      "src": "apply_fix"
+    }
+  ],
+  "name": "rcm-denial-optimization",
+  "namespace": "org.rcm",
+  "nodes": [
+    "split_denials",
+    "classify_denial",
+    "cluster",
+    "lead_review",
+    "apply_fix",
+    "file_report"
+  ],
+  "reducers": {
+    "auto_classified": "sum",
+    "classified": "append",
+    "denied_cents": "sum",
+    "unmapped": "sum"
+  },
+  "retries": {
+    "classify_denial": 1
+  },
+  "type": "workflow"
+}

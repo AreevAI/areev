@@ -1,0 +1,10 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "executor_kind": "client",
+  "kind": "definition",
+  "namespace": "org.ops",
+  "tool_description": "a surveillance analyst decides: escalate, or dismiss as benign with a reason",
+  "tool_name": "analyst_review",
+  "type": "tool"
+}

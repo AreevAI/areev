@@ -1,0 +1,15 @@
+{
+  "because": "beacon posts every alert here; one run per alert",
+  "confidence": 1.0,
+  "context_query": "incident_ctx($service = /service)",
+  "created_at": 1788977862216,
+  "dedup_key": [
+    "/alert_id"
+  ],
+  "enabled": true,
+  "kind": "webhook",
+  "namespace": "org.ops",
+  "scope": "beacon:alerts",
+  "type": "trigger",
+  "workflow": "fe5f922214b704985c9fa4532d1742f1f9dbba6df9892308d5258cf8fe82fecd"
+}

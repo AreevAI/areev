@@ -1,0 +1,10 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "executor_kind": "client",
+  "kind": "definition",
+  "namespace": "org.ops",
+  "tool_description": "a person decides: approve, revise, or reject",
+  "tool_name": "human_review",
+  "type": "tool"
+}

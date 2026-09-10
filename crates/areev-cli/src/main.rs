@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod pack;
 mod run_stack;
 mod tune;
 mod trigger_cli;
@@ -206,6 +207,25 @@ COMMANDS:
   log      [--since OP] [--limit N]   op-log (change feed)
   bundle   --out FILE [--since OP]    incremental backup (git-shaped)
   import   --bundle FILE              apply a bundle (fast-forward)
+  pack     validate DIR               check a pack without opening a memory:
+                                      it builds every grain, addresses it, and
+                                      compares against the manifest's
+                                      expected_hash. Prints the pins its code
+                                      needs
+  pack     install DIR [--dry-run]    seed a pack into --db: blobs into the
+                                      CAS, `blob:`/`grain:` references
+                                      rewritten to the addresses they turn out
+                                      to have, saved queries restored. An
+                                      expected_hash that does not match is
+                                      REFUSED with nothing written
+  pack     export --out DIR [--pack-format source|bundle] [--name N]
+                                      turn this memory's namespace into an
+                                      installable pack. `source` writes
+                                      reviewable grain JSON (and refuses to
+                                      write anything it cannot rebuild to the
+                                      same address); `bundle` writes a bundle
+                                      plus a manifest of what it must contain.
+                                      See docs/pack.md
   migrate  --from SRC --file PATH [--history PATH]   import another system's
            export: mem0 | mem0-history | langgraph | letta | letta-archival |
            zep | basic-memory (PATH = vault dir) | jsonl (generic
@@ -1508,6 +1528,16 @@ fn run() -> Result<(), String> {
     // surprise.
     if cmd == "provision" {
         return run_provision(&flags);
+    }
+
+    // `pack validate` reads a directory and opens nothing: content addressing
+    // is a pure function of the grain, so what a pack WILL install is knowable
+    // without a memory to install it into. Dispatched here for the same reason
+    // `auth` is — resolving a default memory would create a file the command
+    // has no use for, and print a line implying an association that does not
+    // exist. `install`/`export` fall through and take one normally.
+    if cmd == "pack" && positional.first().map(|s| s.as_str()) == Some("validate") {
+        return pack::run_pack(None, "shared", &flags, &positional);
     }
 
     // Long-lived / exposed surfaces must name their memory explicitly rather
@@ -3573,6 +3603,9 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             run_audit(&mut m, &flags, &positional)?;
         }
         "anonymize" => run_anonymize(m, &flags, &positional)?,
+        "pack" => {
+            return pack::run_pack(Some(m), &ns, &flags, &positional);
+        }
         "trigger" => {
             // The locator rides along so a connector module declaring
             // `{"blob": {"read": true}}` can be served by the per-poll broker

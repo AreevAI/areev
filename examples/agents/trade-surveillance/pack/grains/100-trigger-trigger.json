@@ -1,0 +1,38 @@
+{
+  "because": "a block order and a material event on the SAME instrument, inside one window, is a case for an analyst",
+  "confidence": 1.0,
+  "context_query": "case_ctx($symbol = /correlation)",
+  "correlate": "/symbol",
+  "created_at": 1788977862920,
+  "enabled": true,
+  "kind": "composite",
+  "members": {
+    "material_event": "20d783c3ff9450fb64955d586f115193bd013f6da972599e388ef3bb03341abb",
+    "order_burst": "c418c5e229cc3de216b274243bab9defb3d13ef2940bfb32a0cfe40a1e35aab9"
+  },
+  "namespace": "org.ops",
+  "predicate": {
+    "kind": "and",
+    "left": {
+      "comparator": "eq",
+      "field": "order_burst",
+      "kind": "comparison",
+      "value": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "right": {
+      "comparator": "eq",
+      "field": "material_event",
+      "kind": "comparison",
+      "value": {
+        "kind": "boolean",
+        "value": true
+      }
+    }
+  },
+  "type": "trigger",
+  "window_ms": 15000,
+  "workflow": "4c99bb1046bf76dcb5c6fd69e1996a6d44264d4a7da69abcb77baeca4a9e359a"
+}

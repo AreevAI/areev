@@ -1,0 +1,15 @@
+{
+  "id": "watch",
+  "type": "trigger",
+  "kind": "polling",
+  "name": "ap-mailbox",
+  "workflow": "grain:plan",
+  "connector": "mailbox",
+  "connector_tool": "grain:poll",
+  "scope": "mailbox:ap@desk.example",
+  "interval_secs": 1,
+  "dedup_key": ["/id"],
+  "config": { "int:feed_blob": "blob:feed" },
+  "because": "the AP desk watches this mailbox, and the code that reads it is part of the memory",
+  "created_at": 1788134400000
+}

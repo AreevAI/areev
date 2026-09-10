@@ -1,0 +1,73 @@
+{
+  "grains": [
+    {
+      "expected_hash": "9dd96b2280e9d82633248289ab1b037418b0a41e27ad8767066eb87f9a605938",
+      "file": "grains/010-tool-redirect.json"
+    },
+    {
+      "expected_hash": "a04eeeb506607a04af8b8d8afac37f5b636c78fc027d73155133add85ef4216c",
+      "file": "grains/020-tool-accept.json"
+    },
+    {
+      "expected_hash": "d0ebe95f1f0d0b8ad388cf89bc0db00ad18c1dfaa8e510d7c3cd1d01f23f8c12",
+      "file": "grains/030-tool-clinician_review.json"
+    },
+    {
+      "expected_hash": "1f7350a1ee4c698b6db07736131531fefcadb542f918fa059a180f2ef49cbe2e",
+      "file": "grains/040-tool-triage.json"
+    },
+    {
+      "expected_hash": "5d21dce57d91c7c1e64b4678b196ffc3f6782e2d2a84e2ffdf07190eb978354e",
+      "file": "grains/050-tool-code_lookup.json"
+    },
+    {
+      "expected_hash": "ff13ce623c98e0127294e07441b795966c0c1ea9806778ca7f5ea3bd31760490",
+      "file": "grains/060-tool-extract.json"
+    },
+    {
+      "expected_hash": "d596c8819595c6814b5b8f8d92dc04b5f25aeffa69c818fcc802d82afc45a794",
+      "file": "grains/070-skill-referral-triage-judgment.json"
+    },
+    {
+      "expected_hash": "e9cb3f56c7b8bb3b90e277cd3792a18e5bd79a145e3dc169e59fb7b865540103",
+      "file": "grains/080-workflow-clinical-referral-triage.json"
+    },
+    {
+      "expected_hash": "35ce9b267febbc2d976572f44f07f8e3a310f623053affbe78feb193afe129e6",
+      "file": "grains/090-trigger-mock.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "clinical-referrals",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), protocol: (RECALL facts WHERE namespace = \"org.clinic.protocol\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, protocol, activity",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977861
+    },
+    "referral_ctx": {
+      "body": "ASSEMBLE \"referral_ctx\" FROM judgment: (RECALL skills LIMIT 2), protocol: (RECALL facts WHERE namespace = \"org.clinic.protocol\" LIMIT 60), letter: (RECALL events WHERE namespace = \"org.clinic.referrals\" AND session_id = $session RECENT 3) BUDGET 4000 tokens FORMAT json",
+      "description": "what a triage run may see about one referral",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "session"
+        }
+      ],
+      "updated_at": 1788977861
+    }
+  },
+  "templates": {
+    "rule_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977861
+    }
+  },
+  "version": "1.0.0"
+}

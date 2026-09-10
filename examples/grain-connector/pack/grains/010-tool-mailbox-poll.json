@@ -1,0 +1,12 @@
+{
+  "id": "poll",
+  "type": "tool",
+  "tool_name": "mailbox.poll",
+  "kind": "definition",
+  "tool_description": "Poll a filed mailbox feed and report new messages.",
+  "created_at": 1788134400000,
+  "executor_uri": "blob:mailbox_poll",
+  "runtime": "wasm32-areev-io",
+  "runtime_limits": { "fuel": 200000000, "max_pages": 256, "max_blob_bytes": 1048576 },
+  "capabilities": [ { "blob": { "read": true } } ]
+}

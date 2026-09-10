@@ -1,0 +1,73 @@
+{
+  "grains": [
+    {
+      "expected_hash": "3ee16b81dcd342909724e37ac3b21d7e92d89197dda1c193644130b7fd5f7e64",
+      "file": "grains/010-tool-file_report.json"
+    },
+    {
+      "expected_hash": "b9677cd966fd0682ad42deca1c16d34d5dbfe065357b70cc8049f0bd0fafe5ff",
+      "file": "grains/020-tool-apply_fix.json"
+    },
+    {
+      "expected_hash": "bc1f3660243f758971271ab147c13a875ff4904f4e55d72a97d90da121d6fc12",
+      "file": "grains/030-tool-lead_review.json"
+    },
+    {
+      "expected_hash": "c34e3ffab586648df9caa5f47f3014bc9e52f0239c737aa36ed443e42da258fa",
+      "file": "grains/040-tool-cluster.json"
+    },
+    {
+      "expected_hash": "95fce5448edc44eb35ce8972ade5c98475f9d41de6243aa476ec42cdeade2f0e",
+      "file": "grains/050-tool-classify_denial.json"
+    },
+    {
+      "expected_hash": "9641825cace6ff446b2883b072d5d76e93d1ea7bac03213776579c550980d0b7",
+      "file": "grains/060-tool-split_denials.json"
+    },
+    {
+      "expected_hash": "56604a0bbeabdddc7c3f9ee4ff0a56f4c0d48ff6b30a32b20ecfa49679901889",
+      "file": "grains/070-skill-denial-judgment.json"
+    },
+    {
+      "expected_hash": "d32a9b993b1fed95be919b3be922f8fa289d461e71b531f09e12f1a734062a7d",
+      "file": "grains/080-workflow-rcm-denial-optimization.json"
+    },
+    {
+      "expected_hash": "5bf619269f6f119a2459ffe85a3b2ccc96c0d9a7cf10079b79618351248d6c92",
+      "file": "grains/090-trigger-mock.json"
+    }
+  ],
+  "namespace": "org.rcm",
+  "pack": "rcm-optimization",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), lessons: (RECALL facts WHERE namespace = \"org.rcm.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, mappings",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    },
+    "rcm_ctx": {
+      "body": "ASSEMBLE \"rcm_ctx\" FROM judgment: (RECALL skills LIMIT 2), desk: (RECALL facts WHERE namespace = \"org.rcm.*\" LIMIT 200) BUDGET 4000 tokens FORMAT json",
+      "description": "what the desk must know before it opens a remittance",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "session"
+        }
+      ],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "mapping_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}} ({{confidence}})\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

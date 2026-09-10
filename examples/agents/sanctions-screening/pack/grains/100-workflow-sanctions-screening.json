@@ -1,0 +1,67 @@
+{
+  "bindings": {
+    "block": "f43cad255e31f072ccc74f7451f09e19cce55ea964e52c4112fa901ea682754a",
+    "officer_review": "5fe2609ea0e10253adc02e1f7b3e2976f7c637ca06f99864ac44710df6629836",
+    "open_case": "72339275f9f826f9aa6dfe29098380549089d79493e21fb0bece5b0721864bbf",
+    "record_disposition": "e1927a2c7ccb8ac884b8e3900fdef5e8cee07c42ab637644dccc045db9618dd5",
+    "release": "d9cbe9c8fe0006dc7dddaa7cabcea312db127c3e12114cc23047a66d21ce2990",
+    "screen": "d7bc80a6e5be5ea205f1263648f157efbcd10bb20bfa96d5dcd3c80413a8c570",
+    "triage": "151b00d40708efa76acc9eb9f04a69f2c8db58afa6c00c963b4f846b32bd981c"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "triage",
+      "src": "screen"
+    },
+    {
+      "cond": "needs_review == false",
+      "dst": "release",
+      "src": "triage"
+    },
+    {
+      "cond": "needs_review == true",
+      "dst": "open_case",
+      "src": "triage"
+    },
+    {
+      "dst": "officer_review",
+      "src": "open_case"
+    },
+    {
+      "cond": "decision == \"release\"",
+      "dst": "release",
+      "src": "officer_review"
+    },
+    {
+      "cond": "decision == \"block\"",
+      "dst": "block",
+      "src": "officer_review"
+    },
+    {
+      "cond": "decision == \"false_positive\"",
+      "dst": "record_disposition",
+      "src": "officer_review"
+    },
+    {
+      "dst": "release",
+      "src": "record_disposition"
+    }
+  ],
+  "name": "sanctions-screening",
+  "namespace": "org.ops",
+  "nodes": [
+    "screen",
+    "triage",
+    "open_case",
+    "officer_review",
+    "record_disposition",
+    "release",
+    "block"
+  ],
+  "retries": {
+    "screen": 1
+  },
+  "type": "workflow"
+}

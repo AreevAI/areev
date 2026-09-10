@@ -24,6 +24,24 @@ stack's seeder pins `created_at`: **all stacks of one agent must mint the
 identical plan hash**. That turns "did a stack drift?" into a string
 comparison.
 
+Each agent also carries a `pack/` — the same agent as an installable pack
+(`docs/pack.md`), **exported from its own freshly seeded memory** rather than
+written by hand, because the grains a pack installs and the grains a seeder
+writes must be the same grains. `run-smokes.sh` adds a `pack` lane that
+installs it into a scratch memory and asserts it carries the plan the language
+stacks mint. Regenerate after changing a seeder:
+
+```bash
+PYTHON=.venv/bin/python examples/agents/export-packs.sh          # all of them
+PYTHON=.venv/bin/python examples/agents/export-packs.sh due-diligence
+```
+
+The lane needs the `areev` binary (`cargo build -p areev`, or `AREEV=<path>`)
+and skips loudly without one. It is what goes stale when a seeder changes and
+the packs were not regenerated — and it fails rather than installing last
+week's agent. Note that a pack is a snapshot: trigger grains carry the wall
+clock, so a regeneration rewrites those files even when nothing else moved.
+
 ## Run locally (before pushing to main)
 
 ```bash
@@ -50,6 +68,9 @@ entry point with skips forbidden:
 ```yaml
 REQUIRE="python typescript rust" examples/agents/run-smokes.sh
 ```
+
+The pack lane runs there too, as long as the job has a built binary; add
+`pack` to `REQUIRE` to make its skip a failure.
 
 Local and CI share one script on purpose: a green local run predicts a
 green job, and there is no second harness to drift.

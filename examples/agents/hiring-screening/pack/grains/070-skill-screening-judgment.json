@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk reads an application against a requisition",
+  "instructions": "Check only what the requisition published, and check it the same way for everybody. A criterion the application does not mention is NOT EVIDENCED, which is a question for the first call and never a screen-out. An application we cannot read is a handling failure, never a rejection. Every advance and every reject is a named person's decision with a written reason.",
+  "name": "screening-judgment",
+  "namespace": "org.talent",
+  "type": "skill"
+}

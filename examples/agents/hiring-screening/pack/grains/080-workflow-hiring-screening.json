@@ -1,0 +1,54 @@
+{
+  "bindings": {
+    "advance": "825e37db682eda9c6ded2c9afbea0e28ed90a64c25ad46f5a536f2ad4794d1eb",
+    "check_criteria": "ae8d5d68f4f52cb216cc9fbdb65da72a07c06e032f417041222693f7b3bf95e0",
+    "close": "e2425362b1f1c91a67318ad34b7c4a959573c8b1d277c1705448f1244784a5cc",
+    "parse_application": "5413b4a8e9ada0af48c06b4240ae65cb0846fd0ce8f72273d839702cf7ef5edf",
+    "recruiter_review": "be98837c9e2697ab8bb5ada23ec8f2db48f244cc2f2e20338c4ecae71a1b720d",
+    "reject": "b755238e15fe97e8950c590b8293d947f17ecd26c6749d21910c2119594a9efd"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "check_criteria",
+      "src": "parse_application"
+    },
+    {
+      "dst": "recruiter_review",
+      "src": "check_criteria"
+    },
+    {
+      "cond": "decision == \"advance\"",
+      "dst": "advance",
+      "src": "recruiter_review"
+    },
+    {
+      "cond": "decision == \"reject\"",
+      "dst": "reject",
+      "src": "recruiter_review"
+    },
+    {
+      "dst": "close",
+      "src": "advance"
+    },
+    {
+      "dst": "close",
+      "src": "reject"
+    }
+  ],
+  "name": "hiring-screening",
+  "namespace": "org.talent",
+  "nodes": [
+    "parse_application",
+    "check_criteria",
+    "recruiter_review",
+    "advance",
+    "reject",
+    "close"
+  ],
+  "retries": {
+    "parse_application": 1
+  },
+  "type": "workflow"
+}

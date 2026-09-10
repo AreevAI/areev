@@ -1,0 +1,58 @@
+{
+  "grains": [
+    {
+      "expected_hash": "a7d78075c140dbb15800a8442a8a6a7e738358cc65c25aecb7a4bbf0966b28d6",
+      "file": "grains/010-tool-close.json"
+    },
+    {
+      "expected_hash": "4f0dc9b3d8050a0ddb9f922654240f0378974560a0a3aec08489545861b928c9",
+      "file": "grains/020-tool-disclose_only.json"
+    },
+    {
+      "expected_hash": "361956703cbdb4a0fd03caa05cd3bcce0b753cb3a10e14d473a692640f429062",
+      "file": "grains/030-tool-erase.json"
+    },
+    {
+      "expected_hash": "6cff5d5a3bb141b9b29ed7769eda568bcd99ca740e3776d04bbead29dc06bf2a",
+      "file": "grains/040-tool-dpo_review.json"
+    },
+    {
+      "expected_hash": "3b1448cb63a6c739b5d6f0271eb9fab222b53809faec0c6563dbb830a3450ae4",
+      "file": "grains/050-tool-build_report.json"
+    },
+    {
+      "expected_hash": "623ebcc3f5665b30f81c5242fe1bf738ee9dc1c2b07d387d1dadc2e50d7ea01f",
+      "file": "grains/060-tool-identify_subject.json"
+    },
+    {
+      "expected_hash": "9ed0ce7d6079fa6e00aef0a03ab724b9a3f76cbbfd65502fc53bf9c7b88b42a1",
+      "file": "grains/070-skill-dsar-judgment.json"
+    },
+    {
+      "expected_hash": "1fddd1d71a959adb78de2c701a3c9e08161aa4867cf9818573bd0f7d637f00b5",
+      "file": "grains/080-workflow-data-subject-request.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "data-subject-requests",
+  "queries": {
+    "desk_rules": {
+      "body": "ASSEMBLE \"desk_rules\" FROM plan: (RECALL workflows LIMIT 3), judgment: (RECALL skills LIMIT 2), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), rules: (RECALL facts WHERE namespace = \"org.privacy\" LIMIT 60) BUDGET 3000 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, declared rules",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977861
+    }
+  },
+  "templates": {
+    "rule_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}}\n}\n",
+      "updated_at": 1788977861
+    }
+  },
+  "version": "1.0.0"
+}

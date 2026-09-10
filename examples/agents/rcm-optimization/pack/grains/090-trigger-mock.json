@@ -1,0 +1,17 @@
+{
+  "because": "work every payer remittance the day it lands",
+  "confidence": 1.0,
+  "connector": "mock",
+  "context_query": "rcm_ctx($session = /remit_id)",
+  "created_at": 1788977862655,
+  "dedup_key": [
+    "/remit_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.rcm",
+  "scope": "feed:remittance",
+  "type": "trigger",
+  "workflow": "d32a9b993b1fed95be919b3be922f8fa289d461e71b531f09e12f1a734062a7d"
+}

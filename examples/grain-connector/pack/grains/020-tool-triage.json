@@ -1,0 +1,9 @@
+{
+  "id": "triage",
+  "type": "tool",
+  "tool_name": "triage",
+  "kind": "definition",
+  "tool_description": "A person decides what to do with the message.",
+  "executor_kind": "client",
+  "created_at": 1788134400000
+}
