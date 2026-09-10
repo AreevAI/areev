@@ -45,9 +45,15 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 python3 stub-vendor.py "$PORT" > "$OUT/stub.log" 2>&1 &
 STUB=$!
 trap 'kill "$STUB" 2>/dev/null || true' EXIT INT TERM
-# Wait for it rather than sleeping a guess.
+# Wait for it rather than sleeping a guess. The probe is python3 — which this
+# example already requires, since the stub IS python3 — and not bash's
+# `/dev/tcp`: this script is `#!/bin/sh`, and on Ubuntu that is dash, which has
+# no such device. (macOS's `/bin/sh` is bash, which is why a `/dev/tcp` probe
+# passes locally and hangs in CI — the worst possible split.)
 i=0
-while ! (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; do
+until python3 -c "import socket, sys
+s = socket.socket(); s.settimeout(0.2)
+sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT)) == 0 else 1)" 2>/dev/null; do
   i=$((i + 1)); [ "$i" -lt 100 ] || fail "the stub upstream never came up on :$PORT"
   sleep 0.1
 done

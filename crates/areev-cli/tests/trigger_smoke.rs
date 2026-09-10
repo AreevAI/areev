@@ -620,12 +620,23 @@ fn a_connector_named_as_a_grain_is_stored_and_refused_until_the_host_pins_it() {
     assert!(both.contains(&pin), "the refusal must name the address to pin: {both}");
 
     // With the pin, the same poll runs the code the declaration names.
-    let (pinned_db, pin) = install("pinned.db");
-    let (ok, out, err) = areev(&[
-        "trigger", "run", "--db", &pinned_db, "--ns", "watch", "--allow-executor", &pin,
-        "--format", "json",
-    ]);
-    assert!(ok, "a pinned connector must run: {err} {out}");
-    assert!(!out.contains("TRG-E012"), "{out}");
-    assert!(out.contains("\"claimed\": 1") || out.contains("\"claimed\":1"), "{out}");
+    //
+    // Unix only, and not because of a test harness quirk: a pinned NATIVE blob
+    // is a program, so it is platform-specific by construction — `docs/run.md`
+    // says to pin per platform — and this pack carries a `#!/bin/sh` one.
+    // Everything above is the part that must hold everywhere: the flag reaches
+    // the declaration, and an unpinned or wrongly-pinned host refuses. What is
+    // skipped here is only "and then it ran", which `grain_connector_tests`
+    // pins the same way.
+    #[cfg(unix)]
+    {
+        let (pinned_db, pin) = install("pinned.db");
+        let (ok, out, err) = areev(&[
+            "trigger", "run", "--db", &pinned_db, "--ns", "watch", "--allow-executor", &pin,
+            "--format", "json",
+        ]);
+        assert!(ok, "a pinned connector must run: {err} {out}");
+        assert!(!out.contains("TRG-E012"), "{out}");
+        assert!(out.contains("\"claimed\": 1") || out.contains("\"claimed\":1"), "{out}");
+    }
 }
