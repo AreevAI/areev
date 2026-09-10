@@ -46,7 +46,9 @@ pub use executor::{
     env_allow_policy, is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor,
     CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
 };
-pub use manifest::{abstract_nodes, BudgetsSpec, ForkBase, PinnedTool, RunManifest};
+pub use manifest::{
+    abstract_nodes, pin_from_definition, BudgetsSpec, ForkBase, PinnedTool, RunManifest,
+};
 pub use runner::{ns_in_scope, CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
 pub use stream::{RunEvent, RunObserver};

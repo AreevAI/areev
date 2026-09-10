@@ -39,6 +39,7 @@ fn evaluator(facade: &Arc<AreevFacade>, clock: &Arc<FixedClock>, node: &str) -> 
         facade: Arc::clone(facade),
         clock: Arc::clone(clock) as Arc<dyn Clock>,
         connector: None,
+        connector_code: None,
         starter: None,
         credentials: Default::default(),
         ns: NS.into(),

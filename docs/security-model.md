@@ -793,8 +793,9 @@ Each of the following is worth stating because it closes a specific hole:
   `tool_env=`/`toolEnv` in the bindings) inverts it: the environment is
   cleared and only the named variables get through, on top of the minimal set
   (`PATH` above all) without which a bare command name resolves to nothing.
-  It applies to `--tool-cmd`, to a `trigger run` connector, and to a pinned
-  **native** blob; the sandbox seam already clears and is unaffected. Naming a
+  It applies to `--tool-cmd`, to a `trigger run` connector (either kind), and
+  to a pinned **native** blob; the sandbox seam already clears and is
+  unaffected. Naming a
   variable Areev was already told holds a secret does **not** re-admit it: the
   name is dropped and reported, so the #100 invariant stays unconditional
   rather than becoming "unless the operator asked". The one deliberate
@@ -967,7 +968,13 @@ plainly too:
 
 The authorization deliberately does not live in the file. An operator pins
 addresses with `areev run start --allow-executor <addr>`, which is host
-configuration, never a grain. There is no CAL grant form for this and there
+configuration, never a grain. Since 1.7.4 the same pin governs a **trigger's
+connector** (`connector_tool`, #185): a polling connector may be a Definition
+carrying a blob rather than a `--connector-cmd` script, and it runs only where
+`areev trigger run --allow-executor <addr>` says so — refused with `TRG-E012`
+otherwise, before a broker is started. That path matters more than it looks:
+a heartbeat runs unattended, so it is the one surface where an unauthorized
+blob would execute with nobody reading the output. There is no CAL grant form for this and there
 should not be: `mg:permits` Facts replicate, and a permission that arrives in
 the same bundle as the code it authorizes is not a permission. This is the same
 split that keeps trigger evaluation state and host config out of the file.

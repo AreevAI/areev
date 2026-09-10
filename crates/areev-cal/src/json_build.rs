@@ -140,6 +140,7 @@ fn type_known_fields(grain_type: &str) -> &'static [&'static str] {
             "kind",
             "workflow",
             "connector",
+            "connector_tool",
             "scope",
             "enabled",
             "dedup_key",
@@ -337,6 +338,7 @@ fn build_trigger_from_json(
 
     let mut t = Trigger::new(kind, &workflow);
     t.connector = get_str("connector");
+    t.connector_tool = get_str("connector_tool");
     t.scope = get_str("scope");
     t.enabled = fields.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     t.dedup_key = strings("dedup_key");

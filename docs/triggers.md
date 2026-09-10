@@ -194,6 +194,69 @@ back to the embedded tier. See [run.md](run.md#backend-divergence-reading-the-me
 
 ## The connector contract
 
+A connector comes in two shapes, and they answer the same request with the same
+JSON. What differs is where the code lives — and therefore what can be proved
+about it:
+
+| | **A host command** (`--connector-cmd`) | **A grain** (`connector_tool`, 1.7.4, #185) |
+|---|---|---|
+| Where the code lives | a file on the machine running the heartbeat | a Tool Definition in the memory, `executor_uri` → a CAS blob |
+| Travels in a bundle | no | yes |
+| `areev tool provenance` | nothing to chase | chases the blob |
+| The loop can revise it | no — a `code_revision` cannot see it | yes, under the Rule E1 evalset gate |
+| Isolation | none: it runs as you | `wasm32-areev-io` under areev-sandbox — no socket, no filesystem, no clock |
+| What authorizes it | having installed the file | `--allow-executor <address>` on the evaluating host |
+
+The spec-level record for the field is
+[`oms-1.7-amendments-connector-tool.md`](oms-1.7-amendments-connector-tool.md).
+
+The grain form is the one to reach for when a connector is a real integration:
+cursor bugs, pagination edge cases and provider quirks are exactly the failures
+a gated code revision is built to fix, and they are invisible to a loop that
+cannot see the code.
+
+### Naming the connector's code (`connector_tool`)
+
+```bash
+areev trigger add --db ap.db --ns accounting --type polling   --workflow <PLAN> --observer gmail --connector-tool <TOOL DEFINITION HASH>   --interval 900 --dedup-key /message_id   --because "the AP desk watches this mailbox"
+```
+
+The trigger names a **Definition**, not a blob, because a blob is bytes: the
+runtime, the limits and above all the `capabilities` declaration that decides
+where the code may reach live on the Definition, and a second place to write
+them would be a second place for them to disagree. `--observer`/`--connector`
+still names the connector beside it, and must: the run id is derived from
+`(trigger, connector, dedup value)`, so revising the code must not renumber the
+runs.
+
+Running it takes the same flags the run path takes, and means the same things
+by them:
+
+```bash
+areev trigger run --db ap.db --ns accounting   --allow-executor <64 hex> --sandbox-cmd areev-sandbox   --credential gmail=GMAIL_TOKEN
+```
+
+**Nothing runs that this host did not pin.** A bundle carries the connector's
+code, so a permission arriving in the same bundle as the code it authorizes
+would not be a permission — the authorization deliberately does not live in the
+file. An unpinned connector is `TRG-E012`, naming the address to pin, before a
+broker is started and before anything is spent. The same error covers a
+Definition that carries no `executor_uri`, a declared runtime with no
+`--sandbox-cmd`, and a blob-reading module on an evaluator wired no memory
+locator. Both bindings take the same pin (`allow_executor`, `sandbox_cmd`,
+`executor_cache`, `executor_timeout_secs` on `trigger_run`/`trigger_deliver`),
+and each reads its `$AREEV_RUN_*` variable, because a heartbeat is a cron line.
+
+A grain connector's declared capabilities are enforced by the per-poll broker
+exactly as a run's capability tools are (`docs/run.md`, "Capability tools"): a
+`{"http": …}` block reaches only the hosts, methods, credentials and headers it
+names, and `{"blob": {"read": true}}` reads the memory's stored bytes by
+content address — the attachment an earlier poll filed — with every read
+journaled as a `blob_read` Observation. `examples/grain-connector/` is a
+keyless, offline example of exactly that, with no host script anywhere.
+
+### The wire shape (both kinds)
+
 Same shape as `--tool-cmd`, because a connector **is** a tool: JSON on stdin,
 JSON on stdout, one process per invocation. That means one contract to learn,
 and connectors inherit the spawn hardening every host command gets — a wall-clock
@@ -309,6 +372,7 @@ plan by hand executes it on a heartbeat:
 |---|---|---|---|
 | Host tools | `--tool-cmd` | `tool_cmd` | `$AREEV_RUN_TOOL_CMD` |
 | Polling connector | `--connector-cmd` | `connector_cmd` | `$AREEV_RUN_CONNECTOR_CMD` |
+| A connector that is a grain (#185) | `--allow-executor`, `--sandbox-cmd`, `--executor-cache`, `--executor-timeout` | `allow_executor`, `sandbox_cmd`, `executor_cache`, `executor_timeout_secs` | `$AREEV_RUN_ALLOW_EXECUTOR`, `$AREEV_RUN_SANDBOX_CMD`, `$AREEV_RUN_EXECUTOR_CACHE`, `$AREEV_RUN_EXECUTOR_TIMEOUT` |
 | Code-carrying tools (Tier C) | `--allow-executor` | `allow_executor` | `$AREEV_RUN_ALLOW_EXECUTOR` |
 | Sandbox dispatch (`runtime`) | `--sandbox-cmd` | `sandbox_cmd` | `$AREEV_RUN_SANDBOX_CMD` |
 | Prepared-code cache | `--executor-cache` | `executor_cache` | `$AREEV_RUN_EXECUTOR_CACHE` |
@@ -635,6 +699,14 @@ trigger only the credentials its connector actually needs, and prefer one
 connector per service — the same "one capability tool per service" guidance the
 run path had before the pairing existed.
 
+A **grain** connector narrows this from the other side. Its Definition's
+`capabilities` declaration is registered with the per-poll broker under the
+connector's own name, and the effective reach is `declared ∩ granted` on every
+call — so a connector that declared one host, one method and one credential
+cannot spend the others even though the pass's grant carries them. That is the
+same asymmetry the run path has: the grant is what the operator allowed, the
+declaration is what the code says it needs, and both have to say yes.
+
 Why this rather than a sandbox: a polling connector legitimately needs the
 network *and* the credential, so isolation does not constrain what actually goes
 wrong. The January 2026 n8n community-node compromise exfiltrated decrypted
@@ -853,3 +925,4 @@ the seam does and does not guarantee.
 | `TRG-E009` | the connector tried to reach a disallowed host |
 | `TRG-E010` | the store failed underneath the evaluator |
 | `TRG-E011` | a connector's blob payload violated the contract (bad base64, dangling `"@N"`, budget overrun) — the poll refused whole, cursor unmoved |
+| `TRG-E012` | the trigger names its connector as a grain and this host will not run it: no `--allow-executor` pin, an unreadable Definition or blob, a Definition carrying no `executor_uri`, a declared runtime with no `--sandbox-cmd`, or a blob-reading module on an evaluator wired no memory locator. Separate from `TRG-E003` because the fix is different — E003 says *configure a connector*, this says *this specific code is not authorized here*, and names the address to pin |

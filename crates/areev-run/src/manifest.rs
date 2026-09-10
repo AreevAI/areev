@@ -350,11 +350,23 @@ impl RunManifest {
     }
 }
 
-fn pin_from_definition(
-    node: &str,
+/// Read a Tool Definition into the pinned shape a run (or a trigger's
+/// connector, #185) executes under: name, executor kind, `executor_uri`,
+/// runtime, limits and capability declaration, each either dispatchable or
+/// refused by name.
+///
+/// `label` is what a refusal calls the caller — a node name on the run path,
+/// the connector name on the trigger path. Public because the trigger
+/// evaluator resolves a connector Definition the same way and must reach the
+/// same verdict: two readers of one declaration would drift the first time
+/// either moved, and the one that drifts quietly is the heartbeat nobody
+/// watches.
+pub fn pin_from_definition(
+    label: &str,
     h: &Hash,
     g: &areev_core::format::deserialize::DeserializedGrain,
 ) -> std::result::Result<PinnedTool, RunError> {
+    let node = label;
     if g.get_str("kind") != Some("definition") {
         return Err(RunError::UnresolvedRef {
             what: format!(

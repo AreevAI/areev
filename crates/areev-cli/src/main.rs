@@ -116,6 +116,13 @@ COMMANDS:
                                       ...)` — pointers resolve against the
                                       firing item's payload (fail-closed)
            [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
+           [--connector-tool HASH]    the connector's CODE as a grain: a Tool
+                                      Definition whose executor_uri carries the
+                                      blob. --observer/--connector still names
+                                      it (that name is half the run-id dedup
+                                      identity). Nothing runs unless the
+                                      evaluating host pinned the address with
+                                      --allow-executor
            [--scope S] [--dedup-key PTR] [--catchup last|none|all]
            [--where EXPR] [--members ALIAS=HASH,...] [--correlate PTR]
            [--window 10m]
@@ -139,7 +146,9 @@ COMMANDS:
                                       A firing gets the SAME runner `run start`
                                       builds: the executor pin, the sandbox and
                                       the model all reach it, so a plan that
-                                      runs by hand runs on a heartbeat. Every
+                                      runs by hand runs on a heartbeat — and
+                                      the same pin decides whether a trigger's
+                                      own --connector-tool code may run. Every
                                       one of those also reads its $AREEV_RUN_*
                                       variable, because a heartbeat is a cron
                                       line, not an interactive command.
@@ -3565,7 +3574,10 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
         "anonymize" => run_anonymize(m, &flags, &positional)?,
         "trigger" => {
-            return trigger_cli::run_trigger(m, &ns, &flags, &positional);
+            // The locator rides along so a connector module declaring
+            // `{"blob": {"read": true}}` can be served by the per-poll broker
+            // (#185): the read never opens the memory the evaluator holds.
+            return trigger_cli::run_trigger(m, &ns, &db, &flags, &positional);
         }
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;
