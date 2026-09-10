@@ -277,7 +277,7 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|cancel|list|inspect|verify|fork|shadow|
+  run      <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|
            oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
@@ -314,7 +314,10 @@ COMMANDS:
            command may itself contain '@'. --resolver-env names the variables
            a resolver needs for its OWN authentication ($VAULT_TOKEN,
            $AWS_PROFILE): they are withheld from every other subprocess and
-           re-admitted only for resolvers;
+           re-admitted only for resolvers. All five also read their
+           $AREEV_RUN_CREDENTIAL / _ALLOW_HOST / _TOOL_EGRESS /
+           _CREDENTIAL_TTL / _RESOLVER_ENV variable (the flag wins), which
+           is how `areev serve` and a heartbeat configure the broker;
            --allow-executor pins the content address of a code-carrying tool
            (a Definition whose executor_uri names a cas:// blob). Nothing
            code-carrying runs unpinned, because the blob travels with the
@@ -341,6 +344,10 @@ COMMANDS:
            rather than name what it must not. A bare --tool-env passes nothing
            but that minimal set. Naming a variable already registered as
            holding a secret does NOT re-admit it: it is dropped and reported;
+           input --run-id ID --message TEXT [--as PRINCIPAL] queues a
+           steering message: the next superstep hands it to its nodes under
+           `$inbox`, so a person redirects a running run in band instead of
+           through a human-gate ask;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run. `areev run demo` seeds the
            10-minute proof
@@ -1462,8 +1469,9 @@ fn run() -> Result<(), String> {
     // entry in the list above (#100). `Credential::bearer_from_env` registers
     // the core seam for every host that reads one; this adds the loop mirror,
     // and does it HERE rather than in `build_egress` because the choke point
-    // runs before any verb arm can spawn.
-    if let Some(list) = flag(&flags, "credential") {
+    // runs before any verb arm can spawn. The variable spelling (#201) is
+    // read here too: a secret named out of band is still a secret.
+    if let Some(list) = run_stack::flag_or_env(&flags, "credential", areev_run::egress_spec::ENV_CREDENTIAL) {
         for pair in list.split(',') {
             if let Some((_, spec)) = pair.split_once('=') {
                 let spec = spec.trim();
@@ -1505,7 +1513,7 @@ fn run() -> Result<(), String> {
     // environment would put it inside every `--tool-cmd` subprocess — the #100
     // leak reopened one level up. Withheld from every child here, and
     // re-admitted only for resolver spawns (`CredentialSource::spawn_policy`).
-    if let Some(list) = flag(&flags, "resolver-env") {
+    if let Some(list) = run_stack::flag_or_env(&flags, "resolver-env", areev_run::egress_spec::ENV_RESOLVER_ENV) {
         for var in list.split(',').map(str::trim).filter(|v| !v.is_empty()) {
             areev_core::proc::deny_env_var(var);
             areev_loop::proc::deny_env_var(var);
@@ -2599,6 +2607,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             }
             let facade = apply_principal(facade, &flags)?;
             let mut server = areev_mcp::McpServer::new(facade, None)
+                .with_memory_path(&db)
                 .assembly_manifest_sample_rate(assembly_manifest_sample_rate(&flags)?);
             if flags.contains_key("no-destructive-ops") {
                 server = server.allow_destructive_ops(false);
@@ -4105,6 +4114,15 @@ fn run_run(
                 .map_err(|e| e.to_string())?;
             println!("response recorded — `areev run resume --run-id {run_id}` to continue");
         }
+        "input" => {
+            let run_id = need("run-id", "areev run input --run-id ID --message TEXT")?;
+            let message = need("message", "areev run input --run-id ID --message TEXT")?;
+            runner.input(&run_id, &message, &principal).map_err(|e| e.to_string())?;
+            println!(
+                "steering message queued for '{run_id}' — the next superstep hands it \
+                 to its nodes under `$inbox`"
+            );
+        }
         "cancel" => {
             let run_id = need("run-id", "areev run cancel --run-id ID [--because \"why\"]")?;
             let because = flag(flags, "because").unwrap_or_else(|| "canceled".into());
@@ -4296,7 +4314,7 @@ fn run_run(
         other => {
             return Err(format!(
                 "unknown run subcommand '{other}' — usage: areev run \
-                 <start|resume|respond|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
+                 <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
             ))
         }
     }

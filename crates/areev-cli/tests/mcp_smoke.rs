@@ -104,7 +104,7 @@ fn mcp_round_trip() {
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 25);
+    assert_eq!(tools.len(), 26);
     for memory_tool in ["areev_search", "areev_nearest"] {
         assert!(
             tools.iter().any(|t| t["name"] == memory_tool),
@@ -115,6 +115,7 @@ fn mcp_round_trip() {
         "areev_run_start",
         "areev_run_resume",
         "areev_run_respond",
+        "areev_run_input",
         "areev_run_cancel",
         "areev_run_verify",
         "areev_run_list",
@@ -717,7 +718,7 @@ fn mcp_supersede_runs_touching_and_recommendations() {
 /// and a client that calls one anyway (stale tool cache, hand-rolled request)
 /// gets a named refusal, not a crash or a silent no-op. `--profile full`
 /// (the default) is unaffected, so this only checks the narrowed side —
-/// `mcp_round_trip` above already exercises the full 25-tool surface.
+/// `mcp_round_trip` above already exercises the full 26-tool surface.
 #[test]
 fn mcp_profile_memory_hides_run_tools() {
     let dir = TempDir::new().unwrap();
@@ -760,7 +761,7 @@ fn mcp_profile_memory_hides_run_tools() {
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12, "memory profile: 25 minus the 13-tool run/loop family");
+    assert_eq!(tools.len(), 12, "memory profile: 26 minus the 14-tool run/loop family");
     for run_tool in ["areev_run_start", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
         assert!(
             !tools.iter().any(|t| t["name"] == run_tool),
@@ -1025,4 +1026,67 @@ fn mcp_mount_of_a_missing_file_is_refused_not_created() {
         !std::path::Path::new(missing).exists(),
         "and it must not have created the file"
     );
+}
+
+// ---- #201: the broker from `areev serve`, configured out of band ----------
+
+#[cfg(unix)]
+#[path = "common/egress201.rs"]
+mod egress201;
+
+/// `$AREEV_RUN_CREDENTIAL` / `$AREEV_RUN_ALLOW_HOST` / `$AREEV_RUN_TOOL_EGRESS`
+/// at server start are the CLI flags' grammar, server-bound like
+/// `$AREEV_RUN_TOOL_CMD`: an MCP client cannot hand itself a credential.
+#[cfg(unix)]
+#[test]
+fn a_capability_tool_reaches_the_broker_the_server_was_started_with() {
+    let up = egress201::upstream();
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("e.db");
+    let db = db.to_str().unwrap();
+    let cache = dir.path().join("execache");
+    let sandbox = egress201::sandbox_cmd();
+    let (wf, addr) = egress201::declare(db, &up.url);
+    let (creds, hosts, egress) = egress201::grants(&up.url);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["serve", "--mcp", "--db", db, "--ns", "ops"])
+        .envs(egress201::SECRETS)
+        .env("AREEV_RUN_ALLOW_EXECUTOR", &addr)
+        .env("AREEV_RUN_EXECUTOR_CACHE", cache.to_str().unwrap())
+        .env("AREEV_RUN_SANDBOX_CMD", &sandbox)
+        .env("AREEV_RUN_CREDENTIAL", &creds)
+        .env("AREEV_RUN_ALLOW_HOST", &hosts)
+        .env("AREEV_RUN_TOOL_EGRESS", &egress)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let script = [
+        rpc(1, "initialize", serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})),
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+        rpc(2, "tools/call", serde_json::json!({"name": "areev_run_start", "arguments": {
+            "workflow": wf, "run_id": "mcp-1"}})),
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in &script {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let started = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["id"] == 2)
+        .unwrap_or_else(|| panic!("no reply to run_start: {stdout}"));
+    let text = started["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("Completed"), "{started}");
+
+    let (result, refusals) = egress201::outcome(db, "mcp-1");
+    egress201::assert_outcome(&result, &refusals, "mcp");
 }

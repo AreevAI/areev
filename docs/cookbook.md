@@ -1222,6 +1222,9 @@ AREEV_RUN_ALLOW_EXECUTOR=1671652297b93a6a… \
 AREEV_RUN_SANDBOX_CMD=/usr/local/bin/areev-sandbox \
 AREEV_RUN_EXECUTOR_TIMEOUT=900 \
 AREEV_RUN_MODEL=claude-sonnet-5 \
+AREEV_RUN_CREDENTIAL=outlook=OUTLOOK_TOKEN \
+AREEV_RUN_ALLOW_HOST=https://graph.microsoft.com \
+AREEV_RUN_TOOL_EGRESS=send_reply:outlook:POST \
   areev trigger run --db ap.db --ns accounting --max-usd 0.25 --ask-ttl 3600
 ```
 

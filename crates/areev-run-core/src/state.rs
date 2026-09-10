@@ -147,6 +147,10 @@ pub struct AbstractFlow {
     pub unknown_strikes: u32,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 /// The complete scheduler state. Serialized (as JSON) into each checkpoint's
 /// `context_data`; byte-stability across resumes is what the
 /// replay-equivalence gate compares.
@@ -192,7 +196,7 @@ pub struct SchedulerState {
     /// by index).
     pub pending_asks: BTreeMap<String, PendingAsk>,
     /// In-flight abstract-node LLM loops, by node index.
-    pub abstract_flows: BTreeMap<usize, AbstractFlow>,
+    pub abstract_flows: BTreeMap<String, AbstractFlow>,
     /// Send-spawned tasks by `task_path`. A target node shows `Dispatched`
     /// while its batch is unresolved and completes when the batch drains.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -205,6 +209,13 @@ pub struct SchedulerState {
     /// Ask ids already announced in an envelope — a parked run polled again
     /// must not re-emit its envelope every step call.
     pub announced_asks: BTreeSet<String>,
+    /// Steering messages queued since the last superstep opened, INERT
+    /// until one does: an open moves them into `context` under `$inbox`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbox: Vec<Value>,
+    /// How many steering messages the run has ever accepted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inputs_seen: u64,
     /// A cancel marker observed (drain in progress).
     pub cancel: Option<(String, String)>,
     /// A budget axis exhausted mid-superstep (per-dispatch reservation,
@@ -243,6 +254,8 @@ impl SchedulerState {
             send_tasks: BTreeMap::new(),
             spawn_counter: BTreeMap::new(),
             announced_asks: BTreeSet::new(),
+            inbox: Vec::new(),
+            inputs_seen: 0,
             cancel: None,
             exhausted: None,
             failed: None,

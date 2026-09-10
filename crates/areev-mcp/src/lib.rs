@@ -59,7 +59,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Latest MCP protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Which slice of the 25-tool surface a session advertises and accepts.
+/// Which slice of the 26-tool surface a session advertises and accepts.
 /// `Full` (the default — unchanged prior behavior) is every tool; `Memory`
 /// drops the workflow-runtime family (`run_*`, `areev_loop`,
 /// `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
@@ -93,6 +93,7 @@ const RUN_FAMILY: &[&str] = &[
     "areev_run_start",
     "areev_run_resume",
     "areev_run_respond",
+    "areev_run_input",
     "areev_run_cancel",
     "areev_run_verify",
     "areev_run_list",
@@ -118,6 +119,9 @@ pub struct McpServer {
     /// process start, never controllable by the MCP client.
     loop_policy: Option<areev_loop::Policy>,
     assembly_manifest_sample_rate: f64,
+    /// The memory's path or DSN, when the host told us: the credential
+    /// broker's blob door (`{"blob": {"read": true}}`) serves from it.
+    memory_path: Option<String>,
 }
 
 impl McpServer {
@@ -137,7 +141,15 @@ impl McpServer {
             locked_ns: None,
             loop_policy: None,
             assembly_manifest_sample_rate: 0.0,
+            memory_path: None,
         }
+    }
+
+    /// Name the memory this server opened, so a run's credential broker can
+    /// serve its blobs (#201). Host config; an MCP client cannot set it.
+    pub fn with_memory_path(mut self, path: impl Into<String>) -> Self {
+        self.memory_path = Some(path.into());
+        self
     }
 
     /// Attach a host loop policy so an MCP-triggered `areev_loop` run
@@ -187,10 +199,24 @@ impl McpServer {
     /// ceiling either executor otherwise runs a tool under — `0` waits
     /// forever, an unparseable value is ignored and the default stands.
     /// `$AREEV_RUN_TOOL_ENV` (the CLI's `--tool-env`) clears the tool's
-    /// environment down to the variables it names. The
+    /// environment down to the variables it names. The credential broker
+    /// (#201) reads `$AREEV_RUN_CREDENTIAL`, `$AREEV_RUN_ALLOW_HOST`,
+    /// `$AREEV_RUN_TOOL_EGRESS`, `$AREEV_RUN_CREDENTIAL_TTL` and
+    /// `$AREEV_RUN_RESOLVER_ENV` — the CLI flags' grammar verbatim, and
+    /// server-bound for the same reason as the pin. The
     /// principal is always [`run_identity`](Self::run_identity)'s
     /// server-bound value — callers pass it through, never a client string.
-    fn runner(&self, principal: &str) -> areev_run::Runner {
+    fn runner(&self, principal: &str) -> Result<areev_run::Runner, String> {
+        let egress: Option<areev_run::EgressHandle> =
+            match areev_run::EgressSpec::from_env()?.build()? {
+                None => None,
+                Some(broker) => {
+                    if let Some(path) = &self.memory_path {
+                        broker.serve_blobs(path);
+                    }
+                    Some(areev_run::EgressHandle::new(std::sync::Arc::new(broker)))
+                }
+            };
         let timeout: Option<Option<std::time::Duration>> = std::env::var("AREEV_RUN_EXECUTOR_TIMEOUT")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
@@ -218,6 +244,9 @@ impl McpServer {
                     }
                     if let Some(p) = env.clone() {
                         ce = ce.with_env_policy(p);
+                    }
+                    if let Some(h) = &egress {
+                        ce = ce.with_egress(h.clone());
                     }
                     std::sync::Arc::new(ce)
                 }
@@ -266,11 +295,14 @@ impl McpServer {
                     if let Some(p) = env {
                         ce = ce.with_env_policy(p);
                     }
+                    if let Some(h) = egress {
+                        ce = ce.with_egress(h);
+                    }
                     std::sync::Arc::new(ce)
                 }
                 _ => executor,
             };
-        areev_run::Runner {
+        Ok(areev_run::Runner {
             facade: std::sync::Arc::clone(&self.facade),
             clock: std::sync::Arc::new(areev_run::SystemClock),
             executor,
@@ -278,7 +310,7 @@ impl McpServer {
             observer: None,
             ns: self.default_ns.clone(),
             principal: principal.to_string(),
-        }
+        })
     }
 
     /// The loop engine for a call: builtins + the host policy when set.
@@ -761,7 +793,7 @@ impl McpServer {
                         .into());
                 }
                 let h = Hash::from_hex(wf).map_err(|e| e.to_string())?;
-                let runner = self.runner(&self.run_identity());
+                let runner = self.runner(&self.run_identity())?;
                 let session = runner
                     .start(&h, run_id, input, &run_opts(args))
                     .map_err(|e| e.to_string())?;
@@ -771,7 +803,7 @@ impl McpServer {
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_resume requires 'run_id'")?;
                 let session = self
-                    .runner(&self.run_identity())
+                    .runner(&self.run_identity())?
                     .resume(run_id, &run_opts(args))
                     .map_err(|e| e.to_string())?;
                 Ok(run_session_json(session).to_string())
@@ -795,18 +827,30 @@ impl McpServer {
                 let responder = self.run_identity();
                 let result = args.get("result").cloned().unwrap_or(Value::Null);
                 let is_error = args.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-                self.runner(&responder)
+                self.runner(&responder)?
                     .respond(run_id, ask, result, is_error, &responder)
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"responded": ask, "run_id": run_id, "responder": responder,
                           "note": "resume the run to spend the compute"}).to_string())
+            }
+            "areev_run_input" => {
+                let run_id = args.get("run_id").and_then(Value::as_str)
+                    .ok_or("areev_run_input requires 'run_id'")?;
+                let message = args.get("message").and_then(Value::as_str)
+                    .ok_or("areev_run_input requires 'message'")?;
+                let who = self.run_identity();
+                self.runner(&who)?
+                    .input(run_id, message, &who)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"queued": run_id, "by": who,
+                          "note": "the next superstep hands it to its nodes under $inbox"}).to_string())
             }
             "areev_run_cancel" => {
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_cancel requires 'run_id'")?;
                 let because = args.get("because").and_then(Value::as_str).unwrap_or("canceled via mcp");
                 let who = self.run_identity();
-                self.runner(&who)
+                self.runner(&who)?
                     .cancel(run_id, &who, because)
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"canceled": run_id}).to_string())
@@ -815,7 +859,7 @@ impl McpServer {
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_verify requires 'run_id'")?;
                 let report = self
-                    .runner("agent:mcp")
+                    .runner("agent:mcp")?
                     .verify(run_id)
                     .map_err(|e| e.to_string())?;
                 serde_json::to_string(&report).map_err(|e| e.to_string())
@@ -823,7 +867,7 @@ impl McpServer {
             "areev_run_list" => {
                 let n = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
                 let ids = self
-                    .runner("agent:mcp")
+                    .runner("agent:mcp")?
                     .recent_runs(n)
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"runs": ids}).to_string())
@@ -1241,6 +1285,14 @@ fn all_tool_defs() -> Vec<Value> {
                 "result": {"description": "the response value as any JSON value"},
                 "is_error": {"type": "boolean", "description": "true = refuse the ask (journaled as UserAborted)"}
             }, "required": ["run_id", "tool_call_id"]}
+        }),
+        json!({
+            "name": "areev_run_input",
+            "description": "Queue a steering message for a running run. The next superstep hands it to its nodes in their input under `$inbox` — an in-band channel, so a chat-style plan does not have to misuse a human-gate ask to receive one.",
+            "inputSchema": {"type": "object", "properties": {
+                "run_id": s("the run to steer"),
+                "message": s("the message text")
+            }, "required": ["run_id", "message"]}
         }),
         json!({
             "name": "areev_run_cancel",

@@ -106,6 +106,13 @@ def test_run_oversight_report(db):
     assert by_plan["run_id"] == "py-oversight"
 
 
+def test_run_input_queues_a_steering_message(db):
+    wf = _plan(db)
+    json.loads(db.run_start(wf, "py-in", tool_cmd='printf \'{"greeting": "hi"}\''))
+    queued = json.loads(db.run_input("py-in", "use the express carrier"))
+    assert queued["queued"] == "py-in"
+
+
 def test_run_cancel_and_fork(db):
     wf = _plan(db)
     session = json.loads(db.run_start(

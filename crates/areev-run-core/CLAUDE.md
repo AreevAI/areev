@@ -59,7 +59,12 @@ journaled events back, assert the same commands come out.
 ## Wave 2 semantics (pinned)
 
 - **Abstract flows** (`AbstractFlow` in state): one LLM loop per node
-  attempt; turns and model-issued tool calls share `effect_seq`. Effect
+  attempt — or per Send task against an abstract target. `abstract_flows` is
+  keyed by `flow_key(node_idx, task_path)`: the bare index for a node's own
+  loop (so the serialized shape never changed), `"<i>@<path>"` for a task's.
+  Iterate it through `flow_owners`, which sorts by (node, path) — a
+  BTreeMap<String> orders "10" before "2", and emission order is canonical
+  node order; turns and model-issued tool calls share `effect_seq`. Effect
   resolution sets `FlowNeed`; `progress_open` EMITS in canonical node order
   (resolution has no command sink — emitting there would be arrival-order).
   Tool failures inside a flow are MODEL-VISIBLE error results, never
@@ -78,10 +83,24 @@ journaled events back, assert the same commands come out.
   `parent/NNNN` with a MONOTONIC per-parent counter (`spawn_counter`) —
   re-entered spawners mint fresh paths, so keys never collide across
   generations; zero-padding makes lexicographic order spawn order. Targets
-  must be Host nodes (v1), never the spawner. The target shows `Dispatched`
+  must be Host or Abstract nodes, never the spawner; an Abstract target
+  gets ONE LLM loop PER TASK, keyed `flow_key(node, task_path)`. The target shows `Dispatched`
   while its batch runs and completes with a Null contribution when the
   batch drains — the join below a fan-out. Task retries are per-task
   attempts against the target's retry budget.
+- **Steering inputs**: `EventIn::InputSeen` only appends to `inbox`. The
+  queue is drained at superstep OPEN (`apply_inbox`), into `context` under
+  `$inbox` — never at `dispatch_node`, or a mid-superstep retry would consume
+  it and replay could no longer place the message from the checkpoint alone.
+- **Bubbled asks**: a Subgraph effect whose result carries `PARKED_ASKS`
+  parks the parent instead of resolving it. The asks are booked under a
+  PRE-ALLOCATED next-ROUND key that stays outstanding (so the superstep
+  holds open) and is what `EventIn::AskForwarded` dispatches — the child
+  resumes under a journal entry of its own, which is also replay's evidence
+  that the ask was forwarded. The pre-allocated key advances `effect_seq`,
+  NEVER `attempt`: the driver derives the child run id from the attempt, so
+  bumping it would forward the answer into a brand-new child — and holding
+  the attempt still is also what keeps a park off the retry budget.
 - **Reducers**: injected via `StepEnv.reduce` (the driver freezes the table
   in the manifest); merge order is static results by node index, then Send
   results by task path.

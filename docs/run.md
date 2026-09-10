@@ -104,7 +104,10 @@ What each piece means:
     parks and waits for `respond`;
   - a binding to another **Workflow grain** is a **subgraph** — it executes
     inline as a child run with its own journal (child run id is
-    deterministic: `parent~<tool_call_id prefix>`).
+    deterministic: `parent~sha256(parent, node, attempt)[..16]`, so a bounded
+    cycle re-running the node gets a fresh child while a park and its answer
+    reach the same one). A child that parks on a human gate **bubbles** its
+    asks to the parent — see below.
   - an **unbound** node (no binding, no same-named Definition grain) is an
     **abstract node** — a journaled LLM tool-calling loop; see below.
 - **`retries`** — `retries: {node: n}` means *n re-attempts* after the
@@ -262,6 +265,27 @@ The broker checks the destination against `--allow-host`, the method and
 credential against that tool's grant, attaches the credential, and makes the
 request. The token never enters the tool's process, so a compromised tool has
 nothing to exfiltrate.
+
+The broker is on every surface that starts a run, not only the CLI (#201).
+The five settings are the same spec strings everywhere, parsed by one parser
+(`areev_run::EgressSpec`), so a spec that works on the CLI works verbatim
+from a binding — and a refusal from a binding-driven run is journaled exactly
+as from the CLI: `403` carrying `RUN-E022` to the tool, an Observation in
+`agent:harness`:
+
+| CLI | Python (`run_start`/`run_resume`/`trigger_run`/`trigger_deliver`) | Node | Environment (`areev serve`, and any surface out of band) |
+|---|---|---|---|
+| `--credential` | `credentials=` | `credentials` | `$AREEV_RUN_CREDENTIAL` |
+| `--allow-host` | `allow_hosts=` | `allowHosts` | `$AREEV_RUN_ALLOW_HOST` |
+| `--tool-egress` | `tool_egress=` | `toolEgress` | `$AREEV_RUN_TOOL_EGRESS` |
+| `--credential-ttl` | `credential_ttl_secs=` | `credentialTtlSecs` | `$AREEV_RUN_CREDENTIAL_TTL` |
+| `--resolver-env` | `resolver_env=` | `resolverEnv` | `$AREEV_RUN_RESOLVER_ENV` |
+
+The variables are server-bound in the sense `$AREEV_RUN_TOOL_CMD` is: read
+at `areev serve` start, never from an MCP client, because the grant IS the
+authorization. A flag wins over its variable. On the trigger surface
+`credentials` configures the connector-poll broker too (owners dropped, as
+one `--credential` flag does both), beside the older `credentials_json`.
 
 `headers` is optional and carries **non-credential** request headers — the
 ones enterprise APIs require and no credential expresses: `X-Goog-User-Project`
@@ -569,6 +593,24 @@ areev run start --db m.db --workflow <plan-hash> \
   --tool-egress 'send_ask:gmail:POST'
 ```
 
+The same run from a binding takes the same spec strings (#201):
+
+```python
+m.run_start(plan, "r1", allow_executor="<64 hex>", sandbox_cmd="areev-sandbox",
+            credentials="gmail=GMAIL_TOKEN",
+            allow_hosts="https://gmail.googleapis.com",
+            tool_egress="send_ask:gmail:POST")
+```
+
+```js
+await m.runStart(plan, 'r1', null, null, null, null, null, null, null, null, null, null,
+  '<64 hex>', null, 'areev-sandbox', null, null, null,
+  'gmail=GMAIL_TOKEN', 'https://gmail.googleapis.com', 'send_ask:gmail:POST')
+```
+
+and `areev serve` reads them from `$AREEV_RUN_CREDENTIAL`,
+`$AREEV_RUN_ALLOW_HOST` and `$AREEV_RUN_TOOL_EGRESS` at start.
+
 **A trigger's connector is one of these too** (#185). A polling trigger may
 name a Definition as its `connector_tool`, and the evaluator resolves it
 through the same reader, pins it with the same `--allow-executor`, dispatches
@@ -578,6 +620,7 @@ holds identically on the heartbeat path, with `TRG-E012` in place of
 `RUN-E018` at the pin. See [`triggers.md`](triggers.md#the-connector-contract).
 Three blessed blobs ship for exactly this shape:
 [`blessed-tools.md`](blessed-tools.md).
+
 
 What is enforced, and where:
 
@@ -744,6 +787,17 @@ resume:
 - `--ask-ttl <sec>` on start bounds how long an ask may sit unanswered.
 - Refusing an ask is a first-class answer: `--is-error true` journals the
   refusal and fails the node as user-aborted.
+- A **subgraph child that parks bubbles its asks to the parent**: the parent
+  node parks on the same `tool_call_id`s, and `respond`/`resume` on the
+  *parent* route to the child. You answer the run you started, however deep
+  the gate sits. The bubble is journaled as the subgraph effect's own result,
+  so `verify` reproduces the park from the parent's journal alone — it never
+  re-runs the child. A bubble round advances the effect's `effect_seq`, not
+  the node's `attempt` — which is what sends the answer back to the *same*
+  child, and what keeps a park off the node's retry budget. Separation of
+  duties is judged against the parent's triggering principal before the
+  answer is forwarded. `--ask-ttl` still applies: an expired bubbled ask is
+  forwarded anyway, and the child's own resume settles it as `Timeout`.
 
 The web console (`areev ui`) surfaces pending asks in its **Runs tab**, which
 groups runs as *Waiting on you* / *In flight* / *Finished* so an ask cannot be
@@ -763,6 +817,39 @@ officer named in the audit record. A proxy-asserted identity keeps every read
 and review; it loses only this verb. Approvers should hold a per-principal
 credential (`areev ui --auth <map>`), whose grants are the same either way —
 what differs is the strength of the proof, not the rights.
+
+## Steering a running run (the input queue)
+
+A person can redirect a run without stopping it, and without a plan having to
+model a human gate just to *receive* a message:
+
+```bash
+areev run input --run-id demo-1 --message "use the express carrier"
+```
+
+Each message is a Fact on the run, journaled in the run's own namespace. The
+run's driver picks it up at its next wave boundary and the **next superstep**
+hands every node it dispatches the queued messages, in order, in their input
+under the reserved key `$inbox`.
+
+The driver applies a message only while a superstep is **open**, and an open
+is the only thing that drains the queue — so a message is inert for the whole
+superstep that observed it. That is what makes `verify` exact: which wave the
+driver happened to poll on cannot show up in a checkpoint, so replay places
+messages by counting the journal against the checkpoint's own `inputs_seen`,
+never against a timestamp.
+
+Three bounds, stated. A message queued *while a node is running* is seen by
+the next superstep, not by the node in flight — an abstract node's LLM loop
+lives inside one superstep, so steering lands after its turn ends. A message
+queued *before the run starts* reaches the second superstep, not the first;
+the first superstep's input is `--input`. And a fork does not inherit the base
+run's queue.
+
+`run.execute` is the verb — steering advances a run, so it is granted like
+starting one, not like the brake. The same surface exists as
+`areev_run_input` (MCP), `db.run_input(run_id, message)` (Python) and
+`m.runInput(runId, message)` (Node).
 
 ## Budgets
 
@@ -877,8 +964,13 @@ Each spawn executes the target node with its own input under a task path
 (`parent/0000`, `parent/0001`, …); the batch joins before the target's
 downstream edges fire. Validation is all-or-nothing (one malformed spawn
 fails the batch, not half of it), and declared reducers (`append`, `sum`, …)
-make the merged results order-independent. Spawn targets are host-bound
-nodes in v1.
+make the merged results order-independent.
+
+A spawn target is a **host tool node or an abstract node** — never a client
+gate, a subgraph, or the spawner itself. Fanning out to an abstract node
+gives each task its own LLM loop, journaled under its own task path
+(`node@parent/0000`), so N documents get N independent agent loops from one
+plan instead of N nodes.
 
 ## Watching a run
 
@@ -1019,10 +1111,10 @@ The same runtime on every surface — one journal, one set of rules:
 
 | Surface | Shape |
 |---|---|
-| CLI | `areev run start/resume/respond/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
-| MCP | the six `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
-| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
+| CLI | `areev run start/resume/respond/input/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
+| MCP | the seven `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other
@@ -1057,10 +1149,8 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
-- Subgraphs run inline on the driver thread; a child that parks on a human
-  gate fails its parent node (ask *bubbling* is not in v1), and parallel
-  subgraph siblings serialize.
-- `Send` targets host-bound nodes only in v1.
+- Subgraphs run inline on the driver thread, so parallel subgraph siblings
+  serialize.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
 - One memory = one writer: while a driver holds the file, another process

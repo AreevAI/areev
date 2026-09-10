@@ -18,6 +18,7 @@
 pub mod broker;
 pub mod clock;
 pub mod egress;
+pub mod egress_spec;
 pub mod executor;
 pub mod journal;
 pub mod lease;
@@ -42,6 +43,7 @@ pub use areev_core::types::capability::AllowedHost;
 // driver does not have to know that.
 pub use areev_core::types::capability::{CapabilityDenied, Declaration};
 pub use egress::{EgressDenied, EgressPolicy};
+pub use egress_spec::EgressSpec;
 pub use executor::{
     env_allow_policy, is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor,
     CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
@@ -49,7 +51,7 @@ pub use executor::{
 pub use manifest::{
     abstract_nodes, pin_from_definition, BudgetsSpec, ForkBase, PinnedTool, RunManifest,
 };
-pub use runner::{ns_in_scope, CrashPoint, OnDangling, RunOptions, Runner};
+pub use runner::{ns_in_scope, subgraph_run_id, CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
 pub use stream::{RunEvent, RunObserver};
 // Downstream hosts (MCP, bindings) speak the run vocabulary without a

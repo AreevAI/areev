@@ -75,7 +75,7 @@ per line to stdout. It handles these methods:
 |---|---|
 | `initialize` | Returns `protocolVersion`, `capabilities.tools`, and `serverInfo` |
 | `ping` | Returns an empty result |
-| `tools/list` | Returns the twenty-five tool definitions (with input schemas), narrowed by `--profile` when set |
+| `tools/list` | Returns the twenty-six tool definitions (with input schemas), narrowed by `--profile` when set |
 | `tools/call` | Invokes a tool by `name` with `arguments` |
 
 Conventions:
@@ -123,12 +123,12 @@ multi-tenant host gives an agent a session it must not escape.
 ### Tool profiles
 
 By default (`--profile full`, the implicit setting) a session advertises and
-accepts all twenty-five tools. `--profile memory` narrows both `tools/list`
+accepts all twenty-six tools. `--profile memory` narrows both `tools/list`
 and `tools/call` to the twelve read/write/query tools (`areev_recall`,
 `areev_search`, `areev_nearest`, `areev_add`, `areev_supersede`,
 `areev_forget`, `areev_remember`, `areev_cal`, `areev_subject_report`,
 `areev_related`, `areev_entity_at`, `areev_step_actions`) and drops the
-thirteen-tool workflow-runtime family (`areev_run_*`, `areev_loop`,
+fourteen-tool workflow-runtime family (`areev_run_*`, `areev_loop`,
 `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
 `areev_run_manifest`). Use this when a host wants Areev purely as chat
 memory — an agent that will never start or approve a governed run doesn't
@@ -144,7 +144,7 @@ areev serve --mcp --db memory.db --profile memory
 
 ---
 
-## The twenty-five tools
+## The twenty-six tools
 
 ### `areev_recall`
 
@@ -455,7 +455,7 @@ read the grain are not recorded: a read leaves no grain.
 | `hash` | string | **yes** | content address (64-hex) of the grain |
 | `depth` | integer | no | provenance hops to walk, max 8 (default 4) |
 
-### The runtime six (`areev_run_*`)
+### The runtime seven (`areev_run_*`)
 
 The governed workflow runtime over MCP: journaled, checkpointed, budgeted,
 resumable runs of Workflow grains. Two rules distinguish this surface from
@@ -464,6 +464,11 @@ the CLI:
 - **Host tools execute only via `$AREEV_RUN_TOOL_CMD`** (the same subprocess
   seam as the CLI's `--tool-cmd`: input JSON on stdin, result JSON on
   stdout). Without it, host-tool nodes fail loudly rather than silently.
+  The credential broker follows the same posture (#201):
+  `$AREEV_RUN_CREDENTIAL`, `$AREEV_RUN_ALLOW_HOST`, `$AREEV_RUN_TOOL_EGRESS`,
+  `$AREEV_RUN_CREDENTIAL_TTL` and `$AREEV_RUN_RESOLVER_ENV` take the CLI
+  flags' spec strings verbatim at server start, so a `wasm32-areev-io` tool's
+  `areev::fetch` is answered here too — and never configurable by a client.
 - **The acting principal is server-bound** — the identity the server was
   started with (`--as`, else `agent:mcp`). `principal`/`responder` are
   **not** parameters; a client-supplied name would let an agent approve
@@ -475,6 +480,7 @@ the CLI:
 | `areev_run_start` | Start a run — `workflow` (64-hex), fresh `run_id`, optional `input` (any JSON) and budgets (`max_tokens`, `max_usd_micros`, `max_wall_ms`, `max_supersteps`). Client-gated nodes park the run and return a `requires_action` envelope. Code-carrying / sandboxed Definitions follow the same server-bound posture as `$AREEV_RUN_TOOL_CMD`: the operator sets `$AREEV_RUN_ALLOW_EXECUTOR` (the executor pin, comma list), `$AREEV_RUN_EXECUTOR_CACHE`, `$AREEV_RUN_SANDBOX_CMD` (the areev-sandbox runner for `runtime: "wasm32-areev"`), and `$AREEV_RUN_EXECUTOR_TIMEOUT` (#133 — overrides the fixed 300s wall-clock ceiling either executor otherwise runs a tool under; `0` waits forever) at server start — a client can never pin code, because the pin IS the authorization. `$AREEV_RUN_TOOL_ENV` (#188 — a comma list of variables a host tool may keep; set, the tool's environment is cleared down to those plus the minimal set a command needs to start) is server-bound the same way. |
 | `areev_run_resume` | Resume a parked/interrupted run from its latest checkpoint — settles answered asks, expires stale ones, re-delivers crash-window intents under the same idempotency key (recorded). |
 | `areev_run_respond` | Answer one pending ask by `tool_call_id` (never an index) with `result` / `is_error`. Separation of duties is structural; rejected and late responses are journaled as audit evidence before the error returns. |
+| `areev_run_input` | Queue a steering message (`run_id`, `message`). The next superstep hands it to its nodes under `$inbox` — an in-band channel, so a chat-style plan does not misuse a human-gate ask to receive one. |
 | `areev_run_cancel` | Write the kill-switch marker (`run_id`, optional `because`) — deliberately the lowest-privilege run verb. |
 | `areev_run_verify` | Journal-consistent replay: re-derives every checkpoint and byte-compares against the stored chain, writing nothing; divergences name the differing fields. |
 | `areev_run_list` | Recent run ids, newest first (`limit`, default 20). |

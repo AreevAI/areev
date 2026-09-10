@@ -14,8 +14,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
+import { fileURLToPath } from 'node:url'
 
 import { Areev, readBlobOffline } from '../index.js'
 
@@ -927,6 +929,12 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.equal(seed.length, HEX64)
   assert.ok(JSON.parse(await m.runList()).includes('js-1-fork'))
 
+  // Steering: a queued message is receipted as JSON (py/js parity).
+  assert.equal(
+    JSON.parse(await m.runInput('js-1', 'use the express carrier')).queued,
+    'js-1',
+  )
+
   // Kill switch returns its receipt as JSON (py/js parity).
   assert.deepEqual(JSON.parse(await m.runCancel('js-1-fork', 'drill')),
     { canceled: 'js-1-fork' })
@@ -1772,4 +1780,150 @@ test('bulk embeddings and the vector-index surface (#141)', async () => {
   await assert.rejects(() => m.vectorRecallCheck('[[1,0,0]]', 2, null, 100), /STO-E007/)
   assert.deepEqual(JSON.parse(await m.dropVectorIndex()), { index: null })
   m.close()
+})
+
+// ---- #201: the credential broker reaches a binding-driven run --------------
+
+const FETCHER = fileURLToPath(new URL('./fixtures/egress_fetcher.mjs', import.meta.url))
+const REPO = fileURLToPath(new URL('../../..', import.meta.url))
+
+/// A local upstream that says whether the broker attached a credential.
+async function upstream() {
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ ok: true, auth: !!req.headers.authorization, method: req.method }))
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() }
+}
+
+/// ONE declaration and ONE set of grants, taken verbatim by the binding and
+/// by the CLI: a capability tool whose module names its upstream, declaring
+/// gmail for it and sheets for another service, so an "unpaired" call can
+/// name a credential the tool holds for the wrong host.
+async function declareFetcher(m, up) {
+  const uri = await m.putBlob(Buffer.from(JSON.stringify({ upstream: up })))
+  const tool = await m.add('tool', JSON.stringify({
+    tool_name: 'fetcher', kind: 'definition', executor_uri: uri, runtime: 'wasm32-areev-io',
+    capabilities: [
+      { http: { hosts: [up], methods: ['POST'], credentials: ['gmail'] } },
+      { http: { hosts: ['https://sheets.example.com'], methods: ['POST'], credentials: ['sheets'] } },
+    ],
+  }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'fetch', nodes: ['fetcher'], edges: [], bindings: { fetcher: tool },
+  }))
+  return { wf, addr: uri.replace('cas://sha256:', '') }
+}
+const grantsFor = (up) => ({
+  credentials: 'gmail=AREEV_TEST_GMAIL_201,sheets=AREEV_TEST_SHEETS_201',
+  allowHosts: `${up},https://sheets.example.com`,
+  toolEgress: 'fetcher:gmail+sheets:POST',
+})
+const SECRETS = { AREEV_TEST_GMAIL_201: 's3cret-gmail', AREEV_TEST_SHEETS_201: 's3cret-sheets' }
+
+/// What the module reported, and every refusal the run journaled.
+async function fetcherOutcome(m, runId) {
+  const trace = JSON.parse(await m.runTrace(runId, 100, false, 'ops')).trace
+  // The execution record's `content` (deserialized as `tool_content`) is the JSON result.
+  const exec = trace.find((g) => g.fields.tool_name === 'fetcher' && (g.fields.tool_content ?? g.fields.content))
+  assert.ok(exec, `no execution record for the fetcher: ${JSON.stringify(trace)}`)
+  const raw = exec.fields.tool_content ?? exec.fields.content
+  const result = typeof raw === 'string' ? JSON.parse(raw) : raw
+  const harness = JSON.parse(await m.runTrace(runId, 100, false, 'agent:harness')).trace
+  const refusals = harness.filter((g) => g.fields.observation_kind === 'egress_refusal')
+  return { result, refusals }
+}
+
+function assertFetcherOutcome({ result, refusals }, label) {
+  assert.equal(result.leak, '', `${label}: the secret never reaches the module`)
+  assert.equal(result.allow_fetch, true, `${label}: the capability gate is opened`)
+  // An admitted call answers 200 with {status, body}: the upstream's own reply, as a string.
+  assert.equal(result.admitted.status, 200, `${label}: admitted ${JSON.stringify(result.admitted)}`)
+  assert.equal(result.admitted.body.status, 200, `${label}: admitted ${JSON.stringify(result.admitted)}`)
+  const upstreamSaw = JSON.parse(result.admitted.body.body)
+  assert.equal(upstreamSaw.auth, true, `${label}: the broker attached the credential`)
+  assert.equal(upstreamSaw.method, 'POST')
+  for (const k of ['wrong_host', 'wrong_method', 'undeclared_credential', 'unpaired']) {
+    assert.equal(result[k].status, 403, `${label}: ${k}: ${JSON.stringify(result[k])}`)
+    assert.equal(result[k].body.code, 'RUN-E022', `${label}: ${k}: ${JSON.stringify(result[k])}`)
+  }
+  assert.match(result.unpaired.body.error, /no single capability pairs/)
+  // Journaled exactly as from the CLI: one Observation per distinct refusal.
+  assert.equal(refusals.length, 4, `${label}: ${JSON.stringify(refusals)}`)
+  const destinations = refusals.map((r) => r.fields.destination)
+  assert.ok(destinations.includes('https://evil.example.net/steal'), `${label}: ${destinations}`)
+  assert.ok(refusals.every((r) => r.fields.run_id), `${label}: refusals name the run`)
+}
+
+test('a wasm32-areev-io tool reaches the credential broker from the binding exactly as from the CLI (#201)', async (t) => {
+  const up = await upstream()
+  const dir = mkdtempSync(join(tmpdir(), 'areev-egress-'))
+  const db = join(dir, 'e.db')
+  const cache = join(dir, 'execache')
+  const sandbox = `${process.execPath} ${FETCHER}`
+  const g = grantsFor(up.url)
+  Object.assign(process.env, SECRETS)
+  try {
+    const m = new Areev(db, 'ops')
+    const { wf, addr } = await declareFetcher(m, up.url)
+
+    // Without the grants nothing answers `areev::fetch` — the #201 state.
+    const bare = JSON.parse(await m.runStart(
+      wf, 'js-bare', null, null, null, null, null, null, null, null, null, null,
+      addr, cache, sandbox,
+    ))
+    assert.match(bare.finished, /Failed/, JSON.stringify(bare))
+
+    // With them, on the binding: the same admitted call and the same four refusals.
+    const ran = JSON.parse(await m.runStart(
+      wf, 'js-1', null, null, null, null, null, null, null, null, null, null,
+      addr, cache, sandbox, null, null, null,
+      g.credentials, g.allowHosts, g.toolEgress,
+    ))
+    assert.match(ran.finished, /Completed/, JSON.stringify(ran))
+    const viaBinding = await fetcherOutcome(m, 'js-1')
+    assertFetcherOutcome(viaBinding, 'binding')
+
+    // A bad spec is refused before anything is journaled, with the CLI's words.
+    await assert.rejects(
+      m.runStart(wf, 'js-bad', null, null, null, null, null, null, null, null, null, null,
+        addr, cache, sandbox, null, null, null, 'gmail', g.allowHosts, g.toolEgress),
+      /--credential: expected name=ENV_VAR/,
+    )
+    m.close()
+
+    // The CLI leg: the SAME declaration and the SAME grants, spelled as flags.
+    const bin = process.env.AREEV_BIN
+      || ['target/debug/areev', 'target/release/areev'].map((p) => join(REPO, p)).find(existsSync)
+    if (!bin) {
+      t.diagnostic('CLI leg skipped: no areev binary found (set AREEV_BIN)')
+      return
+    }
+    // Spawned asynchronously: the upstream lives on THIS event loop, and a
+    // spawnSync would block it for exactly as long as the broker waits on it.
+    const cli = await new Promise((resolve) => {
+      const child = spawn(bin, [
+        'run', '--db', db, '--ns', 'ops', 'start', '--workflow', wf, '--run-id', 'cli-1',
+        '--allow-executor', addr, '--executor-cache', cache, '--sandbox-cmd', sandbox,
+        '--credential', g.credentials, '--allow-host', g.allowHosts, '--tool-egress', g.toolEgress,
+      ], { env: { ...process.env, ...SECRETS } })
+      let stdout = '', stderr = ''
+      child.stdout.on('data', (d) => { stdout += d })
+      child.stderr.on('data', (d) => { stderr += d })
+      child.on('close', (status) => resolve({ status, stdout, stderr }))
+    })
+    assert.equal(cli.status, 0, `${cli.stdout}\n${cli.stderr}`)
+    const m2 = new Areev(db, 'ops')
+    const viaCli = await fetcherOutcome(m2, 'cli-1')
+    assertFetcherOutcome(viaCli, 'cli')
+    // Same verdicts, call for call.
+    for (const k of ['admitted', 'wrong_host', 'wrong_method', 'undeclared_credential', 'unpaired']) {
+      assert.deepEqual(viaBinding.result[k], viaCli.result[k], k)
+    }
+    m2.close()
+  } finally {
+    for (const k of Object.keys(SECRETS)) delete process.env[k]
+    up.close()
+  }
 })
