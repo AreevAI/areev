@@ -9,7 +9,7 @@ v1.7.3 · 17 crates · 304 Rust files
 | Source code | **95,498** lines |
 | Test code | **57,024** lines (37.4% of all code) |
 | Test functions | **2,724** |
-| Line coverage | **81.8%** of 62,453 instrumented source lines |
+| Line coverage | **82.3%** of 62,893 instrumented source lines |
 | Stable error codes | **99** |
 | Reference docs | 62 files, 29,698 lines |
 
@@ -48,27 +48,27 @@ v1.7.3 · 17 crates · 304 Rust files
 
 ## Coverage
 
-**81.8%** of 62,453 instrumented source
+**82.3%** of 62,893 instrumented source
 lines, measured by `cargo llvm-cov --workspace` in CI and committed as
 `docs/coverage.json` for this script to render — it needs a full instrumented
 build and the whole suite, which is minutes rather than milliseconds.
 
 | Crate | Coverage | Lines | Floor |
 |---|---:|---:|---:|
-| `areev-conformance` | 97.6% | 1,383 / 1,417 | 95.0 |
-| `areev-loop` | 94.2% | 8,353 / 8,866 | 90.0 |
-| `areev-run-core` | 91.9% | 1,265 / 1,377 | 89.0 |
+| `areev-conformance` | 97.5% | 1,419 / 1,456 | 95.0 |
+| `areev-loop` | 94.2% | 8,359 / 8,872 | 90.0 |
+| `areev-run-core` | 92.3% | 1,411 / 1,528 | 89.0 |
 | `areev-trigger` | 90.5% | 1,336 / 1,476 | 89.0 |
-| `areev-run` | 86.1% | 4,169 / 4,841 | 79.0 |
+| `areev-run` | 87.0% | 4,482 / 5,150 | 79.0 |
 | `areev-loop-adapter` | 84.4% | 710 / 841 | 78.0 |
-| `areev-store` | 84.4% | 6,756 / 8,008 | 83.0 |
-| `areev-core` | 84.0% | 5,677 / 6,759 | 80.0 |
+| `areev-store` | 84.4% | 6,781 / 8,034 | 83.0 |
+| `areev-core` | 84.1% | 5,681 / 6,759 | 80.0 |
 | `areev-server` | 82.1% | 975 / 1,187 | 75.0 |
 | `areev-context` | 82.0% | 1,276 / 1,556 | 79.0 |
+| `areev-mcp` | 78.8% | 834 / 1,059 | 71.0 |
+| `areev-cli` | 76.3% | 4,405 / 5,770 | 70.0 |
 | `areev-llm` | 75.8% | 1,008 / 1,329 | 73.0 |
-| `areev-cli` | 74.2% | 4,379 / 5,898 | 70.0 |
 | `areev-cal` | 73.2% | 13,083 / 17,876 | 70.0 |
-| `areev-mcp` | 71.4% | 730 / 1,022 | 71.0 |
 
 Enforcement is **per crate, not one workspace target**: a single number lets a
 regression in one crate hide behind a gain in another, and these crates do not
@@ -91,9 +91,9 @@ definition and counting it scores the suite against itself.
 
 Both filters are visible in the numbers rather than hidden. On the same scope
 with test code counted back in, the trace reads
-**85.6%**; unfiltered — every
+**86.0%**; unfiltered — every
 instrumented line, which is what a naive `cargo llvm-cov` summary prints — it
-reads **81.1%**. The published figure
+reads **81.4%**. The published figure
 is the lowest of the three.
 
 Regenerate with `python3 scripts/coverage.py --lcov lcov.info`.
