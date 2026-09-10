@@ -16,6 +16,14 @@
 //! dialects genuinely differ (upserts, the vector functions, `PRAGMA`).
 //! Unknown divergent constructs FAIL FAST with the offending SQL rather than
 //! executing something subtly different.
+//!
+//! Connections belong to a process-wide pool per DSN (`PgPool`, #181), not
+//! to a handle: a handle borrows one per statement, or for the length of a
+//! transaction, so N memories in a process hold at most `?pool=` (default
+//! [`DEFAULT_POOL_SIZE`]) connections between them and an idle memory holds
+//! none. Every statement is schema-qualified and every per-transaction
+//! setting is `SET LOCAL`, which is what lets any connection serve any
+//! schema.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -339,41 +347,218 @@ pub fn strip_schema(url: &str) -> String {
     strip_param(url, "schema")
 }
 
-pub(crate) struct PgDb {
+// ---- the process-wide pool (#181) -------------------------------------
+
+/// Connections one process may hold to one DSN when neither `?pool=` nor
+/// `$AREEV_PG_POOL` says otherwise.
+pub const DEFAULT_POOL_SIZE: usize = 8;
+
+/// The out-of-band spelling of `?pool=`, for a DSN that is not yours to edit.
+pub const POOL_ENV: &str = "AREEV_PG_POOL";
+
+/// The connection cap for `url`: `?pool=N` on the DSN, else `$AREEV_PG_POOL`,
+/// else [`DEFAULT_POOL_SIZE`]. The DSN wins, as everywhere.
+pub fn pool_size(url: &str) -> Result<usize> {
+    if let Some((_, query)) = url.split_once('?') {
+        let mut from_dsn = None;
+        for pair in query.split('&') {
+            if let Some(("pool", v)) = pair.split_once('=') {
+                from_dsn = Some(parse_pool_size("postgres URL: pool", v)?);
+            }
+        }
+        if let Some(n) = from_dsn {
+            return Ok(n);
+        }
+    }
+    match std::env::var(POOL_ENV) {
+        Ok(v) if !v.trim().is_empty() => parse_pool_size(&format!("${POOL_ENV}"), v.trim()),
+        _ => Ok(DEFAULT_POOL_SIZE),
+    }
+}
+
+fn parse_pool_size(what: &str, v: &str) -> Result<usize> {
+    match v.parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(AreevError::Validation(format!(
+            "{what}={v:?} must be a whole number of connections, at least 1"
+        ))),
+    }
+}
+
+/// Strip `?pool=` from a DSN.
+pub fn strip_pool(url: &str) -> String {
+    strip_param(url, "pool")
+}
+
+/// One connection, with the state that belongs to it rather than to any
+/// memory handle: its prepared statements (a `Statement` names a server-side
+/// object of ONE session) and the two GUCs a handle may want set.
+pub(crate) struct PooledConn {
+    client: tokio_postgres::Client,
+    /// Keyed by the translated, schema-qualified SQL, so one connection
+    /// serves many schemas without one memory's statement answering for
+    /// another's. Bounded (see `prepared`).
+    cache: HashMap<String, tokio_postgres::Statement>,
+    /// What this session currently has applied — reconciled against the
+    /// handle's wish before each statement outside a transaction.
+    ef_search: Option<usize>,
+    exact_scan: bool,
+}
+
+/// The per-DSN pool: one runtime driving every connection, a fair semaphore
+/// as the cap, and the idle connections. Lives for the process; a handle
+/// borrows from it per statement, or per transaction.
+pub(crate) struct PgPool {
     rt: tokio::runtime::Runtime,
-    /// Kept so a dead session can be replaced in place. A managed Postgres
-    /// restarts, fails over, and drops idle connections as ROUTINE
-    /// maintenance, not as an incident — before this, one such event
-    /// permanently poisoned a long-lived handle and every later call failed
-    /// until the process was recycled.
     url: String,
+    cap: usize,
+    sem: std::sync::Arc<tokio::sync::Semaphore>,
+    idle: std::sync::Mutex<Vec<PooledConn>>,
+}
+
+/// A borrowed connection. Returned to the pool on drop unless it broke.
+pub(crate) struct Checkout {
+    pool: std::sync::Arc<PgPool>,
+    conn: Option<PooledConn>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    broken: bool,
+}
+
+impl Checkout {
+    pub(crate) fn conn(&mut self) -> &mut PooledConn {
+        self.conn.as_mut().expect("a checkout holds its connection until drop")
+    }
+    pub(crate) fn client(&self) -> &tokio_postgres::Client {
+        &self.conn.as_ref().expect("a checkout holds its connection until drop").client
+    }
+    /// Note a failure: a dead socket is discarded rather than returned.
+    pub(crate) fn note(&mut self, e: &AreevError) {
+        if self.client().is_closed() || PgDb::is_connection_dead(e) {
+            self.broken = true;
+        }
+    }
+}
+
+impl Drop for Checkout {
+    fn drop(&mut self) {
+        if let Some(c) = self.conn.take() {
+            if !self.broken && !c.client.is_closed() {
+                if let Ok(mut idle) = self.pool.idle.lock() {
+                    idle.push(c);
+                }
+            }
+        }
+    }
+}
+
+static POOLS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, std::sync::Arc<PgPool>>>,
+> = std::sync::OnceLock::new();
+
+impl PgPool {
+    /// The pool for `url`, made on first use. Keyed by the DSN with the
+    /// store's own parameters (`schema`, `provision`, `pool`) stripped, so
+    /// every memory on one server and role shares one pool; a different
+    /// role or TLS setting is a different pool. The first open sizes it;
+    /// a later open asking for another size gets the warning back.
+    pub(crate) fn for_url(url: &str) -> Result<(std::sync::Arc<PgPool>, Option<String>)> {
+        let want = pool_size(url)?;
+        let key = strip_param(&strip_param(&strip_param(url, "pool"), "provision"), "schema");
+        let mut reg = POOLS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(p) = reg.get(&key) {
+            let warn = (p.cap != want).then(|| {
+                format!(
+                    "postgres pool for this DSN was sized at {} connections by an earlier open \
+                     in this process; ?pool={want} (or ${POOL_ENV}) does not resize it",
+                    p.cap
+                )
+            });
+            return Ok((std::sync::Arc::clone(p), warn));
+        }
+        // Multi-thread so callers on any thread `block_on` concurrently — a
+        // current-thread runtime serializes its `block_on` callers, which
+        // would make the pool a process-wide lock. The workers drive the
+        // connections' I/O, so there must be enough to pump every borrowed
+        // one at once: size them to the cap, bounded (a handful of idle
+        // driver threads is cheap; a hundred is not), never below two.
+        let workers = want.clamp(2, 8);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .thread_name("areev-pg")
+            .enable_all()
+            .build()
+            .map_err(db_err)?;
+        let p = std::sync::Arc::new(PgPool {
+            rt,
+            url: key.clone(),
+            cap: want,
+            sem: std::sync::Arc::new(tokio::sync::Semaphore::new(want)),
+            idle: std::sync::Mutex::new(Vec::new()),
+        });
+        reg.insert(key, std::sync::Arc::clone(&p));
+        Ok((p, None))
+    }
+
+    pub(crate) fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+        self.rt.block_on(f)
+    }
+
+    /// Borrow a connection: an idle one, else a new one, waiting (fairly)
+    /// while `cap` are out.
+    pub(crate) fn checkout(self: &std::sync::Arc<Self>) -> Result<Checkout> {
+        let permit = self
+            .rt
+            .block_on(std::sync::Arc::clone(&self.sem).acquire_owned())
+            .map_err(db_err)?;
+        let idle = loop {
+            let next = self.idle.lock().unwrap_or_else(|p| p.into_inner()).pop();
+            match next {
+                Some(c) if c.client.is_closed() => continue,
+                other => break other,
+            }
+        };
+        let conn = match idle {
+            Some(c) => c,
+            None => self.dial()?,
+        };
+        Ok(Checkout { pool: std::sync::Arc::clone(self), conn: Some(conn), _permit: permit, broken: false })
+    }
+
+    fn dial(&self) -> Result<PooledConn> {
+        let client = crate::pgtls::connect(&self.rt, &self.url)?;
+        // Schema-independent baseline: no table resolves through it (every
+        // reference is qualified), but pgvector's type and operator do.
+        self.rt
+            .block_on(client.batch_execute("SET search_path TO public, ext"))
+            .map_err(pg_err)?;
+        Ok(PooledConn { client, cache: HashMap::new(), ef_search: None, exact_scan: false })
+    }
+}
+
+// ---- the handle ---------------------------------------------------------
+
+pub(crate) struct PgDb {
+    pool: std::sync::Arc<PgPool>,
     schema: String,
-    // `Arc` so a caller can clone the handle out of the cell and drop the
-    // borrow BEFORE awaiting on it. Holding a `Ref` across an await is the
-    // shape that would deadlock against `reconnect`'s `borrow_mut`; taking the
-    // clone first makes that impossible by construction rather than by
-    // reasoning about which futures run when. `Arc` rather than `Rc` because
-    // `Db` is `Send` — the handle moves between threads even though only one
-    // uses it at a time.
-    client: RefCell<std::sync::Arc<tokio_postgres::Client>>,
-    /// Prepared statements keyed by the ORIGINAL (untranslated) SQL, so hot
-    /// callers hit the cache without re-translating.
-    ///
-    /// MUST be cleared on reconnect: a `tokio_postgres::Statement` names a
-    /// server-side prepared statement belonging to ONE session, so carrying
-    /// the cache across a reconnect makes every hot call fail forever with
-    /// `26000 invalid_sql_statement_name` — a reconnect that reconnects and
-    /// still cannot serve a query.
-    cache: RefCell<HashMap<String, tokio_postgres::Statement>>,
+    /// The connection pinned for an open transaction: taken at `begin`,
+    /// given back at `commit`/`rollback`. Outside one, every statement
+    /// borrows for its own duration, so an idle handle holds nothing.
+    pinned: RefCell<Option<Checkout>>,
     /// Whether a transaction is open on this handle. Nothing is replayed while
     /// it is: the transaction died with the connection, so silently re-running
     /// one statement would apply it outside the atomic unit it was written for.
     in_txn: std::cell::Cell<bool>,
-    /// Session settings that must SURVIVE a reconnect: `reconnect` builds a
-    /// fresh session with Postgres defaults, and a replayed read on it would
-    /// silently grade the HNSW answer against itself.
+    /// What this handle wants set — applied to whichever connection serves
+    /// it (`SET LOCAL` inside a transaction, reconciled per connection
+    /// outside), never assumed to be on the session.
     ann_ef_search: std::cell::Cell<Option<usize>>,
     exact_scan: std::cell::Cell<bool>,
+    /// Hot SQL → its translated, qualified form, so the hot path translates
+    /// once per handle.
+    xlate: RefCell<HashMap<String, String>>,
     /// Cached BM25 collection stats — a COUNT/SUM over fts_doc is O(corpus)
     /// and would otherwise run on EVERY text query. Invalidated on this
     /// handle's own writes (reserve_write); other writers' documents stay
@@ -386,23 +571,43 @@ pub(crate) struct PgDb {
     /// telemetry sidecar's v2 migration), so "the schema is current" is
     /// decided once, here, rather than re-derived by each of them.
     bootstrap_skipped: bool,
+    /// A pool-size mismatch this open could not honour (see `PgPool::for_url`).
+    pool_warning: Option<String>,
+}
+
+/// Statements this handle wants applied for the transaction it is opening,
+/// where the serving connection's session does not already say so.
+fn txn_prelude(want_ef: Option<usize>, want_exact: bool, conn: &PooledConn) -> String {
+    let mut sql = String::from("BEGIN");
+    match (want_ef, conn.ef_search) {
+        (Some(ef), have) if have != Some(ef) => {
+            sql.push_str(&format!("; SET LOCAL hnsw.ef_search = {ef}"));
+        }
+        (None, Some(_)) => sql.push_str("; SET LOCAL hnsw.ef_search TO DEFAULT"),
+        _ => {}
+    }
+    if want_exact && !conn.exact_scan {
+        sql.push_str("; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off");
+    } else if !want_exact && conn.exact_scan {
+        sql.push_str("; SET LOCAL enable_indexscan TO DEFAULT; SET LOCAL enable_bitmapscan TO DEFAULT");
+    }
+    sql
 }
 
 impl PgDb {
-    /// Connect, create-or-attach the schema, pin `search_path`, and run the
-    /// caller's `bootstrap` statements (DDL + seeding).
+    /// Attach to the schema — create-or-bootstrap it when the stamp says so —
+    /// through the process's pool for `url`.
     ///
     /// **The bootstrap is the exception, not the rule.** When `stamp` names a
     /// marker row and that row already holds the caller's version, this open
-    /// takes the fast path: `SET search_path` and nothing else — no advisory
-    /// lock, no `CREATE SCHEMA`, no DDL, no seeding. The probe itself is two
-    /// SELECTs needing nothing beyond `USAGE` on the schema and `SELECT` on
-    /// the stamp table, and it uses `to_regclass` rather than naming the table
-    /// in a `FROM` clause, so an absent schema (or absent table) answers NULL
-    /// instead of raising `42P01` — a first open costs one query, not one
-    /// error. (Sibling probe: [`Self::verify_read_only`] asks the same
-    /// question — "is this schema usable?" — for a read-only open, and the two
-    /// must stay in step; see the note on each.)
+    /// takes the fast path: two SELECTs and nothing else — no advisory lock,
+    /// no `CREATE SCHEMA`, no DDL, no seeding. The probe needs nothing beyond
+    /// `USAGE` on the schema and `SELECT` on the stamp table, and it uses
+    /// `to_regclass` rather than naming the table in a `FROM` clause, so an
+    /// absent schema (or absent table) answers NULL instead of raising
+    /// `42P01` — a first open costs one query, not one error. (Sibling probe:
+    /// [`Self::verify_read_only`] asks the same question for a read-only open,
+    /// and the two must stay in step; see the note on each.)
     ///
     /// Only a missing or stale stamp reaches the bootstrap, which then runs
     /// inside ONE explicit transaction holding `pg_advisory_xact_lock`: this
@@ -411,8 +616,9 @@ impl PgDb {
     /// pg_namespace/pg_type). Transaction-scoped rather than session-scoped
     /// because Postgres DDL is transactional: the statements become atomic
     /// (a half-applied schema is no longer reachable) and the lock is released
-    /// by COMMIT/ROLLBACK, which deletes the "must release even on failure"
-    /// hazard the explicit `pg_advisory_unlock` existed to cover.
+    /// by COMMIT/ROLLBACK. The bare `CREATE TABLE`s in `bootstrap` resolve
+    /// through a `SET LOCAL search_path` that ends with the transaction —
+    /// the one place the schema is ever on a search path.
     ///
     /// `read_only` skips ALL of that — no advisory lock, no `CREATE SCHEMA`,
     /// no `bootstrap` statements (`PG_SCHEMA`'s DDL + `PG_SEED`'s upserts) —
@@ -421,9 +627,11 @@ impl PgDb {
     /// checks whether the schema already exists, and it checks table
     /// OWNERSHIP before it checks whether an index already exists, so even
     /// fully-idempotent `IF NOT EXISTS` DDL 42501s for such a role on a
-    /// schema that is already there (issue #127). Instead it pins
-    /// `search_path` (a session command any role may issue) and VERIFIES
-    /// with SELECT-only probes — see [`Self::verify_read_only`].
+    /// schema that is already there (issue #127). Instead it VERIFIES with
+    /// SELECT-only probes — see [`Self::verify_read_only`].
+    ///
+    /// The connection borrowed for all of this goes back to the pool before
+    /// this returns: an open handle holds none until it begins a transaction.
     pub(crate) fn open(
         url: &str,
         schema: &str,
@@ -440,109 +648,171 @@ impl PgDb {
                 "postgres schema name must be [a-z_][a-z0-9_]* and <= 63 bytes, got {schema:?}"
             )));
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(db_err)?;
-        // `pgtls::connect` reads the DSN's `sslmode`/`sslrootcert`, spawns the
-        // connection future onto this runtime (it must be driven for the
-        // client to make progress; the current-thread runtime polls it inside
-        // every block_on below), and REFUSES a DSN that asks for encryption a
-        // build without `postgres-tls` cannot give it.
-        let client = crate::pgtls::connect(&rt, url)?;
-        let mut bootstrap_skipped = false;
-        if read_only {
-            rt.block_on(Self::verify_read_only(&client, schema))?;
-        } else {
-            // The fast path (issue #180). Ask the schema what shape it is in
-            // BEFORE anything that needs a lock or an ownership grant; a
-            // steady-state open ends here, having issued `SET search_path` and
-            // two SELECTs.
-            if let Some(st) = stamp {
-                bootstrap_skipped = rt
-                    .block_on(Self::schema_stamp(&client, schema, st))?
-                    .as_deref()
-                    == Some(st.version);
+        let (pool, pool_warning) = PgPool::for_url(url)?;
+        let mut co = pool.checkout()?;
+        let opened = Self::open_on(&pool, co.client(), url, schema, bootstrap, read_only, stamp);
+        let bootstrap_skipped = match opened {
+            Ok(skipped) => skipped,
+            Err(e) => {
+                co.note(&e);
+                return Err(e);
             }
-            if !bootstrap_skipped && provision_mode(url)? == ProvisionMode::Never {
-                // `?provision=never`: refuse without touching anything. No
-                // advisory lock, no DDL, not even the CREATE SCHEMA — the
-                // whole point is a runtime role that holds no CREATE.
-                return Err(Self::not_provisioned(&client, &rt, schema, stamp));
-            }
-            if !bootstrap_skipped {
-                rt.block_on(async {
-                    // ONE transaction around the whole bootstrap. Postgres DDL
-                    // is transactional, so the statements are atomic, and
-                    // `pg_advisory_xact_lock` is released by COMMIT/ROLLBACK —
-                    // there is no unlock to forget on a failure path.
-                    client.batch_execute("BEGIN").await.map_err(pg_err)?;
-                    let boot = async {
-                        client
-                            .query_one(
-                                "SELECT pg_advisory_xact_lock(hashtext('areev_bootstrap'), hashtext($1))",
-                                &[&schema],
-                            )
-                            .await
-                            .map_err(pg_err)?;
-                        client
-                            .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
-                            .await
-                            .map_err(pg_err)?;
-                        // A plain SET inside a transaction is transactional: it
-                        // survives the COMMIT below and is undone by a ROLLBACK,
-                        // which is exactly what a failed bootstrap wants.
-                        client
-                            .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
-                            .await
-                            .map_err(pg_err)?;
-                        for sql in bootstrap {
-                            client.batch_execute(sql).await.map_err(|e| {
-                                AreevError::Storage(format!(
-                                    "bootstrap failed: {} — in: {sql}",
-                                    pg_err(e)
-                                ))
-                            })?;
-                        }
-                        // LAST, inside the same transaction: the stamp is only
-                        // true if every statement above committed with it.
-                        if let Some(st) = stamp {
-                            client
-                                .execute(
-                                    &format!(
-                                        "INSERT INTO \"{schema}\".{}(k, v) VALUES ($1, $2) \
-                                         ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
-                                        st.table
-                                    ),
-                                    &[&st.key, &st.version],
-                                )
-                                .await
-                                .map_err(pg_err)?;
-                        }
-                        Ok::<_, AreevError>(())
-                    }
-                    .await;
-                    match boot {
-                        Ok(()) => client.batch_execute("COMMIT").await.map_err(pg_err),
-                        Err(e) => {
-                            let _ = client.batch_execute("ROLLBACK").await;
-                            Err(e)
-                        }
-                    }
-                })?;
-            }
-        }
+        };
+        drop(co);
         Ok(Self {
-            rt,
-            url: url.to_string(),
+            pool,
             schema: schema.to_string(),
-            client: RefCell::new(std::sync::Arc::new(client)),
-            cache: RefCell::new(HashMap::new()),
+            pinned: RefCell::new(None),
             in_txn: std::cell::Cell::new(false),
             ann_ef_search: std::cell::Cell::new(None),
             exact_scan: std::cell::Cell::new(false),
+            xlate: RefCell::new(HashMap::new()),
             stats: RefCell::new(None),
             bootstrap_skipped,
+            pool_warning,
+        })
+    }
+
+    /// The verify-or-bootstrap half of [`Self::open`], on one borrowed
+    /// connection. Returns whether the bootstrap was skipped.
+    fn open_on(
+        pool: &PgPool,
+        client: &tokio_postgres::Client,
+        url: &str,
+        schema: &str,
+        bootstrap: &[&str],
+        read_only: bool,
+        stamp: Option<PgStamp>,
+    ) -> Result<bool> {
+        if read_only {
+            pool.block_on(Self::verify_read_only(client, schema))?;
+            return Ok(false);
+        }
+        // The fast path (issue #180). Ask the schema what shape it is in
+        // BEFORE anything that needs a lock or an ownership grant; a
+        // steady-state open ends here, having issued two SELECTs.
+        let mut skipped = false;
+        if let Some(st) = stamp {
+            skipped = pool.block_on(Self::schema_stamp(client, schema, st))?.as_deref()
+                == Some(st.version);
+        }
+        if skipped {
+            return Ok(true);
+        }
+        if provision_mode(url)? == ProvisionMode::Never {
+            // `?provision=never`: refuse without touching anything. No
+            // advisory lock, no DDL, not even the CREATE SCHEMA — the
+            // whole point is a runtime role that holds no CREATE.
+            return Err(Self::not_provisioned(client, pool, schema, stamp));
+        }
+        match Self::bootstrap_once(pool, client, schema, bootstrap, stamp) {
+            Ok(()) => Ok(false),
+            // A concurrent opener won the race and created the schema first.
+            // The advisory lock makes this rare, not impossible: the pool
+            // shares one runtime, so two openers' `CREATE SCHEMA` can
+            // interleave ahead of the lock under load (Postgres documents
+            // IF NOT EXISTS DDL as itself racy). The contract is that both
+            // openers succeed — re-read the stamp, and if the winner left it
+            // current, this open is done. Otherwise the winner is still
+            // mid-bootstrap or failed: one retry, which serialises cleanly
+            // now that the racing CREATE has landed. Pinned by #181's
+            // `concurrent_first_open_bootstraps_once` under a small pool.
+            Err(e) if Self::is_lost_bootstrap_race(&e) => {
+                let current = match stamp {
+                    Some(st) => {
+                        pool.block_on(Self::schema_stamp(client, schema, st))?.as_deref()
+                            == Some(st.version)
+                    }
+                    None => false,
+                };
+                if current {
+                    Ok(true)
+                } else {
+                    Self::bootstrap_once(pool, client, schema, bootstrap, stamp).map(|()| false)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A duplicate-object error from the bootstrap: two openers raced the
+    /// `IF NOT EXISTS` DDL. `23505` on a catalog index (schema or type name),
+    /// `42P06` duplicate_schema, `42710` duplicate_object.
+    fn is_lost_bootstrap_race(e: &AreevError) -> bool {
+        let AreevError::Storage(msg) = e else { return false };
+        msg.contains("postgres error 23505")
+            || msg.contains("postgres error 42P06")
+            || msg.contains("postgres error 42710")
+    }
+
+    /// One bootstrap attempt: DDL + seeding in ONE transaction holding the
+    /// advisory lock.
+    fn bootstrap_once(
+        pool: &PgPool,
+        client: &tokio_postgres::Client,
+        schema: &str,
+        bootstrap: &[&str],
+        stamp: Option<PgStamp>,
+    ) -> Result<()> {
+        pool.block_on(async {
+            // ONE transaction around the whole bootstrap. Postgres DDL
+            // is transactional, so the statements are atomic, and
+            // `pg_advisory_xact_lock` is released by COMMIT/ROLLBACK —
+            // there is no unlock to forget on a failure path.
+            client.batch_execute("BEGIN").await.map_err(pg_err)?;
+            let boot = async {
+                client
+                    .query_one(
+                        "SELECT pg_advisory_xact_lock(hashtext('areev_bootstrap'), hashtext($1))",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(pg_err)?;
+                client
+                    .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                    .await
+                    .map_err(pg_err)?;
+                // LOCAL: the bare DDL below needs the schema on the path,
+                // and the pooled connection must not keep it afterwards.
+                client
+                    .batch_execute(&format!(
+                        "SET LOCAL search_path TO \"{schema}\", public, ext"
+                    ))
+                    .await
+                    .map_err(pg_err)?;
+                for sql in bootstrap {
+                    client.batch_execute(sql).await.map_err(|e| {
+                        AreevError::Storage(format!(
+                            "bootstrap failed: {} — in: {sql}",
+                            pg_err(e)
+                        ))
+                    })?;
+                }
+                // LAST, inside the same transaction: the stamp is only
+                // true if every statement above committed with it.
+                if let Some(st) = stamp {
+                    client
+                        .execute(
+                            &format!(
+                                "INSERT INTO \"{schema}\".{}(k, v) VALUES ($1, $2) \
+                                 ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
+                                st.table
+                            ),
+                            &[&st.key, &st.version],
+                        )
+                        .await
+                        .map_err(pg_err)?;
+                }
+                Ok::<_, AreevError>(())
+            }
+            .await;
+            match boot {
+                Ok(()) => client.batch_execute("COMMIT").await.map_err(pg_err),
+                Err(e) => {
+                    let _ = client.batch_execute("ROLLBACK").await;
+                    Err(e)
+                }
+            }
         })
     }
 
@@ -550,6 +820,11 @@ impl PgDb {
     /// version and therefore ran no bootstrap at all.
     pub(crate) fn bootstrap_skipped(&self) -> bool {
         self.bootstrap_skipped
+    }
+
+    /// The pool-size mismatch this open could not honour, if any.
+    pub(crate) fn pool_warning(&self) -> Option<&str> {
+        self.pool_warning.as_deref()
     }
 
     /// Read the bootstrap marker without naming the stamp table in a `FROM`
@@ -562,9 +837,6 @@ impl PgDb {
     /// of noise in the server log for a wholly expected condition. Needs no
     /// privilege beyond `USAGE` on the schema and `SELECT` on the table.
     ///
-    /// `SET search_path` rides along because the fast path owes it either way,
-    /// and the simple-query protocol sends both in one round trip.
-    ///
     /// Kept deliberately adjacent to [`Self::verify_read_only`], which asks
     /// the same question for a read-only open and by a different method (it
     /// probes the five tables `finish_open` reads, because a read-only open
@@ -575,18 +847,14 @@ impl PgDb {
         schema: &str,
         stamp: PgStamp,
     ) -> Result<Option<String>> {
-        let probe = client
-            .simple_query(&format!(
-                "SET search_path TO \"{schema}\", public, ext; \
-                 SELECT to_regclass('\"{schema}\".{}') IS NOT NULL AS present",
-                stamp.table
-            ))
+        let present = client
+            .query_one(
+                "SELECT to_regclass($1) IS NOT NULL",
+                &[&format!("\"{schema}\".{}", stamp.table)],
+            )
             .await
-            .map_err(pg_err)?;
-        let present = probe.iter().any(|m| match m {
-            tokio_postgres::SimpleQueryMessage::Row(r) => r.get("present") == Some("t"),
-            _ => false,
-        });
+            .map_err(pg_err)?
+            .get::<_, bool>(0);
         if !present {
             return Ok(None);
         }
@@ -607,12 +875,12 @@ impl PgDb {
     /// one.
     fn not_provisioned(
         client: &tokio_postgres::Client,
-        rt: &tokio::runtime::Runtime,
+        pool: &PgPool,
         schema: &str,
         stamp: Option<PgStamp>,
     ) -> AreevError {
         let version = stamp.map(|s| s.version).unwrap_or(PG_SCHEMA_VERSION);
-        let exists = rt
+        let exists = pool
             .block_on(client.query_one(
                 "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
                 &[&schema],
@@ -637,15 +905,14 @@ impl PgDb {
         })
     }
 
-    /// The read-only counterpart to the bootstrap block above: pin
-    /// `search_path` (harmless for any role), then confirm with SELECT-only
-    /// probes that there is something real to point it at — never attempt
-    /// to create anything. Distinguishes the two failure modes an operator
-    /// must act on differently: a schema that was never created/migrated at
-    /// all, versus one that exists but is missing tables this build's
-    /// bootstrap would have added (a partial or outdated migration) — both
-    /// need an owning role to run bootstrap read-write, but "absent" also
-    /// means the schema name itself may be wrong.
+    /// The read-only counterpart to the bootstrap block above: confirm with
+    /// SELECT-only probes that there is something real to open — never
+    /// attempt to create anything. Distinguishes the two failure modes an
+    /// operator must act on differently: a schema that was never
+    /// created/migrated at all, versus one that exists but is missing tables
+    /// this build's bootstrap would have added (a partial or outdated
+    /// migration) — both need an owning role to run bootstrap read-write, but
+    /// "absent" also means the schema name itself may be wrong.
     ///
     /// The table list mirrors exactly what `finish_open` reads
     /// unconditionally right after `open()` returns (`meta`, `terms`,
@@ -667,10 +934,6 @@ impl PgDb {
         client: &tokio_postgres::Client,
         schema: &str,
     ) -> Result<()> {
-        client
-            .batch_execute(&format!("SET search_path TO \"{schema}\", public, ext"))
-            .await
-            .map_err(pg_err)?;
         let exists = client
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
@@ -733,12 +996,13 @@ impl PgDb {
 
     /// Is this error the CONNECTION dying, as opposed to the statement failing?
     ///
-    /// Only these justify replacing the client: an ordinary constraint
-    /// violation must stay an ordinary error. Covers the client noticing the
-    /// socket is gone (`is_closed`), SQLSTATE class 08 (connection exception),
-    /// and the three 57Pnn shutdown codes a managed Postgres sends on
-    /// restart/failover — `57P01 terminating connection due to administrator
-    /// command` is the one a Cloud SQL maintenance window produces.
+    /// Only these justify discarding the connection: an ordinary constraint
+    /// violation must stay an ordinary error. Covers SQLSTATE class 08
+    /// (connection exception) and the three 57Pnn shutdown codes a managed
+    /// Postgres sends on restart/failover — `57P01 terminating connection due
+    /// to administrator command` is the one a Cloud SQL maintenance window
+    /// produces. The client noticing the socket is gone (`is_closed`) is the
+    /// other signal, checked where the checkout is at hand.
     fn is_connection_dead(e: &AreevError) -> bool {
         let AreevError::Storage(msg) = e else {
             return false;
@@ -751,82 +1015,89 @@ impl PgDb {
             || msg.contains("connection unexpectedly closed")
     }
 
-    /// Replace the dead session with a fresh one.
-    ///
-    /// Deliberately does NOT re-run the bootstrap DDL: the schema already
-    /// exists, and re-taking the bootstrap advisory lock on every blip would
-    /// serialise recovery across every handle on the database. Only the
-    /// session-local state has to be restored — `search_path` — and the two
-    /// caches that belonged to the old session have to go.
-    fn reconnect(&self) -> Result<()> {
-        let client = crate::pgtls::connect(&self.rt, &self.url)?;
-        let mut session = format!("SET search_path TO \"{}\", public, ext", self.schema);
-        // Re-apply what the dead session carried, or a replayed read lands
-        // on Postgres defaults: an `ef_search` a host tuned, and the exact-scan
-        // bypass mid `vector_recall_check`.
-        if let Some(ef) = self.ann_ef_search.get() {
-            session.push_str(&format!("; SET hnsw.ef_search = {ef}"));
+    /// Run `f` on a connection: the pinned one inside a transaction, else a
+    /// borrow for this call. A connection that died under `f` is discarded
+    /// rather than returned.
+    fn with_conn<T>(&self, f: impl FnOnce(&PgPool, &mut PooledConn) -> Result<T>) -> Result<T> {
+        let mut pinned = self.pinned.borrow_mut();
+        if let Some(co) = pinned.as_mut() {
+            let r = f(&self.pool, co.conn());
+            if let Err(e) = &r {
+                co.note(e);
+            }
+            return r;
         }
-        if self.exact_scan.get() {
-            session.push_str("; SET enable_indexscan = off; SET enable_bitmapscan = off");
+        drop(pinned);
+        let mut co = self.pool.checkout()?;
+        let r = f(&self.pool, co.conn());
+        if let Err(e) = &r {
+            co.note(e);
         }
-        self.rt.block_on(client.batch_execute(&session)).map_err(pg_err)?;
-        // Order matters only in that both must happen before the next call:
-        // a Statement from the old session is invalid, and the BM25 collection
-        // stats were cached against a connection that can no longer confirm them.
-        self.cache.borrow_mut().clear();
-        *self.stats.borrow_mut() = None;
-        *self.client.borrow_mut() = std::sync::Arc::new(client);
+        r
+    }
+
+    /// Bring the connection's session in line with what this handle wants,
+    /// outside a transaction (inside one, `begin` said it with `SET LOCAL`).
+    /// A `RESET` is only ever issued to a session that SET the parameter,
+    /// so an unloaded `hnsw.*` placeholder is never named.
+    fn align_session(&self, pool: &PgPool, conn: &mut PooledConn) -> Result<()> {
+        if self.in_txn.get() {
+            return Ok(());
+        }
+        let want_ef = self.ann_ef_search.get();
+        let want_exact = self.exact_scan.get();
+        let mut sql = String::new();
+        if conn.ef_search != want_ef {
+            match want_ef {
+                Some(ef) => sql.push_str(&format!("SET hnsw.ef_search = {ef}; ")),
+                None => sql.push_str("RESET hnsw.ef_search; "),
+            }
+        }
+        if conn.exact_scan != want_exact {
+            sql.push_str(if want_exact {
+                "SET enable_indexscan = off; SET enable_bitmapscan = off; "
+            } else {
+                "RESET enable_indexscan; RESET enable_bitmapscan; "
+            });
+        }
+        if sql.is_empty() {
+            return Ok(());
+        }
+        pool.block_on(conn.client.batch_execute(&sql)).map_err(pg_err)?;
+        conn.ef_search = want_ef;
+        conn.exact_scan = want_exact;
         Ok(())
     }
 
-    /// Reconnect after a connection-level failure, and report whether the
-    /// failed call may be replayed.
-    ///
-    /// `replayable` is the whole safety argument. A READ outside a transaction
-    /// can be re-run: it had no effect, so running it twice is running it
-    /// once. A WRITE cannot — the connection may have died AFTER the server
-    /// committed it, and nothing on this side can tell the difference, so
-    /// replaying risks applying it twice. Those calls get the fresh connection
-    /// for NEXT time and this error now, which is the honest outcome: the host
-    /// learns its unit of work did not complete.
-    fn recover(&self, e: &AreevError, replayable: bool) -> bool {
-        if self.in_txn.get() {
-            return false;
+    /// The translated, schema-qualified form of `sql` — memoised for the
+    /// `_hot` literals, which are the fixed set worth remembering.
+    fn translated(&self, sql: &str, hot: bool) -> Result<String> {
+        if hot {
+            if let Some(t) = self.xlate.borrow().get(sql) {
+                return Ok(t.clone());
+            }
         }
-        // Two independent signals, because neither alone is complete. The
-        // SQLSTATE match reads the message `pg_err` formatted, which only
-        // exists when the SERVER got far enough to send an error; when the
-        // socket simply vanished there is no SQLSTATE to match and the client
-        // is the only witness. Asking the client directly also means a change
-        // to `pg_err`'s wording degrades recovery rather than silently
-        // disabling it. The borrow is dropped before `reconnect` takes its
-        // `borrow_mut`.
-        let socket_gone = self.client.borrow().is_closed();
-        if !socket_gone && !Self::is_connection_dead(e) {
-            return false;
+        let t = qualify_tables(&translate(sql)?, &self.schema);
+        if hot {
+            self.xlate.borrow_mut().insert(sql.to_string(), t.clone());
         }
-        // A failed reconnect leaves the handle dead-but-retryable rather than
-        // erroring here: the caller's original error is the more useful one,
-        // and the next call tries again.
-        if self.reconnect().is_err() {
-            return false;
-        }
-        replayable
+        Ok(t)
     }
 
-    /// Prepare-and-cache. ONLY the `_hot` calls come through here: their SQL
-    /// is a fixed set of `&'static` literals, so the cache (and the server-
-    /// side named statements behind it) is bounded. Plain `query`/`execute`
-    /// must NOT cache — the recall path builds per-call-unique IN-list SQL,
-    /// which would grow both sides without bound.
-    fn prepared(&self, sql: &str) -> Result<tokio_postgres::Statement> {
-        if let Some(st) = self.cache.borrow().get(sql) {
+    /// Prepare-and-cache on THIS connection. ONLY the `_hot` calls come
+    /// through here: their SQL is a fixed set of literals per schema, and the
+    /// cache is emptied when it grows past what one connection should hold
+    /// server-side (a thousand schemas through one connection would
+    /// otherwise pin a thousand copies of every hot statement).
+    fn prepared(
+        pool: &PgPool,
+        conn: &mut PooledConn,
+        translated: &str,
+    ) -> Result<tokio_postgres::Statement> {
+        if let Some(st) = conn.cache.get(translated) {
             return Ok(st.clone());
         }
-        let translated = qualify_tables(&translate(sql)?, &self.schema);
-        let client = self.client.borrow().clone();
-        let st = self.rt.block_on(client.prepare(&translated)).map_err(|e| {
+        let st = pool.block_on(conn.client.prepare(translated)).map_err(|e| {
             // Keep the SQLSTATE and server message (`pg_err`), not the
             // driver's bare "db error", so a failing prepare names its cause.
             AreevError::Storage(format!(
@@ -834,7 +1105,10 @@ impl PgDb {
                 pg_err(e)
             ))
         })?;
-        self.cache.borrow_mut().insert(sql.to_string(), st.clone());
+        if conn.cache.len() >= 512 {
+            conn.cache.clear();
+        }
+        conn.cache.insert(translated.to_string(), st.clone());
         Ok(st)
     }
 
@@ -845,7 +1119,7 @@ impl PgDb {
     /// `DEALLOCATE ALL`, the prepared-statement half, for the one probe that
     /// exercises the `26000` retry on its own. Never inside a transaction — a
     /// pooler keeps one backend for its length.
-    fn maybe_discard_session(&self) -> Result<()> {
+    fn maybe_discard_session(&self, pool: &PgPool, conn: &mut PooledConn) -> Result<()> {
         if self.in_txn.get() {
             return Ok(());
         }
@@ -856,31 +1130,71 @@ impl PgDb {
             Some("deallocate") => "RESET ALL; DEALLOCATE ALL",
             Some(_) => "RESET ALL",
         };
-        let client = self.client.borrow().clone();
-        self.rt.block_on(client.batch_execute(sql)).map_err(pg_err)
+        pool.block_on(conn.client.batch_execute(sql)).map_err(pg_err)?;
+        // The session no longer carries what this process set on it; say so,
+        // and re-apply below rather than believing the old bookkeeping.
+        conn.ef_search = None;
+        conn.exact_scan = false;
+        if sql.contains("DEALLOCATE") {
+            conn.cache.clear();
+        }
+        Ok(())
     }
 
     fn query_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<Vec<Row>> {
-        self.maybe_discard_session()?;
-        let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
-        let refs: Vec<&(dyn ToSql + Sync)> =
-            vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
-        let rows = if hot {
-            let st = self.prepared(sql)?;
-            let client = self.client.borrow().clone();
-            self.rt.block_on(client.query(&st, &refs))
-        } else {
-            // Uncached path: the temporary statement is closed on drop, so
-            // dynamic SQL leaves nothing behind on either side.
-            let translated = qualify_tables(&translate(sql)?, &self.schema);
-            let client = self.client.borrow().clone();
-            self.rt.block_on(client.query(translated.as_str(), &refs))
-        }
-        .map_err(pg_err)?;
-        rows.iter().map(row_to_row).collect()
+        let translated = self.translated(sql, hot)?;
+        self.with_conn(|pool, conn| {
+            self.maybe_discard_session(pool, conn)?;
+            self.align_session(pool, conn)?;
+            let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
+            let refs: Vec<&(dyn ToSql + Sync)> =
+                vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
+            let rows = if hot {
+                let st = Self::prepared(pool, conn, &translated)?;
+                pool.block_on(conn.client.query(&st, &refs))
+            } else {
+                // Uncached path: the temporary statement is closed on drop, so
+                // dynamic SQL leaves nothing behind on either side.
+                pool.block_on(conn.client.query(translated.as_str(), &refs))
+            }
+            .map_err(pg_err)
+            .map_err(|e| Self::forget_stale(conn, e))?;
+            rows.iter().map(row_to_row).collect()
+        })
     }
 
-    /// A read, replayed once if the connection died under it.
+    fn execute_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
+        let translated = self.translated(sql, hot)?;
+        self.with_conn(|pool, conn| {
+            self.maybe_discard_session(pool, conn)?;
+            self.align_session(pool, conn)?;
+            let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
+            let refs: Vec<&(dyn ToSql + Sync)> =
+                vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
+            if hot {
+                let st = Self::prepared(pool, conn, &translated)?;
+                pool.block_on(conn.client.execute(&st, &refs))
+            } else {
+                pool.block_on(conn.client.execute(translated.as_str(), &refs))
+            }
+            .map_err(pg_err)
+            .map_err(|e| Self::forget_stale(conn, e))
+        })
+    }
+
+    /// A `26000` means this session lost its named statements wholesale (a
+    /// reset, or a backend switch behind an external pooler), so every
+    /// cached name is suspect: drop them all while the connection is still
+    /// at hand, and let the caller decide whether to retry.
+    fn forget_stale(conn: &mut PooledConn, e: AreevError) -> AreevError {
+        if matches!(&e, AreevError::Storage(m) if m.starts_with("postgres error 26000")) {
+            conn.cache.clear();
+        }
+        e
+    }
+
+    /// A read, replayed once if the connection died under it or the backend
+    /// no longer knew a cached statement.
     ///
     /// Replay is safe here precisely because it is a read: no effect to
     /// duplicate. This is what turns a routine managed-Postgres restart from
@@ -889,7 +1203,7 @@ impl PgDb {
         match self.query_once(sql, params.clone(), hot) {
             Ok(rows) => Ok(rows),
             Err(e) => {
-                if self.stale_statement(sql, &e, hot) || self.recover(&e, true) {
+                if self.stale_statement(&e, hot) || self.recover(&e, true) {
                     self.query_once(sql, params, hot)
                 } else {
                     Err(Self::explain_stale(e))
@@ -898,28 +1212,35 @@ impl PgDb {
         }
     }
 
-    /// A cached named statement the server no longer knows (SQLSTATE
-    /// `26000`): the session was reset under us, or a transaction-mode
-    /// pooler handed this call to a backend that never prepared it. Evict
-    /// it so the retry re-prepares. Safe for writes too — the server refused
-    /// at Bind, before anything executed.
-    fn stale_statement(&self, sql: &str, e: &AreevError, hot: bool) -> bool {
+    /// Whether a `26000` may be retried: only a hot statement (the cache was
+    /// cleared where it failed) and only outside a transaction — inside one
+    /// the failed Bind has already aborted it, and a retry would only add
+    /// `25P02`. The caller gets the 26000, with the remedy named
+    /// (see `explain_stale`).
+    fn stale_statement(&self, e: &AreevError, hot: bool) -> bool {
         if !hot {
             return false;
         }
         let AreevError::Storage(msg) = e else { return false };
-        if !msg.starts_with("postgres error 26000") {
+        msg.starts_with("postgres error 26000") && !self.in_txn.get()
+    }
+
+    /// After a connection-level failure, whether the failed call may be
+    /// replayed. The dead connection was already discarded by the checkout
+    /// that noticed; the next borrow dials a fresh one.
+    ///
+    /// `replayable` is the whole safety argument. A READ outside a transaction
+    /// can be re-run: it had no effect, so running it twice is running it
+    /// once. A WRITE cannot — the connection may have died AFTER the server
+    /// committed it, and nothing on this side can tell the difference, so
+    /// replaying risks applying it twice. Those calls get this error now,
+    /// which is the honest outcome: the host learns its unit of work did not
+    /// complete.
+    fn recover(&self, e: &AreevError, replayable: bool) -> bool {
+        if self.in_txn.get() {
             return false;
         }
-        // The whole cache, not the one entry: a 26000 means this session lost
-        // its statements wholesale (a reset, or a backend switch), so every
-        // cached name is suspect and the next one would trip the same way.
-        let _ = sql;
-        self.cache.borrow_mut().clear();
-        // Inside a transaction the failed Bind has already aborted it;
-        // a retry would only add `25P02`. The caller gets the 26000, with
-        // the remedy named (see `explain_stale`).
-        !self.in_txn.get()
+        Self::is_connection_dead(e) && replayable
     }
 
     /// A `26000` that could not be retried (it happened mid-transaction) is
@@ -942,37 +1263,44 @@ impl PgDb {
         }
     }
 
-    /// A write. Reconnects for the NEXT call but never replays this one — see
-    /// [`recover`](Self::recover) for why a possibly-committed write must not
-    /// be re-run.
+    /// A write. Never replayed — see [`recover`](Self::recover) for why a
+    /// possibly-committed write must not be re-run; a stale statement is the
+    /// one exception, since the server refused at Bind, before anything ran.
     fn run_execute(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
         match self.execute_once(sql, params.clone(), hot) {
             Ok(n) => Ok(n),
             Err(e) => {
-                if self.stale_statement(sql, &e, hot) {
+                if self.stale_statement(&e, hot) {
                     return self.execute_once(sql, params, hot);
                 }
-                self.recover(&e, false);
                 Err(Self::explain_stale(e))
             }
         }
     }
 
-    fn execute_once(&self, sql: &str, params: Vec<Value>, hot: bool) -> Result<u64> {
-        self.maybe_discard_session()?;
-        let vals: Vec<PgVal> = params.into_iter().map(PgVal).collect();
-        let refs: Vec<&(dyn ToSql + Sync)> =
-            vals.iter().map(|v| v as &(dyn ToSql + Sync)).collect();
-        if hot {
-            let st = self.prepared(sql)?;
-            let client = self.client.borrow().clone();
-            self.rt.block_on(client.execute(&st, &refs)).map_err(pg_err)
-        } else {
-            let translated = qualify_tables(&translate(sql)?, &self.schema);
-            let client = self.client.borrow().clone();
-            self.rt
-                .block_on(client.execute(translated.as_str(), &refs))
-                .map_err(pg_err)
+    /// End the pinned transaction with `verb`, giving the connection back.
+    fn end_txn(&self, verb: &str) -> Result<()> {
+        let co = self.pinned.borrow_mut().take();
+        // Cleared either way: a failed COMMIT ends the transaction just as
+        // surely as a successful one.
+        self.in_txn.set(false);
+        let Some(mut co) = co else {
+            return Ok(());
+        };
+        let r = self.pool.block_on(co.client().batch_execute(verb)).map_err(pg_err);
+        if let Err(e) = &r {
+            co.note(e);
+        }
+        r
+    }
+}
+
+impl Drop for PgDb {
+    fn drop(&mut self) {
+        // A transaction left open (a panic mid-write, a caller that never
+        // committed) must not travel back to the pool with the connection.
+        if self.pinned.borrow().is_some() {
+            let _ = self.end_txn("ROLLBACK");
         }
     }
 }
@@ -995,46 +1323,51 @@ impl Db for PgDb {
     }
 
     fn begin(&self) -> Result<()> {
-        let client = self.client.borrow().clone();
-        // Conformance-only `deallocate-txn`: a backend switch AT transaction
-        // start, which is what a non-tracking pooler does — the statements
-        // cached so far are unknown to the backend this transaction lands on.
-        if session_chaos_mode().as_deref() == Some("deallocate-txn") {
-            self.rt.block_on(client.batch_execute("DEALLOCATE ALL")).map_err(pg_err)?;
+        if self.pinned.borrow().is_some() {
+            // Postgres itself only warns on a nested BEGIN; keep the one
+            // connection and the one transaction.
+            return Ok(());
         }
-        let r = self.rt.block_on(client.batch_execute("BEGIN")).map_err(pg_err);
-        // Set only on success, so a failed BEGIN does not wedge the handle
-        // into "a transaction is open" and block every later recovery.
-        match &r {
-            Ok(_) => self.in_txn.set(true),
+        let mut co = self.pool.checkout()?;
+        let r = {
+            let conn = co.conn();
+            // Conformance-only `deallocate-txn`: a backend switch AT
+            // transaction start, which is what a non-tracking pooler does —
+            // the statements cached so far are unknown to the backend this
+            // transaction lands on.
+            if session_chaos_mode().as_deref() == Some("deallocate-txn") {
+                self.pool
+                    .block_on(conn.client.batch_execute("DEALLOCATE ALL"))
+                    .map_err(pg_err)?;
+                conn.cache.clear();
+            }
+            // BEGIN and, in the same round trip, what this handle wants for
+            // the transaction's length — LOCAL, so the connection returns to
+            // the pool as it came.
+            let sql = txn_prelude(self.ann_ef_search.get(), self.exact_scan.get(), conn);
+            self.pool.block_on(conn.client.batch_execute(&sql)).map_err(pg_err)
+        };
+        match r {
+            Ok(()) => {
+                *self.pinned.borrow_mut() = Some(co);
+                self.in_txn.set(true);
+                Ok(())
+            }
             Err(e) => {
-                self.recover(e, false);
+                // Set only on success, so a failed BEGIN does not wedge the
+                // handle into "a transaction is open".
+                co.note(&e);
+                Err(e)
             }
         }
-        r
     }
 
     fn commit(&self) -> Result<()> {
-        let client = self.client.borrow().clone();
-        let r = self.rt.block_on(client.batch_execute("COMMIT")).map_err(pg_err);
-        // Cleared either way: a failed COMMIT ends the transaction just as
-        // surely as a successful one, and leaving the flag set would suppress
-        // reconnects forever after a single outage mid-transaction.
-        self.in_txn.set(false);
-        if let Err(ref e) = r {
-            self.recover(e, false);
-        }
-        r
+        self.end_txn("COMMIT")
     }
 
     fn rollback(&self) -> Result<()> {
-        let client = self.client.borrow().clone();
-        let r = self.rt.block_on(client.batch_execute("ROLLBACK")).map_err(pg_err);
-        self.in_txn.set(false);
-        if let Err(ref e) = r {
-            self.recover(e, false);
-        }
-        r
+        self.end_txn("ROLLBACK")
     }
 
     fn prefers_batched_reads(&self) -> bool {
@@ -1203,53 +1536,52 @@ impl Db for PgDb {
     }
 
     fn ensure_embeddings(&self, dim: usize) -> Result<()> {
-        self.rt.block_on(async {
-            // Best-effort: only required if the extension is not installed
-            // yet, and refused on unprivileged roles where an admin already
-            // installed it — the ALTER below gives the real error.
-            // WITH SCHEMA public is load-bearing: search_path is pinned to
-            // the MEMORY's schema, and without it pgvector's objects would
-            // install into that schema — invisible to sibling memories, and
-            // destroyed database-wide by that one memory's DROP SCHEMA
-            // erasure.
-            // Cloned out of the cell up front, so no borrow is held across an
-            // await (see the `client` field).
-            let client = self.client.borrow().clone();
-            let _ = client
-                .batch_execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
-                .await;
-            client
-                .batch_execute(&format!(
-                    "ALTER TABLE \"{}\".embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})",
-                    self.schema
-                ))
-                .await
-                .map_err(|e| {
-                    AreevError::Storage(format!(
-                        "cannot add vector({dim}) column (is the pgvector extension available?): {e}"
+        let schema = self.schema.clone();
+        self.with_conn(|pool, conn| {
+            pool.block_on(async {
+                let client = &conn.client;
+                // Best-effort: only required if the extension is not installed
+                // yet, and refused on unprivileged roles where an admin already
+                // installed it — the ALTER below gives the real error.
+                // WITH SCHEMA public is load-bearing: without it pgvector's
+                // objects would install into whatever schema is first on the
+                // path — invisible to sibling memories, and destroyed
+                // database-wide by that one memory's DROP SCHEMA erasure.
+                let _ = client
+                    .batch_execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+                    .await;
+                client
+                    .batch_execute(&format!(
+                        "ALTER TABLE \"{schema}\".embeddings ADD COLUMN IF NOT EXISTS vec vector({dim})"
                     ))
-                })?;
-            // A pre-existing column with a different dim would make every add
-            // fail mid-transaction — refuse the embedder up front instead.
-            let row = client
-                .query_one(
-                    "SELECT a.atttypmod FROM pg_attribute a
-                      JOIN pg_class c ON a.attrelid = c.oid
-                      JOIN pg_namespace n ON c.relnamespace = n.oid
-                     WHERE n.nspname = $1 AND c.relname = 'embeddings'
-                       AND a.attname = 'vec'",
-                    &[&self.schema],
-                )
-                .await
-                .map_err(pg_err)?;
-            let existing = row.get::<_, i32>(0);
-            if existing > 0 && existing as usize != dim {
-                return Err(AreevError::Validation(format!(
-                    "embeddings column holds vector({existing}) but the embedder produces dim {dim} \
-                     — refusing to mix vector spaces (this is a hard error on the postgres backend)"
-                )));
-            }
-            Ok(())
+                    .await
+                    .map_err(|e| {
+                        AreevError::Storage(format!(
+                            "cannot add vector({dim}) column (is the pgvector extension available?): {e}"
+                        ))
+                    })?;
+                // A pre-existing column with a different dim would make every add
+                // fail mid-transaction — refuse the embedder up front instead.
+                let row = client
+                    .query_one(
+                        "SELECT a.atttypmod FROM pg_attribute a
+                          JOIN pg_class c ON a.attrelid = c.oid
+                          JOIN pg_namespace n ON c.relnamespace = n.oid
+                         WHERE n.nspname = $1 AND c.relname = 'embeddings'
+                           AND a.attname = 'vec'",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(pg_err)?;
+                let existing = row.get::<_, i32>(0);
+                if existing > 0 && existing as usize != dim {
+                    return Err(AreevError::Validation(format!(
+                        "embeddings column holds vector({existing}) but the embedder produces dim {dim} \
+                         — refusing to mix vector spaces (this is a hard error on the postgres backend)"
+                    )));
+                }
+                Ok(())
+            })
         })
     }
 
@@ -1286,52 +1618,49 @@ impl Db for PgDb {
                 "hnsw ef_construction must be 4..=1000, got {ef_construction}"
             )));
         }
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            // The column arrives with the first embedder (`ensure_embeddings`).
-            // Without it there is nothing to index, and `CREATE INDEX` would
-            // fail with an undefined-column error that reads like a bug.
-            let has_vec = client
-                .query_one(
-                    "SELECT count(*) FROM pg_attribute a
-                       JOIN pg_class c ON a.attrelid = c.oid
-                       JOIN pg_namespace n ON c.relnamespace = n.oid
-                      WHERE n.nspname = $1 AND c.relname = 'embeddings'
-                        AND a.attname = 'vec' AND NOT a.attisdropped",
-                    &[&self.schema],
-                )
-                .await
-                .map_err(pg_err)?
-                .get::<_, i64>(0);
-            if has_vec == 0 {
-                return Err(AreevError::AnnIndexUnsupported(
-                    "this memory has no embeddings yet — install an embedder and store at least \
-                     one vector before building an index over them"
-                        .into(),
-                ));
-            }
-            client
-                .batch_execute(&format!(
-                    "CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON \"{}\".embeddings \
-                     USING hnsw (vec vector_cosine_ops) WITH (m = {m}, ef_construction = {ef_construction})",
-                    self.schema
-                ))
-                .await
-                .map_err(|e| {
-                    AreevError::Storage(format!("cannot build the HNSW index over embeddings: {e}"))
-                })?;
-            // Session-scoped, and this backend holds one connection per store
-            // handle, so it lasts as long as the handle does. It is NOT a file
-            // truth: a different host opening the same schema picks its own
-            // accuracy/latency point, which is right — that trade belongs to
-            // the caller, not to the data.
-            client
-                .batch_execute(&format!("SET hnsw.ef_search = {ef_search}"))
-                .await
-                .map_err(pg_err)?;
-            self.ann_ef_search.set(Some(ef_search));
-            Ok(())
-        })
+        let schema = self.schema.clone();
+        self.with_conn(|pool, conn| {
+            pool.block_on(async {
+                let client = &conn.client;
+                // The column arrives with the first embedder (`ensure_embeddings`).
+                // Without it there is nothing to index, and `CREATE INDEX` would
+                // fail with an undefined-column error that reads like a bug.
+                let has_vec = client
+                    .query_one(
+                        "SELECT count(*) FROM pg_attribute a
+                           JOIN pg_class c ON a.attrelid = c.oid
+                           JOIN pg_namespace n ON c.relnamespace = n.oid
+                          WHERE n.nspname = $1 AND c.relname = 'embeddings'
+                            AND a.attname = 'vec' AND NOT a.attisdropped",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(pg_err)?
+                    .get::<_, i64>(0);
+                if has_vec == 0 {
+                    return Err(AreevError::AnnIndexUnsupported(
+                        "this memory has no embeddings yet — install an embedder and store at least \
+                         one vector before building an index over them"
+                            .into(),
+                    ));
+                }
+                client
+                    .batch_execute(&format!(
+                        "CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON \"{schema}\".embeddings \
+                         USING hnsw (vec vector_cosine_ops) WITH (m = {m}, ef_construction = {ef_construction})"
+                    ))
+                    .await
+                    .map_err(|e| {
+                        AreevError::Storage(format!("cannot build the HNSW index over embeddings: {e}"))
+                    })
+            })
+        })?;
+        // A wish of this HANDLE, applied to whichever connection serves it.
+        // Not a file truth: a different host opening the same schema picks
+        // its own accuracy/latency point, which is right — that trade
+        // belongs to the caller, not to the data.
+        self.ann_ef_search.set(Some(ef_search));
+        Ok(())
     }
 
     fn set_ann_ef_search(&self, ef_search: usize) -> Result<()> {
@@ -1340,72 +1669,60 @@ impl Db for PgDb {
                 "hnsw ef_search must be 1..=1000, got {ef_search}"
             )));
         }
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            client
-                .batch_execute(&format!("SET hnsw.ef_search = {ef_search}"))
-                .await
-                .map_err(pg_err)
-        })?;
         self.ann_ef_search.set(Some(ef_search));
         Ok(())
     }
 
     fn ann_ef_search(&self) -> Result<Option<usize>> {
+        if let Some(ef) = self.ann_ef_search.get() {
+            return Ok(Some(ef));
+        }
+        // Nothing asked for on this handle: report what the server would
+        // use (a database- or role-level `ALTER … SET`, or the default).
         // `current_setting(_, true)` is NULL rather than an error when the
         // extension has never been loaded in this session.
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            let row = client
-                .query_one("SELECT current_setting('hnsw.ef_search', true)", &[])
-                .await
+        self.with_conn(|pool, conn| {
+            let row = pool
+                .block_on(conn.client.query_one("SELECT current_setting('hnsw.ef_search', true)", &[]))
                 .map_err(pg_err)?;
             Ok(row.get::<_, Option<String>>(0).and_then(|v| v.parse().ok()))
         })
     }
 
     fn drop_ann_index(&self) -> Result<()> {
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            client
-                .batch_execute(&format!("DROP INDEX IF EXISTS \"{}\".idx_embeddings_hnsw", self.schema))
-                .await
-                .map_err(pg_err)?;
-            Ok(())
-        })
+        let sql = format!("DROP INDEX IF EXISTS \"{}\".idx_embeddings_hnsw", self.schema);
+        self.with_conn(|pool, conn| pool.block_on(conn.client.batch_execute(&sql)).map_err(pg_err))
     }
 
     fn set_exact_vector_scan(&self, on: bool) -> Result<()> {
         // pgvector serves an approximate k-NN through an index scan over the
         // HNSW graph; with index scans disabled the planner falls back to the
         // sequential scan that computes every distance, which is the exact
-        // answer. Session-scoped like `hnsw.ef_search`, and this backend
-        // holds one connection per handle, so it affects only this handle —
-        // and only until it is switched back.
-        let sql = if on {
-            "SET enable_indexscan = off; SET enable_bitmapscan = off"
-        } else {
-            "RESET enable_indexscan; RESET enable_bitmapscan"
-        };
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            client.batch_execute(sql).await.map_err(pg_err)
-        })?;
+        // answer. A wish of this handle, like `ef_search`, applied to the
+        // connection that serves each statement — and only until switched back.
         self.exact_scan.set(on);
         Ok(())
     }
 
     fn ann_index_name(&self) -> Result<Option<String>> {
-        self.rt.block_on(async {
-            let client = self.client.borrow().clone();
-            let rows = client
-                .query(
-                    "SELECT indexname FROM pg_indexes
-                      WHERE schemaname = $1 AND tablename = 'embeddings'
-                        AND indexdef LIKE '%hnsw%'",
-                    &[&self.schema],
-                )
-                .await
+        let schema = self.schema.clone();
+        self.with_conn(|pool, conn| {
+            // Straight off the catalogs, by access method. `pg_indexes` would
+            // do, but its `indexdef` column is `pg_get_indexdef()` over every
+            // index row in the snapshot, and a sibling schema dropped between
+            // the snapshot and that call is an XX000 for a question about
+            // THIS schema's index.
+            let rows = pool
+                .block_on(conn.client.query(
+                    "SELECT c.relname FROM pg_index i
+                       JOIN pg_class c ON c.oid = i.indexrelid
+                       JOIN pg_class t ON t.oid = i.indrelid
+                       JOIN pg_namespace n ON n.oid = t.relnamespace
+                       JOIN pg_am am ON am.oid = c.relam
+                      WHERE n.nspname = $1 AND t.relname = 'embeddings'
+                        AND am.amname = 'hnsw'",
+                    &[&schema],
+                ))
                 .map_err(pg_err)?;
             Ok(rows.first().map(|r| r.get::<_, String>(0)))
         })
@@ -1837,32 +2154,26 @@ fn term_hash(term: &str) -> Vec<u8> {
 /// while leaving it callable.
 #[cfg(feature = "conformance")]
 pub fn execute_raw(url: &str, sql: &str) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(db_err)?;
-    let client = crate::pgtls::connect(&rt, url)?;
-    rt.block_on(client.batch_execute(sql)).map_err(pg_err)
+    let (pool, _) = PgPool::for_url(url)?;
+    let mut co = pool.checkout()?;
+    let r = pool.block_on(co.client().batch_execute(sql)).map_err(pg_err);
+    if let Err(e) = &r {
+        co.note(e);
+    }
+    r
 }
 
-/// One integer from raw SQL, the read half of [`execute_raw`]. Same audience,
-/// same `conformance` gate, same reason.
 #[cfg(feature = "conformance")]
 pub fn query_raw_i64(url: &str, sql: &str) -> Result<i64> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(db_err)?;
-    let client = crate::pgtls::connect(&rt, url)?;
-    let row = rt.block_on(client.query_one(sql, &[])).map_err(pg_err)?;
-    Ok(row.get::<_, i64>(0))
+    let (pool, _) = PgPool::for_url(url)?;
+    let mut co = pool.checkout()?;
+    let r = pool.block_on(co.client().query_one(sql, &[])).map_err(pg_err);
+    if let Err(e) = &r {
+        co.note(e);
+    }
+    Ok(r?.get::<_, i64>(0))
 }
 
-/// `AREEV_PG_SESSION_CHAOS` under the `conformance` feature: `1`/`reset`
-/// turns on `maybe_discard_session`, `deallocate` its harsher form, and
-/// `deallocate-txn` drops the statements at every `BEGIN` instead (the
-/// backend-switch shape). Read per statement. On a shipped build it is never
-/// consulted.
 fn session_chaos_mode() -> Option<String> {
     #[cfg(feature = "conformance")]
     {
@@ -1882,13 +2193,15 @@ pub fn drop_postgres_schema(url: &str, schema: &str) -> Result<()> {
     if !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return Err(AreevError::Validation(format!("invalid schema name {schema:?}")));
     }
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(db_err)?;
-    let client = crate::pgtls::connect(&rt, url)?;
-    rt.block_on(client.batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE")))
-        .map_err(pg_err)
+    let (pool, _) = PgPool::for_url(url)?;
+    let mut co = pool.checkout()?;
+    let r = pool
+        .block_on(co.client().batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE")))
+        .map_err(pg_err);
+    if let Err(e) = &r {
+        co.note(e);
+    }
+    r
 }
 
 #[cfg(test)]
@@ -2148,6 +2461,24 @@ mod schema_version_tests {
              and update EXPECTED_DIGEST to the value above — a schema stamped with an unbumped \
              version silently skips the migration it needs"
         );
+    }
+
+    #[test]
+    fn pool_size_reads_the_dsn_then_the_environment() {
+        assert_eq!(pool_size("postgres://u@h/db?schema=x").unwrap(), DEFAULT_POOL_SIZE);
+        assert_eq!(pool_size("postgres://u@h/db?pool=3&schema=x").unwrap(), 3);
+        assert!(pool_size("postgres://u@h/db?pool=0").is_err());
+        assert!(pool_size("postgres://u@h/db?pool=many").is_err());
+        std::env::set_var(POOL_ENV, "5");
+        assert_eq!(pool_size("postgres://u@h/db").unwrap(), 5);
+        assert_eq!(pool_size("postgres://u@h/db?pool=2").unwrap(), 2, "the DSN wins");
+        std::env::set_var(POOL_ENV, "x");
+        assert!(pool_size("postgres://u@h/db").is_err());
+        std::env::remove_var(POOL_ENV);
+        assert_eq!(strip_pool("postgres://u@h/db?pool=3&schema=x"), "postgres://u@h/db?schema=x");
+        // The driver never sees it, whatever else rides along.
+        let req = crate::pgtls::SslRequest::split("postgres://u@h/db?pool=3&sslmode=disable").unwrap();
+        assert_eq!(req.dsn, "postgres://u@h/db");
     }
 
     #[test]

@@ -173,7 +173,8 @@ impl Backend for PgBackend {
     }
 
     fn locator(&self, name: &str) -> String {
-        format!("{}?schema={}_{}", self.url, self.prefix, name)
+        let sep = if self.url.contains('?') { '&' } else { '?' };
+        format!("{}{sep}schema={}_{}", self.url, self.prefix, name)
     }
 
     fn scratch(&self) -> &Path {
@@ -286,6 +287,8 @@ macro_rules! for_each_conformance_case {
         $per_case!(recall_writes_nothing_that_survives_reopen);
         $per_case!(imported_grains_are_text_searchable_without_reopen);
         $per_case!(store_recall_still_returns_retracted_grains);
+        // isolation (#181): memories in one process share nothing
+        $per_case!(memories_in_one_process_share_nothing);
     };
 }
 

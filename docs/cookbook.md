@@ -1520,6 +1520,13 @@ run `areev provision --db <dsn> --schema desk_invoice` (or your migration job)
 with a role that owns the schema, then retry
 ```
 
+The third DSN parameter is `pool=P`: how many connections this *process*
+may hold to that server and role, shared by every memory it opens (default
+8; `$AREEV_PG_POOL` when the DSN is not yours to edit). A memory handle
+holds none while idle, so open as many as you like and size the pool for
+the transactions that run at once
+([deployment-profile.md](deployment-profile.md)).
+
 That is the upgrade contract too: after a build whose schema changed, the
 runtime refuses instead of silently migrating under load, and the migration
 is a deploy step you run when you choose.

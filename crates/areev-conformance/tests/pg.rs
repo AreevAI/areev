@@ -312,9 +312,11 @@ fn a_handle_recovers_from_a_database_outage() {
             .build()
             .unwrap();
         rt.block_on(async {
-            let (client, conn) = tokio_postgres::connect(url, tokio_postgres::NoTls)
-                .await
-                .unwrap();
+            // The driver does not know the store's own `?pool=`.
+            let (client, conn) =
+                tokio_postgres::connect(&areev_store::pg::strip_pool(url), tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
             tokio::spawn(async move {
                 let _ = conn.await;
             });

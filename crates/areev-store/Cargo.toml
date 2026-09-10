@@ -16,7 +16,7 @@ categories = ["database-implementations", "caching"]
 # Server-tier storage backend: the same Areev store logic over a PostgreSQL
 # schema (one memory = one schema). Non-default so edge builds stay
 # dependency-light; see docs/postgres-backend-plan.md.
-postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time"]
+postgres = ["dep:tokio-postgres", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 # Raw-SQL escape hatches (`pg::execute_raw`, `pg::query_raw_i64`) that the
 # backend-parameterized conformance suite needs to stage a pre-migration
 # schema. NEVER enabled by a shipped build: they take arbitrary SQL against

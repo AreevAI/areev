@@ -127,7 +127,7 @@ impl SslRequest {
             match pair.split_once('=') {
                 Some(("sslmode", v)) => mode = SslMode::parse(v)?,
                 Some(("sslrootcert", v)) if !v.is_empty() => root_cert = Some(v.to_string()),
-                Some(("provision", _)) => {}
+                Some(("provision", _)) | Some(("pool", _)) => {}
                 _ => rest.push(pair),
             }
         }
@@ -167,6 +167,11 @@ pub(crate) fn connect(
 ) -> Result<tokio_postgres::Client> {
     let req = SslRequest::split(url)?;
     let mut cfg: tokio_postgres::Config = req.dsn.parse().map_err(crate::pg::pg_err)?;
+    // Named in `pg_stat_activity`, so an operator (and the pool's own test)
+    // can count what this process holds. A DSN that names one keeps it.
+    if cfg.get_application_name().is_none() {
+        cfg.application_name("areev");
+    }
     // `sslmode` was stripped above, so the parsed config carries the driver
     // default; set the mode we actually resolved.
     cfg.ssl_mode(match req.mode {

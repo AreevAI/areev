@@ -105,6 +105,12 @@ jobs:
       # masquerade as a skipped suite.
       - name: Conformance + CAL smoke (postgres)
         run: cargo test -p areev-conformance --features postgres
+      # #181: the same suite with every memory squeezed through a pool of
+      # two connections — the pooled transport must be invisible.
+      - name: Conformance through a pool of two (postgres)
+        env:
+          AREEV_PG_URL: postgres://postgres:postgres@127.0.0.1:5432/areev_test?pool=2
+        run: cargo test -p areev-conformance --features postgres --test pg --test pg_chaos --test pg_stale --test pg_pool
       - name: Store unit tests with the postgres feature
         run: cargo test -p areev-store --features postgres --lib
       # `postgres-tls` is a SEPARATE build, not a superset in test terms: the

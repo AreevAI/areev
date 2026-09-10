@@ -37,13 +37,31 @@ transports implement it:
   (`conformance` feature: `RESET ALL` before every statement outside a
   transaction; `=deallocate` adds `DEALLOCATE ALL` there and `=deallocate-txn`
   drops the statements at every `BEGIN` instead, the two halves `pg_stale.rs`
-  pins) and through a real transaction-mode PgBouncer, the `vector(dim)` column is added at the first
-  `set_embedder` (dim mismatch = hard refusal), CAS blobs live in an
-  in-schema table, and `prefers_batched_reads = true`. Page cipher and the
-  telemetry sidecar are file-backend-only and rejected at open.
+  pins) and through a real transaction-mode PgBouncer. **A handle owns no
+  connection** (#181): `PgPool`, one per DSN per process (keyed with
+  `schema`/`provision`/`pool` stripped), owns a one-worker multi-thread
+  runtime, a fair `Semaphore` sized by `?pool=` / `$AREEV_PG_POOL` (default
+  `DEFAULT_POOL_SIZE`), and the idle connections. `with_conn` borrows one
+  per statement; `begin` pins one on the handle until `commit`/`rollback`
+  (`Drop` rolls back a forgotten one). Per-connection state lives on
+  `PooledConn` — the prepared-statement cache (keyed by translated SQL,
+  cleared past 512), the applied `hnsw.ef_search`/exact-scan GUCs — and the
+  handle only *wishes* those: `txn_prelude` says them with `SET LOCAL` after
+  `BEGIN`, `align_session` reconciles them onto the borrowed connection
+  outside one. The bootstrap's bare DDL is the one place the schema is ever
+  on a `search_path`, and that is `SET LOCAL` to its transaction; a dialled
+  connection carries `public, ext` for pgvector's type only. A dead
+  connection is discarded (`Checkout::note`), never returned; reads outside
+  a transaction replay once on a fresh one, writes never. Pinned by
+  `tests/pg_pool.rs` (N handles ≤ P connections, counted in
+  `pg_stat_activity` by `application_name = areev`) and the two-backend
+  `memories_in_one_process_share_nothing` case. The `vector(dim)` column is
+  added at the first `set_embedder` (dim mismatch = hard refusal), CAS blobs
+  live in an in-schema table, and `prefers_batched_reads = true`. Page
+  cipher and the telemetry sidecar are file-backend-only and rejected at
+  open.
   **Every session opens through `pgtls::connect`** (src/pgtls.rs) — the one
-  place a Postgres socket is made, for `open`, `reconnect`, and
-  `drop_postgres_schema` alike. It splits `sslmode`/`sslrootcert` out of the
+  place a Postgres socket is made, called only by `PgPool::dial`. It splits `sslmode`/`sslrootcert` out of the
   DSN (the driver rejects `sslrootcert` as an unknown option and knows only
   three of libpq's five `sslmode` rungs), maps the mode onto a driver mode
   plus a rustls certificate verifier, and spawns the connection future. The

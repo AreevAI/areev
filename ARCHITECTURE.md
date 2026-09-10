@@ -1820,10 +1820,51 @@ suite through a real PgBouncer in transaction mode. What the store cannot
 absorb is stated rather than papered over: the driver names every
 parameterized statement, so the pooler must track prepared statements across
 backends (PgBouncer 1.21+ does) or run in session mode — inside a transaction
-a stale statement aborts it, and the error names both remedies. Two things
-stay session-scoped by design for now: `hnsw.ef_search`, whose loss under
-pooling is a silent accuracy regression, and the process-wide pool itself,
-which is the next increment.
+a stale statement aborts it, and the error names both remedies. The
+process-wide pool that this made possible is the next decision.
+
+### One connection pool per DSN per process, because a handle is not a connection
+
+Every Postgres handle owned a connection — its own tokio current-thread
+runtime, one `tokio_postgres` client, a second for the telemetry sidecar —
+for as long as it was open. That is the file backend's shape carried over
+(a file handle *is* a resource), and on a server it inverts the economics:
+a worker holding a thousand memories held a thousand or two thousand
+connections, idle or not, against a `max_connections` that Postgres sizes
+in the low hundreds. The documented remedy was for the host to keep an LRU
+of handles, which is exactly the thing Areev Cloud's spec asks to remove
+(#181). Once every statement was schema-qualified (the previous decision),
+nothing about a connection belonged to a memory any more.
+
+The decision: connections belong to a pool keyed by the DSN with the
+store's own parameters stripped — one per server, role and TLS setting per
+process — and a handle borrows one per statement, or one for the length of
+a transaction. The pool is bounded by `?pool=` on the DSN or `$AREEV_PG_POOL`
+(default 8, the DSN winning), and callers past the bound wait in order
+rather than fail. What used to be handle state was split by where it
+belongs: prepared statements and the applied GUCs live on the connection;
+the handle keeps only what it *wants* (`ef_search`, the exact-scan toggle)
+and says so per transaction with `SET LOCAL`, reconciling it onto whichever
+connection serves it outside one. The bootstrap's bare DDL is the one place
+a memory's schema is ever on a `search_path`, and that too is `SET LOCAL`.
+A dead connection is dropped, not repaired in place.
+
+Two consequences are worth naming. The pool's runtime is a one-worker
+multi-thread runtime rather than the private current-thread runtime the
+store otherwise uses (§10, "dependency-light"): a current-thread runtime
+serialises its `block_on` callers, which would have made the pool a
+process-wide lock, and the worker is what keeps every connection driven
+while no caller is inside the store. It is still private to the store and
+still behind the sync `Db` seam; the invariant that Areev imposes no runtime
+on its host stands. And the default is bounded rather than unbounded on
+purpose: the issue exists because a cap that holds only when someone
+remembers to configure it is not a guarantee. Proof: `tests/pg_pool.rs`
+counts `pg_stat_activity` while twelve telemetry-on handles and six
+concurrent writers run through a pool of three; the two-backend case
+`memories_in_one_process_share_nothing` shows two memories served in turn by
+one pool share nothing; and the whole conformance suite passes through a
+pool of two, under the `RESET ALL` chaos hook, and through PgBouncer in
+transaction mode.
 
 ### The dictionary is keyed by digest, because the index must be bounded and the value is not
 
