@@ -21,6 +21,7 @@ pub use clock::{Clock, FixedClock, SystemClock};
 pub use connector::{PollItem, PollRequest, PollResponse};
 pub use context::{parse_context_query, ContextQuerySpec};
 pub use eval::{
-    trigger_name, EvalOptions, EvalReport, Evaluator, RunStarter, StartResult, TriggerStatus,
+    trigger_name, ConnectorCode, EvalOptions, EvalReport, Evaluator, RunStarter, StartResult,
+    TriggerStatus,
 };
 pub use error::{Result, TriggerError};

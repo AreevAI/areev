@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "kind": "definition",
+  "namespace": "org.uw",
+  "tool_description": "aggregate exposure across the insured's policies",
+  "tool_name": "accumulation",
+  "type": "tool"
+}

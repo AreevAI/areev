@@ -121,6 +121,7 @@ impl Rig {
             facade: Arc::clone(&self.facade),
             clock: Arc::clone(&self.clock) as Arc<dyn areev_trigger::Clock>,
             connector: None,
+            connector_code: None,
             starter: Some(Arc::new(RunnerStarter {
                 runner,
                 opts: RunOptions {

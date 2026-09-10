@@ -39,6 +39,16 @@ pub enum TriggerError {
     /// unmoved — refusing loudly beats truncating, because a silently
     /// dropped attachment is an invoice posting without evidence.
     BlobContract { trigger: String, detail: String },
+    /// TRG-E012 — the trigger names its connector as a GRAIN (#185) and this
+    /// host will not run it: no pin, an unreadable Definition or blob, a
+    /// Definition carrying no code, a declared runtime with no sandbox, or a
+    /// blob-reading module on an evaluator wired no memory locator.
+    ///
+    /// Separate from `TRG-E003` because the fix is different: E003 says
+    /// *configure a connector*, this one says *this specific code is not
+    /// authorized here* — and the authorization deliberately does not travel
+    /// in the file, so the address to pin is what the message carries.
+    ConnectorCode { trigger: String, detail: String },
 }
 
 impl TriggerError {
@@ -55,6 +65,7 @@ impl TriggerError {
             TriggerError::EgressRefused { .. } => "TRG-E009",
             TriggerError::Storage { .. } => "TRG-E010",
             TriggerError::BlobContract { .. } => "TRG-E011",
+            TriggerError::ConnectorCode { .. } => "TRG-E012",
         }
     }
 }
@@ -102,6 +113,10 @@ impl fmt::Display for TriggerError {
                 f,
                 "TRG-E011: connector blob contract violated for trigger {trigger}: {detail} — \
                  the poll was refused whole and the cursor left unmoved"
+            ),
+            TriggerError::ConnectorCode { trigger, detail } => write!(
+                f,
+                "TRG-E012: trigger {trigger} cannot run its connector code: {detail}"
             ),
         }
     }

@@ -6,7 +6,7 @@
 //! lives.
 
 use crate::Backend;
-use areev_core::types::{ExecutionStatus, Fact, Grain, State, Tool, Workflow};
+use areev_core::types::{ExecutionStatus, Fact, Grain, State, Tool, ToolKind, Workflow};
 
 /// `run_id` is a typed field only on Event; on every other type it rides as a
 /// top-level extra field the indexer reads. That was mechanical and untested
@@ -141,6 +141,65 @@ pub fn step_action_survives_supersession_only_by_restatement(b: &dyn Backend) {
         journal.len(),
         2,
         "[{}] the journal keeps intent AND result (run rows never flip)",
+        b.name()
+    );
+}
+
+/// The execution edge behind `areev tool provenance`: a journal entry names
+/// the Definition it ran in `spec_hash`, and the run join reads that backwards.
+///
+/// Storage semantics, so both backends must answer identically — and this one
+/// is a scan rather than an index read, which is exactly the kind of thing
+/// that behaves differently when one backend's `recent` orders or windows
+/// differently from the other's.
+pub fn runs_executing_reads_the_spec_hash_edge(b: &dyn Backend) {
+    let mut m = b.open();
+    let def = m
+        .add(
+            &Tool::new("screen")
+                .kind(ToolKind::Definition)
+                .tool_description("the pinned rule")
+                .created_at(1_000)
+                .namespace("ops"),
+        )
+        .unwrap();
+    let unrelated = m
+        .add(
+            &Tool::new("post")
+                .kind(ToolKind::Definition)
+                .tool_description("another tool")
+                .created_at(1_001)
+                .namespace("ops"),
+        )
+        .unwrap();
+
+    for (run, spec, at) in [("run-a", &def, 2_000), ("run-b", &def, 2_001), ("run-c", &unrelated, 2_002)] {
+        let mut entry = Tool::new("screen").spec_hash(&spec.to_hex()).created_at(at).namespace("ops");
+        entry
+            .common_mut()
+            .extra_fields
+            .insert("run_id".into(), serde_json::json!(run));
+        m.add(&entry).unwrap();
+    }
+
+    let mut runs = m.runs_touching("ops", &def, 4).unwrap();
+    runs.sort();
+    assert_eq!(
+        runs,
+        vec!["run-a".to_string(), "run-b".to_string()],
+        "[{}] the runs that executed this definition, and only those",
+        b.name()
+    );
+    assert!(
+        m.runs_executing("ops", &def).unwrap().len() == 2,
+        "[{}] the narrow read agrees with the walk",
+        b.name()
+    );
+    // A Fact can never be named by a spec_hash, so the scan is skipped for it.
+    let f = m.add(&Fact::new("s", "r", "o").namespace("ops").created_at(3_000)).unwrap();
+    assert!(
+        m.runs_executing("ops", &f).unwrap().is_empty(),
+        "[{}] only a Tool Definition has an execution edge",
         b.name()
     );
 }

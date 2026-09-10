@@ -224,9 +224,10 @@ one visible symptom is that the pin you expected to break did not.
 [`agents/sanctions-screening/`](agents/sanctions-screening/) walks the whole
 chain and asserts each link.
 
-**Inbound: do you need a connector at all?** The trigger path cannot yet
-execute a connector from a grain (resolving connectors as capability tools
-by content address is a documented not-yet), but often you don't need one:
+**Inbound: which shape does your source want?** Since 1.7.4 the trigger path
+can execute a connector **from a grain** (#185), so the old trade — item
+machinery *or* governed code — is gone. Three shapes, in ascending order of
+what the evaluator does for you:
 
 1. **Push sources** → a `webhook`/`manual` trigger + `areev trigger
    deliver`, **no connector**. The host already terminates TLS and
@@ -234,17 +235,24 @@ by content address is a documented not-yet), but often you don't need one:
    grain-stored capability tools.
 2. **Pull sources with simple item semantics** → a cron trigger, **no
    connector**, with a grain-stored `wasm32-areev-io` tool as the plan's
-   entry node polling through the broker. The fetch code is a grain, so
-   the loop governs it. Cost: you manage the cursor yourself (a State
-   grain via `ACCUMULATE`) and one run processes a batch.
-3. **Pull sources that need the item machinery** — per-item dedup (one
-   run per item, twice-delivered = one run), cursor/catch-up/backlog,
-   backoff, attachment filing into the CAS — → keep a connector script,
-   and keep it a **dumb pipe** (fetch, normalize, cursor) so the logic
-   worth improving lives behind the seam, in grains. Connectors are
-   already shaped like capability tools (pure stdio, no memory access,
-   brokered credentials), so expect this file to become a grain when the
-   trigger path's egress plumbing unifies with the run path's.
+   entry node polling through the broker. Cost: you manage the cursor
+   yourself (a State grain via `ACCUMULATE`) and one run processes a batch.
+3. **Pull sources that need the item machinery** — per-item dedup (one run
+   per item, twice-delivered = one run), cursor/catch-up/backlog, backoff,
+   attachment filing into the CAS — → a **polling trigger whose
+   `connector_tool` names a Definition**. You get all of the above from the
+   evaluator *and* the fetch code is a grain: it travels in bundles,
+   `tool provenance` chases it, and the loop can propose a `code_revision`
+   against it under the Rule E1 evalset gate. The evaluating host must pin
+   its address (`--allow-executor`), which is the same split the run path
+   makes — the code replicates, the authority does not.
+   [`../grain-connector/`](../grain-connector/) is a keyless, offline
+   example; `docs/triggers.md` has the contract.
+
+   A `--connector-cmd` host script still works and is still the fastest way
+   to get moving. Keep it a **dumb pipe** (fetch, normalize, cursor) so the
+   logic worth improving lives behind the seam — and note that a dumb pipe
+   is exactly what ports to a grain when you want the loop to see it.
 
 ---
 
@@ -922,9 +930,9 @@ mounts or bundle subscriptions.
 
 ## Missing something?
 
-If your agent needs a capability this guide says is a not-yet (connectors
-as grains, CAL syntax for `max_cycles`/reducers, CAL `REVERT`, …) — or one
-it doesn't mention at all — **file an issue**:
+If your agent needs a capability this guide says is a not-yet (CAL syntax for
+`max_cycles`/reducers, CAL `REVERT`, …) — or one it doesn't mention at all —
+**file an issue**:
 [github.com/AreevAI/areev/issues](https://github.com/AreevAI/areev/issues).
 Real agent-builder use cases are what prioritize the roadmap; describe the
 workflow you're building, not just the feature.

@@ -4676,8 +4676,16 @@ impl Areev {
     /// `run_id` of everything reachable, including the grain itself. Bounded by
     /// `depth` hops, because a long-lived memory's lineage is unbounded.
     ///
-    /// Note this records runs that *produced or refined* the grain, not runs
-    /// that merely read it — a read leaves no grain, so nothing in an
+    /// A **Tool Definition** additionally collects the runs that EXECUTED it.
+    /// That edge is not provenance: a journal's result grain supersedes its
+    /// intent, and neither supersedes the Definition, so the lineage walk on
+    /// its own answers "no runs" to the one question `areev tool provenance`
+    /// exists to ask. What connects them is §8.4's `spec_hash` — the intent
+    /// names the Definition it is about to run — and this reads that edge
+    /// backwards (see [`Areev::runs_executing`]).
+    ///
+    /// Note this records runs that *produced or refined* the grain, or ran it,
+    /// not runs that merely read it — a read leaves no grain, so nothing in an
     /// append-only store can attest to it.
     pub fn runs_touching(&mut self, ns: &str, hash: &Hash, depth: usize) -> Result<Vec<String>> {
         require_exact_ns("runs_touching", ns)?;
@@ -4722,6 +4730,55 @@ impl Areev {
                 break;
             }
             frontier = next;
+        }
+
+        // The execution edge, appended so the provenance answer above is
+        // unchanged for every caller that already had one.
+        for run in self.runs_executing(ns, hash)? {
+            if seen_run.insert(run.clone()) {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }
+
+    /// The runs whose journal entries name `hash` as the Definition they ran.
+    ///
+    /// A journal intent carries `spec_hash` (§8.4) — "this is the tool I am
+    /// about to execute" — and nothing indexes it, because it is a field on
+    /// the grain rather than a `related_to` link. So this is a bounded scan of
+    /// the namespace's Tool grains, which is affordable for the reason it is
+    /// acceptable in the definition catalogue: both are forensics reads on the
+    /// authoring path, not hot reads.
+    ///
+    /// The scan is skipped entirely unless `hash` IS a Tool Definition, since
+    /// nothing else can be named by a `spec_hash` — so every other caller of
+    /// [`Areev::runs_touching`] pays nothing for this.
+    pub fn runs_executing(&mut self, ns: &str, hash: &Hash) -> Result<Vec<String>> {
+        require_exact_ns("runs_executing", ns)?;
+        let is_definition = matches!(self.get(hash), Ok(g)
+            if g.grain_type == areev_core::types::GrainType::Tool
+                && g.get_str("kind") == Some("definition"));
+        if !is_definition {
+            return Ok(Vec::new());
+        }
+        let hex = hash.to_hex();
+        let mut runs: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        // Journal entries are two per effect and definitions are few, so the
+        // window has to be wide enough that an active memory cannot crowd out
+        // the very entries being looked for — the same reasoning, and the same
+        // number, as the runtime's definition catalogue.
+        const SPEC_SCAN: usize = 200_000;
+        for g in self.recent(ns, Some(areev_core::types::GrainType::Tool), SPEC_SCAN)? {
+            if g.get_str("spec_hash") != Some(hex.as_str()) {
+                continue;
+            }
+            if let Some(r) = g.get_str("run_id") {
+                if seen.insert(r.to_string()) {
+                    runs.push(r.to_string());
+                }
+            }
         }
         Ok(runs)
     }

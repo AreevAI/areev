@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "kind": "definition",
+  "namespace": "org.ops",
+  "tool_description": "tell the sender what happened",
+  "tool_name": "reply_email",
+  "type": "tool"
+}

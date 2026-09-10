@@ -1,0 +1,17 @@
+{
+  "because": "triage every referral that reaches the chest pain service",
+  "confidence": 1.0,
+  "connector": "mock",
+  "context_query": "referral_ctx($session = /referral_id)",
+  "created_at": 1788977861473,
+  "dedup_key": [
+    "/referral_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.ops",
+  "scope": "inbox:referrals",
+  "type": "trigger",
+  "workflow": "e9cb3f56c7b8bb3b90e277cd3792a18e5bd79a145e3dc169e59fb7b865540103"
+}

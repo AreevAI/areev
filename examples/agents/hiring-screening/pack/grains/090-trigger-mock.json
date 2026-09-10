@@ -1,0 +1,17 @@
+{
+  "because": "screen every application against REQ-4417",
+  "confidence": 1.0,
+  "connector": "mock",
+  "context_query": "screen_ctx($session = /application_id)",
+  "created_at": 1788977862047,
+  "dedup_key": [
+    "/application_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.talent",
+  "scope": "queue:applications",
+  "type": "trigger",
+  "workflow": "6adaafd898188707e3d61146bd02bc2f769b793b2aec401f4a2d0f2619aa4607"
+}

@@ -109,7 +109,12 @@ merged without a design discussion first:
 
 1. Fork, create a topic branch, and make your change with signed-off commits.
 2. Ensure `cargo test --workspace` passes and you have not introduced new clippy
-   warnings.
+   warnings. Two packages live outside the workspace and need their own run
+   when you touch them: `cargo test --manifest-path areev-sandbox/Cargo.toml`
+   (which also exercises the committed blessed blobs) and `cd crates/areev-js
+   && npm run build && node --test __test__/smoke.mjs`. If you rebuilt a blob
+   in `areev-tools/`, `python3 areev-tools/manifest.py --check` must pass and
+   the new addresses go in the same commit.
 3. Update docs/tests as needed. Open a PR against `main` using the PR template.
 4. A maintainer will review. Please be responsive to feedback; we aim to keep
    the review loop short.

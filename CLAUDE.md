@@ -49,6 +49,10 @@ cargo run -p areev-bench --bin selfimprove_aba -- --workdir /tmp/aba --mock --as
 #   ^ keyless CI floor: proves the A/B/A/B plumbing, never a learning claim.
 #     Live numbers need --agent-cmd/--llm-cmd (see SELFIMPROVE.md "Reproduce").
 
+python3 areev-tools/manifest.py --check   # blessed blobs match their published addresses
+areev-tools/build.sh                      # rebuild them (needs the wasm32 target)
+cargo test --manifest-path areev-sandbox/Cargo.toml   # incl. the blessed-blob tests
+
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
@@ -130,13 +134,14 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-llm` | Out-of-box LLM backends (OpenAI-compatible/Anthropic/Ollama over a small blocking HTTP client) for Areev Loop, the `remember()` free-text→Fact extraction (`extract.rs`), and the `ToolCallLlm` tool-calling seam (`toolcall.rs`) for the runtime | — |
 | `areev-run-core` | The PURE `areev run` scheduler: sans-IO `step(env, state, events) → (commands, state)`, frozen condition grammar, plan validation (Tarjan + cycle bounds), re-entry generations, `RUN-Ennn` errors. No clock/rand/IO in its dep tree — CI-enforced | yes |
 | `areev-run` | The `areev run` driver (a host, peer of areev-mcp): journal (intent=Pending Tool grain, result=supersession re-stating identity), checkpoints, resume with same-key crash redelivery, HITL respond with separation of duties, budgets, cancel, journal-consistent `verify`; plus the two host-boundary controls shared with `areev-trigger` — the content-addressed code executor (`executor_uri` behind a host-side pin) and the credential broker + outbound allowlist | yes |
-| `areev-trigger` | Standing rules that start workflows: the `Trigger` grain's eight kinds over four primitives, the one-shot `trigger run` evaluator (claim, cursor, backoff, catch-up), the connector contract (same JSON-on-stdio shape as `--tool-cmd`), composite gates with correlation windows, and heartbeat rendering (the egress broker moved to `areev-run` so tools could share it). No daemon: cadence is data, evaluation is a command — `docs/triggers.md` | — |
+| `areev-trigger` | Standing rules that start workflows: the `Trigger` grain's eight kinds over four primitives, the one-shot `trigger run` evaluator (claim, cursor, backoff, catch-up), the connector contract in **two shapes** — a host command (`--connector-cmd`, same JSON-on-stdio as `--tool-cmd`) or a **grain** (`connector_tool` → a Tool Definition, pinned by the host with `--allow-executor`, dispatched through `areev-run`'s `CodeExecutor` and answered by the per-poll broker; `TRG-E012` when unpinned) — composite gates with correlation windows, and heartbeat rendering (the egress broker moved to `areev-run` so tools could share it). No daemon: cadence is data, evaluation is a command — `docs/triggers.md` | — |
 | `areev-mcp` | Stdio MCP server (see below) | — |
 | `areev-server` | Web console (see below) | — |
 | `areev` | The `areev` binary (see below) | — |
 | `areev-py` | PyO3 bindings (see below) | — |
 | `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy, and the **self-improvement** A/B/A/B causal proof — `SELFIMPROVE.md`) | yes |
 | `areev-js` | Node (napi) bindings — **standalone package, not a workspace member** (see below) | — |
+| `areev-tools` | The blessed `wasm32-areev-io` blobs (`http.call`, `mcp.call`, `a2a.call`) + the example connector `mailbox.poll` — **its own cargo workspace**, `no_std`, builds for `wasm32-unknown-unknown`. What ships is `dist/*.wasm`, committed and content-addressed; `dist/blessed.json` records the addresses and `docs/blessed-tools.md` documents them | — |
 
 ## Cross-cutting invariants
 
@@ -221,6 +226,8 @@ family (`areev run`, `areev loop`, `areev anonymize`, the console, …):
 | A subsystem with its own reference doc | that doc (`docs/run.md`, `docs/loop.md`, `docs/erasure.md`, `docs/gdpr.md`, …) |
 | An architecture-level decision or new cross-cutting subsystem | `ARCHITECTURE.md` §10 as a **named** decision |
 | Python/Node binding methods | keep both in lockstep + regenerate `areev-js/index.d.ts` (napi build) |
+| A pack's shape, or `areev pack` behavior | `docs/pack.md`; re-run `examples/agents/export-packs.sh` if the grain format moved |
+| A blessed wasm blob (`areev-tools/`) | rebuild with `areev-tools/build.sh`, commit `dist/` **and** the addresses quoted in `docs/blessed-tools.md`, and re-point every pack that pinned the old address |
 | A release | `CHANGELOG.md` (the release runbook owns this) |
 
 The failure mode this prevents is real: the anonymization feature shipped
@@ -344,7 +351,8 @@ grain selection, dynamic planning, do/don't) is
   queue: **`run.respond` refuses shared-token and anonymous callers** — only
   a per-principal credential (`areev ui --auth`) may approve, because the
   approver's identity IS the audit record; cancel keeps the low bar.
-- **areev**: ~30 verbs (incl. `migrate` from other memory systems,
+- **areev**: ~30 verbs (incl. `pack validate|install|export` — the installable
+  agent unit, `docs/pack.md`; `migrate` from other memory systems,
   `reindex`, the graph/time reads `related`/`entity-at`/`step-actions`, the
   join `run-trace`/`runs-touching`, the DSAR read `subject-report`, the
   credential lifecycle `auth mint|list|revoke`, and `provision` — the last two

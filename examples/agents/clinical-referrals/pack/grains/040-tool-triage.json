@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "kind": "definition",
+  "namespace": "org.ops",
+  "tool_description": "apply the clinic's own protocol over the suggestion",
+  "tool_name": "triage",
+  "type": "tool"
+}

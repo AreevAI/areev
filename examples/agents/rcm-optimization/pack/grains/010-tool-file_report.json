@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "kind": "definition",
+  "namespace": "org.rcm",
+  "tool_description": "file the remittance's outcome, decided or not",
+  "tool_name": "file_report",
+  "type": "tool"
+}

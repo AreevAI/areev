@@ -4,7 +4,11 @@ resolver = "2"
 # wasmi, whose MSRV and dependency tree must not reach workspace `cargo deny`,
 # MSRV checks, or test time. Built and tested on its own, invoked as a
 # subprocess — the areev-js pattern, and the accepted D7 placement decision.
-exclude = ["areev-sandbox"]
+# `areev-tools` is excluded for the same reason and one more: its crates are
+# `no_std` cdylibs for `wasm32-unknown-unknown`, so `cargo test --workspace`
+# has no host to run them on. What ships from there is `dist/*.wasm` —
+# committed, content-addressed blobs (#179).
+exclude = ["areev-sandbox", "areev-tools"]
 members = ["crates/areev-core", "crates/areev-store", "crates/areev-cal", "crates/areev-cli", "crates/areev-mcp", "crates/areev-context", "crates/areev-server", "crates/areev-py", "crates/areev-bench", "crates/areev-loop", "crates/areev-loop-adapter", "crates/areev-llm", "crates/areev-conformance", "crates/areev-run-core", "crates/areev-run", "crates/areev-trigger"]
 
 [workspace.package]

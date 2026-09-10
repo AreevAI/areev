@@ -163,6 +163,7 @@ static FIELD_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
     // same field name, same short key, which is what the map is keyed on.
     m.insert("workflow", "twf");
     m.insert("connector", "tcon");
+    m.insert("connector_tool", "tct");
     m.insert("scope", "tscp");
     m.insert("enabled", "tena");
     m.insert("dedup_key", "tdk");

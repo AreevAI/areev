@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "description": "how this desk reads an invoice",
+  "instructions": "Extract one row per invoice. Prefer the canonical vendor name from the alias facts. Never guess an amount: a low-confidence field goes to review, not to the sheet.",
+  "name": "invoice-triage",
+  "namespace": "org.ops",
+  "type": "skill"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "plan",
+  "type": "workflow",
+  "name": "fetch-invoice",
+  "nodes": ["vendor_api"],
+  "bindings": { "vendor_api": "grain:vendor_api" },
+  "created_at": 1788134400000
+}

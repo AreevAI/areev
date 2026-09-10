@@ -1,0 +1,16 @@
+{
+  "because": "every block order the venue reports",
+  "confidence": 1.0,
+  "connector": "mock",
+  "created_at": 1788977862920,
+  "dedup_key": [
+    "/event_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.ops",
+  "scope": "feed:order-book",
+  "type": "trigger",
+  "workflow": "60684d27cd0aaa2e571ef528994561813cb373b297ea7a758b5c9b51252ac648"
+}

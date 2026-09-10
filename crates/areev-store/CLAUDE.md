@@ -166,6 +166,17 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   `prov_idx`; it used to scan and deserialize every grain in the store.
   `run_id` is written through `Capture` (so `remember`/`capture` set it on
   every surface, not just Rust).
+  `runs_touching` has a SECOND leg that is not provenance at all: for a **Tool
+  Definition** it also answers "which runs executed this code", by reading
+  §8.4's `spec_hash` backwards (`runs_executing`). A journal's result
+  supersedes its intent and neither supersedes the Definition, so the lineage
+  walk alone answered "no runs" to the one question `areev tool provenance`
+  exists to ask. `spec_hash` is a field rather than a `related_to` link, so
+  nothing indexes it and this is a bounded scan of the namespace's Tool grains
+  — affordable for the same reason the runtime's definition catalogue scan is,
+  and skipped entirely unless the target IS a Definition, so no other caller
+  pays for it. Conformance (both backends):
+  `runs_executing_reads_the_spec_hash_edge`.
   `rebuild_link_indexes()` backfills all three (plus `related_to` links) and is
   wired into `areev reindex`, `reindex_links()` and `reindexLinks()` — but
   **open() heals automatically**: the `link_index` meta row is the file-truth,

@@ -1610,12 +1610,70 @@ one of these answers honestly: `vector_index()` is `null`, a build is
 `STO-E007`, and the check reports `recall: 1.0` without running anything,
 because the reads were exact to begin with.
 
+## 24. Ship an agent as a pack (and install it somewhere else)
+
+A **pack** is a directory carrying an agent: the tool definitions, the plan,
+the triggers, the code blobs those name, and the saved queries they use. One
+verb installs it, and the same verb refuses it when it would install something
+other than what the deployment expects.
+
+```bash
+areev pack validate ./pack                  # opens no memory at all
+areev pack install  ./pack --db agent.db    # blobs → CAS, grains → memory
+```
+
+```
+installed pack invoice-to-accounting 1.0.0 into ns 'ap'
+  blob  poll             cas://sha256:2a8f2d40…
+  grain tool             d893b4e0…  (grains/010-tool-poll.json)
+  grain workflow         5d281d51…  (grains/030-workflow.json)
+  grain trigger          3afb5bd1…  (grains/040-trigger.json)
+
+Nothing code-carrying runs until this host pins it:
+  --allow-executor 2a8f2d40…
+```
+
+Two things to notice. **No address in the pack was typed by a human**: a grain
+names its code as `"blob:poll"` and the plan binds its tool as
+`"grain:poll"`, and install rewrites both to the addresses the bytes turn out
+to have — because an address is a measurement, and anything typed is a claim
+that can be wrong. And **the pin is not in the pack**: the code travels with
+the memory, the permission to run it does not.
+
+Going the other way — turn a memory you built by hand into a pack someone else
+can install:
+
+```bash
+areev pack export --db agent.db --ns ap --out ./pack --name invoice-to-accounting
+```
+
+It writes one reviewable JSON file per grain plus a manifest that records each
+one's `expected_hash`, and it **refuses to write anything it cannot rebuild to
+the same address** — finding that out at install time on someone else's machine
+is exactly what this check exists to prevent. `--pack-format bundle` writes the
+binary bundle instead, plus a manifest of the plans it must contain.
+
+Reinstalling elsewhere gives byte-identical grains, so triggers, run history
+and loop findings all still point at the same plan. If a seeder changed and the
+pack did not, install says so and writes nothing:
+
+```
+areev: this pack does not build what its manifest says it builds:
+  grains/030-workflow.json (workflow): expected 8f2c…, builds to 41ab…
+```
+
+Full reference: [`pack.md`](pack.md). Every agent under `examples/agents/`
+ships one, and `examples/grain-connector/pack/` is a hand-written pack whose
+trigger's connector is itself a pinned wasm blob.
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
 - [`cal-reference.md`](cal-reference.md) — the CAL query language
 - [`mcp-reference.md`](mcp-reference.md) — the MCP tools
 - [`triggers.md`](triggers.md) — the eight trigger kinds, in full
+- [`pack.md`](pack.md) — packs: validate, install, export
+- [`blessed-tools.md`](blessed-tools.md) — the shared `http.call` / `mcp.call` / `a2a.call` blobs
 - [`run.md`](run.md) — the governed workflow runtime
 - [`docker.md`](docker.md) — the container image: compose, heartbeat, cloud deploys
 - [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)

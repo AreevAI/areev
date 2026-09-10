@@ -605,6 +605,9 @@ impl DeserializedGrain {
                 if let Some(c) = self.get_str("connector") {
                     t = t.connector(c);
                 }
+                if let Some(c) = self.get_str("connector_tool") {
+                    t = t.connector_tool(c);
+                }
                 if let Some(sc) = self.get_str("scope") {
                     t = t.scope(sc);
                 }
@@ -1322,6 +1325,7 @@ impl DeserializedGrain {
         t.catchup = self.get_str("catchup").and_then(Catchup::parse).unwrap_or_default();
         t.config = self.fields.get("config").cloned();
         t.context_query = self.get_str("context_query").map(str::to_string);
+        t.connector_tool = self.get_str("connector_tool").map(str::to_string);
         self.fill_common_scalars(&mut t.common);
         Ok(t)
     }

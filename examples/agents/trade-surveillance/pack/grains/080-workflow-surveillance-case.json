@@ -1,0 +1,44 @@
+{
+  "bindings": {
+    "analyst_review": "52b5706ad8b56f66e548bb97d601df2d7fb76f91214124d8bc22d9941637a182",
+    "assemble_case": "bca18829d99406d41005b78c1fd19cc3d39c0fb66ba88f8bf8aae88eb536428b",
+    "file_alert": "a8e4a3122d4e7cb7c93dec2dfdfa03b84f9d88f925c9028df6b2739a7a5bdde8",
+    "prior_art": "109789cd02dff4c5004c14abb94c8f742b93f3f985b0656919bf07d55a4a07e1",
+    "record_dismissal": "7c1d30d1d46af0aae1d317ab170268597cfa2a87d6f8c0112acec61d412f354f"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "prior_art",
+      "src": "assemble_case"
+    },
+    {
+      "dst": "analyst_review",
+      "src": "prior_art"
+    },
+    {
+      "cond": "disposition == \"escalate\"",
+      "dst": "file_alert",
+      "src": "analyst_review"
+    },
+    {
+      "cond": "disposition == \"benign\"",
+      "dst": "record_dismissal",
+      "src": "analyst_review"
+    }
+  ],
+  "name": "surveillance-case",
+  "namespace": "org.ops",
+  "nodes": [
+    "assemble_case",
+    "prior_art",
+    "analyst_review",
+    "file_alert",
+    "record_dismissal"
+  ],
+  "retries": {
+    "assemble_case": 1
+  },
+  "type": "workflow"
+}

@@ -45,7 +45,14 @@ REPO = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {
     "target", "node_modules", ".git", "dist", "build", "__pycache__",
     ".venv", "venv", ".mypy_cache", ".pytest_cache", "npm", "artifacts",
-    ".claude", "areev-sandbox",
+    # Standalone packages outside the cargo workspace (`areev-sandbox`,
+    # `areev-tools`). The Rust scan is rooted at `crates/` and `fuzz/`, so
+    # neither is reached today; they are named here so that stays true if a
+    # root is ever widened. Their source is first-party, but the per-crate
+    # table is built from workspace members and the coverage job scores only
+    # what it can run, so counting their lines would inflate a "source" figure
+    # nothing below accounts for.
+    ".claude", "areev-sandbox", "areev-tools",
 }
 
 # This script's own outputs. They live under docs/ but are not reference

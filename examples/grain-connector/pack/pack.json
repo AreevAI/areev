@@ -1,0 +1,16 @@
+{
+  "pack": "grain-connector",
+  "version": "1.0.0",
+  "description": "A polling trigger whose connector is a grain: pinned code, named by content address.",
+  "namespace": "demo",
+  "blobs": {
+    "mailbox_poll": "blobs/mailbox.poll.wasm",
+    "feed": "fixtures/mailbox.json"
+  },
+  "grains": [
+    "grains/010-tool-mailbox-poll.json",
+    "grains/020-tool-triage.json",
+    "grains/030-workflow.json",
+    "grains/040-trigger.json"
+  ]
+}

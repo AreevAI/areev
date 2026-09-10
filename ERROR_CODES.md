@@ -163,6 +163,7 @@ in source.
 | `TRG-E009` | `EgressRefused` | The connector tried to reach a host outside its allowlist |
 | `TRG-E010` | `Storage` | The store refused or failed underneath the evaluator |
 | `TRG-E011` | `BlobContract` | A connector's blob payload violated the contract (bad base64, dangling `"@N"` reference, or budget overrun); the poll was refused whole with the cursor unmoved |
+| `TRG-E012` | `ConnectorCode` | The trigger names its connector as a GRAIN (#185) and this host will not run it: no `--allow-executor` pin, an unreadable Definition or code blob, a Definition carrying no `executor_uri`, a declared runtime with no `--sandbox-cmd`, or a blob-reading module on an evaluator wired no memory locator |
 
 ## Registry — CAL codes
 

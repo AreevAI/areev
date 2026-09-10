@@ -1,0 +1,37 @@
+# The blessed `wasm32-areev-io` tools (#179), and the example connector the
+# trigger path's grain connector (#185) is demonstrated with.
+#
+# A STANDALONE workspace, deliberately not a member of the root one — the same
+# placement decision `areev-sandbox` and `areev-js` carry. These crates build
+# for `wasm32-unknown-unknown` and are `no_std`: they must not reach the
+# workspace's `cargo deny`, MSRV check, clippy pass or test time, and
+# `cargo test --workspace` must not try to run a cdylib that has no host.
+#
+# What ships is not this source but `dist/*.wasm` — content-addressed blobs,
+# committed, whose addresses `dist/blessed.json` records and
+# `docs/blessed-tools.md` documents. Rebuild with `./build.sh`.
+[workspace]
+resolver = "2"
+members = ["common", "http-call", "mcp-call", "a2a-call", "mailbox-poll"]
+
+[workspace.package]
+# These crates are never published and never depended on by name: a blessed
+# tool's identity is its CONTENT ADDRESS, not a version number, which is why
+# this is not one of the version sites `scripts/check_versions.py` reconciles.
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["MindGryd Software Private Limited"]
+repository = "https://github.com/AreevAI/areev"
+publish = false
+
+[profile.release]
+# Small and deterministic beats fast: these modules do a few kilobytes of JSON
+# shaping around one brokered call, and the artifact is committed, so every
+# byte is read by a human at review time and hashed into an address at build
+# time.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

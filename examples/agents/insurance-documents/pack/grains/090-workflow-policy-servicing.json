@@ -1,0 +1,60 @@
+{
+  "bindings": {
+    "accumulation": "5a09ca39c981da099a77dc290763523e9e7bcc355abe09cf0733bccdc66de009",
+    "assess_cover": "a4e07934bc43cec1726dd53a341315fc8adef9b13f08c2ee1c859ff157642a50",
+    "extract": "989db181494516484393893cbbeac18f8977e93df0b29584836e7a194c34ea15",
+    "issue_determination": "b2a78be2e2d1125071b9cfecaddfeff4ff5aae4b72a97a34b18f6a8bd58966d8",
+    "record_change": "6587360b4dff8e46a83b15a713b96ab0fcd5ae68fbf4df11b31a6075ed5372b8",
+    "refer_back": "688bfd5ad27bc9fa2b5b827a805de010e7318c061a2444321f5f990b0e84fdc7",
+    "underwriter_review": "dd7ba63bac34598040c949dea2b741c848f8ea8170b504c32c4ff424eed6d99e"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "cond": "route == \"referral\"",
+      "dst": "refer_back",
+      "src": "extract"
+    },
+    {
+      "cond": "route == \"claim\"",
+      "dst": "assess_cover",
+      "src": "extract"
+    },
+    {
+      "cond": "route == \"change\"",
+      "dst": "record_change",
+      "src": "extract"
+    },
+    {
+      "dst": "accumulation",
+      "src": "assess_cover"
+    },
+    {
+      "cond": "settled == true",
+      "dst": "issue_determination",
+      "src": "accumulation"
+    },
+    {
+      "cond": "settled != true",
+      "dst": "underwriter_review",
+      "src": "accumulation"
+    },
+    {
+      "dst": "issue_determination",
+      "src": "underwriter_review"
+    }
+  ],
+  "name": "policy-servicing",
+  "namespace": "org.uw",
+  "nodes": [
+    "extract",
+    "assess_cover",
+    "accumulation",
+    "underwriter_review",
+    "issue_determination",
+    "refer_back",
+    "record_change"
+  ],
+  "type": "workflow"
+}

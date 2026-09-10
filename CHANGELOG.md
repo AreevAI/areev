@@ -45,6 +45,116 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   varies per generation while a park and its answer reach the same child; and
   a bubble round advances `effect_seq` rather than `attempt`, so parking never
   spends the node's retry budget.
+- **A trigger can name its connector by content address** (#185). A polling
+  connector was a host command (`--connector-cmd`), which put the code most
+  likely to be wrong — cursors, pagination, a provider's quirks — outside the
+  memory: it did not travel in a bundle, `areev tool provenance` could not
+  chase it, and the loop could not propose a `code_revision` against it. A
+  Trigger now carries **`connector_tool`**, a reference to a Tool Definition
+  whose `executor_uri` is the blob:
+
+  ```bash
+  areev trigger add --type polling --workflow <PLAN> --observer gmail \
+    --connector-tool <DEFINITION> --interval 900 --dedup-key /message_id \
+    --because "the AP desk watches this mailbox"
+
+  areev trigger run --allow-executor <64 hex> --sandbox-cmd areev-sandbox
+  ```
+
+  A Definition rather than a `cas://` blob directly, because the runtime, the
+  limits and the `capabilities` declaration that decides where the code may
+  reach live on the Definition — a second place to write them would be a second
+  place for them to disagree. The evaluator reads it through the *same*
+  `pin_from_definition` `RunManifest::resolve` uses, and dispatches through the
+  same `CodeExecutor`, so the sandbox argv, the capability registration and the
+  cleared environment are one implementation rather than a second that drifts
+  on the surface nobody watches.
+
+  **The authorization does not travel with the code.** `--allow-executor` on
+  the evaluating host is what runs it; without it the poll refuses with the new
+  **`TRG-E012`**, naming the address to pin, before a broker is started and
+  before anything is spent. The same code covers a Definition carrying no
+  `executor_uri`, a declared runtime with no `--sandbox-cmd`, and a
+  blob-reading module on an evaluator wired no memory locator. `connector` (the
+  name) stays required beside `connector_tool`: the run id is derived from
+  `(trigger, connector, dedup value)`, so revising the code must not renumber
+  the runs. Both bindings take the same pin on `trigger_run`/`trigger_deliver`
+  (`allow_executor`, `sandbox_cmd`, `executor_cache`, `executor_timeout_secs`),
+  each reading its `$AREEV_RUN_*` variable, because a heartbeat is a cron line.
+  `trigger show` now prints the connector and, when it is a grain, says so.
+  `examples/grain-connector/` runs the whole path keyless and offline.
+
+  *Breaking for direct constructors:* `areev_trigger::Evaluator` gained a
+  `connector_code` field. A host that runs host-command connectors only passes
+  `None` — and a trigger naming a connector Definition then refuses rather than
+  falling through to `--connector-cmd`, because a fallback would run a
+  different program than the declaration names.
+
+- **`areev pack validate | install | export`** (#178) — a pack is an
+  installable agent: a manifest, the grains it seeds, and the code blobs those
+  grains name. It replaces the installer everyone was writing (blobs into the
+  CAS, `executor_uri` rewritten to the address the bytes turned out to have,
+  grains seeded in order, plan hashes checked) with one verb, and self-hosters
+  get the same door a managed deployment does.
+
+  ```bash
+  areev pack validate ./pack                 # opens no memory at all
+  areev pack install  ./pack --db agent.db   # refuses on a hash mismatch
+  areev pack export   --db agent.db --ns ops --out ./pack
+  ```
+
+  References are **symbolic** — `"blob:<name>"` and `"grain:<id>"` — because an
+  address is a measurement of bytes, not something an author can write down;
+  install stores the blob, learns its address, rewrites the Definition,
+  addresses *that*, and rewrites the plan that binds it. `expected_hash` is
+  **refused, not warned**, with nothing written: a plan installed at a
+  different address than the deployment expects has changed what runs, and
+  every trigger pointing at the old hash is now pointing elsewhere. Grains are
+  built and addressed with no store at all (content addressing is a pure
+  function of the serialized grain), so `validate` speaks for `install` and can
+  run in CI on a pull request. Export writes either reviewable grain JSON
+  (refusing to write anything it cannot rebuild to the same address) or a
+  bundle plus a manifest of what it must contain. Saved queries and templates
+  travel too — a pack without them installs a trigger whose `context_query`
+  names nothing. `docs/pack.md` is the reference; every agent under
+  `examples/agents/` now ships a `pack/`, and `run-smokes.sh` asserts each one
+  installs the same plan its language stacks mint.
+
+- **Blessed shared tools: `http.call`, `mcp.call`, `a2a.call`** (#179) — three
+  `wasm32-areev-io` blobs shipped in this repository with documented content
+  addresses (`areev-tools/dist/blessed.json`, `docs/blessed-tools.md`). A pack
+  binds one by address, declares where it may reach, and gets an outbound leg
+  with no code of its own.
+
+  The point is not convenience. A tool gateway that decides *where a request
+  may go* is code everyone installing it must trust; `http.call` makes no such
+  decision — it hands the request to the broker and the answer back, verbatim,
+  in both directions. Where it may go, which method, which credential and which
+  headers are the Definition's `capabilities` and the host's grant: data, in
+  the memory, replicated with the tool, auditable without reading any code.
+  Two Definitions may name the same blob with different declarations, which is
+  exactly the shape a fleet wants. `mcp.call` and `a2a.call` add one JSON-RPC
+  envelope and one unwrap, copying the caller's `arguments` **byte for byte**
+  rather than round-tripping it.
+
+  They are `no_std` with no dependencies (`http.call` is 2,598 bytes), built
+  from `areev-tools/` — a standalone workspace, like `areev-sandbox` — and
+  tested where the engine is: `areev-sandbox/tests/blessed_tools.rs` runs the
+  committed bytes under real wasmi against a loopback broker stand-in, and
+  asserts the import gate holds (a tool that declared no network does not get
+  `areev::fetch` linked at all). CI checks that every published address is the
+  address of the file beside it.
+
+- **`examples/agents/sanctions-screening` seeds deterministically.** Its
+  evalset Fact — the gate Rule E1 pins on the `screen` tool — was stamped with
+  the wall clock, so the tool's hash, and therefore the desk's plan hash,
+  differed on every seed. A plan hash that moves cannot be pinned by a pack,
+  quoted in a README, or pointed at by a trigger, and nothing caught it because
+  the cross-stack hash comparison needs two stacks and this desk has one. The
+  seeder now pins `created_at` like every other grain it writes. Pinning it
+  surfaced a second bug, fixed below rather than worked around: a dated evalset
+  is exactly what `cold_grains` was mis-flagging as a retire candidate.
+
 
 - **The benchmark harnesses can run against a Postgres memory** (#200).
   `AREEV_BENCH_DB` (or `receipts/run.py --db`) names the memory — a file path
@@ -239,6 +349,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unsatisfiable and nothing builds at all.
 
 ### Fixed
+
+- **`areev tool provenance` reports the runs that executed a tool.** The doc
+  said it chained code "to the runs that executed it"; the command answered
+  `runs_touching: 0` for a Definition a run had just executed. The walk behind
+  it is a PROVENANCE walk — `derived_from` up, the reverse index down — and a
+  journal's result grain supersedes its intent while neither supersedes the
+  Definition, so there was no edge to find. What connects a run to the code it
+  ran is §8.4's `spec_hash`, and `runs_touching` now reads it backwards for a
+  Tool Definition (`Areev::runs_executing`, exposed on its own too). A bounded
+  scan rather than an index read, because `spec_hash` is a field and not a
+  `related_to` link — and skipped entirely unless the target IS a Definition,
+  so no other caller pays for it. Pinned by a conformance case on both
+  backends; `examples/blessed-tools/` asserts both runs, the refused one
+  included, because a request the broker turned down is still a run that
+  touched that code.
+
+- **`cold_grains` no longer proposes retiring a Rule E1 gate.** An evalset a
+  live Tool Definition pins is read by the gate at review time, never through
+  recall, so it aged past the grace window and was flagged as a retire
+  candidate — the one grain that must not be retired, since removing it removes
+  the gate a `code_revision` has to pass. Recall counts measure whether a fact
+  informs *answers*; that fact's job is to judge *code*. Facts pinned as
+  `evalset_hash` by a live Definition are now excluded, and deliberately only
+  those: a general "any hash a live grain mentions" sweep would also swallow
+  the evidence a pending recommendation cites, and since this analyzer's own
+  findings cite the fact they flag, every cold finding would suppress itself on
+  the next run. `examples/agents/sanctions-screening` drops the config widening
+  it needed and asserts the clean result instead.
 
 - **An `ASSEMBLE` source can carry its own pipeline, and no longer drops a
   nested assembly's grains.** Sources had no pipeline at all, so a source

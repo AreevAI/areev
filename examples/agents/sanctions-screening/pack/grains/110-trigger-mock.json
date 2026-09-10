@@ -1,0 +1,17 @@
+{
+  "because": "screen every outbound payment before it leaves",
+  "confidence": 1.0,
+  "connector": "mock",
+  "context_query": "screen_ctx($session = /payment_id)",
+  "created_at": 1788980193436,
+  "dedup_key": [
+    "/payment_id"
+  ],
+  "enabled": true,
+  "interval_secs": 1,
+  "kind": "polling",
+  "namespace": "org.ops",
+  "scope": "queue:payments-out",
+  "type": "trigger",
+  "workflow": "924795a19e9a626d6c0db8e08e246a16a94950cd8c4529b8a1384b9f8f4d86cc"
+}

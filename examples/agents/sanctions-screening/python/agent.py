@@ -265,14 +265,22 @@ def seed():
     #     off the proposal -- a proposer that could name its own grader is
     #     not gated. The cases are the desk's own regression bar: names it
     #     must match and names it must not.
-    evalset = db.add_fact(
-        "evalset:screen", "mg:evalset",
-        json.dumps({"name": "screen", "cases": [
+    #     `created_at` is pinned like every other grain this seeder writes, and
+    #     for the same reason: the plan binds `screen` by hash, `screen` names
+    #     this evalset by hash, so an evalset stamped with the wall clock made
+    #     the DESK's plan hash different on every seed -- and a plan hash that
+    #     moves cannot be pinned by a pack, quoted in a README, or pointed at
+    #     by a trigger.
+    evalset = db.add("fact", json.dumps({
+        "subject": "evalset:screen", "relation": "mg:evalset",
+        "object": json.dumps({"name": "screen", "cases": [
             {"name": "exact list hit", "input": {"name": "Kestrel Marine Ltd"},
              "expect": {"contains": "Kestrel Marine"}},
             {"name": "clean counterparty", "input": {"name": "Harbour Freight Co"},
              "expect": {"equals": {"matches": []}}},
-        ]}), ns=NS, idempotent=True)
+        ]}),
+        "created_at": EPOCH_MS,
+    }), ns=NS)
 
     # 2. the definitions. `screen` is code-carrying; the rest are host tools.
     screen = tool_def("screen", "match the counterparty against the list",

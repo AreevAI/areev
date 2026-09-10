@@ -369,6 +369,12 @@ fn add_type_specific_fields<G: Grain + 'static>(grain: &G, map: &mut BTreeMap<St
         if let Some(ref c) = t.connector {
             map.insert(compact_field("connector").to_string(), nfc_string(c));
         }
+        if let Some(ref ct) = t.connector_tool {
+            // Omit-default (#185): a trigger whose connector is a host command
+            // carries no reference, and absent-means-command keeps every
+            // pre-1.7.4 trigger at the address it already has.
+            map.insert(compact_field("connector_tool").to_string(), nfc_string(ct));
+        }
         if let Some(ref sc) = t.scope {
             map.insert(compact_field("scope").to_string(), nfc_string(sc));
         }

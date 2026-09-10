@@ -1,0 +1,9 @@
+{
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "kind": "definition",
+  "namespace": "org.uw",
+  "tool_description": "return the document to its sender, unactioned",
+  "tool_name": "refer_back",
+  "type": "tool"
+}

@@ -269,6 +269,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(run_id_indexes_on_any_grain_type);
         $per_case!(run_grains_pages_completely);
         $per_case!(step_action_survives_supersession_only_by_restatement);
+        $per_case!(runs_executing_reads_the_spec_hash_edge);
         // dictionary values are unbounded by their index (#160)
         $per_case!(incompressible_values_of_any_size_are_stored);
         // namespace prefix scoping ("org.*") + the ns registry

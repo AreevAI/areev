@@ -160,6 +160,18 @@ pub struct TriggerStatus {
     pub name: Option<String>,
     pub kind: String,
     pub workflow: String,
+    /// The connector's name, and — when its code is a grain (#185) — the
+    /// Definition that carries it.
+    ///
+    /// Reported because a reader looking at a heartbeat needs to know which of
+    /// the two connector kinds this is: the answer decides whether the code
+    /// travelled with the memory or lives on whichever machine happens to run
+    /// the pass, and that is the first question a stale-poll investigation
+    /// asks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector_tool: Option<String>,
     pub enabled: bool,
     pub paused: bool,
     pub due: bool,
@@ -239,6 +251,93 @@ pub enum StartResult {
     Failed(String),
 }
 
+/// How this host runs a connector that is a **grain** rather than a command
+/// (#185).
+///
+/// Host config, never in the file, for exactly the reason `--allow-executor`
+/// is host config on the run path: a bundle carries the connector's code, so a
+/// permission arriving in the same bundle as the code it authorizes is not a
+/// permission. A trigger may name any Definition it likes; nothing runs unless
+/// this host pinned its address.
+///
+/// Absent (`None` on the evaluator) means a trigger naming a connector
+/// Definition refuses with `TRG-E012` — the same fail-closed shape as a due
+/// polling trigger with no `--connector-cmd`.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectorCode {
+    /// Content addresses this host will execute — `--allow-executor`, the
+    /// same comma list and the same meaning the run path gives it.
+    pub allow: Vec<String>,
+    /// Where a pinned blob is materialized (`--executor-cache`).
+    pub cache_dir: Option<std::path::PathBuf>,
+    /// The `areev-sandbox` runner, argv-split by the executor. Required for a
+    /// `wasm32-areev`/`wasm32-areev-io` connector, which is the shape this
+    /// exists for; a native pinned blob runs without one.
+    pub sandbox_cmd: Option<String>,
+    /// Per-invocation wall-clock ceiling (`--executor-timeout`), in the run
+    /// path's tri-state: `None` leaves the executor's own default standing,
+    /// `Some(None)` waits forever on request, `Some(Some(d))` overrides.
+    pub timeout: Option<Option<std::time::Duration>>,
+    /// Environment policy for a NATIVE pinned blob. The sandbox clears its
+    /// environment regardless — see `CodeExecutor`.
+    pub env: Option<areev_core::proc::EnvPolicy>,
+    /// The memory's locator, so a connector declaring `{"blob": {"read":
+    /// true}}` can be served by the per-poll broker. The evaluator holds the
+    /// memory while a connector runs, and the broker's blob read deliberately
+    /// does not open it — it goes to the `.blobs` sidecar, or to one
+    /// short-lived Postgres connection of its own (#202).
+    pub db_locator: Option<String>,
+}
+
+/// A connector Definition resolved, pinned and read — everything
+/// `execute_code` needs, gathered before a broker is started so a refusal
+/// costs no side effects.
+struct PreparedConnector {
+    /// The Definition's own content address, which is what the trigger names.
+    tool_hash: String,
+    code: areev_run::PreparedCode,
+    /// True when the pinned declaration asks to read CAS blobs, which is what
+    /// decides whether the per-poll broker serves them.
+    wants_blobs: bool,
+}
+
+/// `cas://sha256:<hex>` and a bare `<hex>` are the same pin, compared the way
+/// the executor compares them.
+fn normalize_address(uri: &str) -> String {
+    uri.trim()
+        .strip_prefix("cas://sha256:")
+        .unwrap_or_else(|| uri.trim())
+        .to_ascii_lowercase()
+}
+
+/// The inner executor a connector's [`areev_run::CodeExecutor`] wraps.
+///
+/// It is never reached: this path only ever calls `execute_code`, which
+/// dispatches the blob itself. It exists because `CodeExecutor` wraps
+/// something by construction, and what it wraps on the run path — the host's
+/// `--tool-cmd` — must NOT be silently reachable here. A connector that
+/// resolved to a command would be a different program than the declaration
+/// names.
+struct NoConnectorFallback;
+
+impl HostToolExecutor for NoConnectorFallback {
+    fn execute(
+        &self,
+        tool_name: &str,
+        _hash: &str,
+        _input: &serde_json::Value,
+        _idem: &str,
+    ) -> areev_run::ExecResult {
+        areev_run::ExecResult::Err {
+            cause: areev_run::FailCause::ExecutorError,
+            detail: format!(
+                "connector {tool_name:?} is declared as a grain, so it has no host command to \
+                 fall back to"
+            ),
+        }
+    }
+}
+
 /// Evaluates triggers against one memory.
 pub struct Evaluator {
     pub facade: Arc<AreevFacade>,
@@ -247,6 +346,13 @@ pub struct Evaluator {
     /// loudly with `TRG-E003` rather than quietly doing nothing — a poll that
     /// silently returns no items is indistinguishable from a healthy source.
     pub connector: Option<Arc<dyn HostToolExecutor>>,
+    /// How a connector that is a GRAIN runs (#185). `None` means this host
+    /// runs host-command connectors only, and a trigger naming a connector
+    /// Definition refuses with `TRG-E012` rather than falling back to
+    /// `--connector-cmd` — a fallback would run a different program than the
+    /// declaration names, which is the failure with no symptom the pin exists
+    /// to refuse.
+    pub connector_code: Option<ConnectorCode>,
     /// Starts the bound workflow. `None` ingests the item and records the
     /// firing without starting anything — what `--no-start` is for, and what
     /// the ingest-only tests use.
@@ -274,6 +380,7 @@ impl Evaluator {
             facade,
             clock,
             connector: None,
+            connector_code: None,
             starter: None,
             credentials: Default::default(),
             ns: ns.to_string(),
@@ -344,6 +451,8 @@ impl Evaluator {
                 name: trigger_name(&t),
                 kind: t.kind.as_str().to_string(),
                 workflow: t.workflow.clone(),
+                connector: t.connector.clone(),
+                connector_tool: t.connector_tool.clone(),
                 enabled: t.enabled,
                 paused: st.paused,
                 // An unusable declaration is never due. Saying otherwise would
@@ -1085,6 +1194,135 @@ impl Evaluator {
         Ok(all_refs)
     }
 
+    /// Resolve a trigger's `connector_tool` into something executable, or
+    /// `None` when the trigger names no connector grain and the host command
+    /// polls as before.
+    ///
+    /// Every refusal here happens before the poll has spent anything, and each
+    /// one names the flag that fixes it — a heartbeat is the surface where a
+    /// vague failure costs the most, because nobody is reading it.
+    fn prepare_connector(
+        &self,
+        hash: &str,
+        trigger: &Trigger,
+        connector_name: &str,
+    ) -> Result<Option<PreparedConnector>> {
+        let Some(reference) = trigger
+            .connector_tool
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        else {
+            return Ok(None);
+        };
+        let refuse = |detail: String| TriggerError::ConnectorCode {
+            trigger: hash.to_string(),
+            detail,
+        };
+        let Some(cfg) = self.connector_code.as_ref() else {
+            return Err(refuse(format!(
+                "connector {connector_name:?} is a grain ({reference}) but this host runs no \
+                 code-carrying connectors — pass --allow-executor <address> (and --sandbox-cmd \
+                 for a wasm module)"
+            )));
+        };
+        let hex = areev_core::types::strip_grain_scheme(reference);
+        let h = Hash::from_hex(hex).map_err(|e| {
+            refuse(format!("connector_tool {reference:?} is not a content address: {e}"))
+        })?;
+        let g = self
+            .facade
+            .with_store(|m| m.get(&h))
+            .map_err(|e| refuse(format!("connector Definition {hex} is unreadable: {e}")))?;
+        if g.grain_type != GrainType::Tool {
+            return Err(refuse(format!(
+                "connector_tool {hex} is a {:?} grain, not a Tool Definition",
+                g.grain_type
+            )));
+        }
+        // ONE reader of a Definition's executable shape, shared with
+        // `RunManifest::resolve`: a connector that ran under different rules
+        // than a node binding the same grain would be a second implementation
+        // of the pin, the runtime table and the capability check — and the one
+        // that drifts is this one, because nobody is watching a poll.
+        let pin = areev_run::pin_from_definition(connector_name, &h, &g)
+            .map_err(|e| refuse(e.to_string()))?;
+        let Some(uri) = pin.executor_uri.clone() else {
+            return Err(refuse(format!(
+                "connector Definition {hex} names no executor_uri — a connector grain IS its \
+                 code, so there is nothing to run"
+            )));
+        };
+        // The host pin, checked here so the refusal can name the address to
+        // copy. `execute_code` checks it again on the way in; that one is the
+        // guarantee, this one is the error message.
+        let addr = normalize_address(&uri);
+        if !cfg.allow.iter().any(|a| normalize_address(a) == addr) {
+            return Err(refuse(format!(
+                "connector {connector_name:?} names {uri}, which this host did not pin — \
+                 add --allow-executor {addr}"
+            )));
+        }
+        if pin.runtime.as_deref().is_some_and(areev_run::is_sandbox_runtime)
+            && cfg.sandbox_cmd.is_none()
+        {
+            return Err(refuse(format!(
+                "connector {connector_name:?} declares runtime {:?}, which needs the sandbox — \
+                 pass --sandbox-cmd areev-sandbox",
+                pin.runtime.as_deref().unwrap_or_default()
+            )));
+        }
+        // `get_blob` verifies the digest on every read, so these bytes ARE the
+        // address the trigger named.
+        let bytes = self
+            .facade
+            .with_store(|m| m.get_blob(&uri))
+            .map_err(|e| refuse(format!("connector blob {uri} is unreadable: {e}")))?;
+        let wants_blobs = pin
+            .capabilities
+            .as_ref()
+            .and_then(|v| areev_run::Declaration::parse(v).ok())
+            .is_some_and(|d| d.declares_blob_read());
+        Ok(Some(PreparedConnector {
+            tool_hash: h.to_hex(),
+            code: areev_run::PreparedCode {
+                uri,
+                bytes,
+                runtime: pin.runtime,
+                limits: pin.runtime_limits,
+                capabilities: pin.capabilities,
+            },
+            wants_blobs,
+        }))
+    }
+
+    /// The executor a grain connector runs under, bound to THIS poll's broker.
+    ///
+    /// Built per poll rather than once on the evaluator because the broker is
+    /// per poll: it is started with the trigger's own allowlist and stops when
+    /// the call returns, and a handle to a broker that has stopped would hand
+    /// the module a dead token.
+    fn code_executor(&self, broker: &Arc<areev_run::Broker>) -> areev_run::CodeExecutor {
+        let cfg = self.connector_code.clone().unwrap_or_default();
+        let mut ce = areev_run::CodeExecutor::new(Arc::new(NoConnectorFallback));
+        for addr in &cfg.allow {
+            ce = ce.allow(addr);
+        }
+        if let Some(dir) = cfg.cache_dir {
+            ce = ce.cache_dir(dir);
+        }
+        if let Some(cmd) = cfg.sandbox_cmd.as_deref() {
+            ce = ce.sandbox_cmd(cmd);
+        }
+        if let Some(t) = cfg.timeout {
+            ce = ce.with_timeout(t);
+        }
+        if let Some(env) = cfg.env {
+            ce = ce.with_env_policy(env);
+        }
+        ce.with_egress(areev_run::EgressHandle::new(Arc::clone(broker)))
+    }
+
     fn poll(
         &self,
         hash: &str,
@@ -1093,12 +1331,16 @@ impl Evaluator {
         opts: &EvalOptions,
     ) -> Result<PollResponse> {
         let connector_name = trigger.connector.as_deref().unwrap_or_default();
-        let Some(exec) = &self.connector else {
+        // A connector named by content address (#185) is resolved, pinned and
+        // read BEFORE a broker starts: a Definition this host did not pin must
+        // refuse having spent nothing — no port, no token, no upstream call.
+        let prepared = self.prepare_connector(hash, trigger, connector_name)?;
+        if prepared.is_none() && self.connector.is_none() {
             return Err(TriggerError::NoConnector {
                 trigger: hash.to_string(),
                 connector: connector_name.to_string(),
             });
-        };
+        }
         // Start a broker for this call, scoped to this trigger's allowlist. The
         // connector is handed its URL — never a token — so a compromised
         // connector has nothing to exfiltrate and nowhere undeclared to send
@@ -1109,24 +1351,51 @@ impl Evaluator {
         // apart from: a default grant covers it. Its methods are whatever the
         // connector needs to poll, and the credentials are the ones this host
         // configured — naming one it was not given still fails.
-        let grants = areev_run::EgressGrants::new().default_for_all(
-            self.credentials.keys().fold(
-                areev_run::CallerGrant::new()
-                    .method("GET")
-                    .method("POST")
-                    .method("PUT")
-                    .method("PATCH")
-                    .method("DELETE"),
-                |g, name| g.credential(name),
-            ),
+        let grant = self.credentials.keys().fold(
+            areev_run::CallerGrant::new()
+                .method("GET")
+                .method("POST")
+                .method("PUT")
+                .method("PATCH")
+                .method("DELETE"),
+            |g, name| g.credential(name),
         );
-        let broker = areev_run::Broker::start(
-            policy,
-            self.credentials.clone(),
-            grants,
-            "TRG-E009",
-        )
-        .map_err(|detail| TriggerError::Storage { detail })?;
+        // The same grant twice, under two names, because the broker
+        // identifies a caller by the TOKEN it presents: the default token maps
+        // to no caller at all, and a capability declaration is registered
+        // under a name (#185). A grain connector declares
+        // `{"blob": {"read": true}}` as tool `<connector>`, so it needs a
+        // token that resolves back to `<connector>` — otherwise its own
+        // declaration is invisible to the check that reads it, and every blob
+        // read is refused as undeclared. The default stays for the subprocess
+        // connector, which presents a token and names nothing.
+        let grants = areev_run::EgressGrants::new()
+            .default_for_all(grant.clone())
+            .grant(connector_name, grant);
+        let broker = Arc::new(
+            areev_run::Broker::start(policy, self.credentials.clone(), grants, "TRG-E009")
+                .map_err(|detail| TriggerError::Storage { detail })?,
+        );
+        // A connector module that declared `{"blob": {"read": true}}` reads
+        // the memory's stored bytes through this same broker on the same
+        // token (#106) — the attachment an earlier poll filed, by address.
+        // The read never opens the memory, which is what makes it safe while
+        // the evaluator holds it.
+        if prepared.as_ref().is_some_and(|p| p.wants_blobs) {
+            let locator = self
+                .connector_code
+                .as_ref()
+                .and_then(|c| c.db_locator.as_deref())
+                .ok_or_else(|| TriggerError::ConnectorCode {
+                    trigger: hash.to_string(),
+                    detail: format!(
+                        "connector {connector_name:?} declares {{\"blob\": {{\"read\": true}}}} \
+                         but this host wired the evaluator no memory locator, so the broker \
+                         cannot serve a blob read"
+                    ),
+                })?;
+            broker.serve_blobs(locator);
+        }
 
         let request = PollRequest {
             trigger: hash,
@@ -1143,30 +1412,48 @@ impl Evaluator {
         // The idempotency key ties this call to this occurrence, so a connector
         // that deduplicates on it sees a retry as a retry.
         let idem = format!("{hash}:{}", state.fence);
-        // The connector reads AREEV_EGRESS_URL out of its environment. The
-        // spawn seam scrubs whatever `--passphrase-env` and `--token-env` name,
-        // so this is the only network affordance it has from us.
-        //
-        // The variable is PROCESS-GLOBAL, and `HostToolExecutor::execute` has no
-        // per-call environment, so two evaluators in one process would race:
-        // one could hand its broker's URL to the other's connector, pointing it
-        // at the wrong allowlist. The lock makes the set→spawn→unset window
-        // exclusive. Production runs one evaluator per process, so this
-        // serialises nothing that was parallel; it closes a hazard that only
-        // exists in-process (and that our own threaded tests could reach).
         static EGRESS_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let result = {
-            let _guard = EGRESS_ENV.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("AREEV_EGRESS_URL", broker.url());
-            // The broker authenticates its callers: loopback is not an
-            // authorization, and without the token every call would 401.
-            if let Some(t) = broker.token_for(connector_name) {
-                std::env::set_var("AREEV_EGRESS_TOKEN", t);
+        let result = match &prepared {
+            // The connector is a grain: the pinned blob runs under the same
+            // `CodeExecutor` the run path uses, so the sandbox argv, the
+            // capability registration, the per-call broker handshake and the
+            // cleared environment are ONE implementation rather than a second
+            // one that drifts. It takes its broker token per call rather than
+            // through the process environment, so the mutex below is not its
+            // hazard to hold.
+            Some(p) => self.code_executor(&broker).execute_code(
+                connector_name,
+                &p.tool_hash,
+                &p.code,
+                &payload,
+                &idem,
+            ),
+            // The connector reads AREEV_EGRESS_URL out of its environment. The
+            // spawn seam scrubs whatever `--passphrase-env` and `--token-env`
+            // name, so this is the only network affordance it has from us.
+            //
+            // The variable is PROCESS-GLOBAL, and `HostToolExecutor::execute`
+            // has no per-call environment, so two evaluators in one process
+            // would race: one could hand its broker's URL to the other's
+            // connector, pointing it at the wrong allowlist. The lock makes
+            // the set→spawn→unset window exclusive. Production runs one
+            // evaluator per process, so this serialises nothing that was
+            // parallel; it closes a hazard that only exists in-process (and
+            // that our own threaded tests could reach).
+            None => {
+                let exec = self.connector.as_ref().expect("checked above");
+                let _guard = EGRESS_ENV.lock().unwrap_or_else(|e| e.into_inner());
+                std::env::set_var("AREEV_EGRESS_URL", broker.url());
+                // The broker authenticates its callers: loopback is not an
+                // authorization, and without the token every call would 401.
+                if let Some(t) = broker.token_for(connector_name) {
+                    std::env::set_var("AREEV_EGRESS_TOKEN", t);
+                }
+                let r = exec.execute(connector_name, hash, &payload, &idem);
+                std::env::remove_var("AREEV_EGRESS_URL");
+                std::env::remove_var("AREEV_EGRESS_TOKEN");
+                r
             }
-            let r = exec.execute(connector_name, hash, &payload, &idem);
-            std::env::remove_var("AREEV_EGRESS_URL");
-            std::env::remove_var("AREEV_EGRESS_TOKEN");
-            r
         };
 
         // Surface a refused destination as its own error rather than letting it

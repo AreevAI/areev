@@ -1,0 +1,7 @@
+# The sandbox refuses a module whose DECLARED maximum memory is above its page
+# ceiling (256 pages = 16 MiB by default), and rustc emits no maximum at all
+# unless the linker is told one — an absent maximum reads as "unbounded", which
+# is exactly what that check exists to refuse. So every blessed blob declares
+# 256 pages, matching the ceiling rather than guessing under it.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--max-memory=16777216"]

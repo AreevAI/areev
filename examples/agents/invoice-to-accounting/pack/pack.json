@@ -1,0 +1,85 @@
+{
+  "grains": [
+    {
+      "expected_hash": "b934bc0aab793a289263cad1027e7a7db91b94b76c50b06ff7b3c391457edcf1",
+      "file": "grains/010-tool-reply_email.json"
+    },
+    {
+      "expected_hash": "b399c2ddd7e6ae25af9362a5ae68407df01189d95b2376ac6a0949399198314d",
+      "file": "grains/020-tool-append_sheet.json"
+    },
+    {
+      "expected_hash": "f0eeda133d3b84cd8801846d5bb303266051875010bef89c6dfee07b590e711a",
+      "file": "grains/030-tool-apply_corrections.json"
+    },
+    {
+      "expected_hash": "09cca7510596d696e86d650cc0c576f8f9fd7be7e3c22374f63603ff5a9bb371",
+      "file": "grains/040-tool-human_review.json"
+    },
+    {
+      "expected_hash": "3c6e1e189378af78698cc495e7b81c68406e3f15b27813873f144ee30e3f7060",
+      "file": "grains/050-tool-send_ask.json"
+    },
+    {
+      "expected_hash": "31724a39f2dee451ff60d30caf78003e0629007524c3d34f6978fe2e8b3ade5e",
+      "file": "grains/060-tool-validate_rows.json"
+    },
+    {
+      "expected_hash": "288bc7ee4c9d02083123e42e2cbbc6dff6f307977701a8197f0128a1e77b1c99",
+      "file": "grains/070-tool-extract_rows.json"
+    },
+    {
+      "expected_hash": "b869cfd3e1fce18d3edb11d4f51ea45cf471318147f90334462069c227297ceb",
+      "file": "grains/080-tool-parse_attachments.json"
+    },
+    {
+      "expected_hash": "231ecfe61ceaac8e012f0b630b6fc36acf587079c1f807850a48c4755de62c30",
+      "file": "grains/090-skill-invoice-triage.json"
+    },
+    {
+      "expected_hash": "3da2300c12969e725444cef1270f5c9574e8e7a191b016ac7effee323ce47091",
+      "file": "grains/100-workflow-invoice-to-accounting.json"
+    },
+    {
+      "expected_hash": "ff5189f883b779d7ca455aae1a4bfe0dc9b81698da1dc3d7db06ae2e3c8432ba",
+      "file": "grains/110-trigger-mock.json"
+    },
+    {
+      "expected_hash": "95746e081340cb37c207b35136c70b8e0e155bf57083ace8e5f32142989dad29",
+      "file": "grains/120-trigger-mock-95746e08.json"
+    }
+  ],
+  "namespace": "org.ops",
+  "pack": "invoice-to-accounting",
+  "queries": {
+    "desk_pulse": {
+      "body": "ASSEMBLE \"desk_pulse\" FROM plan: (RECALL workflows LIMIT 3), tools: (RECALL tools WHERE kind = \"definition\" LIMIT 12), activity: (RECALL tools WHERE kind != \"definition\" RECENT 40), lessons: (RECALL facts WHERE namespace = \"org.*\" LIMIT 40) BUDGET 2500 tokens FORMAT markdown",
+      "description": "the desk briefing itself: plan, tools, lessons, outcomes",
+      "last_run_at": null,
+      "params": [],
+      "updated_at": 1788977862
+    },
+    "extract_ctx": {
+      "body": "ASSEMBLE \"extract_ctx\" FROM instructions: (RECALL skills LIMIT 2), desk: (RECALL facts WHERE namespace = \"org.*\" LIMIT 120), thread: (RECALL events WHERE session_id = $session RECENT 10) BUDGET 4000 tokens FORMAT json",
+      "description": "what extraction should know before reading an invoice",
+      "last_run_at": null,
+      "params": [
+        {
+          "name": "session"
+        }
+      ],
+      "updated_at": 1788977862
+    }
+  },
+  "templates": {
+    "vendor_line": {
+      "description": "",
+      "grain_types": [],
+      "last_run_at": null,
+      "parent": null,
+      "source": "ELEMENT {\n- {{subject}} {{relation}} {{object}} ({{confidence}})\n}\n",
+      "updated_at": 1788977862
+    }
+  },
+  "version": "1.0.0"
+}

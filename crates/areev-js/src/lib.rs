@@ -195,6 +195,41 @@ fn js_read_only_evaluator(
     )
 }
 
+/// The host config a connector that is a GRAIN runs under (#185) — the same
+/// pin the run path takes, read off the same `JsExecutorPin`, so a host grants
+/// an address once and it means one thing.
+///
+/// `None` when nothing is pinned: a trigger naming a connector Definition then
+/// refuses with `TRG-E012` naming the address, rather than falling through to
+/// whatever `connectorCmd` happens to be.
+fn js_connector_code(pin: &JsExecutorPin, db: &str) -> Option<areev_trigger::ConnectorCode> {
+    let allow: Vec<String> = pin
+        .allow_executor
+        .as_deref()?
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect();
+    if allow.is_empty() {
+        return None;
+    }
+    Some(areev_trigger::ConnectorCode {
+        allow,
+        cache_dir: pin.executor_cache.as_deref().map(std::path::PathBuf::from),
+        sandbox_cmd: pin.sandbox_cmd.clone(),
+        timeout: pin.executor_timeout_secs.and_then(|s| u64::try_from(s).ok()).map(|s| {
+            if s == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(s))
+            }
+        }),
+        env: js_tool_env_policy(pin.tool_env.as_deref()),
+        db_locator: Some(db.to_string()),
+    })
+}
+
 /// The acting evaluator. Mirrors the CLI's construction, including the two
 /// deliberate `None`s: without a connector a due polling trigger fails loudly
 /// (`TRG-E003`) rather than looking healthy while doing nothing, and without a
@@ -204,6 +239,7 @@ fn js_evaluator(
     facade: std::sync::Arc<AreevFacade>,
     path: &str,
     ns: String,
+    db: String,
     principal: String,
     connector_cmd: Option<String>,
     tool_cmd: Option<String>,
@@ -238,6 +274,9 @@ fn js_evaluator(
     // gating on one meant such a plan was ingested, recorded as fired, and
     // never started.
     let can_execute = tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+    // Built before `pin` is moved into the runner below: the connector's code
+    // and a firing's nodes run off ONE pin.
+    let connector_code = js_connector_code(&pin, &db);
     // The runs a firing starts get the broker `runStart` would build (#201)
     // — distinct from the connector-poll credentials below.
     let handle = if can_execute { js_egress_handle(path, &egress)? } else { None };
@@ -289,6 +328,7 @@ fn js_evaluator(
         facade,
         clock: std::sync::Arc::new(areev_trigger::SystemClock),
         connector,
+        connector_code,
         starter,
         credentials,
         ns,
@@ -622,7 +662,9 @@ pub struct Areev {
     /// object that started it.
     facade: FacadeSlot,
     /// The memory's path or DSN — the credential broker's blob door reads
-    /// stored bytes from it by path (#106), lock-free.
+    /// stored bytes from it by path (#106), lock-free, and the trigger
+    /// evaluator's per-poll broker serves a grain connector's
+    /// `areev::blob_get` the same way (#185). Neither read opens the memory.
     path: String,
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
@@ -3222,6 +3264,7 @@ impl Areev {
         let slot = self.facade.clone();
         let path = self.path.clone();
         let ns = self.ns.clone();
+        let db = self.path.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
@@ -3230,6 +3273,7 @@ impl Areev {
                 facade,
                 &path,
                 ns,
+                db,
                 actor,
                 connector_cmd,
                 tool_cmd,
@@ -3295,6 +3339,7 @@ impl Areev {
         let slot = self.facade.clone();
         let path = self.path.clone();
         let ns = self.ns.clone();
+        let db = self.path.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
@@ -3305,6 +3350,7 @@ impl Areev {
                 facade,
                 &path,
                 ns,
+                db,
                 actor,
                 connector_cmd,
                 tool_cmd,

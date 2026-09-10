@@ -1,0 +1,80 @@
+{
+  "bindings": {
+    "append_sheet": "b399c2ddd7e6ae25af9362a5ae68407df01189d95b2376ac6a0949399198314d",
+    "apply_corrections": "f0eeda133d3b84cd8801846d5bb303266051875010bef89c6dfee07b590e711a",
+    "extract_rows": "288bc7ee4c9d02083123e42e2cbbc6dff6f307977701a8197f0128a1e77b1c99",
+    "human_review": "09cca7510596d696e86d650cc0c576f8f9fd7be7e3c22374f63603ff5a9bb371",
+    "parse_attachments": "b869cfd3e1fce18d3edb11d4f51ea45cf471318147f90334462069c227297ceb",
+    "reply_done": "b934bc0aab793a289263cad1027e7a7db91b94b76c50b06ff7b3c391457edcf1",
+    "reply_rejected": "b934bc0aab793a289263cad1027e7a7db91b94b76c50b06ff7b3c391457edcf1",
+    "send_ask": "3c6e1e189378af78698cc495e7b81c68406e3f15b27813873f144ee30e3f7060",
+    "validate_rows": "31724a39f2dee451ff60d30caf78003e0629007524c3d34f6978fe2e8b3ade5e"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "extract_rows",
+      "src": "parse_attachments"
+    },
+    {
+      "dst": "validate_rows",
+      "src": "extract_rows"
+    },
+    {
+      "cond": "needs_review == false",
+      "dst": "append_sheet",
+      "src": "validate_rows"
+    },
+    {
+      "cond": "needs_review == true",
+      "dst": "send_ask",
+      "src": "validate_rows"
+    },
+    {
+      "dst": "human_review",
+      "src": "send_ask"
+    },
+    {
+      "cond": "decision == \"approve\"",
+      "dst": "append_sheet",
+      "src": "human_review"
+    },
+    {
+      "cond": "decision == \"revise\"",
+      "dst": "apply_corrections",
+      "src": "human_review"
+    },
+    {
+      "cond": "decision == \"reject\"",
+      "dst": "reply_rejected",
+      "src": "human_review"
+    },
+    {
+      "dst": "send_ask",
+      "max_cycles": 3,
+      "src": "apply_corrections"
+    },
+    {
+      "dst": "reply_done",
+      "src": "append_sheet"
+    }
+  ],
+  "name": "invoice-to-accounting",
+  "namespace": "org.ops",
+  "nodes": [
+    "parse_attachments",
+    "extract_rows",
+    "validate_rows",
+    "send_ask",
+    "human_review",
+    "apply_corrections",
+    "append_sheet",
+    "reply_done",
+    "reply_rejected"
+  ],
+  "retries": {
+    "extract_rows": 1
+  },
+  "type": "workflow"
+}

@@ -611,6 +611,17 @@ await m.runStart(plan, 'r1', null, null, null, null, null, null, null, null, nul
 and `areev serve` reads them from `$AREEV_RUN_CREDENTIAL`,
 `$AREEV_RUN_ALLOW_HOST` and `$AREEV_RUN_TOOL_EGRESS` at start.
 
+**A trigger's connector is one of these too** (#185). A polling trigger may
+name a Definition as its `connector_tool`, and the evaluator resolves it
+through the same reader, pins it with the same `--allow-executor`, dispatches
+it through the same `CodeExecutor` and answers its `areev::fetch` /
+`areev::blob_get` from the per-poll broker — so everything in the table below
+holds identically on the heartbeat path, with `TRG-E012` in place of
+`RUN-E018` at the pin. See [`triggers.md`](triggers.md#the-connector-contract).
+Three blessed blobs ship for exactly this shape:
+[`blessed-tools.md`](blessed-tools.md).
+
+
 What is enforced, and where:
 
 | Check | Where | Failure |

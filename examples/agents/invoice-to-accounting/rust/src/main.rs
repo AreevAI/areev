@@ -536,6 +536,11 @@ fn ingest() -> i32 {
         // A connector IS a tool: same JSON-on-stdio contract, same spawn
         // hardening, one subprocess shape to learn.
         connector: Some(Arc::new(areev_run::CommandExecutor::new(&self_cmd("connector")))),
+        // This desk's connector is a host command (above). A connector that is
+        // a GRAIN instead — pinned code, named by the trigger's
+        // `connector_tool` — runs off this, and needs the host to have pinned
+        // its address: see `examples/grain-connector/`.
+        connector_code: None,
         starter: Some(Arc::new(RunnerStarter {
             runner: db.runner(Some(&self_cmd("tools"))),
             opts: Db::run_opts(),

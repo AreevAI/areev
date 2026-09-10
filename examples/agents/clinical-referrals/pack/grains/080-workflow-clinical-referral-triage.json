@@ -1,0 +1,50 @@
+{
+  "bindings": {
+    "accept": "a04eeeb506607a04af8b8d8afac37f5b636c78fc027d73155133add85ef4216c",
+    "clinician_review": "d0ebe95f1f0d0b8ad388cf89bc0db00ad18c1dfaa8e510d7c3cd1d01f23f8c12",
+    "code_lookup": "5d21dce57d91c7c1e64b4678b196ffc3f6782e2d2a84e2ffdf07190eb978354e",
+    "extract": "ff13ce623c98e0127294e07441b795966c0c1ea9806778ca7f5ea3bd31760490",
+    "redirect": "9dd96b2280e9d82633248289ab1b037418b0a41e27ad8767066eb87f9a605938",
+    "triage": "1f7350a1ee4c698b6db07736131531fefcadb542f918fa059a180f2ef49cbe2e"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "code_lookup",
+      "src": "extract"
+    },
+    {
+      "dst": "triage",
+      "src": "code_lookup"
+    },
+    {
+      "dst": "clinician_review",
+      "src": "triage"
+    },
+    {
+      "cond": "decision == \"accept\"",
+      "dst": "accept",
+      "src": "clinician_review"
+    },
+    {
+      "cond": "decision == \"redirect\"",
+      "dst": "redirect",
+      "src": "clinician_review"
+    }
+  ],
+  "name": "clinical-referral-triage",
+  "namespace": "org.ops",
+  "nodes": [
+    "extract",
+    "code_lookup",
+    "triage",
+    "clinician_review",
+    "accept",
+    "redirect"
+  ],
+  "retries": {
+    "code_lookup": 1
+  },
+  "type": "workflow"
+}

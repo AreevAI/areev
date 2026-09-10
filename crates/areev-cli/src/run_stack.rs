@@ -149,6 +149,39 @@ pub fn tool_env_policy(flags: &HashMap<String, String>) -> Option<areev_core::pr
 /// same bundle as the code it authorizes. The broker handle reaches the code
 /// executor too (#87): a pinned blob gets the SAME credential story as a
 /// `--tool-cmd`, whether or not one is configured.
+/// The host config a connector that is a GRAIN runs under (#185).
+///
+/// `None` when the operator pinned nothing: a trigger naming a connector
+/// Definition then refuses with `TRG-E012` naming the address to pin, rather
+/// than silently polling with whatever `--connector-cmd` happens to be. The
+/// flags are deliberately the run path's own — a connector is a tool, and a
+/// second spelling for "this host will execute this address" would be a second
+/// place for an operator to grant more than they meant to.
+pub fn connector_code(
+    flags: &HashMap<String, String>,
+    db: &str,
+) -> Option<areev_trigger::ConnectorCode> {
+    let list = flag_or_env(flags, "allow-executor", "AREEV_RUN_ALLOW_EXECUTOR")?;
+    let allow: Vec<String> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect();
+    if allow.is_empty() {
+        return None;
+    }
+    Some(areev_trigger::ConnectorCode {
+        allow,
+        cache_dir: flag_or_env(flags, "executor-cache", "AREEV_RUN_EXECUTOR_CACHE")
+            .map(std::path::PathBuf::from),
+        sandbox_cmd: flag_or_env(flags, "sandbox-cmd", "AREEV_RUN_SANDBOX_CMD"),
+        timeout: executor_timeout(flags),
+        env: tool_env_policy(flags),
+        db_locator: Some(db.to_string()),
+    })
+}
+
 pub fn tool_executor(
     flags: &HashMap<String, String>,
     egress: Option<&areev_run::EgressHandle>,

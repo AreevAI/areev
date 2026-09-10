@@ -1,0 +1,66 @@
+{
+  "bindings": {
+    "apply_remediation": "578a1eca9d05fb794b84504168164d8a589a3f56529128c52dd77fec0ca85003",
+    "classify": "4dd2dde4687717e496823499c318ea8bd6710efc5505e98069fe0fd9b2d69a78",
+    "close": "0119da86fe2767b652d181bf53dd22775a2ec902e0bc89c95bd2fe16e73dbc7f",
+    "oncall_review": "5ca10e54076a8b8f8d251820a307fa79586587f03fefe28c82b1df918d048616",
+    "propose_action": "bf7a6ca7d4260329377942e279da2a4a5a24c9f4c3baecbd09745ba77cb9d5c2",
+    "recall_runbook": "8b1d475f0a3b7caab7b43dfe1a5830bd67a2947024905c0b9e292f3a6908e28e",
+    "record_only": "9ff6b84cc02bd645224b8fd1fb9dbd0af04d031cbd619df4f15ee05848371b11"
+  },
+  "confidence": 1.0,
+  "created_at": 1756000000000,
+  "edges": [
+    {
+      "dst": "recall_runbook",
+      "src": "classify"
+    },
+    {
+      "dst": "propose_action",
+      "src": "recall_runbook"
+    },
+    {
+      "cond": "proposed_action == \"none\"",
+      "dst": "record_only",
+      "src": "propose_action"
+    },
+    {
+      "cond": "proposed_action != \"none\"",
+      "dst": "oncall_review",
+      "src": "propose_action"
+    },
+    {
+      "cond": "decision == \"apply\"",
+      "dst": "apply_remediation",
+      "src": "oncall_review"
+    },
+    {
+      "cond": "decision == \"record_only\"",
+      "dst": "record_only",
+      "src": "oncall_review"
+    },
+    {
+      "dst": "close",
+      "src": "apply_remediation"
+    },
+    {
+      "dst": "close",
+      "src": "record_only"
+    }
+  ],
+  "name": "incident-response",
+  "namespace": "org.ops",
+  "nodes": [
+    "classify",
+    "recall_runbook",
+    "propose_action",
+    "oncall_review",
+    "apply_remediation",
+    "record_only",
+    "close"
+  ],
+  "retries": {
+    "classify": 1
+  },
+  "type": "workflow"
+}

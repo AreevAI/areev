@@ -445,7 +445,9 @@ Everything recorded during a run, plus what the run produced downstream
 
 #### `areev_runs_touching`
 
-Which runs produced or refined a grain — the reverse join. Runs that merely
+Which runs produced or refined a grain — the reverse join. For a **Tool
+Definition** it also answers which runs EXECUTED it, which is a different edge
+(§8.4's `spec_hash`, read backwards) and not a provenance hop. Runs that merely
 read the grain are not recorded: a read leaves no grain.
 
 | Parameter | Type | Required | Description |

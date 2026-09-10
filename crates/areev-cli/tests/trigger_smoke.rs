@@ -519,3 +519,124 @@ fn executor_timeout_flag_reaches_a_firings_pinned_code_node() {
     assert!(ok, "a firing that starts still exits cleanly even if its node timed out: {out}{err}");
     assert!(out.contains("\"runs_started\":1"), "{out}");
 }
+
+#[test]
+fn a_connector_named_as_a_grain_is_stored_and_refused_until_the_host_pins_it() {
+    // The CLI half of #185: `--connector-tool` reaches the grain, and
+    // `trigger run` refuses that code until this host pinned its address. The
+    // evaluator's own resolve/pin/dispatch rules are pinned next door, in
+    // areev-trigger's `grain_connector_tests`.
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+
+    // 1. the flag reaches the declaration. `trigger add` does not resolve the
+    //    reference (that is TRG-E012 at firing time), so a literal is honest
+    //    here — the same shape `--workflow` takes.
+    let def_literal = "d".repeat(64);
+    let (ok, out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "polling",
+        "--workflow", WF, "--observer", "mailbox", "--connector-tool", &def_literal,
+        "--interval", "60", "--dedup-key", "/id",
+        "--because", "the desk watches this mailbox, and its code is in the memory",
+    ]);
+    assert!(ok, "declaring a grain connector failed: {err}");
+    let trigger = out.trim().rsplit(' ').next().unwrap().to_string();
+    let (ok, shown, err) = areev(&["trigger", "show", &trigger, "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    assert!(shown.contains(&def_literal), "the declaration lost the reference: {shown}");
+
+    // 2. and running it refuses by name. A pack is how a code-carrying
+    //    Definition gets into a memory from the CLI, so this is also the
+    //    deployment path end to end.
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(pack.join("grains")).unwrap();
+    std::fs::create_dir_all(pack.join("blobs")).unwrap();
+    std::fs::write(pack.join("blobs/poll.sh"), b"#!/bin/sh\necho '{\"items\":[]}'\n").unwrap();
+    std::fs::write(
+        pack.join("grains/010-tool.json"),
+        r#"{ "id": "poll", "type": "tool", "tool_name": "mailbox.poll",
+             "kind": "definition", "tool_description": "read the mailbox",
+             "created_at": 1788134400000, "executor_uri": "blob:poll" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        pack.join("grains/020-workflow.json"),
+        r#"{ "id": "plan", "type": "workflow", "name": "triage", "nodes": ["triage"],
+             "created_at": 1788134400000 }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        pack.join("grains/030-trigger.json"),
+        r#"{ "id": "watch", "type": "trigger", "kind": "polling", "workflow": "grain:plan",
+             "connector": "mailbox", "connector_tool": "grain:poll", "interval_secs": 60,
+             "dedup_key": ["/id"], "created_at": 1788134400000,
+             "because": "the desk watches this mailbox" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        pack.join("pack.json"),
+        r#"{ "pack": "mailbox", "version": "1.0.0", "namespace": "watch",
+             "blobs": { "poll": "blobs/poll.sh" },
+             "grains": [ "grains/010-tool.json", "grains/020-workflow.json",
+                         "grains/030-trigger.json" ] }"#,
+    )
+    .unwrap();
+    // Each case gets its own memory: a refused poll BACKS OFF (a stale pin is
+    // treated like a connector failure), so a second attempt in the same
+    // memory would be skipped as not-due rather than refused again.
+    let install = |name: &str| -> (String, String) {
+        let db = dir.path().join(name).to_str().unwrap().to_string();
+        let (ok, installed, err) =
+            areev(&["pack", "install", pack.to_str().unwrap(), "--db", &db, "--format", "json"]);
+        assert!(ok, "pack install failed: {err}");
+        let pin = serde_json::from_str::<serde_json::Value>(&installed).unwrap()
+            ["allow_executor"][0]
+            .as_str()
+            .expect("a pinnable address")
+            .to_string();
+        (db, pin)
+    };
+    let (db, pin) = install("unpinned.db");
+    let db = db.as_str();
+
+    // A host that pinned NOTHING is refused for being that host, and told
+    // which flag it is missing.
+    let (_ok, out, err) =
+        areev(&["trigger", "run", "--db", db, "--ns", "watch", "--format", "json"]);
+    let both = format!("{out}{err}");
+    assert!(both.contains("TRG-E012"), "expected a TRG-E012 refusal: {both}");
+    assert!(both.contains("--allow-executor"), "the refusal must name the fix: {both}");
+
+    // A host that pinned something ELSE is refused with the address to add,
+    // so pinning it is a copy-paste rather than a hunt.
+    let (wrong_db, _) = install("wrongpin.db");
+    let (_ok, out, err) = areev(&[
+        "trigger", "run", "--db", &wrong_db, "--ns", "watch", "--allow-executor",
+        &"a".repeat(64), "--format", "json",
+    ]);
+    let both = format!("{out}{err}");
+    assert!(both.contains("TRG-E012"), "{both}");
+    assert!(both.contains(&pin), "the refusal must name the address to pin: {both}");
+
+    // With the pin, the same poll runs the code the declaration names.
+    //
+    // Unix only, and not because of a test harness quirk: a pinned NATIVE blob
+    // is a program, so it is platform-specific by construction — `docs/run.md`
+    // says to pin per platform — and this pack carries a `#!/bin/sh` one.
+    // Everything above is the part that must hold everywhere: the flag reaches
+    // the declaration, and an unpinned or wrongly-pinned host refuses. What is
+    // skipped here is only "and then it ran", which `grain_connector_tests`
+    // pins the same way.
+    #[cfg(unix)]
+    {
+        let (pinned_db, pin) = install("pinned.db");
+        let (ok, out, err) = areev(&[
+            "trigger", "run", "--db", &pinned_db, "--ns", "watch", "--allow-executor", &pin,
+            "--format", "json",
+        ]);
+        assert!(ok, "a pinned connector must run: {err} {out}");
+        assert!(!out.contains("TRG-E012"), "{out}");
+        assert!(out.contains("\"claimed\": 1") || out.contains("\"claimed\":1"), "{out}");
+    }
+}

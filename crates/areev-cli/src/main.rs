@@ -3,6 +3,7 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
+mod pack;
 mod run_stack;
 mod tune;
 mod trigger_cli;
@@ -116,6 +117,13 @@ COMMANDS:
                                       ...)` — pointers resolve against the
                                       firing item's payload (fail-closed)
            [--interval SECS | --cron EXPR | --at MS] [--observer NAME]
+           [--connector-tool HASH]    the connector's CODE as a grain: a Tool
+                                      Definition whose executor_uri carries the
+                                      blob. --observer/--connector still names
+                                      it (that name is half the run-id dedup
+                                      identity). Nothing runs unless the
+                                      evaluating host pinned the address with
+                                      --allow-executor
            [--scope S] [--dedup-key PTR] [--catchup last|none|all]
            [--where EXPR] [--members ALIAS=HASH,...] [--correlate PTR]
            [--window 10m]
@@ -139,7 +147,9 @@ COMMANDS:
                                       A firing gets the SAME runner `run start`
                                       builds: the executor pin, the sandbox and
                                       the model all reach it, so a plan that
-                                      runs by hand runs on a heartbeat. Every
+                                      runs by hand runs on a heartbeat — and
+                                      the same pin decides whether a trigger's
+                                      own --connector-tool code may run. Every
                                       one of those also reads its $AREEV_RUN_*
                                       variable, because a heartbeat is a cron
                                       line, not an interactive command.
@@ -197,6 +207,25 @@ COMMANDS:
   log      [--since OP] [--limit N]   op-log (change feed)
   bundle   --out FILE [--since OP]    incremental backup (git-shaped)
   import   --bundle FILE              apply a bundle (fast-forward)
+  pack     validate DIR               check a pack without opening a memory:
+                                      it builds every grain, addresses it, and
+                                      compares against the manifest's
+                                      expected_hash. Prints the pins its code
+                                      needs
+  pack     install DIR [--dry-run]    seed a pack into --db: blobs into the
+                                      CAS, `blob:`/`grain:` references
+                                      rewritten to the addresses they turn out
+                                      to have, saved queries restored. An
+                                      expected_hash that does not match is
+                                      REFUSED with nothing written
+  pack     export --out DIR [--pack-format source|bundle] [--name N]
+                                      turn this memory's namespace into an
+                                      installable pack. `source` writes
+                                      reviewable grain JSON (and refuses to
+                                      write anything it cannot rebuild to the
+                                      same address); `bundle` writes a bundle
+                                      plus a manifest of what it must contain.
+                                      See docs/pack.md
   migrate  --from SRC --file PATH [--history PATH]   import another system's
            export: mem0 | mem0-history | langgraph | letta | letta-archival |
            zep | basic-memory (PATH = vault dir) | jsonl (generic
@@ -324,7 +353,8 @@ COMMANDS:
            10-minute proof
   run-trace --run-id ID [--limit N]   what a run recorded, and what it
                                       produced downstream (facts/lessons)
-  runs-touching --hash H [--depth N]  which runs produced or refined a grain
+  runs-touching --hash H [--depth N]  which runs produced or refined a grain —
+                                      and, for a tool definition, which ran it
                                       (walks provenance both ways)
   verify                              integrity + content-address recheck
   stats                               store counters
@@ -1507,6 +1537,16 @@ fn run() -> Result<(), String> {
     // surprise.
     if cmd == "provision" {
         return run_provision(&flags);
+    }
+
+    // `pack validate` reads a directory and opens nothing: content addressing
+    // is a pure function of the grain, so what a pack WILL install is knowable
+    // without a memory to install it into. Dispatched here for the same reason
+    // `auth` is — resolving a default memory would create a file the command
+    // has no use for, and print a line implying an association that does not
+    // exist. `install`/`export` fall through and take one normally.
+    if cmd == "pack" && positional.first().map(|s| s.as_str()) == Some("validate") {
+        return pack::run_pack(None, "shared", &flags, &positional);
     }
 
     // Long-lived / exposed surfaces must name their memory explicitly rather
@@ -3573,8 +3613,14 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             run_audit(&mut m, &flags, &positional)?;
         }
         "anonymize" => run_anonymize(m, &flags, &positional)?,
+        "pack" => {
+            return pack::run_pack(Some(m), &ns, &flags, &positional);
+        }
         "trigger" => {
-            return trigger_cli::run_trigger(m, &ns, &flags, &positional);
+            // The locator rides along so a connector module declaring
+            // `{"blob": {"read": true}}` can be served by the per-poll broker
+            // (#185): the read never opens the memory the evaluator holds.
+            return trigger_cli::run_trigger(m, &ns, &db, &flags, &positional);
         }
         "retention" => {
             run_retention(&mut m, &ns, &flags, &positional)?;

@@ -410,7 +410,9 @@ fn py_observer(on_event: Option<Py<PyAny>>) -> Option<std::sync::Arc<dyn areev_r
 struct Areev {
     facade: std::sync::Arc<AreevFacade>,
     /// The memory's path or DSN — the credential broker's blob door reads
-    /// stored bytes from it by path (#106), lock-free.
+    /// stored bytes from it by path (#106), lock-free, and the trigger
+    /// evaluator's per-poll broker serves a grain connector's
+    /// `areev::blob_get` the same way (#185). Neither read opens the memory.
     path: String,
     ns: String,
     /// Host-asserted actor label stamped on every loop audit grain (§6.6).
@@ -2924,6 +2926,9 @@ impl Areev {
         // recorded as fired, and never started.
         let can_execute =
             tool_cmd.is_some() || pin.allow_executor.is_some() || llm.is_some();
+        // Built before `pin` is moved into the runner below: the connector's
+        // code and a firing's nodes run off ONE pin.
+        let connector_code = connector_code(&pin, &self.path);
         // The runs a firing starts get the broker `run_start` would build
         // (#201) — distinct from the connector-poll credentials below.
         let handle = if can_execute { self.egress_handle(&egress)? } else { None };
@@ -2970,6 +2975,7 @@ impl Areev {
             facade: std::sync::Arc::clone(&self.facade),
             clock: std::sync::Arc::new(areev_trigger::SystemClock),
             connector,
+            connector_code,
             starter,
             credentials,
             ns: self.ns.clone(),
@@ -3149,6 +3155,37 @@ struct ExecutorPin {
     /// empty list included — clears it and passes only those, plus the
     /// minimal set a command needs to start.
     tool_env: Option<String>,
+}
+
+/// The host config a connector that is a GRAIN runs under (#185) — the same
+/// pin the run path takes, read off the same `ExecutorPin`, so a binding host
+/// grants an address once and it means one thing.
+///
+/// `None` when nothing is pinned: a trigger naming a connector Definition then
+/// refuses with `TRG-E012` naming the address, rather than falling through to
+/// whatever `connector_cmd` happens to be.
+fn connector_code(pin: &ExecutorPin, db: &str) -> Option<areev_trigger::ConnectorCode> {
+    let allow: Vec<String> = pin
+        .allow_executor
+        .as_deref()?
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect();
+    if allow.is_empty() {
+        return None;
+    }
+    Some(areev_trigger::ConnectorCode {
+        allow,
+        cache_dir: pin.executor_cache.as_deref().map(std::path::PathBuf::from),
+        sandbox_cmd: pin.sandbox_cmd.clone(),
+        timeout: pin
+            .executor_timeout_secs
+            .map(|s| if s == 0 { None } else { Some(std::time::Duration::from_secs(s)) }),
+        env: tool_env_policy(pin.tool_env.as_deref()),
+        db_locator: Some(db.to_string()),
+    })
 }
 
 /// The credential broker's settings (#201): the CLI's `--credential`,

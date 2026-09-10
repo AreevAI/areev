@@ -217,6 +217,27 @@ pub struct Trigger {
     pub workflow: String,
     /// Connector name — `"gmail"`, `"stripe"`. Half of the firing identity.
     pub connector: Option<String>,
+    /// The connector's CODE, named by content address: a reference to a Tool
+    /// **Definition** grain whose `executor_uri` carries the blob (#185).
+    ///
+    /// Absent — the pre-1.7.4 shape — means the host command
+    /// (`--connector-cmd`) polls, so the fetch code lives outside the memory
+    /// where no `code_revision` can see it and no bundle carries it. Naming a
+    /// Definition instead makes a connector what every other executable thing
+    /// here already is: content-addressed, replicated, chased by
+    /// `areev tool provenance`, and revisable by the loop under the Rule E1
+    /// evalset gate.
+    ///
+    /// A Definition and not a `cas://` blob directly, because a blob is bytes:
+    /// the runtime, the limits, and above all the `capabilities` declaration
+    /// that decides where the code may reach live on the Definition, and a
+    /// second place to write them would be a second place for them to
+    /// disagree. `connector` stays required beside it — it is half the run-id
+    /// dedup identity, and a rename of the code must not renumber the runs.
+    ///
+    /// Stored as written (`<64 hex>`, `sha256:<hex>` or `grain:sha256:<hex>`);
+    /// read through [`strip_grain_scheme`], exactly like [`Trigger::members`].
+    pub connector_tool: Option<String>,
     /// What is watched, in the connector's own vocabulary:
     /// `"mailbox:accounts@example.com"`.
     pub scope: Option<String>,
@@ -285,6 +306,7 @@ impl Trigger {
             kind,
             workflow: workflow.to_string(),
             connector: None,
+            connector_tool: None,
             scope: None,
             enabled: true,
             dedup_key: Vec::new(),
@@ -305,6 +327,13 @@ impl Trigger {
 
     pub fn connector(mut self, connector: &str) -> Self {
         self.connector = Some(connector.to_string());
+        self
+    }
+
+    /// Name the connector's code by content address — a Tool Definition
+    /// whose `executor_uri` carries the blob (#185).
+    pub fn connector_tool(mut self, reference: &str) -> Self {
+        self.connector_tool = Some(reference.to_string());
         self
     }
 
@@ -520,6 +549,9 @@ impl Trigger {
         m.insert("workflow".into(), serde_json::json!(self.workflow));
         if let Some(ref c) = self.connector {
             m.insert("connector".into(), serde_json::json!(c));
+        }
+        if let Some(ref c) = self.connector_tool {
+            m.insert("connector_tool".into(), serde_json::json!(c));
         }
         if let Some(ref s) = self.scope {
             m.insert("scope".into(), serde_json::json!(s));

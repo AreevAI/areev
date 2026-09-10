@@ -2,65 +2,65 @@
   "version": "1.7.3",
   "crates": 17,
   "rust": {
-    "files": 299,
-    "physical_lines": 197328,
-    "source_code": 93607,
-    "test_code": 55778,
-    "unit_test_code": 26697,
-    "integration_test_code": 29081,
+    "files": 304,
+    "physical_lines": 201438,
+    "source_code": 95498,
+    "test_code": 57024,
+    "unit_test_code": 26791,
+    "integration_test_code": 30233,
     "example_code": 669,
-    "test_functions": 2691,
+    "test_functions": 2724,
     "test_ratio": 0.6,
-    "test_share": 37.3
+    "test_share": 37.4
   },
   "per_crate": [
     {
       "name": "areev-cal",
       "files": 41,
-      "physical": 57005,
-      "source_code": 24564,
+      "physical": 57007,
+      "source_code": 24566,
       "test_code": 19404,
       "tests": 1021
     },
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 23699,
-      "source_code": 10840,
-      "test_code": 5718,
-      "tests": 289
+      "physical": 23882,
+      "source_code": 10900,
+      "test_code": 5780,
+      "tests": 291
     },
     {
       "name": "areev-core",
       "files": 51,
-      "physical": 17782,
-      "source_code": 8853,
+      "physical": 17825,
+      "source_code": 8870,
       "test_code": 4514,
       "tests": 301
     },
     {
-      "name": "areev-loop",
-      "files": 34,
-      "physical": 16874,
-      "source_code": 11604,
-      "test_code": 1527,
-      "tests": 192
+      "name": "areev-cli",
+      "files": 22,
+      "physical": 17781,
+      "source_code": 7394,
+      "test_code": 6701,
+      "tests": 195
     },
     {
       "name": "areev-run",
-      "files": 21,
-      "physical": 16176,
-      "source_code": 6003,
-      "test_code": 5898,
-      "tests": 174
+      "files": 22,
+      "physical": 17127,
+      "source_code": 6360,
+      "test_code": 6271,
+      "tests": 187
     },
     {
-      "name": "areev-cli",
-      "files": 19,
-      "physical": 16142,
-      "source_code": 6657,
-      "test_code": 6126,
-      "tests": 185
+      "name": "areev-loop",
+      "files": 34,
+      "physical": 16935,
+      "source_code": 11611,
+      "test_code": 1552,
+      "tests": 194
     },
     {
       "name": "areev-bench",
@@ -72,11 +72,11 @@
     },
     {
       "name": "areev-trigger",
-      "files": 12,
-      "physical": 5854,
-      "source_code": 1788,
-      "test_code": 2310,
-      "tests": 122
+      "files": 13,
+      "physical": 6430,
+      "source_code": 1969,
+      "test_code": 2521,
+      "tests": 128
     },
     {
       "name": "areev-context",
@@ -97,24 +97,24 @@
     {
       "name": "areev-run-core",
       "files": 8,
-      "physical": 3796,
-      "source_code": 1934,
+      "physical": 3989,
+      "source_code": 2100,
       "test_code": 969,
       "tests": 31
     },
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 3573,
-      "source_code": 2675,
+      "physical": 3746,
+      "source_code": 2815,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-conformance",
       "files": 19,
-      "physical": 3542,
-      "source_code": 1777,
+      "physical": 3637,
+      "source_code": 1849,
       "test_code": 838,
       "tests": 20
     },
@@ -129,8 +129,8 @@
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 3183,
-      "source_code": 2284,
+      "physical": 3325,
+      "source_code": 2393,
       "test_code": 0,
       "tests": 0
     },
@@ -145,130 +145,130 @@
     {
       "name": "areev-mcp",
       "files": 1,
-      "physical": 1342,
-      "source_code": 1172,
+      "physical": 1394,
+      "source_code": 1215,
       "test_code": 0,
       "tests": 0
     }
   ],
   "docs": {
-    "files": 59,
-    "lines": 28667
+    "files": 62,
+    "lines": 29698
   },
-  "error_codes": 98,
+  "error_codes": 99,
   "bindings": {
-    "python_files": 91,
-    "node_test_files": 4
+    "python_files": 93,
+    "node_test_files": 5
   },
   "coverage": {
-    "line_coverage": 81.1,
-    "lines_covered": 46984,
-    "lines_total": 57966,
-    "files": 158,
+    "line_coverage": 82.3,
+    "lines_covered": 51760,
+    "lines_total": 62893,
+    "files": 163,
     "global_floor": 75.0,
     "per_crate": [
       {
         "name": "areev-conformance",
-        "line_coverage": 97.7,
-        "lines_covered": 1186,
-        "lines_total": 1214,
+        "line_coverage": 97.5,
+        "lines_covered": 1419,
+        "lines_total": 1456,
         "floor": 95.0
       },
       {
         "name": "areev-loop",
-        "line_coverage": 93.4,
-        "lines_covered": 6530,
-        "lines_total": 6992,
+        "line_coverage": 94.2,
+        "lines_covered": 8359,
+        "lines_total": 8872,
         "floor": 90.0
       },
       {
-        "name": "areev-trigger",
-        "line_coverage": 92.0,
-        "lines_covered": 1221,
-        "lines_total": 1327,
+        "name": "areev-run-core",
+        "line_coverage": 92.3,
+        "lines_covered": 1411,
+        "lines_total": 1528,
         "floor": 89.0
       },
       {
-        "name": "areev-run-core",
-        "line_coverage": 91.9,
-        "lines_covered": 1265,
-        "lines_total": 1377,
+        "name": "areev-trigger",
+        "line_coverage": 90.5,
+        "lines_covered": 1336,
+        "lines_total": 1476,
         "floor": 89.0
       },
       {
         "name": "areev-run",
-        "line_coverage": 84.9,
-        "lines_covered": 3820,
-        "lines_total": 4498,
+        "line_coverage": 87.0,
+        "lines_covered": 4482,
+        "lines_total": 5150,
         "floor": 79.0
       },
       {
-        "name": "areev-store",
-        "line_coverage": 84.7,
-        "lines_covered": 6573,
-        "lines_total": 7761,
-        "floor": 83.0
-      },
-      {
         "name": "areev-loop-adapter",
-        "line_coverage": 84.3,
-        "lines_covered": 709,
+        "line_coverage": 84.4,
+        "lines_covered": 710,
         "lines_total": 841,
         "floor": 78.0
       },
       {
+        "name": "areev-store",
+        "line_coverage": 84.4,
+        "lines_covered": 6781,
+        "lines_total": 8034,
+        "floor": 83.0
+      },
+      {
         "name": "areev-core",
-        "line_coverage": 84.0,
-        "lines_covered": 5621,
-        "lines_total": 6692,
+        "line_coverage": 84.1,
+        "lines_covered": 5681,
+        "lines_total": 6759,
         "floor": 80.0
       },
       {
         "name": "areev-server",
-        "line_coverage": 81.8,
-        "lines_covered": 969,
-        "lines_total": 1185,
+        "line_coverage": 82.1,
+        "lines_covered": 975,
+        "lines_total": 1187,
         "floor": 75.0
       },
       {
         "name": "areev-context",
-        "line_coverage": 81.4,
-        "lines_covered": 1254,
-        "lines_total": 1541,
+        "line_coverage": 82.0,
+        "lines_covered": 1276,
+        "lines_total": 1556,
         "floor": 79.0
       },
       {
-        "name": "areev-llm",
-        "line_coverage": 76.4,
-        "lines_covered": 999,
-        "lines_total": 1307,
-        "floor": 73.0
-      },
-      {
         "name": "areev-mcp",
-        "line_coverage": 72.9,
-        "lines_covered": 730,
-        "lines_total": 1002,
+        "line_coverage": 78.8,
+        "lines_covered": 834,
+        "lines_total": 1059,
         "floor": 71.0
       },
       {
         "name": "areev-cli",
-        "line_coverage": 72.5,
-        "lines_covered": 3551,
-        "lines_total": 4897,
+        "line_coverage": 76.3,
+        "lines_covered": 4405,
+        "lines_total": 5770,
         "floor": 70.0
       },
       {
+        "name": "areev-llm",
+        "line_coverage": 75.8,
+        "lines_covered": 1008,
+        "lines_total": 1329,
+        "floor": 73.0
+      },
+      {
         "name": "areev-cal",
-        "line_coverage": 72.4,
-        "lines_covered": 12556,
-        "lines_total": 17332,
+        "line_coverage": 73.2,
+        "lines_covered": 13083,
+        "lines_total": 17876,
         "floor": 70.0
       }
     ],
     "comparisons": {
-      "same_scope_with_test_code": 85.1,
-      "whole_unfiltered_trace": 81.0
+      "same_scope_with_test_code": 86.0,
+      "whole_unfiltered_trace": 81.4
     },
     "excluded_from_scope": [
       {

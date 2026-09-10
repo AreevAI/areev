@@ -88,6 +88,7 @@ impl RunStarter for RunnerStarter {
 pub fn run_trigger(
     m: Areev,
     ns: &str,
+    db: &str,
     flags: &HashMap<String, String>,
     positional: &[String],
 ) -> Result<(), String> {
@@ -99,12 +100,12 @@ pub fn run_trigger(
         "add" => add(&facade, ns, flags, json_out),
         "list" => list(&facade, ns, json_out),
         "show" => show(&facade, ns, positional.get(1), json_out),
-        "run" => evaluate(facade, ns, flags, json_out),
+        "run" => evaluate(facade, ns, db, flags, json_out),
         "pause" => set_paused(&facade, ns, positional.get(1), flags, true, json_out),
         "resume" => set_paused(&facade, ns, positional.get(1), flags, false, json_out),
         "status" => status(&facade, ns, json_out),
         "render" => render_target(&facade, ns, flags, positional.get(1)),
-        "deliver" => deliver(facade, ns, flags, json_out),
+        "deliver" => deliver(facade, ns, db, flags, json_out),
         other => Err(format!(
             "unknown trigger subcommand '{other}' \
              (add|list|show|status|run|render|deliver|pause|resume)"
@@ -125,6 +126,7 @@ pub fn run_trigger(
 fn evaluator(
     facade: Arc<AreevFacade>,
     ns: &str,
+    db: &str,
     flags: &HashMap<String, String>,
 ) -> Result<(Evaluator, Option<Arc<areev_run::Broker>>), String> {
     let principal = flag(flags, "as").unwrap_or_else(|| "user:local".into());
@@ -188,6 +190,13 @@ fn evaluator(
             facade,
             clock: Arc::new(SystemClock),
             connector,
+            // A connector that is a GRAIN runs off the same pin the run path
+            // takes (#185) — one `--allow-executor` list, one `--sandbox-cmd`,
+            // one cache, whether the code is a plan's node or the poll itself.
+            // Unset flags leave this `None`, and a trigger naming a connector
+            // Definition then refuses by name rather than falling through to
+            // `--connector-cmd`.
+            connector_code: run_stack::connector_code(flags, db),
             starter,
             credentials,
             ns: ns.to_string(),
@@ -222,6 +231,12 @@ fn add(
     let mut t = Trigger::new(kind, &workflow).namespace(ns);
     if let Some(c) = flag(flags, "observer").or_else(|| flag(flags, "connector")) {
         t = t.connector(&c);
+    }
+    // The connector's CODE, by content address (#185): a Tool Definition whose
+    // `executor_uri` carries the blob. `--connector` still names it — that name
+    // is half the run-id dedup identity, so it survives a code revision.
+    if let Some(c) = flag(flags, "connector-tool") {
+        t = t.connector_tool(areev_core::types::strip_grain_scheme(&c));
     }
     if let Some(s) = flag(flags, "scope") {
         t = t.scope(&s);
@@ -446,6 +461,18 @@ fn show(
         }
         println!("kind         {}", found.kind);
         println!("workflow     {}", found.workflow);
+        if let Some(c) = &found.connector {
+            println!("connector    {c}");
+        }
+        // Which KIND of connector this is: a grain (the code travelled with
+        // the memory, and this host must have pinned it) or a host command
+        // (whatever `--connector-cmd` names on the machine running the pass).
+        if let Some(c) = &found.connector_tool {
+            println!(
+                "connector by {c}  (a Tool Definition — the evaluating host must \
+                 --allow-executor its blob)"
+            );
+        }
         println!("enabled      {}", found.enabled);
         println!("paused       {}", found.paused);
         println!("due          {}", found.due);
@@ -546,10 +573,11 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
 fn evaluate(
     facade: Arc<AreevFacade>,
     ns: &str,
+    db: &str,
     flags: &HashMap<String, String>,
     json_out: bool,
 ) -> Result<(), String> {
-    let (ev, broker) = evaluator(facade, ns, flags)?;
+    let (ev, broker) = evaluator(facade, ns, db, flags)?;
     let mut opts = EvalOptions { dry_run: flag(flags, "dry-run").is_some(), ..Default::default() };
     if let Some(id) = flag(flags, "id") {
         opts.only = Some(id);
@@ -659,6 +687,7 @@ fn render_target(
 fn deliver(
     facade: Arc<AreevFacade>,
     ns: &str,
+    db: &str,
     flags: &HashMap<String, String>,
     json_out: bool,
 ) -> Result<(), String> {
@@ -680,7 +709,7 @@ fn deliver(
     let payload: serde_json::Value =
         serde_json::from_str(raw.trim()).map_err(|e| format!("payload is not JSON: {e}"))?;
 
-    let (ev, broker) = evaluator(facade, ns, flags)?;
+    let (ev, broker) = evaluator(facade, ns, db, flags)?;
     let report = ev.deliver(&id, payload).map_err(|e| e.to_string())?;
     if json_out {
         println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?);
