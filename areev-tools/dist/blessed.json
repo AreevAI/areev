@@ -1,0 +1,53 @@
+{
+  "note": "Blessed wasm32-areev-io tools (#179). A tool's identity is its content address: pin it with --allow-executor and name it from a Definition's executor_uri. Rebuild with areev-tools/build.sh; docs/blessed-tools.md documents the contracts.",
+  "tools": {
+    "http.call": {
+      "summary": "One brokered HTTP request, forwarded verbatim. The declaration is the policy.",
+      "address": "cas://sha256:6c088ed0161d1254bdf669b978391d0403de5878233e3bd3f13b026be47c98a2",
+      "sha256": "6c088ed0161d1254bdf669b978391d0403de5878233e3bd3f13b026be47c98a2",
+      "bytes": 2598,
+      "runtime": "wasm32-areev-io",
+      "imports": [
+        "areev::emit",
+        "areev::fetch"
+      ],
+      "source": "areev-tools/http-call"
+    },
+    "mcp.call": {
+      "summary": "Call a tool on an MCP server (JSON-RPC 2.0 `tools/call`) and unwrap `result`.",
+      "address": "cas://sha256:e52f19ff68e9ab2184886f36790e8838cd864fd38f31a36ffdff6fc2d9aca428",
+      "sha256": "e52f19ff68e9ab2184886f36790e8838cd864fd38f31a36ffdff6fc2d9aca428",
+      "bytes": 7748,
+      "runtime": "wasm32-areev-io",
+      "imports": [
+        "areev::emit",
+        "areev::fetch"
+      ],
+      "source": "areev-tools/mcp-call"
+    },
+    "a2a.call": {
+      "summary": "Send a message to an A2A agent (JSON-RPC 2.0 `message/send`) and unwrap `result`.",
+      "address": "cas://sha256:d6fe7e471c8f43999346781370ce711272eba578a01cfd6324be3996e26d25e3",
+      "sha256": "d6fe7e471c8f43999346781370ce711272eba578a01cfd6324be3996e26d25e3",
+      "bytes": 11067,
+      "runtime": "wasm32-areev-io",
+      "imports": [
+        "areev::emit",
+        "areev::fetch"
+      ],
+      "source": "areev-tools/a2a-call"
+    },
+    "mailbox.poll": {
+      "summary": "The example trigger connector: reads a filed feed by content address (#185).",
+      "address": "cas://sha256:2a8f2d40014a9f3d9dea4ee6a17d80fea74b541a6d70db6ba714146ec6dd668d",
+      "sha256": "2a8f2d40014a9f3d9dea4ee6a17d80fea74b541a6d70db6ba714146ec6dd668d",
+      "bytes": 9268,
+      "runtime": "wasm32-areev-io",
+      "imports": [
+        "areev::blob_get",
+        "areev::emit"
+      ],
+      "source": "areev-tools/mailbox-poll"
+    }
+  }
+}
