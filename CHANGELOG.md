@@ -6,6 +6,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run started where it cannot see the plan's Definitions refuses instead
+  of substituting** (#230). A node that names its tool rather than binding it
+  resolves through the RUN's namespace, so a plan started somewhere other
+  than where its tools were authored found an empty catalogue — and, with a
+  model configured, quietly became an abstract node: the Definition's
+  `executor_uri`, runtime and capabilities dropped, a model answering
+  instead, and the run reporting Completed having called nothing. Resolution
+  now asks one more question before falling through: if the plan grain lives
+  in another namespace and a Definition of that name is there, the run is
+  refused at start (`RUN-E004`, before the lease), naming the node, the
+  namespace searched and the one that would have worked. A node that names
+  no Definition anywhere is still abstract, and a bound node still resolves
+  from any namespace.
+- **`run inspect` reports the resolution it froze, not a summary of it**
+  (#230). A bound capability tool printed as a bare `"executor": "host"` —
+  byte-identical to a node with no Definition at all — so a correct run and
+  a broken one were indistinguishable in the one command you would run to
+  tell them apart. Each `pinned[]` row now also carries `executor_uri`,
+  `runtime` and the `capabilities` declaration when the Definition named
+  code.
+- **`areev run start` notes a plan/run namespace mismatch** (#230). Running
+  a plan from another namespace is supported and sometimes intended, but it
+  is also what a forgotten `--ns` looks like — the run works and its record
+  lands where nobody is looking. One line on stderr, naming the flag that
+  would move it.
+
 ## [1.8.0] — 2026-09-11
 
 ### Added

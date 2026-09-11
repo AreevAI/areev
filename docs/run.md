@@ -728,6 +728,23 @@ audit, the run-outcome census, egress refusals — live in the reserved
 `agent:harness` — it never did, and an operator who believed it could leave a
 run journal outside every policy they had declared. #87.)
 
+**The plan's namespace and the run's are independent, and that cuts both
+ways.** A plan is addressed by hash, so any namespace may run it; the record
+lands where the run is, not where the plan is. That is the point — the
+journal should sit under the retention and erasure policy you chose for it —
+but it is also what a forgotten `--ns` looks like: the run works, and every
+`RECALL … --ns <the plan's namespace>` that goes looking for its results
+finds nothing. `areev run start` says so once, on stderr, when the two
+differ:
+
+```
+areev: note: this plan lives in namespace 'ap', but the run reads and
+journals in 'shared' — pass `--ns ap` if its record should sit with the plan
+```
+
+It is a note, not a refusal: running one plan across many tenants'
+namespaces is a supported shape, not a mistake.
+
 | Record | Grain | Namespace | When |
 |---|---|---|---|
 | Intent | Tool grain, `status = pending` | session `--ns` | **before** every effect dispatch |
@@ -751,6 +768,23 @@ areev run list [--last N] [--offset N]    # recent runs, newest first; stderr no
 areev run list --ns ops                   # ...scoped to one session namespace ("ops.*" also works)
 areev runs-touching --hash <GRAIN>        # the reverse join: which runs produced/refined this grain
 ```
+
+`run inspect`'s `pinned[]` is the **frozen resolution**, not a summary of it:
+each row carries the node, the tool name and the executor kind, plus
+`executor_uri`, `runtime` and the `capabilities` declaration whenever the
+Definition named code. A capability tool therefore cannot read as an
+ordinary `--tool-cmd` node (#230) — which it did, identically, until 1.8.0:
+
+```jsonc
+"pinned": [{ "node": "vendor_api", "tool": "vendor_api", "executor": "host",
+             "executor_uri": "cas://sha256:6c088ed0…",
+             "runtime": "wasm32-areev-io",
+             "capabilities": [{ "http": { "hosts": ["http://127.0.0.1:7788"], … } }] }]
+```
+
+Note `executor` stays `host`: it is the *answering party* (a host, not a
+person at `run respond`), and code is how that host answers. What the run
+will execute is `executor_uri`.
 
 ## Crash recovery and resume
 
@@ -932,6 +966,29 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …). No model runs unless you
   configure one — an abstract node without an LLM is `RUN-E006` at start,
   not a silent skip.
+- **A node is not abstract just because this run cannot see its
+  Definition.** A named node resolves through the RUN's namespace, so a plan
+  started somewhere other than where its tools were authored would find an
+  empty catalogue — and, with a model configured, quietly become an abstract
+  node: the Definition's `executor_uri`, runtime and capabilities dropped, a
+  model answering instead, and the run reporting Completed having called
+  nothing. So resolution asks one more question before it falls through. If
+  the plan grain itself lives in another namespace and a Definition of that
+  name is *there*, the run is refused at start (`RUN-E004`), naming the node,
+  the namespace searched and the one that would have worked (#230):
+
+  ```
+  RUN-E004: node 'vendor_api' has no binding, and namespace 'shared' — where
+  this run reads and journals — holds no Tool Definition named 'vendor_api'.
+  The plan grain itself lives in namespace 'ap', which does. Start the run
+  there (`--ns ap`), or bind the node to a Definition by hash so it resolves
+  from any namespace
+  ```
+
+  A node that names no Definition anywhere, including the plan's own
+  namespace, is genuinely abstract and behaves exactly as before. A **bound**
+  node is unaffected either way: a binding is a content address, so it
+  resolves from any namespace at all.
 - The tools *offered* to the model are exactly the manifest's pinned host
   Definitions. Tool arguments are validated against the pinned schemas —
   strictly, with one re-prompt on violation; an unknown tool name gets one

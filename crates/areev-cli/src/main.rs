@@ -4091,6 +4091,25 @@ fn run_run(
                 None => serde_json::json!({}),
             };
             let h = Hash::from_hex(&wf).map_err(|e| e.to_string())?;
+            // A plan is addressed by hash, so it runs from any namespace —
+            // but the journal, the results and every namespace-scoped read
+            // land in the RUN's namespace, not the plan's. That is by design
+            // (the run's namespace is the policy choice, docs/run.md), and it
+            // is also the shape of a forgotten `--ns`: the run works, and its
+            // record is invisible everywhere the operator looks for it (#230).
+            // Say it once, on stderr, and carry on.
+            if let Ok(plan_grain) = runner.facade.with_store(|m| m.get(&h)) {
+                if let Some(plan_ns) = plan_grain.get_str("namespace") {
+                    if plan_ns != runner.ns {
+                        eprintln!(
+                            "areev: note: this plan lives in namespace '{plan_ns}', but the run \
+                             reads and journals in '{}' — pass `--ns {plan_ns}` if its record \
+                             should sit with the plan",
+                            runner.ns
+                        );
+                    }
+                }
+            }
             let session = runner.start(&h, &run_id, input, &opts).map_err(|e| e.to_string())?;
             print_session(session);
         }

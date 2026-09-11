@@ -2240,7 +2240,29 @@ impl Runner {
             pinned: manifest
                 .pinned
                 .iter()
-                .map(|p| json!({"node": p.node, "tool": p.tool_name, "executor": p.executor}))
+                .map(|p| {
+                    // The resolution, not a summary of it (#230). A node
+                    // bound to a Definition that names a code blob used to
+                    // print as a bare `"executor": "host"` — identical to a
+                    // `--tool-cmd` node — so a reader could not tell a
+                    // capability tool that resolved correctly from one whose
+                    // Definition had not been found at all. That cost an
+                    // afternoon and produced the wrong conclusion. What a run
+                    // froze at start is what `inspect` must say.
+                    let mut row =
+                        json!({"node": p.node, "tool": p.tool_name, "executor": p.executor});
+                    let row_obj = row.as_object_mut().expect("json! built an object");
+                    if let Some(uri) = &p.executor_uri {
+                        row_obj.insert("executor_uri".into(), json!(uri));
+                    }
+                    if let Some(rt) = &p.runtime {
+                        row_obj.insert("runtime".into(), json!(rt));
+                    }
+                    if let Some(caps) = &p.capabilities {
+                        row_obj.insert("capabilities".into(), caps.clone());
+                    }
+                    row
+                })
                 .collect(),
             budgets: serde_json::to_value(manifest.budgets).unwrap_or(Value::Null),
             fork_of: manifest
