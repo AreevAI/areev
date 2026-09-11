@@ -12,7 +12,7 @@
 # `docs/blessed-tools.md` documents. Rebuild with `./build.sh`.
 [workspace]
 resolver = "2"
-members = ["common", "http-call", "mcp-call", "a2a-call", "mailbox-poll"]
+members = ["common", "http-call", "mcp-call", "a2a-call", "mailbox-poll", "rest-poll"]
 
 [workspace.package]
 # These crates are never published and never depended on by name: a blessed

@@ -97,6 +97,33 @@ impl Rig {
         self.facade.with_store(|m| m.add(&def)).unwrap()
     }
 
+    /// The same Definition, plus the `config` a generic blob is wired with
+    /// (#231) — where the items are, which pointer is the id.
+    fn connector_def_with_config(&self, uri: &str, config: Value) -> Hash {
+        let def = Tool::new("mailbox.poll")
+            .kind(ToolKind::Definition)
+            .tool_description("read the mailbox")
+            .created_at(T0 - 2000)
+            .namespace(NS)
+            .executor_uri(uri)
+            .extra_field("config", config);
+        self.facade.with_store(|m| m.add(&def)).unwrap()
+    }
+
+    /// A polling trigger with its own instance `config`.
+    fn declare_with_config(&self, def: &Hash, config: Value) -> String {
+        let plan = self.plan();
+        let t = Trigger::new(TriggerKind::Polling, &plan.to_hex())
+            .connector("mailbox")
+            .interval_secs(60)
+            .dedup_key("/id")
+            .created_at(T0)
+            .namespace(NS)
+            .connector_tool(&def.to_hex())
+            .config(config);
+        self.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+    }
+
     fn plan(&self) -> Hash {
         let wf = Workflow::new(vec!["triage".into()]).created_at(T0 - 1000).namespace(NS);
         self.facade.with_store(|m| m.add(&wf)).unwrap()
@@ -180,6 +207,125 @@ fn a_trigger_polls_the_code_its_declaration_names() {
     let bodies: String = events.iter().filter_map(|g| g.get_str("content")).collect();
     assert!(!bodies.contains("from-the-host-command"), "the host command ran instead: {bodies}");
     let _ = hash;
+}
+
+/// Echoes the whole request back as the item payload, so a test can assert
+/// what the evaluator actually handed the connector.
+#[cfg(unix)]
+const ECHO_REQUEST: &str = r#"#!/bin/sh
+read -r line
+printf '{"items":[{"id":"seen","payload":{"id":"seen","request":%s}}],"cursor":"c-1"}\n' "$line"
+"#;
+
+/// Reports a failure in the house shape every blessed blob fails in.
+#[cfg(unix)]
+const FAILING: &str = r#"#!/bin/sh
+read -r line
+printf '{"error":"upstream answered 503","code":"RUN-E022"}\n'
+"#;
+
+#[cfg(unix)]
+#[test]
+fn a_definitions_config_wires_the_connector_and_the_trigger_specializes_it() {
+    // #231: a generic blob (`rest.poll`) is made provider-specific by the
+    // Definition's `config`, beside the `capabilities` block it must agree
+    // with — so "a Gmail connector" is a declaration, not a crate. The
+    // trigger's own config is the instance, and wins where they collide.
+    let rig = Rig::new();
+    let uri = rig.put_blob(ECHO_REQUEST.as_bytes());
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = rig.connector_def_with_config(
+        &uri,
+        json!({ "items": "/messages", "id": "/id", "query": { "q": "from:vendor" } }),
+    );
+    rig.declare_with_config(&def, json!({ "query": { "q": "newer_than:1d" }, "scope": "ap@desk" }));
+
+    let ev = rig.evaluator(Some(rig.code(&[&addr])));
+    ev.run(&opts()).unwrap(); // seeds
+    rig.clock.advance(120_000);
+    let report = ev.run(&opts()).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let events = rig
+        .facade
+        .with_store(|m| m.recent(NS, Some(areev_core::types::GrainType::Event), 20))
+        .unwrap();
+    let body: String = events.iter().filter_map(|g| g.get_str("content")).collect();
+    let seen: Value = serde_json::from_str(&body).expect("the Event carries the item payload");
+    let config = &seen["request"]["config"];
+    assert_eq!(config["items"], "/messages", "the Definition's wiring reached the connector");
+    assert_eq!(config["id"], "/id");
+    assert_eq!(
+        config["query"]["q"], "newer_than:1d",
+        "and the trigger specialized it: the instance wins on a collision"
+    );
+    assert_eq!(config["scope"], "ap@desk", "the trigger may add keys of its own");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_connector_that_reports_an_error_fails_the_poll_instead_of_looking_empty() {
+    // `PollResponse` is `#[serde(default)]`, so `{"error": …}` used to
+    // deserialize into an empty page with no cursor: a source that is DOWN,
+    // reported as a source with nothing new, on every tick, silently. It is
+    // the shape every blessed blob fails in, so this is not a corner case.
+    let rig = Rig::new();
+    let uri = rig.put_blob(FAILING.as_bytes());
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = rig.connector_def(Some(&uri), None);
+    rig.declare(Some(&def));
+
+    let report = rig.evaluator(Some(rig.code(&[&addr]))).run(&opts()).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert_eq!(report.errors.len(), 1, "a failed poll is an error, not a quiet tick: {report:?}");
+    assert!(report.errors[0].contains("upstream answered 503"), "{:?}", report.errors);
+    assert!(report.errors[0].contains("RUN-E022"), "the code survives: {:?}", report.errors);
+}
+
+/// Returns the SAME item every time, with a cursor derived from the one it
+/// was handed — so a page can be entirely duplicates and still have moved.
+#[cfg(unix)]
+const SAME_ITEM: &str = r#"#!/bin/sh
+read -r line
+cur=$(printf '%s' "$line" | sed -n 's/.*"cursor":"\([^"]*\)".*/\1/p')
+printf '{"items":[{"id":"m-1","payload":{"id":"m-1"}}],"cursor":"%sx"}\n' "$cur"
+"#;
+
+#[cfg(unix)]
+#[test]
+fn a_page_that_is_entirely_duplicates_still_advances_the_cursor() {
+    // The rule a connector author reaches for last and needs most: advance on
+    // everything LOOKED AT, not on everything that turned into work. A page
+    // whose items were all deduped away is a page that was read — holding the
+    // cursor there re-fetches it forever, on every tick, for as long as the
+    // trigger lives. (A page that failed to START is the opposite case, and
+    // #129 holds the cursor for exactly that one.)
+    let rig = Rig::new();
+    let uri = rig.put_blob(SAME_ITEM.as_bytes());
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = rig.connector_def(Some(&uri), None);
+    let hash = rig.declare(Some(&def));
+    let ev = rig.evaluator(Some(rig.code(&[&addr])));
+
+    ev.run(&opts()).unwrap(); // seeds: cursor "x", nothing fires
+    rig.clock.advance(120_000);
+    let first = ev.run(&opts()).unwrap();
+    assert_eq!(first.runs_started, 1, "the item is new here: {first:?}");
+
+    rig.clock.advance(120_000);
+    let again = ev.run(&opts()).unwrap();
+    assert!(again.errors.is_empty(), "{:?}", again.errors);
+    assert_eq!(again.runs_started, 0, "the same item must not start a second run");
+    assert_eq!(again.duplicates, 1, "it is a duplicate, not a failure: {again:?}");
+    assert!(again.cursor_held.is_empty(), "and nothing held the cursor: {again:?}");
+
+    let status = ev.status().unwrap();
+    let st = status.iter().find(|s| s.trigger == hash).expect("the trigger has state");
+    assert_eq!(
+        st.cursor.as_deref(),
+        Some("xxx"),
+        "three polls, three advances — a page of duplicates moved it too"
+    );
 }
 
 #[test]

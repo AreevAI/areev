@@ -48,6 +48,18 @@
         "areev::emit"
       ],
       "source": "areev-tools/mailbox-poll"
+    },
+    "rest.poll": {
+      "summary": "Poll a paginated REST source: the Definition's config maps items, id, cursor and pages (#231).",
+      "address": "cas://sha256:e53d60bdddfb7b496952e4901fdfa6578a3d4ccdcba4ff6b2f40cd1b00869f79",
+      "sha256": "e53d60bdddfb7b496952e4901fdfa6578a3d4ccdcba4ff6b2f40cd1b00869f79",
+      "bytes": 21321,
+      "runtime": "wasm32-areev-io",
+      "imports": [
+        "areev::emit",
+        "areev::fetch"
+      ],
+      "source": "areev-tools/rest-poll"
     }
   }
 }
