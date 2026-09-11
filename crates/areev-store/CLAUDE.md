@@ -39,8 +39,9 @@ transports implement it:
   drops the statements at every `BEGIN` instead, the two halves `pg_stale.rs`
   pins) and through a real transaction-mode PgBouncer. **A handle owns no
   connection** (#181): `PgPool`, one per DSN per process (keyed with
-  `schema`/`provision`/`pool` stripped), owns a one-worker multi-thread
-  runtime, a fair `Semaphore` sized by `?pool=` / `$AREEV_PG_POOL` (default
+  `schema`/`provision`/`pool`/`pool_idle_secs` stripped — `pool_key`), owns a
+  multi-thread runtime, a fair `Semaphore` sized by `?pool=` /
+  `$AREEV_PG_POOL` (default
   `DEFAULT_POOL_SIZE`), and the idle connections. `with_conn` borrows one
   per statement; `begin` pins one on the handle until `commit`/`rollback`
   (`Drop` rolls back a forgotten one). Per-connection state lives on
@@ -52,10 +53,26 @@ transports implement it:
   on a `search_path`, and that is `SET LOCAL` to its transaction; a dialled
   connection carries `public, ext` for pgvector's type only. A dead
   connection is discarded (`Checkout::note`), never returned; reads outside
-  a transaction replay once on a fresh one, writes never. Pinned by
+  a transaction replay once on a fresh one, writes never.
+  **A quiet pool is reaped** (#229): each idle connection is stamped when it
+  goes back (`idle: Vec<(Instant, PooledConn)>`, popped from the END so the
+  cold ones age out), one process-wide `areev-pg-reap` thread closes what has
+  been idle past `?pool_idle_secs=` / `$AREEV_PG_POOL_IDLE_SECS` (default
+  `DEFAULT_POOL_IDLE_SECS`, `0` = never) every half-TTL, and `sweep` then
+  evicts the pool itself — runtime threads included — once its idle list is
+  empty and `Arc::strong_count == 1` under the registry lock, which is what
+  proves nothing holds it (a handle or a `Checkout` is a clone only
+  obtainable there). Reaping is what bounds a host that gives every tenant
+  its own ROLE, where one pool per tenant makes `?pool=` bound nothing in
+  aggregate. A plain OS thread, not a task per pool: a task per pool
+  re-creates the accumulation in thread form, and dropping a `Runtime` from
+  inside itself panics. Pinned by
   `tests/pg_pool.rs` (N handles ≤ P connections, counted in
-  `pg_stat_activity` by `application_name = areev`) and the two-backend
-  `memories_in_one_process_share_nothing` case. The `vector(dim)` column is
+  `pg_stat_activity` by `application_name = areev`; plus eight one-pool-each
+  memories going 8 → 8-after-close → 0-after-TTL, pools evicted) and the
+  two-backend
+  `memories_in_one_process_share_nothing` case. The whole Pg suite also
+  passes with `AREEV_PG_POOL_IDLE_SECS=1`, re-dialling throughout. The `vector(dim)` column is
   added at the first `set_embedder` (dim mismatch = hard refusal), CAS blobs
   live in an in-schema table, and `prefers_batched_reads = true`. Page
   cipher and the telemetry sidecar are file-backend-only and rejected at
