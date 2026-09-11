@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Idle Postgres connections are reaped, and a quiet pool is evicted**
+  (#229). `?pool=` bounds one pool, and the pool is keyed by the DSN — so a
+  host that gives every tenant its own Postgres role has one pool per tenant,
+  and nothing ever released one: a long-lived worker's connection count grew
+  with the number of distinct roles it had *ever touched*, not with how many
+  were in use, and only a restart brought it down. Now a connection idle past
+  `?pool_idle_secs=T` (default 300 s, `$AREEV_PG_POOL_IDLE_SECS` out of band,
+  the DSN winning, `0` to keep the previous never-reap behaviour) is closed by
+  one process-wide reaper thread, and a pool whose connections have all gone —
+  with no handle and no statement holding it — is dropped from the registry,
+  releasing its runtime's worker threads too. An idle memory now genuinely
+  holds nothing; reopening one whose pool was reaped costs one dial and emits
+  no warning. `?pool=` semantics are unchanged, and the parameter is stripped
+  before the DSN reaches the driver like every other store parameter. Proven
+  by a new case in `tests/pg_pool.rs` — eight memories on eight DSNs (the
+  shape eight roles would have) holding eight connections after every handle
+  is dropped, then zero, with all eight pools gone — and by the whole Pg
+  conformance suite, chaos hook included, running with a one-second TTL.
+  `docs/deployment-profile.md` now states the retained-connection model a
+  capacity plan needs.
+
 ## [1.8.0] — 2026-09-11
 
 ### Added
