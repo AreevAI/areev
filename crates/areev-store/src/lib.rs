@@ -1748,15 +1748,17 @@ pub fn is_pg_dsn(locator: &str) -> bool {
 fn read_blob_pg(dsn: &str, hex: &str, uri: &str) -> Result<Vec<u8>> {
     let (url, schema) = pg::split_schema_url(dsn)?;
     let raw = hex::decode(hex).map_err(|e| AreevError::Storage(e.to_string()))?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| AreevError::Storage(e.to_string()))?;
-    let client = pgtls::connect(&rt, &url)?;
+    let (pool, _) = pg::PgPool::for_url(&url)?;
+    let mut co = pool.checkout()?;
     let sql = pg::qualify_tables("SELECT body FROM blobs WHERE hash = $1", &schema);
-    let rows = rt
-        .block_on(client.query(sql.as_str(), &[&raw]))
-        .map_err(pg::pg_err)?;
+    let rows = pool.block_on(co.client().query(sql.as_str(), &[&raw])).map_err(pg::pg_err);
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            co.note(&e);
+            return Err(e);
+        }
+    };
     let row = rows
         .first()
         .ok_or_else(|| AreevError::Storage(format!("blob missing: {uri}")))?;
@@ -2106,13 +2108,11 @@ impl Areev {
         let mut bootstrap: Vec<&str> = Vec::with_capacity(pg::PG_SCHEMA.len() + pg::PG_SEED.len());
         bootstrap.extend_from_slice(pg::PG_SCHEMA);
         bootstrap.extend_from_slice(pg::PG_SEED);
-        let dbh: Box<dyn Db> = Box::new(pg::PgDb::open(
-            url,
-            schema,
-            &bootstrap,
-            read_only,
-            Some(pg::STORE_STAMP),
-        )?);
+        let pg = pg::PgDb::open(url, schema, &bootstrap, read_only, Some(pg::STORE_STAMP))?;
+        if let Some(w) = pg.pool_warning() {
+            warnings.push(w.to_string());
+        }
+        let dbh: Box<dyn Db> = Box::new(pg);
         let telemetry = match telemetry_mode {
             TelemetryMode::Off => None,
             mode => Some(Telemetry::open_pg(url, schema, mode)?),

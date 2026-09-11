@@ -105,26 +105,41 @@ with a TLS upstream) optional rather than mandatory. It is still the right
 answer when the proxy is also pooling (session mode only — see below) or doing
 IAM auth — point the DSN at it with `sslmode=disable`.
 
-**Connections per handle: 1, or 2 with telemetry.** One `tokio_postgres`
-client per `Areev` handle, plus a second for the recall-telemetry sidecar. The
-**bindings default telemetry to `aggregate`**, so a stock Node or Python handle
-opens **two**. Pass `telemetry="off"` when you do not want the sidecar. A
-multi-tenant host with one memory per tenant multiplies this by tenants *and*
-by instances against the server's `max_connections` — cache handles per tenant
-with an LRU and close idle ones (`close()` in Node; drop in Rust/Python). There
-is no built-in pool.
+**Connections: one pool per DSN per process, `?pool=P` (default 8).** A
+memory handle owns no connection (#181, third increment). Every handle on one
+DSN — one server, one role, one TLS setting — borrows from one process-wide
+pool: a connection per statement, or one for the length of a transaction,
+returned as soon as that ends. So a process holding a thousand memories holds
+at most P connections between them, an idle memory holds none, and the
+telemetry sidecar rides the same pool rather than dialling its own. Set P on
+the DSN (`postgres://…/db?schema=t7&pool=16`) or out of band with
+`$AREEV_PG_POOL`, the DSN winning; the first open sizes the pool and a later
+open naming another size is told so in `open_warnings()` rather than obeyed.
+Size it for *concurrent transactions*, not for memories: a write holds its
+connection until it commits, and callers past the cap wait their turn (FIFO)
+rather than failing. A pool of 1 serialises everything in the process,
+including the broker's blob door, so keep 2 or more where capability tools
+run. Connections carry `application_name = areev`, which is what
+`pg_stat_activity` counts and what the conformance suite asserts against.
+
+The old advice — cache handles in an LRU and close idle ones — is
+withdrawn: handles are cheap to hold open now, since holding one costs no
+connection.
 
 **A pooler may run in transaction mode, on one condition and with one
-caveat.** The store no longer keeps anything it needs on the session: every
-statement names its tables schema-qualified (`"tenant_7".grains`, never
-`grains` resolved through `search_path`), runtime DDL and catalog probes bind
-the schema name instead of reading `current_schema()`, the bootstrap lock is
-transaction-scoped (`pg_advisory_xact_lock`), and a cached prepared statement
-the backend no longer knows (`26000`) is re-prepared and retried when it
-happens outside a transaction. The whole two-backend conformance suite runs
-with `RESET ALL` issued before every statement outside a transaction
-(`tests/pg_chaos.rs`), and — measured, not inferred — passes through a real
-PgBouncer in transaction mode (#181, second increment).
+caveat.** The store keeps nothing it needs on the session: every statement
+names its tables schema-qualified (`"tenant_7".grains`, never `grains`
+resolved through `search_path`), runtime DDL and catalog probes bind the
+schema name instead of reading `current_schema()`, the bootstrap lock is
+transaction-scoped (`pg_advisory_xact_lock`) and the bootstrap's own
+`search_path` is `SET LOCAL` to that transaction, and a cached prepared
+statement the backend no longer knows (`26000`) is re-prepared and retried
+when it happens outside a transaction. The in-process pool depends on the same
+property — any of its connections serves any schema — and the whole
+two-backend conformance suite runs with `RESET ALL` issued before every
+statement outside a transaction (`tests/pg_chaos.rs`), through a pool of two
+(`?pool=2`), and — measured, not inferred — through a real PgBouncer in
+transaction mode (#181).
 
 The **condition**: the pooler must track prepared statements across backends.
 The driver names every parameterized statement it sends, one-shot or cached,
@@ -135,12 +150,15 @@ PgBouncer 1.21+ tracks them when `max_prepared_statements` is above zero;
 below 1.21, or with it at zero, use **session mode**. The error you get
 otherwise names both remedies.
 
-The **caveat**: `hnsw.ef_search` is still a session setting (set by
-`ensure_vector_index` / `set_vector_ef_search`). Under transaction pooling it
-does not survive to the next transaction, and the loss is silent — ANN recall
-drops to pgvector's default of 40 with no error. Until the store scopes it
-per transaction, a pooled deployment that tunes `ef_search` must also set it
-at the pooler or database level (`ALTER DATABASE … SET hnsw.ef_search = 100`).
+The **caveat**: `hnsw.ef_search` (`ensure_vector_index` /
+`set_vector_ef_search`) is a wish of the *handle*, not of any session. Inside
+a transaction the store applies it with `SET LOCAL`, which an external
+transaction-mode pooler cannot lose. Outside one it is reconciled onto the
+in-process pool's connection before the statement — which an external
+transaction-mode pooler in front of that connection *can* drop between
+statements, silently: ANN recall falls to pgvector's default of 40 with no
+error. A deployment that tunes `ef_search` behind such a pooler should also
+set it at the database level (`ALTER DATABASE … SET hnsw.ef_search = 100`).
 
 pgvector's `vector` type and `<=>` operator are resolved through
 `search_path` by Postgres itself, so the extension must live in a schema on
@@ -152,7 +170,7 @@ private one only the store's session-level `search_path` reached.
 | Fine | PgBouncer `session` mode; PgBouncer 1.21+ `transaction` mode with `max_prepared_statements > 0`; pass-through proxies (the Cloud SQL Auth Proxy is a TLS/IAM tunnel); Neon's direct endpoint |
 | Session mode only | A transaction-mode pooler that does not track prepared statements: PgBouncer below 1.21 or with `max_prepared_statements = 0` |
 | Check your pooler's docs | Supavisor, PgCat, Neon's `-pooler` endpoint: each has added prepared-statement tracking; the condition above is what to look for |
-| Not yet | Relying on a tuned `ef_search` through a transaction-mode pooler (see the caveat) |
+| Set it at the database too | A tuned `ef_search` for reads *outside* a transaction, through a transaction-mode pooler (see the caveat) |
 
 **Open cost: provision schemas ahead of the request path.** First open of a
 NEW schema runs the full DDL bootstrap under an advisory lock — hundreds of
@@ -173,9 +191,8 @@ the middle of it.
 
 **Outage recovery: automatic for reads, explicit for writes.** A managed
 Postgres restarts, fails over, and drops connections as routine maintenance.
-The handle now replaces a dead session in place — clearing the
-prepared-statement cache and the BM25 stats cache, both of which belonged to
-the dead session — and:
+A connection that dies is discarded by the pool rather than returned — its
+prepared statements died with it — and the next borrow dials a fresh one:
 
 - a **read** is replayed transparently: it had no effect, so running it twice
   is running it once;
@@ -183,9 +200,9 @@ the dead session — and:
   server committed it, and nothing client-side can tell the difference, so
   replaying risks applying it twice. The call returns its error (`STO-E001`,
   carrying the Postgres SQLSTATE — `57P01` for an administrator restart) and
-  the handle is usable again on the next call. **Your host must treat a failed
-  write as a unit of work to redo**, exactly as it would any other transaction
-  failure.
+  the handle is usable again on the next call, on a fresh connection. **Your
+  host must treat a failed write as a unit of work to redo**, exactly as it
+  would any other transaction failure.
 - nothing is replayed **inside an open transaction**: the transaction died
   with the connection, so the whole unit has to be re-run.
 

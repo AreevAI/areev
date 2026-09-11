@@ -8,6 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **One connection pool per process for the Postgres backend** (#181, third
+  and closing increment). A memory handle no longer owns a connection: every
+  handle on one DSN borrows from one process-wide pool — a connection per
+  statement, or one for the length of a transaction — so N memories in a
+  process hold at most P connections between them, an idle memory holds
+  none, and the telemetry sidecar and the broker's blob door ride the same
+  pool. P is `?pool=` on the DSN or `$AREEV_PG_POOL` (default 8, the DSN
+  winning); the first open sizes the pool and a later open asking otherwise
+  is told in `open_warnings()`. Prepared statements and the ANN session
+  settings moved onto the connection; a handle applies what it wants with
+  `SET LOCAL` per transaction, and the bootstrap's `search_path` is `SET
+  LOCAL` too, so no schema is ever left on a pooled session. Connections
+  carry `application_name = areev`. Proven by a new conformance binary
+  (twelve telemetry-on handles and six concurrent writers through a pool of
+  three, counted in `pg_stat_activity`), a two-backend isolation case (two
+  memories served in turn by one pool share nothing), and the whole suite
+  through `?pool=2`, the chaos hook and PgBouncer. The deployment profile's
+  "keep an LRU of handles" advice is withdrawn.
+
+
 - **`$send` can fan out to an abstract node** (#187). A spawn target had to
   be a host tool node, so a plan that wanted N documents classified by an
   agent had to enumerate N nodes or drop to a single tool call. Each task now
