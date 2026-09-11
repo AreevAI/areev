@@ -1866,6 +1866,46 @@ one pool share nothing; and the whole conformance suite passes through a
 pool of two, under the `RESET ALL` chaos hook, and through PgBouncer in
 transaction mode.
 
+### A pool is reaped, because the thing that multiplies is the pool and not the memory
+
+The pool bounds what one *DSN* costs, and the sentence it licensed — "N
+memories hold at most P connections" — is true only where N memories share a
+DSN. Areev Cloud gives every memory its own Postgres **role**, which is the
+isolation property it sells, and a role is part of the pool key: one pool per
+tenant, `?pool=` bounding each separately rather than their sum. Nothing ever
+released one. The registry had no eviction and the idle list had no TTL, so a
+worker's connection count grew with the number of distinct tenants it had
+*ever touched* since it started, not with how many were in use, and only a
+restart brought it down — a cell of 500 memories across four workers trending
+to 2,000 connections against a server sized in the low hundreds (#229). The
+previous decision's own remedy was unavailable, because it had just withdrawn
+the handle LRU that used to bound this by accident.
+
+The decision: idleness is a state a pool can leave AND return to. A
+connection idle past `?pool_idle_secs=` (default 300 s,
+`$AREEV_PG_POOL_IDLE_SECS` out of band, `0` to keep the old never-reap
+behaviour) is closed, and a pool whose idle list has emptied while no handle
+and no checkout holds it is dropped from the registry, taking its runtime's
+worker threads with it. So an idle memory holds no connection, an idle
+process holds no pool, and the reopen after a reaping costs one dial and says
+nothing — the schema is stamped, so it is not even a bootstrap.
+
+Two details carry the weight. The reaper is ONE plain OS thread per process,
+not a task per pool: a task per pool would rebuild the same accumulation in
+thread form, and a task on a pool's own runtime cannot drop that pool, since
+dropping a `Runtime` from inside itself panics. And eviction's safety is the
+`Arc` count read under the registry lock — every other reference to a pool is
+a clone that can only be made while holding that lock, so a count of one
+proves the registry is the last owner and the pool can go. The alternative
+considered and not taken was a process-wide connection ceiling: it bounds the
+same number, but a cap shared across pools can deadlock a caller that holds
+one memory's transaction open while opening another's, which the per-pool
+semaphore cannot. Proof: `tests/pg_pool.rs` opens eight memories on eight
+DSNs — the shape eight roles would have — and asserts eight connections held
+after every handle is dropped, then zero once the TTL passes, with all eight
+pools gone from the registry; and the whole conformance suite passes with a
+one-second TTL under the chaos hook, re-dialling throughout.
+
 ### The dictionary is keyed by digest, because the index must be bounded and the value is not
 
 Every subject, relation and object string is interned into `terms` (§3): a

@@ -127,7 +127,7 @@ impl SslRequest {
             match pair.split_once('=') {
                 Some(("sslmode", v)) => mode = SslMode::parse(v)?,
                 Some(("sslrootcert", v)) if !v.is_empty() => root_cert = Some(v.to_string()),
-                Some(("provision", _)) | Some(("pool", _)) => {}
+                Some(("provision", _)) | Some(("pool", _)) | Some(("pool_idle_secs", _)) => {}
                 _ => rest.push(pair),
             }
         }

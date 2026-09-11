@@ -127,7 +127,7 @@ in source.
 | `RUN-E001` | `Stalled` | No node can advance and the run is not finished |
 | `RUN-E002` | `UnboundedCycle` | A cyclic SCC carries no `max_cycles` edge |
 | `RUN-E003` | `Unreachable` | A node cannot be reached from the entry |
-| `RUN-E004` | `UnresolvedRef` | A binding does not resolve to a usable Tool definition |
+| `RUN-E004` | `UnresolvedRef` | A node does not resolve to a usable Tool Definition: a binding that names something else (or nothing), or an unbound node whose Definition lives in the plan's namespace rather than the run's |
 | `RUN-E005` | `InvalidCondition` | An edge condition does not parse |
 | `RUN-E006` | `NoToolLlm` | An abstract node has neither a bound tool nor an LLM |
 | `RUN-E007` | `BudgetExhausted` | A budget axis was spent |

@@ -24,6 +24,14 @@
 //! none. Every statement is schema-qualified and every per-transaction
 //! setting is `SET LOCAL`, which is what lets any connection serve any
 //! schema.
+//!
+//! A pool that has gone quiet gives its connections BACK (#229): one reaper
+//! thread per process closes a connection idle past `?pool_idle_secs=`
+//! (default [`DEFAULT_POOL_IDLE_SECS`]) and then evicts the pool itself once
+//! nothing holds it. Without that, "N memories hold at most P connections"
+//! bounds nothing on a host that gives every tenant its own ROLE — a
+//! different role is a different pool, so a long-lived worker accumulated one
+//! pool, and one connection, per tenant it had ever touched.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -390,6 +398,73 @@ pub fn strip_pool(url: &str) -> String {
     strip_param(url, "pool")
 }
 
+/// How long a pooled connection may sit idle before the reaper closes it,
+/// when neither `?pool_idle_secs=` nor `$AREEV_PG_POOL_IDLE_SECS` says
+/// otherwise. Five minutes: long enough that a process doing steady work
+/// re-dials approximately never, short enough that a host handing every
+/// tenant its own role gets its connections back on a human timescale
+/// rather than at the next restart (#229).
+pub const DEFAULT_POOL_IDLE_SECS: u64 = 300;
+
+/// The out-of-band spelling of `?pool_idle_secs=`, for a DSN that is not
+/// yours to edit.
+pub const POOL_IDLE_ENV: &str = "AREEV_PG_POOL_IDLE_SECS";
+
+/// Our name for the parameter, in the two places that must agree: the reader
+/// below and the pool key.
+const POOL_IDLE_PARAM: &str = "pool_idle_secs";
+
+/// How long `url`'s pool keeps an idle connection: `?pool_idle_secs=N` on the
+/// DSN, else `$AREEV_PG_POOL_IDLE_SECS`, else [`DEFAULT_POOL_IDLE_SECS`]. The
+/// DSN wins, as everywhere.
+///
+/// `0` is `None` — never reap, hold every connection dialled until the
+/// process ends, which is what every build before #229 did.
+pub fn pool_idle_ttl(url: &str) -> Result<Option<std::time::Duration>> {
+    if let Some((_, query)) = url.split_once('?') {
+        let mut from_dsn = None;
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == POOL_IDLE_PARAM {
+                    from_dsn = Some(parse_idle_secs(&format!("postgres URL: {POOL_IDLE_PARAM}"), v)?);
+                }
+            }
+        }
+        if let Some(t) = from_dsn {
+            return Ok(t);
+        }
+    }
+    match std::env::var(POOL_IDLE_ENV) {
+        Ok(v) if !v.trim().is_empty() => parse_idle_secs(&format!("${POOL_IDLE_ENV}"), v.trim()),
+        _ => Ok(Some(std::time::Duration::from_secs(DEFAULT_POOL_IDLE_SECS))),
+    }
+}
+
+fn parse_idle_secs(what: &str, v: &str) -> Result<Option<std::time::Duration>> {
+    match v.parse::<u64>() {
+        Ok(0) => Ok(None),
+        Ok(n) => Ok(Some(std::time::Duration::from_secs(n))),
+        Err(_) => Err(AreevError::Validation(format!(
+            "{what}={v:?} must be a whole number of seconds an idle connection is kept \
+             (0 to keep them for the life of the process)"
+        ))),
+    }
+}
+
+/// Strip `?pool_idle_secs=` from a DSN.
+pub fn strip_pool_idle(url: &str) -> String {
+    strip_param(url, POOL_IDLE_PARAM)
+}
+
+/// How the two pool knobs read back in a warning — `None` is a setting, not
+/// an absence.
+fn describe_ttl(ttl: Option<std::time::Duration>) -> String {
+    match ttl {
+        Some(d) => format!("{}s", d.as_secs()),
+        None => "never".to_string(),
+    }
+}
+
 /// One connection, with the state that belongs to it rather than to any
 /// memory handle: its prepared statements (a `Statement` names a server-side
 /// object of ONE session) and the two GUCs a handle may want set.
@@ -406,14 +481,19 @@ pub(crate) struct PooledConn {
 }
 
 /// The per-DSN pool: one runtime driving every connection, a fair semaphore
-/// as the cap, and the idle connections. Lives for the process; a handle
-/// borrows from it per statement, or per transaction.
+/// as the cap, and the idle connections (each stamped with when it went
+/// idle, which is what the reaper reads). A handle borrows from it per
+/// statement, or per transaction; the pool outlives every handle, but no
+/// longer outlives its own usefulness (#229).
 pub(crate) struct PgPool {
     rt: tokio::runtime::Runtime,
     url: String,
     cap: usize,
+    /// How long an idle connection is kept before the reaper closes it.
+    /// `None` = for the life of the process.
+    idle_ttl: Option<std::time::Duration>,
     sem: std::sync::Arc<tokio::sync::Semaphore>,
-    idle: std::sync::Mutex<Vec<PooledConn>>,
+    idle: std::sync::Mutex<Vec<(std::time::Instant, PooledConn)>>,
 }
 
 /// A borrowed connection. Returned to the pool on drop unless it broke.
@@ -444,39 +524,147 @@ impl Drop for Checkout {
         if let Some(c) = self.conn.take() {
             if !self.broken && !c.client.is_closed() {
                 if let Ok(mut idle) = self.pool.idle.lock() {
-                    idle.push(c);
+                    // Stamped as it goes back, and taken from the END on the
+                    // way out: the hot connection stays hot and the cold ones
+                    // age out, which is what makes an idle TTL bite.
+                    idle.push((std::time::Instant::now(), c));
                 }
             }
         }
     }
 }
 
-static POOLS: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<String, std::sync::Arc<PgPool>>>,
-> = std::sync::OnceLock::new();
+/// The live pools, plus whether the reaper thread is running. One lock over
+/// both, deliberately: the reaper decides to stop in the same critical
+/// section an opener uses to insert a pool, so a pool can never be left with
+/// nobody to reap it.
+#[derive(Default)]
+struct Registry {
+    pools: HashMap<String, std::sync::Arc<PgPool>>,
+    reaping: bool,
+}
+
+static POOLS: std::sync::OnceLock<std::sync::Mutex<Registry>> = std::sync::OnceLock::new();
+
+fn registry() -> std::sync::MutexGuard<'static, Registry> {
+    POOLS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// What keys a pool: the DSN with the store's own parameters stripped. One
+/// server, role and TLS setting, however many memories and whatever each of
+/// them asked for in `?pool=` / `?pool_idle_secs=`.
+fn pool_key(url: &str) -> String {
+    strip_param(
+        &strip_param(&strip_param(&strip_param(url, "pool"), POOL_IDLE_PARAM), "provision"),
+        "schema",
+    )
+}
+
+/// Does this process still hold a pool for `url`? The reaper's effect on the
+/// pool itself — the connection count is the server's side of the same story
+/// — for the test that pins #229.
+#[cfg(feature = "conformance")]
+pub fn pool_is_registered(url: &str) -> bool {
+    registry().pools.contains_key(&pool_key(url))
+}
+
+/// How often the reaper looks: half the shortest TTL in the process, bounded
+/// so a long TTL costs nothing and a short one is still observed promptly.
+/// A connection therefore lives at most `ttl + MAX_REAP_TICK`.
+const MIN_REAP_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+const MAX_REAP_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Start the reaper if some pool now wants one. Called with the registry
+/// locked, so the flag it sets cannot race the sweep that clears it.
+fn start_reaper(reg: &mut Registry) {
+    if reg.reaping || !reg.pools.values().any(|p| p.idle_ttl.is_some()) {
+        return;
+    }
+    // ONE thread for every pool in the process — the accumulation this fixes
+    // would otherwise be re-created in thread form — and a plain OS thread
+    // rather than a task on a pool's own runtime, because it DROPS pools and
+    // dropping a `Runtime` from inside that runtime panics.
+    let spawned = std::thread::Builder::new().name("areev-pg-reap".into()).spawn(|| {
+        while let Some(tick) = sweep() {
+            std::thread::sleep(tick);
+        }
+    });
+    // Out of threads: this open still works, unreaped, and the next one tries
+    // again. Never a reason to fail an open.
+    reg.reaping = spawned.is_ok();
+}
+
+/// One pass: close what has been idle too long, then evict a pool that holds
+/// nothing and that nothing holds. Returns how long to sleep, or `None` when
+/// no pool wants reaping any more — the thread exits and the next open
+/// starts a new one.
+fn sweep() -> Option<std::time::Duration> {
+    let mut evicted: Vec<std::sync::Arc<PgPool>> = Vec::new();
+    let tick = {
+        let mut reg = registry();
+        let now = std::time::Instant::now();
+        let mut keep = HashMap::with_capacity(reg.pools.len());
+        for (key, p) in std::mem::take(&mut reg.pools) {
+            let left = p.reap_idle(now);
+            // Nothing left to hand out and nobody holding it: the pool goes
+            // too, and its runtime's worker threads with it. Sound under this
+            // lock and only under it — every other reference (a handle, a
+            // checkout) is an `Arc` clone that can only be made from here, so
+            // a count of one means this map is the last owner.
+            if left == 0 && p.idle_ttl.is_some() && std::sync::Arc::strong_count(&p) == 1 {
+                evicted.push(p);
+            } else {
+                keep.insert(key, p);
+            }
+        }
+        reg.pools = keep;
+        match reg.pools.values().filter_map(|p| p.idle_ttl).min() {
+            Some(ttl) => Some((ttl / 2).clamp(MIN_REAP_TICK, MAX_REAP_TICK)),
+            None => {
+                reg.reaping = false;
+                None
+            }
+        }
+    };
+    // Off the lock: dropping a pool drops its runtime, which waits for its
+    // worker threads — not something to do while every opener in the process
+    // is queued behind the registry.
+    drop(evicted);
+    tick
+}
 
 impl PgPool {
     /// The pool for `url`, made on first use. Keyed by the DSN with the
-    /// store's own parameters (`schema`, `provision`, `pool`) stripped, so
-    /// every memory on one server and role shares one pool; a different
-    /// role or TLS setting is a different pool. The first open sizes it;
-    /// a later open asking for another size gets the warning back.
+    /// store's own parameters (`schema`, `provision`, `pool`,
+    /// `pool_idle_secs`) stripped, so every memory on one server and role
+    /// shares one pool; a different role or TLS setting is a different pool.
+    /// The first open sizes it and sets its idle TTL; a later open asking
+    /// for another size or TTL gets the warning back.
     pub(crate) fn for_url(url: &str) -> Result<(std::sync::Arc<PgPool>, Option<String>)> {
         let want = pool_size(url)?;
-        let key = strip_param(&strip_param(&strip_param(url, "pool"), "provision"), "schema");
-        let mut reg = POOLS
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if let Some(p) = reg.get(&key) {
-            let warn = (p.cap != want).then(|| {
-                format!(
+        let want_ttl = pool_idle_ttl(url)?;
+        let key = pool_key(url);
+        let mut reg = registry();
+        if let Some(p) = reg.pools.get(&key) {
+            let mut warn: Vec<String> = Vec::new();
+            if p.cap != want {
+                warn.push(format!(
                     "postgres pool for this DSN was sized at {} connections by an earlier open \
                      in this process; ?pool={want} (or ${POOL_ENV}) does not resize it",
                     p.cap
-                )
-            });
-            return Ok((std::sync::Arc::clone(p), warn));
+                ));
+            }
+            if p.idle_ttl != want_ttl {
+                warn.push(format!(
+                    "postgres pool for this DSN reaps idle connections after {} by an earlier \
+                     open in this process; ?{POOL_IDLE_PARAM}={} (or ${POOL_IDLE_ENV}) does not \
+                     change it",
+                    describe_ttl(p.idle_ttl),
+                    describe_ttl(want_ttl)
+                ));
+            }
+            let p = std::sync::Arc::clone(p);
+            return Ok((p, (!warn.is_empty()).then(|| warn.join("; "))));
         }
         // Multi-thread so callers on any thread `block_on` concurrently — a
         // current-thread runtime serializes its `block_on` callers, which
@@ -495,11 +683,40 @@ impl PgPool {
             rt,
             url: key.clone(),
             cap: want,
+            idle_ttl: want_ttl,
             sem: std::sync::Arc::new(tokio::sync::Semaphore::new(want)),
             idle: std::sync::Mutex::new(Vec::new()),
         });
-        reg.insert(key, std::sync::Arc::clone(&p));
+        reg.pools.insert(key, std::sync::Arc::clone(&p));
+        start_reaper(&mut reg);
         Ok((p, None))
+    }
+
+    /// Close every connection idle longer than this pool's TTL — and any the
+    /// server has already hung up on, whatever the TTL. Returns how many are
+    /// left, which is what tells the caller whether the pool itself is now
+    /// holding nothing.
+    fn reap_idle(&self, now: std::time::Instant) -> usize {
+        let mut idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(ttl) = self.idle_ttl else {
+            return idle.len();
+        };
+        let mut kept = Vec::with_capacity(idle.len());
+        let mut doomed = Vec::new();
+        for (since, c) in idle.drain(..) {
+            if now.duration_since(since) < ttl && !c.client.is_closed() {
+                kept.push((since, c));
+            } else {
+                doomed.push(c);
+            }
+        }
+        *idle = kept;
+        let left = idle.len();
+        drop(idle);
+        // The sockets close here, off the pool's lock: dropping the `Client`
+        // is what ends its connection task.
+        drop(doomed);
+        left
     }
 
     pub(crate) fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
@@ -516,8 +733,8 @@ impl PgPool {
         let idle = loop {
             let next = self.idle.lock().unwrap_or_else(|p| p.into_inner()).pop();
             match next {
-                Some(c) if c.client.is_closed() => continue,
-                other => break other,
+                Some((_, c)) if c.client.is_closed() => continue,
+                other => break other.map(|(_, c)| c),
             }
         };
         let conn = match idle {
@@ -2479,6 +2696,74 @@ mod schema_version_tests {
         // The driver never sees it, whatever else rides along.
         let req = crate::pgtls::SslRequest::split("postgres://u@h/db?pool=3&sslmode=disable").unwrap();
         assert_eq!(req.dsn, "postgres://u@h/db");
+    }
+
+    #[test]
+    fn pool_idle_ttl_reads_the_dsn_then_the_environment() {
+        let secs = |u: &str| pool_idle_ttl(u).unwrap().map(|d| d.as_secs());
+        assert_eq!(secs("postgres://u@h/db?schema=x"), Some(DEFAULT_POOL_IDLE_SECS));
+        assert_eq!(secs("postgres://u@h/db?pool_idle_secs=30&schema=x"), Some(30));
+        // 0 is a setting, not an absence: keep every connection dialled for
+        // the life of the process, which is what every build before #229 did.
+        assert_eq!(secs("postgres://u@h/db?pool_idle_secs=0"), None);
+        assert!(pool_idle_ttl("postgres://u@h/db?pool_idle_secs=soon").is_err());
+        std::env::set_var(POOL_IDLE_ENV, "45");
+        assert_eq!(secs("postgres://u@h/db"), Some(45));
+        assert_eq!(secs("postgres://u@h/db?pool_idle_secs=10"), Some(10), "the DSN wins");
+        std::env::set_var(POOL_IDLE_ENV, "whenever");
+        assert!(pool_idle_ttl("postgres://u@h/db").is_err());
+        std::env::remove_var(POOL_IDLE_ENV);
+        assert_eq!(
+            strip_pool_idle("postgres://u@h/db?pool_idle_secs=30&schema=x"),
+            "postgres://u@h/db?schema=x"
+        );
+        // The driver never sees it — `tokio_postgres` rejects unknown options.
+        let req =
+            crate::pgtls::SslRequest::split("postgres://u@h/db?pool_idle_secs=30&sslmode=disable")
+                .unwrap();
+        assert_eq!(req.dsn, "postgres://u@h/db");
+    }
+
+    /// No server needed: a pool is a runtime, a semaphore and an empty idle
+    /// list until somebody checks out, so the registry's own rules are
+    /// testable against a DSN that resolves nowhere.
+    #[test]
+    fn the_pool_key_ignores_the_idle_parameter_and_a_later_open_is_told_not_obeyed() {
+        let host = "pool-key.invalid";
+        let (first, w) =
+            PgPool::for_url(&format!("postgres://u@{host}/db?pool=4&pool_idle_secs=0&schema=one"))
+                .unwrap();
+        assert!(w.is_none(), "{w:?}");
+        let (second, w) =
+            PgPool::for_url(&format!("postgres://u@{host}/db?pool=4&pool_idle_secs=0&schema=two"))
+                .unwrap();
+        assert!(w.is_none(), "{w:?}");
+        assert!(std::sync::Arc::ptr_eq(&first, &second), "neither schema nor TTL keys the pool");
+
+        let (third, w) =
+            PgPool::for_url(&format!("postgres://u@{host}/db?pool=9&pool_idle_secs=30&schema=c"))
+                .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &third));
+        assert_eq!(third.idle_ttl, None, "the first open set the TTL");
+        let w = w.unwrap();
+        assert!(w.contains("sized at 4"), "{w}");
+        assert!(w.contains("after never"), "{w}");
+    }
+
+    /// The #229 lifecycle, minus the connections: a pool nothing holds, with
+    /// nothing idle in it, does not outlive the sweep.
+    #[test]
+    fn a_pool_that_holds_nothing_and_that_nothing_holds_is_evicted() {
+        let host = "pool-evict.invalid";
+        let (p, _) =
+            PgPool::for_url(&format!("postgres://u@{host}/db?pool=2&pool_idle_secs=1")).unwrap();
+        assert!(registry().pools.keys().any(|k| k.contains(host)));
+        drop(p);
+        sweep();
+        assert!(
+            !registry().pools.keys().any(|k| k.contains(host)),
+            "an unreferenced, empty pool must not survive a sweep"
+        );
     }
 
     #[test]

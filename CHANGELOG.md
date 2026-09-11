@@ -8,6 +8,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Idle Postgres connections are reaped, and a quiet pool is evicted**
+  (#229). `?pool=` bounds one pool, and the pool is keyed by the DSN — so a
+  host that gives every tenant its own Postgres role has one pool per tenant,
+  and nothing ever released one: a long-lived worker's connection count grew
+  with the number of distinct roles it had *ever touched*, not with how many
+  were in use, and only a restart brought it down. Now a connection idle past
+  `?pool_idle_secs=T` (default 300 s, `$AREEV_PG_POOL_IDLE_SECS` out of band,
+  the DSN winning, `0` to keep the previous never-reap behaviour) is closed by
+  one process-wide reaper thread, and a pool whose connections have all gone —
+  with no handle and no statement holding it — is dropped from the registry,
+  releasing its runtime's worker threads too. An idle memory now genuinely
+  holds nothing; reopening one whose pool was reaped costs one dial and emits
+  no warning. `?pool=` semantics are unchanged, and the parameter is stripped
+  before the DSN reaches the driver like every other store parameter. Proven
+  by a new case in `tests/pg_pool.rs` — eight memories on eight DSNs (the
+  shape eight roles would have) holding eight connections after every handle
+  is dropped, then zero, with all eight pools gone — and by the whole Pg
+  conformance suite, chaos hook included, running with a one-second TTL.
+  `docs/deployment-profile.md` now states the retained-connection model a
+  capacity plan needs.
+
 - **A blessed `rest.poll`: a paginated REST connector is a declaration, not a
   crate** (#231). `mailbox.poll` said a production connector "differs in one
   line" — true for one provider, five Rust crates for five, each carrying the
@@ -33,6 +54,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the trigger is the instance. Either alone behaves exactly as before.
 
 ### Fixed
+
+- **A run started where it cannot see the plan's Definitions refuses instead
+  of substituting** (#230). A node that names its tool rather than binding it
+  resolves through the RUN's namespace, so a plan started somewhere other
+  than where its tools were authored found an empty catalogue — and, with a
+  model configured, quietly became an abstract node: the Definition's
+  `executor_uri`, runtime and capabilities dropped, a model answering
+  instead, and the run reporting Completed having called nothing. Resolution
+  now asks one more question before falling through: if the plan grain lives
+  in another namespace and a Definition of that name is there, the run is
+  refused at start (`RUN-E004`, before the lease), naming the node, the
+  namespace searched and the one that would have worked. A node that names
+  no Definition anywhere is still abstract, and a bound node still resolves
+  from any namespace.
+- **`run inspect` reports the resolution it froze, not a summary of it**
+  (#230). A bound capability tool printed as a bare `"executor": "host"` —
+  byte-identical to a node with no Definition at all — so a correct run and
+  a broken one were indistinguishable in the one command you would run to
+  tell them apart. Each `pinned[]` row now also carries `executor_uri`,
+  `runtime` and the `capabilities` declaration when the Definition named
+  code.
+- **`areev run start` notes a plan/run namespace mismatch** (#230). Running
+  a plan from another namespace is supported and sometimes intended, but it
+  is also what a forgotten `--ns` looks like — the run works and its record
+  lands where nobody is looking. One line on stderr, naming the flag that
+  would move it.
 
 - **A connector that reports an error no longer reads as an empty page**
   (#231). `PollResponse` tolerates unknown fields, so `{"error": "…"}` — the
