@@ -144,6 +144,12 @@ impl RunManifest {
         llm_available: bool,
         llm_max_tokens: Option<u32>,
     ) -> std::result::Result<RunManifest, RunError> {
+        // Where the plan itself lives. Read once, used only when a node fails
+        // to resolve: a plan run in a namespace that is not its own is the
+        // misroute #230 reported, and the plan grain is the one thing that
+        // knows where its Definitions were authored.
+        let plan_ns =
+            m.get(plan_hash).ok().and_then(|g| g.get_str("namespace").map(str::to_string));
         let mut pinned = Vec::with_capacity(plan.nodes.len());
         for (i, node) in plan.nodes.iter().enumerate() {
             let resolved = match &plan.bindings[i] {
@@ -177,6 +183,28 @@ impl RunManifest {
                     // tool-calling seam configured.
                     match find_definition_by_name(m, ns, node) {
                         Some((h, g)) => pin_from_definition(node, &h, &g)?,
+                        // The misroute FIRST, before either fallback (#230).
+                        // A node whose name matches a real Definition sitting
+                        // in the plan's own namespace is a run started in the
+                        // wrong place, not an instruction for a model: its
+                        // `executor_uri`, runtime and capabilities would all
+                        // be silently dropped, and with an LLM configured the
+                        // node would quietly become an abstract one and the
+                        // run would report Completed having called nothing.
+                        // Costs one extra catalogue scan, and only on a miss.
+                        None if misrouted(m, ns, plan_ns.as_deref(), node) => {
+                            let pns = plan_ns.as_deref().unwrap_or_default();
+                            return Err(RunError::UnresolvedRef {
+                                what: format!(
+                                    "node '{node}' has no binding, and namespace '{ns}' — where \
+                                     this run reads and journals — holds no Tool Definition \
+                                     named '{node}'. The plan grain itself lives in namespace \
+                                     '{pns}', which does. Start the run there (`--ns {pns}`), \
+                                     or bind the node to a Definition by hash so it resolves \
+                                     from any namespace"
+                                ),
+                            });
+                        }
                         None if llm_available => PinnedTool {
                             node: node.clone(),
                             tool_hash: String::new(),
@@ -541,6 +569,25 @@ fn find_definition_by_name(
     let g = candidates.remove(&hex)?;
     let h = Hash::from_hex(&hex).ok()?;
     Some((h, g))
+}
+
+/// Is this unresolved node a MISROUTED run rather than an abstract one
+/// (#230)? True when the plan grain lives in another namespace and a Tool
+/// Definition named `node` is there — the run was started somewhere the
+/// plan's own tools cannot be seen.
+///
+/// Deliberately narrow: it asks the plan's namespace and no other. A sweep
+/// over every namespace in the memory would be both unbounded (journal Tool
+/// grains crowd the catalogue) and less certain — the plan grain is the one
+/// place that records where its nodes were authored to resolve. A run whose
+/// namespace IS the plan's, or whose plan names a namespace with no such
+/// Definition, falls through to the existing verdicts unchanged: abstract
+/// with a model configured, `RUN-E006` without.
+fn misrouted(m: &mut Areev, ns: &str, plan_ns: Option<&str>, node: &str) -> bool {
+    match plan_ns {
+        Some(p) if p != ns => find_definition_by_name(m, p, node).is_some(),
+        _ => false,
+    }
 }
 
 /// The nodes of `plan_hash` that would resolve as **abstract** — no binding
