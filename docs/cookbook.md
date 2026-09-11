@@ -1524,7 +1524,11 @@ The third DSN parameter is `pool=P`: how many connections this *process*
 may hold to that server and role, shared by every memory it opens (default
 8; `$AREEV_PG_POOL` when the DSN is not yours to edit). A memory handle
 holds none while idle, so open as many as you like and size the pool for
-the transactions that run at once
+the transactions that run at once. The fourth is `pool_idle_secs=T`
+(default 300; `$AREEV_PG_POOL_IDLE_SECS`): a connection idle that long is
+closed, and a pool nothing is using goes with it — so a process that has
+gone quiet holds nothing, not one connection per role it has ever opened.
+`pool_idle_secs=0` keeps them for the life of the process
 ([deployment-profile.md](deployment-profile.md)).
 
 That is the upgrade contract too: after a build whose schema changed, the

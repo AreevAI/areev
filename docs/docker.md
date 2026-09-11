@@ -145,7 +145,9 @@ agent; memories separate *between* agents. Concretely:
   reviewer can run on one host without the host becoming the trust boundary.
 - **Budget the connections** on a shared Postgres: a process holds at most
   `?pool=` connections per DSN (default 8, `$AREEV_PG_POOL` out of band)
-  however many memories it opens, and first open of a new schema runs the
+  however many memories it opens — per DSN, so count roles rather than
+  memories if each tenant has its own — and gives them back after
+  `?pool_idle_secs=` (default 300). First open of a new schema runs the
   DDL bootstrap — provision schemas when the agent is created, not on its
   first turn ([deployment-profile.md](deployment-profile.md)).
 

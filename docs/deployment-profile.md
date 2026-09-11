@@ -126,6 +126,39 @@ The old advice — cache handles in an LRU and close idle ones — is
 withdrawn: handles are cheap to hold open now, since holding one costs no
 connection.
 
+**What a process actually holds, for a capacity plan.** A pool is keyed by
+the DSN, so the unit that multiplies is not the memory but the *pool*:
+
+> connections held ≈ distinct DSNs opened × that pool's peak concurrency,
+> until reaped.
+
+"Distinct DSNs" means distinct server, role and TLS setting — every memory on
+one role shares one pool and `?pool=P` caps it, which is the shape #181 was
+designed for. **Give every tenant its own role and the multiplier is the
+tenant count**: 500 tenants on one worker are 500 pools, and `?pool=` bounds
+each of them separately, not their sum. That is the topology to size for if
+you use one.
+
+**Idle connections are reaped: `?pool_idle_secs=T` (default 300).** A
+connection that has sat idle for T seconds is closed, and a pool whose
+connections have all gone — with no handle and no statement holding it — is
+dropped entirely, releasing its runtime's worker threads too (#229). So an
+idle memory holds no connection *and* an idle process trends to zero, rather
+than to one connection per role it has ever touched. One reaper thread per
+process does this, looking every half-T (at most every 30 s), so a connection
+outlives its TTL by at most that. Set T on the DSN or out of band with
+`$AREEV_PG_POOL_IDLE_SECS`, the DSN winning, on the same first-open-wins
+terms as `?pool=`; `pool_idle_secs=0` never reaps, which is what every build
+through 1.8.0 did. Reopening a memory whose pool was reaped costs one dial and
+nothing else — no warning, no bootstrap (the schema is stamped), no
+reconfiguration.
+
+Two sizing consequences. A short T on a busy process is a re-dial tax, not a
+saving — the connections it closes are about to be wanted again; T is there
+to bound what an *idle* process holds. And a long T is how you keep a
+latency-sensitive path warm: nothing is reaped while work keeps arriving, so
+steady-state traffic never pays for a dial.
+
 **A pooler may run in transaction mode, on one condition and with one
 caveat.** The store keeps nothing it needs on the session: every statement
 names its tables schema-qualified (`"tenant_7".grains`, never `grains`
