@@ -275,6 +275,15 @@ tool does, so the two must not diverge.
   "config": { "int:cursor_field": "since" } }
 ```
 
+**`config` comes from two places, and they mean different things** (#231). The Definition's `config` is the connector's **wiring** — for a generic
+blob like [`rest.poll`](blessed-tools.md), which field holds the items, which
+pointer is the cursor — and it sits beside the `capabilities` block it has to
+agree with, travels with the code, and is what a `code_revision` reviews. The
+trigger's `config` is the **instance**: which mailbox, which query, which
+cadence. They are merged shallowly with the trigger winning, so two
+declarations can share one Definition; either alone passes through untouched,
+so a connector written before this saw exactly what it sees now.
+
 **stdout**
 
 ```json
@@ -291,6 +300,13 @@ tool does, so the two must not diverge.
   released, `next_due_at` is pushed out by an exponential backoff floored at the
   declared interval, and the failure is visible in `trigger status`. A broken
   connector backs off; it never hot-loops.
+- **So is `{"error": "…"}`** (#231). That is the shape every blessed blob
+  fails in, and the response type tolerates unknown fields — so an upstream
+  that was DOWN used to deserialize into an empty page with no cursor and read
+  as a source with nothing new, on every tick, silently. A poll that answered
+  an error failed: the cursor stays, the backoff applies, and the code it
+  carried (`RUN-E022` for a refused destination) is in the message. Report an
+  error or a page, never both.
 
 ### Blobs: attachments without inlining (1.5.1, #93)
 

@@ -2053,9 +2053,10 @@ a destination — every grain is built and addressed with no store at all, since
 content addressing is a pure function of the serialized grain — so a CI check
 and a deployment cannot disagree about what a pack contains.
 
-**Three blessed `wasm32-areev-io` blobs ship in the repository** (`http.call`,
-`mcp.call`, `a2a.call`, #179), content-addressed, with their addresses
-published in `areev-tools/dist/blessed.json`. The point is not convenience: a
+**Blessed `wasm32-areev-io` blobs ship in the repository** (`http.call`,
+`mcp.call`, `a2a.call`, #179; `rest.poll`, #231; plus `mailbox.poll`, the
+keyless connector example), content-addressed, with their addresses published
+in `areev-tools/dist/blessed.json`. The point is not convenience: a
 tool gateway that decides *where a request may go* is code that everyone
 installing it has to trust, and `http.call` makes no such decision — it hands
 the request to the broker and the answer back, verbatim, both ways. Where it
@@ -2065,6 +2066,19 @@ tool, auditable without reading any code. The gateway becomes configuration.
 Two Definitions may name the same blob with different declarations, which is
 the shape a fleet wants — one address to pin, one blob to review, a per-service
 policy the memory states out loud.
+
+`rest.poll` (#231) extends the same argument from one request to a *poll*, and
+it is the one place the tier carries opinions on purpose. A paginated connector
+is one request plus three decisions — where the items are, where the cursor is,
+how the next page is asked for — and those decisions are what differ per
+provider and what implementers get wrong. Written as code they are five crates
+the loop cannot see; written as JSON pointers in the Definition's `config` they
+are data a reviewer reads, a `code_revision` can propose against, and a bundle
+carries. The four cursor rules (absent means leave it, advance on everything
+looked at, the first poll seeds, a page token rides in the cursor) live in one
+reviewed blob instead of once per provider. A Definition's `config` is the
+connector's wiring and the trigger's is the instance; they merge with the
+trigger winning.
 
 They are `no_std`, dependency-free and small (`http.call` is 2.6 KB) because a
 blessed blob is reviewed as bytes; their JSON handling is a *slicer* that

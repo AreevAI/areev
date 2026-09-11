@@ -18,6 +18,9 @@
 //!     byte;
 //!   * `mailbox.poll` (the trigger-connector example, #185) reads a filed feed
 //!     by content address and pages it with a cursor;
+//!   * `rest.poll` (#231) maps a paginated REST source with JSON pointers out
+//!     of the Definition's `config` — so the four cursor rules live in one
+//!     reviewed blob instead of one crate per provider;
 //!   * and the import gate holds for all of them: a blob that declared no
 //!     network does not get `areev::fetch` linked, and one that declared no
 //!     blob read does not get `areev::blob_get`.
@@ -122,7 +125,7 @@ fn every_published_address_is_the_address_of_the_file() {
     use sha2_lite::sha256_hex;
     let m = manifest();
     let tools = m["tools"].as_object().expect("tools");
-    assert_eq!(tools.len(), 4, "one entry per shipped blob: {:?}", tools.keys());
+    assert_eq!(tools.len(), 5, "one entry per shipped blob: {:?}", tools.keys());
     for (name, meta) in tools {
         let bytes = blob(name);
         let hex = sha256_hex(&bytes);
@@ -355,13 +358,261 @@ fn mailbox_poll_refuses_a_declaration_that_names_no_feed() {
     );
 }
 
+// ── rest.poll (#231) ───────────────────────────────────────────────────
+//
+// One blob, five providers. Everything provider-shaped is a pointer in the
+// Definition's `config`, so these tests are the readable form of what a
+// reviewer would otherwise have to read five crates to check.
+
+/// The Gmail-shaped declaration from the issue, minus the credential (the
+/// broker holds those; the tool only ever names one).
+fn gmail_config() -> Value {
+    json!({
+        "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+        "query": { "q": "newer_than:1d" },
+        "credential": "gmail",
+        "page_size": "maxResults",
+        "items": "/messages",
+        "id": "/id",
+        "order": "newest_first",
+        "next_page": { "token_at": "/nextPageToken", "as_query": "pageToken" }
+    })
+}
+
+fn poll_request(config: Value, cursor: Option<&str>) -> Value {
+    let mut req = json!({ "trigger": "t", "connector": "gmail", "max_items": 2, "config": config });
+    if let Some(c) = cursor {
+        req["cursor"] = json!(c);
+    }
+    req
+}
+
+#[test]
+fn rest_poll_maps_a_response_with_pointers_from_the_definition() {
+    let (out, seen) = call(
+        "rest.poll",
+        poll_request(gmail_config(), None),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[{\"id\":\"m-3\",\"snippet\":\"newest\"},{\"id\":\"m-2\"}]}"}"#,
+    );
+    let req: Value = serde_json::from_str(&seen.body).unwrap();
+    let url = req["url"].as_str().unwrap();
+    assert!(url.starts_with("https://gmail.googleapis.com/gmail/v1/users/me/messages?"), "{url}");
+    assert!(url.contains("q=newer_than%3A1d"), "a static query parameter, encoded: {url}");
+    assert!(
+        url.contains("maxResults=2"),
+        "max_items is asked of the SOURCE as a page size, never used to slice a page here: {url}"
+    );
+    assert_eq!(req["method"], "GET");
+    assert_eq!(req["credential"], "gmail", "the tool names a credential and never holds one");
+
+    assert_eq!(out["items"].as_array().unwrap().len(), 2);
+    assert_eq!(out["items"][0]["id"], "m-3");
+    assert_eq!(
+        out["items"][0]["payload"]["snippet"], "newest",
+        "the source's own object becomes the payload, sliced rather than re-encoded"
+    );
+    assert_eq!(
+        out["cursor"], "m-3",
+        "newest_first: the watermark is the newest end of the page, not its last element"
+    );
+    assert!(out.get("more").is_none(), "no page token, nothing in flight: {out}");
+}
+
+#[test]
+fn rest_poll_carries_a_page_token_in_the_cursor_and_then_settles() {
+    // Rule 4: a page token means "come back immediately". The cursor is the
+    // only state a connector has between invocations, so the token rides in it.
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some("m-0")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[{\"id\":\"m-9\"}],\"nextPageToken\":\"CAUQAA\"}"}"#,
+    );
+    assert_eq!(out["more"], true, "there is a backlog: {out}");
+    let carried: Value = serde_json::from_str(out["cursor"].as_str().unwrap()).unwrap();
+    assert_eq!(carried["w"], "m-9", "the watermark this drain decided");
+    assert_eq!(carried["p"], "CAUQAA", "and the page to ask for next");
+
+    // Feed it back: the token becomes a query parameter, the watermark is held
+    // (newest_first — later pages are OLDER and must not move it backwards),
+    // and with no token in the reply the cursor collapses to the bare form.
+    let (out, seen) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some(out["cursor"].as_str().unwrap())),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[{\"id\":\"m-8\"}]}"}"#,
+    );
+    let req: Value = serde_json::from_str(&seen.body).unwrap();
+    assert!(req["url"].as_str().unwrap().contains("pageToken=CAUQAA"), "{}", req["url"]);
+    assert_eq!(out["items"][0]["id"], "m-8", "the older page still delivers its items");
+    assert_eq!(out["cursor"], "m-9", "and the watermark did not walk backwards into it");
+    assert!(out.get("more").is_none(), "drained: {out}");
+}
+
+#[test]
+fn rest_poll_advances_over_an_oldest_first_page() {
+    // The other ordering, and the other carry rule: each page's last item is
+    // the newest thing looked at, so the watermark moves with every page and a
+    // crash mid-drain resumes from the last page actually delivered.
+    let config = json!({
+        "url": "https://api.example.com/events",
+        "items": "/data",
+        "id": "/event_id",
+        "cursor_param": "after"
+    });
+    let (out, seen) = call(
+        "rest.poll",
+        poll_request(config, Some("e-1")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"data\":[{\"event_id\":\"e-2\"},{\"event_id\":\"e-3\"}]}"}"#,
+    );
+    let req: Value = serde_json::from_str(&seen.body).unwrap();
+    assert!(req["url"].as_str().unwrap().contains("after=e-1"), "the stored watermark is sent back");
+    assert_eq!(out["cursor"], "e-3", "oldest_first: the last item looked at");
+}
+
+#[test]
+fn rest_poll_takes_the_watermark_from_a_pointer_when_the_source_publishes_one() {
+    // A server-side watermark (historyId, deltaLink) is always better than an
+    // item id, and `cursor_from` is how a declaration says so. `-` is the last
+    // element of an array along the way.
+    let config = json!({
+        "url": "https://api.example.com/sync",
+        "items": "/changes",
+        "id": "/id",
+        "cursor_from": "/changes/-/seq"
+    });
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(config, Some("7")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"changes\":[{\"id\":\"c-8\",\"seq\":8},{\"id\":\"c-9\",\"seq\":9}]}"}"#,
+    );
+    assert_eq!(out["cursor"], "9", "a number is a perfectly good watermark");
+}
+
+#[test]
+fn rest_poll_leaves_the_cursor_alone_on_an_empty_page() {
+    // Rule 1. Absent is "leave it where it is"; `null` would rewind the source,
+    // which for a mailbox means re-processing everything.
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some("m-9")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[]}"}"#,
+    );
+    assert_eq!(out["items"].as_array().unwrap().len(), 0);
+    assert!(out.get("cursor").is_none(), "no cursor key at all: {out}");
+    assert!(out.get("more").is_none());
+}
+
+#[test]
+fn rest_poll_ends_a_drain_that_finished_on_an_empty_page() {
+    // The one case where restating an unchanged watermark is doing something:
+    // the stored cursor still carries an exhausted page token, and leaving it
+    // alone would re-ask for that same page on every tick, forever.
+    let carried = r#"{"w":"m-9","p":"CAUQAA"}"#;
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some(carried)),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[]}"}"#,
+    );
+    assert_eq!(out["cursor"], "m-9", "the token is dropped and the watermark kept: {out}");
+    assert!(out.get("more").is_none());
+}
+
+#[test]
+fn rest_poll_reports_an_upstream_failure_instead_of_an_empty_page() {
+    // The failure this whole tier exists to make loud: a poll that answered
+    // nothing must not look like a healthy source with nothing new.
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some("m-9")),
+        io(),
+        200,
+        r#"{"status":503,"body":"upstream is down"}"#,
+    );
+    let err = out["error"].as_str().unwrap_or_default();
+    assert!(err.contains("503"), "got {out}");
+    assert!(out.get("items").is_none(), "an error is not a page: {out}");
+}
+
+#[test]
+fn rest_poll_forwards_a_broker_refusal_with_its_code() {
+    // Reach is the declaration's business, not this blob's: a URL outside the
+    // capabilities block is refused by the broker, and the refusal arrives
+    // unchanged so an operator can look the code up.
+    let (out, _) = call(
+        "rest.poll",
+        poll_request(gmail_config(), None),
+        io(),
+        403,
+        r#"{"error":"caller 'gmail' may not reach gmail.googleapis.com","code":"RUN-E022"}"#,
+    );
+    assert_eq!(out["code"], "RUN-E022", "{out}");
+}
+
+#[test]
+fn rest_poll_refuses_a_declaration_that_names_no_url() {
+    let out = run(&blob("rest.poll"), &json!({ "trigger": "t", "config": {} }), &io()).unwrap();
+    assert_eq!(out.fetches, 0, "nothing was sent: {}", out.output);
+    assert!(out.output["error"].as_str().unwrap_or_default().contains("url"), "{}", out.output);
+}
+
+#[test]
+fn two_definitions_naming_one_blob_poll_two_apis() {
+    // The point of the whole exercise: no per-provider code. Two `config`
+    // blocks, one address, two different APIs read correctly.
+    let (gmail, gmail_seen) = call(
+        "rest.poll",
+        poll_request(gmail_config(), Some("m-1")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"messages\":[{\"id\":\"m-2\"}]}"}"#,
+    );
+    let xero = json!({
+        "url": "https://api.xero.com/api.xro/2.0/Invoices",
+        "headers": { "Accept": "application/json" },
+        "credential": "xero",
+        "items": "/Invoices",
+        "id": "/InvoiceID",
+        "cursor_param": "If-Modified-Since"
+    });
+    let (xero_out, xero_seen) = call(
+        "rest.poll",
+        poll_request(xero, Some("2026-09-01")),
+        io(),
+        200,
+        r#"{"status":200,"body":"{\"Invoices\":[{\"InvoiceID\":\"INV-88\",\"Total\":1240}]}"}"#,
+    );
+
+    let g: Value = serde_json::from_str(&gmail_seen.body).unwrap();
+    let x: Value = serde_json::from_str(&xero_seen.body).unwrap();
+    assert!(g["url"].as_str().unwrap().starts_with("https://gmail.googleapis.com/"));
+    assert!(x["url"].as_str().unwrap().starts_with("https://api.xero.com/"));
+    assert_eq!(x["headers"]["Accept"], "application/json");
+    assert_eq!(gmail["items"][0]["id"], "m-2");
+    assert_eq!(xero_out["items"][0]["id"], "INV-88");
+    assert_eq!(xero_out["items"][0]["payload"]["Total"], 1240);
+    assert_eq!(xero_out["cursor"], "INV-88");
+}
+
 #[test]
 fn the_import_gate_holds_for_every_shipped_blob() {
     // The declaration decides which imports exist. A network tool on a host
     // that linked no `fetch` is refused BY NAME before one instruction — and a
     // blob reader is refused the same way, even on a host that allowed fetch,
     // because the two gates are independent.
-    for name in ["http.call", "mcp.call", "a2a.call"] {
+    for name in ["http.call", "mcp.call", "a2a.call", "rest.poll"] {
         match run(&blob(name), &Value::Null, &Limits::default()).unwrap_err() {
             SandboxError::ForbiddenImport { module, name: import } => {
                 assert_eq!((module.as_str(), import.as_str()), ("areev", "fetch"), "{name}");

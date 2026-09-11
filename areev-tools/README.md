@@ -16,7 +16,15 @@ addresses `dist/blessed.json` records and
 | `mcp-call` | `mcp.call` | JSON-RPC `tools/call` around the caller's `arguments`, `result` unwrapped |
 | `a2a-call` | `a2a.call` | JSON-RPC `message/send` around a message or a line of text |
 | `mailbox-poll` | `mailbox.poll` | the trigger-connector example: reads a filed feed by content address |
+| `rest-poll` | `rest.poll` | polls a paginated REST source; the Definition's `config` maps items, id, cursor and pages |
 | `common` | — | the guest ABI (allocator, panic handler, the three imports) and a JSON **slicer** |
+
+`rest-poll` carries its own JSON-pointer slicer rather than adding one to
+`common`, and the reason is the tier's own rule: a blessed blob's identity is
+its content address, and adding even an unused function to the shared crate
+changes the bytes of every blob built from it — which would re-point every pack
+that pinned one. Moving a helper into `common` is a deliberate re-blessing of
+all of them, not a refactor.
 
 ## Why `no_std` and hand-rolled JSON
 

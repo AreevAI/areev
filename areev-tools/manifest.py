@@ -45,6 +45,12 @@ TOOLS = {
         {"areev::emit", "areev::blob_get"},
         "The example trigger connector: reads a filed feed by content address (#185).",
     ),
+    "rest.poll": (
+        "areev_tool_rest_poll.wasm",
+        "wasm32-areev-io",
+        {"areev::emit", "areev::fetch"},
+        "Poll a paginated REST source: the Definition's config maps items, id, cursor and pages (#231).",
+    ),
 }
 
 # The sandbox's default ceiling (areev-sandbox `DEFAULT_MAX_PAGES`).

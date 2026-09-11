@@ -299,6 +299,41 @@ struct PreparedConnector {
     /// True when the pinned declaration asks to read CAS blobs, which is what
     /// decides whether the per-poll broker serves them.
     wants_blobs: bool,
+    /// The Definition's `config` (#231) — the connector's WIRING, as opposed
+    /// to the trigger's `config`, which is the instance. A generic blob like
+    /// `rest.poll` is made provider-specific here, beside the `capabilities`
+    /// block it has to agree with, and travels with the code rather than
+    /// with each declaration that names it.
+    config: Option<serde_json::Value>,
+}
+
+/// The `config` a connector is handed: the Definition's wiring with the
+/// trigger's own keys laid over it.
+///
+/// Shallow, and the trigger wins — the more specific instance specializes the
+/// shared declaration, which is what lets two mailboxes share one Definition.
+/// Either side alone passes through untouched, so a connector that predates
+/// Definition config sees exactly what it saw before.
+fn merged_config(
+    definition: Option<&serde_json::Value>,
+    trigger: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match (definition, trigger) {
+        (None, t) => t.cloned(),
+        (Some(d), None) => Some(d.clone()),
+        (Some(d), Some(t)) => match (d.as_object(), t.as_object()) {
+            (Some(d), Some(t)) => {
+                let mut out = d.clone();
+                for (k, v) in t {
+                    out.insert(k.clone(), v.clone());
+                }
+                Some(serde_json::Value::Object(out))
+            }
+            // Neither is an object: nothing to merge key-wise, and the
+            // instance is the more specific statement.
+            _ => Some(t.clone()),
+        },
+    }
 }
 
 /// `cas://sha256:<hex>` and a bare `<hex>` are the same pin, compared the way
@@ -1283,6 +1318,7 @@ impl Evaluator {
             .as_ref()
             .and_then(|v| areev_run::Declaration::parse(v).ok())
             .is_some_and(|d| d.declares_blob_read());
+        let config = g.fields.get("config").filter(|v| !v.is_null()).cloned();
         Ok(Some(PreparedConnector {
             tool_hash: h.to_hex(),
             code: areev_run::PreparedCode {
@@ -1293,6 +1329,7 @@ impl Evaluator {
                 capabilities: pin.capabilities,
             },
             wants_blobs,
+            config,
         }))
     }
 
@@ -1397,13 +1434,17 @@ impl Evaluator {
             broker.serve_blobs(locator);
         }
 
+        let config = merged_config(
+            prepared.as_ref().and_then(|p| p.config.as_ref()),
+            trigger.config.as_ref(),
+        );
         let request = PollRequest {
             trigger: hash,
             connector: connector_name,
             scope: trigger.scope.as_deref(),
             cursor: state.cursor.as_deref(),
             max_items: opts.max_items,
-            config: trigger.config.as_ref(),
+            config: config.as_ref(),
         };
         let payload = serde_json::to_value(&request).map_err(|e| TriggerError::ConnectorFailed {
             trigger: hash.to_string(),
@@ -1472,6 +1513,26 @@ impl Evaluator {
         }
         match result {
             areev_run::ExecResult::Ok(v) => {
+                // `{"error": …}` is the shape every blessed blob fails in, and
+                // `PollResponse` would deserialize it into an empty page with
+                // no cursor — a source that is down, reported as a source with
+                // nothing new, on every tick, silently. A poll that answered an
+                // error FAILED: the claim is released, the cursor stays, and
+                // the backoff applies (#231).
+                if let Some(detail) = v
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .map(str::trim)
+                    .filter(|e| !e.is_empty())
+                {
+                    let code = v.get("code").and_then(|c| c.as_str()).unwrap_or_default();
+                    let named =
+                        if code.is_empty() { String::new() } else { format!(" [{code}]") };
+                    return Err(TriggerError::ConnectorFailed {
+                        trigger: hash.to_string(),
+                        detail: format!("the connector reported an error{named}: {detail}"),
+                    });
+                }
                 serde_json::from_value(v).map_err(|e| TriggerError::ConnectorFailed {
                     trigger: hash.to_string(),
                     detail: format!("response is not a poll response: {e}"),

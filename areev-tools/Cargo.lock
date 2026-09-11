@@ -33,3 +33,10 @@ version = "0.0.0"
 dependencies = [
  "areev-tool-common",
 ]
+
+[[package]]
+name = "areev-tool-rest-poll"
+version = "0.0.0"
+dependencies = [
+ "areev-tool-common",
+]

@@ -29,6 +29,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/deployment-profile.md` now states the retained-connection model a
   capacity plan needs.
 
+- **A blessed `rest.poll`: a paginated REST connector is a declaration, not a
+  crate** (#231). `mailbox.poll` said a production connector "differs in one
+  line" — true for one provider, five Rust crates for five, each carrying the
+  same three decisions in code: where the items are, where the cursor is, how
+  the next page is asked for. Those are the parts most likely to be wrong, and
+  in code they are invisible to the pack, to `areev tool provenance` and to the
+  loop's `code_revision` gate. `rest.poll` takes them as JSON pointers in the
+  Definition's `config` (`items`, `id`, `cursor_from`, `next_page`, plus
+  `query`/`headers`/`credential`/`page_size`/`cursor_param`/`order`), so two
+  Definitions naming one blob poll two different APIs. Pointers are RFC 6901
+  with one extension — `-` selects an array's last element, which is what makes
+  `/messages/-/id` writable. The four cursor rules connector authors get wrong
+  live in it once: an absent cursor leaves the stored one alone, the watermark
+  advances over everything looked at (`max_items` is asked of the SOURCE as a
+  page size, never used to slice a page afterwards), the first poll seeds, and
+  a page token rides in the cursor so `more: true` drains without hammering.
+  Reach is unchanged — the `capabilities` block still bounds it and the broker
+  still refuses what it does not admit. `mailbox.poll` is untouched and remains
+  the keyless, network-free floor; the other four addresses are unchanged.
+- **A Tool Definition's `config` reaches the connector it names** (#231),
+  merged under the trigger's own config (the trigger wins). The Definition is
+  the connector's wiring, beside the `capabilities` block it must agree with;
+  the trigger is the instance. Either alone behaves exactly as before.
+
 ### Fixed
 
 - **A run started where it cannot see the plan's Definitions refuses instead
@@ -56,6 +80,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is also what a forgotten `--ns` looks like — the run works and its record
   lands where nobody is looking. One line on stderr, naming the flag that
   would move it.
+
+- **A connector that reports an error no longer reads as an empty page**
+  (#231). `PollResponse` tolerates unknown fields, so `{"error": "…"}` — the
+  shape every blessed blob fails in — deserialized into an empty page with no
+  cursor: a source that was DOWN, reported as a source with nothing new, on
+  every tick, silently. A poll that answers an error now fails (`TRG-E004`):
+  the claim is released, the cursor stays put, the backoff applies, and the
+  code it carried is in the message.
 
 ## [1.8.0] — 2026-09-11
 
