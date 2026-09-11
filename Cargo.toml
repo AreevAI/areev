@@ -12,7 +12,7 @@ exclude = ["areev-sandbox", "areev-tools"]
 members = ["crates/areev-core", "crates/areev-store", "crates/areev-cal", "crates/areev-cli", "crates/areev-mcp", "crates/areev-context", "crates/areev-server", "crates/areev-py", "crates/areev-bench", "crates/areev-loop", "crates/areev-loop-adapter", "crates/areev-llm", "crates/areev-conformance", "crates/areev-run-core", "crates/areev-run", "crates/areev-trigger"]
 
 [workspace.package]
-version = "1.8.0"
+version = "1.8.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]

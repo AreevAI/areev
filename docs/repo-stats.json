@@ -1,17 +1,17 @@
 {
-  "version": "1.8.0",
+  "version": "1.8.1",
   "crates": 17,
   "rust": {
-    "files": 306,
-    "physical_lines": 201996,
-    "source_code": 95833,
-    "test_code": 57130,
-    "unit_test_code": 26807,
-    "integration_test_code": 30323,
+    "files": 307,
+    "physical_lines": 202873,
+    "source_code": 96047,
+    "test_code": 57498,
+    "unit_test_code": 26863,
+    "integration_test_code": 30635,
     "example_code": 669,
-    "test_functions": 2726,
+    "test_functions": 2737,
     "test_ratio": 0.6,
-    "test_share": 37.3
+    "test_share": 37.4
   },
   "per_crate": [
     {
@@ -25,10 +25,10 @@
     {
       "name": "areev-store",
       "files": 40,
-      "physical": 24218,
-      "source_code": 11158,
-      "test_code": 5796,
-      "tests": 292
+      "physical": 24503,
+      "source_code": 11285,
+      "test_code": 5852,
+      "tests": 295
     },
     {
       "name": "areev-core",
@@ -41,18 +41,18 @@
     {
       "name": "areev-cli",
       "files": 22,
-      "physical": 17792,
-      "source_code": 7394,
+      "physical": 17811,
+      "source_code": 7406,
       "test_code": 6704,
       "tests": 195
     },
     {
       "name": "areev-run",
-      "files": 22,
-      "physical": 17127,
-      "source_code": 6360,
-      "test_code": 6271,
-      "tests": 187
+      "files": 23,
+      "physical": 17400,
+      "source_code": 6395,
+      "test_code": 6415,
+      "tests": 191
     },
     {
       "name": "areev-loop",
@@ -73,10 +73,10 @@
     {
       "name": "areev-trigger",
       "files": 13,
-      "physical": 6430,
-      "source_code": 1969,
-      "test_code": 2521,
-      "tests": 128
+      "physical": 6637,
+      "source_code": 2009,
+      "test_code": 2631,
+      "tests": 131
     },
     {
       "name": "areev-context",
@@ -105,10 +105,10 @@
     {
       "name": "areev-conformance",
       "files": 21,
-      "physical": 3848,
+      "physical": 3941,
       "source_code": 1926,
-      "test_code": 925,
-      "tests": 21
+      "test_code": 983,
+      "tests": 22
     },
     {
       "name": "areev-js",
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 62,
-    "lines": 29783
+    "lines": 30133
   },
   "error_codes": 99,
   "bindings": {
