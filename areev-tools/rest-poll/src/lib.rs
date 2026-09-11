@@ -285,24 +285,24 @@ fn poll(input: &[u8]) -> String {
             json::escape_str_into(w, &mut out);
             out.push('"');
         }
-        // Nothing new on this page. Two different situations that must not be
-        // conflated:
-        (None, None) => match (&resume.page, &resume.watermark) {
-            // A drain that ended on an empty page. The stored cursor still
-            // carries the exhausted page token, so leaving it alone would
-            // re-ask for that same page forever. Write the watermark back
-            // WITHOUT the token — the only case where restating an unchanged
-            // watermark is doing something.
-            (Some(_), Some(w)) => {
+        // Nothing new on this page. Two situations that must not be conflated,
+        // and only one of them writes anything:
+        //
+        // * A drain that ended on an empty page — the stored cursor still
+        //   carries the exhausted page token, so leaving it alone would re-ask
+        //   for that same page forever. Write the watermark back WITHOUT the
+        //   token; the only case where restating an unchanged watermark is
+        //   doing something.
+        // * Otherwise rule 1: no cursor key at all, which is "leave it where it
+        //   is". `null` would rewind the source — for a mailbox, re-processing
+        //   everything it holds.
+        (None, None) => {
+            if let (Some(_), Some(w)) = (&resume.page, &resume.watermark) {
                 out.push_str(",\"cursor\":\"");
                 json::escape_str_into(w, &mut out);
                 out.push('"');
             }
-            // Rule 1: nothing found, nothing in flight. No cursor key at all —
-            // "leave it where it is". `null` would rewind the source, which for
-            // a mailbox means re-processing everything it holds.
-            _ => {}
-        },
+        }
     }
     out.push('}');
     out
