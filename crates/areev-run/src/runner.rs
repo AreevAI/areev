@@ -61,6 +61,10 @@ pub struct RunOptions {
     /// calls and re-prompts share the counter. Frozen into the manifest at
     /// start; None = [`areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT`].
     pub max_effects_per_attempt: Option<u32>,
+    /// Bound on ONE tool result's size in an abstract node's transcript, in
+    /// characters — the journal keeps every result in full. Frozen into the
+    /// manifest at start. None = unbounded.
+    pub llm_tool_result_chars: Option<usize>,
     /// Crash-injection for the §5.5 gates. `None` in production.
     pub inject_crash: Option<CrashPoint>,
 }
@@ -1262,6 +1266,7 @@ impl Runner {
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
+            llm_tool_result_chars: manifest.llm_tool_result_chars,
         };
         let run_id = st.run_id.clone();
 
@@ -2404,6 +2409,7 @@ impl Runner {
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
+            llm_tool_result_chars: manifest.llm_tool_result_chars,
         };
 
         let mut report = VerifyReport::default();

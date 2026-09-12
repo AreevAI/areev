@@ -88,6 +88,11 @@ pub struct StepEnv<'a> {
     /// manifest, so a resume bounds the loop exactly as the start did;
     /// [`DEFAULT_MAX_EFFECTS_PER_ATTEMPT`] when the manifest pins none.
     pub max_effects_per_attempt: u32,
+    /// Bound on ONE tool result's size in the TRANSCRIPT (characters — there
+    /// is no tokenizer here, and calling it tokens would be a lie). `None` =
+    /// unbounded, which is what every run did before the knob existed. The
+    /// journal is never bounded: see [`bound_tool_content`].
+    pub llm_tool_result_chars: Option<usize>,
 }
 
 /// One step's output.
@@ -240,7 +245,14 @@ fn resolve_effect(
             EffectKind::Tool
                 if st.abstract_flows[&flow].pending_tools.contains_key(&key.effect_seq) =>
             {
-                handle_flow_tool_outcome(st, node_idx, &key.task_path, key.effect_seq, outcome);
+                handle_flow_tool_outcome(
+                    env,
+                    st,
+                    node_idx,
+                    &key.task_path,
+                    key.effect_seq,
+                    outcome,
+                );
                 return;
             }
             _ => {}
@@ -642,29 +654,86 @@ fn handle_llm_outcome(
     }
 }
 
+/// Bound ONE tool result for the TRANSCRIPT. The journal is untouched: the
+/// driver wrote the full result grain before this event ever reached `step`,
+/// so what is dropped here is dropped from scheduler state only and stays
+/// addressable at `(run, task_path, node, attempt, effect_seq)` forever.
+///
+/// `cap` is in **characters**, and is named that because that is what it is.
+/// This crate holds no tokenizer, and a "token" bound implemented as
+/// `chars / 4` would be a guess wearing a precise name. It is also why this is
+/// a separate bound from the context ceiling, which uses the provider's own
+/// reported prompt tokens: one oversized entry is a different problem from a
+/// transcript that grew, and no fold can shrink a single entry.
+///
+/// Under the cap the value passes through **byte-identically**, so a run with
+/// no cap configured builds exactly the transcript it always did. Over it, the
+/// model sees the head, the tail, the true length, and where the whole thing
+/// lives. Pure and total: a function of the journaled outcome and the manifest,
+/// so replay rebuilds the same entry.
+pub fn bound_tool_content(
+    raw: &Value,
+    cap: Option<usize>,
+    attempt: u32,
+    effect_seq: u32,
+) -> Value {
+    let Some(cap) = cap else { return raw.clone() };
+    // A string result is measured as its text; anything else as the JSON the
+    // model would have been shown.
+    let text = match raw {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let total = text.chars().count();
+    if total <= cap {
+        return raw.clone();
+    }
+    let half = cap / 2;
+    serde_json::json!({
+        "truncated": true,
+        "chars": total,
+        "head": text.chars().take(half).collect::<String>(),
+        "tail": text.chars().skip(total - half).collect::<String>(),
+        "journal": { "attempt": attempt, "effect_seq": effect_seq },
+    })
+}
+
 /// A model-issued tool call resolved. Tool failures inside an abstract loop
 /// are MODEL-VISIBLE error results, never scheduler retries — the model
 /// decides what to do about its own tool's failure.
 fn handle_flow_tool_outcome(
+    env: &StepEnv<'_>,
     st: &mut SchedulerState,
     i: usize,
     path: &str,
     effect_seq: u32,
     outcome: &EffectOutcome,
 ) {
+    // Read before the flow is borrowed mutably — the attempt is what makes the
+    // truncation's journal pointer resolvable.
+    let attempt = flow_attempt(st, i, path);
+    let cap = env.llm_tool_result_chars;
     let Some(flow) = st.abstract_flows.get_mut(&flow_key(i, path)) else { return };
     let Some(call) = flow.pending_tools.remove(&effect_seq) else { return };
     let entry = match outcome {
         EffectOutcome::Completed { result, .. } => serde_json::json!({
             "role": "tool",
             "tool_call_id": call.model_call_id,
-            "content": result,
+            "content": bound_tool_content(result, cap, attempt, effect_seq),
             "is_error": false,
         }),
+        // Failure details are short by construction, but they carry a tool's
+        // stderr — so the same rule applies rather than one honest path and one
+        // hopeful one.
         EffectOutcome::Failed { cause, detail, .. } => serde_json::json!({
             "role": "tool",
             "tool_call_id": call.model_call_id,
-            "content": format!("{cause:?}: {detail}"),
+            "content": bound_tool_content(
+                &Value::String(format!("{cause:?}: {detail}")),
+                cap,
+                attempt,
+                effect_seq,
+            ),
             "is_error": true,
         }),
     };
@@ -1563,4 +1632,80 @@ fn stalled_culprit(env: &StepEnv<'_>, st: &SchedulerState) -> String {
 fn finish(st: &mut SchedulerState, out: &mut Vec<Command>, outcome: RunOutcome) {
     st.phase = Phase::Finished(outcome.clone());
     out.push(Command::Finish { outcome });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// No cap = the transcript entry every run before this knob built. Not
+    /// "close enough": byte-identical, so an unbounded run's checkpoints are
+    /// unchanged and its `verify` still passes.
+    #[test]
+    fn no_cap_passes_the_result_through_verbatim() {
+        let big = json!({"rows": vec!["x"; 5_000]});
+        assert_eq!(bound_tool_content(&big, None, 3, 7), big);
+    }
+
+    /// The boundary, from both sides. At exactly the cap nothing happens; one
+    /// character more and the entry becomes the bounded shape.
+    #[test]
+    fn the_cap_is_inclusive() {
+        let at = Value::String("a".repeat(64));
+        assert_eq!(bound_tool_content(&at, Some(64), 0, 0), at);
+
+        let over = Value::String("a".repeat(65));
+        let bounded = bound_tool_content(&over, Some(64), 3, 7);
+        assert_eq!(bounded["truncated"], true);
+        assert_eq!(bounded["chars"], 65, "the TRUE length, not the kept length");
+        assert_eq!(bounded["head"].as_str().unwrap().chars().count(), 32);
+        assert_eq!(bounded["tail"].as_str().unwrap().chars().count(), 32);
+        // Where the whole thing still is. A model told "truncated" with no
+        // pointer has learned nothing it can act on, and neither has a human
+        // reading the transcript back.
+        assert_eq!(bounded["journal"], json!({"attempt": 3, "effect_seq": 7}));
+    }
+
+    /// The cap counts CHARACTERS, which is what it is called. Slicing by bytes
+    /// here would both mis-measure a multibyte result and be able to cut a
+    /// UTF-8 sequence in half.
+    #[test]
+    fn a_multibyte_result_is_cut_on_character_boundaries() {
+        // 40 characters, 120 bytes: a byte cap of 20 would land mid-sequence.
+        let text: String = "日本語です".repeat(8);
+        assert_eq!(text.chars().count(), 40);
+        assert!(text.len() > 40, "the point of the case");
+
+        let bounded = bound_tool_content(&Value::String(text.clone()), Some(20), 1, 2);
+        assert_eq!(bounded["chars"], 40);
+        let head = bounded["head"].as_str().unwrap();
+        let tail = bounded["tail"].as_str().unwrap();
+        assert_eq!(head.chars().count(), 10);
+        assert_eq!(tail.chars().count(), 10);
+        assert!(text.starts_with(head), "the head is a real prefix");
+        assert!(text.ends_with(tail), "the tail is a real suffix");
+    }
+
+    /// A structured result is measured and shown as the JSON the model would
+    /// have been handed, not as Rust's `Debug` of it.
+    #[test]
+    fn a_json_result_is_bounded_as_its_serialized_form() {
+        let big = json!({"k": "v".repeat(200)});
+        let bounded = bound_tool_content(&big, Some(40), 0, 1);
+        assert_eq!(bounded["chars"], big.to_string().chars().count());
+        assert!(bounded["head"].as_str().unwrap().starts_with(r#"{"k":"#), "{bounded}");
+        assert!(bounded["tail"].as_str().unwrap().ends_with(r#""}"#), "{bounded}");
+    }
+
+    /// A degenerate cap must not panic or produce nonsense — it keeps nothing
+    /// and still says how much there was and where it is.
+    #[test]
+    fn a_cap_of_zero_keeps_nothing_and_still_points_at_the_journal() {
+        let bounded = bound_tool_content(&Value::String("abc".into()), Some(0), 9, 4);
+        assert_eq!(bounded["chars"], 3);
+        assert_eq!(bounded["head"], "");
+        assert_eq!(bounded["tail"], "");
+        assert_eq!(bounded["journal"]["effect_seq"], 4);
+    }
 }

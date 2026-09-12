@@ -161,6 +161,13 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+**What the journal keeps and what the model sees are not the same thing.** The
+result grain always carries your tool's full output, verbatim. When the tool was
+called *by a model* inside an abstract node, `--llm-tool-result-chars` bounds
+how much of it enters that node's transcript — the model may see a head, a tail
+and a pointer where a 40 KB log dump was. Write tools whose output a model can
+use, and reach for the journal (`areev run-trace`) when you want all of it.
+
 Every host-executed tool (`--tool-cmd` and a pinned `--allow-executor` blob
 alike) runs under a wall-clock ceiling, fixed at 300s until it could be
 raised (#133): a tool that never exits parks a pool worker and, at the next
@@ -1037,10 +1044,35 @@ follow, none of them visible from the flag names:
 So a transcript that outgrows the model's context window is **the provider's
 error and nothing more**: the runtime does not summarize, trim, or re-plan it.
 The rejection is terminal, so the node fails with the provider's message as its
-detail. Two shapes reach it. One oversized tool result — a file read, a log
-dump, a JSON dump — can exhaust the window inside a single round, because a
-tool result enters the transcript exactly as the tool returned it. Or an
-ordinary loop accumulates enough turns to grow past it under the effect cap.
+detail. Two shapes reach it, and only the first has a bound today.
+
+**One oversized tool result** — a file read, a log dump, a JSON dump — can
+exhaust the window inside a single round, because a tool result otherwise
+enters the transcript exactly as the tool returned it. No summary can shrink a
+single entry, so this needs its own bound:
+`--llm-tool-result-chars N` (`llm_tool_result_chars` on MCP, Python and Node;
+default: unbounded). Over the bound, the model is shown
+
+```json
+{"truncated": true, "chars": 41822, "head": "…first N/2…", "tail": "…last N/2…",
+ "journal": {"attempt": 1, "effect_seq": 3}}
+```
+
+— the true length, the two ends, and the journal coordinates of the whole
+thing. **The journal is never bounded**: the full result grain was written
+before the scheduler ever saw the outcome, so `run-trace` and a DSAR still
+show every byte and `verify` still replays byte-identically. The number is in
+**characters** because that is what it counts; there is no tokenizer in the
+runtime, and a "token" bound computed as `chars / 4` would be a guess wearing a
+precise name. The bound applies to a failed tool's detail too (it carries the
+tool's stderr), and is frozen in the manifest like every other run ceiling.
+
+It does **not** bound the state a node is handed. A reducer that accumulates a
+large value puts that value in `messages[0]` of every abstract node below it;
+that is a plan-shape question, not a transcript one.
+
+**Or the loop simply grows** — enough turns, each carrying the ones before it,
+to pass the window under the effect cap. Nothing bounds that yet.
 
 What survives either way is the **journal**: one intent + result grain per
 effect, written before the node failed and untouched by its failure. Every turn
@@ -1250,10 +1282,13 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 - An abstract node runs at most `--max-effects` effects per attempt (turns, tool
   calls and re-prompts share the counter), default **16**; one more fails the
   node. Frozen in the manifest at start.
-- **There is no context-window management.** An abstract node's transcript
-  grows without bound until the provider rejects it, and that rejection fails
-  the node. No summarization, no trimming, no per-result cap — the journal
-  keeps every turn, but the runtime will not shrink what it sends.
+- `--llm-tool-result-chars` bounds ONE tool result in the transcript
+  (characters, default unbounded); the journal keeps every result in full.
+- **There is no context-window management.** Past the per-result bound an
+  abstract node's transcript still grows without limit until the provider
+  rejects it, and that rejection fails the node. No summarization, no trimming
+  of the transcript as a whole — the journal keeps every turn, but the runtime
+  will not shrink what it sends.
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
 - The condition grammar is frozen; there is no expression language beyond

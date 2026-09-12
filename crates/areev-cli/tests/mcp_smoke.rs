@@ -138,6 +138,10 @@ fn mcp_round_trip() {
         start_props["max_effects_per_attempt"]["type"], "integer",
         "areev_run_start must advertise the effect cap: {start_props}"
     );
+    assert_eq!(
+        start_props["llm_tool_result_chars"]["type"], "integer",
+        "…and the per-tool-result transcript bound: {start_props}"
+    );
     assert!(
         tools.iter().any(|t| t["name"] == "areev_subject_report"),
         "the DSAR read joined in the GDPR compliance pack"

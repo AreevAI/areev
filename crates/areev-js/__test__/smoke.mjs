@@ -775,12 +775,14 @@ test('toolEnv clears a host tool environment down to what it names', async () =>
   await m.close()
 })
 
-test('maxEffectsPerAttempt is accepted on runStart and reaches the manifest', async () => {
-  // Lockstep with the CLI's `--max-effects` and Python's
-  // `max_effects_per_attempt`: an abstract node's loop is bounded by an effect
-  // count, and a binding that cannot raise it cannot run a long agent at all.
-  // Appended LAST in the signature on purpose — JS has no keyword arguments, so
-  // inserting it would have re-pointed every existing positional call.
+test('the run loop limits are accepted on runStart and reach the manifest', async () => {
+  // Lockstep with the CLI's `--max-effects` / `--llm-tool-result-chars` and
+  // Python's `max_effects_per_attempt` / `llm_tool_result_chars`: an abstract
+  // node's loop is bounded by an effect count and by how much of one tool
+  // result the model is shown, and a binding that cannot set either cannot run
+  // a long agent at all. Appended LAST in the signature on purpose — JS has no
+  // keyword arguments, so inserting them would have re-pointed every existing
+  // positional call.
   const m = makeDb('ops')
   const greet = await m.add('tool', JSON.stringify({
     tool_name: 'greet', kind: 'definition',
@@ -794,7 +796,7 @@ test('maxEffectsPerAttempt is accepted on runStart and reaches the manifest', as
     wf, 'js-cap', '{}', `printf '{"ok":true}'`,
     null, null, null, null, null, null, null, null,
     null, null, null, null, null, null, null, null, null, null, null,
-    40,
+    40, 12000,
   ))
   assert.equal(session.finished, 'Completed')
   // It reached the run rather than being dropped: the replay builds its

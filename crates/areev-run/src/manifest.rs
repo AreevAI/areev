@@ -97,6 +97,12 @@ pub struct RunManifest {
     /// `skip_serializing_if`: those manifests must serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_effects_per_attempt: Option<u32>,
+    /// Bound on ONE tool result's size in an abstract node's TRANSCRIPT, in
+    /// characters. The journal keeps every result in full regardless — this
+    /// bounds only what the model is shown. `None` = unbounded, the behaviour
+    /// of every run before the knob existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_tool_result_chars: Option<usize>,
     /// Typed reducers (§6.5): state_key → builtin reducer name, read off
     /// the Workflow grain's `reducers` field and FROZEN here — a resume
     /// must merge exactly as the original run did. Undeclared keys are LWW.
@@ -263,6 +269,7 @@ impl RunManifest {
             input,
             llm_max_tokens: None,
             max_effects_per_attempt: None,
+            llm_tool_result_chars: None,
             reducers,
             fork_of: None,
         })
@@ -279,6 +286,7 @@ impl RunManifest {
     pub fn with_limits(mut self, opts: &crate::RunOptions) -> Self {
         self.llm_max_tokens = opts.llm_max_tokens;
         self.max_effects_per_attempt = opts.max_effects_per_attempt;
+        self.llm_tool_result_chars = opts.llm_tool_result_chars;
         self
     }
 
@@ -672,6 +680,7 @@ mod tests {
             input: json!({}),
             llm_max_tokens: None,
             max_effects_per_attempt: None,
+            llm_tool_result_chars: None,
             reducers: BTreeMap::new(),
             fork_of: None,
         }
@@ -701,6 +710,10 @@ mod tests {
         let m: RunManifest = serde_json::from_str(stored).unwrap();
         assert_eq!(m.max_effects_per_attempt, None);
         assert_eq!(m.max_effects_per_attempt(), 16);
+        assert_eq!(
+            m.llm_tool_result_chars, None,
+            "unbounded tool results: what every pre-1.9 run did"
+        );
         // Named here as well as in run-core, because changing it changes the
         // behaviour of every existing plan that relies on the bound.
         assert_eq!(areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT, 16);

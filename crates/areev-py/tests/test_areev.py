@@ -591,13 +591,15 @@ def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
     assert seen("py-env-empty", tool_env="") == ""
 
 
-def test_max_effects_per_attempt_is_accepted_on_the_run_surfaces(tmp_path):
-    # Lockstep with the CLI's `--max-effects` and Node's `maxEffectsPerAttempt`:
-    # an abstract node's loop is bounded by an effect count, and a binding that
-    # cannot raise it cannot run a long agent at all. A bound Host node spends
-    # one effect, so the run completes under any cap — what this pins is that
-    # the keyword exists, is typed, and reaches the manifest rather than being
-    # swallowed as an unexpected argument.
+def test_run_loop_limits_are_accepted_on_the_run_surfaces(tmp_path):
+    # Lockstep with the CLI's `--max-effects` / `--llm-tool-result-chars` and
+    # Node's `maxEffectsPerAttempt` / `llmToolResultChars`: an abstract node's
+    # loop is bounded by an effect count and by how much of one tool result the
+    # model is shown, and a binding that cannot set either cannot run a long
+    # agent at all. A bound Host node spends one effect and returns a tiny
+    # result, so the run completes under any limits — what this pins is that the
+    # keywords exist, are typed, and reach the manifest rather than being
+    # swallowed as unexpected arguments.
     m = make_db(tmp_path, ns="ops")
     greet = m.add("tool", json.dumps({
         "tool_name": "greet", "kind": "definition",
@@ -608,7 +610,8 @@ def test_max_effects_per_attempt_is_accepted_on_the_run_surfaces(tmp_path):
         "created_at": 502,
     }), "ops")
     started = json.loads(m.run_start(
-        wf, "py-cap", "{}", 'printf \'{"ok":true}\'', max_effects_per_attempt=40,
+        wf, "py-cap", "{}", 'printf \'{"ok":true}\'',
+        max_effects_per_attempt=40, llm_tool_result_chars=12000,
     ))
     assert started["finished"] == "Completed"
     # It reached the run rather than being dropped on the floor: the run is

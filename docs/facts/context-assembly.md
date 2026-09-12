@@ -271,8 +271,10 @@ run`, and the sheet would be dishonest by omission if it stopped here.
 
 - **An abstract node's transcript has no size bound.** It is the whole attempt
   (`AbstractFlow.messages`, `crates/areev-run-core/src/state.rs`) and every
-  turn sends all of it; tool results enter it verbatim. The only bound is a
-  count — 16 effects per node attempt.
+  turn sends all of it. Two *parts* of it are bounded — the effect count
+  (`max_effects_per_attempt`, default 16) and one tool result
+  (`llm_tool_result_chars`, default unbounded, in characters) — and neither
+  bounds the whole.
 - **The per-call `llm_max_tokens` is an OUTPUT ceiling** (and the per-dispatch
   reservation), never an input/context bound. `--max-tokens` is cumulative run
   spend, not per-request size.
@@ -280,9 +282,10 @@ run`, and the sheet would be dishonest by omission if it stopped here.
   terminal 4xx → `FailCause::Unknown` → the node fails with the provider's
   message text as its detail. Nothing summarizes, trims, or retries smaller.
 - **The `chars / 4` estimator (§1, §4) is the store's, not the runtime's.** The
-  runtime never estimates: every LLM result carries the provider's own
-  `input_tokens` for the transcript exactly as sent, which is the honest signal
-  any future bound should use.
+  runtime never estimates. Its per-result bound counts **characters** and is
+  named for that; and every LLM result carries the provider's own `input_tokens`
+  for the transcript exactly as sent, which is the honest signal any
+  whole-transcript bound should use.
 
 Stated for users in `docs/run.md` § "What bounds the transcript (and what does
 not)" and § "Bounds, stated". The consolidation producer (§11) is unrelated and

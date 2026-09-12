@@ -25,7 +25,7 @@ pub use error::{BudgetAxis, Result, RunError};
 pub use plan::{PlanEdge, PlanGraph};
 pub use state::{EdgeRes, NodeState, PendingAsk, Phase, SchedulerState, Spent};
 pub use step::{
-    flow_key, step, StepEnv, StepOutcome, DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
+    bound_tool_content, flow_key, step, StepEnv, StepOutcome, DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
 };
 pub use types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,

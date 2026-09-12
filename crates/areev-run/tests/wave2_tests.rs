@@ -373,6 +373,129 @@ fn max_effects_per_attempt_is_frozen_in_the_manifest_and_bounds_the_loop() {
     assert!(runner.verify("cap-40").unwrap().verified);
 }
 
+/// One oversized tool result — a file read, a log dump — can exhaust the
+/// model's window inside a single round, and no summarizer can shrink a single
+/// entry. So the TRANSCRIPT gets a bounded excerpt while the JOURNAL keeps the
+/// whole thing: two different records with two different jobs.
+#[test]
+fn an_oversized_tool_result_is_bounded_in_the_transcript_and_whole_in_the_journal() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["dump", "read"], &[("dump", "read")], &["read"]);
+    // 4,000 characters of payload — far past the 200-character cap below. The
+    // static node run stays small so the only large thing in the transcript is
+    // the MODEL's tool result: this knob bounds tool results, not the state a
+    // node is handed, and a test that conflated the two would pass for the
+    // wrong reason.
+    let payload = "L".repeat(4_000);
+    let big = payload.clone();
+    rig.exec.on("dump", move |_, count| {
+        ExecResult::Ok(if count == 1 { json!({"ready": true}) } else { json!({"log": big}) })
+    });
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "dump", json!({}))]),
+        turn_final(r#"{"verdict": "read it"}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { llm_tool_result_chars: Some(200), ..opts() };
+
+    let session = runner.start(&plan, "big-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "big-1"))
+        .unwrap();
+
+    // The journal holds the result exactly as the tool returned it.
+    let tool_entry = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Tool)
+        .map(|(_, e)| e)
+        .expect("the model's tool call is journaled");
+    let (_, ref settled) = tool_entry.result.as_ref().expect("it settled").clone();
+    match settled {
+        areev_run_core::EffectOutcome::Completed { result, .. } => {
+            assert_eq!(result["log"], payload, "the journal is never bounded");
+        }
+        other => panic!("expected a completed tool result, got {other:?}"),
+    }
+
+    // The transcript the NEXT turn was sent is the journaled intent of that
+    // turn — the one observation point that survives the flow being torn down
+    // when the node completes.
+    let (_, next_turn) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Llm && k.effect_seq == 2)
+        .expect("the closing turn is journaled");
+    let intent = rig.facade.with_store(|m| m.get(&next_turn.intent)).unwrap();
+    let messages = intent.fields.get("input").and_then(|i| i.get("messages")).cloned().unwrap();
+    let tool_msg = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the round's result is in the transcript");
+    let content = &tool_msg["content"];
+    assert_eq!(content["truncated"], true, "{content}");
+    assert_eq!(
+        content["chars"],
+        json!({"log": payload}).to_string().chars().count(),
+        "the model is told the TRUE size, not the kept size"
+    );
+    assert_eq!(content["head"].as_str().unwrap().chars().count(), 100);
+    assert_eq!(content["tail"].as_str().unwrap().chars().count(), 100);
+    // And where to find the rest: the journal coordinates of this very effect.
+    assert_eq!(content["journal"], json!({"attempt": 1, "effect_seq": 1}));
+    assert!(
+        !messages.to_string().contains(&"L".repeat(300)),
+        "no part of the transcript may carry the full dump"
+    );
+
+    // Pure and journal-derived, so replay rebuilds the same bounded entry.
+    let report = runner.verify("big-1").unwrap();
+    assert!(report.verified, "{report:?}");
+    assert_eq!(llm.calls(), 2, "verify never called the model");
+}
+
+/// The other half of the same rule: with no cap configured the transcript is
+/// exactly what it always was. This is the regression guard for every deployed
+/// run that never sets the flag.
+#[test]
+fn no_tool_result_cap_leaves_the_transcript_verbatim() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["dump", "read"], &[("dump", "read")], &["read"]);
+    let payload = "L".repeat(4_000);
+    let big = payload.clone();
+    rig.exec.on("dump", move |_, count| {
+        ExecResult::Ok(if count == 1 { json!({"ready": true}) } else { json!({"log": big}) })
+    });
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "dump", json!({}))]),
+        turn_final(r#"{"verdict": "read it"}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+
+    runner.start(&plan, "big-2", json!({}), &opts()).unwrap();
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "big-2"))
+        .unwrap();
+    let (_, next_turn) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Llm && k.effect_seq == 2)
+        .unwrap();
+    let intent = rig.facade.with_store(|m| m.get(&next_turn.intent)).unwrap();
+    let messages = intent.fields.get("input").and_then(|i| i.get("messages")).cloned().unwrap();
+    let tool_msg =
+        messages.as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap().clone();
+    assert_eq!(tool_msg["content"], json!({"log": payload}), "unbounded = unchanged");
+    assert!(runner.verify("big-2").unwrap().verified);
+}
+
 #[test]
 fn abstract_flow_tool_failure_is_model_visible_not_a_retry() {
     let rig = Rig::new();

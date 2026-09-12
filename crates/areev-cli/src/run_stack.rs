@@ -342,6 +342,8 @@ pub fn run_options(flags: &HashMap<String, String>) -> areev_run::RunOptions {
         on_dangling: Default::default(),
         llm_max_tokens: flag(flags, "llm-max-tokens").and_then(|v| v.parse().ok()),
         max_effects_per_attempt: flag(flags, "max-effects").and_then(|v| v.parse().ok()),
+        llm_tool_result_chars: flag(flags, "llm-tool-result-chars")
+            .and_then(|v| v.parse().ok()),
         inject_crash: None,
     }
 }
@@ -399,6 +401,10 @@ mod tests {
             o.max_effects_per_attempt, None,
             "no flag = the manifest pins nothing = the run-core default"
         );
+        assert_eq!(
+            o.llm_tool_result_chars, None,
+            "no flag = tool results enter the transcript verbatim, as they always did"
+        );
     }
 
     /// The loop bound reaches a run the same way the budgets do — and reaches a
@@ -409,6 +415,15 @@ mod tests {
     fn the_effect_cap_reaches_the_run_a_firing_starts() {
         let o = run_options(&flags(&[("max-effects", "40")]));
         assert_eq!(o.max_effects_per_attempt, Some(40));
+    }
+
+    /// The per-result bound travels the same path, and matters MORE unattended:
+    /// a connector that hands a firing a log dump has nobody watching the
+    /// provider reject the turn.
+    #[test]
+    fn the_tool_result_bound_reaches_the_run_a_firing_starts() {
+        let o = run_options(&flags(&[("llm-tool-result-chars", "12000")]));
+        assert_eq!(o.llm_tool_result_chars, Some(12_000));
     }
 
     /// The environment fallback, in ONE test on purpose: `set_var` is

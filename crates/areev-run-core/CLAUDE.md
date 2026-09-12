@@ -71,8 +71,12 @@ journaled events back, assert the same commands come out.
   scheduler retries. Unknown tool = ONE re-prompt then fail (§6.11);
   strict-arg violations re-prompt via `StepEnv.validate_args`, bounded by
   `max_effects_per_attempt` — the host's number, frozen in the run manifest,
-  `DEFAULT_MAX_EFFECTS_PER_ATTEMPT` (16) when it pins none. It is the ONLY
-  bound on a flow: nothing here limits how large the transcript grows.
+  `DEFAULT_MAX_EFFECTS_PER_ATTEMPT` (16) when it pins none. Tool results enter
+  the transcript through `bound_tool_content`, which excerpts one result past
+  `llm_tool_result_chars` (CHARACTERS — this crate holds no tokenizer and must
+  not pretend) and passes it through byte-identically under the bound, so an
+  unbounded run's checkpoints are unchanged. Neither bounds the transcript as a
+  whole: nothing here limits how large it grows.
   A flow torn down mid-round leaves stragglers:
   `resolve_effect` guards resolved nodes so a late tool result cannot flip
   DoneFailed back to DoneOk.
