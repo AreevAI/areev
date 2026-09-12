@@ -141,6 +141,7 @@ COMMANDS:
            [--executor-timeout SECS] [--tool-env VAR,...]
            [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
+           [--max-effects N] [--llm-tool-result-chars N] [--llm-context-tokens N]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
@@ -286,7 +287,8 @@ COMMANDS:
            without one, every namespace is listed.
            start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--base-url URL]
-           [--key-env VAR] [--llm-max-tokens N]
+           [--key-env VAR] [--llm-max-tokens N] [--max-effects N]
+           [--llm-tool-result-chars N] [--llm-context-tokens N]
            [--events] [--otel-endpoint http://HOST:4318]
            [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
@@ -388,7 +390,17 @@ COMMANDS:
                                       \"unverified\" unless --ground-* checks
                                       them). --dry-run prints, stores nothing.
   hook     claude-code               print settings.json hook snippet
-                                      (auto recall-before-prompt + capture-on-stop)
+                                      (auto recall-before-prompt, capture-on-stop,
+                                      and capture-before-compaction). Prints only —
+                                      areev never edits your settings
+  capture-stop [--policy-version V]   the Stop AND PreCompact handler: reads
+                                      Claude Code hook JSON on stdin and stores
+                                      the transcript's turns as thread-indexed
+                                      Events. Idempotent by content address, so
+                                      both events can point at it. A compaction
+                                      summary is tagged compact_summary; a
+                                      missing transcript exits 0 silently — a
+                                      hook must never cost you a compaction
   anonymize scan [--text T] [--policy-file F]
                                       detect sensitive spans (Tier-0 chain:
                                       structural, regex+checksum, secrets,
@@ -1577,9 +1589,22 @@ each exchange (with tool outcomes) when a turn ends:
     "Stop": [{{ "hooks": [{{
       "type": "command",
       "command": "{exe} capture-stop --db {db} --ns {ns}"
+    }}] }}],
+    "PreCompact": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} capture-stop --db {db} --ns {ns}"
     }}] }}]
   }}
 }}
+
+PreCompact is the same verb on the event that says the conversation is about
+to be dropped: it captures whatever the last Stop did not, so a compaction
+costs the model its context and costs the memory nothing. No matcher, so it
+fires for manual /compact and automatic compaction alike, and it exits
+silently when the host gives it no transcript — a hook must never be why a
+compaction stalls. The summary a compaction produces is stored with
+`compact_summary: true`, so a reader can tell a machine's recap from what the
+person actually typed.
 
 recall-hook reads the prompt and prints matching memories to stdout, which
 Claude Code injects as context — so retrieval no longer depends on the model
@@ -1722,9 +1747,22 @@ each exchange (with tool outcomes) when a turn ends:
     "Stop": [{{ "hooks": [{{
       "type": "command",
       "command": "{exe} capture-stop --db {db} --ns {ns}"
+    }}] }}],
+    "PreCompact": [{{ "hooks": [{{
+      "type": "command",
+      "command": "{exe} capture-stop --db {db} --ns {ns}"
     }}] }}]
   }}
 }}
+
+PreCompact is the same verb on the event that says the conversation is about
+to be dropped: it captures whatever the last Stop did not, so a compaction
+costs the model its context and costs the memory nothing. No matcher, so it
+fires for manual /compact and automatic compaction alike, and it exits
+silently when the host gives it no transcript — a hook must never be why a
+compaction stalls. The summary a compaction produces is stored with
+`compact_summary: true`, so a reader can tell a machine's recap from what the
+person actually typed.
 
 recall-hook reads the prompt and prints matching memories to stdout, which
 Claude Code injects as context — so retrieval no longer depends on the model
@@ -2634,18 +2672,42 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             server.serve_stdio().map_err(|e| e.to_string())?;
         }
         "capture-stop" => {
-            // Claude Code Stop-hook: JSON on stdin with session_id +
-            // transcript_path. Store every ordered turn as a typed Event.
+            // Claude Code Stop AND PreCompact hook: JSON on stdin with
+            // session_id + transcript_path. Store every ordered turn as a
+            // typed Event.
+            //
+            // One verb serves both events because the write path is already
+            // exactly right for a compaction: it reads the cumulative
+            // transcript and is idempotent by content address (see below), so
+            // firing it again just before the host drops the conversation
+            // stores whatever the last Stop did not — which is the point. On
+            // PreCompact that is the difference between memory surviving a
+            // compaction and not.
             use std::io::Read as IoRead;
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input).map_err(|e| e.to_string())?;
             let hook: serde_json::Value =
                 serde_json::from_str(&input).map_err(|e| format!("bad hook json: {e}"))?;
             let session = hook["session_id"].as_str().unwrap_or("unknown-session").to_string();
-            let tpath = hook["transcript_path"]
+            // FAIL OPEN on a missing path. PreCompact has been observed firing
+            // with an empty `transcript_path` (anthropics/claude-code#13668),
+            // and this verb must never be the reason a compaction is delayed
+            // or noisy: there is nothing to capture, so say nothing and exit 0.
+            // Erroring here would surface on the user's every auto-compaction.
+            let tpath = match hook["transcript_path"].as_str().map(str::trim) {
+                Some(p) if !p.is_empty() => p,
+                _ => return Ok(()),
+            };
+            // Same reasoning for an unreadable transcript: the file is written
+            // asynchronously and can lag the conversation a hook fires from.
+            let Ok(transcript) = std::fs::read_to_string(tpath) else { return Ok(()) };
+            // Which event this is, when the host says. Carried onto the turns
+            // a compaction is about to cost, so a later reader can tell them
+            // from an ordinary Stop capture.
+            let compact_trigger = hook["hook_event_name"]
                 .as_str()
-                .ok_or("hook json missing transcript_path")?;
-            let transcript = std::fs::read_to_string(tpath).map_err(|e| e.to_string())?;
+                .filter(|e| e.eq_ignore_ascii_case("precompact"))
+                .map(|_| hook["trigger"].as_str().unwrap_or("unknown").to_string());
             // Claude's Stop hook points at the cumulative transcript, so every
             // firing re-reads turns already captured. Identify a turn by its
             // own content address rather than by its position in the thread: a
@@ -2703,6 +2765,23 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                         .extra_fields
                         .insert("elisions".into(), serde_json::Value::Array(elisions));
                 }
+                // A compaction summary is a transcript line with
+                // `isCompactSummary: true` and `message.role: "user"` — so
+                // without this it lands as an ordinary user Event,
+                // indistinguishable from what the person actually typed.
+                //
+                // TAG, do not skip. The summary is the only record of what the
+                // model believed after a compaction, which makes it worth
+                // keeping; but a `RECALL events` consumer building a picture of
+                // what the USER asked for must be able to tell a machine's
+                // recap from a human's words. `role` deliberately stays `user`:
+                // that IS how the model saw it.
+                if v["isCompactSummary"].as_bool() == Some(true) {
+                    event
+                        .common
+                        .extra_fields
+                        .insert("compact_summary".into(), serde_json::Value::Bool(true));
+                }
                 // The policy in force when the turn happened. `areev corpus`
                 // reports it under `binding.policy_versions`, which is how a
                 // training row states which governance regime produced it —
@@ -2722,6 +2801,34 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     stored += 1;
                 }
                 parent = Some(hash.to_hex());
+            }
+            // On a compaction, record that this happened — in `agent:harness`,
+            // never the captured namespace: this is evidence ABOUT the session,
+            // not a turn of it, and mixing the two would put harness noise into
+            // every `RECALL events` the agent does.
+            //
+            // It is the only durable answer to "did memory survive the
+            // compaction?", asked after the fact when the transcript is gone.
+            if let Some(trigger) = &compact_trigger {
+                let mut obs = areev_core::types::Observation::new("agent:hook", "system")
+                    .subject(&format!("session:{session}"))
+                    .object(&format!(
+                        "compaction (trigger={trigger}) — {stored} turns captured, \
+                         {skipped} already stored"
+                    ))
+                    .namespace(areev_core::authz::HARNESS_NS)
+                    // Positional, like the turns above: a wall clock here would
+                    // re-hash on every firing and defeat the same dedup.
+                    .created_at((stored + skipped) as i64);
+                let ex = &mut obs.common.extra_fields;
+                ex.insert("observation_kind".into(), serde_json::json!("compaction"));
+                ex.insert("session_id".into(), serde_json::json!(session));
+                ex.insert("compact_trigger".into(), serde_json::json!(trigger));
+                ex.insert("captured".into(), serde_json::json!(stored));
+                ex.insert("already_stored".into(), serde_json::json!(skipped));
+                // Fail open, like every other PreCompact path: a hook error
+                // must never cost the user a compaction.
+                let _ = m.add(&obs);
             }
             println!("captured {stored} events for session {session} ({skipped} already stored)");
         }
@@ -4000,7 +4107,12 @@ fn run_retention(
 /// `requires_action` envelope, answered with `areev run respond` by a
 /// SECOND principal (approval separation of duties is refused structurally,
 /// not documented). Wave 2: `--model provider:name` powers abstract nodes
-/// (`--llm-max-tokens` is the per-turn ceiling AND the §6.7 reservation),
+/// (`--llm-max-tokens` is the per-turn OUTPUT ceiling AND the §6.7
+/// reservation; `--max-effects` bounds how many turns + tool calls one node
+/// attempt may spend, `--llm-tool-result-chars` how much of ONE tool result the
+/// model is shown — the journal keeps all of it — and `--llm-context-tokens`
+/// the whole transcript, past which the middle is folded into one journaled
+/// summary; all frozen into the manifest so a resume bounds them alike),
 /// `--events` streams §6.10 run events to stderr as JSON lines, and
 /// `fork --run-id BASE --as-run NEW [--at N] [--plan HASH]` is §5.4
 /// time-travel / in-flight migration.
@@ -6231,6 +6343,7 @@ fn run_init(
     eprintln!("\nClaude Code hooks (paste into settings.json — absolute path baked in):");
     eprintln!("  UserPromptSubmit → {exe} recall-hook --ns {ns} --with-loop");
     eprintln!("  Stop             → {exe} capture-stop --ns {ns}");
+    eprintln!("  PreCompact       → {exe} capture-stop --ns {ns}");
     eprintln!("  SessionEnd       → {exe} loop run --min-new 20 --min-new-errors 3 --quiet --ns {ns}");
     Ok(())
 }

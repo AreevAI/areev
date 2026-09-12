@@ -147,6 +147,7 @@ in source.
 | `RUN-E021` | `LeaseLost` | Another driver took this run over mid-flight; this driver's writes are refused |
 | `RUN-E023` | `AnonReplayUnsafe` | An anonymization policy covers the run's namespace with a scope whose placeholders are not value-derived, so an abstract node's model boundary would make `verify` diverge |
 | `RUN-E022` | `EgressRefused` | A host command's mediated I/O was refused: destination outside the run's allowlist, a method its grant does not permit, a credential it may not spend, a request header it may not set — undeclared, or one the broker owns — or a CAS blob read without the `blob` capability (the trigger evaluator reports the same condition as `TRG-E009`) |
+| `RUN-E024` | `ContextExceeded` | An abstract node's transcript is over `--llm-context-tokens` (measured by the provider's own reported prompt tokens) and nothing is left to fold — the node's input and the kept tail alone exceed the ceiling. Raise the ceiling, bound oversized tool results (`--llm-tool-result-chars`), or split the node |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 

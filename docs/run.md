@@ -161,6 +161,13 @@ One subprocess seam on every surface (CLI `--tool-cmd`, MCP
 Without a tool command configured, host-tool nodes fail loudly rather than
 silently — there is no built-in "just run it" executor.
 
+**What the journal keeps and what the model sees are not the same thing.** The
+result grain always carries your tool's full output, verbatim. When the tool was
+called *by a model* inside an abstract node, `--llm-tool-result-chars` bounds
+how much of it enters that node's transcript — the model may see a head, a tail
+and a pointer where a 40 KB log dump was. Write tools whose output a model can
+use, and reach for the journal (`areev run-trace`) when you want all of it.
+
 Every host-executed tool (`--tool-cmd` and a pinned `--allow-executor` blob
 alike) runs under a wall-clock ceiling, fixed at 300s until it could be
 raised (#133): a tool that never exits parks a pool worker and, at the next
@@ -893,6 +900,11 @@ run's accounting equals a live run's. Exhaustion is a **parked checkpoint**,
 not a corrupted run: `areev run fork` re-opens a budget-exhausted terminal
 under raised budgets, continuing exactly where it stopped.
 
+Every axis here is **cumulative**, never per-request: `--max-tokens` bounds
+what the run spends in total, not how large any one model request may be. What
+bounds a single request is the abstract node's transcript, which is a separate
+matter — see [What bounds the transcript](#what-bounds-the-transcript-and-what-does-not).
+
 ## Verify and shadow
 
 ```bash
@@ -1005,6 +1017,144 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   missing key fails without leaving behind a run that could never advance. The
   backend is host config and is deliberately not journaled with the run, which
   is why `run_resume` takes it too rather than recovering it from the manifest.
+
+### What bounds the transcript (and what does not)
+
+An abstract node's transcript is the **whole attempt** — every model turn,
+every tool result, verbatim — and each turn sends all of it. Three things
+follow, none of them visible from the flag names:
+
+- `--llm-max-tokens` is the **output** ceiling for one call, and the per-call
+  reservation checked against the token budget. It says nothing about how
+  large the prompt may grow.
+- `--max-tokens` bounds **cumulative** spend across the run, not the size of
+  any one request. A run can sit far under its token budget and still issue a
+  request no provider will accept.
+- The only bound on the loop itself is a **count**: `--max-effects N` (default
+  **16**) effects per node attempt, with model turns, model-issued tool calls
+  and re-prompts sharing one counter. A node that needs one more fails
+  `ExecutorError: llm loop exceeded max_effects_per_attempt` — at the default,
+  and at one tool call per turn, that is roughly eight turns, so an agent doing
+  real work usually wants it raised. The number is **frozen into the run
+  manifest** at start, so a `resume` and a `verify` bound the loop exactly as
+  the start did; passing it on a resume changes nothing. Same knob as
+  `max_effects_per_attempt` (MCP `areev_run_start`, Python, Node) and on
+  `trigger run`, which starts runs nobody is watching.
+
+So a transcript that outgrows the model's context window is **the provider's
+error and nothing more**: the runtime does not summarize, trim, or re-plan it.
+The rejection is terminal, so the node fails with the provider's message as its
+detail. Two shapes reach it, and only the first has a bound today.
+
+**One oversized tool result** — a file read, a log dump, a JSON dump — can
+exhaust the window inside a single round, because a tool result otherwise
+enters the transcript exactly as the tool returned it. No summary can shrink a
+single entry, so this needs its own bound:
+`--llm-tool-result-chars N` (`llm_tool_result_chars` on MCP, Python and Node;
+default: unbounded). Over the bound, the model is shown
+
+```json
+{"truncated": true, "chars": 41822, "head": "…first N/2…", "tail": "…last N/2…",
+ "journal": {"attempt": 1, "effect_seq": 3}}
+```
+
+— the true length, the two ends, and the journal coordinates of the whole
+thing. **The journal is never bounded**: the full result grain was written
+before the scheduler ever saw the outcome, so `run-trace` and a DSAR still
+show every byte and `verify` still replays byte-identically. The number is in
+**characters** because that is what it counts; there is no tokenizer in the
+runtime, and a "token" bound computed as `chars / 4` would be a guess wearing a
+precise name. The bound applies to a failed tool's detail too (it carries the
+tool's stderr), and is frozen in the manifest like every other run ceiling.
+
+It does **not** bound the state a node is handed. A reducer that accumulates a
+large value puts that value in `messages[0]` of every abstract node below it;
+that is a plan-shape question, not a transcript one.
+
+**Or the loop simply grows** — enough turns, each carrying the ones before it,
+to pass the window under the effect cap. That is what `--llm-context-tokens`
+is for.
+
+### The fold: what happens when the transcript outgrows the window
+
+`--llm-context-tokens N` (`llm_context_tokens` on MCP, Python and Node; default:
+no ceiling) sets a ceiling on the whole transcript. Before each turn the
+scheduler compares the **provider's own reported prompt tokens for the previous
+turn**, plus the `--llm-max-tokens` reservation for this one, against it. Over
+the ceiling, it emits one more turn — a **summarizer** — over the middle of the
+transcript, and replaces that middle with the answer:
+
+```
+messages[0]  the node's instruction + input      ← never folded
+messages[1]  [Areev fold 1: transcript entries 1..9 of attempt 1 were replaced
+             by this summary, journaled at effect_seq 9. The full record — every
+             turn and every tool result — is in this run's journal.]
+             <the summary>
+messages[2…] the last few entries, verbatim      ← the kept tail
+```
+
+Seven things are worth knowing before you turn it on.
+
+- **Nothing is deleted.** The fold edits scheduler state; every folded turn and
+  tool result is still a journaled intent + result grain, still visible in
+  `run-trace`, still addressable by `(run, task_path, node, attempt,
+  effect_seq)`. The journal is the archive — that is the whole design
+  ([ARCHITECTURE.md](../ARCHITECTURE.md), "The journal is the archive").
+- **The summarizer is an ordinary journaled turn.** It spends an effect and a
+  token reservation like any other, its request is in the journal (including the
+  exact prompt, versioned), and `verify` answers it from the journal — so a
+  folded run still replays byte-identically and **still never calls the model**.
+- **The summarizer is offered no tools**, so a fold can have no side effects.
+- **The trigger is the provider's number, not an estimate.** Areev's `chars / 4`
+  token estimator belongs to `ASSEMBLE`; the runtime never consults it.
+- **Raise `--llm-max-tokens` when you use folds.** A summarizer turn runs under
+  the same per-call output ceiling as every other turn, and the default (1024)
+  is tight for summarizing a long middle.
+- **`RUN-E024` when nothing is foldable.** If the node's input and the kept tail
+  alone exceed the ceiling there is no middle to summarize, and a second fold
+  would only summarize summaries — so the node fails, naming the ceiling and the
+  three ways out (raise it, bound the tool results, split the node).
+- **The measurement lags one round — so set `--llm-tool-result-chars` too.**
+  See below; this is the one way a ceiling on its own still lets a node die.
+
+The ceiling is frozen in the manifest at start, like every other run limit, so a
+`resume` folds exactly where the start would have.
+
+#### The two bounds are complementary, not alternatives
+
+The check runs on the **previous** turn's reported number, so the transcript it
+actually sends is bigger than the one it measured — by exactly one round: that
+turn's assistant entry, plus that round's tool results. Both were appended after
+the provider reported.
+
+That gap is the ceiling's blind spot, and on its own it is **unbounded**:
+
+```
+turn 4 sent, 88,000 tok → provider reports 88,000   ← the measurement
+  + assistant entry (the tool call) ....    200 tok │ appended after,
+  + tool result: a 40k-token log dump . 40,000 tok  │ unmeasured
+                            transcript = 128,200 tok
+
+turn 6 check: 88,000 + reserve 4,096 = 92,096 ≤ 100,000 → no fold
+              …and the turn goes out carrying 128,200. The provider
+              rejects it, and the node dies with the ceiling set.
+```
+
+`--llm-tool-result-chars` is what makes the blind spot finite: with it, one
+round can add at most the assistant entry plus (tool calls in that round × the
+cap). Bound the results and the same run measures 91,200, fits, and folds a few
+rounds later with headroom in hand.
+
+So: **set both.** The per-result bound caps how far the transcript can move
+between measurements; the ceiling caps the total. A ceiling alone is a bound on
+a transcript that no longer exists. (This is the same shape as the §6.7 budget
+overshoot, which is likewise bounded by one dispatch rather than eliminated —
+stated, not hidden.)
+
+What survives either way is the **journal**: one intent + result grain per
+effect, written before the node failed and untouched by its failure. Every turn
+and every tool result is still addressable, and `run-trace` still shows all of
+them. The transcript is scheduler state; the record is the journal.
 
 ## Fan-out (`Send`)
 
@@ -1201,11 +1351,29 @@ actually meet: `RUN-E002` unbounded cycle (add `max_cycles`), `RUN-E004`
 unresolvable binding, `RUN-E005` bad condition, `RUN-E006` abstract node
 without an LLM, `RUN-E007` budget exhausted (fork to raise), `RUN-E009`
 replay divergence (names the differing fields), `RUN-E011` response names no
-pending ask, `RUN-E012` missing grant, `RUN-E013` canceled. The full
+pending ask, `RUN-E012` missing grant, `RUN-E013` canceled, `RUN-E024`
+transcript over `--llm-context-tokens` with nothing left to fold. The full
 registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
+- An abstract node runs at most `--max-effects` effects per attempt (turns, tool
+  calls and re-prompts share the counter), default **16**; one more fails the
+  node. Frozen in the manifest at start.
+- `--llm-tool-result-chars` bounds ONE tool result in the transcript
+  (characters, default unbounded); the journal keeps every result in full.
+- `--llm-context-tokens` bounds the WHOLE transcript, in the provider's own
+  reported prompt tokens (default: no ceiling). Past it the middle is folded
+  into one journaled summary; `RUN-E024` when nothing is foldable. It measures
+  the PREVIOUS turn, so it lags one round — pair it with
+  `--llm-tool-result-chars`, which is what makes that lag finite.
+- **Both bounds are off by default.** Without them an abstract node's transcript
+  grows until the provider rejects it, and that rejection fails the node — the
+  runtime will not shrink what it sends unless you ask it to.
+- **A fold does not react to a provider's context-length error.** It is
+  proactive only: an overflow that arrives as a terminal 4xx still fails the
+  node, because the model seam classifies errors structurally and does not parse
+  provider message strings.
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
 - The condition grammar is frozen; there is no expression language beyond

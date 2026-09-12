@@ -11,7 +11,7 @@ use areev_llm::{
     Usage,
 };
 use areev_run::{
-    BudgetsSpec, ExecResult, HostToolExecutor, OnDangling, RunManifest, RunOptions, Runner,
+    ExecResult, HostToolExecutor, RunManifest, RunOptions, Runner,
     RunSession, ScriptedClock,
 };
 use areev_run_core::{EffectKind, RunError, RunOutcome};
@@ -63,6 +63,11 @@ impl HostToolExecutor for TestExec {
 struct ScriptedLlm {
     responses: Mutex<VecDeque<ToolCallResponse>>,
     calls: Mutex<u32>,
+    /// How many tool Definitions each request offered, in call order — the
+    /// only way to assert that a summarizer turn was offered NONE, since that
+    /// choice is made in the driver's prepare step and never reaches the
+    /// journal.
+    tools_offered: Mutex<Vec<usize>>,
 }
 
 impl ScriptedLlm {
@@ -70,10 +75,14 @@ impl ScriptedLlm {
         ScriptedLlm {
             responses: Mutex::new(responses.into_iter().collect()),
             calls: Mutex::new(0),
+            tools_offered: Mutex::new(Vec::new()),
         }
     }
     fn calls(&self) -> u32 {
         *self.calls.lock().unwrap()
+    }
+    fn tools_offered(&self) -> Vec<usize> {
+        self.tools_offered.lock().unwrap().clone()
     }
 }
 
@@ -87,8 +96,9 @@ impl ToolCallLlm for ScriptedLlm {
     fn provider(&self) -> &'static str {
         "openai"
     }
-    fn call(&self, _req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
+    fn call(&self, req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
         *self.calls.lock().unwrap() += 1;
+        self.tools_offered.lock().unwrap().push(req.tools.len());
         self.responses.lock().unwrap().pop_front().ok_or(ToolCallError {
             retryable: false,
             message: "scripted LLM exhausted — unexpected extra call".into(),
@@ -120,6 +130,20 @@ fn turn_final(text: &str) -> ToolCallResponse {
         stop_reason: StopReason::EndTurn,
         usage: Usage { input_tokens: 20, output_tokens: 7, cache_read_tokens: None },
     }
+}
+
+/// The same turn shapes, but reporting the prompt tokens the PROVIDER saw —
+/// which is the only signal the context ceiling ever consults.
+fn turn_tools_at(calls: Vec<(&str, &str, Value)>, input_tokens: u64) -> ToolCallResponse {
+    ToolCallResponse { usage: Usage { input_tokens, ..usage_of(0) }, ..turn_tools(calls) }
+}
+
+fn turn_final_at(text: &str, input_tokens: u64) -> ToolCallResponse {
+    ToolCallResponse { usage: Usage { input_tokens, ..usage_of(0) }, ..turn_final(text) }
+}
+
+fn usage_of(input_tokens: u64) -> Usage {
+    Usage { input_tokens, output_tokens: 5, cache_read_tokens: None }
 }
 
 struct Rig {
@@ -209,14 +233,7 @@ impl Rig {
 }
 
 fn opts() -> RunOptions {
-    RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 2,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    }
+    RunOptions { workers: 2, ..Default::default() }
 }
 
 fn clocks() -> Vec<u64> {
@@ -310,6 +327,476 @@ fn llm_reservation_refuses_turn_that_cannot_fit() {
     // The reservation refusal is replay-consistent like everything else.
     let report = runner.verify("abs-3").unwrap();
     assert!(report.verified, "{report:?}");
+}
+
+/// The effect cap is the ONLY bound on an abstract node's loop, so it has to
+/// be the host's number and not a literal in the driver — and it has to be
+/// frozen, or a resume would re-bound a loop the start already bounded.
+#[test]
+fn max_effects_per_attempt_is_frozen_in_the_manifest_and_bounds_the_loop() {
+    // A model that never stops calling tools: nothing but the cap can end it.
+    let grind = |rig: &Rig| {
+        rig.exec.on("fetch", |_, _| ExecResult::Ok(json!({"fetched": 1})));
+        rig.plan(&["fetch", "grind"], &[("fetch", "grind")], &["grind"])
+    };
+
+    // Capped at 4: turn 0, tool 1, turn 2, tool 3 — then the fifth effect is
+    // refused and the node fails naming the bound it hit.
+    let rig = Rig::new();
+    let plan = grind(&rig);
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "fetch", json!({}))]),
+        turn_tools(vec![("c2", "fetch", json!({}))]),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { max_effects_per_attempt: Some(4), ..opts() };
+
+    let session = runner.start(&plan, "cap-4", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    let RunOutcome::Failed { node, detail } = outcome else {
+        panic!("the cap must fail the node, got {outcome:?}")
+    };
+    assert_eq!(node, "grind");
+    assert!(detail.contains("max_effects_per_attempt"), "{detail}");
+    assert_eq!(llm.calls(), 2, "a cap of 4 admits exactly two turns");
+    assert_eq!(
+        rig.journal_keys("cap-4", "grind"),
+        vec![
+            (1, 0, EffectKind::Llm),
+            (1, 1, EffectKind::Tool),
+            (1, 2, EffectKind::Llm),
+            (1, 3, EffectKind::Tool),
+        ],
+        "every admitted effect is journaled; the refused one never existed"
+    );
+
+    // Verify is what proves the freeze: the replay builds its scheduler env
+    // from the MANIFEST alone — no `RunOptions` reaches it — so a cap that had
+    // not been frozen would replay at the default 16, run past effect 4, and
+    // diverge instead of reproducing the failure.
+    let report = runner.verify("cap-4").unwrap();
+    assert!(report.verified, "{report:?}");
+    assert_eq!(llm.calls(), 2, "verify never called the model");
+
+    // Raised to 40: the same loop, now long enough to finish.
+    let rig = Rig::new();
+    let plan = grind(&rig);
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "fetch", json!({}))]),
+        turn_tools(vec![("c2", "fetch", json!({}))]),
+        turn_final(r#"{"ground": true}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { max_effects_per_attempt: Some(40), ..opts() };
+
+    let session = runner.start(&plan, "cap-40", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(llm.calls(), 3);
+    assert_eq!(rig.final_context("cap-40")["ground"], true);
+    assert!(runner.verify("cap-40").unwrap().verified);
+}
+
+/// One oversized tool result — a file read, a log dump — can exhaust the
+/// model's window inside a single round, and no summarizer can shrink a single
+/// entry. So the TRANSCRIPT gets a bounded excerpt while the JOURNAL keeps the
+/// whole thing: two different records with two different jobs.
+#[test]
+fn an_oversized_tool_result_is_bounded_in_the_transcript_and_whole_in_the_journal() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["dump", "read"], &[("dump", "read")], &["read"]);
+    // 4,000 characters of payload — far past the 200-character cap below. The
+    // static node run stays small so the only large thing in the transcript is
+    // the MODEL's tool result: this knob bounds tool results, not the state a
+    // node is handed, and a test that conflated the two would pass for the
+    // wrong reason.
+    let payload = "L".repeat(4_000);
+    let big = payload.clone();
+    rig.exec.on("dump", move |_, count| {
+        ExecResult::Ok(if count == 1 { json!({"ready": true}) } else { json!({"log": big}) })
+    });
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "dump", json!({}))]),
+        turn_final(r#"{"verdict": "read it"}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { llm_tool_result_chars: Some(200), ..opts() };
+
+    let session = runner.start(&plan, "big-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "big-1"))
+        .unwrap();
+
+    // The journal holds the result exactly as the tool returned it.
+    let tool_entry = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Tool)
+        .map(|(_, e)| e)
+        .expect("the model's tool call is journaled");
+    let (_, ref settled) = tool_entry.result.as_ref().expect("it settled").clone();
+    match settled {
+        areev_run_core::EffectOutcome::Completed { result, .. } => {
+            assert_eq!(result["log"], payload, "the journal is never bounded");
+        }
+        other => panic!("expected a completed tool result, got {other:?}"),
+    }
+
+    // The transcript the NEXT turn was sent is the journaled intent of that
+    // turn — the one observation point that survives the flow being torn down
+    // when the node completes.
+    let (_, next_turn) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Llm && k.effect_seq == 2)
+        .expect("the closing turn is journaled");
+    let intent = rig.facade.with_store(|m| m.get(&next_turn.intent)).unwrap();
+    let messages = intent.fields.get("input").and_then(|i| i.get("messages")).cloned().unwrap();
+    let tool_msg = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the round's result is in the transcript");
+    let content = &tool_msg["content"];
+    assert_eq!(content["truncated"], true, "{content}");
+    assert_eq!(
+        content["chars"],
+        json!({"log": payload}).to_string().chars().count(),
+        "the model is told the TRUE size, not the kept size"
+    );
+    assert_eq!(content["head"].as_str().unwrap().chars().count(), 100);
+    assert_eq!(content["tail"].as_str().unwrap().chars().count(), 100);
+    // And where to find the rest: the journal coordinates of this very effect.
+    assert_eq!(content["journal"], json!({"attempt": 1, "effect_seq": 1}));
+    assert!(
+        !messages.to_string().contains(&"L".repeat(300)),
+        "no part of the transcript may carry the full dump"
+    );
+
+    // Pure and journal-derived, so replay rebuilds the same bounded entry.
+    let report = runner.verify("big-1").unwrap();
+    assert!(report.verified, "{report:?}");
+    assert_eq!(llm.calls(), 2, "verify never called the model");
+}
+
+/// The other half of the same rule: with no cap configured the transcript is
+/// exactly what it always was. This is the regression guard for every deployed
+/// run that never sets the flag.
+#[test]
+fn no_tool_result_cap_leaves_the_transcript_verbatim() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["dump", "read"], &[("dump", "read")], &["read"]);
+    let payload = "L".repeat(4_000);
+    let big = payload.clone();
+    rig.exec.on("dump", move |_, count| {
+        ExecResult::Ok(if count == 1 { json!({"ready": true}) } else { json!({"log": big}) })
+    });
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "dump", json!({}))]),
+        turn_final(r#"{"verdict": "read it"}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+
+    runner.start(&plan, "big-2", json!({}), &opts()).unwrap();
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "big-2"))
+        .unwrap();
+    let (_, next_turn) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "read" && k.kind == EffectKind::Llm && k.effect_seq == 2)
+        .unwrap();
+    let intent = rig.facade.with_store(|m| m.get(&next_turn.intent)).unwrap();
+    let messages = intent.fields.get("input").and_then(|i| i.get("messages")).cloned().unwrap();
+    let tool_msg =
+        messages.as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap().clone();
+    assert_eq!(tool_msg["content"], json!({"log": payload}), "unbounded = unchanged");
+    assert!(runner.verify("big-2").unwrap().verified);
+}
+
+// ---- the fold ---------------------------------------------------------------
+
+/// A plan whose abstract node can call one host tool, and whose tool returns a
+/// distinguishable payload per call — so a folded round can be told apart from
+/// a kept one by reading the transcript.
+fn fold_rig() -> (Rig, Hash) {
+    let rig = Rig::new();
+    let plan = rig.plan(&["fetch", "agent"], &[("fetch", "agent")], &["agent"]);
+    rig.exec.on("fetch", |_, count| ExecResult::Ok(json!({"round": count})));
+    (rig, plan)
+}
+
+/// The transcript a turn was actually sent, read back from that turn's
+/// journaled intent — the one observation point that survives the flow being
+/// torn down when the node completes.
+fn journaled_messages(rig: &Rig, run_id: &str, node: &str, effect_seq: u32) -> Value {
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", run_id))
+        .unwrap();
+    let (_, entry) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == node && k.kind == EffectKind::Llm && k.effect_seq == effect_seq)
+        .unwrap_or_else(|| panic!("no llm effect at seq {effect_seq}"));
+    let intent = rig.facade.with_store(|m| m.get(&entry.intent)).unwrap();
+    intent.fields.get("input").cloned().unwrap()
+}
+
+/// The fold, end to end. When the provider's own reported prompt tokens plus
+/// the per-call reservation would pass the ceiling, the scheduler emits ONE more
+/// journaled turn over the middle of the transcript and splices its answer in.
+///
+/// Nothing is deleted: the folded turns remain journaled intent + result grains,
+/// `verify` answers the summarizer from the journal like any other turn, and the
+/// fold message in the transcript says where the record is.
+#[test]
+fn a_transcript_past_the_context_ceiling_folds_into_one_journaled_summary() {
+    let (rig, plan) = fold_rig();
+    // Ceiling 1000, reservation 100: a fold is due once the provider reports
+    // more than 900 prompt tokens.
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 100),
+        turn_tools_at(vec![("c2", "fetch", json!({}))], 400),
+        turn_tools_at(vec![("c3", "fetch", json!({}))], 950),
+        // seq 6: the summarizer turn. Offered no tools, so it could not call
+        // one even if it tried.
+        turn_final_at("fetched rounds 2 and 3; still need round 4", 950),
+        turn_final_at(r#"{"verdict": "done"}"#, 300),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions {
+        llm_context_tokens: Some(1_000),
+        llm_max_tokens: Some(100),
+        ..opts()
+    };
+
+    let session = runner.start(&plan, "fold-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(llm.calls(), 5, "three rounds, one fold, one closing turn");
+
+    // The summarizer was offered NO tools; every other turn was offered fetch.
+    assert_eq!(
+        llm.tools_offered(),
+        vec![1, 1, 1, 0, 1],
+        "only the fold turn (the 4th call) is toolless"
+    );
+
+    // The fold is an ordinary journaled effect, and its intent records the
+    // decision: which entries it covered and which prompt produced it.
+    let fold_input = journaled_messages(&rig, "fold-1", "agent", 6);
+    assert_eq!(
+        fold_input["fold"],
+        json!({"from": 1, "to": 3, "seq": 6, "prompt_v": 1}),
+        "the fold decision is in the journal, not only in state: {fold_input}"
+    );
+    let asked = fold_input["messages"].as_array().unwrap();
+    assert_eq!(asked.len(), 3, "the two folded entries plus the fold prompt");
+    assert_eq!(
+        asked.last().unwrap()["content"],
+        areev_run_core::step::FOLD_PROMPT,
+        "the summarizer's instruction rides the journal verbatim"
+    );
+
+    // The turn AFTER the fold sees: the node's own input untouched, then the
+    // fold message in place of the folded round, then the kept tail.
+    let next = journaled_messages(&rig, "fold-1", "agent", 7);
+    let msgs = next["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["role"], "user", "messages[0] is the node's input");
+    assert!(
+        msgs[0]["content"]["state"]["round"] == json!(1),
+        "the node's own input survives a fold: {}",
+        msgs[0]
+    );
+    let folded = msgs[1]["content"].as_str().unwrap();
+    assert!(folded.starts_with("[Areev fold 1: transcript entries 1..3 of attempt 1"), "{folded}");
+    assert!(folded.contains("effect_seq 6"), "it names where the summary is journaled: {folded}");
+    assert!(folded.contains("fetched rounds 2 and 3"), "the summary itself: {folded}");
+
+    // Round 2 was folded away; rounds 3 and 4 are still there verbatim.
+    let shown = next["messages"].to_string();
+    assert!(!shown.contains(r#""round":2"#), "the folded round left the transcript");
+    assert!(shown.contains(r#""round":3"#), "the kept tail is untouched");
+    assert!(shown.contains(r#""round":4"#));
+
+    // And the folded round is still in the JOURNAL, in full.
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "fold-1"))
+        .unwrap();
+    let (_, folded_tool) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "agent" && k.kind == EffectKind::Tool && k.effect_seq == 1)
+        .expect("the folded round's tool call is still journaled");
+    match &folded_tool.result.as_ref().unwrap().1 {
+        areev_run_core::EffectOutcome::Completed { result, .. } => {
+            assert_eq!(result["round"], 2, "the journal is the archive");
+        }
+        other => panic!("expected a completed result, got {other:?}"),
+    }
+
+    // Verify replays the fold from the journal — the scripted model is
+    // exhausted, so any model call during verify would fail loudly.
+    let report = runner.verify("fold-1").unwrap();
+    assert!(report.verified, "{report:?}");
+    assert_eq!(llm.calls(), 5, "verify never called the model");
+}
+
+/// No ceiling = no folds, ever, on exactly the same climbing token counts. The
+/// regression guard for every deployed run that sets nothing.
+#[test]
+fn without_a_context_ceiling_a_growing_transcript_never_folds() {
+    let (rig, plan) = fold_rig();
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 100),
+        turn_tools_at(vec![("c2", "fetch", json!({}))], 400),
+        turn_tools_at(vec![("c3", "fetch", json!({}))], 950),
+        turn_final_at(r#"{"verdict": "done"}"#, 99_000),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { llm_max_tokens: Some(100), ..opts() };
+
+    let session = runner.start(&plan, "nofold-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(llm.calls(), 4, "three rounds and a closing turn — no summarizer");
+    assert_eq!(llm.tools_offered(), vec![1, 1, 1, 1], "no toolless turn happened");
+    let last = journaled_messages(&rig, "nofold-1", "agent", 6);
+    assert!(
+        !last["messages"].to_string().contains("Areev fold"),
+        "nothing was folded: {}",
+        last["messages"]
+    );
+    assert!(last.get("fold").is_none());
+    assert!(runner.verify("nofold-1").unwrap().verified);
+}
+
+/// A ceiling nothing can fit under fails the node with `RUN-E024` rather than
+/// folding repeatedly. There is no foldable middle — the node's input and the
+/// kept tail alone exceed the ceiling — and another fold would only spend the
+/// effect budget summarizing summaries.
+#[test]
+fn a_ceiling_with_nothing_foldable_fails_the_node_with_run_e024() {
+    let (rig, plan) = fold_rig();
+    let llm = Arc::new(ScriptedLlm::new(vec![turn_tools_at(
+        vec![("c1", "fetch", json!({}))],
+        500,
+    )]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions {
+        llm_context_tokens: Some(100),
+        llm_max_tokens: Some(100),
+        ..opts()
+    };
+
+    let session = runner.start(&plan, "e024-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    let RunOutcome::Failed { node, detail } = outcome else {
+        panic!("the ceiling must fail the node, got {outcome:?}")
+    };
+    assert_eq!(node, "agent");
+    // The code LEADS the detail: this is not an executor error, and burying
+    // `RUN-E024` behind an `ExecutorError:` prefix would break the one rule
+    // every error code in this workspace follows.
+    assert!(detail.starts_with("RUN-E024: "), "{detail}");
+    assert!(detail.contains("nothing is left to fold"), "{detail}");
+    assert!(detail.contains("--llm-context-tokens"), "it names the way out: {detail}");
+    assert_eq!(llm.calls(), 1, "no summarizer was dispatched — there was nothing to summarize");
+    assert!(runner.verify("e024-1").unwrap().verified);
+}
+
+/// A fold is an ordinary journaled effect, so it inherits the ordinary crash
+/// contract: the driver dies after the fold intent is written and before it is
+/// dispatched, and resume adopts that intent and re-dispatches it under the SAME
+/// key rather than writing a second one.
+///
+/// The resume deliberately passes NO limits. The ceiling was frozen in the
+/// manifest at start, so a resume that had to be told about it again would mean
+/// an operator could silently un-fold a run by forgetting a flag.
+#[test]
+fn a_crash_between_a_fold_intent_and_its_dispatch_redelivers_the_same_fold() {
+    let (rig, plan) = fold_rig();
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 100),
+        turn_tools_at(vec![("c2", "fetch", json!({}))], 400),
+        turn_tools_at(vec![("c3", "fetch", json!({}))], 950),
+        turn_final_at("fetched rounds 2 and 3; still need round 4", 950),
+        turn_final_at(r#"{"verdict": "done"}"#, 300),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    // Intent #8 is the fold: fetch, then the agent's seq 0..6.
+    let err = runner
+        .start(
+            &plan,
+            "fold-crash",
+            json!({}),
+            &RunOptions {
+                llm_context_tokens: Some(1_000),
+                llm_max_tokens: Some(100),
+                workers: 1,
+                inject_crash: Some(areev_run::CrashPoint::AfterIntent(8)),
+                ..opts()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, RunError::Storage { .. }), "the injected crash: {err}");
+    assert_eq!(llm.calls(), 3, "the fold intent was written but never dispatched");
+
+    let dangling: Vec<(u32, EffectKind)> = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "fold-crash"))
+        .unwrap()
+        .entries
+        .values()
+        .filter(|e| e.result.is_none())
+        .map(|e| (e.key.effect_seq, e.key.kind))
+        .collect();
+    assert_eq!(dangling, vec![(6, EffectKind::Llm)], "the dangling intent IS the fold");
+
+    let session = runner.resume("fold-crash", &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed, "the fold was re-delivered and the loop finished");
+    assert_eq!(llm.calls(), 5, "the replayed prefix cost no model calls");
+
+    // One entry at seq 6 — the intent was ADOPTED, not duplicated — and it is
+    // still the same fold decision it was before the crash.
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "fold-crash"))
+        .unwrap();
+    assert_eq!(
+        view.entries
+            .keys()
+            .filter(|k| k.node == "agent" && k.effect_seq == 6 && k.kind == EffectKind::Llm)
+            .count(),
+        1,
+        "ONE journal entry for the fold"
+    );
+    let fold_input = journaled_messages(&rig, "fold-crash", "agent", 6);
+    assert_eq!(fold_input["fold"], json!({"from": 1, "to": 3, "seq": 6, "prompt_v": 1}));
+
+    // Deliberately NOT asserting `verify` here. A crash-recovered run diverges
+    // on `spent.wall_ms` today — the crashed leg's journaled readings span a
+    // different active window than the replay reconstructs — and it does so for
+    // a plain Host node exactly as it does here (which is why
+    // `crash_between_intent_and_result_redelivers_not_duplicates` does not
+    // assert it either). Nothing fold-specific: the fold's own state, its
+    // journaled decision and every token count replay identically. Asserting
+    // verify here would pin a pre-existing wall-accounting gap to the fold.
+    let report = runner.verify("fold-crash").unwrap();
+    let fold_step = report.steps.last().expect("a checkpoint was verified");
+    assert!(
+        !fold_step.verdict.contains("fold") && !fold_step.verdict.contains("messages"),
+        "any divergence must not be in the fold's own state: {report:?}"
+    );
 }
 
 #[test]

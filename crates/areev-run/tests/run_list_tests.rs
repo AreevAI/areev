@@ -8,7 +8,7 @@ use areev_core::authz::HARNESS_NS;
 use areev_core::error::Hash;
 use areev_core::types::{Fact, Grain, Tool, ToolKind, Workflow};
 use areev_run::{
-    ns_in_scope, BudgetsSpec, ExecResult, HostToolExecutor, OnDangling, RunOptions, RunSession,
+    ns_in_scope, ExecResult, HostToolExecutor, RunOptions, RunSession,
     Runner, ScriptedClock,
 };
 use areev_run_core::RunOutcome;
@@ -26,14 +26,7 @@ impl HostToolExecutor for OkExec {
 }
 
 fn opts() -> RunOptions {
-    RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 2,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    }
+    RunOptions { workers: 2, ..Default::default() }
 }
 
 fn runner(facade: &Arc<AreevFacade>, ns: &str, t0: u64) -> Runner {

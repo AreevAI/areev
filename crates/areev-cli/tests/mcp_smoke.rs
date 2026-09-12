@@ -125,6 +125,27 @@ fn mcp_round_trip() {
             "missing the Wave-5 run tool {run_tool}"
         );
     }
+    // The run ceilings an MCP host can set are part of the tool's contract:
+    // an abstract node's loop is bounded by an effect count, and a host that
+    // cannot raise it cannot run a long agent at all.
+    let start_props = &by_id(2)["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "areev_run_start")
+        .unwrap()["inputSchema"]["properties"];
+    assert_eq!(
+        start_props["max_effects_per_attempt"]["type"], "integer",
+        "areev_run_start must advertise the effect cap: {start_props}"
+    );
+    assert_eq!(
+        start_props["llm_tool_result_chars"]["type"], "integer",
+        "…and the per-tool-result transcript bound: {start_props}"
+    );
+    assert_eq!(
+        start_props["llm_context_tokens"]["type"], "integer",
+        "…and the whole-transcript ceiling that folds: {start_props}"
+    );
     assert!(
         tools.iter().any(|t| t["name"] == "areev_subject_report"),
         "the DSAR read joined in the GDPR compliance pack"

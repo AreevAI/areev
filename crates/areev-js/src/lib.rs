@@ -2792,6 +2792,12 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<i64>,
         resolver_env: Option<String>,
+        // Appended, never inserted: JS has no keyword arguments, so every
+        // existing positional `runStart(…)` call must keep meaning what it
+        // meant. A new knob goes at the end of the list, always.
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<u32>,
+        llm_context_tokens: Option<i64>,
     ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
         // Built HERE, on the JS thread, before the job is queued — see
         // [`JsEvents`] for why a plain function cannot reach the event bus.
@@ -2829,7 +2835,12 @@ impl Areev {
                 max_usd_micros,
                 max_wall_ms,
                 ask_ttl_sec,
-                llm_max_tokens,
+                JsRunLimits {
+                    llm_max_tokens,
+                    max_effects_per_attempt,
+                    llm_tool_result_chars,
+                    llm_context_tokens,
+                },
             )?;
             let session = runner.start(&h, &run_id, input, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
@@ -2887,7 +2898,16 @@ impl Areev {
                 egress,
                 observer,
             );
-            let opts = js_run_options_full(None, None, None, None, llm_max_tokens)?;
+            // No `maxEffectsPerAttempt` here on purpose: it was frozen into the
+            // manifest at start and is read back from there, so a resume cannot
+            // re-bound a loop the start already bounded.
+            let opts = js_run_options_full(
+                None,
+                None,
+                None,
+                None,
+                JsRunLimits { llm_max_tokens, ..Default::default() },
+            )?;
             let session = runner.resume(&run_id, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
         }))
@@ -3260,6 +3280,9 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<i64>,
         resolver_env: Option<String>,
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<u32>,
+        llm_context_tokens: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -3281,8 +3304,13 @@ impl Areev {
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 JsEgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
-                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
-                                    ask_ttl_sec, llm_max_tokens)?,
+                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
+                                    JsRunLimits {
+                    llm_max_tokens,
+                    max_effects_per_attempt,
+                    llm_tool_result_chars,
+                    llm_context_tokens,
+                })?,
             )?;
             let mut opts = areev_trigger::EvalOptions {
                 dry_run: dry_run.unwrap_or(false),
@@ -3335,6 +3363,9 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<i64>,
         resolver_env: Option<String>,
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<u32>,
+        llm_context_tokens: Option<i64>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -3358,8 +3389,13 @@ impl Areev {
                 llm,
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 JsEgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
-                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms,
-                                    ask_ttl_sec, llm_max_tokens)?,
+                js_run_options_full(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
+                                    JsRunLimits {
+                    llm_max_tokens,
+                    max_effects_per_attempt,
+                    llm_tool_result_chars,
+                    llm_context_tokens,
+                })?,
             )?;
             let report = ev.deliver(&trigger, payload).map_err(err)?;
             serde_json::to_string(&report).map_err(err)
@@ -3688,7 +3724,19 @@ fn js_run_options(
     max_wall_ms: Option<i64>,
     ask_ttl_sec: Option<i64>,
 ) -> napi::Result<areev_run::RunOptions> {
-    js_run_options_full(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, None)
+    js_run_options_full(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, JsRunLimits::default())
+}
+
+/// The run-level LLM ceilings a run inherits at start, frozen into its
+/// manifest. A struct rather than more positional arguments to
+/// [`js_run_options_full`]: they are all small integer options, so a swapped
+/// pair would compile and silently bound the wrong thing.
+#[derive(Default, Clone, Copy)]
+struct JsRunLimits {
+    llm_max_tokens: Option<u32>,
+    max_effects_per_attempt: Option<u32>,
+    llm_tool_result_chars: Option<u32>,
+    llm_context_tokens: Option<i64>,
 }
 
 fn js_run_options_full(
@@ -3696,7 +3744,7 @@ fn js_run_options_full(
     max_usd_micros: Option<i64>,
     max_wall_ms: Option<i64>,
     ask_ttl_sec: Option<i64>,
-    llm_max_tokens: Option<u32>,
+    limits: JsRunLimits,
 ) -> napi::Result<areev_run::RunOptions> {
     // A negative budget is a caller bug — refusing beats silently treating
     // it as "unlimited" (the failure mode a budget exists to prevent).
@@ -3719,7 +3767,10 @@ fn js_run_options_full(
         ask_ttl_sec,
         workers: 4,
         on_dangling: Default::default(),
-        llm_max_tokens,
+        llm_max_tokens: limits.llm_max_tokens,
+        max_effects_per_attempt: limits.max_effects_per_attempt,
+        llm_tool_result_chars: limits.llm_tool_result_chars.map(|n| n as usize),
+        llm_context_tokens: u("llmContextTokens", limits.llm_context_tokens)?,
         inject_crash: None,
     })
 }

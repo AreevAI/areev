@@ -2,7 +2,8 @@
 
 *Verified against the code on 2026-07-16 (branch `main`, near commit `002a0bc`);
 §1, §3 and §4 re-verified 2026-08-16 after the render unification changed
-what is true.
+what is true; §13 added 2026-09-12 — the assembly story is the STORE's, and the
+runtime's absence of one had gone unstated.
 Every claim below is anchored to a `file:line` you can open. This sheet backs the
 assembly claims in the (out-of-repo) `VIDEO_CONCEPT.md` and any marketing/UI copy
 about "assembling the prompt." If the code moves, fix the citations here first —
@@ -260,6 +261,50 @@ label — invalid as written (`CAL-E002`), and its `PRIORITY`-before-`BUDGET` or
 detaches the budget. `ARCHITECTURE.md` §5.4 carried the same invalid
 `org.policies BUDGET 800, …` sketch. All three were corrected and each fixed
 example was re-executed against a live store.
+
+## 13. What the RUNTIME does not do (2026-09-12)
+
+Everything above is about the **memory store**: `ASSEMBLE … BUDGET` with
+Full→Summary→Omit is why the store needs no compaction feature — you do not
+compress what you never loaded (§4). That answer does not extend to `areev
+run`, and the sheet would be dishonest by omission if it stopped here. The
+runtime's own answer is the fold (`ARCHITECTURE.md`, "The journal is the
+archive") — a *different* mechanism for a different problem, and one you have to
+turn on.
+
+- **An abstract node's transcript is unbounded BY DEFAULT.** It is the whole
+  attempt (`AbstractFlow.messages`, `crates/areev-run-core/src/state.rs`) and
+  every turn sends all of it. Three bounds exist and all three are opt-in: the
+  effect count (`max_effects_per_attempt`, default 16 — the only one on by
+  default), one tool result (`llm_tool_result_chars`, characters), and the whole
+  transcript (`llm_context_tokens`, which folds the middle into one journaled
+  summary rather than truncating).
+- **The per-call `llm_max_tokens` is an OUTPUT ceiling** (and the per-dispatch
+  reservation), never an input/context bound. `--max-tokens` is cumulative run
+  spend, not per-request size.
+- **A provider context-length rejection is still not classified.** The fold is
+  PROACTIVE — it acts on the provider's reported prompt tokens before sending.
+  An overflow that actually reaches the provider arrives as a terminal 4xx →
+  `FailCause::Unknown` → the node fails with the provider's message text as its
+  detail. Nothing retries smaller.
+- **The fold's measurement lags one round, so the ceiling alone is not a
+  guarantee.** `AbstractFlow.last_prompt_tokens` is what the provider reported
+  for the PREVIOUS turn; the assistant entry and that round's tool results are
+  appended after it and are not counted until the next turn settles. The gap is
+  unbounded unless `llm_tool_result_chars` is also set, which caps it at one
+  assistant entry plus (tool calls in the round × the cap). Both bounds
+  together, not either one — `docs/run.md` § "The two bounds are complementary,
+  not alternatives". Same shape as the §6.7 one-dispatch budget overshoot:
+  bounded and stated, not eliminated.
+- **The `chars / 4` estimator (§1, §4) is the store's, not the runtime's.** The
+  runtime never estimates. The fold triggers on the provider's own
+  `input_tokens` for the transcript exactly as sent; the per-result bound counts
+  **characters** and is named for that, because a single entry has to be cut
+  before any turn is sent and the pure crate holds no tokenizer.
+
+Stated for users in `docs/run.md` § "What bounds the transcript (and what does
+not)" and § "Bounds, stated". The consolidation producer (§11) is unrelated and
+still unbuilt.
 
 ## Corrections applied to `VIDEO_CONCEPT.md` (2026-07-16)
 

@@ -89,6 +89,22 @@ evidence. Responding and resuming are separate acts.
   pool workers never touch the store. `load_arg_schemas` wires the §6.11
   strict-argument validator into `StepEnv.validate_args` — same table live
   and on verify, or replay diverges.
+- **Every run-level LLM ceiling rides the manifest**, set once at start from
+  `RunOptions` through `RunManifest::with_limits` and read back by BOTH
+  `StepEnv` sites (`drive`, `verify`) through an accessor that supplies the
+  default — which is what makes `verify` reproduce a run that hit its effect
+  cap instead of replaying past it. Deliberately NOT arguments to `resolve`:
+  none of them affects resolution, and two call sites free to pass a different
+  subset is how one silently forgets a knob. Each is `Option` +
+  `skip_serializing_if`, because a manifest is a stored grain and a widened
+  wire shape re-addresses every one ever written (pinned by the golden in
+  `manifest.rs`'s tests). New knobs on the BINDINGS go at the END of the
+  signature — JS has no keyword arguments, so inserting one re-points every
+  existing positional `runStart(…)`.
+- **A summarizer turn is offered no tools, keyed off the JOURNAL.** The prepare
+  step reads `input.fold` on the effect it is about to dispatch, not scheduler
+  state — verify replays from journaled inputs and holds no flow, so keying it
+  off state would offer tools on replay and diverge.
 - **Result grains re-state the DISPATCHED executor** (`DispatchDone.executor`)
   — a flow tool inside an abstract node runs as Host while the node-level
   executor says Abstract; journaling the node-level one would rename the
@@ -378,6 +394,13 @@ Neither replaces the other — see `docs/security-model.md` and
 
 ## Not yet (documented gaps)
 
+- **Context management is PROACTIVE only.** The fold triggers on the provider's
+  reported prompt tokens before a turn is sent; a provider's own context-length
+  *rejection* is still classified nowhere — terminal 4xx → `FailCause::Unknown`
+  → `fail_abstract`, transcript gone from state. Closing that needs a distinct
+  `ToolCallError` kind, which needs the seam to classify structurally rather
+  than parse message strings: feasible on OpenAI-compatible
+  (`error.code = "context_length_exceeded"`), only partial on Anthropic.
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
   detection + explicit forks only.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.

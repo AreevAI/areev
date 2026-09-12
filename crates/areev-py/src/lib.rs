@@ -1701,7 +1701,9 @@ impl Areev {
                         llm_max_tokens = None, allow_executor = None, executor_cache = None,
                         sandbox_cmd = None, executor_timeout_secs = None, tool_env = None,
                         on_event = None, credentials = None, allow_hosts = None,
-                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None,
+                        max_effects_per_attempt = None,
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1729,6 +1731,11 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<u64>,
         resolver_env: Option<String>,
+        // Appended, never inserted: a positional caller of an existing
+        // signature must keep working, so a new knob goes at the end.
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1748,8 +1755,18 @@ impl Areev {
             egress,
             py_observer(on_event),
         );
-        let opts =
-            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens);
+        let opts = run_options(
+            max_tokens,
+            max_usd_micros,
+            max_wall_ms,
+            ask_ttl_sec,
+            RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            },
+        );
         let session = py
             .detach(|| runner.start(&h, &run_id, input, &opts))
             .map_err(err)?;
@@ -1802,7 +1819,11 @@ impl Areev {
             egress,
             py_observer(on_event),
         );
-        let opts = run_options(None, None, None, None, llm_max_tokens);
+        // No `max_effects_per_attempt` here on purpose: it was frozen into the
+        // manifest at start and is read back from there, so a resume cannot
+        // re-bound a loop the start already bounded.
+        let opts =
+            run_options(None, None, None, None, RunLimits { llm_max_tokens, ..Default::default() });
         let session = py.detach(|| runner.resume(&run_id, &opts)).map_err(err)?;
         Ok(run_session_json(session).to_string())
     }
@@ -1878,7 +1899,7 @@ impl Areev {
             None => None,
         };
         let runner = self.runner(None, None);
-        let opts = run_options(None, None, None, None, None);
+        let opts = run_options(None, None, None, None, RunLimits::default());
         let seed = py
             .detach(|| runner.fork(&base_run_id, at_superstep, &new_run_id, plan_hash.as_ref(), &opts))
             .map_err(err)?;
@@ -2686,7 +2707,9 @@ impl Areev {
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
                         executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
                         tool_env = None, credentials = None, allow_hosts = None,
-                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None,
+                        max_effects_per_attempt = None,
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2717,12 +2740,21 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<u64>,
         resolver_env: Option<String>,
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
-            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
+            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
+                        RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            }),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
         if let Some(secs) = lease_secs {
@@ -2749,7 +2781,9 @@ impl Areev {
                         ask_ttl_sec = None, llm_max_tokens = None, allow_executor = None,
                         executor_cache = None, sandbox_cmd = None, executor_timeout_secs = None,
                         tool_env = None, credentials = None, allow_hosts = None,
-                        tool_egress = None, credential_ttl_secs = None, resolver_env = None))]
+                        tool_egress = None, credential_ttl_secs = None, resolver_env = None,
+                        max_effects_per_attempt = None,
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2777,6 +2811,9 @@ impl Areev {
         tool_egress: Option<String>,
         credential_ttl_secs: Option<u64>,
         resolver_env: Option<String>,
+        max_effects_per_attempt: Option<u32>,
+        llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
@@ -2784,7 +2821,13 @@ impl Areev {
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
-            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec, llm_max_tokens),
+            run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
+                        RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            }),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
         serde_json::to_string(&report).map_err(err)
@@ -3234,12 +3277,24 @@ fn tool_env_policy(names: Option<&str>) -> Option<areev_core::proc::EnvPolicy> {
     Some(policy)
 }
 
+/// The run-level LLM ceilings a run inherits at start, frozen into its
+/// manifest. A struct rather than more positional arguments to
+/// [`run_options`]: they are all small integer options, so a swapped pair
+/// would compile and silently bound the wrong thing.
+#[derive(Default, Clone, Copy)]
+struct RunLimits {
+    llm_max_tokens: Option<u32>,
+    max_effects_per_attempt: Option<u32>,
+    llm_tool_result_chars: Option<usize>,
+    llm_context_tokens: Option<u64>,
+}
+
 fn run_options(
     max_tokens: Option<u64>,
     max_usd_micros: Option<u64>,
     max_wall_ms: Option<u64>,
     ask_ttl_sec: Option<i64>,
-    llm_max_tokens: Option<u32>,
+    limits: RunLimits,
 ) -> areev_run::RunOptions {
     areev_run::RunOptions {
         budgets: areev_run::BudgetsSpec {
@@ -3252,7 +3307,10 @@ fn run_options(
         ask_ttl_sec,
         workers: 4,
         on_dangling: Default::default(),
-        llm_max_tokens,
+        llm_max_tokens: limits.llm_max_tokens,
+        max_effects_per_attempt: limits.max_effects_per_attempt,
+        llm_tool_result_chars: limits.llm_tool_result_chars,
+        llm_context_tokens: limits.llm_context_tokens,
         inject_crash: None,
     }
 }
