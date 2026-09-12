@@ -893,6 +893,11 @@ run's accounting equals a live run's. Exhaustion is a **parked checkpoint**,
 not a corrupted run: `areev run fork` re-opens a budget-exhausted terminal
 under raised budgets, continuing exactly where it stopped.
 
+Every axis here is **cumulative**, never per-request: `--max-tokens` bounds
+what the run spends in total, not how large any one model request may be. What
+bounds a single request is the abstract node's transcript, which is a separate
+matter — see [What bounds the transcript](#what-bounds-the-transcript-and-what-does-not).
+
 ## Verify and shadow
 
 ```bash
@@ -1005,6 +1010,36 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   missing key fails without leaving behind a run that could never advance. The
   backend is host config and is deliberately not journaled with the run, which
   is why `run_resume` takes it too rather than recovering it from the manifest.
+
+### What bounds the transcript (and what does not)
+
+An abstract node's transcript is the **whole attempt** — every model turn,
+every tool result, verbatim — and each turn sends all of it. Three things
+follow, none of them visible from the flag names:
+
+- `--llm-max-tokens` is the **output** ceiling for one call, and the per-call
+  reservation checked against the token budget. It says nothing about how
+  large the prompt may grow.
+- `--max-tokens` bounds **cumulative** spend across the run, not the size of
+  any one request. A run can sit far under its token budget and still issue a
+  request no provider will accept.
+- The only bound on the loop itself is a **count**: at most 16 effects per node
+  attempt, with model turns, model-issued tool calls and re-prompts sharing one
+  counter. A node that needs a 17th fails `ExecutorError: llm loop exceeded
+  max_effects_per_attempt` — at one tool call per turn, roughly eight turns.
+
+So a transcript that outgrows the model's context window is **the provider's
+error and nothing more**: the runtime does not summarize, trim, or re-plan it.
+The rejection is terminal, so the node fails with the provider's message as its
+detail. Two shapes reach it. One oversized tool result — a file read, a log
+dump, a JSON dump — can exhaust the window inside a single round, because a
+tool result enters the transcript exactly as the tool returned it. Or an
+ordinary loop accumulates enough turns to grow past it under the effect cap.
+
+What survives either way is the **journal**: one intent + result grain per
+effect, written before the node failed and untouched by its failure. Every turn
+and every tool result is still addressable, and `run-trace` still shows all of
+them. The transcript is scheduler state; the record is the journal.
 
 ## Fan-out (`Send`)
 
@@ -1206,6 +1241,12 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
+- An abstract node runs at most **16 effects per attempt** (turns, tool calls
+  and re-prompts share the counter); the 17th fails the node.
+- **There is no context-window management.** An abstract node's transcript
+  grows without bound until the provider rejects it, and that rejection fails
+  the node. No summarization, no trimming, no per-result cap — the journal
+  keeps every turn, but the runtime will not shrink what it sends.
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
 - The condition grammar is frozen; there is no expression language beyond

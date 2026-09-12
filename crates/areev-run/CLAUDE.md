@@ -378,6 +378,16 @@ Neither replaces the other — see `docs/security-model.md` and
 
 ## Not yet (documented gaps)
 
+- **No context management in an abstract node's loop.** The transcript is the
+  whole attempt (`AbstractFlow.messages`) and every turn clones all of it into
+  the effect input; tool results enter it verbatim; `llm_reserve_tokens` is the
+  per-call OUTPUT ceiling, not an input bound; the only bound is the count
+  (`max_effects_per_attempt`, hardcoded 16 at both `StepEnv` sites). A provider
+  context-length rejection is classified nowhere — terminal 4xx →
+  `FailCause::Unknown` → `fail_abstract`, and the transcript leaves state. The
+  signal for a real bound already exists: every LLM result carries the
+  provider's `input_tokens` for the transcript exactly as sent. Stated for
+  users in `docs/run.md` § "What bounds the transcript".
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
   detection + explicit forks only.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.
