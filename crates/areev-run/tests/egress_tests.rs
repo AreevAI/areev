@@ -325,14 +325,7 @@ fn a_refused_destination_is_auditable_from_the_memory() {
             &plan,
             "r1",
             json!({}),
-            &RunOptions {
-                budgets: Default::default(),
-                ask_ttl_sec: None,
-                workers: 1,
-                on_dangling: areev_run::OnDangling::Redispatch,
-                llm_max_tokens: None,
-                inject_crash: None,
-            },
+            &RunOptions { workers: 1, ..Default::default() },
         )
         .unwrap();
 
@@ -1026,14 +1019,7 @@ fn a_successful_brokered_call_is_auditable_from_the_memory() {
             &plan,
             "r-calls",
             json!({}),
-            &RunOptions {
-                budgets: Default::default(),
-                ask_ttl_sec: None,
-                workers: 1,
-                on_dangling: areev_run::OnDangling::Redispatch,
-                llm_max_tokens: None,
-                inject_crash: None,
-            },
+            &RunOptions { workers: 1, ..Default::default() },
         )
         .unwrap();
 
@@ -1416,14 +1402,7 @@ fn guest_headers_are_journaled_with_their_values() {
             &plan,
             "r-hdrs",
             json!({}),
-            &RunOptions {
-                budgets: Default::default(),
-                ask_ttl_sec: None,
-                workers: 1,
-                on_dangling: areev_run::OnDangling::Redispatch,
-                llm_max_tokens: None,
-                inject_crash: None,
-            },
+            &RunOptions { workers: 1, ..Default::default() },
         )
         .unwrap();
 
@@ -1743,14 +1722,7 @@ fn a_blob_read_is_auditable_from_the_memory() {
             &plan,
             "r-blob",
             json!({}),
-            &RunOptions {
-                budgets: Default::default(),
-                ask_ttl_sec: None,
-                workers: 1,
-                on_dangling: areev_run::OnDangling::Redispatch,
-                llm_max_tokens: None,
-                inject_crash: None,
-            },
+            &RunOptions { workers: 1, ..Default::default() },
         )
         .unwrap();
 
@@ -2121,14 +2093,7 @@ fn the_driver_binds_the_run_principal_for_owned_credentials() {
         principal: "user:bob".into(),
     };
     runner
-        .start(&plan, "r1", json!({}), &RunOptions {
-            budgets: Default::default(),
-            ask_ttl_sec: None,
-            workers: 1,
-            on_dangling: areev_run::OnDangling::Redispatch,
-            llm_max_tokens: None,
-            inject_crash: None,
-        })
+        .start(&plan, "r1", json!({}), &RunOptions { workers: 1, ..Default::default() })
         .unwrap();
 
     assert!(site.requests().is_empty(), "bob's run must not spend alice's credential");

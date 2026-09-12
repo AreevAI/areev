@@ -17,7 +17,7 @@
 use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, Tool, ToolKind, Trigger, TriggerKind, Workflow};
-use areev_run::{BudgetsSpec, CodeExecutor, ExecResult, HostToolExecutor, OnDangling, RunOptions};
+use areev_run::{CodeExecutor, ExecResult, HostToolExecutor, RunOptions};
 use areev_store::Areev;
 use areev_trigger::{clock::FixedClock, EvalOptions, Evaluator, RunStarter, StartResult};
 use serde_json::{json, Value};
@@ -124,14 +124,7 @@ impl Rig {
             connector_code: None,
             starter: Some(Arc::new(RunnerStarter {
                 runner,
-                opts: RunOptions {
-                    budgets: BudgetsSpec::default(),
-                    ask_ttl_sec: None,
-                    workers: 2,
-                    on_dangling: OnDangling::Redispatch,
-                    llm_max_tokens: None,
-                    inject_crash: None,
-                },
+                opts: RunOptions { workers: 2, ..Default::default() },
             }) as Arc<dyn RunStarter>),
             credentials: Default::default(),
             ns: NS.into(),

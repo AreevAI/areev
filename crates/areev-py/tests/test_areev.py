@@ -591,6 +591,36 @@ def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
     assert seen("py-env-empty", tool_env="") == ""
 
 
+def test_run_loop_limits_are_accepted_on_the_run_surfaces(tmp_path):
+    # Lockstep with the CLI's `--max-effects` / `--llm-tool-result-chars` and
+    # Node's `maxEffectsPerAttempt` / `llmToolResultChars`: an abstract node's
+    # loop is bounded by an effect count and by how much of one tool result the
+    # model is shown, and a binding that cannot set either cannot run a long
+    # agent at all. A bound Host node spends one effect and returns a tiny
+    # result, so the run completes under any limits — what this pins is that the
+    # keywords exist, are typed, and reach the manifest rather than being
+    # swallowed as unexpected arguments.
+    m = make_db(tmp_path, ns="ops")
+    greet = m.add("tool", json.dumps({
+        "tool_name": "greet", "kind": "definition",
+        "tool_description": "greets", "created_at": 500,
+    }), "ops")
+    wf = m.add("workflow", json.dumps({
+        "nodes": ["greet"], "edges": [], "bindings": {"greet": greet},
+        "created_at": 502,
+    }), "ops")
+    started = json.loads(m.run_start(
+        wf, "py-cap", "{}", 'printf \'{"ok":true}\'',
+        max_effects_per_attempt=40, llm_tool_result_chars=12000,
+        llm_context_tokens=150000,
+    ))
+    assert started["finished"] == "Completed"
+    # It reached the run rather than being dropped on the floor: the run is
+    # journal-consistent under replay, and the replay builds its scheduler env
+    # from the frozen manifest alone.
+    assert json.loads(m.run_verify("py-cap"))["verified"] is True
+
+
 def test_tool_env_reaches_the_trigger_connector(tmp_path, monkeypatch):
     # A connector holds the third-party credential more often than a tool does,
     # so a tool_env that stopped at the run starter would clear the environment

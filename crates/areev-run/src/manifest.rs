@@ -86,9 +86,29 @@ pub struct RunManifest {
     pub input: serde_json::Value,
     /// Per-LLM-call `max_tokens` — both the request ceiling handed to the
     /// model and the §6.7 per-dispatch reservation the scheduler checks
-    /// before emitting an LLM effect.
+    /// before emitting an LLM effect. This is an OUTPUT ceiling; nothing here
+    /// bounds how large a transcript may grow.
     #[serde(default)]
     pub llm_max_tokens: Option<u32>,
+    /// Effects one node attempt may spend (an abstract node's turns, tool
+    /// calls and re-prompts share the counter). Frozen here so a resume
+    /// bounds the loop exactly as the start did, and absent on every manifest
+    /// written before the knob existed — which is why it is `Option` with
+    /// `skip_serializing_if`: those manifests must serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_effects_per_attempt: Option<u32>,
+    /// Bound on ONE tool result's size in an abstract node's TRANSCRIPT, in
+    /// characters. The journal keeps every result in full regardless — this
+    /// bounds only what the model is shown. `None` = unbounded, the behaviour
+    /// of every run before the knob existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_tool_result_chars: Option<usize>,
+    /// Ceiling on an abstract node's WHOLE transcript, in the provider's own
+    /// reported prompt tokens. Reaching it emits one journaled summarizer turn
+    /// and splices its result over the folded range. `None` = no ceiling, the
+    /// behaviour of every run before the fold existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_context_tokens: Option<u64>,
     /// Typed reducers (§6.5): state_key → builtin reducer name, read off
     /// the Workflow grain's `reducers` field and FROZEN here — a resume
     /// must merge exactly as the original run did. Undeclared keys are LWW.
@@ -142,7 +162,6 @@ impl RunManifest {
         ask_ttl_sec: Option<i64>,
         input: serde_json::Value,
         llm_available: bool,
-        llm_max_tokens: Option<u32>,
     ) -> std::result::Result<RunManifest, RunError> {
         // Where the plan itself lives. Read once, used only when a node fails
         // to resolve: a plan run in a namespace that is not its own is the
@@ -254,16 +273,43 @@ impl RunManifest {
             ask_ttl_sec,
             redaction: "none".into(),
             input,
-            llm_max_tokens,
+            llm_max_tokens: None,
+            max_effects_per_attempt: None,
+            llm_tool_result_chars: None,
+            llm_context_tokens: None,
             reducers,
             fork_of: None,
         })
     }
 
+    /// Freeze the caller's run-level LLM limits into the manifest.
+    ///
+    /// Deliberately NOT arguments to [`RunManifest::resolve`]: not one of them
+    /// affects resolution — they are ceilings the scheduler reads back on
+    /// every resume and verify — and threading each through an
+    /// already-ten-argument signature would make the next one an eleventh,
+    /// with two call sites free to disagree about which knobs they passed.
+    /// One place to add a limit, one place that can forget it.
+    pub fn with_limits(mut self, opts: &crate::RunOptions) -> Self {
+        self.llm_max_tokens = opts.llm_max_tokens;
+        self.max_effects_per_attempt = opts.max_effects_per_attempt;
+        self.llm_tool_result_chars = opts.llm_tool_result_chars;
+        self.llm_context_tokens = opts.llm_context_tokens;
+        self
+    }
+
     /// The per-dispatch token reserve (§6.7) — the scheduler refuses to
     /// emit an LLM effect that could not fit under the token ceiling.
     pub fn llm_reserve_tokens(&self) -> u64 {
-        u64::from(self.llm_max_tokens.unwrap_or(1024))
+        u64::from(self.llm_max_tokens.unwrap_or(crate::runner::DEFAULT_LLM_MAX_TOKENS))
+    }
+
+    /// Effects one node attempt may spend, as the scheduler's `StepEnv` reads
+    /// it. Every `StepEnv` the driver builds — drive, verify — takes it from
+    /// here, so a resumed or replayed run is bounded exactly as the start was.
+    pub fn max_effects_per_attempt(&self) -> u32 {
+        self.max_effects_per_attempt
+            .unwrap_or(areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT)
     }
 
     /// The executor vector the scheduler env consumes, in node order. An
@@ -622,4 +668,71 @@ pub fn abstract_nodes(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A manifest with nothing pinned and no limits set — the shape every
+    /// pre-1.9 run persisted.
+    fn bare() -> RunManifest {
+        RunManifest {
+            run_id: "r1".into(),
+            plan_hash: "deadbeef".into(),
+            principal: "user:t".into(),
+            pinned: vec![],
+            budgets: BudgetsSpec::default(),
+            ask_ttl_sec: None,
+            redaction: "none".into(),
+            input: json!({}),
+            llm_max_tokens: None,
+            max_effects_per_attempt: None,
+            llm_tool_result_chars: None,
+            llm_context_tokens: None,
+            reducers: BTreeMap::new(),
+            fork_of: None,
+        }
+    }
+
+    /// The whole reason `max_effects_per_attempt` is an `Option` carrying
+    /// `skip_serializing_if`: a manifest written before the knob existed must
+    /// serialize to the SAME bytes it did then. The manifest is a stored
+    /// grain, so a widened wire shape would re-address every one of them.
+    #[test]
+    fn an_unset_effect_cap_serializes_as_it_did_before_the_field_existed() {
+        let json = serde_json::to_string(&bare()).unwrap();
+        assert_eq!(
+            json,
+            r#"{"run_id":"r1","plan_hash":"deadbeef","principal":"user:t","pinned":[],"budgets":{"max_supersteps":null,"max_tokens":null,"max_usd_micros":null,"max_wall_ms":null,"max_storage_bytes":null},"ask_ttl_sec":null,"redaction":"none","input":{},"llm_max_tokens":null}"#
+        );
+    }
+
+    /// The other half: a manifest persisted before the field existed still
+    /// loads, and bounds its loops at the documented default.
+    #[test]
+    fn a_pre_existing_manifest_reads_back_at_the_default_cap() {
+        let stored = r#"{"run_id":"r1","plan_hash":"deadbeef","principal":"user:t",
+            "pinned":[],"budgets":{"max_supersteps":null,"max_tokens":null,
+            "max_usd_micros":null,"max_wall_ms":null,"max_storage_bytes":null},
+            "ask_ttl_sec":null,"redaction":"none","input":{},"llm_max_tokens":null}"#;
+        let m: RunManifest = serde_json::from_str(stored).unwrap();
+        assert_eq!(m.max_effects_per_attempt, None);
+        assert_eq!(m.max_effects_per_attempt(), 16);
+        assert_eq!(
+            m.llm_tool_result_chars, None,
+            "unbounded tool results: what every pre-1.9 run did"
+        );
+        // Named here as well as in run-core, because changing it changes the
+        // behaviour of every existing plan that relies on the bound.
+        assert_eq!(areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT, 16);
+    }
+
+    #[test]
+    fn a_pinned_cap_wins_over_the_default() {
+        let m = RunManifest { max_effects_per_attempt: Some(40), ..bare() };
+        assert_eq!(m.max_effects_per_attempt(), 40);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""max_effects_per_attempt":40"#), "{json}");
+    }
 }

@@ -6,12 +6,12 @@ v1.8.1 · 17 crates · 307 Rust files
 
 | | |
 |---|---|
-| Source code | **96,047** lines |
-| Test code | **57,498** lines (37.4% of all code) |
-| Test functions | **2,737** |
+| Source code | **96,408** lines |
+| Test code | **57,998** lines (37.6% of all code) |
+| Test functions | **2,761** |
 | Line coverage | **82.3%** of 62,893 instrumented source lines |
-| Stable error codes | **99** |
-| Reference docs | 62 files, 30,133 lines |
+| Stable error codes | **100** |
+| Reference docs | 62 files, 30,353 lines |
 
 ## By crate
 
@@ -19,32 +19,32 @@ v1.8.1 · 17 crates · 307 Rust files
 |---|---:|---:|---:|---:|
 | `areev-cal` | 41 | 24,566 | 19,404 | 1,021 |
 | `areev-store` | 40 | 11,285 | 5,852 | 295 |
+| `areev-run` | 23 | 6,424 | 6,736 | 201 |
+| `areev-cli` | 22 | 7,412 | 6,749 | 198 |
 | `areev-core` | 51 | 8,870 | 4,514 | 301 |
-| `areev-cli` | 22 | 7,406 | 6,704 | 195 |
-| `areev-run` | 23 | 6,395 | 6,415 | 191 |
 | `areev-loop` | 34 | 11,611 | 1,552 | 194 |
 | `areev-bench` | 19 | 6,482 | 2,596 | 104 |
-| `areev-trigger` | 13 | 2,009 | 2,631 | 131 |
+| `areev-trigger` | 13 | 2,009 | 2,624 | 131 |
 | `areev-context` | 8 | 1,918 | 2,481 | 94 |
 | `areev-server` | 3 | 2,220 | 1,612 | 79 |
-| `areev-run-core` | 8 | 2,100 | 969 | 31 |
+| `areev-run-core` | 8 | 2,326 | 1,110 | 42 |
 | `areev-conformance` | 21 | 1,926 | 983 | 22 |
-| `areev-js` | 2 | 2,815 | 0 | 0 |
+| `areev-js` | 2 | 2,855 | 0 | 0 |
+| `areev-py` | 2 | 2,441 | 0 | 0 |
 | `areev-llm` | 8 | 1,792 | 844 | 44 |
-| `areev-py` | 2 | 2,393 | 0 | 0 |
 | `areev-loop-adapter` | 7 | 987 | 941 | 35 |
-| `areev-mcp` | 1 | 1,215 | 0 | 0 |
+| `areev-mcp` | 1 | 1,227 | 0 | 0 |
 
 ## Composition
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 202,873 |
-| Source code (no blanks or comments) | 96,047 |
-| Unit test code (`#[cfg(test)]` blocks) | 26,863 |
-| Integration test code (`tests/`, `benches/`) | 30,635 |
+| Physical lines (all Rust) | 204,196 |
+| Source code (no blanks or comments) | 96,408 |
+| Unit test code (`#[cfg(test)]` blocks) | 27,081 |
+| Integration test code (`tests/`, `benches/`) | 30,917 |
 | Example code (`examples/`) | 669 |
-| Test functions | 2,737 |
+| Test functions | 2,761 |
 
 ## Coverage
 

@@ -121,6 +121,24 @@ pub enum FlowNeed {
     Tools(Vec<PendingToolCall>),
 }
 
+/// A summarizer turn in flight: which transcript entries its result will
+/// stand in for, and the `effect_seq` it was dispatched under.
+///
+/// Held in state rather than re-derived, because the decision of WHAT to fold
+/// is made before the model answers and must not be re-made afterwards: the
+/// transcript has not changed in between, but re-deriving would couple the
+/// splice to whatever `fold_range` returns at resolution time rather than to
+/// what the journaled request actually summarized.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FoldInFlight {
+    /// First transcript index covered (inclusive).
+    pub from: usize,
+    /// One past the last covered index.
+    pub to: usize,
+    /// The summarizer turn's own effect ordinal.
+    pub effect_seq: u32,
+}
+
 /// In-flight LLM-loop state for one abstract node at its current attempt
 /// (§6.2's "a workflow with abstract nodes is an agent — same runtime").
 /// Every entry is built from journaled outcomes, so the transcript is
@@ -145,9 +163,33 @@ pub struct AbstractFlow {
     /// Unknown-tool corrections issued (§6.11: ONE re-prompt, then the
     /// node fails `ExecutorError`).
     pub unknown_strikes: u32,
+    /// The provider's OWN reported prompt-token count for the last completed
+    /// turn — the transcript's size at the model's tokenizer, not an estimate.
+    /// 0 before the first turn settles, and reset to 0 by a fold so the next
+    /// real turn measures the spliced transcript rather than the old one.
+    ///
+    /// Every one of the fold fields carries `skip_serializing_if` at its
+    /// default: an `AbstractFlow` in a run that configured no ceiling must
+    /// serialize to exactly the bytes it did before these existed, or every
+    /// stored checkpoint diverges on the next `verify`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_prompt_tokens: u64,
+    /// Set while a summarizer turn is outstanding; taken at its resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folding: Option<FoldInFlight>,
+    /// Folds performed on this attempt, and the number in the fold message the
+    /// model reads. A completed node's flow is gone by the terminal checkpoint,
+    /// so the durable record of a fold is its journaled intent (`input.fold`,
+    /// visible in `run-trace`) rather than this counter.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub folds: u32,
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -271,5 +313,54 @@ impl SchedulerState {
             Phase::Finished(o) => Some(o),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bare_flow() -> AbstractFlow {
+        AbstractFlow {
+            messages: vec![serde_json::json!({"role": "user", "content": "go"})],
+            next_effect_seq: 1,
+            pending_tools: BTreeMap::new(),
+            round_results: BTreeMap::new(),
+            need: None,
+            unknown_strikes: 0,
+            last_prompt_tokens: 0,
+            folding: None,
+            folds: 0,
+        }
+    }
+
+    /// The replay-equivalence gate compares checkpoint BYTES, so a run that
+    /// configured no context ceiling must serialize its flows exactly as it did
+    /// before the fold existed. Every fold field is therefore `serde(default)`
+    /// plus `skip_serializing_if` at its default — and this is the test that
+    /// notices when the next field forgets one.
+    #[test]
+    fn a_flow_with_no_fold_state_serializes_as_it_did_before_folds_existed() {
+        let json = serde_json::to_string(&bare_flow()).unwrap();
+        assert_eq!(
+            json,
+            r#"{"messages":[{"content":"go","role":"user"}],"next_effect_seq":1,"pending_tools":{},"round_results":{},"need":null,"unknown_strikes":0}"#
+        );
+    }
+
+    /// And the fold state round-trips byte-stably once it IS set — a checkpoint
+    /// taken mid-fold has to resume into the same splice decision.
+    #[test]
+    fn fold_state_round_trips_byte_stably() {
+        let flow = AbstractFlow {
+            last_prompt_tokens: 120_000,
+            folding: Some(FoldInFlight { from: 1, to: 9, effect_seq: 9 }),
+            folds: 2,
+            ..bare_flow()
+        };
+        let bytes = serde_json::to_string(&flow).unwrap();
+        let back: AbstractFlow = serde_json::from_str(&bytes).unwrap();
+        assert_eq!(back, flow);
+        assert_eq!(serde_json::to_string(&back).unwrap(), bytes);
     }
 }

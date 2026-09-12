@@ -18,7 +18,7 @@ use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, Tool, ToolKind, Workflow};
 use areev_run::{
-    BudgetsSpec, CodeExecutor, ExecResult, HostToolExecutor, OnDangling, RunOptions, Runner,
+    CodeExecutor, ExecResult, HostToolExecutor, RunOptions, Runner,
     RunSession, ScriptedClock,
 };
 use areev_run_core::RunOutcome;
@@ -107,14 +107,7 @@ impl Rig {
 }
 
 fn opts() -> RunOptions {
-    RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 2,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    }
+    RunOptions { workers: 2, ..Default::default() }
 }
 
 #[test]

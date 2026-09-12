@@ -11,7 +11,7 @@ use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, Tool, ToolKind, Workflow};
 use areev_run::{
-    BudgetsSpec, ExecResult, HostToolExecutor, OnDangling, RunOptions, Runner, RunSession,
+    ExecResult, HostToolExecutor, RunOptions, Runner, RunSession,
     SystemClock,
 };
 use areev_store::Areev;
@@ -72,14 +72,7 @@ fn drill(delay_ms: u64, node_ms: u64, run_id: &str) -> (String, bool, String) {
         };
         let _ = brake.cancel(&rid, "user:operator", "kill-switch drill");
     });
-    let opts = RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 1,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    };
+    let opts = RunOptions { workers: 1, ..Default::default() };
     let session = runner.start(&plan, run_id, json!({}), &opts).unwrap();
     braker.join().unwrap();
     let outcome = match session {

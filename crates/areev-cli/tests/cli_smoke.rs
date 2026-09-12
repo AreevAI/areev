@@ -296,6 +296,125 @@ fn capture_stop_keeps_the_ordered_typed_transcript() {
     assert!(err.contains("read-only"), "unclear selector refusal: {err}");
 }
 
+/// PreCompact is the event that says the conversation is about to be dropped,
+/// so `capture-stop` serves it too. Three properties, all of them the
+/// difference between a hook that helps and a hook that hurts:
+///
+/// 1. A missing transcript exits 0 and says nothing. PreCompact has been seen
+///    firing with an empty `transcript_path` (anthropics/claude-code#13668),
+///    and a hook must never be the reason a compaction stalls or gets noisy.
+/// 2. A compaction summary is TAGGED, not stored as if a person typed it.
+/// 3. Stop then PreCompact over the same transcript stores nothing twice — the
+///    two events can point at one verb precisely because it is idempotent.
+#[test]
+fn precompact_captures_before_the_transcript_is_lost() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("compact.db");
+    let db = db.to_str().unwrap();
+
+    let capture = |hook: serde_json::Value| -> (bool, String) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(["capture-stop", "--db", db, "--ns", "code"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn capture-stop");
+        child.stdin.as_mut().unwrap().write_all(hook.to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stdout).to_string())
+    };
+
+    // 1. Fail open: no transcript path at all, and an empty one.
+    for path in [serde_json::Value::Null, serde_json::json!("")] {
+        let (ok, stdout) = capture(serde_json::json!({
+            "session_id": "sess-c",
+            "hook_event_name": "PreCompact",
+            "trigger": "auto",
+            "transcript_path": path,
+        }));
+        assert!(ok, "a PreCompact with no transcript must exit 0, not error");
+        assert!(stdout.trim().is_empty(), "…and must print nothing: {stdout:?}");
+    }
+
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            r#"{"message":{"role":"user","content":"port the parser to the new lexer"}}"#,
+            r#"{"message":{"role":"assistant","content":"Done — three call sites updated."}}"#,
+            // What the compactor leaves behind: `type` and `role` both say
+            // "user", so without the tag this is indistinguishable from the
+            // line above it.
+            r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"Summary: the parser port is done; tests pass."}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    // 2 + 3. Stop first (the ordinary path), then PreCompact over the SAME
+    // transcript: the second firing must add nothing.
+    let (ok, stdout) = capture(serde_json::json!({
+        "session_id": "sess-c",
+        "hook_event_name": "Stop",
+        "transcript_path": transcript.to_str().unwrap(),
+    }));
+    assert!(ok, "capture-stop failed");
+    assert!(stdout.contains("captured 3 events"), "{stdout}");
+
+    let (ok, stdout) = capture(serde_json::json!({
+        "session_id": "sess-c",
+        "hook_event_name": "PreCompact",
+        "trigger": "auto",
+        "transcript_path": transcript.to_str().unwrap(),
+    }));
+    assert!(ok, "PreCompact capture failed");
+    assert!(
+        stdout.contains("captured 0 events") && stdout.contains("3 already stored"),
+        "Stop then PreCompact over one transcript must store nothing twice: {stdout}"
+    );
+
+    // The summary is stored, still `user` (that IS what the model saw), and
+    // flagged so a reader can tell it from what the person typed.
+    let recall = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["cal", "RECALL events RECENT 10", "--db", db, "--ns", "code"])
+        .output()
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&recall.stdout).unwrap();
+    let grains = payload["grains"].as_array().unwrap();
+    assert_eq!(grains.len(), 3, "{payload}");
+    let summaries: Vec<_> =
+        grains.iter().filter(|g| g["fields"]["compact_summary"] == true).collect();
+    assert_eq!(summaries.len(), 1, "exactly the compaction summary is tagged: {payload}");
+    assert_eq!(summaries[0]["fields"]["role"], "user", "role stays what the model saw");
+    assert!(
+        grains
+            .iter()
+            .filter(|g| g["fields"]["role"] == "user")
+            .any(|g| g["fields"]["compact_summary"].is_null()),
+        "the person's own turn must NOT be tagged: {payload}"
+    );
+
+    // The compaction itself is recorded as harness evidence — never in the
+    // captured namespace, which is the agent's to read.
+    let harness = Command::new(env!("CARGO_BIN_EXE_areev"))
+        .args(["cal", "RECALL observations RECENT 10", "--db", db, "--ns", "agent:harness"])
+        .output()
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&harness.stdout).unwrap();
+    let obs = payload["grains"].as_array().unwrap();
+    let compaction = obs
+        .iter()
+        .find(|g| g["fields"]["observation_kind"] == "compaction")
+        .unwrap_or_else(|| panic!("no compaction observation: {payload}"));
+    assert_eq!(compaction["fields"]["compact_trigger"], "auto");
+    assert_eq!(compaction["fields"]["session_id"], "sess-c");
+    assert_eq!(
+        compaction["fields"]["already_stored"], 3,
+        "the evidence that memory survived the compaction: {compaction}"
+    );
+}
+
 #[test]
 fn corpus_registry_requires_harness_write_grant() {
     let dir = TempDir::new().unwrap();

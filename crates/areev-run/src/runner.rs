@@ -57,6 +57,19 @@ pub struct RunOptions {
     /// Per-LLM-call `max_tokens` for abstract nodes — frozen into the
     /// manifest at start (§6.7's per-dispatch reservation). None = 1024.
     pub llm_max_tokens: Option<u32>,
+    /// Effects one node attempt may spend — an abstract node's turns, tool
+    /// calls and re-prompts share the counter. Frozen into the manifest at
+    /// start; None = [`areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT`].
+    pub max_effects_per_attempt: Option<u32>,
+    /// Bound on ONE tool result's size in an abstract node's transcript, in
+    /// characters — the journal keeps every result in full. Frozen into the
+    /// manifest at start. None = unbounded.
+    pub llm_tool_result_chars: Option<usize>,
+    /// Ceiling on an abstract node's whole transcript, in the provider's own
+    /// reported prompt tokens — reaching it folds the middle of the transcript
+    /// into one journaled summary. Frozen into the manifest at start.
+    /// None = no ceiling.
+    pub llm_context_tokens: Option<u64>,
     /// Crash-injection for the §5.5 gates. `None` in production.
     pub inject_crash: Option<CrashPoint>,
 }
@@ -553,8 +566,8 @@ impl Runner {
                 opts.ask_ttl_sec,
                 input.clone(),
                 self.llm.is_some(),
-                opts.llm_max_tokens,
             )
+            .map(|m| m.with_limits(opts))
         })?;
         // Refuse an unpinned code executor before the run exists: it would
         // otherwise take a lease, write a manifest, and fail on first
@@ -858,8 +871,8 @@ impl Runner {
                         opts.ask_ttl_sec,
                         context.clone(),
                         self.llm.is_some(),
-                        opts.llm_max_tokens,
                     )
+                    .map(|m| m.with_limits(opts))
                 })?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
@@ -1257,7 +1270,9 @@ impl Runner {
             ask_ttl_sec: manifest.ask_ttl_sec,
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
-            max_effects_per_attempt: 16,
+            max_effects_per_attempt: manifest.max_effects_per_attempt(),
+            llm_tool_result_chars: manifest.llm_tool_result_chars,
+            llm_context_tokens: manifest.llm_context_tokens,
         };
         let run_id = st.run_id.clone();
 
@@ -1605,8 +1620,16 @@ impl Runner {
                                     detail: "llm effect on a non-abstract node".into(),
                                 });
                             };
-                            let mut defs = Vec::with_capacity(tools.len());
-                            for t in tools {
+                            // A SUMMARIZER turn is offered no tools. Keyed on
+                            // the journaled `fold` marker in the effect's own
+                            // input, so verify makes the identical choice from
+                            // the journal alone — reading it off scheduler
+                            // state would not replay.
+                            let folding = input.get("fold").is_some();
+                            let offered: &[areev_run_core::OfferedTool] =
+                                if folding { &[] } else { tools };
+                            let mut defs = Vec::with_capacity(offered.len());
+                            for t in offered {
                                 let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
                                 let def = self
                                     .facade
@@ -2399,7 +2422,9 @@ impl Runner {
             ask_ttl_sec: manifest.ask_ttl_sec,
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
-            max_effects_per_attempt: 16,
+            max_effects_per_attempt: manifest.max_effects_per_attempt(),
+            llm_tool_result_chars: manifest.llm_tool_result_chars,
+            llm_context_tokens: manifest.llm_context_tokens,
         };
 
         let mut report = VerifyReport::default();

@@ -87,6 +87,16 @@ pub enum RunError {
     /// key for them is HKDF-derived from the page key, which is why this also
     /// means an encrypted memory.
     AnonReplayUnsafe { ns: String, scope: String },
+    /// RUN-E024 — an abstract node's transcript is over `llm_context_tokens`
+    /// and there is nothing left to fold: the node's input and the kept tail
+    /// alone exceed the ceiling, or a fold already ran and did not help.
+    ///
+    /// Deliberately NOT a retry and not a second fold. A fold that cannot find
+    /// a foldable middle will never find one by trying again, and looping on it
+    /// would spend the effect budget summarizing summaries. The honest answer
+    /// is a failed node naming the ceiling it could not fit under — raise it,
+    /// bound the tool results (`llm_tool_result_chars`), or split the node.
+    ContextExceeded { node: String, tokens: u64, ceiling: u64 },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -140,6 +150,7 @@ impl RunError {
             Self::LeaseLost { .. } => "RUN-E021",
             Self::EgressRefused { .. } => "RUN-E022",
             Self::AnonReplayUnsafe { .. } => "RUN-E023",
+            Self::ContextExceeded { .. } => "RUN-E024",
         }
     }
 }
@@ -245,6 +256,14 @@ impl fmt::Display for RunError {
                 "{code}: lease on run '{run_id}' was lost — another driver took it over \
                  while this one was advancing it; this driver's writes are refused"
             ),
+            Self::ContextExceeded { node, tokens, ceiling } => write!(
+                f,
+                "{code}: node '{node}' has a transcript the model reported at \
+                 {tokens} prompt tokens against a ceiling of {ceiling}, and \
+                 nothing is left to fold — the node's input and the kept tail \
+                 alone exceed it. Raise --llm-context-tokens, bound oversized \
+                 tool results (--llm-tool-result-chars), or split the node"
+            ),
         }
     }
 }
@@ -282,6 +301,7 @@ mod tests {
             RunError::LeaseLost { run_id: "r".into() },
             RunError::EgressRefused { destination: "https://x/".into() },
             RunError::AnonReplayUnsafe { ns: "n".into(), scope: "session".into() },
+            RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: 8 },
         ]
     }
 
@@ -302,6 +322,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 23);
+        assert_eq!(seen.len(), 24);
     }
 }

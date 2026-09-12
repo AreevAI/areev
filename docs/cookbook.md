@@ -140,6 +140,26 @@ The snippet wires the `Stop` hook to `areev capture-stop`, which reads Claude
 Code's hook JSON on stdin and stores the last exchange as thread-indexed Event
 grains.
 
+It wires the same verb to **`PreCompact`** as well — the event that says the
+conversation is about to be dropped. `capture-stop` is idempotent by content
+address, so firing it there costs nothing when the last `Stop` already stored
+everything, and saves the turns when it did not. That is the difference between
+a compaction costing the model its context and costing you the record of it.
+Two details worth knowing:
+
+- **A compaction summary is tagged, not disguised.** Claude Code writes its
+  post-compaction summary into the transcript as an ordinary `user` line, so
+  without help it would be stored as if you had typed it. Those Events carry
+  `compact_summary: true` and keep `role: user` — that *is* what the model saw
+  afterwards — so `RECALL events` can tell a machine's recap from your words.
+- **It fails open.** A PreCompact with no readable transcript exits 0 and prints
+  nothing; a hook must never be the reason a compaction stalls.
+
+Each compaction also writes one Observation in `agent:harness`
+(`observation_kind: "compaction"`, with the trigger and how many turns were
+already stored) — the durable answer to "did memory survive it?", asked later
+when the transcript is gone.
+
 See [`mcp-reference.md`](mcp-reference.md) for the tool schemas.
 
 ---
@@ -613,7 +633,7 @@ as above.
 
 ### Closing the loop automatically (Claude Code)
 
-The steps above are the mechanics; two hooks make the loop run without you
+The steps above are the mechanics; three hooks make the loop run without you
 thinking about it. `areev hook claude-code` prints a `settings.json` snippet
 that wires both directions:
 
@@ -627,10 +647,19 @@ areev hook claude-code --db ~/.areev/code.db --ns claude-code   # prints, never 
 - **`Stop` → `areev capture-stop`** stores the turn's last exchange as Events,
   including tool calls and their outcomes (a failing `tool_result` is captured
   and flagged), which is the raw signal reflection distills from.
+- **`PreCompact` → `areev capture-stop`** — the same verb, on the event that
+  says the conversation is about to be dropped. Being idempotent by content
+  address is what lets one verb serve both: it stores whatever the last `Stop`
+  did not and nothing twice. The summary a compaction produces is stored with
+  `compact_summary: true` (see §3), and each compaction leaves one
+  `observation_kind: "compaction"` Observation in `agent:harness` recording how
+  many turns were already safe.
 
 `recall-hook` reads the hook JSON on stdin (`{"prompt": "..."}`), so it also
 works from any tool that can run a command per prompt; it stays silent when
-there is no prompt or no match, so it never adds noise.
+there is no prompt or no match, so it never adds noise. `capture-stop` fails
+open the same way: no readable transcript, no output, exit 0 — a hook must
+never be the reason a compaction stalls.
 
 ### The reflection harness (your model call)
 
