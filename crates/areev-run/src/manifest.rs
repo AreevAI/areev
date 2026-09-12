@@ -103,6 +103,12 @@ pub struct RunManifest {
     /// of every run before the knob existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_tool_result_chars: Option<usize>,
+    /// Ceiling on an abstract node's WHOLE transcript, in the provider's own
+    /// reported prompt tokens. Reaching it emits one journaled summarizer turn
+    /// and splices its result over the folded range. `None` = no ceiling, the
+    /// behaviour of every run before the fold existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_context_tokens: Option<u64>,
     /// Typed reducers (§6.5): state_key → builtin reducer name, read off
     /// the Workflow grain's `reducers` field and FROZEN here — a resume
     /// must merge exactly as the original run did. Undeclared keys are LWW.
@@ -270,6 +276,7 @@ impl RunManifest {
             llm_max_tokens: None,
             max_effects_per_attempt: None,
             llm_tool_result_chars: None,
+            llm_context_tokens: None,
             reducers,
             fork_of: None,
         })
@@ -287,6 +294,7 @@ impl RunManifest {
         self.llm_max_tokens = opts.llm_max_tokens;
         self.max_effects_per_attempt = opts.max_effects_per_attempt;
         self.llm_tool_result_chars = opts.llm_tool_result_chars;
+        self.llm_context_tokens = opts.llm_context_tokens;
         self
     }
 
@@ -681,6 +689,7 @@ mod tests {
             llm_max_tokens: None,
             max_effects_per_attempt: None,
             llm_tool_result_chars: None,
+            llm_context_tokens: None,
             reducers: BTreeMap::new(),
             fork_of: None,
         }

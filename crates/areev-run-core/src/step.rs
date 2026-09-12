@@ -39,9 +39,9 @@
 //!   enforcement point, with overshoot bounded by one superstep's
 //!   dispatches (stated, not hidden).
 
-use crate::error::BudgetAxis;
+use crate::error::{BudgetAxis, RunError};
 use crate::plan::PlanGraph;
-use crate::state::{EdgeRes, NodeState, PendingAsk, Phase, SchedulerState};
+use crate::state::{EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState};
 use crate::types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
     FailCause, JournalKey, NodeExecutor, RunOutcome,
@@ -54,6 +54,33 @@ use std::collections::BTreeMap;
 /// sites and the manifest accessor that feeds them — and because changing it
 /// changes the behaviour of every existing plan that relies on the bound.
 pub const DEFAULT_MAX_EFFECTS_PER_ATTEMPT: u32 = 16;
+
+/// Transcript entries a fold keeps at the END, beyond `messages[0]`.
+///
+/// Four is two complete rounds at one tool call per turn, which is the shortest
+/// tail that still shows the model what it just did and what came back. It is
+/// expressed in entries rather than "rounds" because a round has no fixed
+/// length — a turn may issue three tool calls or none — and a count of entries
+/// is something `fold_range` can check without parsing the transcript's shape.
+/// The cut then moves forward off any `tool` entry, which is what actually
+/// keeps rounds intact.
+pub const KEEP_TAIL: usize = 4;
+
+/// The instruction a summarizer turn carries.
+///
+/// This text RIDES THE JOURNAL: it is part of the fold intent's `input`, so a
+/// stored run records the exact prompt its summary was produced from. Changing
+/// it therefore changes what a journal contains — bump [`FOLD_PROMPT_V`] and
+/// say so in the changelog rather than editing it quietly.
+pub const FOLD_PROMPT: &str = "Summarize the working state of this task so far \
+for someone who will continue it: what has been established, which tools were \
+called and what they returned in substance, what remains to be done, and any \
+errors or dead ends. Be concrete; keep identifiers, paths and values verbatim. \
+Reply with the summary only.";
+
+/// The version of [`FOLD_PROMPT`], journaled beside it so a reader of an old
+/// run knows which wording produced its summaries.
+pub const FOLD_PROMPT_V: u32 = 1;
 
 /// The injected pure behavior. Everything here is REQUIRED to be pure —
 /// enforced by the journaled decision record + replay assertion, not trust.
@@ -93,6 +120,12 @@ pub struct StepEnv<'a> {
     /// unbounded, which is what every run did before the knob existed. The
     /// journal is never bounded: see [`bound_tool_content`].
     pub llm_tool_result_chars: Option<usize>,
+    /// Ceiling on the WHOLE transcript, in the provider's own prompt tokens
+    /// (`AbstractFlow.last_prompt_tokens`). `None` = no ceiling, which is what
+    /// every run did before the fold existed. Reaching it emits one journaled
+    /// summarizer turn and splices its result over the folded range; failing
+    /// to find a foldable range is `RUN-E024`.
+    pub llm_context_tokens: Option<u64>,
 }
 
 /// One step's output.
@@ -352,6 +385,9 @@ fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, 
             round_results: BTreeMap::new(),
             need: None,
             unknown_strikes: 0,
+            last_prompt_tokens: 0,
+            folding: None,
+            folds: 0,
         },
     );
     dispatch_llm_turn(env, st, i, path, out);
@@ -500,6 +536,15 @@ fn handle_llm_outcome(
 ) {
     let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
     let flow_id = flow_key(i, path);
+    // A summarizer turn resolves differently from a model turn: its result is
+    // not the node's answer, and any tool calls in it are ignored (it was
+    // offered none). Taken here so a retryable failure also clears the marker
+    // and `dispatch_llm_turn` re-derives the decision from the same transcript.
+    let folding = st.abstract_flows.get_mut(&flow_id).and_then(|f| f.folding.take());
+    if let Some(f) = folding {
+        resolve_fold(env, st, i, path, f, outcome);
+        return;
+    }
     let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
     match outcome {
         EffectOutcome::Failed { cause, detail, .. } => match cause {
@@ -528,7 +573,14 @@ fn handle_llm_outcome(
                 fail_abstract(env, st, i, path, detail);
             }
         },
-        EffectOutcome::Completed { result, .. } => {
+        EffectOutcome::Completed { result, input_tokens, .. } => {
+            // The transcript's size at the MODEL's own tokenizer, for the
+            // context ceiling to measure on the next dispatch. The provider
+            // reported it for the transcript exactly as sent, which is why the
+            // runtime never estimates.
+            if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
+                flow.last_prompt_tokens = *input_tokens;
+            }
             let text = result.get("text").and_then(|t| t.as_str()).map(str::to_string);
             let calls: Vec<crate::state::PendingToolCall> = result
                 .get("tool_calls")
@@ -696,6 +748,74 @@ pub fn bound_tool_content(
         "tail": text.chars().skip(total - half).collect::<String>(),
         "journal": { "attempt": attempt, "effect_seq": effect_seq },
     })
+}
+
+/// A summarizer turn resolved: splice its result over the range it stood in
+/// for, and hand the loop back to an ordinary next turn.
+///
+/// The splice is an edit to **scheduler state only**. Every entry it removes
+/// remains a journaled intent + result grain — nothing is deleted, nothing is
+/// rewritten, and the fold message says where the record is. That is the root
+/// `CLAUDE.md`'s immutability invariant applied to the runtime.
+fn resolve_fold(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    f: FoldInFlight,
+    outcome: &EffectOutcome,
+) {
+    let flow_id = flow_key(i, path);
+    match outcome {
+        EffectOutcome::Completed { result, .. } => {
+            let summary =
+                result.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            let attempt = flow_attempt(st, i, path);
+            let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
+            // The range was computed against this very transcript and nothing
+            // has touched it since — but a scheduler must not panic on a range
+            // it cannot apply. Dropping the fold and taking an ordinary turn
+            // re-derives the decision on the next dispatch.
+            if f.from >= f.to || f.to > flow.messages.len() {
+                flow.need = Some(crate::state::FlowNeed::NextTurn);
+                return;
+            }
+            let n = flow.folds + 1;
+            let fold_msg = serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "[Areev fold {n}: transcript entries {}..{} of attempt {attempt} were \
+                     replaced by this summary, journaled at effect_seq {}. The full record \
+                     — every turn and every tool result — is in this run's journal.]\n{summary}",
+                    f.from, f.to, f.effect_seq,
+                ),
+            });
+            flow.messages.splice(f.from..f.to, [fold_msg]);
+            flow.folds = n;
+            // The spliced transcript has not been measured yet. Zero means "ask
+            // the provider again", not "it is small" — the next real turn's
+            // reported prompt tokens decide whether another fold is due.
+            flow.last_prompt_tokens = 0;
+            flow.need = Some(crate::state::FlowNeed::NextTurn);
+        }
+        EffectOutcome::Failed { cause, detail, .. } => match cause {
+            // Transient: retry the TURN, which re-derives the fold decision
+            // from the unchanged transcript. Bounded by the effect cap like
+            // every other retry in the loop, so it cannot spin.
+            FailCause::Timeout | FailCause::ExecutorError => {
+                if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
+                    flow.need = Some(crate::state::FlowNeed::NextTurn);
+                }
+            }
+            // Terminal, including a schema failure: there is no schema on a
+            // summarizer turn, so a corrective re-prompt would be theatre.
+            FailCause::Unknown
+            | FailCause::UserAborted
+            | FailCause::SchemaValidationFailed => {
+                fail_abstract(env, st, i, path, detail);
+            }
+        },
+    }
 }
 
 /// A model-issued tool call resolved. Tool failures inside an abstract loop
@@ -1079,6 +1199,85 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
     }
 }
 
+/// Which transcript entries a fold may replace: everything between the node's
+/// input and the last [`KEEP_TAIL`] entries. `None` when that middle is empty —
+/// there is nothing a summary could stand in for.
+///
+/// Two rules make the result safe to send:
+///
+/// - **`messages[0]` is never folded.** It is the node's instruction and its
+///   input state — the only entry that says what the node is for. A summary of
+///   the task cannot replace the task.
+/// - **The cut never separates a `tool` result from the `assistant` entry that
+///   issued it.** Providers reject a tool result with no preceding tool call,
+///   so the cut moves FORWARD past any leading `tool` entries, shrinking the
+///   kept tail rather than splitting a round. Moving it backward would instead
+///   fold the assistant entry and orphan the results.
+///
+/// Pure, and only ever called at a `NextTurn` boundary (`dispatch_llm_turn`
+/// runs with `pending_tools` empty by construction), so a fold cannot land
+/// mid-round.
+fn fold_range(messages: &[Value]) -> Option<(usize, usize)> {
+    let from = 1;
+    let mut to = messages.len().saturating_sub(KEEP_TAIL);
+    if to <= from {
+        return None;
+    }
+    // Keep the round intact: a `tool` entry at the cut belongs to an assistant
+    // entry inside the folded range, so advance until the boundary is not one.
+    while to < messages.len() && messages[to].get("role").and_then(Value::as_str) == Some("tool") {
+        to += 1;
+    }
+    if to <= from || to > messages.len() {
+        return None;
+    }
+    Some((from, to))
+}
+
+/// Emit the summarizer turn for `from..to` of node `i`'s transcript.
+///
+/// An ordinary [`EffectKind::Llm`] effect in every respect that matters: it
+/// consumes an `effect_seq`, spends the per-call reservation, and is journaled
+/// as intent + result. That is the whole design — a fold is one more journaled
+/// turn, so `verify` answers it from the journal like any other and never calls
+/// the model. The `fold` key in its input is what tells the driver to offer the
+/// summarizer NO tools, and what makes the decision visible in `run inspect`.
+fn emit_fold_turn(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    from: usize,
+    to: usize,
+    out: &mut Vec<Command>,
+) {
+    let flow_id = flow_key(i, path);
+    let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
+    if flow.next_effect_seq >= env.max_effects_per_attempt {
+        fail_abstract(env, st, i, path, "llm loop exceeded max_effects_per_attempt");
+        return;
+    }
+    let effect_seq = flow.next_effect_seq;
+    flow.next_effect_seq += 1;
+    flow.need = None;
+    let mut messages: Vec<Value> = flow.messages[from..to].to_vec();
+    messages.push(serde_json::json!({ "role": "user", "content": FOLD_PROMPT }));
+    flow.folding = Some(crate::state::FoldInFlight { from, to, effect_seq });
+    let key = JournalKey {
+        run_id: st.run_id.clone(),
+        task_path: path.to_string(),
+        node: env.plan.nodes[i].clone(),
+        attempt: flow_attempt(st, i, path),
+        effect_seq,
+        kind: EffectKind::Llm,
+    };
+    let input = serde_json::json!({
+        "messages": messages,
+        "fold": { "from": from, "to": to, "seq": effect_seq, "prompt_v": FOLD_PROMPT_V },
+    });
+    emit_effect(env, st, i, path, key, input, out);
+}
+
 /// Emit the next LLM turn of node `i`'s abstract flow, with the §6.7
 /// per-dispatch token reservation: `spent + reserve` must fit BEFORE the
 /// effect is emitted — the refinement pre-flight-only checking could not
@@ -1101,6 +1300,48 @@ fn dispatch_llm_turn(
                 flow.need = Some(crate::state::FlowNeed::NextTurn);
             }
             return;
+        }
+    }
+    // The context ceiling, checked AFTER the budget reservation and BEFORE the
+    // effect cap: a fold spends an effect like any turn, so it must not be the
+    // thing that pushes the node over its count without the count having been
+    // checked. Measured on the PROVIDER's reported prompt tokens for the last
+    // completed turn — never on an estimate — plus the output we are about to
+    // reserve, because a prompt that fits and a reply that does not is the
+    // same rejection.
+    if let Some(ceiling) = env.llm_context_tokens {
+        let projected = st
+            .abstract_flows
+            .get(&flow_id)
+            .map(|f| f.last_prompt_tokens)
+            .unwrap_or(0)
+            .saturating_add(env.llm_reserve_tokens);
+        let idle = st.abstract_flows.get(&flow_id).is_some_and(|f| f.folding.is_none());
+        if idle && projected > ceiling {
+            match st.abstract_flows.get(&flow_id).and_then(|f| fold_range(&f.messages)) {
+                Some((from, to)) => {
+                    emit_fold_turn(env, st, i, path, from, to, out);
+                    return;
+                }
+                // Nothing foldable: the node's input plus the kept tail alone
+                // exceed the ceiling. Another fold cannot help, and looping
+                // would spend the effect budget summarizing summaries.
+                None => {
+                    let tokens = st
+                        .abstract_flows
+                        .get(&flow_id)
+                        .map(|f| f.last_prompt_tokens)
+                        .unwrap_or(0);
+                    let detail = RunError::ContextExceeded {
+                        node: env.plan.nodes[i].clone(),
+                        tokens,
+                        ceiling,
+                    }
+                    .to_string();
+                    fail_abstract_coded(env, st, i, path, &detail);
+                    return;
+                }
+            }
         }
     }
     let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
@@ -1230,8 +1471,25 @@ fn emit_effect(
 }
 
 /// Fail an abstract node (loop bound, terminal model failure): fail-fast
-/// semantics, the same path a Host node's retry exhaustion takes.
+/// semantics, the same path a Host node's retry exhaustion takes. The detail is
+/// classified `ExecutorError:` — the loop's own failures are the executor's as
+/// far as a reader of the outcome is concerned.
 fn fail_abstract(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    detail: &str,
+) {
+    fail_abstract_coded(env, st, i, path, &format!("ExecutorError: {detail}"));
+}
+
+/// Fail an abstract node with a detail that already leads with its own
+/// `RUN-Ennn`. Separate from [`fail_abstract`] because the workspace rule is
+/// that the code is the LEADING token of what a user reads, and an
+/// `ExecutorError:` prefix in front of one buries it — besides being wrong:
+/// a transcript the scheduler refused to send is not an executor's failure.
+fn fail_abstract_coded(
     env: &StepEnv<'_>,
     st: &mut SchedulerState,
     i: usize,
@@ -1246,7 +1504,7 @@ fn fail_abstract(
     let named = st.failed.as_ref().map(|(n, _)| *n).unwrap_or(usize::MAX);
     if i < named {
         let at = if path.is_empty() { String::new() } else { format!(" (task {path})") };
-        st.failed = Some((i, format!("ExecutorError: {detail}{at}")));
+        st.failed = Some((i, format!("{detail}{at}")));
     }
     let _ = env;
 }
@@ -1707,5 +1965,78 @@ mod tests {
         assert_eq!(bounded["head"], "");
         assert_eq!(bounded["tail"], "");
         assert_eq!(bounded["journal"]["effect_seq"], 4);
+    }
+
+    // ---- the fold's range decision -------------------------------------
+
+    fn msg(role: &str) -> Value {
+        json!({"role": role, "content": "x"})
+    }
+
+    /// A short transcript has no middle: `messages[0]` is the node's input and
+    /// the rest is the kept tail, so there is nothing a summary could replace.
+    /// Returning `None` here is what produces `RUN-E024` rather than a fold
+    /// that would delete the task description.
+    #[test]
+    fn nothing_to_fold_below_the_kept_tail() {
+        for n in 0..=KEEP_TAIL + 1 {
+            let messages: Vec<Value> = (0..n).map(|_| msg("user")).collect();
+            assert_eq!(fold_range(&messages), None, "len {n} must not be foldable");
+        }
+    }
+
+    /// The first entry is the node's instruction and input state. A summary of
+    /// the task cannot stand in for the task, so the range always starts at 1.
+    #[test]
+    fn the_nodes_input_is_never_folded() {
+        let messages: Vec<Value> = (0..12).map(|_| msg("user")).collect();
+        let (from, to) = fold_range(&messages).expect("a middle exists");
+        assert_eq!(from, 1, "messages[0] is the node's own input");
+        assert_eq!(to, 12 - KEEP_TAIL);
+    }
+
+    /// Providers reject a `tool` result whose `assistant` tool call is not in
+    /// the request. So the cut moves FORWARD off a tool entry — shrinking the
+    /// kept tail — rather than backward, which would fold the assistant entry
+    /// and orphan the results that follow it.
+    #[test]
+    fn the_cut_never_separates_a_tool_result_from_its_assistant_turn() {
+        // Tail of 4 would start at index 8, which is a `tool`: the cut must
+        // advance to 10, the next non-tool entry.
+        let messages = vec![
+            msg("user"),      // 0 node input
+            msg("assistant"), // 1
+            msg("tool"),      // 2
+            msg("user"),      // 3
+            msg("assistant"), // 4
+            msg("tool"),      // 5
+            msg("user"),      // 6
+            msg("assistant"), // 7
+            msg("tool"),      // 8  <- naive cut lands here
+            msg("tool"),      // 9
+            msg("user"),      // 10
+            msg("assistant"), // 11
+        ];
+        let (from, to) = fold_range(&messages).expect("a middle exists");
+        assert_eq!(from, 1);
+        assert_eq!(to, 10, "advanced past both tool entries");
+        assert_ne!(
+            messages[to].get("role").and_then(Value::as_str),
+            Some("tool"),
+            "the entry AFTER the fold must never be an orphaned tool result"
+        );
+    }
+
+    /// A round wide enough to fill the whole tail — one assistant turn issuing
+    /// eight tool calls — folds ENTIRELY, keeping no tail at all. That is the
+    /// right answer, not a missing guard: every candidate tail entry is a `tool`
+    /// result whose `assistant` entry sits inside the folded range, so keeping
+    /// any of them would orphan it. Fold all of it and make progress, rather
+    /// than refuse and kill the node with `RUN-E024`.
+    #[test]
+    fn a_round_that_fills_the_tail_folds_entirely_rather_than_orphaning_it() {
+        let mut messages = vec![msg("user"), msg("assistant")];
+        messages.extend((0..8).map(|_| msg("tool")));
+        assert_eq!(fold_range(&messages), Some((1, 10)));
     }
 }

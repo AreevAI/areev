@@ -1072,7 +1072,51 @@ large value puts that value in `messages[0]` of every abstract node below it;
 that is a plan-shape question, not a transcript one.
 
 **Or the loop simply grows** — enough turns, each carrying the ones before it,
-to pass the window under the effect cap. Nothing bounds that yet.
+to pass the window under the effect cap. That is what `--llm-context-tokens`
+is for.
+
+### The fold: what happens when the transcript outgrows the window
+
+`--llm-context-tokens N` (`llm_context_tokens` on MCP, Python and Node; default:
+no ceiling) sets a ceiling on the whole transcript. Before each turn the
+scheduler compares the **provider's own reported prompt tokens for the previous
+turn**, plus the `--llm-max-tokens` reservation for this one, against it. Over
+the ceiling, it emits one more turn — a **summarizer** — over the middle of the
+transcript, and replaces that middle with the answer:
+
+```
+messages[0]  the node's instruction + input      ← never folded
+messages[1]  [Areev fold 1: transcript entries 1..9 of attempt 1 were replaced
+             by this summary, journaled at effect_seq 9. The full record — every
+             turn and every tool result — is in this run's journal.]
+             <the summary>
+messages[2…] the last few entries, verbatim      ← the kept tail
+```
+
+Six things are worth knowing before you turn it on.
+
+- **Nothing is deleted.** The fold edits scheduler state; every folded turn and
+  tool result is still a journaled intent + result grain, still visible in
+  `run-trace`, still addressable by `(run, task_path, node, attempt,
+  effect_seq)`. The journal is the archive — that is the whole design
+  ([ARCHITECTURE.md](../ARCHITECTURE.md), "The journal is the archive").
+- **The summarizer is an ordinary journaled turn.** It spends an effect and a
+  token reservation like any other, its request is in the journal (including the
+  exact prompt, versioned), and `verify` answers it from the journal — so a
+  folded run still replays byte-identically and **still never calls the model**.
+- **The summarizer is offered no tools**, so a fold can have no side effects.
+- **The trigger is the provider's number, not an estimate.** Areev's `chars / 4`
+  token estimator belongs to `ASSEMBLE`; the runtime never consults it.
+- **Raise `--llm-max-tokens` when you use folds.** A summarizer turn runs under
+  the same per-call output ceiling as every other turn, and the default (1024)
+  is tight for summarizing a long middle.
+- **`RUN-E024` when nothing is foldable.** If the node's input and the kept tail
+  alone exceed the ceiling there is no middle to summarize, and a second fold
+  would only summarize summaries — so the node fails, naming the ceiling and the
+  three ways out (raise it, bound the tool results, split the node).
+
+The ceiling is frozen in the manifest at start, like every other run limit, so a
+`resume` folds exactly where the start would have.
 
 What survives either way is the **journal**: one intent + result grain per
 effect, written before the node failed and untouched by its failure. Every turn
@@ -1274,7 +1318,8 @@ actually meet: `RUN-E002` unbounded cycle (add `max_cycles`), `RUN-E004`
 unresolvable binding, `RUN-E005` bad condition, `RUN-E006` abstract node
 without an LLM, `RUN-E007` budget exhausted (fork to raise), `RUN-E009`
 replay divergence (names the differing fields), `RUN-E011` response names no
-pending ask, `RUN-E012` missing grant, `RUN-E013` canceled. The full
+pending ask, `RUN-E012` missing grant, `RUN-E013` canceled, `RUN-E024`
+transcript over `--llm-context-tokens` with nothing left to fold. The full
 registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
@@ -1284,11 +1329,16 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
   node. Frozen in the manifest at start.
 - `--llm-tool-result-chars` bounds ONE tool result in the transcript
   (characters, default unbounded); the journal keeps every result in full.
-- **There is no context-window management.** Past the per-result bound an
-  abstract node's transcript still grows without limit until the provider
-  rejects it, and that rejection fails the node. No summarization, no trimming
-  of the transcript as a whole — the journal keeps every turn, but the runtime
-  will not shrink what it sends.
+- `--llm-context-tokens` bounds the WHOLE transcript, in the provider's own
+  reported prompt tokens (default: no ceiling). Past it the middle is folded
+  into one journaled summary; `RUN-E024` when nothing is foldable.
+- **Both bounds are off by default.** Without them an abstract node's transcript
+  grows until the provider rejects it, and that rejection fails the node — the
+  runtime will not shrink what it sends unless you ask it to.
+- **A fold does not react to a provider's context-length error.** It is
+  proactive only: an overflow that arrives as a terminal 4xx still fails the
+  node, because the model seam classifies errors structurally and does not parse
+  provider message strings.
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
 - The condition grammar is frozen; there is no expression language beyond

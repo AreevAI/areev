@@ -22,7 +22,7 @@ journaled events back, assert the same commands come out.
 
 ## Module map
 
-- `error.rs` — the `RUN-Ennn` domain (E001–E020, append-only; format and
+- `error.rs` — the `RUN-Ennn` domain (E001–E024, append-only; format and
   uniqueness pinned by tests).
 - `cond.rs` — the frozen v1 condition grammar (`==`/`!=`/`exists`/truthy;
   strict JSON equality, NO coercion, `1 != 1.0` deliberately). Parse errors
@@ -75,11 +75,27 @@ journaled events back, assert the same commands come out.
   the transcript through `bound_tool_content`, which excerpts one result past
   `llm_tool_result_chars` (CHARACTERS — this crate holds no tokenizer and must
   not pretend) and passes it through byte-identically under the bound, so an
-  unbounded run's checkpoints are unchanged. Neither bounds the transcript as a
-  whole: nothing here limits how large it grows.
+  unbounded run's checkpoints are unchanged.
   A flow torn down mid-round leaves stragglers:
   `resolve_effect` guards resolved nodes so a late tool result cannot flip
   DoneFailed back to DoneOk.
+- **The fold** (`llm_context_tokens`): before a turn, if the PROVIDER's reported
+  `last_prompt_tokens` for the previous turn plus the reservation exceeds the
+  ceiling, emit one summarizer turn over `fold_range(messages)` and splice its
+  result in. Pinned, all of it load-bearing: the trigger is provider tokens and
+  NEVER `chars/4`; `messages[0]` is never folded (a summary of the task cannot
+  replace the task); the cut moves FORWARD off a `tool` entry so a result is
+  never orphaned from its `assistant` turn (a whole round filling the tail folds
+  entirely — that is correct, not a missing guard); a fold happens only at a
+  `NextTurn` boundary, so never mid-round; the summarizer is offered NO tools
+  (the driver keys that off the journaled `input.fold`, not off state, or verify
+  would diverge); a fold is an ORDINARY journaled effect, so verify answers it
+  from the journal and never calls the model; `last_prompt_tokens` resets to 0
+  after a splice so the next real turn re-measures; and nothing foldable is
+  `RUN-E024` via `fail_abstract_coded` (NOT `fail_abstract` — its
+  `ExecutorError:` prefix would bury the code, and a refused transcript is not
+  an executor failure). `FOLD_PROMPT` rides the journal: changing it changes
+  what stored runs contain, so bump `FOLD_PROMPT_V`.
 - **Per-dispatch token reservation** (§6.7): `spent + llm_reserve_tokens`
   must fit BEFORE an LLM effect is emitted; on refusal the un-dispatched
   turn survives as a `FlowNeed` and `exhausted` drains the run — a fork

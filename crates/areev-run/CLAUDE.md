@@ -101,6 +101,10 @@ evidence. Responding and resuming are separate acts.
   `manifest.rs`'s tests). New knobs on the BINDINGS go at the END of the
   signature — JS has no keyword arguments, so inserting one re-points every
   existing positional `runStart(…)`.
+- **A summarizer turn is offered no tools, keyed off the JOURNAL.** The prepare
+  step reads `input.fold` on the effect it is about to dispatch, not scheduler
+  state — verify replays from journaled inputs and holds no flow, so keying it
+  off state would offer tools on replay and diverge.
 - **Result grains re-state the DISPATCHED executor** (`DispatchDone.executor`)
   — a flow tool inside an abstract node runs as Host while the node-level
   executor says Abstract; journaling the node-level one would rename the
@@ -390,17 +394,13 @@ Neither replaces the other — see `docs/security-model.md` and
 
 ## Not yet (documented gaps)
 
-- **No context-WINDOW management in an abstract node's loop.** The transcript is
-  the whole attempt (`AbstractFlow.messages`) and every turn clones all of it
-  into the effect input; `llm_reserve_tokens` is the per-call OUTPUT ceiling,
-  not an input bound. One tool result is bounded
-  (`llm_tool_result_chars` → `bound_tool_content`), and the effect count is
-  bounded (`max_effects_per_attempt`) — but nothing bounds the transcript as a
-  whole. A provider context-length rejection is classified nowhere — terminal
-  4xx → `FailCause::Unknown` → `fail_abstract`, and the transcript leaves
-  state. The signal for a real bound already exists: every LLM result carries
-  the provider's `input_tokens` for the transcript exactly as sent. Stated for
-  users in `docs/run.md` § "What bounds the transcript".
+- **Context management is PROACTIVE only.** The fold triggers on the provider's
+  reported prompt tokens before a turn is sent; a provider's own context-length
+  *rejection* is still classified nowhere — terminal 4xx → `FailCause::Unknown`
+  → `fail_abstract`, transcript gone from state. Closing that needs a distinct
+  `ToolCallError` kind, which needs the seam to classify structurally rather
+  than parse message strings: feasible on OpenAI-compatible
+  (`error.code = "context_length_exceeded"`), only partial on Anthropic.
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
   detection + explicit forks only.
 - D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.

@@ -267,25 +267,31 @@ example was re-executed against a live store.
 Everything above is about the **memory store**: `ASSEMBLE … BUDGET` with
 Full→Summary→Omit is why the store needs no compaction feature — you do not
 compress what you never loaded (§4). That answer does not extend to `areev
-run`, and the sheet would be dishonest by omission if it stopped here.
+run`, and the sheet would be dishonest by omission if it stopped here. The
+runtime's own answer is the fold (`ARCHITECTURE.md`, "The journal is the
+archive") — a *different* mechanism for a different problem, and one you have to
+turn on.
 
-- **An abstract node's transcript has no size bound.** It is the whole attempt
-  (`AbstractFlow.messages`, `crates/areev-run-core/src/state.rs`) and every
-  turn sends all of it. Two *parts* of it are bounded — the effect count
-  (`max_effects_per_attempt`, default 16) and one tool result
-  (`llm_tool_result_chars`, default unbounded, in characters) — and neither
-  bounds the whole.
+- **An abstract node's transcript is unbounded BY DEFAULT.** It is the whole
+  attempt (`AbstractFlow.messages`, `crates/areev-run-core/src/state.rs`) and
+  every turn sends all of it. Three bounds exist and all three are opt-in: the
+  effect count (`max_effects_per_attempt`, default 16 — the only one on by
+  default), one tool result (`llm_tool_result_chars`, characters), and the whole
+  transcript (`llm_context_tokens`, which folds the middle into one journaled
+  summary rather than truncating).
 - **The per-call `llm_max_tokens` is an OUTPUT ceiling** (and the per-dispatch
   reservation), never an input/context bound. `--max-tokens` is cumulative run
   spend, not per-request size.
-- **A provider context-length rejection is not classified.** It arrives as a
-  terminal 4xx → `FailCause::Unknown` → the node fails with the provider's
-  message text as its detail. Nothing summarizes, trims, or retries smaller.
+- **A provider context-length rejection is still not classified.** The fold is
+  PROACTIVE — it acts on the provider's reported prompt tokens before sending.
+  An overflow that actually reaches the provider arrives as a terminal 4xx →
+  `FailCause::Unknown` → the node fails with the provider's message text as its
+  detail. Nothing retries smaller.
 - **The `chars / 4` estimator (§1, §4) is the store's, not the runtime's.** The
-  runtime never estimates. Its per-result bound counts **characters** and is
-  named for that; and every LLM result carries the provider's own `input_tokens`
-  for the transcript exactly as sent, which is the honest signal any
-  whole-transcript bound should use.
+  runtime never estimates. The fold triggers on the provider's own
+  `input_tokens` for the transcript exactly as sent; the per-result bound counts
+  **characters** and is named for that, because a single entry has to be cut
+  before any turn is sent and the pure crate holds no tokenizer.
 
 Stated for users in `docs/run.md` § "What bounds the transcript (and what does
 not)" and § "Bounds, stated". The consolidation producer (§11) is unrelated and

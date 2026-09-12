@@ -1703,7 +1703,7 @@ impl Areev {
                         on_event = None, credentials = None, allow_hosts = None,
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
-                        llm_tool_result_chars = None))]
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -1735,6 +1735,7 @@ impl Areev {
         // signature must keep working, so a new knob goes at the end.
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -1759,7 +1760,12 @@ impl Areev {
             max_usd_micros,
             max_wall_ms,
             ask_ttl_sec,
-            RunLimits { llm_max_tokens, max_effects_per_attempt, llm_tool_result_chars },
+            RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            },
         );
         let session = py
             .detach(|| runner.start(&h, &run_id, input, &opts))
@@ -2703,7 +2709,7 @@ impl Areev {
                         tool_env = None, credentials = None, allow_hosts = None,
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
-                        llm_tool_result_chars = None))]
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -2736,13 +2742,19 @@ impl Areev {
         resolver_env: Option<String>,
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
-                        RunLimits { llm_max_tokens, max_effects_per_attempt, llm_tool_result_chars }),
+                        RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            }),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
         if let Some(secs) = lease_secs {
@@ -2771,7 +2783,7 @@ impl Areev {
                         tool_env = None, credentials = None, allow_hosts = None,
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
-                        llm_tool_result_chars = None))]
+                        llm_tool_result_chars = None, llm_context_tokens = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -2801,6 +2813,7 @@ impl Areev {
         resolver_env: Option<String>,
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<usize>,
+        llm_context_tokens: Option<u64>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
@@ -2809,7 +2822,12 @@ impl Areev {
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
-                        RunLimits { llm_max_tokens, max_effects_per_attempt, llm_tool_result_chars }),
+                        RunLimits {
+                llm_max_tokens,
+                max_effects_per_attempt,
+                llm_tool_result_chars,
+                llm_context_tokens,
+            }),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
         serde_json::to_string(&report).map_err(err)
@@ -3268,6 +3286,7 @@ struct RunLimits {
     llm_max_tokens: Option<u32>,
     max_effects_per_attempt: Option<u32>,
     llm_tool_result_chars: Option<usize>,
+    llm_context_tokens: Option<u64>,
 }
 
 fn run_options(
@@ -3291,6 +3310,7 @@ fn run_options(
         llm_max_tokens: limits.llm_max_tokens,
         max_effects_per_attempt: limits.max_effects_per_attempt,
         llm_tool_result_chars: limits.llm_tool_result_chars,
+        llm_context_tokens: limits.llm_context_tokens,
         inject_crash: None,
     }
 }

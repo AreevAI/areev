@@ -147,6 +147,7 @@ fn env<'a>(plan: &'a PlanGraph, execs: &'a [NodeExecutor], budgets: Budgets) -> 
         llm_reserve_tokens: 1024,
         max_effects_per_attempt: areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
         llm_tool_result_chars: None,
+        llm_context_tokens: None,
     }
 }
 

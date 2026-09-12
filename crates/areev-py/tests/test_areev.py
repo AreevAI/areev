@@ -612,6 +612,7 @@ def test_run_loop_limits_are_accepted_on_the_run_surfaces(tmp_path):
     started = json.loads(m.run_start(
         wf, "py-cap", "{}", 'printf \'{"ok":true}\'',
         max_effects_per_attempt=40, llm_tool_result_chars=12000,
+        llm_context_tokens=150000,
     ))
     assert started["finished"] == "Completed"
     # It reached the run rather than being dropped on the floor: the run is

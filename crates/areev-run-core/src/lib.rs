@@ -23,7 +23,9 @@ pub mod types;
 
 pub use error::{BudgetAxis, Result, RunError};
 pub use plan::{PlanEdge, PlanGraph};
-pub use state::{EdgeRes, NodeState, PendingAsk, Phase, SchedulerState, Spent};
+pub use state::{
+    EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState, Spent,
+};
 pub use step::{
     bound_tool_content, flow_key, step, StepEnv, StepOutcome, DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
 };

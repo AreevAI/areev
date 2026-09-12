@@ -50,6 +50,7 @@ fn run_opts(args: &Map<String, Value>) -> areev_run::RunOptions {
             .get("llm_tool_result_chars")
             .and_then(Value::as_u64)
             .and_then(|n| usize::try_from(n).ok()),
+        llm_context_tokens: args.get("llm_context_tokens").and_then(Value::as_u64),
         inject_crash: None,
     }
 }
@@ -1279,7 +1280,8 @@ fn all_tool_defs() -> Vec<Value> {
                 "max_tokens": {"type": "integer"}, "max_usd_micros": {"type": "integer"},
                 "max_wall_ms": {"type": "integer"}, "max_supersteps": {"type": "integer"},
                 "max_effects_per_attempt": {"type": "integer", "description": "effects one node attempt may spend — an abstract node's model turns, tool calls and re-prompts share the counter (default 16). Frozen into the manifest, so a resume is bounded exactly as the start was."},
-                "llm_tool_result_chars": {"type": "integer", "description": "bound on ONE tool result's size in an abstract node's transcript, in characters (default: unbounded). Over it the model sees the head, the tail and the journal coordinates; the journal keeps every result in full either way."}
+                "llm_tool_result_chars": {"type": "integer", "description": "bound on ONE tool result's size in an abstract node's transcript, in characters (default: unbounded). Over it the model sees the head, the tail and the journal coordinates; the journal keeps every result in full either way."},
+                "llm_context_tokens": {"type": "integer", "description": "ceiling on an abstract node's WHOLE transcript, in the provider's own reported prompt tokens (default: no ceiling). Past it the runtime emits one journaled summarizer turn and splices its answer over the middle of the transcript; nothing is deleted (the journal keeps every turn) and RUN-E024 fails the node when nothing is foldable."}
             }, "required": ["workflow", "run_id"]}
         }),
         json!({

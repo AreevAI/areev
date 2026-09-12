@@ -141,7 +141,7 @@ COMMANDS:
            [--executor-timeout SECS] [--tool-env VAR,...]
            [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
-           [--max-effects N] [--llm-tool-result-chars N]
+           [--max-effects N] [--llm-tool-result-chars N] [--llm-context-tokens N]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
@@ -288,7 +288,7 @@ COMMANDS:
            start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--base-url URL]
            [--key-env VAR] [--llm-max-tokens N] [--max-effects N]
-           [--llm-tool-result-chars N]
+           [--llm-tool-result-chars N] [--llm-context-tokens N]
            [--events] [--otel-endpoint http://HOST:4318]
            [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
@@ -4004,9 +4004,10 @@ fn run_retention(
 /// not documented). Wave 2: `--model provider:name` powers abstract nodes
 /// (`--llm-max-tokens` is the per-turn OUTPUT ceiling AND the §6.7
 /// reservation; `--max-effects` bounds how many turns + tool calls one node
-/// attempt may spend, and `--llm-tool-result-chars` how much of ONE tool
-/// result the model is shown — the journal keeps all of it — both frozen into
-/// the manifest so a resume bounds them alike),
+/// attempt may spend, `--llm-tool-result-chars` how much of ONE tool result the
+/// model is shown — the journal keeps all of it — and `--llm-context-tokens`
+/// the whole transcript, past which the middle is folded into one journaled
+/// summary; all frozen into the manifest so a resume bounds them alike),
 /// `--events` streams §6.10 run events to stderr as JSON lines, and
 /// `fork --run-id BASE --as-run NEW [--at N] [--plan HASH]` is §5.4
 /// time-travel / in-flight migration.

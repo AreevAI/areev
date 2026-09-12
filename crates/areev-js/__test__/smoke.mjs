@@ -796,7 +796,7 @@ test('the run loop limits are accepted on runStart and reach the manifest', asyn
     wf, 'js-cap', '{}', `printf '{"ok":true}'`,
     null, null, null, null, null, null, null, null,
     null, null, null, null, null, null, null, null, null, null, null,
-    40, 12000,
+    40, 12000, 150000,
   ))
   assert.equal(session.finished, 'Completed')
   // It reached the run rather than being dropped: the replay builds its

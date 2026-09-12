@@ -65,6 +65,11 @@ pub struct RunOptions {
     /// characters — the journal keeps every result in full. Frozen into the
     /// manifest at start. None = unbounded.
     pub llm_tool_result_chars: Option<usize>,
+    /// Ceiling on an abstract node's whole transcript, in the provider's own
+    /// reported prompt tokens — reaching it folds the middle of the transcript
+    /// into one journaled summary. Frozen into the manifest at start.
+    /// None = no ceiling.
+    pub llm_context_tokens: Option<u64>,
     /// Crash-injection for the §5.5 gates. `None` in production.
     pub inject_crash: Option<CrashPoint>,
 }
@@ -1267,6 +1272,7 @@ impl Runner {
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
             llm_tool_result_chars: manifest.llm_tool_result_chars,
+            llm_context_tokens: manifest.llm_context_tokens,
         };
         let run_id = st.run_id.clone();
 
@@ -1614,8 +1620,16 @@ impl Runner {
                                     detail: "llm effect on a non-abstract node".into(),
                                 });
                             };
-                            let mut defs = Vec::with_capacity(tools.len());
-                            for t in tools {
+                            // A SUMMARIZER turn is offered no tools. Keyed on
+                            // the journaled `fold` marker in the effect's own
+                            // input, so verify makes the identical choice from
+                            // the journal alone — reading it off scheduler
+                            // state would not replay.
+                            let folding = input.get("fold").is_some();
+                            let offered: &[areev_run_core::OfferedTool] =
+                                if folding { &[] } else { tools };
+                            let mut defs = Vec::with_capacity(offered.len());
+                            for t in offered {
                                 let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
                                 let def = self
                                     .facade
@@ -2410,6 +2424,7 @@ impl Runner {
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
             llm_tool_result_chars: manifest.llm_tool_result_chars,
+            llm_context_tokens: manifest.llm_context_tokens,
         };
 
         let mut report = VerifyReport::default();

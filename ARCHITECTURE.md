@@ -2096,6 +2096,56 @@ and "which pack is installed" is answered by asking the memory what it holds. A
 package manager would put a mutable name in front of an immutable address,
 which is the one thing this data model exists not to do.
 
+### The journal is the archive; a fold is an index-layer edit to the transcript
+
+**Decision (2026-09-12):** an abstract node's transcript is scheduler *state*,
+not the record. The record is the journal — one intent grain plus one result
+grain per effect, written before the scheduler ever sees the outcome. So when a
+transcript outgrows the model's window, the runtime does not summarize the
+record and does not rewrite anything. It emits **one more journaled turn** whose
+result stands in for a range of entries *in state*, and splices.
+
+Four properties follow, and no other runtime's compaction has all of them.
+Nothing is deleted: every folded turn and every tool result stays addressable at
+`(run, task_path, node, attempt, effect_seq)`, which is precisely what the fold
+message left in the transcript tells the model and any later reader. `verify`
+answers the summarizer from the journal like any other turn, so replay is
+byte-stable and **never calls the model**. The fold record is itself a
+content-addressed, supersedable, erasable grain — it is subject to the same
+erasure and DSAR machinery as everything else in the file, rather than being a
+side-channel that survives a `FORGET SUBJECT`. And the decision is pure: it is
+made inside `step()` from scheduler state and `StepEnv` alone, so the same run
+folds at the same point on every replay.
+
+The trigger is the **provider's own `input_tokens`** for the previous turn, plus
+the reservation for the next one — never the `chars / 4` estimator that
+`ASSEMBLE` uses. The tool-calling seam requires `usage` by construction, so the
+exact size of the transcript at the model's own tokenizer is already in hand;
+inventing an estimate beside it would be a guess competing with a measurement.
+The per-tool-result bound is the deliberate exception and says so: it counts
+**characters**, because a single oversized entry has to be cut before any turn
+is sent and there is no tokenizer in the pure crate to cut it by tokens.
+
+Two rules keep a folded transcript sendable. `messages[0]` — the node's
+instruction and its input state — is never folded, because a summary of the task
+cannot stand in for the task. And the cut never separates a `tool` result from
+the `assistant` entry that issued it: it moves *forward* off a tool entry,
+shrinking the kept tail rather than orphaning results a provider would reject.
+A fold only ever happens at a next-turn boundary, so it cannot land mid-round.
+
+**What this deliberately does not do.** It does not react to a provider's
+context-length rejection: the seam classifies errors structurally and does not
+parse message strings, so an overflow that arrives as a terminal 4xx still fails
+the node (a structured `error.code` on OpenAI-compatible endpoints would make a
+reactive path possible later; Anthropic's prose would not). It does not shrink a
+single oversized entry — that is the per-result bound, a different problem with
+a different answer. It does not offer the summarizer tools, so a fold cannot
+have side effects. It does not retry a fold that found nothing to fold:
+`RUN-E024` fails the node rather than spending the effect budget summarizing
+summaries. And it is **off by default** — no ceiling, no folds — because a
+default that silently changed what every existing run sends to its model would
+be a behaviour change disguised as a feature.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

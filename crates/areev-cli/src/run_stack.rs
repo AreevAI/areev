@@ -344,6 +344,7 @@ pub fn run_options(flags: &HashMap<String, String>) -> areev_run::RunOptions {
         max_effects_per_attempt: flag(flags, "max-effects").and_then(|v| v.parse().ok()),
         llm_tool_result_chars: flag(flags, "llm-tool-result-chars")
             .and_then(|v| v.parse().ok()),
+        llm_context_tokens: flag(flags, "llm-context-tokens").and_then(|v| v.parse().ok()),
         inject_crash: None,
     }
 }
@@ -405,6 +406,10 @@ mod tests {
             o.llm_tool_result_chars, None,
             "no flag = tool results enter the transcript verbatim, as they always did"
         );
+        assert_eq!(
+            o.llm_context_tokens, None,
+            "no flag = no ceiling = no folds, as before the fold existed"
+        );
     }
 
     /// The loop bound reaches a run the same way the budgets do — and reaches a
@@ -424,6 +429,14 @@ mod tests {
     fn the_tool_result_bound_reaches_the_run_a_firing_starts() {
         let o = run_options(&flags(&[("llm-tool-result-chars", "12000")]));
         assert_eq!(o.llm_tool_result_chars, Some(12_000));
+    }
+
+    /// And the context ceiling, which is what turns a long unattended agent
+    /// from a provider rejection into a fold.
+    #[test]
+    fn the_context_ceiling_reaches_the_run_a_firing_starts() {
+        let o = run_options(&flags(&[("llm-context-tokens", "150000")]));
+        assert_eq!(o.llm_context_tokens, Some(150_000));
     }
 
     /// The environment fallback, in ONE test on purpose: `set_var` is
