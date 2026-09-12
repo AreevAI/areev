@@ -11,7 +11,7 @@ use areev_llm::{
     Usage,
 };
 use areev_run::{
-    BudgetsSpec, ExecResult, HostToolExecutor, OnDangling, RunManifest, RunOptions, Runner,
+    ExecResult, HostToolExecutor, RunManifest, RunOptions, Runner,
     RunSession, ScriptedClock,
 };
 use areev_run_core::{EffectKind, RunError, RunOutcome};
@@ -209,14 +209,7 @@ impl Rig {
 }
 
 fn opts() -> RunOptions {
-    RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 2,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    }
+    RunOptions { workers: 2, ..Default::default() }
 }
 
 fn clocks() -> Vec<u64> {
@@ -310,6 +303,74 @@ fn llm_reservation_refuses_turn_that_cannot_fit() {
     // The reservation refusal is replay-consistent like everything else.
     let report = runner.verify("abs-3").unwrap();
     assert!(report.verified, "{report:?}");
+}
+
+/// The effect cap is the ONLY bound on an abstract node's loop, so it has to
+/// be the host's number and not a literal in the driver — and it has to be
+/// frozen, or a resume would re-bound a loop the start already bounded.
+#[test]
+fn max_effects_per_attempt_is_frozen_in_the_manifest_and_bounds_the_loop() {
+    // A model that never stops calling tools: nothing but the cap can end it.
+    let grind = |rig: &Rig| {
+        rig.exec.on("fetch", |_, _| ExecResult::Ok(json!({"fetched": 1})));
+        rig.plan(&["fetch", "grind"], &[("fetch", "grind")], &["grind"])
+    };
+
+    // Capped at 4: turn 0, tool 1, turn 2, tool 3 — then the fifth effect is
+    // refused and the node fails naming the bound it hit.
+    let rig = Rig::new();
+    let plan = grind(&rig);
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "fetch", json!({}))]),
+        turn_tools(vec![("c2", "fetch", json!({}))]),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { max_effects_per_attempt: Some(4), ..opts() };
+
+    let session = runner.start(&plan, "cap-4", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    let RunOutcome::Failed { node, detail } = outcome else {
+        panic!("the cap must fail the node, got {outcome:?}")
+    };
+    assert_eq!(node, "grind");
+    assert!(detail.contains("max_effects_per_attempt"), "{detail}");
+    assert_eq!(llm.calls(), 2, "a cap of 4 admits exactly two turns");
+    assert_eq!(
+        rig.journal_keys("cap-4", "grind"),
+        vec![
+            (1, 0, EffectKind::Llm),
+            (1, 1, EffectKind::Tool),
+            (1, 2, EffectKind::Llm),
+            (1, 3, EffectKind::Tool),
+        ],
+        "every admitted effect is journaled; the refused one never existed"
+    );
+
+    // Verify is what proves the freeze: the replay builds its scheduler env
+    // from the MANIFEST alone — no `RunOptions` reaches it — so a cap that had
+    // not been frozen would replay at the default 16, run past effect 4, and
+    // diverge instead of reproducing the failure.
+    let report = runner.verify("cap-4").unwrap();
+    assert!(report.verified, "{report:?}");
+    assert_eq!(llm.calls(), 2, "verify never called the model");
+
+    // Raised to 40: the same loop, now long enough to finish.
+    let rig = Rig::new();
+    let plan = grind(&rig);
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        turn_tools(vec![("c1", "fetch", json!({}))]),
+        turn_tools(vec![("c2", "fetch", json!({}))]),
+        turn_final(r#"{"ground": true}"#),
+    ]));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { max_effects_per_attempt: Some(40), ..opts() };
+
+    let session = runner.start(&plan, "cap-40", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(llm.calls(), 3);
+    assert_eq!(rig.final_context("cap-40")["ground"], true);
+    assert!(runner.verify("cap-40").unwrap().verified);
 }
 
 #[test]

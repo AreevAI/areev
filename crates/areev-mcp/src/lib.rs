@@ -39,6 +39,13 @@ fn run_opts(args: &Map<String, Value>) -> areev_run::RunOptions {
         workers: 4,
         on_dangling: Default::default(),
         llm_max_tokens: None,
+        // Frozen into the manifest at start, so it is read back on resume and
+        // verify — passing it here on a resume changes nothing, exactly as
+        // `llm_max_tokens` behaves.
+        max_effects_per_attempt: args
+            .get("max_effects_per_attempt")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
         inject_crash: None,
     }
 }
@@ -1266,7 +1273,8 @@ fn all_tool_defs() -> Vec<Value> {
                 "run_id": s("fresh run identity (reuse is refused; fork instead)"),
                 "input": {"description": "the run input as any JSON value"},
                 "max_tokens": {"type": "integer"}, "max_usd_micros": {"type": "integer"},
-                "max_wall_ms": {"type": "integer"}, "max_supersteps": {"type": "integer"}
+                "max_wall_ms": {"type": "integer"}, "max_supersteps": {"type": "integer"},
+                "max_effects_per_attempt": {"type": "integer", "description": "effects one node attempt may spend — an abstract node's model turns, tool calls and re-prompts share the counter (default 16). Frozen into the manifest, so a resume is bounded exactly as the start was."}
             }, "required": ["workflow", "run_id"]}
         }),
         json!({

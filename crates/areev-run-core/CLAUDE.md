@@ -70,7 +70,10 @@ journaled events back, assert the same commands come out.
   Tool failures inside a flow are MODEL-VISIBLE error results, never
   scheduler retries. Unknown tool = ONE re-prompt then fail (§6.11);
   strict-arg violations re-prompt via `StepEnv.validate_args`, bounded by
-  `max_effects_per_attempt`. A flow torn down mid-round leaves stragglers:
+  `max_effects_per_attempt` — the host's number, frozen in the run manifest,
+  `DEFAULT_MAX_EFFECTS_PER_ATTEMPT` (16) when it pins none. It is the ONLY
+  bound on a flow: nothing here limits how large the transcript grows.
+  A flow torn down mid-round leaves stragglers:
   `resolve_effect` guards resolved nodes so a late tool result cannot flip
   DoneFailed back to DoneOk.
 - **Per-dispatch token reservation** (§6.7): `spent + llm_reserve_tokens`

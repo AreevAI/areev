@@ -89,6 +89,18 @@ evidence. Responding and resuming are separate acts.
   pool workers never touch the store. `load_arg_schemas` wires the §6.11
   strict-argument validator into `StepEnv.validate_args` — same table live
   and on verify, or replay diverges.
+- **Every run-level LLM ceiling rides the manifest**, set once at start from
+  `RunOptions` through `RunManifest::with_limits` and read back by BOTH
+  `StepEnv` sites (`drive`, `verify`) through an accessor that supplies the
+  default — which is what makes `verify` reproduce a run that hit its effect
+  cap instead of replaying past it. Deliberately NOT arguments to `resolve`:
+  none of them affects resolution, and two call sites free to pass a different
+  subset is how one silently forgets a knob. Each is `Option` +
+  `skip_serializing_if`, because a manifest is a stored grain and a widened
+  wire shape re-addresses every one ever written (pinned by the golden in
+  `manifest.rs`'s tests). New knobs on the BINDINGS go at the END of the
+  signature — JS has no keyword arguments, so inserting one re-points every
+  existing positional `runStart(…)`.
 - **Result grains re-state the DISPATCHED executor** (`DispatchDone.executor`)
   — a flow tool inside an abstract node runs as Host while the node-level
   executor says Abstract; journaling the node-level one would rename the

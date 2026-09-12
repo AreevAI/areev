@@ -1023,10 +1023,16 @@ follow, none of them visible from the flag names:
 - `--max-tokens` bounds **cumulative** spend across the run, not the size of
   any one request. A run can sit far under its token budget and still issue a
   request no provider will accept.
-- The only bound on the loop itself is a **count**: at most 16 effects per node
-  attempt, with model turns, model-issued tool calls and re-prompts sharing one
-  counter. A node that needs a 17th fails `ExecutorError: llm loop exceeded
-  max_effects_per_attempt` — at one tool call per turn, roughly eight turns.
+- The only bound on the loop itself is a **count**: `--max-effects N` (default
+  **16**) effects per node attempt, with model turns, model-issued tool calls
+  and re-prompts sharing one counter. A node that needs one more fails
+  `ExecutorError: llm loop exceeded max_effects_per_attempt` — at the default,
+  and at one tool call per turn, that is roughly eight turns, so an agent doing
+  real work usually wants it raised. The number is **frozen into the run
+  manifest** at start, so a `resume` and a `verify` bound the loop exactly as
+  the start did; passing it on a resume changes nothing. Same knob as
+  `max_effects_per_attempt` (MCP `areev_run_start`, Python, Node) and on
+  `trigger run`, which starts runs nobody is watching.
 
 So a transcript that outgrows the model's context window is **the provider's
 error and nothing more**: the runtime does not summarize, trim, or re-plan it.
@@ -1241,8 +1247,9 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
-- An abstract node runs at most **16 effects per attempt** (turns, tool calls
-  and re-prompts share the counter); the 17th fails the node.
+- An abstract node runs at most `--max-effects` effects per attempt (turns, tool
+  calls and re-prompts share the counter), default **16**; one more fails the
+  node. Frozen in the manifest at start.
 - **There is no context-window management.** An abstract node's transcript
   grows without bound until the provider rejects it, and that rejection fails
   the node. No summarization, no trimming, no per-result cap — the journal

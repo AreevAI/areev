@@ -18,7 +18,7 @@ use areev_llm::{
     StopReason, ToolCallError, ToolCallLlm, ToolCallRequest, ToolCallResponse, Usage,
 };
 use areev_run::{
-    BudgetsSpec, ExecResult, HostToolExecutor, OnDangling, RunOptions, Runner, RunSession,
+    ExecResult, HostToolExecutor, RunOptions, Runner, RunSession,
     ScriptedClock,
 };
 use areev_store::Areev;
@@ -146,14 +146,7 @@ impl Rig {
 }
 
 fn opts() -> RunOptions {
-    RunOptions {
-        budgets: BudgetsSpec::default(),
-        ask_ttl_sec: None,
-        workers: 1,
-        on_dangling: OnDangling::Redispatch,
-        llm_max_tokens: None,
-        inject_crash: None,
-    }
+    RunOptions { workers: 1, ..Default::default() }
 }
 
 /// The whole point, in one test: the model never sees the supplier's name, the

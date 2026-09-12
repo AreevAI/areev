@@ -49,6 +49,12 @@ use crate::types::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Effects one node attempt may spend when the host pins no other number.
+/// Named because three places must agree — both of the driver's `StepEnv`
+/// sites and the manifest accessor that feeds them — and because changing it
+/// changes the behaviour of every existing plan that relies on the bound.
+pub const DEFAULT_MAX_EFFECTS_PER_ATTEMPT: u32 = 16;
+
 /// The injected pure behavior. Everything here is REQUIRED to be pure —
 /// enforced by the journaled decision record + replay assertion, not trust.
 pub struct StepEnv<'a> {
@@ -78,7 +84,9 @@ pub struct StepEnv<'a> {
     pub llm_reserve_tokens: u64,
     /// Hard bound on effects per node attempt — an abstract node's LLM loop
     /// (turns + tool calls + re-prompts) that exceeds it fails the node
-    /// with `ExecutorError` rather than looping forever.
+    /// with `ExecutorError` rather than looping forever. Frozen in the run
+    /// manifest, so a resume bounds the loop exactly as the start did;
+    /// [`DEFAULT_MAX_EFFECTS_PER_ATTEMPT`] when the manifest pins none.
     pub max_effects_per_attempt: u32,
 }
 

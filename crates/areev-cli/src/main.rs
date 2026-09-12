@@ -141,6 +141,7 @@ COMMANDS:
            [--executor-timeout SECS] [--tool-env VAR,...]
            [--model SPEC] [--base-url URL] [--key-env VAR]
            [--max-tokens N] [--max-usd USD] [--max-wall-ms MS] [--ask-ttl SECS]
+           [--max-effects N]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
                                       be coarse. Safe to invoke concurrently.
@@ -286,7 +287,7 @@ COMMANDS:
            without one, every namespace is listed.
            start --workflow HASH --run-id ID [--input JSON]
            [--tool-cmd CMD] [--model provider:name] [--base-url URL]
-           [--key-env VAR] [--llm-max-tokens N]
+           [--key-env VAR] [--llm-max-tokens N] [--max-effects N]
            [--events] [--otel-endpoint http://HOST:4318]
            [--as PRINCIPAL] [--max-tokens N --max-usd F ...]
            [--allow-executor ADDR,...] [--executor-cache DIR]
@@ -4000,7 +4001,9 @@ fn run_retention(
 /// `requires_action` envelope, answered with `areev run respond` by a
 /// SECOND principal (approval separation of duties is refused structurally,
 /// not documented). Wave 2: `--model provider:name` powers abstract nodes
-/// (`--llm-max-tokens` is the per-turn ceiling AND the §6.7 reservation),
+/// (`--llm-max-tokens` is the per-turn OUTPUT ceiling AND the §6.7
+/// reservation; `--max-effects` bounds how many turns + tool calls one node
+/// attempt may spend, frozen into the manifest so a resume bounds it alike),
 /// `--events` streams §6.10 run events to stderr as JSON lines, and
 /// `fork --run-id BASE --as-run NEW [--at N] [--plan HASH]` is §5.4
 /// time-travel / in-flight migration.

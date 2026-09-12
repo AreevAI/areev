@@ -775,6 +775,34 @@ test('toolEnv clears a host tool environment down to what it names', async () =>
   await m.close()
 })
 
+test('maxEffectsPerAttempt is accepted on runStart and reaches the manifest', async () => {
+  // Lockstep with the CLI's `--max-effects` and Python's
+  // `max_effects_per_attempt`: an abstract node's loop is bounded by an effect
+  // count, and a binding that cannot raise it cannot run a long agent at all.
+  // Appended LAST in the signature on purpose — JS has no keyword arguments, so
+  // inserting it would have re-pointed every existing positional call.
+  const m = makeDb('ops')
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition',
+    tool_description: 'greets', created_at: 500,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['greet'], edges: [], bindings: { greet }, created_at: 502,
+  }), 'ops')
+
+  const session = JSON.parse(await m.runStart(
+    wf, 'js-cap', '{}', `printf '{"ok":true}'`,
+    null, null, null, null, null, null, null, null,
+    null, null, null, null, null, null, null, null, null, null, null,
+    40,
+  ))
+  assert.equal(session.finished, 'Completed')
+  // It reached the run rather than being dropped: the replay builds its
+  // scheduler env from the frozen manifest alone.
+  assert.equal(JSON.parse(await m.runVerify('js-cap')).verified, true)
+  await m.close()
+})
+
 test('toolEnv reaches the trigger connector, not just the run executors', async () => {
   // A connector holds the third-party credential more often than a tool does,
   // so a toolEnv that stopped at the run starter would clear the environment

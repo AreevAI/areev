@@ -57,6 +57,10 @@ pub struct RunOptions {
     /// Per-LLM-call `max_tokens` for abstract nodes — frozen into the
     /// manifest at start (§6.7's per-dispatch reservation). None = 1024.
     pub llm_max_tokens: Option<u32>,
+    /// Effects one node attempt may spend — an abstract node's turns, tool
+    /// calls and re-prompts share the counter. Frozen into the manifest at
+    /// start; None = [`areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT`].
+    pub max_effects_per_attempt: Option<u32>,
     /// Crash-injection for the §5.5 gates. `None` in production.
     pub inject_crash: Option<CrashPoint>,
 }
@@ -553,8 +557,8 @@ impl Runner {
                 opts.ask_ttl_sec,
                 input.clone(),
                 self.llm.is_some(),
-                opts.llm_max_tokens,
             )
+            .map(|m| m.with_limits(opts))
         })?;
         // Refuse an unpinned code executor before the run exists: it would
         // otherwise take a lease, write a manifest, and fail on first
@@ -858,8 +862,8 @@ impl Runner {
                         opts.ask_ttl_sec,
                         context.clone(),
                         self.llm.is_some(),
-                        opts.llm_max_tokens,
                     )
+                    .map(|m| m.with_limits(opts))
                 })?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
@@ -1257,7 +1261,7 @@ impl Runner {
             ask_ttl_sec: manifest.ask_ttl_sec,
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
-            max_effects_per_attempt: 16,
+            max_effects_per_attempt: manifest.max_effects_per_attempt(),
         };
         let run_id = st.run_id.clone();
 
@@ -2399,7 +2403,7 @@ impl Runner {
             ask_ttl_sec: manifest.ask_ttl_sec,
             validate_args: &validate_args,
             llm_reserve_tokens: manifest.llm_reserve_tokens(),
-            max_effects_per_attempt: 16,
+            max_effects_per_attempt: manifest.max_effects_per_attempt(),
         };
 
         let mut report = VerifyReport::default();
