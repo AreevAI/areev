@@ -2146,6 +2146,18 @@ summaries. And it is **off by default** — no ceiling, no folds — because a
 default that silently changed what every existing run sends to its model would
 be a behaviour change disguised as a feature.
 
+**The measurement lags one round, and that is stated rather than papered over.**
+The provider reports for the transcript it was sent; the assistant entry and
+that round's tool results are appended afterwards and are not counted until the
+next turn settles. So a ceiling on its own bounds a transcript that no longer
+exists, and one oversized tool result walks straight through it. The per-result
+bound is what makes the gap finite — one assistant entry plus (tool calls in the
+round × the cap) — which is why the two are documented as a pair and not as
+alternatives. The alternative was to estimate the appended entries, and an
+estimate standing in for a measurement is precisely what this decision refuses
+everywhere else. Same shape as §6.7's budget overshoot, bounded by one dispatch:
+named, not hidden.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; the format reserves

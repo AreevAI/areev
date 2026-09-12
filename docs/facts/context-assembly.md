@@ -287,6 +287,15 @@ turn on.
   An overflow that actually reaches the provider arrives as a terminal 4xx →
   `FailCause::Unknown` → the node fails with the provider's message text as its
   detail. Nothing retries smaller.
+- **The fold's measurement lags one round, so the ceiling alone is not a
+  guarantee.** `AbstractFlow.last_prompt_tokens` is what the provider reported
+  for the PREVIOUS turn; the assistant entry and that round's tool results are
+  appended after it and are not counted until the next turn settles. The gap is
+  unbounded unless `llm_tool_result_chars` is also set, which caps it at one
+  assistant entry plus (tool calls in the round × the cap). Both bounds
+  together, not either one — `docs/run.md` § "The two bounds are complementary,
+  not alternatives". Same shape as the §6.7 one-dispatch budget overshoot:
+  bounded and stated, not eliminated.
 - **The `chars / 4` estimator (§1, §4) is the store's, not the runtime's.** The
   runtime never estimates. The fold triggers on the provider's own
   `input_tokens` for the transcript exactly as sent; the per-result bound counts

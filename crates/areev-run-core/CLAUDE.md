@@ -82,7 +82,13 @@ journaled events back, assert the same commands come out.
 - **The fold** (`llm_context_tokens`): before a turn, if the PROVIDER's reported
   `last_prompt_tokens` for the previous turn plus the reservation exceeds the
   ceiling, emit one summarizer turn over `fold_range(messages)` and splice its
-  result in. Pinned, all of it load-bearing: the trigger is provider tokens and
+  result in. **The measurement lags one round** — the assistant entry and that
+  round's tool results were appended after the provider reported — so the
+  ceiling alone bounds a transcript that no longer exists; `llm_tool_result_chars`
+  is what makes that gap finite, and the two are documented as a pair. Do not
+  "fix" this by estimating the appended entries: an estimate competing with a
+  measurement is the exact dishonesty the fact sheet exists to prevent.
+  Pinned, all of it load-bearing: the trigger is provider tokens and
   NEVER `chars/4`; `messages[0]` is never folded (a summary of the task cannot
   replace the task); the cut moves FORWARD off a `tool` entry so a result is
   never orphaned from its `assistant` turn (a whole round filling the tail folds

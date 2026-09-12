@@ -1093,7 +1093,7 @@ messages[1]  [Areev fold 1: transcript entries 1..9 of attempt 1 were replaced
 messages[2…] the last few entries, verbatim      ← the kept tail
 ```
 
-Six things are worth knowing before you turn it on.
+Seven things are worth knowing before you turn it on.
 
 - **Nothing is deleted.** The fold edits scheduler state; every folded turn and
   tool result is still a journaled intent + result grain, still visible in
@@ -1114,9 +1114,42 @@ Six things are worth knowing before you turn it on.
   alone exceed the ceiling there is no middle to summarize, and a second fold
   would only summarize summaries — so the node fails, naming the ceiling and the
   three ways out (raise it, bound the tool results, split the node).
+- **The measurement lags one round — so set `--llm-tool-result-chars` too.**
+  See below; this is the one way a ceiling on its own still lets a node die.
 
 The ceiling is frozen in the manifest at start, like every other run limit, so a
 `resume` folds exactly where the start would have.
+
+#### The two bounds are complementary, not alternatives
+
+The check runs on the **previous** turn's reported number, so the transcript it
+actually sends is bigger than the one it measured — by exactly one round: that
+turn's assistant entry, plus that round's tool results. Both were appended after
+the provider reported.
+
+That gap is the ceiling's blind spot, and on its own it is **unbounded**:
+
+```
+turn 4 sent, 88,000 tok → provider reports 88,000   ← the measurement
+  + assistant entry (the tool call) ....    200 tok │ appended after,
+  + tool result: a 40k-token log dump . 40,000 tok  │ unmeasured
+                            transcript = 128,200 tok
+
+turn 6 check: 88,000 + reserve 4,096 = 92,096 ≤ 100,000 → no fold
+              …and the turn goes out carrying 128,200. The provider
+              rejects it, and the node dies with the ceiling set.
+```
+
+`--llm-tool-result-chars` is what makes the blind spot finite: with it, one
+round can add at most the assistant entry plus (tool calls in that round × the
+cap). Bound the results and the same run measures 91,200, fits, and folds a few
+rounds later with headroom in hand.
+
+So: **set both.** The per-result bound caps how far the transcript can move
+between measurements; the ceiling caps the total. A ceiling alone is a bound on
+a transcript that no longer exists. (This is the same shape as the §6.7 budget
+overshoot, which is likewise bounded by one dispatch rather than eliminated —
+stated, not hidden.)
 
 What survives either way is the **journal**: one intent + result grain per
 effect, written before the node failed and untouched by its failure. Every turn
@@ -1331,7 +1364,9 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
   (characters, default unbounded); the journal keeps every result in full.
 - `--llm-context-tokens` bounds the WHOLE transcript, in the provider's own
   reported prompt tokens (default: no ceiling). Past it the middle is folded
-  into one journaled summary; `RUN-E024` when nothing is foldable.
+  into one journaled summary; `RUN-E024` when nothing is foldable. It measures
+  the PREVIOUS turn, so it lags one round — pair it with
+  `--llm-tool-result-chars`, which is what makes that lag finite.
 - **Both bounds are off by default.** Without them an abstract node's transcript
   grows until the provider rejects it, and that rejection fails the node — the
   runtime will not shrink what it sends unless you ask it to.
