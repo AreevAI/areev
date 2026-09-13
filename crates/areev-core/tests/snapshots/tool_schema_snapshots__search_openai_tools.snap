@@ -30,7 +30,7 @@ expression: "render_json(&t, ProviderKind::OpenAiTools).unwrap()"
       ],
       "type": "object"
     },
-    "strict": true
+    "strict": false
   },
   "type": "function"
 }

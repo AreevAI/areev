@@ -29,6 +29,6 @@ expression: "render_json(&t, ProviderKind::OpenAiResponses).unwrap()"
     ],
     "type": "object"
   },
-  "strict": true,
+  "strict": false,
   "type": "function"
 }
