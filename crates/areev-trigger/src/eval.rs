@@ -185,6 +185,20 @@ pub struct TriggerStatus {
     /// Never fired and no failure recorded — the state an unnoticed
     /// misconfiguration sits in, so it is reported rather than inferred.
     pub never_fired: bool,
+    /// The plan this trigger names has been EDITED: the current head of its
+    /// supersession chain, when that is not the hash the trigger points at.
+    ///
+    /// A Workflow is content-addressed, so editing one mints a new address and
+    /// a trigger keeps starting the version it was declared against. That is
+    /// the correct default — a plan edit must not silently change what fires
+    /// unattended — but it is invisible without this: nothing in a listing
+    /// distinguished a trigger running the current plan from one running a
+    /// version three edits old, and the run itself succeeds either way.
+    ///
+    /// Reported, never followed. `areev trigger retarget` is the deliberate
+    /// act that moves it, and it is a human's to take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_head: Option<String>,
     /// Why this declaration can never fire, if it cannot.
     ///
     /// A trigger can become unusable without ever being written through a
@@ -481,6 +495,7 @@ impl Evaluator {
             // reports whatever it finds, root row or legacy.
             let (st, _raw) = self.resolve_state(&chain, false)?;
             let unusable = schedule::validate(&t).err().map(|e| e.to_string());
+            let plan_head = self.plan_head_if_stale(&t)?;
             out.push(TriggerStatus {
                 trigger: hash,
                 name: trigger_name(&t),
@@ -506,6 +521,7 @@ impl Evaluator {
                 unusable,
                 cursor: st.cursor.clone(),
                 op_cursor: st.op_cursor,
+                plan_head,
                 chain_root: chain.root().to_string(),
             });
         }
@@ -1792,6 +1808,29 @@ impl Evaluator {
             .with_store(|m| m.add_if_novel(&obs))
             .map(|_| ())
             .map_err(|e| TriggerError::Storage { detail: e.to_string() })
+    }
+
+    /// The current head of this trigger's PLAN, when the plan has been edited
+    /// since the trigger was declared. `None` when the trigger already points
+    /// at the live version — the overwhelmingly common case, and one forward
+    /// point read to establish.
+    ///
+    /// Deliberately a report and not a redirect. Following the chain at fire
+    /// time would mean a plan edit silently changes what an unattended
+    /// heartbeat runs, which is exactly what content-addressed binding exists
+    /// to prevent; the operator moves the pointer with `trigger retarget` when
+    /// they mean to.
+    pub fn plan_head_if_stale(&self, t: &Trigger) -> Result<Option<String>> {
+        let Ok(h) = Hash::from_hex(t.workflow_hash()) else {
+            // Not a content address at all — a different complaint, and
+            // `unusable` is where that one is reported.
+            return Ok(None);
+        };
+        let head = self
+            .facade
+            .with_store(|m| m.current_head(&h))
+            .map_err(|e| TriggerError::Storage { detail: e.to_string() })?;
+        Ok((head != h).then(|| head.to_hex()))
     }
 
     /// Resolve (and cache) the supersession chain for one trigger's head

@@ -640,3 +640,96 @@ fn a_connector_named_as_a_grain_is_stored_and_refused_until_the_host_pins_it() {
         assert!(out.contains("\"claimed\": 1") || out.contains("\"claimed\":1"), "{out}");
     }
 }
+
+/// Editing a plan is a supersession that mints a NEW address, and a trigger
+/// keeps starting the version it was declared against — correctly, because a
+/// plan edit must not silently change what an unattended heartbeat runs. What
+/// was missing is that nothing SAID so: a listing showed a trigger on a
+/// three-edits-old plan exactly as it showed a current one, and the run
+/// succeeded either way. Silence is the symptom of every trigger failure; it
+/// must not also be the symptom of a correct default.
+#[test]
+fn an_edited_plan_is_reported_and_re_pointed_in_one_command() {
+    use areev_core::types::{Grain, Tool, ToolKind, Trigger, TriggerKind, Workflow};
+
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+
+    let (v1, v2, trigger) = {
+        let mut m = areev_store::Areev::open(db).unwrap();
+        let def = Tool::new("greet").kind(ToolKind::Definition).namespace("ops");
+        let dh = m.add(&def).unwrap();
+        let wf = Workflow::new(vec!["greet".into()])
+            .bind("greet", &dh.to_hex())
+            .created_at(500)
+            .namespace("ops");
+        let v1 = m.add(&wf).unwrap().to_hex();
+        let t = Trigger::new(TriggerKind::Interval, &v1).interval_secs(60).namespace("ops");
+        let trigger = m.add(&t).unwrap().to_hex();
+
+        // The edit.
+        let mut next = Workflow::new(vec!["greet".into()])
+            .bind("greet", &dh.to_hex())
+            .created_at(600)
+            .namespace("ops");
+        let v1h = areev_core::error::Hash::from_hex(&v1).unwrap();
+        let v2 = m.supersede(&v1h, &mut next).unwrap().to_hex();
+        (v1, v2, trigger)
+    };
+    assert_ne!(v1, v2, "an edit mints a new address — that is the whole problem");
+
+    // The listing names the drift AND the fix, in both renderings.
+    let (ok, out, err) = areev(&["trigger", "list", "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("plan superseded"), "the drift must be visible: {out}");
+    assert!(out.contains(&v2[..12]), "…naming the plan to move to: {out}");
+    assert!(err.contains("retarget"), "…and the command that moves it: {err}");
+
+    let (ok, out, _) = areev(&["trigger", "list", "--db", db, "--ns", "ops", "--format", "json"]);
+    assert!(ok);
+    let rows: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &rows["triggers"][0];
+    assert_eq!(row["plan_superseded"], true, "{rows}");
+    assert_eq!(row["plan_head"], serde_json::json!(v2), "{rows}");
+
+    // Re-point with NO --workflow: the trigger follows its own plan's chain.
+    // That is the ergonomic point — the operator's intent is almost always
+    // "use the edited plan", and it should not require pasting a hash.
+    let (ok, out, err) = areev(&[
+        "trigger", "retarget", &trigger[..12], "--db", db, "--ns", "ops",
+        "--because", "plan edited",
+    ]);
+    assert!(ok, "{err}");
+    assert!(out.contains(&v2[..12]), "{out}");
+
+    // Clean afterwards, and pointing at the edited plan.
+    let (_, out, _) = areev(&["trigger", "list", "--db", db, "--ns", "ops", "--format", "json"]);
+    let rows: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &rows["triggers"][0];
+    assert_eq!(row["workflow"], serde_json::json!(v2));
+    assert!(row.get("plan_superseded").is_none(), "no longer stale: {rows}");
+
+    // The evaluation state survives, because a supersession keeps the chain
+    // ROOT that cursors and dedup fences are keyed on (#128). Without this a
+    // re-pointed polling trigger would replay its whole history.
+    let (_, out, _) = areev(&["trigger", "status", "--db", db, "--ns", "ops", "--format", "json"]);
+    let st: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &st["triggers"][0];
+    assert_ne!(row["trigger"], serde_json::json!(trigger), "the trigger grain was superseded");
+    assert_eq!(
+        row["chain_root"],
+        serde_json::json!(trigger),
+        "…but state still keys on the original root: {st}"
+    );
+
+    // Re-pointing a trigger that is already current is refused, not a no-op
+    // supersession: an audited write with nothing to change is noise in the
+    // chain every later reader has to walk.
+    let (ok, _, err) = areev(&[
+        "trigger", "retarget", &row["trigger"].as_str().unwrap()[..12],
+        "--db", db, "--ns", "ops", "--because", "again",
+    ]);
+    assert!(!ok, "a no-op retarget must be refused");
+    assert!(err.contains("already points at the current plan"), "{err}");
+}

@@ -263,7 +263,9 @@ at run start into host/client/subgraph/abstract executors, so a superseded
 plan never changes a running run). The grain itself is immutable input:
 runs point back at it via `mg:step_action:<node>` links, triggers point at
 it by hash, and every edit is a supersession minting a **new hash** —
-after which triggers must be re-pointed (they do NOT follow heads).
+after which triggers must be re-pointed (they do NOT follow heads —
+`areev trigger retarget` is the one command that does it, and `trigger
+list`/`status` report the drift until you do).
 Lifecycle: author (CAL `ADD workflow` graph syntax — note `* N` = retries,
 not `max_cycles`; JSON `add` for bounded cycles/reducers; console) → run
 (`areev run *`) → history (CAL `HISTORY`, `run-trace`, `runs-touching`,
