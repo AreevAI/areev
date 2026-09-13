@@ -94,10 +94,12 @@ journaled events back, assert the same commands come out.
   configured, and `RUN-E024` then reports `ceiling: None` — "the provider's own
   limit" — rather than inventing a number. `FailCause::ContextOverflow` is
   neither retryable nor terminal for exactly this reason, and it must survive
-  the JOURNAL: the grain-level `FailureCause` vocabulary is .mg format and was
-  NOT widened, so `areev-run`'s journal carries a `context_overflow` extra
-  field and reads it back before the coarse cause. Drop that and replay retries
-  where the live run folded — a `RUN-E009` the tests caught.
+  the JOURNAL: `areev_core::types::FailureCause` carries a matching
+  `ContextOverflow` (OMS 1.6 added `context_overflow` to the spec's open
+  `error_type` enum), so the cause round-trips through the grain's own
+  vocabulary. Flatten it to `executor_error` on the way in — as an earlier
+  revision did — and replay retries where the live run folded, a `RUN-E009` the
+  tests caught.
 - **The fold** (`llm_context_tokens`): before a turn, if the PROVIDER's reported
   `last_prompt_tokens` for the previous turn plus the reservation exceeds the
   ceiling, emit one summarizer turn over `fold_range(messages)` and splice its
