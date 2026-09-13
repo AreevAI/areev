@@ -41,7 +41,19 @@ exactly this).
 checkpoint's post-reducer context) with the clock scripted from journaled
 readings (decision records' open/close), every effect answered from the
 journal, writing NOTHING — and byte-compares every commanded checkpoint
-against the stored chain. Divergence verdicts name the differing fields
+against the stored chain.
+
+**Resume boundaries are rewind points.** `step` closes a superstep and opens
+the next in ONE call at the same reading, so a replay cannot naturally
+reproduce a run that died in between and came back at a later clock. When the
+next stored checkpoint carries `DecisionRecord.resumed_at`, verify reloads the
+checkpoint it just byte-compared (trusting nothing new — it was verified one
+command ago), then feeds `[Resumed, ClockReading(resumed_at)]`. Anything the
+discarded pass dispatched is re-derived at the resumed clock under the same
+journal keys. Before this, EVERY crash-recovered run failed `RUN-E009` on
+`spent.wall_ms` alone — the replay charged the dead span as active wall. A
+fork's SEED is deliberately not such a boundary: it never executed, and on a
+time-travel fork the span back to the base is lineage, not downtime. Divergence verdicts name the differing fields
 (`diff_fields`). Parked spans replay by feeding the stored close reading
 before `ResponseSettled` — see run-core's wall/elapsed pin for why.
 

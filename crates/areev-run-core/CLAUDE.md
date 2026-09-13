@@ -48,7 +48,13 @@ journaled events back, assert the same commands come out.
     (open→park); the park→close tail is NEVER charged and elapsed accrues
     at close from the journaled close reading — accruing at response-apply
     would make state a function of when the operator typed `resume`, and
-    verify could never reproduce it.
+    verify could never reproduce it. A CRASH gap follows the same rule
+    through `EventIn::Resumed`: the driver feeds it (Idle checkpoints only —
+    a park already set `paused_at`, and a fork seed never ran), `open_superstep`
+    turns it into elapsed and stamps `DecisionRecord.resumed_at`, and verify
+    replays the boundary from that stamp. Without the marker the gap is
+    invisible: replay opens the next superstep at the previous close and bills
+    the downtime as wall.
   - **Budgets**: every axis checked at superstep open (per-dispatch
     reservation arrives with Wave-2 LLM effects, which carry a reservable
     `max_tokens`).

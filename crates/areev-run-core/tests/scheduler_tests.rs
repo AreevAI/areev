@@ -574,6 +574,96 @@ fn client_ask_parks_once_resumes_by_id_and_never_charges_the_wait() {
     );
 }
 
+/// The wall/elapsed rule, extended to the gap a CRASH leaves. A driver that
+/// dies between supersteps and comes back later must charge the dead span to
+/// `elapsed`, never to `wall` — the same treatment a park gets, and the reason
+/// `verify` can reproduce a recovered run at all.
+///
+/// Pure-level, because the driver-level twin (`runner_tests`) needs real
+/// crash injection and cannot isolate the arithmetic.
+#[test]
+fn a_resume_boundary_accrues_elapsed_and_never_wall() {
+    let plan = PlanGraph::build(&wf(&["a", "b"]).edge("a", "b")).unwrap();
+    let execs = host_execs(&plan);
+    let e = env(&plan, &execs, Budgets::default());
+    let key = |node: &str| JournalKey {
+        run_id: "run-1".into(),
+        task_path: String::new(),
+        node: node.into(),
+        attempt: 1,
+        effect_seq: 0,
+        kind: EffectKind::Tool,
+    };
+
+    // Superstep 1 opens at 1_000 and closes at 1_010.
+    let mut st = SchedulerState::new("run-1", &plan);
+    let out = step(&e, st, &[
+        EventIn::ClockReading { unix_ms: 1_000 },
+        EventIn::Start { input: json!({}) },
+    ]);
+    st = out.state;
+    let out = step(&e, st, &[
+        EventIn::ClockReading { unix_ms: 1_010 },
+        EventIn::EffectResolved { key: key("a"), outcome: ok(json!({"a": true})) },
+    ]);
+    st = out.state;
+    // Without a Resumed marker the next superstep opened at the close, so no
+    // time is unaccounted yet.
+    assert_eq!(st.elapsed_ms, 0);
+    let wall_before = st.spent.wall_ms;
+
+    // Now the crash: rewind to that closed state and re-enter it the way a
+    // driver picking the run back up does — 5 minutes later.
+    let closed = st_at_close(&e, &plan, &key);
+    let gap_ms = 5 * 60 * 1_000;
+    let out = step(&e, closed, &[
+        EventIn::Resumed,
+        EventIn::ClockReading { unix_ms: 1_010 + gap_ms },
+    ]);
+    let st = out.state;
+
+    assert_eq!(st.elapsed_ms, gap_ms, "the dead span is REPORTED as elapsed");
+    assert_eq!(
+        st.spent.wall_ms, wall_before,
+        "…and never billed as wall: a crashed run is not a working run"
+    );
+    match &st.phase {
+        Phase::Open { record, .. } => assert_eq!(
+            record.resumed_at,
+            Some(1_010 + gap_ms),
+            "the reading is journaled, or verify could not reproduce this"
+        ),
+        other => panic!("expected an open superstep, got {other:?}"),
+    }
+}
+
+/// The state at superstep 1's close — the shape a checkpoint stores.
+fn st_at_close(
+    e: &StepEnv<'_>,
+    plan: &PlanGraph,
+    key: &dyn Fn(&str) -> JournalKey,
+) -> SchedulerState {
+    let mut st = SchedulerState::new("run-1", plan);
+    let out = step(e, st, &[
+        EventIn::ClockReading { unix_ms: 1_000 },
+        EventIn::Start { input: json!({}) },
+    ]);
+    st = out.state;
+    // Close superstep 1 WITHOUT letting it roll straight into the next open:
+    // impossible through `step`, so take the checkpoint the close commanded,
+    // which is exactly what a driver persists and a resume reloads.
+    let out = step(e, st, &[
+        EventIn::ClockReading { unix_ms: 1_010 },
+        EventIn::EffectResolved { key: key("a"), outcome: ok(json!({"a": true})) },
+    ]);
+    for c in out.commands {
+        if let Command::WriteCheckpoint { state_json, .. } = c {
+            return serde_json::from_value(state_json).unwrap();
+        }
+    }
+    panic!("superstep 1 wrote no checkpoint");
+}
+
 #[test]
 fn cancel_drains_without_new_dispatches() {
     let plan =

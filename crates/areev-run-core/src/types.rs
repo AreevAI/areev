@@ -163,6 +163,22 @@ pub enum EventIn {
     AskForwarded { tool_call_id: String },
     /// A steering message was queued against the run.
     InputSeen { message: Value },
+    /// The driver picked this run back up from a checkpoint after it stopped
+    /// running — a crash, a kill, a process restart.
+    ///
+    /// Fed ONLY when the loaded checkpoint is `Idle` (between supersteps).
+    /// A park-resume closes a superstep that is still open and already
+    /// accounts its own gap from the park reading, so feeding this there
+    /// would charge the same span twice.
+    ///
+    /// It exists because the gap between the last close and the next open is
+    /// invisible to the scheduler otherwise: `step()` normally opens the next
+    /// superstep in the very call that closed the previous one, at the same
+    /// reading. A driver that died in between hands the next open a LATER
+    /// reading, and without this marker replay cannot tell that apart from
+    /// active work — which is the whole `RUN-E009`-on-every-crash-recovered
+    /// -run defect this closes.
+    Resumed,
 }
 
 /// One tool offered to an abstract node's model, pinned by the manifest.
@@ -260,6 +276,19 @@ pub struct DecisionRecord {
     /// Send tasks dispatched this superstep: (task_path, attempt).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_dispatched: Vec<(String, u32)>,
+    /// Set when this superstep opened after a RESUME rather than straight
+    /// out of the previous close: the reading the driver took when it picked
+    /// the run back up. The span from the previous close to here accrued as
+    /// `elapsed_ms` — reported, never billed as wall.
+    ///
+    /// Journaled because `verify` cannot otherwise know a resume happened:
+    /// the driver's fresh reading is not derivable from the journal, so a
+    /// replay would open the superstep at the previous close and charge the
+    /// crash gap as active wall. Absent on every superstep that did not
+    /// resume — and on every checkpoint written before this existed, which
+    /// is why it is `Option` with `skip_serializing_if`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

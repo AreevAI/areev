@@ -42,8 +42,12 @@ pub struct Spent {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub usd_micros: u64,
-    /// Active wall only — Σ(superstep close − open). Parked/crashed gaps
-    /// accumulate in `elapsed_ms`, reported but never charged (§6.7).
+    /// Active wall only — Σ(superstep close − open). Parked and CRASHED gaps
+    /// accumulate in `elapsed_ms`, reported but never charged (§6.7). The
+    /// crashed half of that promise needs `EventIn::Resumed`: without the
+    /// marker a resume's gap is invisible to the scheduler, and a replay
+    /// (which opens the next superstep at the previous close) charges it as
+    /// wall while the live driver did not.
     pub wall_ms: u64,
     pub storage_bytes: u64,
     pub journal_grains: u64,

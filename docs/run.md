@@ -805,7 +805,21 @@ resume:
   recorded as an Observation (`on_dangling = fail` turns this into
   `RUN-E008` instead, if your tools can't tolerate redelivery);
 - a run whose manifest exists but whose first checkpoint was lost
-  reconstructs from the manifest's input.
+  reconstructs from the manifest's input;
+- the **gap itself is recorded**. A run that stopped between supersteps and
+  came back later charges nothing for the dead span: it accrues as
+  `elapsed_ms` — reported, never billed — exactly as a HITL park does, and the
+  reading the driver took on picking the run back up is journaled on the
+  superstep it opened. So `areev run inspect` can tell you a run took four
+  hours of calendar time and ninety seconds of work, and say which part was
+  downtime.
+
+That last point is what makes a recovered run **verifiable**. `step` normally
+closes a superstep and opens the next one in the same call, at the same
+reading, so a replay would run straight through a boundary the live driver
+crashed at — charging the crash gap as active wall and diverging on
+`spent.wall_ms` alone. Journaling the resume reading is what lets `verify`
+reproduce the boundary instead of guessing at it.
 
 ## Human-in-the-loop, precisely
 
@@ -915,7 +929,10 @@ areev run shadow --runs a,b,c        # many runs: replay with ZERO effect dispat
 `verify` re-drives the run from the **manifest's input** with the clock
 scripted from journaled readings and every effect answered from the journal,
 writing nothing — then byte-compares each commanded checkpoint against the
-stored chain. Divergence names the differing fields (`RUN-E009`). Canceled
+stored chain. **Crash-recovered runs verify too**: a superstep the live driver
+opened after a resume carries that reading in its decision record, and the
+replay rewinds to the checkpoint it just verified and re-enters the boundary
+the same way — so the dead span lands in `elapsed_ms` on both sides. Divergence names the differing fields (`RUN-E009`). Canceled
 runs verify too (the cancel is replayed from checkpoint state), and
 checkpoints past the last verifiable point are reported honestly as
 unverified rather than skipped.

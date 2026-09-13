@@ -216,6 +216,118 @@ fn crash_between_intent_and_result_redelivers_not_duplicates() {
     });
     assert_eq!(entry_count, 1, "ONE journal entry — the intent was adopted, not duplicated");
     assert_eq!(redeliveries, 1, "the redelivery is recorded, never silent");
+
+    // A recovered run is still a VERIFIABLE run. This used to fail: the
+    // crash-to-resume gap was charged as active wall by the replay (which
+    // opens the next superstep at the previous close) but not by the live
+    // driver (which opened it at a fresh reading), so every crash-recovered
+    // run diverged on `spent.wall_ms` — RUN-E009 on precisely the run an
+    // auditor asks about.
+    let report = runner.verify("run-c").unwrap();
+    assert!(report.verified, "a crash-recovered run must verify: {report:?}");
+
+    // And the gap is REPORTED, not silently dropped: it accrues as elapsed —
+    // the same rule a park follows (`state.rs`: parked/crashed gaps are
+    // reported, never charged).
+    let last = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "run-c"))
+        .unwrap();
+    let terminal = last.checkpoints.last().unwrap();
+    assert!(
+        terminal.scheduler["elapsed_ms"].as_u64().unwrap() > 0,
+        "the crash gap must be reported as elapsed: {}",
+        terminal.scheduler["elapsed_ms"]
+    );
+    let resumed: Vec<u64> =
+        last.checkpoints.iter().filter_map(|c| c.decisions.resumed_at).collect();
+    assert_eq!(resumed.len(), 1, "exactly one superstep opened after a resume");
+}
+
+/// Two crashes, two resumes, one verifiable run. A single resume boundary is
+/// the easy case; the accounting has to hold when they stack, because the
+/// second one measures from a close the FIRST resume produced.
+#[test]
+fn a_run_recovered_twice_still_verifies_and_reports_both_gaps() {
+    let rig = Rig::new();
+    let plan = rig.plan(&["a", "b", "c"], &[("a", "b"), ("b", "c")], &[]);
+    let runner = rig.runner(clocks());
+
+    // Crash after b executed, before its result is journaled.
+    let err = runner
+        .start(
+            &plan,
+            "run-cc",
+            json!({}),
+            &RunOptions {
+                workers: 1,
+                inject_crash: Some(areev_run::CrashPoint::BeforeResult(2)),
+                ..opts()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, RunError::Storage { .. }), "first injected crash: {err}");
+
+    // Resume, and crash again — the counter restarts per drive, and b's
+    // dangling intent is ADOPTED rather than rewritten, so the first intent
+    // this leg writes is c's.
+    let err = runner
+        .resume(
+            "run-cc",
+            &RunOptions {
+                workers: 1,
+                inject_crash: Some(areev_run::CrashPoint::AfterIntent(1)),
+                ..opts()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, RunError::Storage { .. }), "second injected crash: {err}");
+
+    // Resume to completion.
+    let session = runner.resume("run-cc", &RunOptions { workers: 1, ..opts() }).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let report = runner.verify("run-cc").unwrap();
+    assert!(report.verified, "a twice-recovered run must verify: {report:?}");
+
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "run-cc"))
+        .unwrap();
+    let resumed: Vec<u64> =
+        view.checkpoints.iter().filter_map(|c| c.decisions.resumed_at).collect();
+    assert_eq!(resumed.len(), 2, "both boundaries are journaled: {resumed:?}");
+    // Wall counts only the supersteps that actually ran; the two dead spans
+    // are reported as elapsed instead. Neither figure may swallow the other.
+    let terminal = view.checkpoints.last().unwrap();
+    assert!(terminal.scheduler["elapsed_ms"].as_u64().unwrap() > 0);
+    assert!(terminal.scheduler["spent"]["wall_ms"].as_u64().unwrap() > 0);
+}
+
+/// A checkpoint written before `resumed_at` existed carries no marker, and must
+/// replay exactly as it always did. The field is `Option` +
+/// `skip_serializing_if` for this reason: a stored run's verdict cannot change
+/// retroactively because the engine grew a field.
+#[test]
+fn a_decision_record_without_the_resume_marker_is_byte_identical() {
+    let pre = r#"{"superstep":2,"edges":[],"clock_open_ms":100,"clock_close_ms":140,"dispatched":[[0,1]]}"#;
+    let rec: areev_run_core::DecisionRecord = serde_json::from_str(pre).unwrap();
+    assert_eq!(rec.resumed_at, None, "an old record resumed nowhere");
+    assert_eq!(
+        serde_json::to_string(&rec).unwrap(),
+        pre,
+        "a record that did not resume must serialize as it did before the field existed"
+    );
+
+    let resumed = areev_run_core::DecisionRecord { resumed_at: Some(900), ..rec };
+    let json = serde_json::to_string(&resumed).unwrap();
+    assert!(json.contains(r#""resumed_at":900"#), "{json}");
+    assert_eq!(
+        serde_json::from_str::<areev_run_core::DecisionRecord>(&json).unwrap(),
+        resumed,
+        "and round-trips"
+    );
 }
 
 /// A panicking host executor is a FAILED EFFECT (retryable, §6.3), never a
