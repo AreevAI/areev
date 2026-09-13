@@ -181,6 +181,16 @@ pub struct AbstractFlow {
     /// Set while a summarizer turn is outstanding; taken at its resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folding: Option<FoldInFlight>,
+    /// The provider rejected the last turn as too long: fold before trying
+    /// again, whatever the configured ceiling says.
+    ///
+    /// Separate from the ceiling because it answers a different question. The
+    /// ceiling is a PREDICTION made from the previous turn's token count, and
+    /// it can be unset, or set too high, or right but measuring a transcript
+    /// that has since grown. This is the provider's own verdict on the
+    /// transcript as actually sent, and it has to win over all three.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fold_forced: bool,
     /// Folds performed on this attempt, and the number in the fold message the
     /// model reads. A completed node's flow is gone by the terminal checkpoint,
     /// so the durable record of a fold is its journaled intent (`input.fold`,
@@ -195,6 +205,10 @@ fn is_zero(n: &u64) -> bool {
 
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The complete scheduler state. Serialized (as JSON) into each checkpoint's
@@ -273,6 +287,15 @@ pub struct SchedulerState {
     /// node and its detail (deterministic under permutation — chosen at
     /// superstep close, not at arrival).
     pub failed: Option<(usize, String)>,
+    /// Transcript folds performed across the WHOLE run.
+    ///
+    /// Per-flow `AbstractFlow.folds` disappears with the flow when its node
+    /// completes, so by the terminal checkpoint there is nothing left to count
+    /// — and "did this workflow keep outgrowing the model's window?" is a
+    /// question about the run, asked after it ended. Carried here so the
+    /// run-outcome record can state it and the loop can act on it.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub folds: u32,
 }
 
 impl SchedulerState {
@@ -305,6 +328,7 @@ impl SchedulerState {
             cancel: None,
             exhausted: None,
             failed: None,
+            folds: 0,
         }
     }
 
@@ -334,6 +358,7 @@ mod tests {
             unknown_strikes: 0,
             last_prompt_tokens: 0,
             folding: None,
+            fold_forced: false,
             folds: 0,
         }
     }

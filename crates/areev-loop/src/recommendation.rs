@@ -90,6 +90,9 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "run.cost" => {
             "Workflow {workflow} spent ${usd} across {runs} runs (avg ${avg_usd}/run)"
         }
+        "run.context_pressure" => {
+            "Workflow {workflow} summarized its own transcript {folds} time(s) across {runs} runs (avg {avg_folds}/run) — its nodes are outgrowing the model's window"
+        }
         "adapter.candidate" => {
             "Promote adapter for \"{model}\" (base {base_model}) — gated on its pinned evalset"
         }

@@ -142,6 +142,19 @@ impl BudgetsSpec {
     }
 }
 
+/// A single tool result may occupy at most this fraction of the context
+/// ceiling. A quarter is a heuristic and named as one: large enough that an
+/// ordinary file read arrives whole, small enough that one dump cannot carry
+/// the next request past the window on its own.
+const RESULT_SHARE_OF_CEILING: u64 = 4;
+
+/// The runtime's characters-per-token conversion, used ONLY to turn a token
+/// ceiling into a character bound — never to measure a transcript, which is
+/// always the provider's own reported count. Same ratio the store's estimator
+/// uses, and the same honesty applies: it converts a limit, it does not
+/// pretend to count tokens.
+const CHARS_PER_TOKEN: u64 = 4;
+
 impl RunManifest {
     /// Freeze resolutions for every node (V3 + V7):
     /// - **Bound** (a `bindings` hash): must resolve to a Tool Definition.
@@ -290,11 +303,31 @@ impl RunManifest {
     /// already-ten-argument signature would make the next one an eleventh,
     /// with two call sites free to disagree about which knobs they passed.
     /// One place to add a limit, one place that can forget it.
-    pub fn with_limits(mut self, opts: &crate::RunOptions) -> Self {
+    pub fn with_limits(mut self, opts: &crate::RunOptions, model_window: Option<u64>) -> Self {
         self.llm_max_tokens = opts.llm_max_tokens;
         self.max_effects_per_attempt = opts.max_effects_per_attempt;
-        self.llm_tool_result_chars = opts.llm_tool_result_chars;
-        self.llm_context_tokens = opts.llm_context_tokens;
+        // The ceiling the operator set — or, failing that, one derived from
+        // the model's own window. This is what makes folding automatic: a long
+        // agent should not need a flag to survive, and a host that knows the
+        // window can answer the question the operator would have had to.
+        //
+        // Reserved output comes off the top, because a prompt that fits and a
+        // reply that does not is the same rejection. A backend that reports no
+        // window leaves this None and relies on the reactive path instead.
+        self.llm_context_tokens = opts.llm_context_tokens.or_else(|| {
+            model_window.map(|w| w.saturating_sub(u64::from(self.llm_max_tokens.unwrap_or(
+                crate::runner::DEFAULT_LLM_MAX_TOKENS,
+            ))))
+        });
+        // And the per-result bound follows the ceiling, because a ceiling on
+        // its own is not safe: the fold measures the PREVIOUS turn, so one
+        // oversized result appended since can carry the next request past the
+        // window before anything checks. Deriving it means an operator who
+        // sets one bound gets the other, rather than discovering the gap.
+        self.llm_tool_result_chars = opts.llm_tool_result_chars.or_else(|| {
+            self.llm_context_tokens
+                .map(|c| ((c / RESULT_SHARE_OF_CEILING) * CHARS_PER_TOKEN) as usize)
+        });
         self
     }
 

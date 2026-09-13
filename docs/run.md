@@ -1094,8 +1094,9 @@ is for.
 
 ### The fold: what happens when the transcript outgrows the window
 
-`--llm-context-tokens N` (`llm_context_tokens` on MCP, Python and Node; default:
-no ceiling) sets a ceiling on the whole transcript. Before each turn the
+`--llm-context-tokens N` (`llm_context_tokens` on MCP, Python and Node) sets a
+ceiling on the whole transcript. **You usually do not have to** — see
+"Folding is on by default" below. Before each turn the
 scheduler compares the **provider's own reported prompt tokens for the previous
 turn**, plus the `--llm-max-tokens` reservation for this one, against it. Over
 the ceiling, it emits one more turn — a **summarizer** — over the middle of the
@@ -1135,7 +1136,51 @@ Seven things are worth knowing before you turn it on.
   See below; this is the one way a ceiling on its own still lets a node die.
 
 The ceiling is frozen in the manifest at start, like every other run limit, so a
-`resume` folds exactly where the start would have.
+`resume` folds exactly where the start would have. `areev run inspect` reports
+the effective limits under `limits`, which is where to look when you want to
+know what a run is actually bounded by.
+
+#### Folding is on by default
+
+You do not have to set a ceiling for a long agent to survive. Two mechanisms
+cover it, and which one applies depends on what your provider will tell us.
+
+**A ceiling derived from the model.** When the backend can state its own
+context window, an unset `--llm-context-tokens` defaults to *window − the
+per-call output reservation*, and an unset `--llm-tool-result-chars` follows
+from that (a quarter of the ceiling in tokens, converted at 4 chars/token).
+Setting either flag overrides its derived value. Only `claude-*` reports a
+window today: 200,000, and deliberately as a **floor** rather than a
+specification — a model with a larger window folds a little earlier than it
+strictly must, which costs one summary, whereas a number that is too high
+costs the run. A stale table that fails *silently* is the thing being avoided
+here, so there is no table: one number, for one family, checked.
+
+**The provider's own refusal.** Where a provider states overflow
+*structurally* — OpenAI-compatible endpoints return
+`error.code = "context_length_exceeded"` — the runtime does not need to
+predict anything. The refused turn is journaled as a failed effect, the
+transcript is folded, and the **same turn is re-sent** on something smaller.
+This is what closes the one-round measurement gap described above: the ceiling
+can be unset, or set too high, or right about a transcript that has since
+grown, and the provider's verdict beats all three.
+
+Areev never reads a provider's error *prose* to reach that conclusion. A seam
+that matched on wording would work until a vendor reworded it and then fail
+silently. Providers that report overflow only in prose (Anthropic's
+`invalid_request_error`) are covered by the derived ceiling instead — which is
+exactly why that floor exists.
+
+Neither path can loop: a fold costs an effect, so `--max-effects` bounds the
+whole thing, and a refusal with nothing left to fold is `RUN-E024` naming the
+provider's limit rather than inventing a ceiling nobody set.
+
+**Folding is visible to the loop.** Every terminal run records how many times
+it had to summarize itself, and [Areev Loop](loop.md)'s `run_outcome` analyzer
+flags a workflow that needs one on essentially every run: that is a plan-shape
+signal (split the node, bound its tool results, or accept the summaries), so it
+surfaces as an advisory finding a human decides on, with nothing to auto-apply.
+A fold now and then is the mechanism working and says nothing.
 
 #### The two bounds are complementary, not alternatives
 
@@ -1387,10 +1432,12 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 - **Both bounds are off by default.** Without them an abstract node's transcript
   grows until the provider rejects it, and that rejection fails the node — the
   runtime will not shrink what it sends unless you ask it to.
-- **A fold does not react to a provider's context-length error.** It is
-  proactive only: an overflow that arrives as a terminal 4xx still fails the
-  node, because the model seam classifies errors structurally and does not parse
-  provider message strings.
+- **A fold reacts to a provider's context-length error only where that error is
+  STRUCTURED.** OpenAI-compatible endpoints return
+  `error.code = "context_length_exceeded"` and the runtime folds and re-sends
+  on it. Anthropic reports the same condition in prose, which the seam refuses
+  to parse; it is covered by the derived 200k ceiling instead. A streaming turn
+  keeps status-as-error and is proactive-only.
 - Subgraphs run inline on the driver thread, so parallel subgraph siblings
   serialize.
 - The condition grammar is frozen; there is no expression language beyond

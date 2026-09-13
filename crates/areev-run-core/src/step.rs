@@ -397,6 +397,7 @@ fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, 
             unknown_strikes: 0,
             last_prompt_tokens: 0,
             folding: None,
+            fold_forced: false,
             folds: 0,
         },
     );
@@ -576,6 +577,18 @@ fn handle_llm_outcome(
                              Correct it and answer again."
                         ),
                     }));
+                    flow.need = Some(crate::state::FlowNeed::NextTurn);
+                }
+            }
+            // The provider itself said the prompt was too long. Retrying is
+            // pointless and failing is premature: fold, then re-send the same
+            // turn. `dispatch_llm_turn` re-derives everything from the
+            // (unchanged) transcript, and the effect cap bounds this exactly
+            // as it bounds every other loop in here — a node that cannot get
+            // under the limit runs out of effects rather than spinning.
+            FailCause::ContextOverflow => {
+                if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
+                    flow.fold_forced = true;
                     flow.need = Some(crate::state::FlowNeed::NextTurn);
                 }
             }
@@ -807,6 +820,10 @@ fn resolve_fold(
             // reported prompt tokens decide whether another fold is due.
             flow.last_prompt_tokens = 0;
             flow.need = Some(crate::state::FlowNeed::NextTurn);
+            // Run-level too, once the flow borrow is done: this flow is gone
+            // by the terminal checkpoint, and that is where the run-outcome
+            // record is written from.
+            st.folds = st.folds.saturating_add(1);
         }
         EffectOutcome::Failed { cause, detail, .. } => match cause {
             // Transient: retry the TURN, which re-derives the fold decision
@@ -816,6 +833,24 @@ fn resolve_fold(
                 if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
                     flow.need = Some(crate::state::FlowNeed::NextTurn);
                 }
+            }
+            // Even the SUMMARIZER's own request can overflow — it carries the
+            // range it is summarizing. Re-deriving the fold from the same
+            // transcript would ask the identical question again, so this is
+            // terminal: the range that has to shrink is the one thing a fold
+            // cannot shrink for itself.
+            FailCause::ContextOverflow => {
+                let detail = RunError::ContextExceeded {
+                    node: env.plan.nodes[i].clone(),
+                    tokens: st
+                        .abstract_flows
+                        .get(&flow_id)
+                        .map(|f| f.last_prompt_tokens)
+                        .unwrap_or(0),
+                    ceiling: env.llm_context_tokens,
+                }
+                .to_string();
+                fail_abstract_coded(env, st, i, path, &detail);
             }
             // Terminal, including a schema failure: there is no schema on a
             // summarizer turn, so a corrective re-prompt would be theatre.
@@ -1283,6 +1318,9 @@ fn emit_fold_turn(
     let mut messages: Vec<Value> = flow.messages[from..to].to_vec();
     messages.push(serde_json::json!({ "role": "user", "content": FOLD_PROMPT }));
     flow.folding = Some(crate::state::FoldInFlight { from, to, effect_seq });
+    // Consumed: the refusal has been answered with a fold. A further refusal
+    // sets it again, and the effect cap is what bounds that.
+    flow.fold_forced = false;
     let key = JournalKey {
         run_id: st.run_id.clone(),
         task_path: path.to_string(),
@@ -1329,15 +1367,18 @@ fn dispatch_llm_turn(
     // completed turn — never on an estimate — plus the output we are about to
     // reserve, because a prompt that fits and a reply that does not is the
     // same rejection.
-    if let Some(ceiling) = env.llm_context_tokens {
-        let projected = st
-            .abstract_flows
-            .get(&flow_id)
+    {
+        let flow_now = st.abstract_flows.get(&flow_id);
+        let projected = flow_now
             .map(|f| f.last_prompt_tokens)
             .unwrap_or(0)
             .saturating_add(env.llm_reserve_tokens);
-        let idle = st.abstract_flows.get(&flow_id).is_some_and(|f| f.folding.is_none());
-        if idle && projected > ceiling {
+        let idle = flow_now.is_some_and(|f| f.folding.is_none());
+        // Two independent reasons to fold. The ceiling is a prediction and can
+        // be unset; the provider's refusal is a fact and always wins.
+        let forced = flow_now.is_some_and(|f| f.fold_forced);
+        let over_ceiling = env.llm_context_tokens.is_some_and(|c| projected > c);
+        if idle && (forced || over_ceiling) {
             match st.abstract_flows.get(&flow_id).and_then(|f| fold_range(&f.messages)) {
                 Some((from, to)) => {
                     emit_fold_turn(env, st, i, path, from, to, out);
@@ -1355,7 +1396,7 @@ fn dispatch_llm_turn(
                     let detail = RunError::ContextExceeded {
                         node: env.plan.nodes[i].clone(),
                         tokens,
-                        ceiling,
+                        ceiling: env.llm_context_tokens,
                     }
                     .to_string();
                     fail_abstract_coded(env, st, i, path, &detail);

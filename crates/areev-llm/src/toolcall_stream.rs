@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 
 fn terminal(msg: impl Into<String>) -> ToolCallError {
-    ToolCallError { retryable: false, message: msg.into() }
+    ToolCallError { retryable: false, message: msg.into(), ..Default::default() }
 }
 
 fn transport(msg: impl Into<String>) -> ToolCallError {
-    ToolCallError { retryable: true, message: msg.into() }
+    ToolCallError { retryable: true, message: msg.into(), ..Default::default() }
 }
 
 /// POST and return the response body as a line iterator. Status
@@ -43,9 +43,14 @@ pub(crate) fn post_stream_lines(
             let reader = std::io::BufReader::new(resp.into_body().into_reader());
             Ok(reader.lines())
         }
+        // The STREAMING path keeps status-as-error: an SSE stream's failure
+        // body is not JSON we can classify, and a turn that overflows fails
+        // the same way here as a non-streaming one would on a provider with
+        // no structured code. The proactive ceiling covers it.
         Err(ureq::Error::StatusCode(code)) => Err(ToolCallError {
             retryable: code == 429 || (500..=599).contains(&code),
             message: format!("{url}: HTTP {code}"),
+            ..Default::default()
         }),
         Err(e) => Err(transport(format!("{url}: {e}"))),
     }
