@@ -1686,6 +1686,90 @@ fn ground_and_verify_judge_the_lesson_text_not_just_the_summary() {
     }
 }
 
+/// A fold summary reaches the LLM lens, and nothing else in `agent:harness`
+/// does.
+///
+/// Both halves matter. An all-namespace scan hides every `agent:` namespace on
+/// purpose — those hold the file's grants and Tier-2 audit records, and an
+/// analyzer that swept them as ordinary memory once proposed tombstoning the
+/// grants. But a fold summary is the agent's own account of a long run, and
+/// living behind that exclusion made it unreadable to the one consumer it was
+/// written for: measured against a real model, the lens saw `evidence: 0` and
+/// DISCOVER was never called.
+///
+/// So the carve-out is by explicit namespace AND an explicit kind list. This
+/// test pins both directions — a governance record in the same namespace must
+/// stay invisible, or the fix has quietly become the sweep it avoided.
+#[test]
+fn a_fold_summary_reaches_the_llm_lens_and_governance_records_do_not() {
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+    struct RecordingLlm {
+        inner: MockLlm,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::llm::LlmBackend for RecordingLlm {
+        fn model(&self) -> &str {
+            "recording-mock"
+        }
+        fn complete(&self, request: &str) -> crate::error::Result<String> {
+            self.seen.lock().unwrap().push(request.to_string());
+            self.inner.complete(request)
+        }
+    }
+
+    let mut sub = TestSubstrate::new();
+    let fold = sub.put_observation(
+        crate::eval::HARNESS_NS,
+        &[
+            ("observation_kind", json!("fold_summary")),
+            ("run_id", json!("r-1")),
+            ("object", json!("the Rotterdam depot rejects pallets over 1200mm")),
+        ],
+    );
+    // Same namespace, NOT on the list: an audit record the lens must not see.
+    sub.put_observation(
+        crate::eval::HARNESS_NS,
+        &[
+            ("observation_kind", json!("egress_refusal")),
+            ("object", json!("https://blocked.example refused by policy")),
+        ],
+    );
+
+    let discover = format!(
+        r#"{{"recommendations":[
+          {{"summary":"pallet height keeps causing rejections",
+            "target":"entity:logistics/pallet_height","evidence":["{fold}"],
+            "confidence":0.9,"lesson":"Check pallet height before dispatch"}}
+        ]}}"#
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let e = Engine::with_builtins().with_llm(Box::new(RecordingLlm {
+        inner: MockLlm {
+            discover,
+            ground: r#"{"results":[{"id":0,"supported":true}]}"#.to_string(),
+            verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9}]}"#.to_string(),
+            enrich: r#"{"notes":[]}"#.to_string(),
+        },
+        seen: Arc::clone(&seen),
+    }));
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+
+    let seen = seen.lock().unwrap();
+    let discover_req = seen
+        .iter()
+        .find(|r| r.contains("\"op\":\"discover\""))
+        .expect("DISCOVER must be called — an empty bundle skips it entirely");
+    assert!(
+        discover_req.contains("Rotterdam depot rejects pallets over 1200mm"),
+        "the fold summary must reach the lens: {discover_req}"
+    );
+    assert!(
+        !discover_req.contains("blocked.example"),
+        "a governance record in the same namespace must stay hidden: {discover_req}"
+    );
+}
+
 #[test]
 fn human_note_evidence_reaches_the_llm_with_text() {
     use std::sync::{Arc, Mutex};
@@ -3793,14 +3877,21 @@ fn a_grain_checkpoint_counts_activity_since_the_apply() {
         .unwrap();
     e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
     e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply", false, t + 2).unwrap();
-    // Two grains since the apply (one of them the run): not yet.
+    // Two grains since the apply: not yet.
+    //
+    // The journaled eval run is NOT one of them. It lives in `agent:harness`,
+    // and the activity count is an all-namespace scan, which hides governance
+    // namespaces. This test used to count it, because the reference substrate
+    // was more permissive than any real one — the fake said two where
+    // production said one. Counting what production counts is the point.
     journal_exact(&mut sub, "eval-1", 45, t + 10);
     sub.add_fact_at("test", "x", "y", "z", t + 11);
-    e.run(&mut sub.inner, &RunOptions::default(), t + 12).unwrap();
+    sub.add_fact_at("test", "x", "y2", "z2", t + 12);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 13).unwrap();
     assert!(e.outcomes(&sub.inner).unwrap().is_empty());
     // A third: due. Current is the newest run after the apply (45 ≥ 40: held).
-    sub.add_fact_at("test", "x", "y", "w", t + 13);
-    e.run(&mut sub.inner, &RunOptions::default(), t + 14).unwrap();
+    sub.add_fact_at("test", "x", "y", "w", t + 14);
+    e.run(&mut sub.inner, &RunOptions::default(), t + 15).unwrap();
     let v = e.outcomes(&sub.inner).unwrap();
     assert_eq!(v.len(), 1);
     assert_eq!((v[0].verdict.as_str(), v[0].checkpoint), ("held", Some(Checkpoint::AfterGrains(3))));

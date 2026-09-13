@@ -703,6 +703,33 @@ impl Engine {
                 }
             }
         }
+        // Harness evidence, ahead of the general passes and read by EXPLICIT
+        // namespace — the one path that sees past the `agent:` exclusion, and
+        // only for the kinds named above. Early and reserved for the same
+        // reason human notes are: a fold summary is written once per long run
+        // and would lose every time to routine volume.
+        //
+        // A missing namespace or no read grant is nothing to reflect on, not an
+        // error — the same posture `run_outcome` takes over the same rows.
+        if let Ok(rows) =
+            sub.grains_of_type(crate::model::grain_type::OBSERVATION, Some(crate::eval::HARNESS_NS), opts)
+        {
+            let mut seeded = 0usize;
+            for g in rows {
+                if seeded >= HARNESS_SEED_CAP || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE {
+                    break;
+                }
+                let kind = g.str_field("observation_kind").unwrap_or_default();
+                if !HARNESS_EVIDENCE_KINDS.contains(&kind) {
+                    continue;
+                }
+                let before = evidence.len();
+                push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
+                if evidence.len() > before {
+                    seeded += 1;
+                }
+            }
+        }
         // Observations BEFORE facts, with their own small reserve.
         //
         // An Observation is where a human's own words land — a supervisor's
@@ -2235,6 +2262,26 @@ const TOOL_SEED_CAP: usize = 16;
 /// saying "from now on, do X" is a complete rule stated once, and no amount of
 /// counting recovers it from a corpus that never surfaced it.
 const NOTE_SEED_CAP: usize = 8;
+/// Harness Observations the LLM lens is allowed to see, and how many.
+///
+/// An all-namespace scan deliberately hides every `agent:` namespace
+/// (`areev-loop-adapter`): those hold the file's own grants and Tier-2 audit
+/// records, and an analyzer that swept them as ordinary memory once proposed
+/// tombstoning the grants — which locks every non-owner out of the file. That
+/// exclusion stays exactly as it is.
+///
+/// But not everything the harness records is governance. A fold summary is the
+/// agent's OWN account of what a long run had worked out, written when the
+/// transcript outgrew the model's window — experience, in the harness
+/// namespace only because it is evidence about a run rather than memory the
+/// agent asserts. Invisible to the lens, it may as well not have been written.
+///
+/// So: an explicit, named list read from an EXPLICIT namespace (which is what
+/// distinguishes it from a sweep), with a reserve of its own. Adding a kind
+/// here is a one-line decision someone reviews — never a blanket un-hiding of
+/// `agent:*`.
+const HARNESS_EVIDENCE_KINDS: &[&str] = &["fold_summary"];
+const HARNESS_SEED_CAP: usize = 6;
 const LENS_RESERVE: usize = 24;
 
 /// The confidence floor (§5.4): a verified draft below this is dropped. The

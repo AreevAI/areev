@@ -127,7 +127,10 @@ evidence. Responding and resuming are separate acts.
   which `projected_text` does not index, and it carries no s/r/o triple. The
   Observation is EVIDENCE — never the agent's namespace, never a durable
   memory; the loop's LLM path may propose a lesson citing one, and the gates
-  decide. `fold_keys` in `drive` is how the settle path knows an effect was a
+  decide. Reaching the lens at all takes the `HARNESS_EVIDENCE_KINDS` carve-out
+  in `areev-loop` — an all-namespace scan hides `agent:*` on purpose, so
+  writing the Observation was necessary and NOT sufficient. Measured against a
+  live model before the carve-out: `evidence: 0`, DISCOVER never called. `fold_keys` in `drive` is how the settle path knows an effect was a
   summarizer: read off the journaled `input.fold` at prepare time, the same
   marker that decides the turn is offered no tools.
 - **A summarizer turn is offered no tools, keyed off the JOURNAL.** The prepare
