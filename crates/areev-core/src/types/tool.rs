@@ -91,6 +91,18 @@ pub enum FailureCause {
     SchemaValidationFailed,
     UserAborted,
     Unknown,
+    /// The model refused the request because the PROMPT was too long.
+    ///
+    /// Its own bucket because the remediation differs from every other cause
+    /// here: an executor error is retried as-is, this one is only survivable
+    /// by sending something SMALLER. Filed under `executor_error` — as it was
+    /// before this existed — an ops dashboard reads a transport fault and an
+    /// operator goes looking at the wrong layer.
+    ///
+    /// Spelled `context_overflow`, matching the value added to the OMS spec's
+    /// open `error_type` enum in 1.6, so the two failure vocabularies agree on
+    /// this condition even though they are otherwise separate sets.
+    ContextOverflow,
 }
 
 impl FailureCause {
@@ -101,6 +113,7 @@ impl FailureCause {
             Self::SchemaValidationFailed => "schema_validation_failed",
             Self::UserAborted => "user_aborted",
             Self::Unknown => "unknown",
+            Self::ContextOverflow => "context_overflow",
         }
     }
 
@@ -111,6 +124,7 @@ impl FailureCause {
             "schema_validation_failed" => Some(Self::SchemaValidationFailed),
             "user_aborted" => Some(Self::UserAborted),
             "unknown" => Some(Self::Unknown),
+            "context_overflow" => Some(Self::ContextOverflow),
             _ => None,
         }
     }
@@ -704,6 +718,7 @@ mod tests {
             FailureCause::ExecutorError,
             FailureCause::SchemaValidationFailed,
             FailureCause::UserAborted,
+            FailureCause::ContextOverflow,
             FailureCause::Unknown,
         ] {
             let json = serde_json::to_string(&v).unwrap();
