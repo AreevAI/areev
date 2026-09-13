@@ -783,20 +783,13 @@ fn a_crash_between_a_fold_intent_and_its_dispatch_redelivers_the_same_fold() {
     let fold_input = journaled_messages(&rig, "fold-crash", "agent", 6);
     assert_eq!(fold_input["fold"], json!({"from": 1, "to": 3, "seq": 6, "prompt_v": 1}));
 
-    // Deliberately NOT asserting `verify` here. A crash-recovered run diverges
-    // on `spent.wall_ms` today — the crashed leg's journaled readings span a
-    // different active window than the replay reconstructs — and it does so for
-    // a plain Host node exactly as it does here (which is why
-    // `crash_between_intent_and_result_redelivers_not_duplicates` does not
-    // assert it either). Nothing fold-specific: the fold's own state, its
-    // journaled decision and every token count replay identically. Asserting
-    // verify here would pin a pre-existing wall-accounting gap to the fold.
+    // A fold that survived a crash verifies like any other. This assertion was
+    // held back when the fold landed, because EVERY crash-recovered run then
+    // diverged on `spent.wall_ms` — a wall-accounting gap that had nothing to
+    // do with folds. That is fixed (the resume boundary is journaled and
+    // replayed), so the fold gets the assertion it always deserved.
     let report = runner.verify("fold-crash").unwrap();
-    let fold_step = report.steps.last().expect("a checkpoint was verified");
-    assert!(
-        !fold_step.verdict.contains("fold") && !fold_step.verdict.contains("messages"),
-        "any divergence must not be in the fold's own state: {report:?}"
-    );
+    assert!(report.verified, "{report:?}");
 }
 
 #[test]

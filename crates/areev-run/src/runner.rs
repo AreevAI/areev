@@ -654,6 +654,9 @@ impl Runner {
             // this — rebuild from it (dangling intents are adopted by the
             // normal §5.3 path below) rather than bricking the run id.
             let st = SchedulerState::new(run_id, &plan);
+            // No `Resumed` here: with no checkpoint there is no previous
+            // close to measure a gap from, and the first superstep opens at
+            // this very reading exactly as a fresh `start` would.
             let events = vec![
                 EventIn::ClockReading { unix_ms: self.clock.now_ms() },
                 EventIn::Start { input: manifest.input.clone() },
@@ -675,7 +678,27 @@ impl Runner {
         }
 
         let now = self.clock.now_ms();
-        let mut events = vec![EventIn::ClockReading { unix_ms: now }];
+        // A run picked back up between supersteps stopped existing for the
+        // span between its last close and this reading. `Resumed` marks that
+        // so the coming open accrues the gap as ELAPSED rather than charging
+        // it as active wall — and journals the reading, which is what lets
+        // `verify` reproduce the boundary it cannot otherwise see.
+        //
+        // Idle only: a parked checkpoint is `Phase::Open` and already set its
+        // own pause point at the park, so marking again would double-count.
+        //
+        // A fork's SEED is the other exclusion, and for a different reason: it
+        // is a synthetic checkpoint `fork()` wrote, not one a superstep closed,
+        // and the fork has never executed. Nothing stopped, so nothing resumed
+        // — and on a time-travel fork the span from the base checkpoint to now
+        // can be days, which is lineage, not this run's downtime. Once a fork
+        // HAS executed, a later resume of it marks the boundary like any other.
+        let fork_seed = manifest.fork_of.is_some() && view.checkpoints.len() == 1;
+        let mut events = if matches!(st.phase, areev_run_core::Phase::Idle) && !fork_seed {
+            vec![EventIn::Resumed, EventIn::ClockReading { unix_ms: now }]
+        } else {
+            vec![EventIn::ClockReading { unix_ms: now }]
+        };
 
         // Settled-while-parked responses (a respond() wrote the result) and
         // expired asks (settled here as Timeout — never re-dispatched,
@@ -2539,6 +2562,10 @@ impl Runner {
             let mut resolved: Vec<EventIn> = Vec::new();
             let mut parked = false;
             let mut unanswered: Option<JournalKey> = None;
+            // Set when the checkpoint just verified is followed by one the
+            // live driver opened after a RESUME: (the verified checkpoint,
+            // the reading the driver took on picking the run back up).
+            let mut resume_boundary: Option<(usize, u64)> = None;
             for cmd in out.commands {
                 match cmd {
                     Command::WriteIntent { .. } => {}
@@ -2590,9 +2617,40 @@ impl Runner {
                         if !ok {
                             break 'replay;
                         }
+                        // Did the live driver STOP here? `step` closes a
+                        // superstep and opens the next one in the same call,
+                        // at the same reading — so a replay always runs
+                        // straight through a boundary the live driver may
+                        // have crashed at and come back to minutes later.
+                        // The next checkpoint's journaled `resumed_at` is the
+                        // only evidence of that gap, and rewinding to feed it
+                        // is what stops the crash span being charged as
+                        // active wall (the RUN-E009-on-every-recovered-run
+                        // defect).
+                        if let Some(at) =
+                            view.checkpoints.get(ckpt_idx).and_then(|c| c.decisions.resumed_at)
+                        {
+                            resume_boundary = Some((ckpt_idx - 1, at));
+                        }
                     }
                     Command::Finish { .. } => {}
                 }
+            }
+            if let Some((verified_idx, at)) = resume_boundary {
+                // Rewind to the checkpoint just verified and re-enter the
+                // boundary the way the driver did. Reading the stored state
+                // back trusts nothing new: it was byte-compared one command
+                // ago. Whatever this pass dispatched after the close is
+                // discarded and re-derived at the resumed clock, under the
+                // same journal keys.
+                st = serde_json::from_value::<SchedulerState>(
+                    view.checkpoints[verified_idx].scheduler.clone(),
+                )
+                .map_err(|e| RunError::ManifestMismatch {
+                    why: format!("checkpoint {verified_idx} state: {e}"),
+                })?;
+                events = vec![EventIn::Resumed, EventIn::ClockReading { unix_ms: at }];
+                continue;
             }
             if let Some(key) = unanswered {
                 if let Some(cancel_ev) = cancel_peek(pre_ckpt_idx, &pre_state) {

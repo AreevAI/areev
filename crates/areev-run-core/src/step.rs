@@ -180,6 +180,16 @@ fn apply_event(
         EventIn::EffectResolved { key, outcome } => {
             resolve_effect(env, st, key, outcome);
         }
+        EventIn::Resumed => {
+            // Mark where the run stopped, so the coming open can measure the
+            // gap. The checkpoint's own clock IS that point: it is the last
+            // reading the previous close journaled. Only meaningful between
+            // supersteps — a park already set `paused_at` at the park, and
+            // overwriting it here would erase the parked span.
+            if matches!(st.phase, Phase::Idle) && st.paused_at.is_none() {
+                st.paused_at = Some(st.clock_ms);
+            }
+        }
         EventIn::InputSeen { message } => {
             st.inputs_seen += 1;
             st.inbox.push(message.clone());
@@ -1056,6 +1066,15 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
     // Open the superstep.
     st.superstep += 1;
     st.spent.supersteps += 1;
+    // A resume boundary: the span from the previous close to this open is
+    // time the run did not exist. It accrues as `elapsed` and is NEVER
+    // charged as wall — the same rule a park follows, applied to the gap a
+    // crash leaves. Journaling the reading is what lets `verify` reproduce
+    // it: the driver's own clock is not derivable from the journal.
+    let resumed_at = st.paused_at.take().map(|paused| {
+        st.elapsed_ms += st.clock_ms.saturating_sub(paused);
+        st.clock_ms
+    });
     st.wall_open = Some(st.clock_ms);
     st.phase = Phase::Open {
         outstanding: Default::default(),
@@ -1064,6 +1083,7 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
         record: DecisionRecord {
             superstep: st.superstep,
             clock_open_ms: st.clock_ms,
+            resumed_at,
             ..DecisionRecord::default()
         },
     };
