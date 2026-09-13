@@ -1199,6 +1199,15 @@ verifier's job ([`loop.md`](loop.md)): it may propose a lesson **citing** a
 summary, and the four gates decide whether it is ever applied. Nothing here
 reaches the agent's namespace on its own.
 
+That path needed a deliberate carve-out to work at all. An all-namespace scan
+hides every `agent:` namespace, because those also hold the file's grants and
+Tier-2 audit records and an analyzer sweeping them as ordinary memory once
+proposed tombstoning the grants. So the loop reads fold summaries by
+**explicit** namespace and by an explicit list of observation kinds
+(`HARNESS_EVIDENCE_KINDS`), with a reserve of its own — the governance
+exclusion is untouched, and adding a kind to that list is a reviewed one-line
+decision rather than a blanket un-hiding.
+
 #### The two bounds are complementary, not alternatives
 
 The check runs on the **previous** turn's reported number, so the transcript it

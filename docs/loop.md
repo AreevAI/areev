@@ -326,11 +326,12 @@ are the identity when no backend is set:
   clusters the analyzers had already produced).
 
   **The evidence bundle budgets its sources.** DISCOVER sees at most 64
-  grains, drawn from four places that answer different questions: what the
+  grains, drawn from five places that answer different questions: what the
   deterministic findings CITED (≤24 — what clustering already caught), recent
-  tool ERRORS (≤16 — what clustering could have caught and did not),
-  human-authored **Observations** (≤8, taken before the rest), and recent
-  facts (the remainder — the model's own lens).
+  tool ERRORS (≤16 — what clustering could have caught and did not), named
+  **harness records** (≤6 — see below), human-authored **Observations** (≤8,
+  taken before the rest), and recent facts (the remainder — the model's own
+  lens).
 
   The Observation reserve exists for a different reason from the others.
   Learning does not only come from what went wrong: a person saying "from now
@@ -342,6 +343,23 @@ are the identity when no backend is set:
   may cite up to 64 grains on its own: without the reservation the lens is
   starved by the very determinism it exists to look past, and the symptom is
   indistinguishable from a model that simply found nothing.
+
+  **The harness reserve is a deliberate carve-out, not an exception waiting to
+  widen.** An all-namespace scan hides every `agent:` namespace: those hold the
+  file's own grant Facts and its Tier-2 audit Observations, and an analyzer
+  that swept them as ordinary memory once proposed tombstoning the grants —
+  which locks every non-owner out of the file. That exclusion stays.
+
+  But not everything the harness records is governance. A **fold summary** is
+  the agent's own account of what a long run had worked out, written when its
+  transcript outgrew the model's window ([`run.md`](run.md)); it sits in
+  `agent:harness` because it is evidence about a run rather than memory the
+  agent asserts. Invisible to the lens, it may as well not have been written —
+  measured against a live model, the bundle came back empty and DISCOVER was
+  never called. So the loop reads those rows by **explicit namespace** and by
+  an explicit list of `observation_kind` values (`HARNESS_EVIDENCE_KINDS`,
+  currently `fold_summary` alone), with its own small reserve. Adding a kind is
+  a reviewed one-line decision; un-hiding `agent:*` is not on the table.
 
   Two kinds need substrate support: `plan_revision` requires the `plans`
   capability (structural plan validation) and `code_revision` the `code`

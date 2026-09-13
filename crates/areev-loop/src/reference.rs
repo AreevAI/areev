@@ -189,6 +189,18 @@ impl SubstrateRead for ReferenceSubstrate {
             .iter()
             .filter(|g| g.grain_type == grain_type)
             .filter(|g| namespace.is_none_or(|ns| g.namespace == ns))
+            // An ALL-NAMESPACE scan hides governance namespaces, matching what
+            // a real substrate must do: those hold a file's grants and audit
+            // records, and an analyzer sweeping them as ordinary memory can
+            // propose tombstoning the grants. An EXPLICITLY named namespace is
+            // the caller saying they mean it, and is served.
+            //
+            // Modelled here rather than left to the adapters because a fake
+            // more permissive than production hides exactly the bug it should
+            // catch: the fold-summary carve-out passed against this substrate
+            // while the real one returned an empty evidence bundle, and the
+            // gap only showed up against a live model.
+            .filter(|g| namespace.is_some() || !g.namespace.starts_with("agent:"))
             .filter(|g| !opts.live_only || g.is_live())
             .filter(|g| opts.since_ms.is_none_or(|s| g.created_at_ms >= s))
             .cloned()
