@@ -190,6 +190,55 @@ pub fn write_result(
     m.supersede(intent, &mut t)
 }
 
+/// Record a transcript fold's SUMMARY as a Tier-2 Observation in the harness
+/// namespace.
+///
+/// The summary already exists as the fold effect's result grain, but a journal
+/// Tool grain is not reachable by recall: its payload lives in `tool_content`,
+/// which the store's text projection does not index, and it carries no
+/// subject/relation/object. So what an agent worked out over fifty turns is
+/// stored and findable only if you already know the run.
+///
+/// An Observation fixes that without inventing a second copy of the truth.
+/// It is typed, it is indexed, and it is EVIDENCE about the run rather than a
+/// memory of the agent's — which is why it goes to `agent:harness` and never
+/// to the agent's own namespace. Nothing here becomes a durable lesson on its
+/// own: the loop reads these, an LLM may propose a lesson citing one, and the
+/// four gates decide. Recording the summary verbatim as agent memory would
+/// pollute it — a summary is working state ("round 4 outstanding"), not a
+/// thing that is true tomorrow.
+#[allow(clippy::too_many_arguments)]
+pub fn write_fold_summary(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    key: &JournalKey,
+    plan_hash: &Hash,
+    summary: &str,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let mut obs = Observation::new(principal, "agent")
+        .subject(&format!("run:{run_id}"))
+        .object(summary)
+        .namespace(HARNESS_NS)
+        .created_at(clock_ms as i64);
+    let ex = &mut obs.common.extra_fields;
+    ex.insert("run_id".into(), json!(run_id));
+    ex.insert("observation_kind".into(), json!("fold_summary"));
+    ex.insert("plan_hash".into(), json!(plan_hash.to_hex()));
+    ex.insert("node".into(), json!(key.node));
+    ex.insert("attempt".into(), json!(key.attempt));
+    // Where the folded turns themselves are. The summary stands in for a
+    // range of the transcript; this is how a reader gets back to the range.
+    ex.insert("effect_seq".into(), json!(key.effect_seq));
+    // The run's OWN namespace, so a reader can find the journal it came from
+    // without guessing — the observation lives in the harness namespace, the
+    // run does not.
+    ex.insert("run_ns".into(), json!(ns));
+    m.add(&obs)
+}
+
 /// Record one refused outbound call as a Tier-2 Observation.
 ///
 /// Deliberately NOT a journal entry: like the run-outcome record, replay never

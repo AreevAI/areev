@@ -1175,12 +1175,29 @@ Neither path can loop: a fold costs an effect, so `--max-effects` bounds the
 whole thing, and a refusal with nothing left to fold is `RUN-E024` naming the
 provider's limit rather than inventing a ceiling nobody set.
 
-**Folding is visible to the loop.** Every terminal run records how many times
-it had to summarize itself, and [Areev Loop](loop.md)'s `run_outcome` analyzer
-flags a workflow that needs one on essentially every run: that is a plan-shape
-signal (split the node, bound its tool results, or accept the summaries), so it
-surfaces as an advisory finding a human decides on, with nothing to auto-apply.
-A fold now and then is the mechanism working and says nothing.
+**Folding is visible to the loop, two ways.** Every terminal run records how
+many times it had to summarize itself, and [Areev Loop](loop.md)'s
+`run_outcome` analyzer flags a workflow that needs one on essentially every
+run: a plan-shape signal (split the node, bound its tool results, or accept the
+summaries), advisory, nothing to auto-apply. A fold now and then is the
+mechanism working and says nothing.
+
+Each summary is also written as an Observation in `agent:harness`
+(`observation_kind: "fold_summary"`, carrying the run, node and the
+`effect_seq` of the folded range). The same text is already in the fold
+effect's result grain, but a journal Tool grain is not reachable by recall —
+its payload sits in `tool_content`, which the text index does not cover — so
+what an agent worked out over fifty turns would be findable only if you already
+knew the run. As an Observation it is typed, indexed, and part of what the loop
+reads.
+
+It is **evidence about the run, not the agent's memory**, and the namespace
+says so. A fold summary is working state — *"round 4 outstanding"* — and
+recording that verbatim as a durable memory would pollute recall rather than
+improve it. Turning one into a lesson that is still true tomorrow is the LLM
+verifier's job ([`loop.md`](loop.md)): it may propose a lesson **citing** a
+summary, and the four gates decide whether it is ever applied. Nothing here
+reaches the agent's namespace on its own.
 
 #### The two bounds are complementary, not alternatives
 

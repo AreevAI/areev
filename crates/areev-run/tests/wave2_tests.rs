@@ -693,6 +693,35 @@ fn a_transcript_past_the_context_ceiling_folds_into_one_journaled_summary() {
         other => panic!("expected a completed result, got {other:?}"),
     }
 
+    // The summary is also surfaced as harness EVIDENCE — typed, indexed, and
+    // reachable without knowing the run. That is what lets the loop read it
+    // and (through the LLM path and its four gates) propose a lesson from it.
+    // It is NOT the agent's memory: nothing here is true tomorrow.
+    let harness = rig
+        .facade
+        .with_store(|m| {
+            m.run_trace(areev_core::authz::HARNESS_NS, "fold-1", 100).map_err(|e| e.to_string())
+        })
+        .unwrap();
+    let summaries: Vec<_> = harness
+        .iter()
+        .filter(|g| g.get_str("observation_kind") == Some("fold_summary"))
+        .collect();
+    assert_eq!(summaries.len(), 1, "one fold, one summary observation");
+    let obs = summaries[0];
+    assert_eq!(
+        obs.get_str("object"),
+        Some("fetched rounds 2 and 3; still need round 4"),
+        "the model's own summary text, verbatim"
+    );
+    assert_eq!(obs.get_str("node"), Some("agent"));
+    assert_eq!(obs.get_u64("effect_seq"), Some(6), "points back at the folded range");
+    assert_eq!(
+        obs.get_str("namespace"),
+        Some(areev_core::authz::HARNESS_NS),
+        "evidence about the run, never memory in the agent's namespace"
+    );
+
     // Verify replays the fold from the journal — the scripted model is
     // exhausted, so any model call during verify would fail loudly.
     let report = runner.verify("fold-1").unwrap();
