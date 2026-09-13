@@ -120,6 +120,16 @@ evidence. Responding and resuming are separate acts.
   makes folding automatic rather than opt-in. Both call sites of
   `RunManifest::resolve` pass the window; `inspect` reports the effective set
   under `limits`, because a limit the runtime chose is otherwise undebuggable.
+- **A fold summary is written twice, on purpose.** Once as the fold effect's
+  ordinary result grain (the journal record, replayed by verify) and once as a
+  `fold_summary` Observation in `agent:harness`. The second exists because the
+  first is unreachable by recall: a Tool grain's payload is `tool_content`,
+  which `projected_text` does not index, and it carries no s/r/o triple. The
+  Observation is EVIDENCE — never the agent's namespace, never a durable
+  memory; the loop's LLM path may propose a lesson citing one, and the gates
+  decide. `fold_keys` in `drive` is how the settle path knows an effect was a
+  summarizer: read off the journaled `input.fold` at prepare time, the same
+  marker that decides the turn is offered no tools.
 - **A summarizer turn is offered no tools, keyed off the JOURNAL.** The prepare
   step reads `input.fold` on the effect it is about to dispatch, not scheduler
   state — verify replays from journaled inputs and holds no flow, so keying it

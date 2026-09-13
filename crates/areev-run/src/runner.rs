@@ -1352,6 +1352,11 @@ impl Runner {
         );
         let mut intents: BTreeMap<JournalKey, Hash> =
             view.entries.iter().map(|(k, e)| (k.clone(), e.intent)).collect();
+        // Which dispatched effects are SUMMARIZER turns. Read off the
+        // journaled `input.fold` at prepare time (the same marker that decides
+        // the turn is offered no tools) and remembered so the settle path can
+        // record the summary it produced.
+        let mut fold_keys: std::collections::BTreeSet<JournalKey> = Default::default();
         let mut results: BTreeMap<JournalKey, EffectOutcome> = view
             .entries
             .iter()
@@ -1652,6 +1657,9 @@ impl Runner {
                             // the journal alone — reading it off scheduler
                             // state would not replay.
                             let folding = input.get("fold").is_some();
+                            if folding {
+                                fold_keys.insert(key.clone());
+                            }
                             let offered: &[areev_run_core::OfferedTool] =
                                 if folding { &[] } else { tools };
                             let mut defs = Vec::with_capacity(offered.len());
@@ -2013,6 +2021,39 @@ impl Runner {
                                     )
                                 })
                                 .map_err(err_run)?;
+                            // A summarizer turn's answer is the only prose in
+                            // the whole run that says what the agent had
+                            // worked out. Surfaced as harness EVIDENCE the
+                            // loop can read (the journal Tool grain that also
+                            // holds it is not reachable by recall), never as
+                            // the agent's own memory — see
+                            // `journal::write_fold_summary`.
+                            if fold_keys.contains(&key) {
+                                if let EffectOutcome::Completed { result, .. } = &done.outcome {
+                                    let summary = result
+                                        .get("text")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or_default()
+                                        .trim()
+                                        .to_string();
+                                    if !summary.is_empty() {
+                                        self.facade
+                                            .with_store(|m| {
+                                                journal::write_fold_summary(
+                                                    m,
+                                                    &self.ns,
+                                                    &run_id,
+                                                    &key,
+                                                    plan_hash,
+                                                    &summary,
+                                                    now,
+                                                    &self.principal,
+                                                )
+                                            })
+                                            .map_err(err_run)?;
+                                    }
+                                }
+                            }
                             let (in_tok, out_tok, finish, err_type) =
                                 settled_detail(key.kind, &done.outcome);
                             emit(crate::stream::RunEvent::EffectSettled {
