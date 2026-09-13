@@ -180,6 +180,14 @@ COMMANDS:
                                       surfaces the cursor and, for a
                                       superseded declaration, the state key
                                       its evaluation actually lives under
+  trigger  retarget <T> [--workflow HASH] --because \"why\"
+                                      point a trigger at the CURRENT version of
+                                      its plan (editing a plan mints a new hash
+                                      and triggers do not follow heads). Without
+                                      --workflow it follows the plan's own chain
+                                      to the live head; the destination is
+                                      validated before anything is written, and
+                                      the cursor/dedup fence carry over
   trigger  pause <T> --because \"why\" | resume <T> --because \"why\"
                                       operational brake; unlike the
                                       declaration's own enabled flag it stays

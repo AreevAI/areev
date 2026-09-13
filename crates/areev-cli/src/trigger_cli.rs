@@ -101,6 +101,7 @@ pub fn run_trigger(
         "list" => list(&facade, ns, json_out),
         "show" => show(&facade, ns, positional.get(1), json_out),
         "run" => evaluate(facade, ns, db, flags, json_out),
+        "retarget" => retarget(&facade, ns, positional.get(1), flags, json_out),
         "pause" => set_paused(&facade, ns, positional.get(1), flags, true, json_out),
         "resume" => set_paused(&facade, ns, positional.get(1), flags, false, json_out),
         "status" => status(&facade, ns, json_out),
@@ -108,7 +109,7 @@ pub fn run_trigger(
         "deliver" => deliver(facade, ns, db, flags, json_out),
         other => Err(format!(
             "unknown trigger subcommand '{other}' \
-             (add|list|show|status|run|render|deliver|pause|resume)"
+             (add|list|show|status|run|render|deliver|retarget|pause|resume)"
         )),
     }
 }
@@ -390,16 +391,22 @@ fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Strin
     let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
     let declarations = ev.declarations().map_err(|e| e.to_string())?;
     if json_out {
-        let rows: Vec<_> = declarations
-            .iter()
-            .map(|(h, t)| {
-                serde_json::json!({
-                    "trigger": h, "name": areev_trigger::trigger_name(t),
-                    "kind": t.kind.as_str(), "workflow": t.workflow,
-                    "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
-                })
-            })
-            .collect();
+        let mut rows: Vec<serde_json::Value> = Vec::with_capacity(declarations.len());
+        for (h, t) in &declarations {
+            let mut row = serde_json::json!({
+                "trigger": h, "name": areev_trigger::trigger_name(t),
+                "kind": t.kind.as_str(), "workflow": t.workflow,
+                "connector": t.connector, "scope": t.scope, "enabled": t.enabled,
+            });
+            // The plan moved and this trigger did not. Reported here because a
+            // listing is where an operator looks to answer "is this wired up
+            // right?", and until now the answer looked identical either way.
+            if let Some(head) = ev.plan_head_if_stale(t).map_err(|e| e.to_string())? {
+                row["plan_head"] = serde_json::json!(head);
+                row["plan_superseded"] = serde_json::json!(true);
+            }
+            rows.push(row);
+        }
         println!("{}", serde_json::json!({ "ok": true, "triggers": rows }));
         return Ok(());
     }
@@ -407,20 +414,34 @@ fn list(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Strin
         println!("no triggers declared in {ns}");
         return Ok(());
     }
-    for (h, t) in declarations {
+    let mut any_stale = false;
+    for (h, t) in &declarations {
         // A declaration's own name beats its scope in the identity column:
         // that is the string the operator wrote down, and the one they type
         // into a ticket.
-        let what = areev_trigger::trigger_name(&t)
+        let what = areev_trigger::trigger_name(t)
             .unwrap_or_else(|| t.scope.clone().unwrap_or_else(|| "-".into()));
         let what = what.as_str();
         let off = if t.enabled { "" } else { "  [disabled]" };
+        let stale = ev.plan_head_if_stale(t).map_err(|e| e.to_string())?;
+        any_stale |= stale.is_some();
         println!(
-            "{}  {:<9} {:<28} -> {}{off}",
-            short(&h, 12),
+            "{}  {:<9} {:<28} -> {}{off}{}",
+            short(h, 12),
             t.kind.as_str(),
             what,
-            short(&t.workflow, 12)
+            short(&t.workflow, 12),
+            match &stale {
+                Some(head) => format!("  [plan superseded -> {}]", short(head, 12)),
+                None => String::new(),
+            }
+        );
+    }
+    if any_stale {
+        eprintln!(
+            "areev: a trigger above still starts the plan it was declared against, \
+             not the edited one — re-point it with `areev trigger retarget <TRIGGER> \
+             --because \"...\"` (or pass --workflow to name a different plan)"
         );
     }
     Ok(())
@@ -721,6 +742,115 @@ fn deliver(
         println!("delivered · runs {} · ingested {}", report.runs_started, report.ingested);
     }
     report_refusals(&broker);
+    Ok(())
+}
+
+/// Point a trigger at the current version of its plan — or at a different
+/// plan entirely.
+///
+/// This exists because a Workflow is content-addressed: editing one is a
+/// supersession that mints a NEW address, and a trigger keeps starting the
+/// version it was declared against. That default is deliberate (a plan edit
+/// must not silently change what an unattended heartbeat runs), but before
+/// this the only way to move the pointer was to hand-write a `SUPERSEDE
+/// trigger` — for a change whose intent, almost every time, is simply "use the
+/// edited plan".
+///
+/// So `--workflow` is OPTIONAL: without it, the trigger follows its own plan's
+/// chain to the live head. The act stays explicit and audited; only the typing
+/// goes away.
+///
+/// The trigger's evaluation state — cursor, dedup fence, failure count —
+/// survives, because state is keyed on the chain ROOT (#128) and a
+/// supersession keeps that root. A re-pointed polling trigger resumes where it
+/// was rather than replaying history.
+fn retarget(
+    facade: &Arc<AreevFacade>,
+    ns: &str,
+    id: Option<&String>,
+    flags: &HashMap<String, String>,
+    json_out: bool,
+) -> Result<(), String> {
+    let id = id.ok_or(
+        "usage: areev trigger retarget <TRIGGER> [--workflow HASH] --because \"...\"",
+    )?;
+    let because = need(flags, "because")?;
+
+    let ev = Evaluator::read_only(Arc::clone(facade), Arc::new(SystemClock), ns);
+    let (hash, trigger) = ev
+        .declarations()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|(h, _)| h.starts_with(id.as_str()))
+        .ok_or_else(|| format!("no trigger matching '{id}' in {ns}"))?;
+
+    let target = match flag(flags, "workflow") {
+        Some(w) => areev_core::types::strip_grain_scheme(&w).to_string(),
+        None => ev
+            .plan_head_if_stale(&trigger)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "trigger {} already points at the current plan ({}) — pass \
+                     --workflow to send it somewhere else",
+                    short(&hash, 12),
+                    short(trigger.workflow_hash(), 12)
+                )
+            })?,
+    };
+    if target == trigger.workflow_hash() {
+        return Err(format!("trigger {} already points at {}", short(&hash, 12), short(&target, 12)));
+    }
+
+    // Validate the destination BEFORE writing. Re-pointing a standing rule at
+    // a plan that cannot run replaces a stale firing with a broken one, and
+    // the heartbeat that discovers it has nobody watching.
+    let th = areev_core::error::Hash::from_hex(&target)
+        .map_err(|e| format!("--workflow is not a content address: {e}"))?;
+    facade
+        .with_store(|m| m.get(&th))
+        .map_err(|e| format!("--workflow {}: {e}", short(&target, 12)))
+        .and_then(|g| {
+            g.to_workflow().map_err(|e| {
+                format!("--workflow {} is not a Workflow grain: {e}", short(&target, 12))
+            })
+        })
+        .and_then(|wf| {
+            areev_run_core::PlanGraph::build(&wf)
+                .map(|_| ())
+                .map_err(|e| format!("--workflow {} does not validate: {e}", short(&target, 12)))
+        })?;
+
+    // A supersession, not an edit: the old declaration stays readable, and the
+    // chain root the state is keyed on is preserved.
+    let mut next = trigger.clone();
+    next.workflow = target.clone();
+    next.common.extra_fields.insert("because".into(), serde_json::json!(because));
+    let old = areev_core::error::Hash::from_hex(&hash).map_err(|e| e.to_string())?;
+    let new_hash = facade
+        .with_store(|m| m.supersede(&old, &mut next))
+        .map_err(|e| e.to_string())?;
+
+    if json_out {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "trigger": new_hash.to_hex(), "superseded": hash,
+                "workflow": target,
+            })
+        );
+    } else {
+        println!(
+            "trigger {} -> {} now starts plan {}",
+            short(&hash, 12),
+            short(&new_hash.to_hex(), 12),
+            short(&target, 12)
+        );
+        eprintln!(
+            "areev: evaluation state (cursor, dedup fence, failure count) carried over — \
+             a supersession keeps the chain root state is keyed on"
+        );
+    }
     Ok(())
 }
 

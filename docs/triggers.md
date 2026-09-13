@@ -459,10 +459,11 @@ every message in history.
 
 ### Superseding a trigger keeps its cursor (1.6.x, #128)
 
-`SUPERSEDE workflow` mints a new plan hash, and the how-to guide says to
-re-point the trigger at it — triggers do not follow supersession heads. The
-only way to re-point one is to edit its `workflow` field, which is itself a
-supersession and mints a **new trigger hash**. Before this fix, that new hash
+`SUPERSEDE workflow` mints a new plan hash, and the trigger must be re-pointed
+at it — triggers do not follow supersession heads. Re-pointing edits the
+trigger's `workflow` field, which is itself a supersession and mints a **new
+trigger hash**. (`areev trigger retarget` is the one command that does it —
+see "An edited plan is reported, never followed" below.) Before this fix, that new hash
 looked like a brand-new declaration to the evaluator: its cursor re-seeded (a
 mailbox connector silently skips everything that arrived since the old
 trigger's last poll, reported as a healthy tick) and its dedup fence reset
@@ -491,6 +492,51 @@ backlog.
 differs from the trigger's own hash, i.e. only for a superseded declaration)
 alongside the cursor and op-log cursor, so an operator can see directly what
 a re-pointed trigger's evaluation state is doing rather than inferring it.
+
+### An edited plan is reported, never followed
+
+A trigger names its plan by content address, so editing the plan leaves the
+trigger starting the version it was declared against. That is the intended
+behaviour and worth keeping: a plan edit must not silently change what an
+unattended heartbeat runs, and a standing rule that quietly re-aimed itself
+would be the least auditable thing in the system.
+
+What that default cost, until now, was **visibility**. A listing showed a
+trigger on a three-edits-old plan exactly as it showed a current one, the
+firing succeeded, and the only symptom was a workflow behaving like its old
+self. Silence is the symptom of every trigger failure; it should not also be
+the symptom of a correct default.
+
+So the drift is reported wherever a trigger is shown. `trigger list` marks it
+inline and names the command that fixes it:
+
+```
+641b714054bb  interval  nightly-close  -> 60fe7e29a5a7  [plan superseded -> 214ef7a882fe]
+```
+
+`trigger list --format json` and `trigger status` carry `plan_head` (the live
+head of the plan's chain) and `plan_superseded`. Both are absent when the
+trigger is current, so a clean listing stays clean.
+
+And the fix is one command:
+
+```bash
+areev trigger retarget <TRIGGER> --because "plan edited: nightly close v2"
+```
+
+`--workflow` is **optional**. Without it the trigger follows its own plan's
+supersession chain to the live head, because that is the intent almost every
+time; pass `--workflow <HASH>` to send it somewhere else entirely. Either way
+the destination is validated before anything is written — it must resolve to a
+Workflow grain whose graph builds — since re-pointing a standing rule at a plan
+that cannot run replaces a stale firing with a broken one, discovered by a
+heartbeat nobody is watching. Re-pointing a trigger that is already current is
+refused rather than written: an audited supersession with nothing to change is
+noise in a chain every later reader has to walk.
+
+The trigger's evaluation state survives, because state is keyed on the chain
+ROOT and a supersession preserves it (#128, above) — a re-pointed polling
+trigger resumes where it was instead of replaying its backlog.
 
 ### A refused run start does not consume the item (1.6.x, #129)
 

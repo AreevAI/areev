@@ -7329,6 +7329,40 @@ impl Areev {
     /// the process forever — a cyclic `supersedes` graph is corrupt data,
     /// not slow data, and must fail loudly rather than hang whatever called
     /// in.
+    /// Walk FORWARD from `hash` to the grain that currently supersedes it —
+    /// the live head of its edit chain. Returns `hash` itself when nothing
+    /// supersedes it (already current, or unknown to the index).
+    ///
+    /// The mirror of [`Areev::supersession_chain`], which walks backward to the
+    /// root. Both exist because the two directions answer different questions:
+    /// "what was this before?" (provenance) and "what should I be pointing at
+    /// now?" (staleness). The second is what anything holding a content
+    /// address across an edit needs — a trigger above all, since a plan is
+    /// immutable and editing it mints a new address that nothing following
+    /// automatically.
+    ///
+    /// Bounded by [`MAX_SUPERSESSION_CHAIN_HOPS`] like its sibling: a cycle is
+    /// impossible through content addressing, but a bound beats trusting that.
+    pub fn current_head(&self, hash: &Hash) -> Result<Hash> {
+        let mut cur = *hash;
+        for _ in 0..MAX_SUPERSESSION_CHAIN_HOPS {
+            let rows = self.db.query(
+                "SELECT superseded_by FROM grains WHERE hash = ?1",
+                vec![pb(cur.as_bytes().to_vec())],
+            )?;
+            match rows.first() {
+                // Unknown to the index: whatever we walked to is the answer we
+                // can honestly give, same posture as the backward walk.
+                None => return Ok(cur),
+                Some(row) => match row.blob(0).and_then(|b| Hash::try_from_bytes(&b).ok()) {
+                    Some(next) => cur = next,
+                    None => return Ok(cur),
+                },
+            }
+        }
+        Err(AreevError::SupersessionChainTooDeep(*hash))
+    }
+
     pub fn supersession_chain(&self, hash: &Hash) -> Result<Vec<Hash>> {
         let mut out = vec![*hash];
         let mut cur = *hash;
