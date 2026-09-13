@@ -1103,10 +1103,16 @@ fn run_llm_effect(
             }
         }
         Err(e) => EffectOutcome::Failed {
-            // §6.3 mapping: retryable transport/5xx → ExecutorError (the
-            // scheduler retries the TURN); terminal → Unknown (never
-            // retried).
-            cause: if e.retryable { FailCause::ExecutorError } else { FailCause::Unknown },
+            // §6.3 mapping: a structural context refusal is its own cause (the
+            // scheduler folds and re-sends, rather than retrying an identical
+            // prompt or discarding the node); retryable transport/5xx →
+            // ExecutorError (the scheduler retries the TURN); terminal →
+            // Unknown (never retried).
+            cause: match (e.context_overflow, e.retryable) {
+                (true, _) => FailCause::ContextOverflow,
+                (false, true) => FailCause::ExecutorError,
+                (false, false) => FailCause::Unknown,
+            },
             journal_bytes: e.message.len() as u64,
             detail: e.message,
         },

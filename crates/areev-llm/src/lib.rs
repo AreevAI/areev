@@ -60,6 +60,25 @@ pub(crate) fn agent() -> ureq::Agent {
         .into()
 }
 
+/// Like [`agent`], but a non-2xx status is a normal response rather than an
+/// `Error::StatusCode` — so the error BODY can be read.
+///
+/// That body is the only structural evidence of *why* a request failed: an
+/// OpenAI-compatible endpoint states `error.code = "context_length_exceeded"`
+/// there, and the runtime folds a transcript on that signal instead of killing
+/// the node. With status-as-error the body is dropped before anyone sees it
+/// and every 400 looks alike. The broker makes the same trade for the same
+/// reason (`areev-run/src/broker.rs`).
+pub(crate) fn agent_reading_error_bodies() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(CONNECT_SECS)))
+        .timeout_recv_response(Some(Duration::from_secs(READ_SECS)))
+        .timeout_recv_body(Some(Duration::from_secs(READ_SECS)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
 /// The streaming agent (§6.11 [R3]): the whole-body `READ_SECS` cap would
 /// kill any long stream, so the BODY phase is uncapped — liveness comes
 /// from time-to-first-byte (`timeout_recv_response`) plus the provider's

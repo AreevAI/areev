@@ -85,6 +85,19 @@ journaled events back, assert the same commands come out.
   A flow torn down mid-round leaves stragglers:
   `resolve_effect` guards resolved nodes so a late tool result cannot flip
   DoneFailed back to DoneOk.
+- **Two triggers for one fold.** `fold_forced` (the provider REFUSED the last
+  turn as too long, structurally) and the `llm_context_tokens` ceiling are
+  checked together and either fires. They answer different questions: the
+  ceiling is a prediction from the previous turn's token count and can be
+  unset, too high, or stale; the refusal is the provider's verdict on the
+  transcript as actually sent. The refusal therefore works with NO ceiling
+  configured, and `RUN-E024` then reports `ceiling: None` — "the provider's own
+  limit" — rather than inventing a number. `FailCause::ContextOverflow` is
+  neither retryable nor terminal for exactly this reason, and it must survive
+  the JOURNAL: the grain-level `FailureCause` vocabulary is .mg format and was
+  NOT widened, so `areev-run`'s journal carries a `context_overflow` extra
+  field and reads it back before the coarse cause. Drop that and replay retries
+  where the live run folded — a `RUN-E009` the tests caught.
 - **The fold** (`llm_context_tokens`): before a turn, if the PROVIDER's reported
   `last_prompt_tokens` for the previous turn plus the reservation exceeds the
   ceiling, emit one summarizer turn over `fold_range(messages)` and splice its

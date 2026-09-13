@@ -96,7 +96,10 @@ pub enum RunError {
     /// would spend the effect budget summarizing summaries. The honest answer
     /// is a failed node naming the ceiling it could not fit under — raise it,
     /// bound the tool results (`llm_tool_result_chars`), or split the node.
-    ContextExceeded { node: String, tokens: u64, ceiling: u64 },
+    /// `ceiling` is `None` when no ceiling was configured and the PROVIDER
+    /// refused the transcript — the limit was learned from the rejection
+    /// rather than predicted.
+    ContextExceeded { node: String, tokens: u64, ceiling: Option<u64> },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -259,10 +262,16 @@ impl fmt::Display for RunError {
             Self::ContextExceeded { node, tokens, ceiling } => write!(
                 f,
                 "{code}: node '{node}' has a transcript the model reported at \
-                 {tokens} prompt tokens against a ceiling of {ceiling}, and \
-                 nothing is left to fold — the node's input and the kept tail \
-                 alone exceed it. Raise --llm-context-tokens, bound oversized \
-                 tool results (--llm-tool-result-chars), or split the node"
+                 {tokens} prompt tokens against {}, and nothing is left to \
+                 fold — the node's input and the kept tail alone exceed it. \
+                 Raise --llm-context-tokens, bound oversized tool results \
+                 (--llm-tool-result-chars), or split the node",
+                match ceiling {
+                    Some(c) => format!("a ceiling of {c}"),
+                    None => "the provider's own limit, which it refused the \
+                             request against"
+                        .to_string(),
+                }
             ),
         }
     }
@@ -301,7 +310,7 @@ mod tests {
             RunError::LeaseLost { run_id: "r".into() },
             RunError::EgressRefused { destination: "https://x/".into() },
             RunError::AnonReplayUnsafe { ns: "n".into(), scope: "session".into() },
-            RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: 8 },
+            RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: Some(8) },
         ]
     }
 

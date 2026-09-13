@@ -155,7 +155,7 @@ help?):
 | `budget_pressure` *(telemetry)* | context assembly repeatedly overflowing its token budget (fed by the ASSEMBLE allocator) | a flag: raise the budget or curate |
 | `retention_sweep` | grains older than a declared `max_age_days` (**opt-in** — a deletion policy is stated, never inferred; 0 = disabled) | one `FORGET` per over-age grain, batched per namespace (destructive, never auto-applies). The proposal names every grain it would remove, and states how many exceed the per-proposal cap rather than truncating silently. The cron equivalent is `areev retention sweep` — see [`gdpr.md`](gdpr.md) §2a |
 | `outcome_review` | an applied recommendation past `review_after` that regressed | a revert |
-| `run_outcome` | `areev run` workflows whose terminal runs keep failing/stalling/exhausting budgets (≥50% of ≥3 runs), or whose aggregate spend crosses a floor — fed by the run-outcome Observations the driver writes at every terminal run | an advisory flag per workflow (failure cluster and/or cost attribution) |
+| `run_outcome` | `areev run` workflows whose terminal runs keep failing/stalling/exhausting budgets (≥50% of ≥3 runs), whose aggregate spend crosses a floor, or whose transcripts keep outgrowing the model's window (≥1 fold per run) — fed by the run-outcome Observations the driver writes at every terminal run | an advisory flag per workflow (failure cluster, cost attribution and/or context pressure) |
 | `adapter_intake` | an unpromoted adapter registered by [`areev tune`](#the-tuning-seam-adapter_revision) (an `mg:adapter` Fact in `agent:harness`) — one candidate per served model, the newest | an `adapter_revision` pinned to its evalset (Rule E1; never auto-applies) |
 
 Precision is measured, never asserted: `cargo run -p areev-bench --bin

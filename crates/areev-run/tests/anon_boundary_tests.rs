@@ -79,6 +79,7 @@ impl ToolCallLlm for ScriptedLlm {
         self.responses.lock().unwrap().pop_front().ok_or(ToolCallError {
             retryable: false,
             message: "scripted LLM exhausted".into(),
+            ..Default::default()
         })
     }
 }

@@ -126,6 +126,14 @@ pub enum FailCause {
     SchemaValidationFailed,
     UserAborted,
     Unknown,
+    /// The PROVIDER refused the prompt as too long, said so structurally, and
+    /// the transcript is what has to change — not the number of attempts.
+    ///
+    /// Neither retryable nor terminal, which is why it is its own cause: an
+    /// identical retry gets an identical refusal, and failing the node throws
+    /// away work the journal already holds. The scheduler folds and re-sends
+    /// the same turn on something smaller.
+    ContextOverflow,
 }
 
 impl FailCause {
@@ -135,7 +143,10 @@ impl FailCause {
         match self {
             Self::Timeout | Self::ExecutorError => true,
             Self::SchemaValidationFailed => kind == EffectKind::Llm,
-            Self::UserAborted | Self::Unknown => false,
+            // NOT retryable: the same prompt earns the same refusal. The
+            // abstract-node loop handles it by folding first, which is a
+            // different move from spending an attempt.
+            Self::UserAborted | Self::Unknown | Self::ContextOverflow => false,
         }
     }
 }

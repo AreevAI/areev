@@ -138,6 +138,14 @@ pub struct InspectReport {
     pub phase: Option<String>,
     pub spent: Option<serde_json::Value>,
     pub pending_asks: serde_json::Value,
+    /// The run's EFFECTIVE LLM ceilings, after defaults and derivation.
+    ///
+    /// Reported because a limit the runtime chose for you is otherwise
+    /// invisible: an operator asking "why did my agent summarize itself?"
+    /// needs to see the ceiling that fired, and one asking "why did it die at
+    /// 16 effects?" needs to see the cap. Both are frozen in the manifest, so
+    /// this is what the run will keep using on every resume.
+    pub limits: serde_json::Value,
 }
 
 /// One row of the run index: what `areev run list` and the console's Runs

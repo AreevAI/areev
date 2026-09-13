@@ -35,7 +35,7 @@ use areev_core::types::Tool;
 use serde_json::{json, Value};
 
 /// A tool-call seam failure with the runtime's retry classification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolCallError {
     /// True for HTTP 429/5xx and transport faults (timeout, connect, IO) —
     /// the [`areev_core::types::FailureCause::Timeout`]/`ExecutorError`
@@ -43,6 +43,19 @@ pub struct ToolCallError {
     /// retry (auth failures, malformed requests, missing usage).
     pub retryable: bool,
     pub message: String,
+    /// The provider rejected the request because the PROMPT was too long.
+    ///
+    /// Set only from a provider's own STRUCTURED signal — OpenAI-compatible
+    /// endpoints return `error.code = "context_length_exceeded"`. Never from
+    /// reading a message string: prose is not an API, and a seam that guesses
+    /// at wording would silently mis-fire the moment a vendor rewrites it.
+    /// Providers that report overflow only in prose (Anthropic's
+    /// `invalid_request_error`) leave this false and are covered instead by
+    /// the proactive ceiling ([`ToolCallLlm::context_window`]).
+    ///
+    /// The runtime treats it as neither retryable nor terminal: it folds the
+    /// transcript and tries the same turn again on something smaller.
+    pub context_overflow: bool,
 }
 
 impl std::fmt::Display for ToolCallError {
@@ -59,7 +72,7 @@ impl std::fmt::Display for ToolCallError {
 impl std::error::Error for ToolCallError {}
 
 fn terminal(msg: impl Into<String>) -> ToolCallError {
-    ToolCallError { retryable: false, message: msg.into() }
+    ToolCallError { retryable: false, message: msg.into(), ..Default::default() }
 }
 
 pub type ToolCallResult<T> = std::result::Result<T, ToolCallError>;
@@ -165,6 +178,19 @@ pub trait ToolCallLlm: Send + Sync {
     fn provider(&self) -> &'static str {
         "_OTHER"
     }
+    /// The model's total context window in tokens, when this transport can
+    /// state one HONESTLY. `None` means "unknown", never "unbounded".
+    ///
+    /// The runtime uses it to default a fold ceiling, so a wrong answer here
+    /// is worse than no answer: too high and the ceiling never fires, which
+    /// fails exactly as it did before anyone set it. Report a number only
+    /// where it is a stable property of the provider's whole model family,
+    /// not a per-model table that goes stale between releases — a provider
+    /// that returns `None` is covered reactively instead, by
+    /// [`ToolCallError::context_overflow`].
+    fn context_window(&self) -> Option<u64> {
+        None
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse>;
     /// Streaming variant: `on_token` receives text deltas as they arrive.
     /// Default: the non-streaming call, delivered as one final chunk —
@@ -192,30 +218,86 @@ fn post_json_classified(
     headers: &[(&str, &str)],
     body: &Value,
 ) -> ToolCallResult<Value> {
-    let mut req = crate::agent().post(url).header("Content-Type", "application/json");
+    // Status codes are NOT errors at the agent level here, so a 4xx body
+    // survives to be read. That body is the only place a provider states
+    // *why* structurally — `error.code = "context_length_exceeded"` — and
+    // without it an overflow is indistinguishable from any other 400.
+    let mut req = crate::agent_reading_error_bodies()
+        .post(url)
+        .header("Content-Type", "application/json");
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
     let body_text = serde_json::to_string(body)
         .map_err(|e| terminal(format!("encode request: {e}")))?;
-    let text = match req.send(&body_text) {
-        Ok(mut resp) => resp
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| ToolCallError { retryable: true, message: format!("read response: {e}") })?,
-        Err(ureq::Error::StatusCode(code)) => {
-            return Err(ToolCallError {
-                retryable: code == 429 || (500..=599).contains(&code),
-                message: format!("{url}: HTTP {code}"),
-            })
+    let (status, text) = match req.send(&body_text) {
+        Ok(mut resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.body_mut().read_to_string().map_err(|e| ToolCallError {
+                retryable: true,
+                message: format!("read response: {e}"),
+                ..Default::default()
+            })?;
+            (status, body)
         }
         Err(e) => {
-            // Everything else at the transport layer (connect, timeout, TLS,
-            // IO) is worth one more try from the caller's side.
-            return Err(ToolCallError { retryable: true, message: format!("{url}: {e}") });
+            // The transport layer (connect, timeout, TLS, IO) — status codes
+            // no longer land here. Worth one more try from the caller's side.
+            return Err(ToolCallError {
+                retryable: true,
+                message: format!("{url}: {e}"),
+                ..Default::default()
+            });
         }
     };
+    if !(200..300).contains(&status) {
+        let overflow = is_context_overflow(&text);
+        return Err(ToolCallError {
+            retryable: !overflow && (status == 429 || (500..=599).contains(&status)),
+            // The body is where the reason is; a bare code sends an operator
+            // to the provider's dashboard to find out what we already read.
+            message: format!("{url}: HTTP {status}{}", error_detail(&text)),
+            context_overflow: overflow,
+        });
+    }
     serde_json::from_str(&text).map_err(|e| terminal(format!("decode response: {e}")))
+}
+
+/// Is this error body a provider saying "your prompt is too long", in a form
+/// that is part of its API rather than part of its prose?
+///
+/// One shape, deliberately: OpenAI-compatible endpoints put a stable
+/// `error.code` in the body, and `context_length_exceeded` is a documented
+/// value of it. Anthropic reports the same condition as a generic
+/// `invalid_request_error` whose only distinguishing content is an English
+/// sentence — so it is NOT matched here. Matching prose would work until the
+/// day the wording changed, and then fail silently, which is worse than not
+/// matching at all. Anthropic is covered proactively instead
+/// ([`ToolCallLlm::context_window`]).
+fn is_context_overflow(body: &str) -> bool {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.get("code")?.as_str().map(str::to_string))
+        .is_some_and(|code| code == "context_length_exceeded")
+}
+
+/// The provider's own error text, appended to a status line — bounded, because
+/// an error body is untrusted input that lands in a journaled failure detail.
+fn error_detail(body: &str) -> String {
+    let msg = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if msg.is_empty() {
+        return String::new();
+    }
+    let clipped: String = msg.chars().take(300).collect();
+    format!(" — {clipped}")
 }
 
 fn render_tools(tools: &[Tool], provider: ProviderKind) -> ToolCallResult<Vec<Value>> {
@@ -524,12 +606,33 @@ fn anthropic_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Valu
 
 const ANTHROPIC_HEADERS_VERSION: &str = "2023-06-01";
 
+/// The context window every current Claude family shares, used as a FLOOR
+/// rather than a specification.
+///
+/// Anthropic reports overflow as a generic `invalid_request_error` whose only
+/// distinguishing content is prose, so the reactive path cannot see it and
+/// this is the one provider that needs a number. 200k has held across the
+/// Claude 3, 4 and 5 families; a model with a larger window (a 1M beta, say)
+/// simply folds earlier than it strictly must, which costs one summary and
+/// never a failed run. `--llm-context-tokens` overrides it either way.
+///
+/// A floor is the right shape for a constant that can go stale: wrong-low is
+/// a summary nobody needed, wrong-high is the crash this exists to prevent.
+pub const CLAUDE_CONTEXT_FLOOR: u64 = 200_000;
+
 impl ToolCallLlm for crate::Anthropic {
     fn model(&self) -> &str {
         &self.model
     }
     fn provider(&self) -> &'static str {
         "anthropic"
+    }
+    /// Only for `claude-*`. This transport also fronts Bedrock- and
+    /// Vertex-hosted models under other names, and a floor asserted over a
+    /// model family this constant was never checked against would be exactly
+    /// the stale-table failure it exists to avoid.
+    fn context_window(&self) -> Option<u64> {
+        self.model.starts_with("claude-").then_some(CLAUDE_CONTEXT_FLOOR)
     }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = anthropic_body(req, &self.model)?;
@@ -654,5 +757,62 @@ impl ToolCallLlm for crate::Ollama {
         let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
         let lines = crate::toolcall_stream::post_stream_lines(&url, &[], &body)?;
         crate::toolcall_stream::ollama_accumulate(lines, on_token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one shape that counts as evidence: a provider's own structured
+    /// `error.code`. Everything else — including a body whose PROSE clearly
+    /// says the prompt was too long — is deliberately not matched, because a
+    /// seam that reads wording breaks silently the day the wording changes.
+    #[test]
+    fn only_a_structured_code_counts_as_a_context_overflow() {
+        assert!(is_context_overflow(
+            r#"{"error":{"code":"context_length_exceeded","message":"too long"}}"#
+        ));
+
+        // Anthropic's shape: the condition is real, the evidence is prose.
+        assert!(!is_context_overflow(
+            r#"{"type":"error","error":{"type":"invalid_request_error",
+                "message":"prompt is too long: 250000 tokens > 200000 maximum"}}"#
+        ));
+        // A different structured code is a different problem.
+        assert!(!is_context_overflow(r#"{"error":{"code":"rate_limit_exceeded"}}"#));
+        // And nothing at all must not panic or guess.
+        assert!(!is_context_overflow(""));
+        assert!(!is_context_overflow("upstream returned 400"));
+        assert!(!is_context_overflow(r#"{"error":"context_length_exceeded"}"#));
+    }
+
+    /// A provider's own words reach the journaled failure detail — bounded,
+    /// because an error body is untrusted input.
+    #[test]
+    fn the_providers_message_is_surfaced_and_clipped() {
+        assert_eq!(
+            error_detail(r#"{"error":{"message":"prompt is too long"}}"#),
+            " — prompt is too long"
+        );
+        assert_eq!(error_detail("not json"), "");
+        assert_eq!(error_detail(r#"{"error":{}}"#), "");
+
+        let long = "x".repeat(1_000);
+        let body = format!(r#"{{"error":{{"message":"{long}"}}}}"#);
+        let out = error_detail(&body);
+        assert_eq!(out.chars().count(), 300 + " — ".chars().count());
+    }
+
+    /// The floor is claimed for `claude-*` and nothing else: this transport
+    /// also fronts Bedrock and Vertex model names it was never checked
+    /// against, and a wrong-high window is the failure it exists to prevent.
+    #[test]
+    fn the_context_floor_is_claimed_only_for_claude_models() {
+        let claude = crate::Anthropic::new("k", "claude-sonnet-5");
+        assert_eq!(claude.context_window(), Some(CLAUDE_CONTEXT_FLOOR));
+
+        let bedrock = crate::Anthropic::new("k", "anthropic.claude-v2:1");
+        assert_eq!(bedrock.context_window(), None, "an unchecked name claims nothing");
     }
 }

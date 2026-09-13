@@ -37,6 +37,19 @@ const F_USAGE_IN: &str = "usage_input_tokens";
 const F_USAGE_OUT: &str = "usage_output_tokens";
 const F_USD_MICROS: &str = "usage_usd_micros";
 const F_JOURNAL_BYTES: &str = "usage_journal_bytes";
+/// Marks a failure the PROVIDER attributed to prompt length.
+///
+/// An extra field rather than a new `areev_core::types::FailureCause` variant:
+/// that enum is part of the .mg format, and widening it is a spec decision
+/// every conforming implementation would have to follow — not a side effect of
+/// a runtime feature. Extra fields are the format's sanctioned extension
+/// point, and the journal already carries usage and run correlation through
+/// them.
+///
+/// It has to be journaled at all because REPLAY reads the cause back: without
+/// it a resumed or verified run sees a plain `ExecutorError`, retries the
+/// identical prompt instead of folding, and diverges.
+const F_CONTEXT_OVERFLOW: &str = "context_overflow";
 
 fn key_extras(t: &mut Tool, key: &JournalKey, superstep: u64, run_id: &str) {
     let ex = &mut t.common.extra_fields;
@@ -158,7 +171,19 @@ pub fn write_result(
                 FailCause::SchemaValidationFailed => FailureCause::SchemaValidationFailed,
                 FailCause::UserAborted => FailureCause::UserAborted,
                 FailCause::Unknown => FailureCause::Unknown,
+                // Deliberately NOT its own grain-level variant.
+                // `areev_core::types::FailureCause` is part of the .mg format:
+                // widening it changes what every conforming implementation
+                // must read, which is a spec decision and not a side effect of
+                // a runtime feature. The scheduler's distinction is a
+                // scheduler concern — what the JOURNAL needs to record is that
+                // the executor refused and why, and `failure_detail` below
+                // carries the provider's own words for that.
+                FailCause::ContextOverflow => FailureCause::ExecutorError,
             });
+            if *cause == FailCause::ContextOverflow {
+                t.common.extra_fields.insert(F_CONTEXT_OVERFLOW.into(), json!(true));
+            }
             t.failure_detail = Some(detail.clone());
         }
     }
@@ -523,12 +548,20 @@ fn outcome_from_grain(
     status: &str,
 ) -> EffectOutcome {
     if status == "failed" {
-        let cause = match g.get_str("failure_cause") {
-            Some("timeout") => FailCause::Timeout,
-            Some("executor_error") => FailCause::ExecutorError,
-            Some("schema_validation_failed") => FailCause::SchemaValidationFailed,
-            Some("user_aborted") => FailCause::UserAborted,
-            _ => FailCause::Unknown,
+        // The overflow marker is read BEFORE the coarse grain-level cause,
+        // because that cause was flattened to `executor_error` on the way in
+        // (the format's vocabulary is fixed) and reading it alone would turn
+        // a fold into a retry on every replay.
+        let cause = if g.get_bool(F_CONTEXT_OVERFLOW).unwrap_or(false) {
+            FailCause::ContextOverflow
+        } else {
+            match g.get_str("failure_cause") {
+                Some("timeout") => FailCause::Timeout,
+                Some("executor_error") => FailCause::ExecutorError,
+                Some("schema_validation_failed") => FailCause::SchemaValidationFailed,
+                Some("user_aborted") => FailCause::UserAborted,
+                _ => FailCause::Unknown,
+            }
         };
         EffectOutcome::Failed {
             cause,

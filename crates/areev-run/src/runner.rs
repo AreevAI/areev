@@ -94,6 +94,7 @@ fn error_type_of(cause: &FailCause) -> &'static str {
         FailCause::SchemaValidationFailed => "schema_validation_failed",
         FailCause::UserAborted => "user_aborted",
         FailCause::Unknown => "unknown",
+        FailCause::ContextOverflow => "context_overflow",
     }
 }
 
@@ -554,6 +555,7 @@ impl Runner {
             });
         }
         let plan = self.load_plan(plan_hash)?;
+        let llm_window = self.llm.as_ref().and_then(|l| l.context_window());
         let manifest = self.facade.with_store(|m| {
             RunManifest::resolve(
                 m,
@@ -567,7 +569,7 @@ impl Runner {
                 input.clone(),
                 self.llm.is_some(),
             )
-            .map(|m| m.with_limits(opts))
+            .map(|m| m.with_limits(opts, llm_window))
         })?;
         // Refuse an unpinned code executor before the run exists: it would
         // otherwise take a lease, write a manifest, and fail on first
@@ -882,6 +884,7 @@ impl Runner {
                 // restart its graph with the inherited context as input.
                 let plan = self.load_plan(h)?;
                 let context = st.context.clone();
+                let llm_window = self.llm.as_ref().and_then(|l| l.context_window());
                 let manifest = self.facade.with_store(|m| {
                     RunManifest::resolve(
                         m,
@@ -895,7 +898,7 @@ impl Runner {
                         context.clone(),
                         self.llm.is_some(),
                     )
-                    .map(|m| m.with_limits(opts))
+                    .map(|m| m.with_limits(opts, llm_window))
                 })?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
@@ -1918,6 +1921,14 @@ impl Runner {
                 ex.insert("spent_usd_micros".into(), json!(st.spent.usd_micros));
                 ex.insert("spent_wall_ms".into(), json!(st.spent.wall_ms));
                 ex.insert("spent_supersteps".into(), json!(st.spent.supersteps));
+                // Context pressure: how often this run had to summarize itself
+                // to keep going. Zero on the overwhelming majority of runs, and
+                // omitted there so the record stays compact — a workflow that
+                // folds every time is telling you its nodes have outgrown the
+                // window, which is the loop's to notice.
+                if st.folds > 0 {
+                    ex.insert("folds".into(), json!(st.folds));
+                }
                 if let Some(detail) = match &outcome {
                     RunOutcome::Failed { node, detail } => {
                         Some(format!("{node}: {detail}"))
@@ -2321,6 +2332,12 @@ impl Runner {
             phase,
             spent: scheduler.get("spent").cloned(),
             pending_asks: asks,
+            limits: json!({
+                "llm_max_tokens": manifest.llm_reserve_tokens(),
+                "max_effects_per_attempt": manifest.max_effects_per_attempt(),
+                "llm_context_tokens": manifest.llm_context_tokens,
+                "llm_tool_result_chars": manifest.llm_tool_result_chars,
+            }),
         })
     }
 

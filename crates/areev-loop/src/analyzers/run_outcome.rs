@@ -33,7 +33,8 @@ impl RunOutcome {
                 title: "Run outcomes".into(),
                 description:
                     "Flags workflows whose runs keep failing, stalling, or exhausting \
-                     budgets, and attributes run spend per workflow."
+                     budgets, attributes run spend per workflow, and surfaces those \
+                     whose transcripts keep outgrowing the model's window."
                         .into(),
                 tier: Tier::T0,
                 cadence: CadenceClass::Slow,
@@ -58,6 +59,18 @@ impl RunOutcome {
                         max: 1.0,
                         description: "Non-completed fraction at or above which the \
                                       workflow is flagged."
+                            .into(),
+                    },
+                    ParamSpec::Int {
+                        name: "min_folds_per_run".into(),
+                        // Folding once in a while is the mechanism working. A
+                        // workflow averaging one fold PER RUN is one whose
+                        // nodes no longer fit, which is a design signal.
+                        default: 1,
+                        min: 1,
+                        max: 1_000_000,
+                        description: "Average transcript folds per run at or above which \
+                                      a workflow's context pressure is surfaced."
                             .into(),
                     },
                     ParamSpec::Int {
@@ -87,6 +100,7 @@ struct PlanStats {
     runs: i64,
     failed: i64,
     usd_micros: i64,
+    folds: i64,
     last_detail: String,
 }
 
@@ -101,6 +115,7 @@ impl Analyzer for RunOutcome {
         let min_runs = ctx.params().get_int("min_runs");
         let min_failure_ratio = ctx.params().get_float("min_failure_ratio");
         let min_usd = ctx.params().get_int("min_usd_micros");
+        let min_folds_per_run = ctx.params().get_int("min_folds_per_run");
 
         let mut by_plan: BTreeMap<String, PlanStats> = BTreeMap::new();
         let mut evidence: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -125,6 +140,9 @@ impl Analyzer for RunOutcome {
                 .get("spent_usd_micros")
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0);
+            // Absent on every run that never folded, which is most of them.
+            entry.folds +=
+                g.fields.get("folds").and_then(serde_json::Value::as_i64).unwrap_or(0);
             evidence.entry(plan.to_string()).or_default().push(g.hash.clone());
         }
 
@@ -184,6 +202,36 @@ impl Analyzer for RunOutcome {
                     .evidence(evidence.get(plan).cloned().unwrap_or_default()),
                 );
             }
+            // Context pressure. A fold is the runtime keeping a long agent
+            // alive, so one is not a problem — a workflow that needs one on
+            // EVERY run is telling you its nodes no longer fit the window, and
+            // that is a plan-shape decision a person makes: split the node,
+            // bound its tool results, or accept the summaries. Advisory only;
+            // there is nothing here for an apply to do automatically.
+            if s.runs > 0 && s.folds > 0 && s.folds >= min_folds_per_run * s.runs {
+                let mut args = Map::new();
+                args.insert("workflow".into(), json!(short));
+                args.insert("runs".into(), json!(s.runs));
+                args.insert("folds".into(), json!(s.folds));
+                args.insert(
+                    "avg_folds".into(),
+                    json!(format!("{:.1}", s.folds as f64 / s.runs as f64)),
+                );
+                let mut data = Map::new();
+                data.insert("plan_hash".into(), json!(plan));
+                data.insert("folds".into(), json!(s.folds));
+                data.insert("runs".into(), json!(s.runs));
+                out.push(
+                    RecDraft::new(
+                        format!("host:workflow-context/{plan}"),
+                        ActionKind::Flag,
+                        Summary::new("run.context_pressure", args),
+                        Proposal::Data { data },
+                    )
+                    .severity(Severity::Medium)
+                    .evidence(evidence.get(plan).cloned().unwrap_or_default()),
+                );
+            }
         }
         Ok(out)
     }
@@ -211,6 +259,20 @@ mod tests {
         );
     }
 
+    /// A completed run that had to summarize itself `folds` times.
+    fn folded_run(sub: &mut TestSubstrate, plan: &str, folds: i64) {
+        sub.put_observation(
+            HARNESS_NS,
+            &[
+                ("observation_kind", json!("run_outcome")),
+                ("plan_hash", json!(plan)),
+                ("object", json!("completed")),
+                ("spent_usd_micros", json!(0)),
+                ("folds", json!(folds)),
+            ],
+        );
+    }
+
     #[test]
     fn flags_failing_workflow() {
         let mut sub = TestSubstrate::new();
@@ -223,6 +285,60 @@ mod tests {
         let text = drafts[0].summary.render();
         assert!(text.contains("failed 2/3"), "{text}");
         assert_eq!(drafts[0].action_kind, ActionKind::Flag);
+    }
+
+    /// A workflow that folds on every run has outgrown the window. That is a
+    /// plan-shape decision (split the node, bound its tool results, or accept
+    /// the summaries) so it surfaces as an advisory Flag with nothing to
+    /// auto-apply — the same posture as the cost signal beside it.
+    #[test]
+    fn a_workflow_that_folds_every_run_is_surfaced() {
+        let mut sub = TestSubstrate::new();
+        for _ in 0..3 {
+            folded_run(&mut sub, "c0ffee11", 2);
+        }
+        let drafts = sub.analyze(&RunOutcome::new(), 10_000);
+        let pressure: Vec<_> = drafts
+            .iter()
+            .filter(|d| d.summary.render().contains("summarized its own transcript"))
+            .collect();
+        assert_eq!(pressure.len(), 1, "{drafts:?}");
+        let text = pressure[0].summary.render();
+        assert!(text.contains("6 time(s) across 3 runs"), "{text}");
+        assert!(text.contains("avg 2.0/run"), "{text}");
+        assert_eq!(pressure[0].action_kind, ActionKind::Flag);
+    }
+
+    /// Folding is the mechanism WORKING. An occasional fold must not nag: the
+    /// signal is a workflow that needs one every time, not one that ever needed
+    /// one at all.
+    #[test]
+    fn an_occasional_fold_is_not_a_finding() {
+        let mut sub = TestSubstrate::new();
+        folded_run(&mut sub, "c0ffee11", 1);
+        for _ in 0..5 {
+            outcome(&mut sub, "c0ffee11", "completed", 0);
+        }
+        let drafts = sub.analyze(&RunOutcome::new(), 10_000);
+        assert!(
+            !drafts.iter().any(|d| d.summary.render().contains("summarized its own")),
+            "one fold in six runs is healthy: {drafts:?}"
+        );
+    }
+
+    /// The field is absent on every run that never folded, and an absent field
+    /// must read as zero rather than as anything at all.
+    #[test]
+    fn runs_that_never_folded_carry_no_pressure_signal() {
+        let mut sub = TestSubstrate::new();
+        for _ in 0..4 {
+            outcome(&mut sub, "c0ffee11", "completed", 0);
+        }
+        let drafts = sub.analyze(&RunOutcome::new(), 10_000);
+        assert!(
+            !drafts.iter().any(|d| d.summary.render().contains("summarized its own")),
+            "{drafts:?}"
+        );
     }
 
     #[test]

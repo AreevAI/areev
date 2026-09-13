@@ -113,6 +113,13 @@ evidence. Responding and resuming are separate acts.
   `manifest.rs`'s tests). New knobs on the BINDINGS go at the END of the
   signature — JS has no keyword arguments, so inserting one re-points every
   existing positional `runStart(…)`.
+- **Run limits DERIVE when the host can answer.** `with_limits(opts, model_window)`
+  defaults `llm_context_tokens` to `window - reserved output` when the backend
+  reports a window (`ToolCallLlm::context_window`, `claude-*` only, a FLOOR not
+  a spec), and `llm_tool_result_chars` from the ceiling in turn. That is what
+  makes folding automatic rather than opt-in. Both call sites of
+  `RunManifest::resolve` pass the window; `inspect` reports the effective set
+  under `limits`, because a limit the runtime chose is otherwise undebuggable.
 - **A summarizer turn is offered no tools, keyed off the JOURNAL.** The prepare
   step reads `input.fold` on the effect it is about to dispatch, not scheduler
   state — verify replays from journaled inputs and holds no flow, so keying it

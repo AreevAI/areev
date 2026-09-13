@@ -102,7 +102,57 @@ impl ToolCallLlm for ScriptedLlm {
         self.responses.lock().unwrap().pop_front().ok_or(ToolCallError {
             retryable: false,
             message: "scripted LLM exhausted — unexpected extra call".into(),
+            ..Default::default()
         })
+    }
+}
+
+/// A model that refuses the first N calls the way an OpenAI-compatible
+/// endpoint refuses an over-long prompt — structurally, via
+/// `error.code = "context_length_exceeded"` — and answers from the script
+/// after that. Also reports a context window, so the derivation path is
+/// exercised by the same rig.
+struct OverflowingLlm {
+    inner: Arc<ScriptedLlm>,
+    /// Refuse the Nth call this backend sees (1-based); 0 refuses nothing.
+    /// A refusal consumes no script entry — the script answers what follows.
+    refuse_on_call: u32,
+    calls: Mutex<u32>,
+    window: Option<u64>,
+}
+
+impl OverflowingLlm {
+    fn new(inner: Arc<ScriptedLlm>, refuse_on_call: u32, window: Option<u64>) -> Self {
+        OverflowingLlm { inner, refuse_on_call, calls: Mutex::new(0), window }
+    }
+}
+
+impl ToolCallLlm for OverflowingLlm {
+    fn model(&self) -> &str {
+        "scripted-overflow"
+    }
+    fn provider(&self) -> &'static str {
+        "openai"
+    }
+    fn context_window(&self) -> Option<u64> {
+        self.window
+    }
+    fn call(&self, req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        if n == self.refuse_on_call {
+            // Shaped like an OpenAI-compatible refusal: structural, terminal,
+            // and about the prompt rather than the transport.
+            return Err(ToolCallError {
+                retryable: false,
+                message: "HTTP 400 — context_length_exceeded".into(),
+                context_overflow: true,
+            });
+        }
+        self.inner.call(req)
     }
 }
 
@@ -790,6 +840,140 @@ fn a_crash_between_a_fold_intent_and_its_dispatch_redelivers_the_same_fold() {
     // replayed), so the fold gets the assertion it always deserved.
     let report = runner.verify("fold-crash").unwrap();
     assert!(report.verified, "{report:?}");
+}
+
+/// The provider's own refusal folds the transcript and re-sends the turn —
+/// with NO ceiling configured at all.
+///
+/// This is the half a ceiling cannot cover. The proactive trigger measures the
+/// PREVIOUS turn, so a transcript that grew since is only discovered when the
+/// provider rejects it. Retrying earns the same refusal and failing throws
+/// away journaled work, so the loop folds and asks the same question again on
+/// something smaller.
+#[test]
+fn a_providers_context_refusal_folds_and_retries_the_same_turn() {
+    let (rig, plan) = fold_rig();
+    let script = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 100),
+        turn_tools_at(vec![("c2", "fetch", json!({}))], 100),
+        turn_tools_at(vec![("c3", "fetch", json!({}))], 100),
+        // Answered AFTER the refusal: the summarizer the refusal provoked.
+        turn_final_at("rounds 2 and 3 fetched; round 4 outstanding", 100),
+        turn_final_at(r#"{"verdict": "done"}"#, 100),
+    ]));
+    // Call 4 is the turn after three rounds — a transcript with a foldable
+    // middle. The refusal consumes no script entry.
+    let llm = Arc::new(OverflowingLlm::new(Arc::clone(&script), 4, None));
+    let runner = rig.runner(Some(llm.clone()));
+    // No `llm_context_tokens`: nothing predicted this.
+    let o = RunOptions { llm_max_tokens: Some(100), ..opts() };
+
+    let session = runner.start(&plan, "reactive-1", json!({}), &o).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed, "the refusal was survivable");
+
+    // The refused turn is journaled as a failed effect at seq 6 — the record
+    // keeps the refusal, not just its consequence.
+    let view = rig
+        .facade
+        .with_store(|m| areev_run::journal::load(m, "ops", "reactive-1"))
+        .unwrap();
+    let (_, refused) = view
+        .entries
+        .iter()
+        .find(|(k, _)| k.node == "agent" && k.kind == EffectKind::Llm && k.effect_seq == 6)
+        .expect("the refused turn is journaled");
+    assert!(
+        matches!(
+            refused.result.as_ref().map(|(_, o)| o),
+            Some(areev_run_core::EffectOutcome::Failed { .. })
+        ),
+        "the refusal is a journaled failure, not a gap"
+    );
+
+    // …and seq 7 is the fold it provoked, with no ceiling anywhere in sight.
+    let fold_input = journaled_messages(&rig, "reactive-1", "agent", 7);
+    assert_eq!(
+        fold_input["fold"],
+        json!({"from": 1, "to": 3, "seq": 7, "prompt_v": 1}),
+        "the provider's refusal produced a fold: {fold_input}"
+    );
+    assert_eq!(
+        llm.inner.tools_offered().last(),
+        Some(&1),
+        "the re-sent turn is a normal turn again, tools and all"
+    );
+    assert!(runner.verify("reactive-1").unwrap().verified);
+}
+
+/// A refusal with nothing to fold names the PROVIDER's limit, not a ceiling
+/// nobody set. Inventing a number in that message would be a lie about where
+/// the constraint came from.
+#[test]
+fn a_context_refusal_with_nothing_foldable_names_the_providers_limit() {
+    let (rig, plan) = fold_rig();
+    let script = Arc::new(ScriptedLlm::new(vec![turn_final_at("unused", 100)]));
+    // The FIRST turn is refused: the transcript is the node's input and
+    // nothing else, so there is no middle to summarize.
+    let llm = Arc::new(OverflowingLlm::new(Arc::clone(&script), 1, None));
+    let runner = rig.runner(Some(llm.clone()));
+
+    let session = runner.start(&plan, "reactive-2", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    let RunOutcome::Failed { detail, .. } = outcome else {
+        panic!("an unfoldable refusal must fail the node, got {outcome:?}")
+    };
+    assert!(detail.starts_with("RUN-E024: "), "{detail}");
+    assert!(
+        detail.contains("the provider's own limit"),
+        "with no ceiling configured the message must not invent one: {detail}"
+    );
+    assert!(runner.verify("reactive-2").unwrap().verified);
+}
+
+/// A ceiling nobody passed. When the backend states its own window, the
+/// manifest gets a ceiling AND a per-result bound derived from it — which is
+/// the difference between folding being available and folding being automatic.
+#[test]
+fn an_unset_ceiling_is_derived_from_the_models_own_window() {
+    let (rig, plan) = fold_rig();
+    let script = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 10),
+        turn_final_at(r#"{"verdict": "done"}"#, 10),
+    ]));
+    let llm = Arc::new(OverflowingLlm::new(Arc::clone(&script), 0, Some(200_000)));
+    let runner = rig.runner(Some(llm.clone()));
+    let o = RunOptions { llm_max_tokens: Some(4_096), ..opts() };
+
+    runner.start(&plan, "derived-1", json!({}), &o).unwrap();
+    let limits = serde_json::to_value(runner.inspect("derived-1").unwrap()).unwrap();
+    let limits = &limits["limits"];
+    assert_eq!(
+        limits["llm_context_tokens"], 195_904,
+        "the model's window minus the reserved output: {limits}"
+    );
+    assert_eq!(
+        limits["llm_tool_result_chars"], 195_904,
+        "a quarter of the ceiling in tokens, at 4 chars/token: {limits}"
+    );
+
+    // An explicit flag still wins over the model's own number.
+    let o = RunOptions {
+        llm_max_tokens: Some(4_096),
+        llm_context_tokens: Some(50_000),
+        llm_tool_result_chars: Some(9_000),
+        ..opts()
+    };
+    let script2 = Arc::new(ScriptedLlm::new(vec![
+        turn_tools_at(vec![("c1", "fetch", json!({}))], 10),
+        turn_final_at(r#"{"verdict": "done"}"#, 10),
+    ]));
+    let llm2 = Arc::new(OverflowingLlm::new(script2, 0, Some(200_000)));
+    let runner2 = rig.runner(Some(llm2));
+    runner2.start(&plan, "derived-2", json!({}), &o).unwrap();
+    let limits = serde_json::to_value(runner2.inspect("derived-2").unwrap()).unwrap();
+    assert_eq!(limits["limits"]["llm_context_tokens"], 50_000);
+    assert_eq!(limits["limits"]["llm_tool_result_chars"], 9_000);
 }
 
 #[test]
