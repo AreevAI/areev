@@ -1,15 +1,15 @@
 {
-  "version": "1.8.1",
+  "version": "1.8.2",
   "crates": 17,
   "rust": {
     "files": 307,
-    "physical_lines": 205978,
-    "source_code": 96905,
+    "physical_lines": 206128,
+    "source_code": 96993,
     "test_code": 58625,
     "unit_test_code": 27247,
     "integration_test_code": 31378,
     "example_code": 669,
-    "test_functions": 2779,
+    "test_functions": 2780,
     "test_ratio": 0.6,
     "test_share": 37.7
   },
@@ -57,10 +57,10 @@
     {
       "name": "areev-loop",
       "files": 34,
-      "physical": 17054,
-      "source_code": 11652,
+      "physical": 17204,
+      "source_code": 11740,
       "test_code": 1606,
-      "tests": 197
+      "tests": 198
     },
     {
       "name": "areev-bench",
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 62,
-    "lines": 30569
+    "lines": 30771
   },
   "error_codes": 100,
   "bindings": {

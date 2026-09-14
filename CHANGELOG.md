@@ -6,6 +6,180 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-09-14
+
+The theme is context: an abstract node's transcript now has bounds, manages
+itself when it passes them, and leaves behind something the loop can learn
+from. Plus the two defects that only a real provider and a real crash could
+have found.
+
+### Added
+
+- **The fold: a transcript past the ceiling becomes one more journaled turn**
+  (#236). An abstract node's transcript grew until the provider rejected it,
+  and the node died with the provider's message as its detail. Three bounds
+  now exist, and all three are frozen into `RunManifest` at start so `verify`
+  reproduces the run that hit one instead of replaying past it under a
+  default. `--max-effects N` lifts the per-attempt effect cap off the two
+  driver literals that made 16 unraisable — roughly eight turns at one tool
+  call each, which is not an agent. `--llm-tool-result-chars N` bounds a
+  SINGLE tool result, because the likeliest way a node dies is not a long
+  conversation but one file read or log dump entering the transcript verbatim;
+  no summarizer can shrink a single entry, so that bound has to exist
+  separately. Past it the model sees the true length, the head, the tail and
+  the journal coordinates of the whole result; under it the value passes
+  through BYTE-IDENTICALLY, which is why a deployed run that sets nothing has
+  unchanged checkpoints and still verifies — pinned by its own test rather
+  than assumed. `--llm-context-tokens N` is the whole-transcript ceiling: over
+  it the scheduler emits one more turn, a summarizer over the middle of the
+  transcript whose answer is spliced in place of that middle. It is
+  deliberately not truncation — every turn is already a journaled grain, so
+  the summary is one too, and the full transcript stays in the journal. Each
+  flag is also `llm_context_tokens` / `llm_tool_result_chars` /
+  `max_effects_per_attempt` on MCP `areev_run_start`, Python, Node, and
+  `trigger run`. `docs/run.md` gains "What bounds the transcript (and what
+  does not)"; the context-assembly fact sheet gains §13.
+
+- **Long contexts handle themselves, and the loop notices when they don't**
+  (#238). Folding shipped opt-in — two flags, set together, or a long agent
+  still died. Two mechanisms make it automatic, picked by what the provider
+  will actually tell us. Where overflow is reported STRUCTURALLY
+  (OpenAI-compatible `error.code = "context_length_exceeded"`) nothing has to
+  be predicted: the refused turn is journaled, the transcript is folded, and
+  the same turn is re-sent on something smaller. That closes the one-round
+  measurement gap the fold shipped with, because the ceiling can be unset, too
+  high, or right about a transcript that has since grown, and the provider's
+  verdict beats all three. Only a structured code counts — Anthropic reports
+  the same condition as prose, and a seam matching on wording would work until
+  a vendor reworded it and then fail silently. For that path the ceiling is
+  derived from the model instead: an unset `--llm-context-tokens` becomes the
+  window minus reserved output, and the per-result bound derives from the
+  ceiling, so an operator who sets one gets the other. This is deliberately
+  NOT a model→window table — a table of numbers we cannot verify fails
+  SILENTLY when it goes stale, and a too-high entry means the ceiling never
+  fires, which is the crash it was added to prevent. One number (200k), one
+  family (`claude-*`, prefix-checked so Bedrock and Vertex names claim
+  nothing), documented as a FLOOR. `run inspect` now reports the effective
+  `limits`, because a ceiling the runtime picks for you is otherwise invisible.
+  Every terminal run records `folds`, and the loop's `run_outcome` raises an
+  advisory Flag on a workflow that needs one on essentially every run — a
+  plan-shape decision with nothing to auto-apply. A fold now and then is the
+  mechanism working and says nothing.
+
+- **A fold summary becomes evidence the loop can read** (#241, #245). What an
+  agent works out over fifty turns ends up in exactly one place: the summary a
+  fold produces. That text was already stored as the fold effect's result
+  grain, but a journal Tool grain is not reachable by recall — its payload
+  lives in `tool_content`, which the store's text projection does not index,
+  and it carries no subject/relation/object. Each fold now also writes a
+  `fold_summary` Observation in `agent:harness` carrying the run, the node and
+  the `effect_seq` of the range it stands for. Typed and indexed, so the LLM
+  path can propose a lesson CITING a summary and the four gates decide whether
+  it is ever applied. Two boundaries are deliberate: it is evidence, not
+  memory — the namespace is the statement, and a summary is working state
+  whose verbatim recording would pollute recall rather than compound it; and
+  it is written twice on purpose — the result grain stays the record `verify`
+  replays, the Observation is the readable copy. Confirmed against a live
+  model on a memory containing nothing but a fold summary: one pending lesson
+  whose sole cited evidence is the summary grain.
+
+- **`areev trigger retarget` re-points a standing rule at its plan's head**
+  (#243). A trigger names its plan by content address, so editing the plan
+  leaves the trigger starting the version it was declared against. That
+  default is right and stays — a plan edit must not silently change what an
+  unattended heartbeat runs. What it cost was VISIBILITY: a trigger on a
+  three-edits-old plan rendered identically to a current one, fired forever,
+  succeeded every time, ran the old logic, and nothing in `list`, `show`,
+  `status` or the run said a word. Silence is the symptom of every trigger
+  failure and must not also be the symptom of a correct default. So the drift
+  is reported and never followed. `trigger list` marks it inline and names the
+  fixing command on stderr; JSON and `trigger status` carry `plan_head` and
+  `plan_superseded`, absent when current so a clean listing stays clean. On
+  `retarget`, `--workflow` is OPTIONAL — without it the trigger follows its own
+  plan's chain to the live head. The destination is validated before anything
+  is written, because re-pointing a standing rule at a plan that cannot run
+  replaces a stale firing with a broken one discovered by a heartbeat nobody is
+  watching; a no-op retarget is refused rather than written into a chain every
+  later reader walks. `Areev::current_head` is the new store primitive, the
+  forward mirror of the backward `supersession_chain`. Evaluation state keys on
+  the chain ROOT (#128), so a re-pointed polling trigger resumes rather than
+  replaying its backlog — asserted, not assumed.
+
+- **`FailureCause::ContextOverflow`** (#242). A context overflow had nowhere to
+  land in the grain vocabulary, so the journal filed it as `executor_error` and
+  carried the real classification in an extra field beside it. Two mechanisms
+  for one fact, and a taxonomy whose stated purpose — letting dashboards bucket
+  failures without parsing strings — pointed operators at the transport layer
+  when the problem was the transcript. The variant is not a breaking format
+  change: `FailureCause` serializes as a snake_case string and unknown values
+  are dropped on read, so an older reader degrades to "no cause recorded" and
+  no grain re-addresses. OMS 1.6 adds `"context_overflow"` to §6.5's OPEN
+  `error_type` enum on the same spelling (openmemoryspec/oms#11). Worth
+  recording that these remain two vocabularies, not one: they overlap only on
+  `timeout`, and aligning one spelling is not unifying them.
+
+- **PreCompact capture for the Claude Code hook** (#236). Compaction sits
+  between `UserPromptSubmit` and `Stop`: the host is about to drop the
+  conversation and nothing told Areev, so whatever the last Stop had not stored
+  was lost. `hook claude-code` now also wires PreCompact to `capture-stop`,
+  unchanged in its write path — one verb serves both events because it reads
+  the cumulative transcript and is idempotent by content address. No matcher,
+  so manual `/compact` and auto-compaction both reach it.
+
+### Fixed
+
+- **A crash-recovered run verifies, and its downtime is reported** (#237).
+  Every run that crashed and resumed failed `verify` with `RUN-E009` — on
+  `spent.wall_ms`, and on nothing else. That is precisely the run an auditor
+  asks about, against the strongest claim Areev makes. `step` closes a
+  superstep and opens the next in the SAME call at the same reading; a live
+  driver that died in between came back with a fresh, later reading and opened
+  there, charging nothing for the gap, while a replay ran straight through the
+  boundary and billed the downtime as active wall. The divergence was exactly
+  the crash-to-resume span, every time. `EventIn::Resumed` makes the boundary a
+  journaled fact: the gap becomes `elapsed_ms`, the checkpoint stamps
+  `resumed_at`, and `verify` rewinds to the checkpoint it just byte-compared
+  and re-enters the boundary the way the driver did. A second defect was
+  hiding underneath — `state.rs` promised that crashed gaps accumulate in
+  `elapsed_ms`, reported but never charged; for crashes they were charged to
+  NEITHER and simply vanished, so an operator asking how long a run was stalled
+  got nothing. Both halves of that sentence are now true, and `inspect` can say
+  four hours of calendar time and ninety seconds of work. Three exclusions are
+  load-bearing: idle checkpoints only (a parked one already stamped
+  `paused_at`), no checkpoint at all is not a resume boundary, and a fork's
+  SEED is not one either — it is synthetic and has never executed, and on a
+  time-travel fork the span back to the base is lineage, not downtime.
+  `resumed_at` is optional and skipped when absent, so a checkpoint written
+  before it existed serializes byte-identically and no stored run's verdict
+  changes retroactively.
+
+- **`strict` is no longer claimed for a schema that cannot honour it** (#244).
+  Every Tool Definition rendered to an OpenAI-compatible endpoint was rejected
+  with `400 invalid_function_parameters`: `'additionalProperties' is required
+  to be supplied and to be false`. `strict` defaults to true but the renderer
+  never emitted that key, so the default asserted on the author's behalf a
+  property of a schema nothing had checked. Any Definition whose author had not
+  hand-written the key was affected, which is to say almost all of them —
+  **abstract nodes could not call host tools on an OpenAI-compatible provider
+  at all**, and it had been so since 1.0.0. The renderer now either makes the
+  claim true or does not make it: objects are closed recursively when the claim
+  is kept, and a schema with optional properties renders `strict: false` rather
+  than having `required` forced onto it, since imposing that would turn a
+  genuinely optional argument into a mandatory one. Four snapshots move by one
+  line each, schemas untouched. Fixture tests assert the JSON we emit; only a
+  provider validates it, which is why a 2,700-test suite never saw this.
+
+- **The loop's reference substrate no longer models more than production
+  allows** (#245). `TestSubstrate` did not model the `agent:` namespace
+  exclusion at all, so it was strictly more permissive than any real substrate
+  — which is why the fold-summary evidence path shipped believing it worked and
+  only a live provider showed `evidence: 0`. It models the exclusion now, and
+  that immediately surfaced a second case of the same class: a test asserting
+  that a journaled harness run counts toward `after_grains` activity, which it
+  does not. A reference substrate more permissive than production does not just
+  miss bugs, it certifies them.
+
+
 ## [1.8.1] — 2026-09-11
 
 ### Added
@@ -3356,7 +3530,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/AreevAI/areev/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/AreevAI/areev/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/AreevAI/areev/compare/v1.7.3...v1.8.0
 [1.7.3]: https://github.com/AreevAI/areev/compare/v1.7.2...v1.7.3
