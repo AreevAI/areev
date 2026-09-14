@@ -1294,7 +1294,7 @@ fn load_or_create_kdf_sidecar(sidecar: &str) -> Result<([u8; KDF_SALT_LEN], u32,
         Ok(text) => parse_kdf_sidecar(&text, sidecar),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut salt = [0u8; KDF_SALT_LEN];
-            getrandom::getrandom(&mut salt).map_err(kdf_err)?;
+            getrandom::fill(&mut salt).map_err(kdf_err)?;
             let line = format!(
                 "v1 argon2id {} {KDF_M_COST} {KDF_T_COST} {KDF_P_COST}\n",
                 hex::encode(salt)
@@ -2175,7 +2175,7 @@ impl Areev {
             }
             None => {
                 let mut out = [0u8; 32];
-                getrandom::getrandom(&mut out).map_err(|e| {
+                getrandom::fill(&mut out).map_err(|e| {
                     AreevError::CryptoError(format!("anon session key: {e}"))
                 })?;
                 out
@@ -10025,6 +10025,38 @@ mod tests {
 
     fn kdf_line(salt: &[u8], m: u32, t: u32, p: u32) -> String {
         format!("v1 argon2id {} {m} {t} {p}", hex::encode(salt))
+    }
+
+    /// A known-answer test, not a round trip.
+    ///
+    /// Every other test here derives a key and immediately uses it in the same
+    /// build, so all of them would still pass if a dependency bump changed the
+    /// derivation — and every passphrase-encrypted memory in the world would
+    /// then be unopenable, with a green suite. This value was computed with
+    /// argon2 0.5.3, the version 1.8.2 shipped. Argon2id at fixed parameters is
+    /// a standard, so a correct implementation cannot move it; this asserts
+    /// that rather than trusting it.
+    ///
+    /// If this fails after a dependency bump, the bump is a migration with a
+    /// re-key path, not an upgrade. Do not re-bless the constant.
+    #[test]
+    fn the_passphrase_derivation_is_pinned_to_its_shipped_value() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("m.db");
+        let path = db.to_str().unwrap();
+        // A salt fixed in the sidecar, exactly as one written on first use.
+        std::fs::write(
+            format!("{path}.kdf"),
+            format!("{}\n", kdf_line(b"areev-fixed-salt", KDF_M_COST, KDF_T_COST, KDF_P_COST)),
+        )
+        .unwrap();
+
+        let key = Areev::derive_key_for(path, "correct horse battery staple").unwrap();
+        assert_eq!(
+            hex::encode(&key[..]),
+            "be0aac437e23b5932c19e8bc9302569b2f3ea71514e5b846082e7d296ef46738",
+            "Argon2id derivation changed — every passphrase-encrypted memory is now unopenable"
+        );
     }
 
     #[test]

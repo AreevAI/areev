@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The crypto stack moves to the current RustCrypto generation, with the
+  compatibility actually proven** (#240). `sha2` 0.10→0.11, `argon2` 0.5→0.6,
+  `getrandom` 0.2→0.4, `hkdf` 0.12→0.13 and `aes-gcm` 0.10→0.11 — five majors
+  at once, across passphrase key derivation, the CAS sidecar's AEAD and every
+  nonce and token in the tree. The code changes are small: `getrandom` renamed
+  its one function, `hybrid-array` deprecated `from_slice` in favour of the
+  infallible `From<[u8; N]>`, and a digest no longer renders itself as hex.
+
+  The risk was never the compile. **A round trip seals and opens with the same
+  build, so the whole 2,800-test suite would have stayed green if a derivation
+  had shifted — and every passphrase-encrypted memory and every encrypted blob
+  in the world would have become unopenable.** There were no committed
+  fixtures to catch it either. So the reference values were computed with the
+  exact crates 1.8.2 shipped and are now pinned as known-answer tests: the
+  Argon2id key for a fixed passphrase, salt and parameters; the HKDF-SHA256
+  blob subkey; and a ciphertext produced by aes-gcm 0.10.3, which still
+  decrypts with its address binding intact. All three hold. Those tests stay,
+  so the next bump that does move one fails loudly instead of silently — and
+  if it ever fires, the bump is a migration with a re-key path, not an upgrade.
+
+  One cost recorded rather than hidden: `areev-store` named `aes-gcm` directly
+  because the storage engine already pulled the same version, keeping the blob
+  sidecar on the identical primitive as the database pages. The engine stays on
+  0.10.3, so a default build now links both. Taken deliberately — holding a
+  security primitive back to match an upstream pin is the worse trade — and it
+  reverses on its own when the engine catches up. The manifest says so now
+  instead of asserting something false.
+
 ## [1.8.2] — 2026-09-14
 
 The theme is context: an abstract node's transcript now has bounds, manages

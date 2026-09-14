@@ -486,7 +486,7 @@ fn random_token() -> String {
     let mut raw = [0u8; 32];
     // A failure here means the OS has no entropy; there is no safe fallback,
     // and a predictable state/nonce/session id would be a silent auth bypass.
-    getrandom::getrandom(&mut raw).expect("OS CSPRNG unavailable");
+    getrandom::fill(&mut raw).expect("OS CSPRNG unavailable");
     b64url(&raw)
 }
 
