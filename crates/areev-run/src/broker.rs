@@ -729,7 +729,7 @@ fn mint_token() -> String {
     let mut b = [0u8; 24];
     // A broker that cannot get randomness must not fall back to something
     // guessable; the caller turns this into a refusal to start.
-    getrandom::getrandom(&mut b).expect("OS randomness for the egress token");
+    getrandom::fill(&mut b).expect("OS randomness for the egress token");
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -2034,7 +2034,7 @@ fn digest(body: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(body.as_bytes());
-    format!("sha256:{:x}", h.finalize())
+    format!("sha256:{}", hex::encode(h.finalize()))
 }
 
 /// Record one successful call. Bounded so a runaway loop cannot exhaust

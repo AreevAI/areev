@@ -60,11 +60,11 @@ pub(crate) fn derive_blob_key(page_key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
 pub(crate) fn seal(key: &[u8; 32], hex_addr: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::getrandom(&mut nonce_bytes)
+    getrandom::fill(&mut nonce_bytes)
         .map_err(|e| AreevError::CryptoError(format!("blob nonce: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad: hex_addr.as_bytes() })
+        .encrypt(&nonce, Payload { msg: plaintext, aad: hex_addr.as_bytes() })
         .map_err(|_| AreevError::CryptoError("blob encryption failed".into()))?;
     let mut out = Vec::with_capacity(BLOB_MAGIC.len() + NONCE_LEN + ct.len());
     out.extend_from_slice(BLOB_MAGIC);
@@ -85,10 +85,13 @@ pub(crate) fn open(key: &[u8; 32], hex_addr: &str, sealed: &[u8]) -> Result<Vec<
         return Err(AreevError::CryptoError("not an encrypted blob".into()));
     }
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(&sealed[BLOB_MAGIC.len()..BLOB_MAGIC.len() + NONCE_LEN]);
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    // `is_sealed` above proved the length, so this slice is exactly NONCE_LEN.
+    nonce_bytes.copy_from_slice(&sealed[BLOB_MAGIC.len()..BLOB_MAGIC.len() + NONCE_LEN]);
+    let nonce = Nonce::from(nonce_bytes);
     let ct = &sealed[BLOB_MAGIC.len() + NONCE_LEN..];
     cipher
-        .decrypt(nonce, Payload { msg: ct, aad: hex_addr.as_bytes() })
+        .decrypt(&nonce, Payload { msg: ct, aad: hex_addr.as_bytes() })
         .map_err(|_| {
             AreevError::CryptoError(
                 "blob decryption failed — wrong key, or the blob was tampered with".into(),
@@ -181,5 +184,42 @@ mod tests {
         // A sealed blob without a key is a clean error, never a panic.
         let sealed = seal(&k, ADDR, b"x").unwrap();
         assert!(read_maybe_sealed(None, ADDR, sealed).is_err());
+    }
+
+    /// Known-answer tests, not round trips.
+    ///
+    /// A round trip seals and opens with the SAME build, so it passes even if a
+    /// dependency bump silently changed the derivation — and every blob written
+    /// by an older Areev would then be unopenable, with a green suite. These
+    /// values were computed with the crates 1.8.2 shipped (hkdf 0.12.4, sha2
+    /// 0.10.9, aes-gcm 0.10.3) and must not move again: they ARE the on-disk
+    /// format. A future bump that changes one is a migration, not an upgrade.
+    #[test]
+    fn the_blob_subkey_derivation_is_pinned_to_its_shipped_value() {
+        let sub = derive_blob_key(&[7u8; 32]);
+        assert_eq!(
+            hex::encode(&sub[..]),
+            "6ab3258744d33ae6cc71e4aabcf521c22c4c5b79feb26f166d8c379e6aaca781",
+            "HKDF-SHA256 blob subkey changed — every existing blob is now unopenable"
+        );
+    }
+
+    #[test]
+    fn a_blob_sealed_by_the_shipped_build_still_opens() {
+        // Ciphertext produced by aes-gcm 0.10.3 for this exact key, nonce,
+        // plaintext and bound address. Reassembled into the on-disk framing.
+        let ct = hex::decode("b0e09f1336d406c9b5d68f17954cb7813868ae6d03cf6576d0b4d256c1d80e18")
+            .unwrap();
+        let mut sealed = Vec::new();
+        sealed.extend_from_slice(BLOB_MAGIC);
+        sealed.extend_from_slice(&[3u8; NONCE_LEN]);
+        sealed.extend_from_slice(&ct);
+
+        let plaintext = open(&[9u8; 32], "deadbeef", &sealed)
+            .expect("a blob sealed by the shipped build must still open");
+        assert_eq!(plaintext, b"attachment bytes");
+
+        // And the AAD binding still holds against the older ciphertext.
+        assert!(open(&[9u8; 32], "deadbeee", &sealed).is_err());
     }
 }

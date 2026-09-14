@@ -272,10 +272,10 @@ fn a_pinned_blob_reaches_the_credential_broker_on_the_same_terms() {
     // A blob that echoes its egress environment back as the result.
     let script = b"#!/bin/sh\nprintf '{\"url\":\"%s\",\"token\":\"%s\",\"leak\":\"%s\"}' \
                    \"$AREEV_EGRESS_URL\" \"$AREEV_EGRESS_TOKEN\" \"$AREEV_TEST_ZOHO2\"\n";
-    let hex = format!("{:x}", {
+    let hex = {
         use sha2::{Digest, Sha256};
-        Sha256::digest(script)
-    });
+        hex::encode(Sha256::digest(script))
+    };
     let uri = format!("cas://sha256:{hex}");
     let cache = TempDir::new().unwrap();
 

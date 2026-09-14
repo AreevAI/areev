@@ -5598,7 +5598,7 @@ fn run_auth(flags: &HashMap<String, String>, positional: &[String]) -> Result<()
             // verb: the operator never chooses the secret, so its entropy is
             // never a question and the stored SHA-256 is never grindable.
             let mut raw = [0u8; 32];
-            getrandom::getrandom(&mut raw)
+            getrandom::fill(&mut raw)
                 .map_err(|e| format!("areev auth mint: no system randomness available: {e}"))?;
             let token = format!("{TOKEN_PREFIX}{}", areev_core::authz::encode_token_body(&raw));
             let digest = {
