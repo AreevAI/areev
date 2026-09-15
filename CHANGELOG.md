@@ -42,6 +42,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `required_fields_match_the_validator` test pins the row to what the
   builder arms enforce, and `DESCRIBE` output is byte-identical to before.
 
+- **A macOS-only CI flake in the credential broker's binding test.** The
+  Python stub upstream in `areev-py`'s #201 test answered without ever
+  reading the POST body it was sent, so `socketserver` closed the connection
+  over two queued bytes — and a close over unread data sends an RST rather
+  than a FIN, which on macOS discards what the peer has already buffered.
+  The broker read the status line but lost the body it had been promised,
+  and reported the admitted call as a 200 with an empty body: its documented
+  behaviour for a mid-body read failure, and indistinguishable from an
+  upstream that answered with nothing. Harmless on an idle machine and
+  roughly even money on a loaded one — 10 of 20 runs failed under CPU
+  saturation, 0 of 20 after, with the leftover bytes confirmed in the kernel
+  queue on every failing run and absent on every passing one. The stub now
+  drains to `Content-Length`, which the Rust stub for the same test
+  (`areev-cli/tests/common/egress201.rs`) always did and Node's `http`
+  server does on its own. Test-only: no shipped behaviour changed.
+
 ### Changed
 
 - **The crypto stack moves to the current RustCrypto generation, with the
