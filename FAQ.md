@@ -56,7 +56,10 @@ identical content always yields the same address, and any change produces a new
 grain. There are 12 grain types: **Fact, Event, State, Workflow, Tool,
 Observation, Goal, Reasoning, Consensus, Consent, Skill, Recommendation**. A `Fact` is a
 subject–relation–object triple (e.g. `john · prefers · "window seat"`); an
-`Event` is raw conversational content; and so on.
+`Event` is raw conversational content; and so on. Which type to write a given
+memory as — with the pairs people mix up and how each is written on every
+surface — is [`docs/grains.md`](docs/grains.md), the one page every other doc
+defers to on that question.
 
 ### What does "content-addressed / immutable" mean for edits and deletes?
 

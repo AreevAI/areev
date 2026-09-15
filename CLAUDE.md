@@ -221,6 +221,7 @@ family (`areev run`, `areev loop`, `areev anonymize`, the console, …):
 | An MCP tool (add/remove/shape) | `docs/mcp-reference.md` — including the **pinned tool count** in its prose/headings |
 | CAL behavior or the result payload | `docs/cal-reference.md` (its ```sql fences are **executable** — `docs_examples.rs` fails CI on a non-parsing example); new *syntax* additionally needs the OMS spec decision |
 | An error code | `ERROR_CODES.md` (append-only) |
+| A grain type (new, or what it is *for*) | `docs/grains.md` — its decision table quotes each registry row's `purpose` verbatim and a test pins them; the one page every other doc defers to on "which grain" |
 | Store semantics (recall/erasure/replication/meta) | the crate's `CLAUDE.md` **and** a `areev-conformance` case — both backends |
 | Auth, crypto, keys, bind, request parsing | `docs/security-model.md` |
 | A subsystem with its own reference doc | that doc (`docs/run.md`, `docs/loop.md`, `docs/erasure.md`, `docs/gdpr.md`, …) |

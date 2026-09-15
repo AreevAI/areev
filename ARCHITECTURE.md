@@ -168,7 +168,10 @@ OMS 1.5 defines 12 grain types, each with a stable header byte. The type byte, t
 canonical name, and the fields are part of the format contract.
 
 Fields in **bold** are *required* — the write path rejects a grain without them
-(`VAL-E001`). The rest are the type's other characteristic fields.
+(`VAL-E001`). The rest are the type's other characteristic fields. This table
+is the *format* contract; *which* type to write a memory as is
+[`docs/grains.md`](docs/grains.md), whose decision table quotes each type's
+registry `purpose` verbatim (test-pinned) so it and `DESCRIBE <type>` agree.
 
 | Byte | Type | Purpose | Key fields |
 |---|---|---|---|
@@ -196,8 +199,9 @@ at least one required field, and `Recommendation` is engine-emitted — there is
 no `ADD recommendation`.
 
 The required set is not only prose: `DESCRIBE <type>` reports it as
-`required_fields`, so a client can ask the engine instead of reading this
-table, and a test pins the two together.
+`required_fields` — alongside `purpose`, the type's one-line "use it for" from
+the registry — so a client can ask the engine instead of reading this table,
+and a test pins the two together.
 
 > **Tool grains are data, never executables.** Areev stores, correlates, and
 > renders tool definitions/calls/results — it never runs them. A Tool grain's

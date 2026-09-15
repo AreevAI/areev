@@ -1,4 +1,5 @@
-//! Every CAL example in `docs/cal-reference.md` must parse.
+//! Every CAL example in `docs/cal-reference.md` — and in `docs/grains.md`,
+//! the "which grain" page that shows a write per type — must parse.
 //!
 //! Three separate bug reports (#48, #51, #54) were all the same failure: the
 //! reference documented a shape the grammar does not have, and nothing caught
@@ -12,6 +13,9 @@
 use areev_cal::parser::parse;
 
 const REFERENCE: &str = include_str!("../../../docs/cal-reference.md");
+/// The grain-selection page. Its fences are the first `ADD` a confused reader
+/// copies, so they are held to the same bar as the reference.
+const GRAINS: &str = include_str!("../../../docs/grains.md");
 
 /// Placeholder hashes in the docs are elided (`sha256:a1b2c3d4...`,
 /// `sha256:<hash>`) because a real 64-hex address is unreadable in prose.
@@ -72,12 +76,12 @@ fn split_statements(chunk: &str) -> Vec<String> {
     vec![chunk.to_string()]
 }
 
-#[test]
-fn every_sql_example_in_the_cal_reference_parses() {
-    let fences = sql_fences(REFERENCE);
+/// Parse every example in one doc; returns (examples checked, failures).
+fn check_doc(path: &str, md: &str, min_fences: usize) -> (usize, Vec<String>) {
+    let fences = sql_fences(md);
     assert!(
-        fences.len() > 10,
-        "extracted only {} sql fences — the extractor is broken, not the docs",
+        fences.len() >= min_fences,
+        "extracted only {} sql fences from {path} — the extractor is broken, not the docs",
         fences.len()
     );
 
@@ -88,21 +92,34 @@ fn every_sql_example_in_the_cal_reference_parses() {
             checked += 1;
             if let Err(e) = parse(&q) {
                 failures.push(format!(
-                    "docs/cal-reference.md:{line}\n    query: {}\n    error: {e}",
+                    "{path}:{line}\n    query: {}\n    error: {e}",
                     q.replace('\n', "\n           ")
                 ));
             }
         }
     }
+    (checked, failures)
+}
 
-    assert!(
-        checked > 30,
-        "only {checked} examples extracted from {} fences",
-        fences.len()
-    );
+#[test]
+fn every_sql_example_in_the_cal_reference_parses() {
+    let (checked, failures) = check_doc("docs/cal-reference.md", REFERENCE, 11);
+    assert!(checked > 30, "only {checked} examples extracted");
     assert!(
         failures.is_empty(),
         "{} of {checked} documented CAL examples do not parse:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+#[test]
+fn every_sql_example_in_the_grains_page_parses() {
+    let (checked, failures) = check_doc("docs/grains.md", GRAINS, 1);
+    assert!(checked >= 1, "docs/grains.md lost its CAL examples");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} CAL examples in docs/grains.md do not parse:\n\n{}",
         failures.len(),
         failures.join("\n\n")
     );

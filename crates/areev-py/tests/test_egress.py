@@ -27,6 +27,22 @@ class _Upstream(BaseHTTPRequestHandler):
     """Says whether the broker attached a credential."""
 
     def _reply(self):
+        # Drain the request body before answering, though the reply does not
+        # depend on it. `socketserver` closes this connection over whatever is
+        # left unread, and a close over queued bytes sends an RST rather than a
+        # FIN — which on macOS discards what the peer has already buffered. The
+        # broker would then read this status line but lose the body it
+        # announced, and report the admitted call as a 200 with an empty body:
+        # `broker.rs`'s documented behaviour for a mid-body read failure, and a
+        # flake rather than a diagnosis. The admitted call POSTs `{}`, so there
+        # is always a body; whether it is still in the kernel queue when the
+        # headers are parsed is the race, and it loses under load. The Rust
+        # stub reads to `Content-Length` for the same reason
+        # (`areev-cli/tests/common/egress201.rs`); Node's `http` server drains
+        # for you.
+        pending = int(self.headers.get("Content-Length") or 0)
+        if pending:
+            self.rfile.read(pending)
         body = json.dumps({"ok": True, "auth": bool(self.headers.get("Authorization")),
                            "method": self.command}).encode()
         self.send_response(200)
@@ -48,6 +64,7 @@ def upstream():
     t.start()
     yield "http://127.0.0.1:%d" % srv.server_address[1]
     srv.shutdown()
+    srv.server_close()
 
 
 def declare_fetcher(m, up):

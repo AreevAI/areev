@@ -74,58 +74,18 @@ startup error instead of a first-turn error. Full embedding walkthrough:
 
 ## 3. When to use which grain
 
-| Grain | Use it for | Don't use it for |
-|---|---|---|
-| **Fact** | Durable knowledge as subject–relation–object: preferences, config, entity attributes. The unit recall ranks best | Free prose (that's Event), telemetry (Observation) |
-| **Event** | Things that happened at a moment: a message, a decision, an episode. `remember` / `capture` land here, thread-indexed | Current-state lookups — recall the Fact, not the transcript |
-| **State** | A mutable-by-supersession value with history: counters, checkpoints, run manifests. `ACCUMULATE` targets these | Anything another type models better; State is the escape hatch, not the default |
-| **Workflow** | The plan: a directed graph of steps. Immutable — every edit is a supersession minting a **new hash** | Run state or trigger schedules (both point *at* the plan; it stores neither) |
-| **Tool** | Two roles by `kind`: a **definition** (what a tool is — schema, executor, locked params, and its code via `executor_uri`) and an **execution record** (one call that happened, written via `record_tool_call`) | Hand-writing execution records with raw `ADD tool` — identical retries dedup into one grain and starve the loop's evidence |
-| **Trigger** | A standing rule that starts a plan: cron, source-watch, composite gates with correlation windows | Anything the plan itself should decide — a trigger fires runs, it doesn't branch |
-| **Goal** | The task's intent: description, criteria, open/closed state. Write one per task and `related_to`-link the plan to it | Progress logging (Events) or metrics (Observations) |
-| **Observation** | Telemetry and audit: run outcomes, tool errors, authz decisions, loop transitions. What the analyzers read | Knowledge you'd recall into a prompt |
-| **Skill** | Competence the agent has demonstrated, proficiency = confidence; `skill_stall` watches these | A tool catalog (that's Tool definitions) |
-| **Reasoning** | A recorded chain of reasoning worth citing later | Routine step logging — the run journal already captures execution |
-| **Consensus / Consent** | Multi-party agreement; a subject's recorded permission (GDPR trail) | — |
-| **Recommendation** | Written by `areev loop`, never by hand — the governed improvement queue | Ad-hoc TODOs |
-
-Rules of thumb: **if it's true, Fact; if it happened, Event; if it's measured,
+The one rule: **if it's true, Fact; if it happened, Event; if it's measured,
 Observation; if it's intended, Goal; if it's procedure, Workflow; if it's
 capability, Tool.** When two fit, pick the one an analyzer or a recall query
 will consume later — grains are written to be read.
 
-**Two field traps worth knowing before you design around a grain.** First,
-**unknown fields are accepted silently** — a misspelled key is copied into
-`extra_fields` and does nothing, so a typo never errors, it just quietly
-fails to work. Worse, a few *recognized* names have no builder behind them
-and vanish entirely: on `goal` that includes `criteria`, `priority`,
-`goal_state` and `progress` (only `description`, `subject` and `object`
-survive), and there are similar gaps on `observation`, `reasoning` and
-`consent`. Check what actually round-trips before you build a query on a
-field. Second, `tool` takes **`input_schema` / `output_schema`** — there is
-no bare `schema` — and workflow edges are **`src` / `dst`**, never
-`from` / `to`.
-
-**`add` and `supersede` mean different things in time, and the as-of reads
-can tell.** A grain carries two clocks: `valid_from`/`valid_to` (when it was
-true in the world) and the system clock (when you came to know it), and
-`entity_at(..., axis="world"|"knowledge")` reads them separately. The rule
-that falls out is sharp:
-
-- a **variation** — a new state that coexists with the old one in its own
-  time window — is an **`add`**. The world axis picks among *live* grains by
-  their validity window, so both windows must stay live.
-- a **restatement** — you were wrong, or you learned late — is a
-  **`supersede`**. The knowledge axis walks the supersession chain, so a
-  correction has to be linked to what it corrects.
-
-Get it backwards and the reads go quiet rather than wrong: superseding a
-still-valid window hides it from the world axis forever, and adding a
-correction as a fresh grain leaves the knowledge axis unable to find it.
-`system_valid_from` is not settable — the store copies `created_at` into it.
-[`agents/insurance-documents/`](agents/insurance-documents/) turns this into
-the difference between telling an insured they are covered and telling them
-they are 112,000 short.
+The full decision table for all thirteen types, the pairs people mix up
+(Fact vs Event vs Observation, State vs Fact, Tool vs Skill, …), how each
+type is written on every surface, the two field traps, and the
+`add`-vs-`supersede` rule in time all live in one place:
+[`docs/grains.md`](../docs/grains.md). Its "Use it for" column is the same
+sentence `DESCRIBE <type>` returns, so the engine and the page cannot
+disagree. Keep it open beside this guide; the sections below assume it.
 
 ---
 

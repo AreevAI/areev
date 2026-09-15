@@ -72,6 +72,14 @@ that passes locally and fails in CI (or vice versa):
    normalization (this is itself a good bug-hunting axis — see below).
 5. **No ordering assumptions from HashMaps.** Assert on sorted/keyed output, not
    iteration order.
+6. **A stub HTTP server must read the request body it was sent**, even when its
+   reply does not depend on it. Closing a connection over unread bytes sends an
+   RST instead of a FIN, and on macOS an RST discards what the peer has already
+   buffered — so the client reads the status line, loses the body, and reports a
+   `200` with empty content. Under load that is a coin toss (`test_egress.py`'s
+   stub cost CI 10 failures in 20 loaded runs before it drained). Read to
+   `Content-Length` like `areev-cli/tests/common/egress201.rs`; Rust and Python
+   stubs must do it by hand, Node's `http` server drains on its own.
 
 ## Golden dataset + the bless flow
 

@@ -45,31 +45,27 @@ const COMMON_KNOWN_FIELDS: &[&str] = &[
 ///
 /// This is the *declaration* of what the builder arms below enforce, exposed so
 /// `DESCRIBE <type>` can answer "what does this type need" without a caller
-/// discovering it one `VAL-E001` at a time. The two are pinned together by
-/// `required_fields_match_the_validator` — add a `require_str` and the test
-/// fails until this table agrees.
+/// discovering it one `VAL-E001` at a time. The declaration lives on the
+/// grain-type registry (`GrainTypeMeta::required_add_fields`) — one row per
+/// type, next to its `purpose` — and this function is the registry read. The
+/// row and the builder arms are pinned together by
+/// `required_fields_match_the_validator`: add a `require_str` and the test
+/// fails until the registry agrees. (There used to be a second table here; it
+/// and the registry disagreed on `observation`, and nothing caught it because
+/// only this one was read.)
 ///
-/// `goal` is the one inexact row: it accepts `object` as a fallback for
-/// `description`, so the entry names the primary spelling.
-/// `state`/`workflow`/`reasoning`/`consensus` require nothing by design — they
-/// are host-shaped containers, so an empty one is legal.
+/// Unknown names, and the wildcard, require nothing — and so does a type no
+/// host may author. `recommendation` carries a registry row describing what the
+/// *engine* fills in, but no builder here accepts the type, so publishing those
+/// names as "required fields" would be a breadcrumb toward a write that always
+/// refuses. `DESCRIBE recommendations` says `[]`, and the refusal explains why.
 pub fn required_fields(grain_type: &str) -> &'static [&'static str] {
-    match grain_type {
-        "fact" => &["subject", "relation", "object"],
-        "event" => &["content"],
-        "tool" => &["tool_name"],
-        "observation" => &["content"],
-        "goal" => &["description"],
-        "consent" => &["subject_did", "user_id"],
-        "skill" => &["name", "description"],
-        // Unconditional only. A trigger also has *kind-specific* requirements
-        // (an interval trigger needs `interval_secs`, a schedule one needs
-        // `cron`, a composite one needs members and a predicate) which cannot
-        // be expressed in a flat list; `Trigger::incoherence` enforces those and
-        // names the missing piece.
-        "trigger" => &["kind", "workflow"],
-        _ => &[],
-    }
+    use areev_core::types::registry;
+    registry::from_str(grain_type)
+        .map(registry::meta)
+        .filter(|m| m.host_addable)
+        .map(|m| m.required_add_fields)
+        .unwrap_or(&[])
 }
 
 /// Why `build_grain_from_json` refused a type name.
@@ -1499,9 +1495,10 @@ mod tests {
     ];
 
     /// `required_fields` is what `DESCRIBE` publishes and what ARCHITECTURE
-    /// §2.3 bolds. It is a hand-maintained mirror of the `require_str` calls in
-    /// the builder arms, so pin it: every listed field must actually be
-    /// enforced, and no unlisted field may be.
+    /// §2.3 bolds. It reads the registry row (`GrainTypeMeta::required_add_fields`),
+    /// a hand-maintained mirror of the `require_str` calls in the builder arms,
+    /// so pin it: every listed field must actually be enforced, and no unlisted
+    /// field may be.
     #[test]
     fn required_fields_match_the_validator() {
         for gt in ALL_TYPES {
@@ -1528,6 +1525,22 @@ mod tests {
                 "{gt}: rejected a payload carrying every declared required field"
             );
         }
+    }
+
+    /// A type no host can author publishes no required fields, however the
+    /// registry documents the engine's own invariant for it.
+    #[test]
+    fn engine_authored_types_publish_no_required_fields() {
+        assert!(
+            required_fields("recommendation").is_empty(),
+            "DESCRIBE would advertise fields for a type no builder accepts"
+        );
+        assert!(
+            !areev_core::types::registry::meta(areev_core::types::GrainType::Recommendation)
+                .required_add_fields
+                .is_empty(),
+            "the registry row itself should still record what the engine fills"
+        );
     }
 
     /// The four container types accept an empty payload. Documented in

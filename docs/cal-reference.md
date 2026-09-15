@@ -54,7 +54,9 @@ Comments start with `--` and run to end of line.
 Statements name grain types by their **plural** form for reads and **singular**
 form for writes. The names are case-insensitive. A `—` in the write column
 means the type is **engine-authored**: no host surface (CAL, CLI, bindings,
-MCP) can create one, by design.
+MCP) can create one, by design. This table is the *spelling*; which type to
+write a memory as is [`grains.md`](grains.md), and `DESCRIBE <plural>`
+returns the same `purpose` sentence that page quotes.
 
 | Plural (read) | Singular (write) |
 |---|---|
@@ -560,7 +562,7 @@ refused inside saved-query bodies and capped by `allow_destructive_ops`.
 
 | Statement | Purpose |
 |---|---|
-| `DESCRIBE facts` / `DESCRIBE SCHEMA` | Describe a grain type or the whole schema |
+| `DESCRIBE facts` / `DESCRIBE SCHEMA` | Describe a grain type (`purpose`, `required_fields`, `specific_fields`, `common_fields`) or the whole schema |
 | `DESCRIBE CAPABILITIES` | Report the CAL conformance level and supported features |
 | `DESCRIBE FIELDS [type]` | List filterable/sortable fields |
 | `DESCRIBE TEMPLATES` / `DESCRIBE QUERIES` | List registered templates / saved queries |
