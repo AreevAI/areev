@@ -26,7 +26,10 @@ reconstruct, with tests catching only some of it.
 1. **`types/<name>.rs`** — the grain struct (+ `types/mod.rs` module decl).
    Follow an existing type; implement the `Grain` trait / `GrainCommon`.
 2. **`types/registry.rs`** — the `GRAIN_TYPES` metadata row (byte, name,
-   plural, add_via_set, queryable). A test forces coverage of every type here.
+   plural, `purpose`, add_via_set, queryable). A test forces coverage of every
+   type here, and `docs_grains_page_quotes_every_purpose` requires the new
+   row's `purpose` sentence to appear verbatim in `docs/grains.md` — add the
+   type's row to that decision table in the same commit.
 3. **`format/serialize.rs`** — the `add_type_specific_fields` downcast arm.
 4. **`format/deserialize.rs`** — the reconstruction arm + the typed
    reconstructor (`to_<type>()`), and update `embedding_text()` / `base_text()`

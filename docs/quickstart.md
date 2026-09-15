@@ -84,6 +84,20 @@ areev recall john                           # → the stored fact, one JSON grai
 areev recall john --render sml              # → "john prefers window seat" as a model-ready block
 ```
 
+Not everything is a fact. A fact is what the agent holds as *true*; what
+*happened* is an event, what was *measured* is an observation — and the
+same file holds all thirteen grain types:
+
+```bash
+areev remember --content "John asked for a window seat on the 3pm call"   # an Event, thread-indexed
+areev cal 'ADD observation SET content = "seat lookup latency" SET value = "412"
+           SET unit = "ms" SET observer_id = "booking-bot" REASON "measured"'   # an Observation
+areev cal 'DESCRIBE goals'                   # → what a Goal is for, and what it requires
+```
+
+Which type to reach for, and the pairs people mix up, is one page:
+[`grains.md`](grains.md).
+
 Point it at a specific file with `-d mem.db` (or `export AREEV_DB=mem.db`).
 Then explore: `areev cal '<QUERY>'` runs the query language
 ([reference](cal-reference.md)), `areev ui` opens the web console
@@ -239,6 +253,8 @@ db.add(&Fact::new("john", "prefers", "dark mode"))?;
 import areev, json
 m = areev.Areev("john.db", ns="caller")
 m.add_fact("john", "prefers", "tea", confidence=0.95)
+m.add("observation", json.dumps({"content": "seat lookup latency",
+                                 "value": "412", "unit": "ms"}))   # any type: grains.md
 m.recall("john")                     # JSON string, newest-first — needs a subject
 m.search("tea", k=5)                 # free text, when you don't have a subject.
                                      # BM25-only out of the box, so it matches
@@ -263,6 +279,8 @@ const { Areev } = require('@areev/areev')
 
 const mem = new Areev('john.db', 'caller')                  // 3rd arg: passphrase for AES-256 at rest
 await mem.addFact('john', 'prefers', 'tea', 0.95)
+await mem.add('observation', JSON.stringify({ content: 'seat lookup latency',
+                                             value: '412', unit: 'ms' }))   // any type: grains.md
 await mem.recall('john')                                     // JSON string, newest-first
 await mem.cal('RECALL facts WHERE subject = "john"')
 await mem.memoryTool('{"command": "view", "path": "/memories"}')  // Anthropic memory-tool backend

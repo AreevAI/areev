@@ -1185,9 +1185,14 @@ fn all_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "areev_add",
-            "description": "Add a durable memory grain (append-only; content-addressed). Use type 'fact' with subject/relation/object fields for structured knowledge.",
+            "description": "Add a durable memory grain (append-only; content-addressed). Pick the type by what the memory IS: true -> fact (subject/relation/object), happened -> event, measured -> observation, intended -> goal, procedure -> workflow, capability -> tool. When two fit, pick the one a later recall or analyzer will consume. Ask the engine with areev_cal \"DESCRIBE <plural>\" for a type's purpose and required fields.",
             "inputSchema": {"type": "object", "properties": {
-                "type": s("grain type: fact|event|state|goal|observation|... (default fact)"),
+                "type": s(&format!(
+                    "grain type, one of {} (default fact)",
+                    areev_core::types::registry::host_addable_names()
+                        .collect::<Vec<_>>()
+                        .join("|")
+                )),
                 "fields": {"type": "object", "description": "grain fields, e.g. {subject, relation, object, confidence}"},
                 "namespace": s("optional namespace"),
                 "idempotent": {"type": "boolean", "description": "if true, skip the write when this exact value is already the current head for (subject, relation) — returns the existing hash and inserted:false. Use when re-learning a fact you may already hold."}

@@ -31,6 +31,16 @@ pub struct GrainTypeMeta {
     pub name: &'static str,
     /// Canonical plural name used by CAL `RECALL <plural>` (e.g. `"skills"`).
     pub plural: &'static str,
+    /// What the type is *for*, in one sentence — the answer to "which grain
+    /// do I reach for?", which the field lists below cannot give.
+    ///
+    /// This is the single copy. `DESCRIBE <type>` reports it as `purpose`,
+    /// the MCP `areev_add` tool description quotes the rule of thumb built
+    /// from it, and the decision table in `docs/grains.md` is test-pinned to
+    /// contain every row verbatim — so the prose a person reads and the
+    /// answer a client gets from the engine cannot drift apart. Keep it to
+    /// one clause of *use*, not a restatement of the field list.
+    pub purpose: &'static str,
     /// Whether this type can be built from the **generic** CAL form
     /// `ADD <type> SET k = v …`.
     ///
@@ -62,9 +72,22 @@ pub struct GrainTypeMeta {
     /// disagreement this flag exists to prevent is a surface reporting a type
     /// as unknown when it is really unwritable.
     pub host_addable: bool,
-    /// Required fields for an `ADD` of this type. Consumed by the per-type JSON
-    /// builders regardless of [`Self::add_via_set`] — a type that cannot be
-    /// built from flat `SET` pairs still has required fields.
+    /// Required fields for an `ADD` of this type — what the per-type JSON
+    /// builders (`areev_cal::json_build`) refuse to build without, regardless
+    /// of [`Self::add_via_set`]: a type that cannot be built from flat `SET`
+    /// pairs still has required fields. `json_build::required_fields` reads
+    /// this row, and its `required_fields_match_the_validator` test pins the
+    /// row to what the builder arm actually enforces — so `DESCRIBE <type>`
+    /// and `docs/grains.md` report the same set the write path checks. (Until
+    /// that delegation this row was read by nothing and had drifted:
+    /// `observation` claimed `observer_id`/`observer_type` while the builder
+    /// demanded `content`.)
+    ///
+    /// Unconditional requirements only. A trigger also has *kind-specific*
+    /// requirements (an interval trigger needs `interval_secs`, a schedule one
+    /// needs `cron`) which a flat list cannot express; `Trigger::incoherence`
+    /// enforces those and names the missing piece. `goal` is the one inexact
+    /// row: the builder accepts `object` as a fallback for `description`.
     ///
     /// Empty means the type genuinely requires nothing: State, Workflow,
     /// Reasoning and Consensus are host-shaped containers whose whole payload
@@ -85,6 +108,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x01,
         name: "fact",
         plural: "facts",
+        purpose: "Durable structured knowledge as subject-relation-object (a preference, an attribute, a setting): what the agent holds as true right now",
         add_via_set: true,
         host_addable: true,
         required_add_fields: &["subject", "relation", "object"],
@@ -96,6 +120,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x02,
         name: "event",
         plural: "events",
+        purpose: "Something that happened at a moment (a message, a decision, an episode): the transcript unit, thread-indexed and never the current-state lookup",
         add_via_set: false,
         host_addable: true,
         required_add_fields: &["content"],
@@ -119,6 +144,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x03,
         name: "state",
         plural: "states",
+        purpose: "A checkpoint or counter that evolves by supersession with its history kept: the escape hatch when no other type fits, not the default",
         add_via_set: false,
         host_addable: true,
         required_add_fields: &[],
@@ -133,9 +159,13 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x04,
         name: "workflow",
         plural: "workflows",
+        purpose: "A plan: a directed graph of steps bound to tools, immutable and content-addressed, so every edit mints a new hash",
         add_via_set: false,
         host_addable: true,
-        required_add_fields: &["nodes"],
+        // Empty by design (ARCHITECTURE §2.3): a Workflow is a host-shaped
+        // container, so `{}` builds. A plan with no `nodes` is useless, not
+        // invalid — `PlanGraph::build` is where an empty graph is refused.
+        required_add_fields: &[],
         queryable_fields: &[
             "node", "binding", "nodes", "edges", "bindings", "name", "retries",
         ],
@@ -146,6 +176,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x05,
         name: "tool",
         plural: "tools",
+        purpose: "A tool definition (what can run: schema, executor, locked params) or one execution record (what did run), split by kind",
         add_via_set: false,
         host_addable: true,
         required_add_fields: &["tool_name"],
@@ -179,9 +210,14 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x06,
         name: "observation",
         plural: "observations",
+        purpose: "Telemetry, measurements and audit: what an observer noticed, unconfirmed, and what the loop's analyzers read",
         add_via_set: true,
         host_addable: true,
-        required_add_fields: &["observer_id", "observer_type"],
+        // `content` is what the builder enforces (an Observation with nothing
+        // observed is unrecallable); `observer_id`/`observer_type` are
+        // optional, defaulting to "unknown"/"agent". This row used to claim
+        // the reverse, and nothing read it — see the doc on the field.
+        required_add_fields: &["content"],
         queryable_fields: &["observer_id", "observer_type", "sensor", "value", "unit"],
         toon_columns: &["observer", "content"],
     },
@@ -190,6 +226,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x07,
         name: "goal",
         plural: "goals",
+        purpose: "The intent of a task: a description, its criteria, and whether it is still open",
         add_via_set: true,
         host_addable: true,
         required_add_fields: &["description"],
@@ -209,6 +246,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x08,
         name: "reasoning",
         plural: "reasonings",
+        purpose: "A recorded chain of inference from premises to a conclusion, kept because it will be cited later",
         add_via_set: false,
         host_addable: true,
         required_add_fields: &[],
@@ -220,6 +258,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x09,
         name: "consensus",
         plural: "consensuses",
+        purpose: "An agreement reached across several observers or agents, with the threshold that made it one",
         add_via_set: false,
         host_addable: true,
         required_add_fields: &[],
@@ -231,9 +270,10 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x0A,
         name: "consent",
         plural: "consents",
+        purpose: "A subject's recorded permission: granted or withdrawn, scoped by purpose, the GDPR trail",
         add_via_set: false,
         host_addable: true,
-        required_add_fields: &["subject_did"],
+        required_add_fields: &["subject_did", "user_id"],
         queryable_fields: &[
             "consent_action",
             "purpose",
@@ -251,6 +291,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x0B,
         name: "skill",
         plural: "skills",
+        purpose: "A capability the agent has learned, with a proficiency that tracks practice",
         add_via_set: true,
         host_addable: true,
         required_add_fields: &["name", "description"],
@@ -284,6 +325,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x0C,
         name: "recommendation",
         plural: "recommendations",
+        purpose: "A governed proposal the loop made to change memory or configuration: engine-written, never authored by hand",
         // Query-only by design (OMS 1.5 / CAL 1.2): a recommendation is
         // engine-emitted and lifecycle-gated, so there is no `ADD
         // recommendation` and lifecycle transitions never occur through
@@ -313,6 +355,7 @@ pub const GRAIN_TYPES: &[GrainTypeMeta] = &[
         byte: 0x0D,
         name: "trigger",
         plural: "triggers",
+        purpose: "A standing rule that starts a workflow (cron, a watched source, a composite gate): the cadence as data, not a daemon",
         // Not expressible as flat `SET k=v` pairs: `dedup_key` and `members`
         // are lists and `predicate`/`config` are nested JSON. Authored through
         // `areev trigger add`, which builds the grain, rather than by hand.
@@ -388,11 +431,43 @@ mod tests {
             GrainType::Consensus,
             GrainType::Consent,
             GrainType::Skill,
+            GrainType::Recommendation,
+            GrainType::Trigger,
         ] {
             let m = meta(ty);
             assert_eq!(m.ty, ty);
             assert!(!m.name.is_empty());
             assert!(!m.plural.is_empty());
+            assert!(!m.purpose.is_empty(), "{} has no purpose", m.name);
+        }
+    }
+
+    /// The decision table in `docs/grains.md` quotes every row's `purpose`
+    /// verbatim. That page is where people are sent to learn which grain to
+    /// use, and this row is what `DESCRIBE <type>` tells a client — if the
+    /// two disagree, one of them is wrong, and this test says which file to
+    /// fix (the registry is the source; the doc quotes it).
+    #[test]
+    fn docs_grains_page_quotes_every_purpose() {
+        let page = include_str!("../../../../docs/grains.md");
+        for m in GRAIN_TYPES {
+            assert!(
+                page.contains(m.purpose),
+                "docs/grains.md does not quote the registry purpose for `{}`:\n  {}",
+                m.name,
+                m.purpose
+            );
+        }
+    }
+
+    #[test]
+    fn purposes_are_unique_one_liners() {
+        for (i, a) in GRAIN_TYPES.iter().enumerate() {
+            assert!(!a.purpose.contains('\n'), "{} purpose spans lines", a.name);
+            assert!(!a.purpose.contains('|'), "{} purpose would break a markdown table cell", a.name);
+            for b in &GRAIN_TYPES[i + 1..] {
+                assert_ne!(a.purpose, b.purpose, "{} and {} share a purpose", a.name, b.name);
+            }
         }
     }
 

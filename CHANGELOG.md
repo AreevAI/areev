@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **One answer to "which grain do I use?"** — `docs/grains.md`. The
+  decision table for all thirteen types, the rule of thumb (true → Fact,
+  happened → Event, measured → Observation, intended → Goal, procedure →
+  Workflow, capability → Tool), the pairs people mix up, how each type is
+  written on every surface, the two field traps, and `add` vs `supersede` in
+  time. The guidance existed, but only inside the agent-building manual,
+  three sections in; the quickstart showed nothing but a Fact; and the
+  surfaces where the choice is actually made gave no help at all. Now each
+  grain type carries a one-line `purpose` on the registry
+  (`GrainTypeMeta::purpose`), `DESCRIBE <type>` reports it, the MCP
+  `areev_add` description states the rule and enumerates the addable types
+  from the registry instead of trailing off in an ellipsis, and the page's
+  "Use it for" column is test-pinned to quote every registry row verbatim —
+  the engine's answer and the doc's answer cannot drift. Its CAL examples
+  are CI-parsed like the reference's. Every other doc that touched the
+  question (the agent guide, FAQ, ARCHITECTURE §2.3, the CAL and MCP
+  references, the quickstart, `llms.txt`) now defers to it.
+
+### Fixed
+
+- **A dead registry row that lied about required fields.** Each grain type
+  carried a `required_add_fields` list in `types/registry.rs` that *nothing
+  read* — the CAL JSON builder kept its own copy, and that copy is what
+  `DESCRIBE` and `VAL-E001` have always used. Unread, the registry's version
+  had drifted: `observation` claimed to need `observer_id`/`observer_type`
+  when the write path demands `content`, `consent` was missing `user_id`,
+  and `workflow` claimed to need `nodes` though an empty container is legal
+  by design. No output was ever wrong — the wrong copy was simply the one a
+  reader would find first, and the new `purpose` sentence now sits in that
+  same row, so it had to become true rather than merely unused. The
+  builder's `required_fields` now reads the registry, the existing
+  `required_fields_match_the_validator` test pins the row to what the
+  builder arms enforce, and `DESCRIBE` output is byte-identical to before.
+
 ### Changed
 
 - **The crypto stack moves to the current RustCrypto generation, with the

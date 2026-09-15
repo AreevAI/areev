@@ -3685,6 +3685,13 @@ impl CalExecutor {
                 };
                 serde_json::json!({
                     "grain_type": type_name,
+                    // What the type is FOR — the registry's one-line purpose,
+                    // the same sentence `docs/grains.md` quotes. Field lists
+                    // say what a Goal carries; this says when to write one
+                    // instead of a Fact or an Event. `null` for the wildcard.
+                    "purpose": gt
+                        .to_grain_type()
+                        .map(|t| areev_core::types::registry::meta(t).purpose),
                     "specific_fields": specific_fields,
                     // What the write path refuses to build the grain without.
                     // Without this a caller discovers the shape one VAL-E001 at

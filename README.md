@@ -438,6 +438,7 @@ How each number is produced, and the benchmark receipts:
 | [`docs/why-areev.md`](docs/why-areev.md) | The full argument: the problem, the three systems, the honest limits |
 | [`docs/quality.md`](docs/quality.md) | How every published number is produced and gated |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How Areev works: grains, `.mg` format, CAL, recall, sync |
+| [`docs/grains.md`](docs/grains.md) | Which grain? The decision table for all thirteen types, the pairs people mix up, and how each is written on every surface |
 | [`docs/loop.md`](docs/loop.md) | Areev Loop — governed self-improvement (analyzers, four gates, policy, every surface) |
 | [`docs/run.md`](docs/run.md) | `areev run` — the governed runtime: plans, the journal, verify, HITL, budgets, forks |
 | [`examples/how-to-create-an-areev-agent.md`](examples/how-to-create-an-areev-agent.md) | Building an agent on Areev: architecture, grain selection, the autonomy spectrum, dynamic planning, do/don't |

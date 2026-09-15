@@ -6,8 +6,9 @@ installs). See [`docs/loop.md`](../docs/loop.md) for the full guide.
 
 Building your own? Start with
 [`how-to-create-an-areev-agent.md`](how-to-create-an-areev-agent.md) — the
-architecture, which grain to use when, the autonomy spectrum up to dynamic
-planning, and the do/don't list these examples follow.
+architecture, the autonomy spectrum up to dynamic planning, and the do/don't
+list these examples follow — with [`docs/grains.md`](../docs/grains.md) for
+which grain to use when.
 
 Two tiers: [`agents/`](agents/) are **vertical agents** — a whole job, end to
 end — and everything else teaches **one seam** (a protocol, a policy file, a

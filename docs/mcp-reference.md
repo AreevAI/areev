@@ -221,13 +221,18 @@ Returns a JSON array of `{ hash, similarity }`, most similar first.
 
 ### `areev_add`
 
-Add a durable memory grain (append-only, content-addressed). Use `type: "fact"`
-with `subject`/`relation`/`object` fields for structured knowledge.
+Add a durable memory grain (append-only, content-addressed). Pick the type by
+what the memory *is*: true → `fact` (`subject`/`relation`/`object`), happened
+→ `event`, measured → `observation`, intended → `goal`, procedure →
+`workflow`, capability → `tool`. The tool's own description carries that rule
+so a model host sees it without reading docs; the full decision table is
+[`grains.md`](grains.md), and `areev_cal` with `DESCRIBE <plural>` returns a
+type's `purpose` and `required_fields` from the same registry.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `fields` | object | **yes** | Grain fields, e.g. `{subject, relation, object, confidence}` |
-| `type` | string | no | Grain type: `fact` (default), `event`, `state`, `goal`, `observation`, … |
+| `type` | string | no | Grain type: `fact` (default), `event`, `state`, `workflow`, `tool`, `observation`, `goal`, `reasoning`, `consensus`, `consent`, `skill`, `trigger` — the list is generated from the registry's host-addable set, so `recommendation` is absent by design |
 | `namespace` | string | no | Optional namespace (injected into `fields` if absent) |
 
 Returns `{ "hash": "<content address>" }`.
