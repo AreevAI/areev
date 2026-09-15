@@ -1706,6 +1706,49 @@ Full reference: [`pack.md`](pack.md). Every agent under `examples/agents/`
 ships one, and `examples/grain-connector/pack/` is a hand-written pack whose
 trigger's connector is itself a pinned wasm blob.
 
+## 25. Attest what you write, verify what you import
+
+Content addressing already catches a grain that was altered; an attestation
+adds *who wrote it* — a detached Ed25519 signature over the content hash,
+stored as an ordinary grain, so nothing about the memory or its bundles
+changes (`docs/grain-attestation-plan.md`).
+
+```bash
+# The author key is a 32-byte seed, named by environment variable like every
+# other secret here (never on the command line). Keep it in your KMS.
+export AREEV_AUTHOR_KEY=$(openssl rand -hex 32)
+
+# Every grain this host writes is now followed by its attestation.
+areev add --db team.db --ns caller --signing-key-env AREEV_AUTHOR_KEY \
+  alice prefers tea
+
+# A memory that predates the key is retro-filled once (idempotent).
+areev attest --db team.db --signing-key-env AREEV_AUTHOR_KEY --all
+
+# Publish the public half to the hosts that import from you:
+#   {"version":1,"keys":{"<key_id>":"<public key hex>"},"policy":"verify"}
+# (`areev attest <hash>` prints the attestation; the Python/Node
+#  `signing_key()` returns key_id + public_key for the document.)
+
+# An importer checks attestations against that document. `verify` refuses a
+# trusted key's signature that fails; `--require-attested` refuses any grain
+# without a valid attestation from a trusted key. Either way a refused bundle
+# writes nothing.
+areev bundle --db team.db --out delta.mgb
+areev import --db replica.db --bundle delta.mgb \
+  --trusted-authors trusted.json --require-attested
+
+# The read-only audit, on a read-only handle if you like:
+areev verify --db replica.db --attestations --trusted-authors trusted.json
+#   integrity: ok | grains: 2 | hash mismatches: 0 | undecodable: 0
+#   attestations: 1 | policy: verify | attested: 1 | unattested: 0 | invalid: 0 | unknown key: 0 | orphaned: 0
+```
+
+What it proves: that a host holding the key wrote the grain — not which
+person or model, and nothing against that host's operator. Rotation is adding
+a key to the document; revocation is removing one, after which its
+attestations read as `unknown key`.
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

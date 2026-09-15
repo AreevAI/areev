@@ -3,6 +3,7 @@
 //! them into `#[test]`s.
 
 mod add_recall;
+mod attestation;
 mod blobs_hybrid;
 mod erasure;
 mod heads_forks;
@@ -17,6 +18,7 @@ mod run_journal;
 mod supersede_forget;
 
 pub use add_recall::*;
+pub use attestation::*;
 pub use blobs_hybrid::*;
 pub use erasure::*;
 pub use heads_forks::*;

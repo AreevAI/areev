@@ -1685,6 +1685,93 @@ impl Areev {
         })
     }
 
+    // ----- grain attestation (docs/grain-attestation-plan.md) -----
+
+    /// Install the host's author key (a 32-byte Ed25519 seed as 64 hex
+    /// characters). Every grain written from now on is followed by its
+    /// attestation. Returns the key id. Host config, never persisted.
+    #[napi]
+    pub fn set_signing_key(&self, seed_hex: String) -> napi::Result<String> {
+        let facade = take_facade(&self.facade)?;
+        facade.with_store(|m| m.set_signing_key_hex(&seed_hex)).map_err(err)
+    }
+
+    /// The installed author key as JSON `{"key_id", "public_key"}`, or null.
+    #[napi]
+    pub fn signing_key(&self) -> napi::Result<Option<String>> {
+        let facade = take_facade(&self.facade)?;
+        Ok(facade
+            .with_store(|m| Ok::<_, AreevError>(m.signing_key()))
+            .map_err(err)?
+            .map(|(id, pk)| json!({"key_id": id, "public_key": pk}).to_string()))
+    }
+
+    /// Install the trusted-authors document (JSON: `{"keys": {key_id:
+    /// public_key_hex}, "policy": "off|verify|require"}`). Governs bundle
+    /// import and `verifyAttestations`. Returns the number of keys.
+    #[napi]
+    pub fn set_trusted_authors(&self, json: String) -> napi::Result<u32> {
+        let facade = take_facade(&self.facade)?;
+        facade
+            .with_store(|m| m.set_trusted_authors(&json))
+            .map(|n| n as u32)
+            .map_err(err)
+    }
+
+    /// Override the installed trusted-authors policy: off | verify | require.
+    #[napi]
+    pub fn set_attest_policy(&self, policy: String) -> napi::Result<()> {
+        let p = areev_store::AttestPolicy::parse(&policy).map_err(err)?;
+        let facade = take_facade(&self.facade)?;
+        facade
+            .with_store(|m| {
+                m.set_attest_policy(p);
+                Ok::<_, AreevError>(())
+            })
+            .map_err(err)
+    }
+
+    /// Attest one stored grain with the installed key. Idempotent. Resolves
+    /// to the attestation grain's hash.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn attest(&self, hash: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let h = Hash::from_hex(&hash).map_err(err)?;
+            let a = facade.with_store(|m| m.attest(&h)).map_err(err)?;
+            Ok(a.to_hex())
+        })
+    }
+
+    /// Attest every attestable grain the installed key has not attested yet
+    /// (optionally only namespaces starting with `nsPrefix`). Resolves to
+    /// JSON `{"attested", "skipped"}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn attest_all(&self, ns_prefix: Option<String>) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let st = facade
+                .with_store(|m| m.attest_all(ns_prefix.as_deref()))
+                .map_err(err)?;
+            serde_json::to_string(&st).map_err(|e| err(AreevError::Internal(e.to_string())))
+        })
+    }
+
+    /// Check every stored attestation against the trusted authors. Read-only.
+    /// Resolves to the report as JSON; never rejects on a bad attestation —
+    /// read `attest_invalid` and `invalid`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn verify_attestations(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let r = facade.with_store(|m| m.verify_attestations()).map_err(err)?;
+            serde_json::to_string(&r).map_err(|e| err(AreevError::Internal(e.to_string())))
+        })
+    }
+
     /// Incremental backup to a bundle file. Returns last_op_seq cursor.
     #[napi(ts_return_type = "Promise<number>")]
     pub fn bundle(

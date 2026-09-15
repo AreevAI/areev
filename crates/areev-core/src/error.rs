@@ -136,6 +136,16 @@ pub enum AreevError {
     /// still linear. Only the Postgres tier (pgvector HNSW) answers this.
     AnnIndexUnsupported(String),
     CryptoError(String),
+    /// An attestation signed by a trusted author key does not verify over
+    /// the hash it names — the grain or the attestation was altered after
+    /// signing. Raised at bundle import (the whole bundle is refused) and by
+    /// `verify --attestations`.
+    AttestationInvalid(String),
+    /// The import policy is `require` and a grain arrived with no valid
+    /// attestation from a trusted author.
+    AttestationRequired(String),
+    /// A signing seed, public key, or trusted-authors document is malformed.
+    SigningKeyInvalid(String),
     AccumulateRetryExhausted,
     AccumulateInternal(String),
     AccumulateBackpressureRejected,
@@ -174,6 +184,9 @@ impl AreevError {
             Self::ReadOnlyOpenFailed(_) => "STO-E005",
             Self::SchemaNotProvisioned(_) => "STO-E008",
             Self::CryptoError(_) => "CRY-E001",
+            Self::AttestationInvalid(_) => "CRY-E002",
+            Self::AttestationRequired(_) => "CRY-E003",
+            Self::SigningKeyInvalid(_) => "CRY-E004",
             // These originate in CAL ACCUMULATE semantics and bubble up
             // through the store, so they keep their CAL-domain codes.
             Self::AccumulateRetryExhausted => "CAL-E083",
@@ -214,6 +227,9 @@ impl std::fmt::Display for AreevError {
             Self::ReadOnlyOpenFailed(m) => write!(f, "STO-E005: {m}"),
             Self::SchemaNotProvisioned(m) => write!(f, "STO-E008: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
+            Self::AttestationInvalid(m) => write!(f, "CRY-E002: attestation invalid: {m}"),
+            Self::AttestationRequired(m) => write!(f, "CRY-E003: attestation required: {m}"),
+            Self::SigningKeyInvalid(m) => write!(f, "CRY-E004: signing key invalid: {m}"),
             Self::AccumulateRetryExhausted => write!(f, "CAL-E083: ACCUMULATE retry budget exhausted"),
             Self::AccumulateInternal(m) => write!(f, "CAL-E084: ACCUMULATE internal failure: {m}"),
             Self::AccumulateBackpressureRejected => write!(f, "CAL-E085: ACCUMULATE backpressure: inflight cap exceeded"),
@@ -242,6 +258,9 @@ mod error_code_tests {
             AreevError::SupersessionConflict(h),
             AreevError::SupersessionChainTooDeep(h),
             AreevError::AnnIndexUnsupported("x".into()),
+            AreevError::AttestationInvalid("x".into()),
+            AreevError::AttestationRequired("x".into()),
+            AreevError::SigningKeyInvalid("x".into()),
             AreevError::ToolRenderUnsupported("x".into()),
             AreevError::Format("x".into()),
             AreevError::Serialization("x".into()),

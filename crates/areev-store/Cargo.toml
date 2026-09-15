@@ -71,6 +71,13 @@ sha2 = "0.11"
 # already brings. Hand-rolling an AEAD or a KDF is never the right call.
 hkdf = "0.13"
 aes-gcm = "0.11"
+# Grain attestation (docs/grain-attestation-plan.md): a detached Ed25519
+# signature per grain, stored as an ordinary grain. Pure Rust, no `rand`
+# feature (seeds are host-supplied), no CBOR. Its `sha2 0.10` line is already
+# in the lock as a tolerated duplicate. `ring` was considered — it is in the
+# `areev` binary's graph via ureq — but not in this crate's default build, and
+# it is the heavier compile for the per-platform Node addons.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 hex = "0.4"
 serde_json = "1"
 # Derive only — serde is already in the graph beneath serde_json, so this

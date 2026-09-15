@@ -127,6 +127,15 @@ pub struct ImportStats {
     /// Registry meta rows skipped (already present and not older, or
     /// unparseable against a present local row).
     pub meta_skipped: usize,
+    /// Attestation verdicts over the bundle's grains, counted only when the
+    /// handle's attestation policy is not `off` (`set_trusted_authors`).
+    /// A refused bundle returns an error instead, with nothing applied.
+    pub attested: usize,
+    /// Grains whose only attestations were signed by keys outside the
+    /// trusted set — accepted under `verify`, refused under `require`.
+    pub unknown_key: usize,
+    /// Grains in attestable namespaces carrying no attestation at all.
+    pub unattested: usize,
 }
 
 /// Escape `\`, `%` and `_` for a `LIKE ?N ESCAPE '\'` pattern — the one
@@ -789,6 +798,36 @@ pub struct RememberResult {
     pub facts: Vec<Hash>,
 }
 
+/// Result of `Areev::attest_all`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AttestStats {
+    /// Attestations written by this call.
+    pub attested: usize,
+    /// Grains this key had already attested.
+    pub skipped: usize,
+}
+
+/// Result of `Areev::verify_attestations` — separate from [`VerifyReport`]
+/// so `verify` stays byte-identical for callers that never asked.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AttestReport {
+    /// The handle's policy at the time (`off` without trusted authors).
+    pub policy: String,
+    /// Attestation grains found in `agent:attest`.
+    pub attestations: usize,
+    /// Attestable grains with at least one valid attestation by a trusted key.
+    pub attested: usize,
+    /// Attestable grains with none.
+    pub unattested: usize,
+    /// Attestations that do not verify, or are malformed — listed in `invalid`.
+    pub attest_invalid: usize,
+    /// Attestations by keys outside the trusted set (all of them, without one).
+    pub attest_unknown_key: usize,
+    /// Valid attestations whose subject grain is gone (forgotten).
+    pub attest_orphaned: usize,
+    pub invalid: Vec<String>,
+}
+
 /// Integrity report (`Areev::verify`).
 #[derive(Debug, Clone)]
 pub struct VerifyReport {
@@ -843,6 +882,57 @@ const BUNDLE_MAGIC: &[u8; 4] = b"MGB1";
 /// importing a v2 bundle refuses loudly at the magic check rather than
 /// silently dropping the registry.
 const BUNDLE_MAGIC_V2: &[u8; 4] = b"MGB2";
+
+/// One record of an MGB1/MGB2 bundle body, parsed but not yet applied.
+struct BundleRecord {
+    op: i64,
+    hlc: i64,
+    hash: Hash,
+    blob: Vec<u8>,
+}
+
+/// Parse every record after the bundle header at `start`, refusing the whole
+/// bundle on a framing error or on a blob whose bytes do not hash to the
+/// address the record claims. The address is the identity the store indexes
+/// under, so a relabelled record would be stored under a name its bytes do
+/// not have — `verify` would catch it later, but a bundle is an untrusted
+/// input and the check belongs before the first write. Empty blobs are
+/// tombstones and pruned adds (hash only) and carry nothing to check.
+fn parse_bundle_records(data: &[u8], mut i: usize) -> Result<Vec<BundleRecord>> {
+    let mut out = Vec::new();
+    while i < data.len() {
+        if i + 1 + 8 + 32 + 4 > data.len() {
+            return Err(AreevError::Format("truncated bundle record".into()));
+        }
+        let op = data[i] as i64;
+        i += 1;
+        let hlc = i64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+        i += 8;
+        let hash = Hash::try_from_bytes(&data[i..i + 32])?;
+        i += 32;
+        let len = u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        i += 4;
+        if i.checked_add(len).is_none_or(|end| end > data.len()) {
+            return Err(AreevError::Format("truncated bundle blob".into()));
+        }
+        let blob = data[i..i + len].to_vec();
+        i += len;
+        if !blob.is_empty() {
+            let actual = areev_core::format::content_address(&blob);
+            if actual != hash {
+                return Err(AreevError::Format(format!(
+                    "bundle record {} is labelled {} but its bytes hash to {} — refusing the \
+                     whole bundle, nothing was imported",
+                    out.len(),
+                    hash.to_hex(),
+                    actual.to_hex()
+                )));
+            }
+        }
+        out.push(BundleRecord { op, hlc, hash, blob });
+    }
+    Ok(out)
+}
 
 /// Meta-row key prefixes that replicate in bundles: the file-carried
 /// registries (saved queries `qry:`, templates `tpl:`) and the declarative
@@ -1531,6 +1621,9 @@ struct GrainPrep {
     blob: Vec<u8>,
     hash: Hash,
     ns_id: i64,
+    /// The namespace string (`ns_id` is its dictionary id) — the attestation
+    /// hook needs it after the insert without a reverse lookup.
+    ns: String,
     s: Option<i64>,
     p: Option<i64>,
     o: Option<i64>,
@@ -1903,6 +1996,16 @@ pub struct Areev {
     /// the Postgres backend, which admits multiple concurrent writers per
     /// memory by design and arbitrates them with an in-schema counters row.
     _file_guard: Option<OpenFileGuard>,
+    /// Host-held author key (`set_signing_key`): when present every grain
+    /// written through this handle is followed by its attestation. Never
+    /// persisted.
+    signer: Option<attest::Signer>,
+    /// Host-side trusted authors + policy (`set_trusted_authors`): drives
+    /// verification at bundle import and in `verify_attestations`.
+    trusted: Option<attest::TrustedAuthors>,
+    /// True only while the store itself is writing attestation grains — the
+    /// one path allowed into the reserved `agent:attest` namespace.
+    attesting: bool,
 }
 
 impl Areev {
@@ -2383,6 +2486,9 @@ impl Areev {
             anon: anon_gate::AnonGate::new(anon_session_key, anon_memory_key, anon_vault_key),
             ambient_run_id: None,
             _file_guard: file_guard,
+            signer: None,
+            trusted: None,
+            attesting: false,
         };
 
         // Load the file's anonymization policies (+ seed known-identity
@@ -4120,6 +4226,16 @@ impl Areev {
         let gv = extract_view(&view);
         if new_write {
             require_writable_ns(&gv.ns)?;
+            // Only the store mints attestations. A caller cannot author one
+            // through the write API; one can still arrive in a bundle, where
+            // it is checked against the trusted authors like any other.
+            if gv.ns == authz::ATTEST_NS && !self.attesting {
+                return Err(AreevError::Validation(format!(
+                    "namespace {:?} is reserved for attestations the store writes itself — \
+                     use set_signing_key / attest, not add",
+                    authz::ATTEST_NS
+                )));
+            }
         }
         // Known-identity propagation (anon gate): a subject written now must
         // be detectable in prose the boundary transforms later, even if no
@@ -4198,6 +4314,7 @@ impl Areev {
             blob,
             hash,
             ns_id,
+            ns: gv.ns.clone(),
             s,
             p,
             o,
@@ -4305,6 +4422,11 @@ impl Areev {
         })?;
         self.fts_docs += d_docs;
         self.fts_total_len += d_len;
+        if self.signer.is_some() {
+            let written: Vec<(Hash, String, i64)> =
+                preps.iter().map(|p| (p.hash, p.ns.clone(), p.created)).collect();
+            self.attest_written(&written)?;
+        }
         Ok(hashes)
     }
 
@@ -5515,6 +5637,10 @@ impl Areev {
         })?;
         self.fts_docs += d_docs;
         self.fts_total_len += d_len;
+        if self.signer.is_some() {
+            let written = [(preps[0].hash, preps[0].ns.clone(), preps[0].created)];
+            self.attest_written(&written)?;
+        }
         Ok(new_hash)
     }
 
@@ -8514,6 +8640,10 @@ impl Areev {
         })?;
         self.fts_docs += d_docs;
         self.fts_total_len += d_len;
+        if self.signer.is_some() {
+            let written = [(preps[0].hash, preps[0].ns.clone(), preps[0].created)];
+            self.attest_written(&written)?;
+        }
         Ok(merge_hash)
     }
 
@@ -8560,6 +8690,355 @@ impl Areev {
             }
         }
         Ok(out)
+    }
+
+
+    // ----- attestation (docs/grain-attestation-plan.md) -----
+
+    /// Install the host's author key. Every grain written through this
+    /// handle from now on is followed by its attestation (an Observation in
+    /// `agent:attest`). Returns the key id. Host configuration: never
+    /// persisted, like `set_embedder`.
+    pub fn set_signing_key(&mut self, seed: [u8; 32]) -> String {
+        let signer = attest::Signer::from_seed(seed);
+        let id = signer.key_id().to_string();
+        self.signer = Some(signer);
+        id
+    }
+
+    /// The seed as 64 hex characters (the `--signing-key-env` form).
+    pub fn set_signing_key_hex(&mut self, seed_hex: &str) -> Result<String> {
+        let signer = attest::Signer::from_seed_hex(seed_hex)?;
+        let id = signer.key_id().to_string();
+        self.signer = Some(signer);
+        Ok(id)
+    }
+
+    /// The installed author key's id and public key (hex), if any.
+    pub fn signing_key(&self) -> Option<(String, String)> {
+        self.signer.as_ref().map(|s| (s.key_id().to_string(), s.public_key_hex()))
+    }
+
+    /// Install the trusted-authors document (see [`attest::TrustedAuthors`]).
+    /// Its policy governs bundle import and `verify_attestations` on this
+    /// handle. Returns the number of keys.
+    pub fn set_trusted_authors(&mut self, json: &str) -> Result<usize> {
+        let t = attest::TrustedAuthors::from_json(json)?;
+        let n = t.len();
+        self.trusted = Some(t);
+        Ok(n)
+    }
+
+    /// Install an already-built trusted-authors set.
+    pub fn set_trusted_authors_set(&mut self, t: attest::TrustedAuthors) {
+        self.trusted = Some(t);
+    }
+
+    /// Override the policy of the installed trusted-authors set (the CLI's
+    /// `--require-attested`). No-op without one.
+    pub fn set_attest_policy(&mut self, policy: attest::AttestPolicy) {
+        if let Some(t) = self.trusted.take() {
+            self.trusted = Some(t.with_policy(policy));
+        }
+    }
+
+    /// The effective attestation policy: `off` until trusted authors exist.
+    pub fn attest_policy(&self) -> attest::AttestPolicy {
+        self.trusted.as_ref().map(|t| t.policy()).unwrap_or_default()
+    }
+
+    /// Attest one stored grain with the installed key. Idempotent: the
+    /// attestation is a pure function of (key, hash), so a repeat returns the
+    /// existing grain. Refuses grains in reserved namespaces.
+    pub fn attest(&mut self, hash: &Hash) -> Result<Hash> {
+        self.check_writable("attest a grain")?;
+        if self.signer.is_none() {
+            return Err(AreevError::SigningKeyInvalid(
+                "no signing key installed — set_signing_key first".into(),
+            ));
+        }
+        let Some(blob) = self.blob_by_hash(hash)? else {
+            return Err(AreevError::NotFound(*hash));
+        };
+        if blob.is_empty() {
+            return Err(AreevError::NotFound(*hash));
+        }
+        let view = deserialize_blob(&blob)?;
+        let gv = extract_view(&view);
+        if !attest::is_attestable_ns(&gv.ns) {
+            return Err(AreevError::Validation(format!(
+                "grains in the reserved namespace {:?} are not attested",
+                gv.ns
+            )));
+        }
+        let mut out = self.attest_written(&[(*hash, gv.ns.clone(), gv.created_at)])?;
+        Ok(out.remove(0))
+    }
+
+    /// Attest every stored grain in attestable namespaces (optionally only
+    /// those whose namespace starts with `ns_prefix`) that this key has not
+    /// attested yet. The retro-fill for a memory that predates its key.
+    pub fn attest_all(&mut self, ns_prefix: Option<&str>) -> Result<AttestStats> {
+        self.check_writable("attest grains")?;
+        let key_id = match &self.signer {
+            Some(s) => s.key_id().to_string(),
+            None => {
+                return Err(AreevError::SigningKeyInvalid(
+                    "no signing key installed — set_signing_key first".into(),
+                ))
+            }
+        };
+        let already: HashSet<Hash> = self
+            .all_attestations()?
+            .into_iter()
+            .filter_map(|a| a.ok())
+            .filter(|a| a.key_id == key_id)
+            .map(|a| a.attests)
+            .collect();
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = self
+            .db
+            .query("SELECT hash, blob FROM grains", vec![])?
+            .iter()
+            .map(|row| (row.blob(0).unwrap_or_default(), row.blob(1).unwrap_or_default()))
+            .collect();
+        let mut stats = AttestStats::default();
+        let mut todo: Vec<(Hash, String, i64)> = Vec::new();
+        for (h, blob) in rows {
+            let Ok(hash) = Hash::try_from_bytes(&h) else { continue };
+            if blob.is_empty() {
+                continue;
+            }
+            let Ok(view) = deserialize_blob(&blob) else { continue };
+            let gv = extract_view(&view);
+            if !attest::is_attestable_ns(&gv.ns) {
+                continue;
+            }
+            if ns_prefix.is_some_and(|p| !gv.ns.starts_with(p)) {
+                continue;
+            }
+            if already.contains(&hash) {
+                stats.skipped += 1;
+                continue;
+            }
+            todo.push((hash, gv.ns, gv.created_at));
+        }
+        for chunk in todo.chunks(256) {
+            stats.attested += self.attest_written(chunk)?.len();
+        }
+        Ok(stats)
+    }
+
+    /// Check every stored attestation against the trusted authors and count
+    /// the attestable grains that have none. Read-only: runs on a read-only
+    /// handle. Without trusted authors every attestation reads as
+    /// `unknown_key`.
+    pub fn verify_attestations(&mut self) -> Result<AttestReport> {
+        let mut report = AttestReport {
+            policy: self.attest_policy().as_str().to_string(),
+            ..Default::default()
+        };
+        let mut attested: HashSet<Hash> = HashSet::new();
+        let mut invalid: Vec<String> = Vec::new();
+        for parsed in self.all_attestations()? {
+            report.attestations += 1;
+            let att = match parsed {
+                Ok(a) => a,
+                Err(e) => {
+                    report.attest_invalid += 1;
+                    invalid.push(e.to_string());
+                    continue;
+                }
+            };
+            match self.trusted.as_ref().map(|t| t.check(&att)) {
+                Some(attest::Verdict::Valid) => {
+                    if self.blob_by_hash(&att.attests)?.is_some_and(|b| !b.is_empty()) {
+                        attested.insert(att.attests);
+                    } else {
+                        report.attest_orphaned += 1;
+                    }
+                }
+                Some(attest::Verdict::Invalid(m)) => {
+                    report.attest_invalid += 1;
+                    invalid.push(format!("{}: {m}", att.hash.to_hex()));
+                }
+                Some(attest::Verdict::UnknownKey) | None => report.attest_unknown_key += 1,
+            }
+        }
+        let rows: Vec<Vec<u8>> = self
+            .db
+            .query("SELECT hash, blob FROM grains", vec![])?
+            .iter()
+            .filter_map(|row| {
+                let blob = row.blob(1).unwrap_or_default();
+                if blob.is_empty() {
+                    return None;
+                }
+                let view = deserialize_blob(&blob).ok()?;
+                let gv = extract_view(&view);
+                if !attest::is_attestable_ns(&gv.ns) {
+                    return None;
+                }
+                row.blob(0)
+            })
+            .collect();
+        for h in rows {
+            let Ok(hash) = Hash::try_from_bytes(&h) else { continue };
+            if attested.contains(&hash) {
+                report.attested += 1;
+            } else {
+                report.unattested += 1;
+            }
+        }
+        report.invalid = invalid;
+        Ok(report)
+    }
+
+    /// Write attestations for freshly written grains. Skips reserved
+    /// namespaces; a no-op without a signing key.
+    fn attest_written(&mut self, written: &[(Hash, String, i64)]) -> Result<Vec<Hash>> {
+        let Some(signer) = self.signer.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let grains: Vec<Observation> = written
+            .iter()
+            .filter(|(_, ns, _)| attest::is_attestable_ns(ns))
+            .map(|(hash, _, created)| signer.attestation_for(hash, *created))
+            .collect();
+        if grains.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&dyn AddableDyn> = grains.iter().map(|g| g as &dyn AddableDyn).collect();
+        self.attesting = true;
+        let out = self.add_batch_inner(&refs);
+        self.attesting = false;
+        out
+    }
+
+    /// Every stored grain in `agent:attest`, parsed.
+    fn all_attestations(&mut self) -> Result<Vec<Result<attest::Attestation>>> {
+        let Some(ns_id) = self.term_lookup(authz::ATTEST_NS)? else {
+            return Ok(Vec::new());
+        };
+        let blobs: Vec<Vec<u8>> = self
+            .db
+            .query("SELECT blob FROM grains WHERE ns = ?1", vec![pi(ns_id)])?
+            .iter()
+            .filter_map(|row| row.blob(0))
+            .filter(|b| !b.is_empty())
+            .collect();
+        let mut out = Vec::with_capacity(blobs.len());
+        for blob in blobs {
+            let Ok(view) = deserialize_blob(&blob) else { continue };
+            if let Some(parsed) = attest::parse_attestation(&view) {
+                out.push(parsed);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Valid attestations already stored locally for `hash`, by trusted keys.
+    fn has_local_valid_attestation(&mut self, hash: &Hash) -> Result<bool> {
+        let Some(trusted) = self.trusted.as_ref() else { return Ok(false) };
+        let trusted = trusted.clone();
+        let (Some(p), Some(o)) = (
+            self.term_lookup(authz::REL_ATTESTS)?,
+            self.term_lookup(&hash.to_hex())?,
+        ) else {
+            return Ok(false);
+        };
+        let blobs: Vec<Vec<u8>> = self
+            .db
+            .query(
+                "SELECT g.blob FROM triples t JOIN grains g ON g.seq = t.seq WHERE t.p = ?1 AND t.o = ?2",
+                vec![pi(p), pi(o)],
+            )?
+            .iter()
+            .filter_map(|row| row.blob(0))
+            .collect();
+        for blob in blobs {
+            let Ok(view) = deserialize_blob(&blob) else { continue };
+            if let Some(Ok(att)) = attest::parse_attestation(&view) {
+                if trusted.check(&att) == attest::Verdict::Valid {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// The verification pass of a bundle import: runs over the parsed records
+    /// BEFORE the first write, so a refused bundle applies nothing. `off`
+    /// (the default, and the state without trusted authors) does nothing.
+    fn check_bundle_attestations(
+        &mut self,
+        records: &[BundleRecord],
+        stats: &mut ImportStats,
+    ) -> Result<()> {
+        let Some(trusted) = self.trusted.clone() else { return Ok(()) };
+        let policy = trusted.policy();
+        if policy == attest::AttestPolicy::Off {
+            return Ok(());
+        }
+        // Pass 1: every attestation in the bundle, checked. A trusted key's
+        // signature that fails is tampering — refuse regardless of policy.
+        let mut valid_for: HashSet<Hash> = HashSet::new();
+        let mut unknown_for: HashSet<Hash> = HashSet::new();
+        for rec in records {
+            if rec.blob.is_empty() {
+                continue;
+            }
+            let view = deserialize_blob(&rec.blob)?;
+            let Some(parsed) = attest::parse_attestation(&view) else { continue };
+            let att = parsed?;
+            match trusted.check(&att) {
+                attest::Verdict::Valid => {
+                    valid_for.insert(att.attests);
+                }
+                attest::Verdict::UnknownKey => {
+                    unknown_for.insert(att.attests);
+                }
+                attest::Verdict::Invalid(m) => {
+                    return Err(AreevError::AttestationInvalid(format!(
+                        "bundle attestation {}: {m} — refusing the whole bundle, nothing was imported",
+                        att.hash.to_hex()
+                    )));
+                }
+            }
+        }
+        // Pass 2: every attestable grain, classified.
+        for rec in records {
+            if rec.blob.is_empty() || (rec.op != OP_ADD && rec.op != OP_SUPERSEDE) {
+                continue;
+            }
+            let view = deserialize_blob(&rec.blob)?;
+            if attest::parse_attestation(&view).is_some() {
+                continue;
+            }
+            let gv = extract_view(&view);
+            if !attest::is_attestable_ns(&gv.ns) {
+                continue;
+            }
+            if valid_for.contains(&rec.hash) || self.has_local_valid_attestation(&rec.hash)? {
+                stats.attested += 1;
+            } else if unknown_for.contains(&rec.hash) {
+                stats.unknown_key += 1;
+            } else {
+                stats.unattested += 1;
+            }
+        }
+        if policy == attest::AttestPolicy::Require && (stats.unknown_key + stats.unattested) > 0 {
+            let n = stats.unknown_key + stats.unattested;
+            let (uk, ua) = (stats.unknown_key, stats.unattested);
+            stats.attested = 0;
+            stats.unknown_key = 0;
+            stats.unattested = 0;
+            return Err(AreevError::AttestationRequired(format!(
+                "{n} grain(s) without a valid attestation from a trusted author \\
+                 ({uk} signed by unknown keys, {ua} unsigned) — policy is require, \\
+                 refusing the whole bundle, nothing was imported"
+            )));
+        }
+        Ok(())
     }
 
     /// Verify store integrity: Turso's own integrity check plus a full
@@ -9429,24 +9908,12 @@ impl Areev {
             }
             _ => return Err(AreevError::Format("not a MGB1/MGB2 bundle".into())),
         }
-        while i < data.len() {
-            if i + 1 + 8 + 32 + 4 > data.len() {
-                return Err(AreevError::Format("truncated bundle record".into()));
-            }
-            let op = data[i] as i64;
-            i += 1;
-            let hlc = i64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-            i += 8;
-            let hash = Hash::try_from_bytes(&data[i..i + 32])?;
-            i += 32;
-            let len = u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
-            i += 4;
-            if i.checked_add(len).is_none_or(|end| end > data.len()) {
-                return Err(AreevError::Format("truncated bundle blob".into()));
-            }
-            let blob = data[i..i + len].to_vec();
-            i += len;
-
+        // Two passes: parse and check every record first, apply second, so a
+        // bundle that fails its framing or its content addresses writes
+        // nothing — not a prefix of itself.
+        let records = parse_bundle_records(&data, i)?;
+        self.check_bundle_attestations(&records, &mut stats)?;
+        for BundleRecord { op, hlc, hash, blob } in records {
             if let Some(t) = max_hlc {
                 if hlc > t {
                     stats.skipped += 1;
@@ -9604,6 +10071,7 @@ impl Drop for Areev {
 }
 
 mod anon_gate;
+pub mod attest;
 mod blobcrypt;
 pub mod asyncdb;
 pub mod memory_tool;
@@ -9611,6 +10079,7 @@ pub mod migrate;
 pub mod telemetry;
 
 pub use asyncdb::AsyncAreev;
+pub use attest::{AttestPolicy, Attestation, Signer, TrustedAuthors, Verdict};
 pub use telemetry::{
     AccessStat, BudgetStat, QueryStat, RecallEvent, RecallLogEntry, Telemetry, TelemetryMode,
 };

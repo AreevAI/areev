@@ -32,8 +32,10 @@ and breaks OMS §21 conformance. Treat as frozen unless the spec moves:
 - **Omit-when-default** — `None`/empty fields omitted; `ToolKind::Execution`
   and `ExecutorKind::Axtion` omitted, to keep legacy blobs byte-identical.
 - Timestamps: epoch **ms** in the payload, epoch **sec** in the header.
-- Signed grains: the content hash is computed over the *inner* blob (with the
-  signed flag set), not over the COSE envelope.
+- Authenticity never touches the blob: an attestation is a separate grain in
+  `agent:attest` (`authz::ATTEST_NS`, built and verified in
+  `areev-store::attest`). Header bit 0 (`is_signed`) is reserved for OMS §9
+  and never set; a `0x84` COSE prefix is refused by `deserialize_blob`.
 
 ## Module map
 
@@ -93,10 +95,12 @@ determinism per type. Grains are built inline — no fixture files. Heavy inline
 
 ## Gotchas
 
-- The `signing` feature is referenced in code (`serialize_grain_signed`,
-  `crate::crypto::signing`, `coset`) but there is no crypto module, dep, or
-  feature declaration — dormant scaffolding for a future `areev-crypto`.
-  Don't try to build it.
+- There is no signing code in this crate, on purpose. The former COSE
+  scaffold (`serialize_grain_signed`, a `signing` feature) was retired by the
+  §10 decision "Authenticity is an attestation grain, not an envelope"
+  (`docs/grain-attestation-plan.md`): signing lives in `areev-store::attest`
+  as a detached grain, so the format and every content address stay frozen.
+  Do not reintroduce an envelope here without an OMS §9 decision.
 - Deserialize is forward-compatible: unknown enum wire strings are ignored,
   not errors.
 - `base_text()` (reranker input) ≠ `embedding_text()` (embedder input) —

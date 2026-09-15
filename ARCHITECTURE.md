@@ -2160,8 +2160,9 @@ named, not hidden.
 
 ### Portability and provenance over lock-in
 
-Grains are content-addressed, immutable, and hash-linked; the format reserves
-a signing flag (COSE envelope — designed, not yet implemented).
+Grains are content-addressed, immutable, and hash-linked; authenticity is a
+detached attestation grain (next entry), and the format's reserved signing bit
+stays reserved for OMS §9.
 Memory exports to `.mg` and imports into any OMS implementation. `areev bundle
 --since <hash>` produces incremental, resumable, tamper-evident backups to any
 dumb remote (directory, rsync, S3) — end-to-end encrypted when grains and blobs
@@ -2169,6 +2170,54 @@ are encrypted, so the remote never reads the memory. This is *git for agent
 memory*: log, diff, time-travel, forks with explicit merges, and encrypted
 sync, built into the data model because grains already are content-addressed
 immutable objects.
+
+### Authenticity is an attestation grain, not an envelope
+
+A grain's authenticity is recorded by a second, immutable grain: an
+Observation in the reserved namespace `agent:attest` that names the attested
+content hash, the author key's id, and an Ed25519 signature over that hash,
+linked to its subject by an `mg:attests` edge. The signing key and the list of
+trusted public keys are host configuration installed on an open handle and
+never enter the file. Verification runs only where bytes cross a trust
+boundary — bundle import and `follow` — and only when the host installs a
+trusted-authors document; `verify --attestations` is the read-only audit.
+The plan a PR executes is `docs/grain-attestation-plan.md`; the issue it
+decides is [#77](https://github.com/AreevAI/areev/issues/77).
+
+**Why a grain and not an envelope.** The dormant COSE sketch set a header bit,
+re-hashed, and wrapped the blob in CBOR — so the same content, signed and
+unsigned, had two addresses. That breaks the one thing every replica agrees
+on (invariant 1), makes deduplication across peers a lie, puts the first CBOR
+dependency in the root crate (invariant 6), and needs a place to keep the
+envelope on both backends. A detached attestation changes nothing: the
+attested grain's bytes and address are what they were, the bundle format is
+MGB1/MGB2 unchanged (attestations are records like any other), the store
+schema gains no table and the Postgres stamp does not move, and an older
+build reads an attestation as a plain Observation. Ed25519 is deterministic
+and the attestation's `created_at` is pinned to its subject's, so the
+attestation is a pure function of (key, hash): re-attesting is the no-op
+invariant 1 already promises, and two replicas that both attest converge on
+one grain.
+
+**What it proves, stated plainly.** An attestation proves which *host* wrote
+a grain — whoever holds the seed can sign anything — not which person or
+model, and it gives no protection against the operator of that host. It is
+the upgrade from "content addressing detects tampering" to "a trusted key
+vouched for this hash", and no further. Revocation is removing a key from
+the host's document, after which its attestations read as `unknown_key`;
+there is no revocation grain, because an authorization never replicates.
+
+**What it deliberately does not do.** It does not cascade: `FORGET <hash>`
+leaves the attestation an orphan that `verify` reports, and `PURGE` sweeps
+attestations by age like any grain — the attestation names a hash, never a
+subject, so an orphan reveals nothing (the same rule the audit trail's
+fingerprints follow). It does not verify on the recall path, so the latency
+gates are untouched by construction. It does not implement OMS §9 and does
+not prevent it: the `0x84` COSE prefix is refused as "not a grain" rather
+than unwrapped unverified, header bit 0 stays reserved, and if §9 settles on
+an envelope with a changed address that ships as a new grain version behind
+`min_reader_version`, with attestations as the bridge for grains written
+before it.
 
 ---
 

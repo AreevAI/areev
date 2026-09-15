@@ -1568,3 +1568,45 @@ def test_bulk_embeddings_and_the_vector_index_surface(tmp_path):
     with pytest.raises(ValueError, match="STO-E007"):
         m.vector_recall_check("[[1.0, 0.0, 0.0]]", k=2, ef_search=100)
     assert json.loads(m.drop_vector_index())["index"] is None
+
+
+def test_attestation_round_trip(tmp_path):
+    """docs/grain-attestation-plan.md: a keyed writer attests every grain; a
+    require-policy importer admits the signed bundle and refuses an unsigned
+    one whole; verify_attestations reports the counts."""
+    seed = "11" * 32
+    a = areev.Areev(str(tmp_path / "a.db"), ns="caller")
+    assert a.signing_key() is None
+    key_id = a.set_signing_key(seed)
+    assert len(key_id) == 16
+    info = json.loads(a.signing_key())
+    assert info["key_id"] == key_id
+    h = a.add("fact", json.dumps({"subject": "alice", "relation": "prefers", "object": "tea"}))
+    # One attestation per written grain, idempotent.
+    att = a.attest(h)
+    assert a.attest(h) == att
+    assert json.loads(a.attest_all()) == {"attested": 0, "skipped": 1}
+    trusted = json.dumps({"version": 1, "keys": {key_id: info["public_key"]}, "policy": "verify"})
+    assert a.set_trusted_authors(trusted) == 1
+    rep = json.loads(a.verify_attestations())
+    assert (rep["attested"], rep["unattested"], rep["attest_invalid"]) == (1, 0, 0), rep
+    # Plain verify is unchanged.
+    assert json.loads(a.verify())["integrity"] == "ok"
+
+    bundle = str(tmp_path / "signed.mgb")
+    a.bundle(bundle)
+    b = areev.Areev(str(tmp_path / "b.db"), ns="caller")
+    b.set_trusted_authors(trusted)
+    b.set_attest_policy("require")
+    assert b.import_bundle(bundle) == 2  # grain + attestation
+    assert json.loads(b.verify_attestations())["attested"] == 1
+
+    c = areev.Areev(str(tmp_path / "c.db"), ns="caller")
+    c.add("fact", json.dumps({"subject": "bob", "relation": "prefers", "object": "coffee"}))
+    plain = str(tmp_path / "plain.mgb")
+    c.bundle(plain)
+    with pytest.raises(ValueError, match="CRY-E003"):
+        b.import_bundle(plain)
+    assert json.loads(b.verify_attestations())["unattested"] == 0, "refused bundle wrote nothing"
+    with pytest.raises(ValueError, match="CRY-E004"):
+        b.set_attest_policy("maybe")

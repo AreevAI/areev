@@ -1982,6 +1982,75 @@ impl Areev {
         Ok(json!({"hash": h.to_hex(), "runs": runs}).to_string())
     }
 
+    // ----- grain attestation (docs/grain-attestation-plan.md) -----
+
+    /// Install the host's author key (a 32-byte Ed25519 seed as 64 hex
+    /// characters). Every grain written from now on is followed by its
+    /// attestation. Returns the key id. Host config, never persisted.
+    fn set_signing_key(&self, seed_hex: String) -> PyResult<String> {
+        self.facade
+            .with_store(|m| m.set_signing_key_hex(&seed_hex))
+            .map_err(err)
+    }
+
+    /// The installed author key as JSON `{"key_id", "public_key"}`, or None.
+    fn signing_key(&self) -> PyResult<Option<String>> {
+        Ok(self
+            .facade
+            .with_store(|m| Ok::<_, AreevError>(m.signing_key()))
+            .map_err(err)?
+            .map(|(id, pk)| json!({"key_id": id, "public_key": pk}).to_string()))
+    }
+
+    /// Install the trusted-authors document (JSON: `{"keys": {key_id:
+    /// public_key_hex}, "policy": "off|verify|require"}`). Governs bundle
+    /// import and `verify_attestations`. Returns the number of keys.
+    fn set_trusted_authors(&self, json: String) -> PyResult<usize> {
+        self.facade.with_store(|m| m.set_trusted_authors(&json)).map_err(err)
+    }
+
+    /// Override the installed trusted-authors policy: off | verify | require.
+    fn set_attest_policy(&self, policy: String) -> PyResult<()> {
+        let p = areev_store::AttestPolicy::parse(&policy).map_err(err)?;
+        self.facade
+            .with_store(|m| {
+                m.set_attest_policy(p);
+                Ok::<_, AreevError>(())
+            })
+            .map_err(err)
+    }
+
+    /// Attest one stored grain with the installed key. Idempotent. Returns
+    /// the attestation grain's hash.
+    fn attest(&self, py: Python<'_>, hash: String) -> PyResult<String> {
+        let h = Hash::from_hex(&hash).map_err(err)?;
+        let a = py
+            .detach(|| self.facade.with_store(|m| m.attest(&h)))
+            .map_err(err)?;
+        Ok(a.to_hex())
+    }
+
+    /// Attest every attestable grain the installed key has not attested yet
+    /// (optionally only namespaces starting with `ns_prefix`). Returns JSON
+    /// `{"attested", "skipped"}`.
+    #[pyo3(signature = (ns_prefix = None))]
+    fn attest_all(&self, py: Python<'_>, ns_prefix: Option<String>) -> PyResult<String> {
+        let st = py
+            .detach(|| self.facade.with_store(|m| m.attest_all(ns_prefix.as_deref())))
+            .map_err(err)?;
+        serde_json::to_string(&st).map_err(|e| err(AreevError::Internal(e.to_string())))
+    }
+
+    /// Check every stored attestation against the trusted authors. Read-only.
+    /// Returns the report as JSON; never raises on a bad attestation — read
+    /// `attest_invalid` and `invalid`.
+    fn verify_attestations(&self, py: Python<'_>) -> PyResult<String> {
+        let r = py
+            .detach(|| self.facade.with_store(|m| m.verify_attestations()))
+            .map_err(err)?;
+        serde_json::to_string(&r).map_err(|e| err(AreevError::Internal(e.to_string())))
+    }
+
     /// Incremental backup to a bundle file. Returns last_op_seq cursor.
     #[pyo3(signature = (path, since = 0))]
     fn bundle(&self, py: Python<'_>, path: String, since: i64) -> PyResult<i64> {

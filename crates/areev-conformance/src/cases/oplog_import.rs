@@ -169,3 +169,44 @@ pub fn imported_grains_are_text_searchable_without_reopen(b: &dyn Backend) {
 
     let _ = std::fs::remove_file(&bundle);
 }
+
+/// A bundle is an untrusted input: a record whose bytes do not hash to the
+/// address it claims is refused before the first write, on both backends,
+/// so the peer never indexes a blob under a name its bytes do not have.
+pub fn relabelled_bundle_record_is_refused_before_any_write(b: &dyn Backend) {
+    let mut a = b.open_named("relabel_a");
+    a.add(&fact("ns", "alice", "lives_in", "Berlin")).unwrap();
+    a.add(&fact("ns", "bob", "lives_in", "Paris")).unwrap();
+    let path = b.scratch().join("relabel.mgb");
+    a.bundle_since(0, path.to_str().unwrap()).unwrap();
+
+    // Locate the first record: 4-byte magic, plus an MGB2 meta segment when
+    // the file carried registry rows. Then flip one byte of its stated hash.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut i = 4;
+    if &bytes[..4] == b"MGB2" {
+        let meta_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        i = 8 + meta_len;
+    }
+    let hash_at = i + 1 + 8;
+    bytes[hash_at] ^= 0x01;
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut peer = b.open_named("relabel_peer");
+    let err = peer.import_bundle(path.to_str().unwrap()).unwrap_err();
+    assert!(
+        err.to_string().starts_with("FMT-E001"),
+        "relabelled record must be a format refusal: {err}"
+    );
+    assert!(
+        err.to_string().contains("nothing was imported"),
+        "refusal must say the bundle was not applied: {err}"
+    );
+    assert_eq!(
+        peer.changes_since(0, 100).unwrap().len(),
+        0,
+        "a refused bundle must write nothing — not even the records before the bad one"
+    );
+    assert!(peer.recall("ns", "alice", None, 8).unwrap().is_empty());
+    assert!(peer.recall("ns", "bob", None, 8).unwrap().is_empty());
+}

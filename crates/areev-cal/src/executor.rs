@@ -2618,17 +2618,13 @@ impl CalExecutor {
                     ("object", Comparator::Eq) => {
                         params.object = Some(value_to_string(value)?);
                     }
-                    ("namespace", Comparator::Eq) => {
-                        // Only apply if not overridden by capability token.
-                        if self.config.namespace_override.is_none() {
-                            params.namespace = Some(value_to_string(value)?);
-                        }
+                    // Only apply if not overridden by capability token — an
+                    // overridden filter falls through to the no-op arm.
+                    ("namespace", Comparator::Eq) if self.config.namespace_override.is_none() => {
+                        params.namespace = Some(value_to_string(value)?);
                     }
-                    ("user_id", Comparator::Eq) => {
-                        // Only apply if not overridden by capability token.
-                        if self.config.user_id_override.is_none() {
-                            params.user_id = Some(value_to_string(value)?);
-                        }
+                    ("user_id", Comparator::Eq) if self.config.user_id_override.is_none() => {
+                        params.user_id = Some(value_to_string(value)?);
                     }
                     ("confidence", Comparator::Gte) | ("confidence", Comparator::Gt) => {
                         params.confidence_threshold = Some(value_to_f64(value)?);
@@ -5403,8 +5399,6 @@ fn build_features_list() -> Vec<&'static str> {
     features.push("a2a");
     #[cfg(feature = "app")]
     features.push("app");
-    #[cfg(feature = "signing")]
-    features.push("signing");
     #[cfg(feature = "import")]
     features.push("import");
     #[cfg(feature = "auth")]
