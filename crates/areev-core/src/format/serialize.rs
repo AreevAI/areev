@@ -110,33 +110,6 @@ pub fn serialize_grain<G: Grain + 'static>(grain: &G) -> Result<(Vec<u8>, Hash)>
     Ok((blob, hash))
 }
 
-/// Serialize a grain, set the is_signed flag, and wrap in a COSE Sign1 envelope.
-///
-/// Returns `(cose_bytes, content_hash, inner_blob)` where:
-/// - `cose_bytes` is the COSE Sign1 envelope to store/transmit.
-/// - `content_hash` is SHA-256(inner_blob) — computed over the inner blob with is_signed=1.
-/// - `inner_blob` is the raw .mg blob with is_signed flag set.
-///
-/// `org_context` is bound into the COSE AAD to prevent cross-org replay attacks — pass
-/// `org_id.as_bytes()` whenever the org context is available. An empty slice is accepted
-/// but reduces the cross-context binding guarantee.
-#[cfg(feature = "signing")]
-pub fn serialize_grain_signed<G: crate::Grain + 'static>(
-    grain: &G,
-    signing_key: &crate::crypto::signing::GrainSigningKey,
-    org_context: &[u8],
-) -> crate::error::Result<(Vec<u8>, crate::error::Hash, Vec<u8>)> {
-    // Step 1: Normal serialization (is_signed flag is 0 at this point)
-    let (mut blob, _) = serialize_grain(grain)?;
-    // Step 2: Set is_signed flag (bit 0 of byte 1)
-    blob[1] |= 0x01;
-    // Step 3: Recompute content address over blob with is_signed=1
-    let hash = crate::format::header::content_address(&blob);
-    // Step 4: COSE Sign1 wrap with org-scoped AAD
-    let signed = crate::crypto::signing::sign_grain(&blob, signing_key, org_context)?;
-    Ok((signed.cose_bytes, hash, blob))
-}
-
 /// Detect sensitivity level from tags.
 fn detect_sensitivity(tags: &[String]) -> u8 {
     for tag in tags {

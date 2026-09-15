@@ -237,6 +237,14 @@ macro_rules! for_each_conformance_case {
         $per_case!(merge_replicates_as_fork_closure);
         $per_case!(merge_heads_closure_logged);
         $per_case!(forget_replicates_as_tombstone);
+        $per_case!(relabelled_bundle_record_is_refused_before_any_write);
+        // grain attestation (detached Ed25519 signatures as grains)
+        $per_case!(attestation_follows_every_write_and_is_deterministic);
+        $per_case!(user_writes_to_the_attest_namespace_are_refused);
+        $per_case!(tampered_attestation_refuses_the_bundle_before_any_write);
+        $per_case!(require_policy_refuses_unsigned_bundles_and_off_admits_them);
+        $per_case!(attested_bundle_passes_require_and_unknown_keys_are_named);
+        $per_case!(attestation_verification_is_read_only_and_reports_orphans);
         $per_case!(changes_since_cursor_pages_in_order);
         $per_case!(pitr_max_hlc_cutoff_is_inclusive);
         // registry meta segment (saved queries / templates / retention)

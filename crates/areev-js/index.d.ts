@@ -215,6 +215,39 @@ export declare class Areev {
   getBlob(uri: string): Promise<Buffer>
   /** Store statistics as JSON. */
   stats(): Promise<string>
+  /**
+   * Install the host's author key (a 32-byte Ed25519 seed as 64 hex
+   * characters). Every grain written from now on is followed by its
+   * attestation. Returns the key id. Host config, never persisted.
+   */
+  setSigningKey(seedHex: string): string
+  /** The installed author key as JSON `{"key_id", "public_key"}`, or null. */
+  signingKey(): string | null
+  /**
+   * Install the trusted-authors document (JSON: `{"keys": {key_id:
+   * public_key_hex}, "policy": "off|verify|require"}`). Governs bundle
+   * import and `verifyAttestations`. Returns the number of keys.
+   */
+  setTrustedAuthors(json: string): number
+  /** Override the installed trusted-authors policy: off | verify | require. */
+  setAttestPolicy(policy: string): void
+  /**
+   * Attest one stored grain with the installed key. Idempotent. Resolves
+   * to the attestation grain's hash.
+   */
+  attest(hash: string): Promise<string>
+  /**
+   * Attest every attestable grain the installed key has not attested yet
+   * (optionally only namespaces starting with `nsPrefix`). Resolves to
+   * JSON `{"attested", "skipped"}`.
+   */
+  attestAll(nsPrefix?: string | undefined | null): Promise<string>
+  /**
+   * Check every stored attestation against the trusted authors. Read-only.
+   * Resolves to the report as JSON; never rejects on a bad attestation —
+   * read `attest_invalid` and `invalid`.
+   */
+  verifyAttestations(): Promise<string>
   /** Incremental backup to a bundle file. Returns last_op_seq cursor. */
   bundle(path: string, since?: number | undefined | null): Promise<number>
   /** Apply a bundle (fast-forward, idempotent). Returns ops applied. */

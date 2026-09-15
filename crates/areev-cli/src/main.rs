@@ -366,7 +366,12 @@ COMMANDS:
   runs-touching --hash H [--depth N]  which runs produced or refined a grain —
                                       and, for a tool definition, which ran it
                                       (walks provenance both ways)
-  verify                              integrity + content-address recheck
+  verify   [--attestations]           integrity + content-address recheck
+                                      (--attestations also checks every
+                                       attestation against --trusted-authors)
+  attest   <hash> | --all [--ns PREFIX]  sign a stored grain with the author
+                                      key (--signing-key-env); --all retro-
+                                      fills a memory that predates its key
   stats                               store counters
   serve    --mcp [--ns NS] [--mount alias=path|DSN,...] [--no-destructive-ops] [--lock-ns NS] [--profile memory|full]  MCP server on stdio
                                       (--mount adds read-only memories for
@@ -561,6 +566,16 @@ Anonymization key: add --anon-key-env <VAR> to any command to supply the
 subkeys are derived from. Independent of the page cipher, so the mapping vault
 and value-derived tokens also work on postgres and on plaintext files. Never
 persisted; rotating it is a crypto-erasure of the mapping table.
+
+Grain attestation: add --signing-key-env <VAR> (a 32-byte Ed25519 seed, 64
+hex characters in VAR) to any command and every grain it writes is followed by
+an attestation — a detached signature over the grain's content hash, stored as
+an Observation in agent:attest. Add --trusted-authors FILE (a JSON map of
+key_id -> public key, with an optional policy of off | verify | require) to
+check attestations at import/follow and in `verify --attestations`; add
+--require-attested to refuse any bundle carrying a grain without a valid
+attestation from a trusted key. Keys are host config, never written to the
+memory; the attested grain's hash never changes. docs/grain-attestation-plan.md
 
 Vector recall: add --embed-cmd 'CMD' [--embed-model NAME] to any command to
 install a command embedder — CMD gets the text on stdin and must print a JSON
@@ -1472,6 +1487,7 @@ fn run() -> Result<(), String> {
         "passphrase-env",
         "token-env",
         "anon-key-env",
+        "signing-key-env",
         // [A0/A3] Both are impersonation-grade: the proxy secret can assert
         // any identity, and the OIDC client secret can redeem codes as the
         // console itself. Neither may reach a --tool-cmd subprocess.
@@ -1969,6 +1985,29 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         for w in &m.open_warnings()[seen..] {
             eprintln!("areev: warning: {w}");
         }
+    }
+
+    // Grain attestation (docs/grain-attestation-plan.md). The author key is
+    // named by variable like every other secret here; the trusted-authors
+    // document is a host file. Both are handle-level host config, never
+    // written to the memory.
+    if let Some(var) = flag(&flags, "signing-key-env") {
+        let raw = zeroize::Zeroizing::new(std::env::var(&var).map_err(|_| {
+            format!("--signing-key-env {var}: environment variable is not set")
+        })?);
+        m.set_signing_key_hex(raw.trim())
+            .map_err(|e| format!("--signing-key-env {var}: {e}"))?;
+    }
+    if let Some(path) = flag(&flags, "trusted-authors") {
+        let doc = std::fs::read_to_string(&path)
+            .map_err(|e| format!("--trusted-authors {path}: {e}"))?;
+        m.set_trusted_authors(&doc).map_err(|e| format!("--trusted-authors {path}: {e}"))?;
+    }
+    if flags.contains_key("require-attested") {
+        if flag(&flags, "trusted-authors").is_none() {
+            return Err("--require-attested needs --trusted-authors FILE (nothing to require against)".into());
+        }
+        m.set_attest_policy(areev_store::AttestPolicy::Require);
     }
 
     match cmd.as_str() {
@@ -2612,8 +2651,46 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 "integrity: {} | grains: {} | hash mismatches: {} | undecodable: {}",
                 rep.integrity, rep.grains, rep.hash_mismatches, rep.undecodable
             );
-            if rep.integrity != "ok" || rep.hash_mismatches > 0 || rep.undecodable > 0 {
+            let mut failed = rep.integrity != "ok" || rep.hash_mismatches > 0 || rep.undecodable > 0;
+            // Opt-in so the line above stays byte-identical for every caller
+            // that never asked about attestations.
+            if flags.contains_key("attestations") {
+                let a = m.verify_attestations().map_err(|e| e.to_string())?;
+                println!(
+                    "attestations: {} | policy: {} | attested: {} | unattested: {} | invalid: {} | unknown key: {} | orphaned: {}",
+                    a.attestations, a.policy, a.attested, a.unattested, a.attest_invalid,
+                    a.attest_unknown_key, a.attest_orphaned
+                );
+                for line in &a.invalid {
+                    eprintln!("areev: invalid attestation: {line}");
+                }
+                // An attestation from a trusted key that fails is tampering
+                // under any policy; missing ones fail only under `require`.
+                failed |= a.attest_invalid > 0
+                    || (a.policy == "require" && (a.unattested > 0 || a.attest_unknown_key > 0));
+            }
+            if failed {
                 return Err("verification FAILED".to_string());
+            }
+        }
+        "attest" => {
+            // `areev attest <hash>` signs one stored grain; `areev attest --all
+            // [--ns PREFIX]` retro-fills a memory that predates its key. Both
+            // need --signing-key-env; both are idempotent.
+            if m.signing_key().is_none() {
+                return Err("areev attest needs --signing-key-env VAR (the author key)".into());
+            }
+            if flags.contains_key("all") {
+                let prefix = flag(&flags, "ns");
+                let st = m.attest_all(prefix.as_deref()).map_err(|e| e.to_string())?;
+                println!("attested: {} | already attested: {}", st.attested, st.skipped);
+            } else {
+                let Some(h) = positional.first().cloned().or_else(|| flag(&flags, "hash")) else {
+                    return Err("usage: areev attest <hash> | areev attest --all [--ns PREFIX]".into());
+                };
+                let hash = Hash::from_hex(&h).map_err(|e| e.to_string())?;
+                let att = m.attest(&hash).map_err(|e| e.to_string())?;
+                println!("{}", att.to_hex());
             }
         }
         "stats" => {

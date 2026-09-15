@@ -85,6 +85,15 @@ a fingerprint.
 
 ---
 
+### Attestations follow the same rule
+
+A grain attestation (`agent:attest`, `docs/grain-attestation-plan.md`) names
+a content hash, a key id and a signature — never a subject. Erasing a subject
+tombstones the grains that mention it and leaves their attestations as
+orphans that `areev verify --attestations` reports; an orphan says only that
+some host once vouched for a hash that no longer resolves, which re-identifies
+nobody. `PURGE OLDER THAN` sweeps attestations by age like any other grain.
+
 ## 2. Deployment requirements
 
 These are **requirements**, not suggestions. The article map above assumes

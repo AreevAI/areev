@@ -47,7 +47,6 @@ llm-rerank = []
 mcp = []
 pii_ner = []
 rerank = []
-signing = []
 
 [dev-dependencies]
 tempfile = "3"

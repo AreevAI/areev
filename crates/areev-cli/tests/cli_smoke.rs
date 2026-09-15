@@ -1768,3 +1768,105 @@ fn a_capability_tool_reaches_the_broker_from_the_flags_and_from_their_variables(
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--credential: expected name=ENV_VAR"));
 }
+
+/// Grain attestation through the binary: a keyed writer's bundle passes a
+/// `--require-attested` importer, an unsigned one is refused whole, and
+/// `verify --attestations` reports the counts (docs/grain-attestation-plan.md).
+#[test]
+fn attest_end_to_end() {
+    let dir = TempDir::new().unwrap();
+    let db_a = dir.path().join("a.db");
+    let db_a = db_a.to_str().unwrap();
+    let db_b = dir.path().join("b.db");
+    let db_b = db_b.to_str().unwrap();
+    let db_c = dir.path().join("c.db");
+    let db_c = db_c.to_str().unwrap();
+    let bundle = dir.path().join("signed.mgb");
+    let bundle = bundle.to_str().unwrap();
+    let plain_bundle = dir.path().join("plain.mgb");
+    let plain_bundle = plain_bundle.to_str().unwrap();
+    let trusted = dir.path().join("trusted.json");
+    let trusted_path = trusted.to_str().unwrap();
+
+    let seed = "11".repeat(32);
+    let signer = areev_store::Signer::from_seed([0x11u8; 32]);
+    std::fs::write(
+        &trusted,
+        format!(
+            r#"{{"version":1,"keys":{{"{}":"{}"}},"policy":"verify"}}"#,
+            signer.key_id(),
+            signer.public_key_hex()
+        ),
+    )
+    .unwrap();
+    let keyed = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .env("AREEV_TEST_SEED", &seed)
+            .args(args)
+            .arg("--signing-key-env")
+            .arg("AREEV_TEST_SEED")
+            .output()
+            .expect("spawn areev");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+
+    // A keyed write is followed by its attestation.
+    let (ok, hash, err) = keyed(&["add", "--db", db_a, "--ns", "caller", "alice", "prefers", "tea"]);
+    assert!(ok, "keyed add failed: {err}");
+    let hash = hash.trim().to_string();
+    let (ok, out, err) = areev(&["stats", "--db", db_a]);
+    assert!(ok, "{err}");
+    assert!(out.contains("grains: 2"), "grain + attestation expected: {out}");
+    // Re-attesting is idempotent and `--all` finds nothing left to do.
+    let (ok, a1, err) = keyed(&["attest", "--db", db_a, &hash]);
+    assert!(ok, "attest failed: {err}");
+    let (ok, a2, _) = keyed(&["attest", "--db", db_a, &hash]);
+    assert!(ok);
+    assert_eq!(a1.trim(), a2.trim());
+    let (ok, out, err) = keyed(&["attest", "--db", db_a, "--all"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("attested: 0 | already attested: 1"), "{out}");
+    // Without a key the verb refuses up front.
+    let (ok, _, err) = areev(&["attest", "--db", db_a, &hash]);
+    assert!(!ok && err.contains("--signing-key-env"), "{err}");
+
+    // verify --attestations against the trusted set.
+    let (ok, out, err) = areev(&["verify", "--db", db_a, "--attestations", "--trusted-authors", trusted_path]);
+    assert!(ok, "verify failed: {err}\n{out}");
+    assert!(out.contains("integrity: ok"), "{out}");
+    assert!(out.contains("attestations: 1 | policy: verify | attested: 1 | unattested: 0 | invalid: 0"), "{out}");
+    // Plain verify output is unchanged.
+    let (ok, out, _) = areev(&["verify", "--db", db_a]);
+    assert!(ok);
+    assert_eq!(out.lines().count(), 1, "{out}");
+
+    // The signed bundle passes a --require-attested importer …
+    let (ok, _, err) = areev(&["bundle", "--db", db_a, "--out", bundle]);
+    assert!(ok, "bundle failed: {err}");
+    let (ok, out, err) = areev(&[
+        "import", "--db", db_b, "--bundle", bundle, "--trusted-authors", trusted_path, "--require-attested",
+    ]);
+    assert!(ok, "require-attested import failed: {err}\n{out}");
+    let (ok, out, _) = areev(&["recall", "--db", db_b, "--ns", "caller", "--subject", "alice"]);
+    assert!(ok && out.contains("tea"), "{out}");
+
+    // … and an unsigned bundle does not, leaving the importer untouched.
+    let (ok, _, err) = areev(&["add", "--db", db_c, "--ns", "caller", "bob", "prefers", "coffee"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = areev(&["bundle", "--db", db_c, "--out", plain_bundle]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = areev(&[
+        "import", "--db", db_b, "--bundle", plain_bundle, "--trusted-authors", trusted_path, "--require-attested",
+    ]);
+    assert!(!ok, "unsigned bundle must be refused under --require-attested");
+    assert!(err.contains("CRY-E003") && err.contains("nothing was imported"), "{err}");
+    let (ok, out, _) = areev(&["stats", "--db", db_b]);
+    assert!(ok && out.contains("grains: 2"), "importer must be untouched: {out}");
+    // --require-attested without a trusted set is a usage error, not a silent pass.
+    let (ok, _, err) = areev(&["import", "--db", db_b, "--bundle", plain_bundle, "--require-attested"]);
+    assert!(!ok && err.contains("--trusted-authors"), "{err}");
+}

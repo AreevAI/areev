@@ -25,6 +25,13 @@ use std::fmt;
 pub const AUTHZ_NS: &str = "agent:authz";
 /// Reserved namespace for reproducible run and assembly manifests.
 pub const HARNESS_NS: &str = "agent:harness";
+/// Reserved namespace for grain attestations: one Observation per signed
+/// grain saying "author key K signed content hash H", linked to the grain by
+/// [`REL_ATTESTS`]. The signature is detached on purpose — the attested
+/// grain's bytes and address never change (`docs/grain-attestation-plan.md`).
+pub const ATTEST_NS: &str = "agent:attest";
+/// Relation from an attestation to the grain it attests.
+pub const REL_ATTESTS: &str = "mg:attests";
 /// Relation carried by a grant grain (OMS `PERMISSION` category).
 pub const REL_PERMITS: &str = "mg:permits";
 

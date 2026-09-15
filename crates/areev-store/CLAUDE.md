@@ -443,8 +443,12 @@ query_expansion|superseded` options (executor → `RecallParams` →
 
 `BUNDLE_MAGIC = b"MGB1"`. `bundle_since(cursor)` exports op-log records
 (`op·hlc·hash·len·blob`; forgotten grains have len 0). `import_bundle_until`
-replays idempotently in op order; its `max_hlc` filter is point-in-time
-restore. `changes_since` is the follow/pull cursor primitive. Streaming
+is **two-pass**: `parse_bundle_records` reads and checks every record first —
+framing, and that each non-empty blob hashes to the address its record
+claims — then `check_bundle_attestations` runs the attestation policy, and
+only then does anything apply. A bundle that fails either pass writes
+nothing (`applied == 0`, conformance-pinned), not a prefix of itself. Replay
+is idempotent in op order; the `max_hlc` filter is point-in-time restore. `changes_since` is the follow/pull cursor primitive. Streaming
 ("generations", `areev stream/restore/follow`) is CLI-level orchestration of
 these same calls — there is no separate segment abstraction in this crate.
 
@@ -461,6 +465,42 @@ touch `text_index`/`min_reader_version`), and skips the segment entirely on
 a PITR import (meta rows have no HLC). Counted in
 `ImportStats::meta_applied/meta_skipped`. Conformance:
 `cases/meta_registry.rs`, both backends.
+
+## Grain attestation (`attest.rs`)
+
+A detached Ed25519 signature per grain, stored as an Observation in
+`agent:attest` (`authz::ATTEST_NS`) with an `mg:attests` edge to its subject
+— `docs/grain-attestation-plan.md`, §10 "Authenticity is an attestation
+grain, not an envelope". Nothing about the blob, the address, the schema, or
+the bundle format changes; the attestation is a pure function of (key,
+hash) because Ed25519 is deterministic and `created_at` is pinned to the
+subject's.
+
+- **Host config on the handle, never in the file**: `set_signing_key[_hex]`
+  installs the author key (`Signer`, seed zeroized); `set_trusted_authors`
+  installs the `TrustedAuthors` document (`keys: {key_id: pubkey_hex}`,
+  `policy: off|verify|require`, default `verify`); `set_attest_policy`
+  overrides the policy (the CLI's `--require-attested`). `attest_policy()`
+  is `Off` without a document.
+- **Write path**: with a signer installed, `add_batch_inner`, `supersede`
+  and `merge_heads` call `attest_written` after their transaction, which
+  adds the attestations through the same `add_batch_inner` under the
+  `attesting` flag. Reserved namespaces (`agent:authz`/`harness`/`attest`)
+  are never attested. `attest(hash)` and `attest_all(ns_prefix)` retro-fill.
+- **Only the store mints attestations**: `prep_from_blob(new_write = true)`
+  refuses `agent:attest` unless `attesting` is set, so the public write API
+  cannot author one; bundles can carry them, where they are checked.
+- **Import** (`check_bundle_attestations`, before the first write): pass 1
+  checks every attestation in the bundle — a *trusted* key whose signature
+  fails is tampering and refuses the bundle under any policy (`CRY-E002`);
+  pass 2 classifies every attestable grain as `attested` (valid in the
+  bundle, or already valid locally via the `mg:attests` triple), `unknown_key`
+  or `unattested` into `ImportStats`. `require` refuses the bundle when either
+  of the last two is non-zero (`CRY-E003`). `off` computes nothing.
+- **`verify_attestations`** is a separate `AttestReport` (so `verify` stays
+  byte-identical): counts attested/unattested grains, invalid/unknown-key/
+  orphaned attestations. Read-only — runs on a `read_only` handle.
+- Conformance: `cases/attestation.rs`, both backends.
 
 ## Trigger state (`trg:` meta rows) + `meta_cas`
 

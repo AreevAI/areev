@@ -17,7 +17,6 @@ categories = ["data-structures", "encoding"]
 # these but they are not wired up yet. Declared here so `unexpected_cfgs` stays
 # quiet; enabling them is future work.
 http = []
-signing = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

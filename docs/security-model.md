@@ -452,10 +452,20 @@ causes, not just the one this redaction closes.
   substitute for TLS: without it (native or proxied), the token and all
   memory still cross the wire in the clear, so `--token-env` guards against
   unauthorized clients but not against a network eavesdropper.
-- ⚠️ **Integrity, not authenticity.** Content addressing detects corruption and
-  tampering, but does **not** verify *who* authored a grain. There is dormant
-  scaffolding for COSE signing, but signature verification is not yet enforced
-  on import. **Only sync with peers you trust.**
+- ⚠️ **Integrity by default; authenticity is opt-in.** Content addressing
+  detects corruption and tampering on every open, and bundle import refuses a
+  record whose bytes do not hash to the address it claims — before any write.
+  *Who* wrote a grain is verified only when the host opts in: a writer with
+  `--signing-key-env` follows every grain with an **attestation** (a detached
+  Ed25519 signature over the content hash, stored as a grain in
+  `agent:attest`), and an importer with `--trusted-authors FILE` checks them
+  at import/`follow` — `verify` policy refuses a trusted key's signature that
+  fails, `require` (`--require-attested`) refuses any grain without a valid
+  attestation from a trusted key. Neither key ever enters the file. An
+  attestation proves the writing **host**, not a person or a model, and gives
+  no protection against that host's operator. Without trusted authors
+  installed the position is unchanged: **only sync with peers you trust.**
+  Design: `docs/grain-attestation-plan.md`.
 - ⚠️ **`verify` detects modification, not removal.** `areev verify` re-hashes
   every grain it can read, so an in-place edit of stored bytes is caught. But
   whole-file tampering that corrupts the WAL makes the storage engine roll the
@@ -1098,8 +1108,10 @@ boundary. See [`loop.md`](loop.md) for the surfaces; the invariants:
 
 ## Roadmap
 
-- Enforced grain signing / authenticity verification on import (COSE) —
-  tracked in [#77](https://github.com/AreevAI/areev/issues/77).
+- Grain attestation shipped as opt-in (`--signing-key-env`,
+  `--trusted-authors`, `--require-attested`; [#77](https://github.com/AreevAI/areev/issues/77),
+  `docs/grain-attestation-plan.md`). Still open: a default-on policy, and
+  OMS §9's envelope form if the spec settles on one.
 
 If you find something that contradicts this document, that is itself worth
 reporting — see [SECURITY.md](../SECURITY.md).

@@ -10,31 +10,21 @@ use crate::format::header::MgHeader;
 #[allow(clippy::wildcard_imports)]
 use crate::types::*;
 
-/// Unwrap a COSE Sign1 envelope to get the inner .mg blob, if the bytes start with 0x84.
-///
-/// COSE Sign1 is encoded as a CBOR 4-element array, which always starts with 0x84.
-/// Raw .mg blobs start with 0x01 (version byte).
-/// If the input is not COSE-wrapped, returns `None` (caller uses raw bytes directly).
-fn unwrap_if_cose(raw_bytes: &[u8]) -> Result<Option<Vec<u8>>> {
-    if raw_bytes.first() != Some(&0x84) {
-        return Ok(None);
+/// Refuse a COSE Sign1 envelope. COSE Sign1 is a CBOR 4-element array and
+/// always starts with `0x84`; a raw `.mg` blob starts with its version byte.
+/// Authenticity is a detached attestation grain, not an envelope
+/// (`docs/grain-attestation-plan.md`), so a wrapped blob is not a grain and
+/// fails closed here rather than being unwrapped unverified. Header bit 0
+/// (`is_signed`) stays reserved for OMS §9 and is never set by this crate.
+fn refuse_if_cose(raw_bytes: &[u8]) -> Result<()> {
+    if raw_bytes.first() == Some(&0x84) {
+        return Err(AreevError::Format(
+            "blob is a COSE Sign1 envelope, not a .mg grain — Areev records authenticity as a \
+             detached attestation grain, never as an envelope around the blob"
+                .into(),
+        ));
     }
-    #[cfg(feature = "signing")]
-    {
-        use coset::{CborSerializable, CoseSign1};
-        let cose = CoseSign1::from_slice(raw_bytes)
-            .map_err(|e| AreevError::Format(format!("COSE Sign1 decode: {}", e)))?;
-        let inner = cose
-            .payload
-            .ok_or_else(|| AreevError::Format("COSE Sign1 envelope has no payload".into()))?;
-        Ok(Some(inner))
-    }
-    #[cfg(not(feature = "signing"))]
-    {
-        Err(AreevError::Format(
-            "blob is a COSE Sign1 envelope but the 'signing' feature is not enabled".into(),
-        ))
-    }
+    Ok(())
 }
 
 /// Deserialized grain data from an .mg blob.
@@ -47,18 +37,9 @@ pub struct DeserializedGrain {
 }
 
 /// Deserialize an .mg blob into a DeserializedGrain.
-///
-/// Transparently handles COSE Sign1 envelopes: if the bytes start with 0x84,
-/// the inner .mg blob is extracted first (no signature verification — use
-/// `crypto::signing::verify_grain` separately if verification is required).
 pub fn deserialize_blob(blob: &[u8]) -> Result<DeserializedGrain> {
-    // Unwrap COSE Sign1 envelope if present (0x84 = CBOR 4-element array header).
-    // The inner blob is owned; we keep a reference to either the unwrapped or original bytes.
-    let unwrapped: Option<Vec<u8>> = unwrap_if_cose(blob)?;
-    let inner: &[u8] = match unwrapped.as_deref() {
-        Some(b) => b,
-        None => blob,
-    };
+    refuse_if_cose(blob)?;
+    let inner: &[u8] = blob;
 
     if inner.len() < 10 {
         return Err(AreevError::Format(
@@ -111,7 +92,6 @@ pub fn deserialize_blob(blob: &[u8]) -> Result<DeserializedGrain> {
         _ => return Err(AreevError::Format("payload must be a map".into())),
     };
 
-    // Content hash is always SHA-256(inner_blob), not SHA-256(cose_bytes)
     let hash = crate::format::header::content_address(inner);
 
     Ok(DeserializedGrain {
