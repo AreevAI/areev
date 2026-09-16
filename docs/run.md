@@ -939,8 +939,15 @@ unverified rather than skipped.
 
 `shadow` is the same machinery as a batch pre-flight: the replay path holds
 no executor, so "re-execute these journaled runs with zero side effects" is
-structural, not a promise. It is also how [Areev Loop](loop.md) evaluates
-proposed changes against history before anything is applied.
+structural, not a promise. What it answers today is **consistency**: each
+named run is re-driven under its **own** manifest and the report says
+whether every checkpoint still matches the journal. It does not take a
+candidate plan, a candidate loop configuration, or a recommendation, and
+nothing in [Areev Loop](loop.md) calls it — the loop verifies a proposal's
+claims before apply and measures its metric after (`docs/loop.md`, "the
+Verify gate"); a pre-apply rehearsal of a change against history is the
+first unbuilt item on the loop's roadmap (`docs/loop-explainer.md` §16),
+and this replay path is the machinery it will build on.
 
 ## Time travel and migration (`fork`)
 
