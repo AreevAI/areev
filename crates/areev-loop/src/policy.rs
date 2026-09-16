@@ -381,6 +381,21 @@ impl Default for PlanAuthoring {
     }
 }
 
+/// What DISCOVER does with a lesson that says, in other words, what a live
+/// lesson on the same entity already says. `authored_dedup_key` collapses
+/// the same text; a rewording is the reviewer's call — so `flag` (default)
+/// lets it reach the queue carrying `near_duplicate_of`, and `suppress`
+/// drops it before the queue and counts it in the funnel as
+/// `dropped_near_duplicate`. Measured need (`crates/areev-bench/ADBUY.md`,
+/// seed 3): ten approved rules stated four facts, each approvable alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NearDuplicateMode {
+    #[default]
+    Flag,
+    Suppress,
+}
+
 /// The parsed host policy. Everything default-closed — the two fields whose
 /// closed state is not the zero value (`skills`, `min_evidence`) say so in
 /// their own `Default`.
@@ -443,6 +458,14 @@ pub struct Policy {
     /// supersession (consolidation) is not drift.
     #[serde(default = "default_true")]
     pub premise_drift: bool,
+    /// What to do with an authored lesson that near-duplicates a live one on
+    /// the same entity (default `flag`: queue it, marked).
+    #[serde(default, skip_serializing_if = "is_default_near_duplicate")]
+    pub near_duplicate: NearDuplicateMode,
+}
+
+fn is_default_near_duplicate(m: &NearDuplicateMode) -> bool {
+    *m == NearDuplicateMode::default()
 }
 
 fn is_default_cadence(c: &Cadence) -> bool {
@@ -465,6 +488,7 @@ impl Default for Policy {
             min_evidence: 1,
             plans: PlanAuthoring::default(),
             premise_drift: true,
+            near_duplicate: NearDuplicateMode::default(),
         }
     }
 }
@@ -604,6 +628,16 @@ mod tests {
         .expect_err("unknown baseline kind");
         let msg = err.to_string();
         assert!(msg.contains("newest_before_apply") && msg.contains("high_water"), "{msg}");
+    }
+
+    #[test]
+    fn near_duplicate_mode_parses_and_rejects_unknown() {
+        assert_eq!(Policy::default().near_duplicate, NearDuplicateMode::Flag);
+        let p = Policy::from_json(r#"{"near_duplicate": "suppress"}"#).unwrap();
+        assert_eq!(p.near_duplicate, NearDuplicateMode::Suppress);
+        let err = Policy::from_json(r#"{"near_duplicate": "drop"}"#).expect_err("unknown mode");
+        let msg = err.to_string();
+        assert!(msg.contains("flag") && msg.contains("suppress"), "{msg}");
     }
 
     #[test]

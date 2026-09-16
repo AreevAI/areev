@@ -140,6 +140,9 @@ macro_rules! impl_substrate {
             fn tool_evalset(&self, tool: &str) -> WResult<Option<String>> {
                 tool_evalset(self.facade_ref(), tool)
             }
+            fn embed(&self, text: &str) -> WResult<Option<Vec<f32>>> {
+                self.facade_ref().with_store(|m| m.embed_text(text)).map_err(we)
+            }
             fn heads(&self, namespace: Option<&str>) -> WResult<Vec<HeadGroup>> {
                 heads(self.facade_ref(), namespace)
             }

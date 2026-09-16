@@ -134,9 +134,9 @@ syncs with the file and is queryable.
 
 ## The analyzers
 
-Fourteen built-in analyzers, all deterministic (T0/T1), computing over typed
-grains — never raw prose. Twelve are default-on; goal stagnation and retention
-sweep are opt-in (see the table). Three are **telemetry-fed** —
+Fifteen built-in analyzers, all deterministic (T0/T1), computing over typed
+grains — never raw prose. Twelve are default-on; goal stagnation, retention
+sweep and the lesson pile are opt-in (see the table). Three are **telemetry-fed** —
 they read the recall-telemetry sidecar (below) and move Areev Loop from *hygiene*
 (is memory internally correct?) to *utility* (is memory used, and does it
 help?):
@@ -157,6 +157,7 @@ help?):
 | `outcome_review` | an applied recommendation past `review_after` that regressed | a revert |
 | `run_outcome` | `areev run` workflows whose terminal runs keep failing/stalling/exhausting budgets (≥50% of ≥3 runs), whose aggregate spend crosses a floor, or whose transcripts keep outgrowing the model's window (≥1 fold per run) — fed by the run-outcome Observations the driver writes at every terminal run | an advisory flag per workflow (failure cluster, cost attribution and/or context pressure) |
 | `adapter_intake` | an unpromoted adapter registered by [`areev tune`](#the-tuning-seam-adapter_revision) (an `mg:adapter` Fact in `agent:harness`) — one candidate per served model, the newest | an `adapter_revision` pinned to its evalset (Rule E1; never auto-applies) |
+| `lesson_pile` | more than `max_active` (default 8) live lessons on one entity (**opt-in** — a budget is stated, never inferred). Measured need: on the ad-buy corpus ten approved rules stating four facts took the agent from 238 to 128, and a reviewer judging one card at a time could not see the pile | an advisory flag listing the pile with each member's latest Verify-gate verdict (`held` / `regressed` / `drifted` / `unmeasured`), so the reviewer can retire what measured badly; with an LLM attached it is also DISCOVER's cue to draft **one consolidating lesson** (`kind: consolidation`) through GROUND → VERIFY — gate-judged, human-applied, never auto-applied; its apply supersedes every member and `rollback` restores them all |
 
 Precision is measured, never asserted: `cargo run -p areev-bench --bin
 loop_precision` scores each analyzer against a labeled fixture and exits
@@ -263,7 +264,7 @@ are the identity when no backend is set:
   isn't pushed to over-generate. Every draft must **cite evidence** (uncited →
   dropped) and name a `target`; `origin = llm` so it can **never auto-apply**.
   A draft may also carry a **proposal** — a specific change it asks a reviewer
-  to make. That is a **closed vocabulary of five kinds**, each mapping onto an
+  to make. That is a **closed vocabulary of eight kinds**, each mapping onto an
   apply path that already records an inverse:
 
   | kind | target | what an apply runs |
@@ -275,11 +276,30 @@ are the identity when no backend is set:
   | `code_revision` | `tool:<name>` | §7.4's promotion grain, behind the Rule E1 evalset gate |
   | `skill` | `entity:<ns>/<skill-name>` | `ADD skill` — a reusable procedure (description, `when_to_use`, ordered steps) from a trajectory that succeeded; `SUPERSEDE … WITH skill` when a live skill of that name exists. Offered only under `skills.enabled` |
   | `plan` | `entity:<ns>/<plan-name>` | one batch: `ADD workflow` (steps bound to tools the evidence shows were called, edges with conditions in the runtime's frozen grammar — handed to the substrate's plan validator first) **and** `ADD skill` of the same name (the prose). `SUPERSEDE` both when a live pair of that name exists. Offered only under `plans.enabled` |
+  | `consolidation` | `entity:<ns>/<subject>` | one batch: `ADD` the one lesson (carrying `consolidates: [hashes]`) and `SUPERSEDE` each member of the pile with a marker (`relation = "mg:lesson_consolidated"`), so the prompt holds one rule, not N copies; `rollback` retracts the markers and the line and every member is a head again. Offered only in answer to a `lesson_pile` finding, and `supersedes` must be exactly the live lessons that finding lists — the model cannot pick a pile of its own |
 
   A draft with no proposal — or one the engine cannot resolve — stays an
   advisory flag, exactly as every DISCOVER finding used to. What resolves
   becomes an *applicable*, rollbackable recommendation, with the exact change
   an apply would make shown in the review summary.
+
+  **A lesson that restates a live one is marked.** `authored_dedup_key`
+  collapses the same *text* proposed twice; it cannot see the same
+  instruction in different words, which is exactly what a proposer emits,
+  pass after pass, from the same recurring evidence. So at ROUTE an authored
+  lesson is compared with every live lesson on its entity: by **cosine over
+  the substrate's embedder** when one is installed (`Capabilities.embeddings`,
+  threshold 0.90), else by **normalized token-set Jaccard** (threshold 0.60 —
+  a weak floor, and honest about it; the record says which method spoke).
+  Under the default policy, `near_duplicate: "flag"`, the draft still
+  reaches the queue — the reviewer's call stays theirs — carrying
+  `near_duplicate_of: [{hash, score, method}]`, its summary says
+  NEAR-DUPLICATE and names the closest rule, and the console card shows the
+  existing rule beside it. `near_duplicate: "suppress"` drops it before the
+  queue and the funnel counts it as `dropped_near_duplicate`, beside
+  `dropped_uncited` and `dropped_target`, so "the model contributed nothing"
+  keeps its distinct causes. A `consolidation` is exempt — superseding the
+  pile is its whole point.
 
   Four rules bound the surface, all enforced in the engine:
 
@@ -443,14 +463,16 @@ db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole me
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
 db.loop_run()   # the returned JSON carries `llm_funnel` when a backend is
 #   attached: evidence → proposed → cited (with `dropped_uncited` and
-#   `dropped_target` split out) → grounded → kept → stored. "The model
-#   contributed nothing" has five causes that need opposite fixes and all
-#   render as an empty queue; this is how you tell them apart.
+#   `dropped_target` split out) → grounded → kept → stored (with
+#   `dropped_near_duplicate` split out under `near_duplicate: "suppress"`).
+#   "The model contributed nothing" has six causes that need opposite fixes
+#   and all render as an empty queue; this is how you tell them apart.
 db.recommendations('{"status":"pending"}')
 #   rows carry hash/status/severity/analyzer/summary/target_ref/destructive,
 #   plus `rollbackable` and `evalset_hash` — Rule E1's pin, so a reviewer can
 #   see which gate a code or adapter revision will be held to BEFORE they
 #   approve it (null on every other kind; the engine refuses a pin elsewhere)
+#   — and `near_duplicate_of`, the live lessons an authored lesson restates
 db.apply_recommendation(hash, because="…")     # audited approve+apply
 db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   (code/adapter) revision: evidence loads from the recorded eval summary,
@@ -721,7 +743,13 @@ approved rules stated four distinct facts, each true and well-formed enough
 that a reviewer approved it alone, and the agent stopped emitting the very
 fields the rules most insistently named. Every rule in the prompt is a rule
 competing for the model's attention; a reviewer judging one at a time cannot
-see the pile. Semantic near-duplicate suppression is not in the engine.
+see the pile. Two things now see it: a near-duplicate check at proposal time
+(cosine with an embedder, token-set Jaccard without — `near_duplicate:
+"flag" | "suppress"` in the policy), and the opt-in `lesson_pile` analyzer,
+which flags an entity over its lesson budget with each member's latest
+verdict and cues one consolidating lesson through the ordinary gates. What
+neither does is judge whether the pile is *harmful* — that stays the Verify
+gate's question, and the reviewer's.
 
 Neither is a bug in the four gates. Both are limits of what the gates
 measure, and a host running the loop unattended over many passes should
@@ -860,6 +888,12 @@ consolidation does) is not drift. It exists because a lesson that outlives
 its premise is measured harm: on PAST-Bench a rule encoding the old regime's
 flag cost the governed arm 0.32 on the very migration family it was learned
 in.
+
+`near_duplicate` (default `flag`) decides what DISCOVER does with an
+authored lesson that says, in other words, what a live lesson on the same
+entity already says: `flag` queues it marked with `near_duplicate_of`,
+`suppress` drops it before the queue and counts it in the funnel. Measured
+need: on the ad-buy corpus ten approved rules stated four distinct facts.
 
 `min_evidence` (default 1) is the fewest distinct grains a draft must cite
 to be offered as a change; under it the draft is stored and reviewable but

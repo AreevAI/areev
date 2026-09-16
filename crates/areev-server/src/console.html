@@ -3110,6 +3110,17 @@ function sugCard(r) {
 
   const ev = evidenceRows(r.evidence);
   if (ev) card.appendChild(ev);
+  /* An authored lesson that restates a rule already in memory: show that
+     rule beside the proposal. The reviewer's call stays theirs — the engine
+     only measured that the two mean the same thing. */
+  if (Array.isArray(r.near_duplicate_of) && r.near_duplicate_of.length) {
+    const best = r.near_duplicate_of[0];
+    card.appendChild(el('span', 'sub', 'Already in memory as ' + r.near_duplicate_of.length
+      + (r.near_duplicate_of.length === 1 ? ' rule' : ' rules') + ' that mean the same thing (closest '
+      + Math.round((best.score || 0) * 100) + '% by ' + (best.method || 'text') + '). Applying adds another copy.'));
+    const near = evidenceRows(r.near_duplicate_of.map(n => n.hash));
+    if (near) card.appendChild(near);
+  }
 
   const acts = el('div', 'acts');
   const reason = el('div', 'reason'); reason.hidden = true;

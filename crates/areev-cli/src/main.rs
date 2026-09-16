@@ -6169,14 +6169,21 @@ fn run_loop(
                 let rows: Vec<_> = recs
                     .iter()
                     .map(|r| {
-                        serde_json::json!({
+                        let mut row = serde_json::json!({
                             "hash": r.hash,
                             "status": r.status.as_str(),
                             "severity": r.severity.as_str(),
                             "analyzer": r.analyzer,
                             "destructive": r.destructive,
                             "summary": r.summary.render(),
-                        })
+                        });
+                        // The live lessons an authored lesson restates, when
+                        // the engine found any — so a reviewer sees the pile
+                        // from the listing. Absent otherwise.
+                        if !r.near_duplicate_of.is_empty() {
+                            row["near_duplicate_of"] = serde_json::json!(r.near_duplicate_of);
+                        }
+                        row
                     })
                     .collect();
                 println!("{}", serde_json::to_string(&rows).map_err(|e| e.to_string())?);
@@ -6232,6 +6239,9 @@ fn run_loop(
             // stored grain body; the outcome metric and any LLM guidance ride
             // along when present.
             let o = out.as_object_mut().unwrap();
+            if !r.near_duplicate_of.is_empty() {
+                o.insert("near_duplicate_of".into(), serde_json::json!(r.near_duplicate_of));
+            }
             if let Ok(serde_json::Value::Object(p)) = serde_json::to_value(&r.proposal) {
                 o.extend(p);
             }

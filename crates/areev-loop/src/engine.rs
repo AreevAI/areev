@@ -179,6 +179,13 @@ pub struct LlmFunnel {
     /// the default policy reads exactly as before.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub advisory_thin_evidence: u64,
+    /// Kept, but dropped before the queue for restating a live lesson on the
+    /// same entity in other words (`Policy::near_duplicate = suppress`). Its
+    /// own counter beside `dropped_uncited` and `dropped_target`, so "the
+    /// model contributed nothing" keeps its distinct causes. Omitted when
+    /// zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_near_duplicate: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -461,6 +468,7 @@ impl Engine {
         let mut analyzers_skipped = Vec::new();
         let mut candidates: Vec<Recommendation> = Vec::new();
         let caps = sub.capabilities();
+        let verdicts = latest_verdicts(persisted);
 
         for analyzer in &self.analyzers {
             let m = analyzer.manifest();
@@ -517,6 +525,7 @@ impl Engine {
                 analysis_watermark,
                 now_ms,
                 outcome_inputs,
+                &verdicts,
             );
             match analyzer.analyze(&ctx) {
                 Ok(drafts) => {
@@ -788,6 +797,11 @@ impl Engine {
         if self.policy.plans.enabled {
             instructions.push_str(&plan_instructions(self.policy.plans.min_nodes));
         }
+        // Offered only when a pile is on the table: the paragraph would
+        // otherwise invite the model to invent one.
+        if findings.iter().any(|f| f.analyzer.starts_with("loop.lesson_pile/")) {
+            instructions.push_str(CONSOLIDATION_INSTRUCTIONS);
+        }
         let request = crate::llm::LlmRequest {
             loop_proto: 1,
             op: "discover",
@@ -888,7 +902,7 @@ impl Engine {
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
         let outcome_metric = self.outcome_metric_template(sub);
-        self.verify_drafts(&**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel)
+        self.verify_drafts(sub, &**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel)
     }
 
     /// The metric an applicable LLM-authored proposal will be re-measured by,
@@ -939,8 +953,10 @@ impl Engine {
     /// **and** clears the confidence floor. Any failed call drops the whole LLM
     /// contribution for the run (safe default), never the run.
     #[allow(clippy::too_many_arguments)]
-    fn verify_drafts(
+    #[allow(clippy::too_many_arguments)]
+    fn verify_drafts<S: SubstrateRead>(
         &self,
+        sub: &S,
         llm: &dyn crate::llm::LlmBackend,
         ground: &dyn crate::llm::LlmBackend,
         validated: Vec<ValidatedDraft>,
@@ -1048,6 +1064,36 @@ impl Engine {
         for (i, v) in validated.into_iter().enumerate() {
             if let Some(&conf) = verdicts.get(&i) {
                 if conf >= MIN_LLM_CONFIDENCE {
+                    // A lesson that restates, in other words, a live lesson
+                    // on the same entity. `authored_dedup_key` collapses the
+                    // same TEXT; meaning is measured here — cosine over the
+                    // substrate's embedder when it has one, token-set Jaccard
+                    // as the T0 floor — and the policy says whether the
+                    // reviewer sees it marked or never sees it. A
+                    // consolidation is exempt: superseding the pile is its
+                    // whole point.
+                    let near = match v.resolved.as_ref() {
+                        Some(r) if r.action != ActionKind::Consolidate => r
+                            .fact_fields
+                            .as_ref()
+                            .filter(|f| f.get("relation").and_then(Value::as_str) == Some("lesson"))
+                            .map(|f| {
+                                near_duplicates_of(
+                                    sub,
+                                    f.get("subject").and_then(Value::as_str).unwrap_or(""),
+                                    f.get("namespace").and_then(Value::as_str),
+                                    f.get("object").and_then(Value::as_str).unwrap_or(""),
+                                )
+                            })
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
+                    };
+                    if !near.is_empty()
+                        && self.policy.near_duplicate == crate::policy::NearDuplicateMode::Suppress
+                    {
+                        funnel.dropped_near_duplicate += 1;
+                        continue;
+                    }
                     let mut rec = stamp_llm(
                         llm.model(),
                         &v.draft,
@@ -1057,6 +1103,18 @@ impl Engine {
                         conf,
                         now_ms,
                     );
+                    if let Some(best) = near.first() {
+                        // The summary says so, and names the closest rule.
+                        rec.summary.args.insert("near_count".into(), Value::from(near.len() as u64));
+                        rec.summary.args.insert("near_score".into(), Value::from(best.score));
+                        rec.summary.args.insert("near_method".into(), Value::from(best.method.clone()));
+                        rec.summary.args.insert(
+                            "near_hash".into(),
+                            Value::from(best.hash.chars().take(12).collect::<String>()),
+                        );
+                        rec.summary.template_id = "llm.lesson_near_duplicate".into();
+                        rec.near_duplicate_of = near;
+                    }
                     // Only a proposal an apply can execute (and roll back)
                     // is measured: an advisory flag changes nothing, so
                     // there is nothing to hold or regress.
@@ -2818,6 +2876,9 @@ struct ResolvedProposal {
     /// the grain can carry the VERIFIER's confidence, which is not known until
     /// after the gates have run.
     fact_fields: Option<serde_json::Map<String, Value>>,
+    /// Statements appended after the `fact_fields` ADD when the proposal is
+    /// rendered — a consolidation's supersessions of the pile it replaces.
+    extra_statements: Vec<String>,
 }
 
 /// The Workflow fields a `plan_revision` may touch. Thresholds and limits —
@@ -2982,6 +3043,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.65,
                 fact_fields: None,
+                extra_statements: Vec::new(),
             })
         }
         // ---- skill: a reusable procedure from a trajectory that succeeded ----
@@ -3012,6 +3074,77 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.6,
                 fact_fields: None,
+                extra_statements: Vec::new(),
+            })
+        }
+        // ---- consolidation: one lesson replacing a pile ----
+        P::Consolidation { lesson, supersedes } => {
+            let lesson = sanitize_lesson(&lesson);
+            if lesson.is_empty() {
+                return None;
+            }
+            let fields = derived_fact_fields(target, "lesson", &lesson, cited, ns_by_hash)?;
+            let subject = fields.get("subject").and_then(Value::as_str).unwrap_or("").to_string();
+            // Every member must be a LIVE lesson on this very entity, all in
+            // one namespace, and there must be a pile — a "consolidation" of
+            // one grain, or of grains the model picked from elsewhere, is
+            // not a consolidation and stays advisory.
+            let mut hashes: Vec<String> = supersedes.into_iter().collect();
+            hashes.sort();
+            hashes.dedup();
+            let mut members = Vec::new();
+            for h in &hashes {
+                let g = sub.grain(h).ok().flatten()?;
+                if !g.is_live()
+                    || g.fact_relation() != Some("lesson")
+                    || g.fact_subject().is_none_or(|s| normalize_ident(s) != normalize_ident(&subject))
+                {
+                    return None;
+                }
+                members.push(g);
+            }
+            if members.len() < 2 || members.iter().any(|m| m.namespace != members[0].namespace) {
+                return None;
+            }
+            let ns = members[0].namespace.clone();
+            let mut fields = fields;
+            if !ns.is_empty() {
+                fields.insert("namespace".into(), Value::from(ns.clone()));
+            }
+            fields.insert("consolidates".into(), Value::from(hashes.clone()));
+            // Each member is superseded by a marker naming the line that
+            // replaced it — not by a copy of the lesson, which would leave N
+            // live copies in the prompt. Rollback retracts the markers and
+            // the added line; the members come back as heads.
+            let extra_statements: Vec<String> = members
+                .iter()
+                .map(|m| {
+                    let mut marker = serde_json::Map::new();
+                    marker.insert("subject".into(), Value::from(subject.clone()));
+                    marker.insert("relation".into(), Value::from("mg:lesson_consolidated"));
+                    marker.insert("object".into(), Value::from(lesson.clone()));
+                    if !ns.is_empty() {
+                        marker.insert("namespace".into(), Value::from(ns.clone()));
+                    }
+                    cal::supersede(&m.hash, "fact", &marker)
+                })
+                .collect();
+            args.insert("lesson".into(), Value::from(lesson.clone()));
+            args.insert("count".into(), Value::from(members.len() as u64));
+            Some(ResolvedProposal {
+                action: ActionKind::Consolidate,
+                proposal: Proposal::Cal { cal: cal::batch(&extra_statements) },
+                rendered: format!(
+                    "Proposed consolidation of {} lessons on \"{subject}\" into one: \"{lesson}\"",
+                    members.len()
+                ),
+                summary_key: "llm.consolidation",
+                summary_args: args,
+                rollbackable: true,
+                evalset_hash: None,
+                importance: 0.6,
+                fact_fields: Some(fields),
+                extra_statements,
             })
         }
         // ---- lesson: the pre-vocabulary shape, unchanged ----
@@ -3035,6 +3168,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.5,
                 fact_fields: Some(fields),
+                extra_statements: Vec::new(),
             })
         }
         // ---- fact: a durable fact under a model-chosen relation ----
@@ -3058,6 +3192,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.5,
                 fact_fields: Some(fields),
+                extra_statements: Vec::new(),
             })
         }
         // ---- query_revision: how the agent assembles its own context ----
@@ -3098,6 +3233,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.6,
                 fact_fields: None,
+                extra_statements: Vec::new(),
             })
         }
         // ---- plan_revision: field-level edits to a Workflow grain ----
@@ -3175,6 +3311,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: None,
                 importance: 0.7,
                 fact_fields: None,
+                extra_statements: Vec::new(),
             })
         }
         // ---- code_revision: §7.4, gated by the tool's own evalset ----
@@ -3209,6 +3346,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 evalset_hash: Some(evalset),
                 importance: 0.8,
                 fact_fields: None,
+                extra_statements: Vec::new(),
             })
         }
     }
@@ -3259,7 +3397,9 @@ fn stamp_llm(
             // independent signal — never the proposer's self-report.
             if let Some(mut fields) = r.fact_fields.take() {
                 fields.insert("confidence".into(), Value::from(confidence.clamp(0.0, 1.0)));
-                r.proposal = Proposal::Cal { cal: cal::add("fact", &fields) };
+                let mut statements = vec![cal::add("fact", &fields)];
+                statements.extend(r.extra_statements.iter().cloned());
+                r.proposal = Proposal::Cal { cal: cal::batch(&statements) };
             }
             let mut args = r.summary_args;
             args.insert("text".into(), Value::from(summary_text));
@@ -3318,6 +3458,7 @@ fn stamp_llm(
         created_at_ms: now_ms,
         guidance,
         evalset_hash,
+        near_duplicate_of: Vec::new(),
         status: RecStatus::Pending,
     }
 }
@@ -3836,6 +3977,109 @@ fn derived_fact_fields(
     Some(fields)
 }
 
+/// The latest Verify-gate verdict for every grain an applied recommendation
+/// created — keyed by the CREATED hash, so an analyzer looking at a live
+/// lesson can say how it measured (`held`, `regressed`, `drifted`,
+/// `held_costlier`) without reaching the engine's state itself.
+fn latest_verdicts(p: &LoopPersisted) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (rec_hash, applied) in &p.applied {
+        let latest = p
+            .outcomes
+            .get(rec_hash)
+            .and_then(|v| v.iter().max_by_key(|o| o.measured_at_ms))
+            .map(|o| o.verdict.clone());
+        for h in &applied.created_hashes {
+            out.insert(h.clone(), latest.clone().unwrap_or_else(|| "unmeasured".into()));
+        }
+    }
+    out
+}
+
+/// Cosine similarity at or above which two lesson embeddings are one
+/// instruction (the T1 leg).
+pub const NEAR_DUPLICATE_COSINE: f64 = 0.90;
+/// Token-set Jaccard at or above which two lesson texts are one instruction
+/// (the T0 floor — weak, and honest about it).
+pub const NEAR_DUPLICATE_JACCARD: f64 = 0.60;
+/// How many near-duplicates a recommendation names, best first.
+const NEAR_DUPLICATE_CAP: usize = 8;
+
+/// The live lessons on `subject` (in `namespace`, when known) that `text`
+/// restates. Cosine over the substrate's embedder when it embeds both sides;
+/// otherwise normalized token-set Jaccard. Best first, capped. A read that
+/// fails yields nothing — a near-duplicate check must never block a draft.
+pub(crate) fn near_duplicates_of<S: SubstrateRead + ?Sized>(
+    sub: &S,
+    subject: &str,
+    namespace: Option<&str>,
+    text: &str,
+) -> Vec<crate::recommendation::NearDuplicate> {
+    use crate::analyzers::duplicate_sweep::{jaccard, tokenize};
+    if subject.is_empty() || text.trim().is_empty() {
+        return Vec::new();
+    }
+    let Ok(facts) = sub.grains_of_type(
+        crate::model::grain_type::FACT,
+        namespace,
+        ReadOpts { live_only: true, since_ms: None },
+    ) else {
+        return Vec::new();
+    };
+    let mine = sub.embed(text).ok().flatten();
+    let my_tokens = tokenize(text);
+    let mut out: Vec<crate::recommendation::NearDuplicate> = facts
+        .iter()
+        .filter(|f| f.fact_relation() == Some("lesson"))
+        .filter(|f| f.fact_subject().is_some_and(|s| normalize_ident(s) == normalize_ident(subject)))
+        .filter_map(|f| {
+            let other = f.fact_object()?;
+            let (score, method, floor) = match (&mine, sub.embed(other).ok().flatten()) {
+                (Some(a), Some(b)) => (cosine(a, &b), "cosine", NEAR_DUPLICATE_COSINE),
+                _ => (jaccard(&my_tokens, &tokenize(other)), "jaccard", NEAR_DUPLICATE_JACCARD),
+            };
+            (score >= floor).then(|| crate::recommendation::NearDuplicate {
+                hash: f.hash.clone(),
+                score: (score * 1000.0).round() / 1000.0,
+                method: method.into(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal).then(a.hash.cmp(&b.hash)));
+    out.truncate(NEAR_DUPLICATE_CAP);
+    out
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += *x as f64 * *y as f64;
+        na += *x as f64 * *x as f64;
+        nb += *y as f64 * *y as f64;
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
+    }
+}
+
+/// The `consolidation` paragraph appended to the DISCOVER instructions. It
+/// is answerable only to a `lesson_pile` finding, which lists the hashes the
+/// proposal must name — the model cannot pick a pile of its own.
+const CONSOLIDATION_INSTRUCTIONS: &str = " (8) {\"kind\":\"consolidation\",\"lesson\":\"...\",\
+\"supersedes\":[\"<hash>\",...]} with the same entity target — ONLY in answer to a \
+'Lesson pile' finding, which lists the live lessons on one entity that exceed \
+its budget. Write ONE short imperative rule (max 240 chars) that says what \
+those lessons say together, dropping nothing a lesson that measured 'held' \
+required and keeping nothing only a lesson that measured 'regressed' or \
+'drifted' added; 'supersedes' MUST be exactly the hashes that finding lists \
+(cite them as evidence too). Applying it replaces every listed lesson with \
+the one line; the reviewer can restore them all.";
+
 /// The action kinds that apply ONLY through the evalset-run gating edge
 /// (§7.4 for tool code; the tuning seam's adapter promotion inherits the
 /// same rule). One predicate so the gate, the rollbackable stamp, and the
@@ -3917,6 +4161,7 @@ fn stamp(
         created_at_ms: now_ms,
         guidance: None,
         evalset_hash: d.evalset_hash,
+        near_duplicate_of: Vec::new(),
         status: RecStatus::Pending,
     })
 }

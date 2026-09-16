@@ -50,6 +50,7 @@ pub struct AnalyzeCtx<'a> {
     watermark_ms: Option<i64>,
     now_ms: i64,
     outcome_inputs: &'a [OutcomeInput],
+    verdicts: &'a std::collections::BTreeMap<String, String>,
 }
 
 impl<'a> AnalyzeCtx<'a> {
@@ -61,6 +62,7 @@ impl<'a> AnalyzeCtx<'a> {
         watermark_ms: Option<i64>,
         now_ms: i64,
         outcome_inputs: &'a [OutcomeInput],
+        verdicts: &'a std::collections::BTreeMap<String, String>,
     ) -> Self {
         AnalyzeCtx {
             reader,
@@ -69,7 +71,15 @@ impl<'a> AnalyzeCtx<'a> {
             watermark_ms,
             now_ms,
             outcome_inputs,
+            verdicts,
         }
+    }
+
+    /// The latest Verify-gate verdict for a grain an applied recommendation
+    /// created (`held`, `regressed`, `drifted`, `held_costlier`,
+    /// `unmeasured`), or `None` for a grain no apply created.
+    pub fn verdict_for(&self, created_hash: &str) -> Option<&str> {
+        self.verdicts.get(created_hash).map(String::as_str)
     }
 
     pub fn params(&self) -> &Params {
@@ -194,6 +204,7 @@ pub fn builtin_analyzers() -> Vec<Box<dyn Analyzer>> {
         Box::new(crate::analyzers::retention_sweep::RetentionSweep::new()),
         Box::new(crate::analyzers::run_outcome::RunOutcome::new()),
         Box::new(crate::analyzers::adapter_intake::AdapterIntake::new()),
+        Box::new(crate::analyzers::lesson_pile::LessonPile::new()),
     ]
 }
 
@@ -206,14 +217,14 @@ mod tests {
         let a = builtin_analyzers();
         assert_eq!(
             a.len(),
-            14,
+            15,
             "6 hygiene + skill/goal trajectory + 3 telemetry-fed (cold/coverage/budget) \
-             + retention (default-off) + run_outcome + adapter_intake"
+             + retention (default-off) + run_outcome + adapter_intake + lesson_pile (default-off)"
         );
         let mut ids: Vec<&str> = a.iter().map(|x| x.manifest().id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 14, "analyzer ids must be unique");
+        assert_eq!(ids.len(), 15, "analyzer ids must be unique");
     }
 
     #[test]

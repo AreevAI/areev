@@ -245,7 +245,7 @@ fn obs_text(o: &GrainRecord) -> Option<&str> {
         .or_else(|| o.str_field("text"))
 }
 
-fn tokenize(text: &str) -> std::collections::BTreeSet<String> {
+pub(crate) fn tokenize(text: &str) -> std::collections::BTreeSet<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
@@ -253,7 +253,7 @@ fn tokenize(text: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-fn jaccard(a: &std::collections::BTreeSet<String>, b: &std::collections::BTreeSet<String>) -> f64 {
+pub(crate) fn jaccard(a: &std::collections::BTreeSet<String>, b: &std::collections::BTreeSet<String>) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 1.0;
     }

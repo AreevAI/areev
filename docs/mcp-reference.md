@@ -395,6 +395,11 @@ blocked (self-approval, `LOP-E021`) — run a reviewer process with distinct
 | `because` | string | for an action | mandatory written reason |
 | `gating_run` | string | for a gated apply | an `eval-…` run id from `areev eval run`; a **code or adapter revision** applies only with one, and the evidence is loaded from the journaled `mg:eval_run` summary — never from the client. An ungated apply of a gated revision is refused *before* the approval lands, so nothing is stranded |
 
+Listed rows carry `hash`, `status`, `severity`, `analyzer`, `summary`,
+`target_ref`, `destructive`, and `near_duplicate_of` — the live lessons an
+LLM-authored lesson restates in other words, as `[{hash, score, method}]`
+(`method` is `cosine` with an embedder, `jaccard` without; empty when none).
+
 ### The graph, time, and run↔memory reads
 
 Five read-only tools expose the graph walk, the as-of axis, and the join

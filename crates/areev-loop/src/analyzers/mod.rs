@@ -11,6 +11,7 @@ pub mod coverage_gap;
 pub mod duplicate_sweep;
 pub mod fork_surfacing;
 pub mod goal_stagnation;
+pub mod lesson_pile;
 pub mod outcome_review;
 pub mod retention_sweep;
 pub mod run_outcome;
