@@ -2294,6 +2294,29 @@ impl Areev {
         serde_json::to_string(&res).map_err(err)
     }
 
+    /// Score a candidate loop configuration against the recorded past,
+    /// beside the incumbent (`areev loop replay`). `request` is the JSON
+    /// `ReplayRequest`: `{"config": {"<analyzer id>": {...}}, "policy": {...},
+    /// "window": "90d" | "since_ms": n, "step": "per-pass" | "1d"}`. Reads
+    /// only; the model and external analyzers are reported `not_replayed`.
+    /// Returns the report JSON.
+    #[pyo3(signature = (request = None, policy = None))]
+    fn loop_replay(&self, py: Python<'_>, request: Option<String>, policy: Option<String>) -> PyResult<String> {
+        let req = areev_loop::replay::ReplayRequest::from_json(request.as_deref().unwrap_or("{}")).map_err(err)?;
+        let res = py.detach(|| -> PyResult<_> {
+            let mut engine = Engine::with_builtins();
+            if let Some(path) = policy {
+                let s = std::fs::read_to_string(&path)
+                    .map_err(|e| err(format!("policy {path}: {e}")))?;
+                engine = engine.with_policy(areev_loop::Policy::from_json(&s).map_err(err)?);
+            }
+            let (candidate, opts) = req.resolve(now_ms()).map_err(err)?;
+            let sub = BorrowedSubstrate::new(&self.facade);
+            engine.replay(&sub, &candidate, &opts).map_err(err)
+        })?;
+        serde_json::to_string(&res).map_err(err)
+    }
+
     /// List recommendations. `filter` is optional JSON, e.g. `{"status":
     /// "pending"}`; omit or `{"status":"all"}` for every status. JSON list.
     #[pyo3(signature = (filter = None))]

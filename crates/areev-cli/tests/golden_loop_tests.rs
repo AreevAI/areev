@@ -977,6 +977,65 @@ fn loop_near_duplicate_lesson_is_flagged_end_to_end() {
     assert!(list_rows(&g2.db, T0, &[]).iter().all(|r| r["analyzer"] != "loop.llm/1"));
 }
 
+// ---------------------------------------------------------------------------
+// Suite W13 — replay: a candidate configuration scored against the past
+// ---------------------------------------------------------------------------
+
+/// Identity: replaying the golden memory with the candidate equal to the
+/// current config, through its one recorded pass, reproduces the golden
+/// queue byte-for-byte — the same content addresses `list` shows — with the
+/// op-log length unchanged. The JSON shape is pinned.
+#[test]
+fn loop_replay_identity_reproduces_the_queue_with_zero_writes() {
+    let (g, _res) = import_and_run();
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("candidate.json");
+    std::fs::write(&cfg, "{}").unwrap();
+    let live: BTreeSet<String> = list_rows(&g.db, T0, &[])
+        .iter()
+        .map(|r| r["hash"].as_str().unwrap().to_string())
+        .collect();
+    let out = loop_ok(&g.db, T0, &["replay", "--config", cfg.to_str().unwrap(), "--format", "json"]);
+    assert_golden(&loop_golden_dir().join("replay-identity.json"), &out);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["steps"], serde_json::json!([T0]));
+    assert_eq!(v["oplog_len"]["before"], v["oplog_len"]["after"], "zero writes: {}", v["oplog_len"]);
+    for arm in ["incumbent", "candidate"] {
+        let addrs: BTreeSet<String> = v[arm]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["address"].as_str().expect("the adapter names the address").to_string())
+            .collect();
+        assert_eq!(addrs, live, "{arm}: the would-be grains ARE the stored grains");
+        assert!(v[arm]["findings"].as_array().unwrap().iter().all(|f| f["recorded"] == "never_reviewed"));
+    }
+    assert_eq!(v["not_replayed"], serde_json::json!([]), "{}", v["not_replayed"]);
+
+    // A candidate that disables an analyzer drops exactly its rows; the
+    // incumbent row is still present. The text form renders the table.
+    std::fs::write(&cfg, r#"{"config": {"loop.contradiction_sweep/1": {"enabled": false}}}"#).unwrap();
+    let out = loop_ok(&g.db, T0, &["replay", "--config", cfg.to_str().unwrap(), "--format", "json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["incumbent"]["total"]["findings"], live.len());
+    assert!(v["candidate"]["per_analyzer"].get("loop.contradiction_sweep/1").is_none(), "{v}");
+    assert_eq!(v["candidate"]["skipped"]["loop.contradiction_sweep/1"], "disabled");
+    let text = loop_ok(&g.db, T0, &["replay", "--config", cfg.to_str().unwrap()]);
+    assert!(text.contains("incumbent") && text.contains("candidate") && text.contains("op-log"), "{text}");
+    assert!(text.contains("(unchanged)"), "{text}");
+
+    // A window holding no recorded pass is refused, as is an unknown key in
+    // the file.
+    let after = (T0 + 1).to_string();
+    let (code, _out, err) = loop_cmd(&g.db, T0 + HOUR, &["replay", "--config", cfg.to_str().unwrap(), "--since", &after]);
+    assert_ne!(code, 0);
+    assert!(err.contains("no step"), "{err}");
+    std::fs::write(&cfg, r#"{"analyzers": {}}"#).unwrap();
+    let (code, _out, err) = loop_cmd(&g.db, T0, &["replay", "--config", cfg.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    assert!(err.contains("unknown field"), "{err}");
+}
+
 #[test]
 fn loop_llm_findings_never_auto_apply() {
     let Some(py) = find_python() else {

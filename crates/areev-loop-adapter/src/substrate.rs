@@ -143,6 +143,9 @@ macro_rules! impl_substrate {
             fn embed(&self, text: &str) -> WResult<Option<Vec<f32>>> {
                 self.facade_ref().with_store(|m| m.embed_text(text)).map_err(we)
             }
+            fn address_of(&self, spec: &GrainSpec) -> WResult<Option<String>> {
+                address_of(spec)
+            }
             fn heads(&self, namespace: Option<&str>) -> WResult<Vec<HeadGroup>> {
                 heads(self.facade_ref(), namespace)
             }
@@ -614,6 +617,46 @@ fn put_grain(f: &AreevFacade, spec: &GrainSpec) -> WResult<String> {
     f.with_store(|m| m.add(&fact))
         .map(|h| h.to_hex())
         .map_err(we)
+}
+
+/// The content address `put_grain` would assign — the same Fact it would
+/// build, serialized without being stored. What lets `areev loop replay`
+/// name the exact grain a live pass would have written, byte for byte.
+/// `None` when the spec carries no engine-logical time: the store would
+/// stamp the wall clock, and a guessed address would be a wrong one.
+fn address_of(spec: &GrainSpec) -> WResult<Option<String>> {
+    let Some(created) = spec_created_ms(spec) else {
+        return Ok(None);
+    };
+    let payload = serde_json::to_string(&spec.fields)
+        .map_err(|e| WErr::Substrate(format!("encode grain: {e}")))?;
+    let mut fact = if spec.grain_type == "fact" {
+        match (
+            spec.fields.get("subject").and_then(Value::as_str),
+            spec.fields.get("relation").and_then(Value::as_str),
+            spec.fields.get("object").and_then(Value::as_str),
+        ) {
+            (Some(subject), Some(relation), Some(object)) => {
+                let mut fact = Fact::new(subject, relation, object).namespace(LOOP_NS).confidence(1.0);
+                for (k, v) in &spec.fields {
+                    if !matches!(k.as_str(), "subject" | "relation" | "object") {
+                        fact.common.extra_fields.insert(k.clone(), v.clone());
+                    }
+                }
+                fact
+            }
+            _ => Fact::new(&unique_subject(&payload), loop_relation(&spec.grain_type), &payload)
+                .namespace(LOOP_NS)
+                .confidence(1.0),
+        }
+    } else {
+        Fact::new(&unique_subject(&payload), loop_relation(&spec.grain_type), &payload)
+            .namespace(LOOP_NS)
+            .confidence(1.0)
+    };
+    fact.common.created_at = Some(created);
+    let (_, hash) = areev_core::format::serialize::serialize_grain(&fact).map_err(we)?;
+    Ok(Some(hash.to_hex()))
 }
 
 fn supersede_op(f: &AreevFacade, target_hash: &str, spec: &GrainSpec) -> WResult<String> {

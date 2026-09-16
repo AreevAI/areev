@@ -479,6 +479,9 @@ db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   and an ungated attempt refuses BEFORE the approval lands
 db.dismiss_recommendation(hash, "…")           # audited reject
 db.rollback_recommendation(hash, because="…")  # retract what an apply created
+db.loop_replay('{"config": {"loop.staleness/1": {"severity_floor": "medium"}}, "window": "90d"}')
+#   score a candidate config against the recorded past, beside the incumbent
+#   (zero writes; the model and external analyzers reported `not_replayed`)
 db.loop_outcomes()   # the Verify gate's held/regressed record; each row names
 #   the run it compared against (`baseline_kind`, `baseline_run_id`) and, on an
 #   evalset metric, `best_before` — the peak before the apply — plus, under a
@@ -491,8 +494,8 @@ db.record_adapter(reply_json, manifest_hash, evalset_hash)
 Node mirrors these as `recordToolCall`, `loopRun` (incl. `fullSweep` /
 `policy`), `recommendations`, `applyRecommendation` (incl. `gatingRun`),
 `dismissRecommendation`, `rollbackRecommendation`, `loopOutcomes`,
-`recordCorpusExport`, and `recordAdapter`, plus the `actor` constructor
-argument.
+`loopReplay`, `recordCorpusExport`, and `recordAdapter`, plus the `actor`
+constructor argument.
 
 ### MCP — two tools
 
@@ -504,7 +507,8 @@ with different `--scopes`/`--actor` so no agent can approve its own proposals.
 ### HTTP — `/api/loop/*`
 
 `GET recommendations|health|analyzers` (reads) and `POST run|review|apply|
-rollback|config` (writes). `POST /api/loop/apply` takes an optional
+rollback|config|replay` (writes, though `replay` writes nothing — it is
+guarded because it runs every analyzer over the whole history on request). `POST /api/loop/apply` takes an optional
 `gating_run` — the `eval-…` run id a **code or adapter revision** requires;
 the evidence is loaded server-side from the journaled `mg:eval_run` summary,
 never from the request. The console's Areev Loop tab renders the queue with
@@ -514,6 +518,72 @@ additionally asks for the gate run id before it will apply. The **Setup**
 tab is writable — click an analyzer on/off to persist an enable/disable to
 the file's config (`POST /api/loop/config`). Auto-apply is never grantable
 from the console — only via a host policy file.
+
+## Replay — score a configuration against the past
+
+Every threshold in a policy file used to be a guess validated in
+production: the only way to evaluate a change was to run it live and watch
+the queue for weeks. The engine is a pure function of (file, policy, now)
+— `run` never reads the clock, and the golden suite byte-pins queues
+because of it — so a candidate configuration has a measurable quality on
+the recorded past. `docs/loop-proposal.md` §17 named this rung 1 of the
+escalation ladder: *explore in the past, not in production.*
+
+```bash
+areev loop replay --db agent.db --config candidate.json                 # per recorded pass
+areev loop replay --db agent.db --config candidate.json --window 90d --step 1d
+areev loop replay --db agent.db --config candidate.json --format json
+```
+
+`candidate.json` is a per-analyzer overlay in the shape the Setup view
+saves — `{"config": {"loop.run_outcome/1": {"params": {"min_failure_ratio":
+0.3}}, "loop.staleness/1": {"severity_floor": "medium"}}}` — plus an
+optional `"policy"` to replay under (severity floors, the deny list,
+`near_duplicate`, …; auto-apply grants are irrelevant, a replay applies
+nothing). The report always carries two arms, **incumbent** (the file's
+config under the host's policy) and **candidate**, so it is a comparison,
+never a bare number:
+
+- **Steps.** `--step per-pass` (default) steps `now` through the moments
+  the loop actually ran, reconstructed from the audit trail (every stored
+  finding's first transition is stamped with its pass's `now`; a pass that
+  stored nothing left no trace and is not a step). `--step 1d` is a fixed
+  stride from `--since <epoch-ms>` or `--window 90d`.
+- **Prefix only.** Each step reads through a view that hides every grain
+  created after that step's `now` — the paper's prefix rule, no leakage
+  from the future.
+- **State fidelity.** The watermark advances per step; a recorded
+  rejection (or a measured revert) of a dedup key puts it on the same
+  doubling cooldown a live pass would have; a rollback frees it; and the
+  queue the rehearsal itself produced is what dedups its next step.
+- **Zero writes.** The view refuses every mutating call by type and the
+  engine holds an immutable borrow; the CLI additionally reads the op-log
+  length before and after and prints it (`op-log 212 → 212 (unchanged)`),
+  refusing the report if it moved.
+- **The columns.** Per analyzer and in total: `findings`; the overlap with
+  recorded decisions, matched by dedup key — `approved` (incl. applied and
+  rolled back), `rejected`, `never_reviewed` (stored, still pending),
+  `never_proposed` (the incumbent never produced it); the overlap with
+  outcomes on the approved ones — `regressed`, `drifted`, `held`; and the
+  queue volume per step. When the substrate can compute a content address
+  without writing (Areev can), each would-be finding names the exact grain a
+  live pass would have stored — the identity test pins that replaying the
+  golden memory under its own config reproduces the golden queue byte for
+  byte.
+- **Scope, stated in the output.** `origin = llm` proposals and
+  `origin = command` analyzers are not replayed — a model is not a pure
+  function of the evidence and a command is out of process — and appear as
+  `not_replayed` with the reason, as do the telemetry-fed analyzers (the
+  rollups are not time-indexed). The deterministic rows are unaffected.
+
+No auto-adoption: replay informs; adopting the configuration remains the
+policy file or `POST /api/loop/config`, by a human. `POST /api/loop/replay`
+takes the same request (`{config, policy, window | since_ms, step}`,
+token-guarded like `/api/loop/config`), the console's Setup view has a
+**Preview** beside each analyzer's On/Off that shows the would-be queue
+delta before Save, and the bindings expose `loop_replay(request_json,
+policy=…)` / `loopReplay(request, policy)`. MCP deliberately has no replay
+tool: host policy is not client-controllable.
 
 ## Does it actually work? — the Verify gate
 

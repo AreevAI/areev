@@ -1595,7 +1595,11 @@ Escalation ladder, in order:
    past offline (`areev-loop replay --set duplicate_sweep.threshold=0.85
    --window 90d`) — off-policy evaluation at zero live risk, unique to
    content-addressed immutable memory. Positioning line: *"explore in the
-   past, not in production."*
+   past, not in production."* **Shipped 2026-09-16** as `areev loop replay
+   --config candidate.json [--window 90d] [--step per-pass|1d]`
+   (`docs/loop.md`, "Replay"): the incumbent is always a row, reads are
+   prefix-only, writes are refused by type, and LLM/command findings are
+   reported `not_replayed`.
 2. **Ranking exploration**: Thompson-style ordering of the pending queue
    from per-analyzer approval history — the console queue is where this
    lands; the exploration cost is reviewer attention, never memory

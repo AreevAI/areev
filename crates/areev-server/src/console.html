@@ -3547,6 +3547,29 @@ function renderConnectGeneral(host) {
         else toast('Could not change it: ' + ((res && res.error) || 'the console may be read-only'));
       };
       row.appendChild(lock(sw));
+      /* Preview this change: replay the flipped setting against the recorded
+         passes and say what the queue would have been, beside what it was —
+         before anything is saved. A computation, never an adoption. */
+      const pv = el('button', 'btn ghost sm', 'Preview');
+      pv.title = 'What would the queue have looked like with this ' + (a.enabled ? 'off' : 'on') + '?';
+      pv.onclick = async () => {
+        pv.disabled = true;
+        const cfg = {}; cfg[a.id] = { enabled: !a.enabled };
+        const res = await api('/api/loop/replay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: cfg, window: '90d', step: 'per-pass' }) });
+        pv.disabled = false;
+        if (!(res && res.ok)) { toast('Could not preview: ' + ((res && res.error) || 'the console may be read-only')); return; }
+        const r = res.replay, i = r.incumbent.total, c = r.candidate.total;
+        const line = el('span', 'tiny');
+        line.style.lineHeight = '18px';
+        line.textContent = 'Over the last ' + r.steps.length + ' pass' + (r.steps.length === 1 ? '' : 'es')
+          + ': now ' + i.findings + ' finding' + (i.findings === 1 ? '' : 's')
+          + ' (' + i.approved + ' approved, ' + i.rejected + ' dismissed) · with this change ' + c.findings
+          + ' (' + c.approved + ' approved, ' + c.rejected + ' dismissed)'
+          + (r.not_replayed.length ? ' · not rehearsed: ' + r.not_replayed.map(n => n.what).join(', ') : '');
+        body.appendChild(line);
+      };
+      row.appendChild(lock(pv));
       const dev = el('span', 'mono dev-only'); dev.textContent = a.id + ' · ' + (a.tier || '');
       dev.style.cssText = 'margin-left:10px';
       row.appendChild(dev);
