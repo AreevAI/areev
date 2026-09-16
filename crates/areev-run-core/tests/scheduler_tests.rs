@@ -914,3 +914,154 @@ fn send_fan_out_is_permutation_invariant_with_unique_keys() {
         }
     }
 }
+
+// ---- abstract nodes: the name the model was OFFERED (#251) -----------------
+
+/// The tools an abstract node offers, by their canonical (Definition) names.
+fn abstract_exec(names: &[&str]) -> Vec<NodeExecutor> {
+    vec![NodeExecutor::Abstract {
+        tools: names
+            .iter()
+            .map(|n| OfferedTool { tool_name: (*n).into(), tool_hash: "deadbeef".into() })
+            .collect(),
+    }]
+}
+
+/// A fake provider: turn 0 calls `called`, every later turn ends the loop.
+/// It echoes back a name the way a real provider does — whatever the tools
+/// array showed it — so what the test varies is exactly the spelling.
+fn echoing_provider(called: &str) -> impl Fn(&JournalKey, &Value) -> EffectOutcome + '_ {
+    move |key: &JournalKey, _in: &Value| match (key.kind, key.effect_seq) {
+        (EffectKind::Llm, 0) => ok(json!({
+            "text": Value::Null,
+            "tool_calls": [{"id": "call_0", "name": called, "arguments": {}}],
+            "stop_reason": "tool_use",
+        })),
+        (EffectKind::Llm, _) => ok(json!({
+            "text": "{\"filed\": true}",
+            "tool_calls": [],
+            "stop_reason": "end_turn",
+        })),
+        (EffectKind::Tool, _) => ok(json!({"receipt": "r-1"})),
+    }
+}
+
+/// Every host tool the run actually dispatched, in command order.
+fn dispatched_tools(cmds: &[Command]) -> Vec<String> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Command::Dispatch { executor: NodeExecutor::Host { tool_name, .. }, .. } => {
+                Some(tool_name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn run_abstract(
+    plan: &PlanGraph,
+    execs: &[NodeExecutor],
+    behavior: Behavior<'_>,
+) -> SimResult {
+    Sim {
+        env: env(plan, execs, Budgets::default()),
+        behavior,
+        seed: 1,
+        clock: 1_000,
+        respond: BTreeMap::new(),
+    }
+    .run()
+}
+
+#[test]
+fn a_dotted_definition_is_callable_by_the_normalized_name_it_was_offered_as() {
+    // Anthropic/OpenAI forbid dots, so `receipt.prepare` reaches the model as
+    // `receipt_prepare` and the model calls that back. Before #251 the node
+    // failed after one re-prompt it could not possibly satisfy.
+    let plan = PlanGraph::build(&wf(&["decide"])).unwrap();
+    let execs = abstract_exec(&["receipt.prepare"]);
+    let behavior = echoing_provider("receipt_prepare");
+    let r = run_abstract(&plan, &execs, &behavior);
+
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(
+        dispatched_tools(&r.commands),
+        vec!["receipt.prepare".to_string()],
+        "the call must dispatch the DEFINITION, under its canonical name"
+    );
+    assert_eq!(r.state.context["filed"], json!(true));
+}
+
+#[test]
+fn the_canonical_name_still_works_when_the_model_uses_it() {
+    // A provider that leaves dots alone (or a model quoting the plan) is not
+    // punished for it: exact match is tried first.
+    let plan = PlanGraph::build(&wf(&["decide"])).unwrap();
+    let execs = abstract_exec(&["receipt.prepare"]);
+    let behavior = echoing_provider("receipt.prepare");
+    let r = run_abstract(&plan, &execs, &behavior);
+
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(dispatched_tools(&r.commands), vec!["receipt.prepare".to_string()]);
+}
+
+#[test]
+fn an_exact_name_wins_over_a_normalized_collision() {
+    // `receipt.prepare` and `receipt_prepare` both render as
+    // `receipt_prepare`. The tool literally named that is what runs — a
+    // guess between the two would silently execute the wrong Definition.
+    let plan = PlanGraph::build(&wf(&["decide"])).unwrap();
+    let execs = abstract_exec(&["receipt.prepare", "receipt_prepare"]);
+    let behavior = echoing_provider("receipt_prepare");
+    let r = run_abstract(&plan, &execs, &behavior);
+
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(dispatched_tools(&r.commands), vec!["receipt_prepare".to_string()]);
+}
+
+#[test]
+fn a_name_matching_neither_form_still_re_prompts_once_then_fails() {
+    // The fold must not swallow the unknown-tool guard: a name that is not an
+    // offered tool under either spelling gets exactly one correction, and the
+    // correction names the tools the way the model was shown them.
+    let plan = PlanGraph::build(&wf(&["decide"])).unwrap();
+    let execs = abstract_exec(&["receipt.prepare"]);
+    let behavior = |key: &JournalKey, _in: &Value| match key.kind {
+        EffectKind::Llm => ok(json!({
+            "text": Value::Null,
+            "tool_calls": [{"id": "call_0", "name": "receipt.file", "arguments": {}}],
+            "stop_reason": "tool_use",
+        })),
+        EffectKind::Tool => ok(json!({})),
+    };
+    let r = run_abstract(&plan, &execs, &behavior);
+
+    assert!(
+        matches!(r.state.outcome(), Some(RunOutcome::Failed { node, detail })
+            if node == "decide" && detail.contains("receipt.file")),
+        "{:?}",
+        r.state.outcome()
+    );
+    assert!(dispatched_tools(&r.commands).is_empty(), "nothing may execute");
+    // Two turns: the first call, then the one after the correction.
+    let turns = r
+        .commands
+        .iter()
+        .filter(|c| matches!(c, Command::Dispatch { key, .. } if key.kind == EffectKind::Llm))
+        .count();
+    assert_eq!(turns, 2, "one corrective re-prompt, then the node fails");
+    let correction = r
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Dispatch { key, input, .. } if key.kind == EffectKind::Llm => {
+                Some(input.clone())
+            }
+            _ => None,
+        })
+        .next_back()
+        .expect("a second turn");
+    let text = correction.to_string();
+    assert!(text.contains("receipt_prepare"), "the correction offers the model-facing name: {text}");
+    assert!(!text.contains("receipt.prepare"), "a dotted choice is one the provider forbids: {text}");
+}

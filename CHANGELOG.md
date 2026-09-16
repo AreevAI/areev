@@ -8,6 +8,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The selfimprove bench can open a Postgres memory** (#250). `selfimprove_aba
+  --db PATH|postgres://…?schema=…` — or `$AREEV_BENCH_DB`, the same variable the
+  Python harnesses have honoured since 1.8.0 (#200) — moves the MEMORY out of
+  the workdir while the transcripts and `report.json` stay in it. The A/B/A/B
+  track is the one with no external dataset, a keyless deterministic floor and
+  a programmatic scorer, which makes it the natural case for proving a
+  provisioned schema answers like an embedded file; it was also the only track
+  that could not target one, because the Rust binary hard-coded
+  `<workdir>/bench.db`. With a DSN set no `bench.db` is created at all, the
+  report records the memory redacted (a password must not ride into a published
+  run directory) beside a `db_backend` field, `?provision=never` is honoured so
+  the run's role needs no `CREATE`, and "fresh memory" is judged by what the
+  schema HOLDS rather than by whether a file exists. `selfimprove_learn` stays
+  file-only and says so: its method is one fresh copy of the captured memory per
+  pass, and a schema cannot be copied. Gated in CI's postgres job
+  (`cargo test -p areev-bench --features postgres --test selfimprove_pg`);
+  without the feature a DSN is refused by name, never treated as a filename.
+
 - **One answer to "which grain do I use?"** — `docs/grains.md`. The
   decision table for all thirteen types, the rule of thumb (true → Fact,
   happened → Event, measured → Observation, intended → Goal, procedure →
@@ -27,6 +45,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   references, the quickstart, `llms.txt`) now defers to it.
 
 ### Fixed
+
+- **An abstract node could not call a tool with a dot in its name** (#251).
+  Anthropic and OpenAI forbid `.` in a tool name, so a pinned Definition called
+  `receipt.prepare` is offered to the model as `receipt_prepare` — and the
+  model, correctly, called back with what it was given. The scheduler's
+  unknown-tool check compared that against the un-normalized set, so **every**
+  call to a dotted tool from inside an abstract node failed the node after one
+  corrective re-prompt the model could not possibly satisfy. The reverse map the
+  normalizer's own doc comment promised ("the invoker reverse-maps on the return
+  path") was never written. Now it is, once, where the model's answer enters the
+  scheduler: exact match wins, then a unique normalized match, so the
+  unknown-tool guard, the strict-argument validator (which had silently skipped
+  every dotted tool, its schema keyed by the canonical name) and the dispatch
+  all see the Definition's own `tool_name`. A name matching neither form still
+  gets exactly one correction, now listing the tools the way the model was shown
+  them. The outbound half is fixed with it: the tool-calling adapters render a
+  replayed `tool_use`/`tool_calls` name — and a `ToolChoice::Named` — through the
+  same normalizer, because a transcript naming a tool the request never offered
+  is a 400 on the loop's *second* turn. Found by Areev Cloud's first
+  model-backed capture pack; it removes the rule that a pack with an abstract
+  node must name its tools without dots. One consequence worth stating: `areev
+  run verify` on an ALREADY-FAILED pre-fix run (one whose journal records the
+  `model called unknown tool(s)` failure) can now diverge, because the
+  scheduler would take the dispatch the journal never contains. Runs that
+  succeeded replay unchanged — the fix touches no journal shape.
 
 - **A dead registry row that lied about required fields.** Each grain type
   carried a `required_add_fields` list in `types/registry.rs` that *nothing

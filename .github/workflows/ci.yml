@@ -113,6 +113,11 @@ jobs:
         run: cargo test -p areev-conformance --features postgres --test pg --test pg_chaos --test pg_stale --test pg_pool
       - name: Store unit tests with the postgres feature
         run: cargo test -p areev-store --features postgres --lib
+      # The one bench track that can target a Cloud-provisioned memory (#250).
+      # It is the only place in CI that opens a DSN from the Rust bench tree,
+      # so without this step the path is exercised by hand or not at all.
+      - name: Selfimprove bench against a provisioned schema (postgres)
+        run: cargo test -p areev-bench --features postgres --test selfimprove_pg
       # `postgres-tls` is a SEPARATE build, not a superset in test terms: the
       # refusal path (STO-E003, "asks for encryption, gets none") only exists
       # in the build above, and the verifiers only exist in this one. Its

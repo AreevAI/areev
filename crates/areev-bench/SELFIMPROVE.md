@@ -846,7 +846,8 @@ the prompt to re-run.
 
 | flag | what it does |
 |---|---|
-| `--workdir PATH` | run directory; refuses a pre-existing `bench.db` (a stale memory would poison A0) |
+| `--workdir PATH` | run directory (transcripts + report); also holds the memory unless `--db` moves it. Refuses a pre-existing `bench.db` — a stale memory would poison A0 |
+| `--db PATH \| postgres://…?schema=…` | the MEMORY, moved out of the workdir: a file path, or a provisioned Postgres schema. Also `$AREEV_BENCH_DB`, the same variable the Python tracks honour (#200); the flag wins. Unset, every published run is byte-for-byte what it was |
 | `--seed N` `--experience N` `--eval N` | task generation; `--seed` reproduces the task sets exactly |
 | `--mock` \| `--agent-cmd 'CMD'` | exactly one: the deterministic keyless agent, or a chat adapter |
 | `--llm-cmd` / `--ground-cmd 'CMD'` | the loop's DISCOVER/VERIFY and GROUND backends (**loop** protocol) |
@@ -854,12 +855,46 @@ the prompt to re-run.
 | `--llm-lessons` | the **loop+LLM arm**: the scripted review also approves + applies LLM-authored lessons, and they render into LESSONS. Requires `--llm-cmd` or `--mock-llm`. Off = the published-run review policy, byte-for-byte |
 | `--no-analyzer-lessons` | suppress APPLYING analyzer lessons; the analyzers still run, so the LLM's evidence is unchanged. With `--llm-lessons` this is the **llm-only** cell of the 2x2. Refused on its own — nothing would apply and B would be a second A0 |
 | `--learner` | give DISCOVER the **learner** scoring rule (`Policy::discover_objective = learner`, `docs/loop.md`) instead of the review-queue default: withholding a lesson over a recurring failure costs the same as a wrong one. The gates behind it are unchanged. Requires `--llm-cmd` or `--mock-llm` |
-| `--stop-after experience` | capture the experience phase into `bench.db` and exit — no eval states. The input `selfimprove_learn` measures learn passes over |
+| `--stop-after experience` | capture the experience phase into `bench.db` and exit — no eval states. The input `selfimprove_learn` measures learn passes over (file-backed only; see `--db`) |
 | `--arms LIST` | comma list of `m-steel,m-all,m-llm,m-cmd`; empty = governed states only |
 | `--context-cmd 'CMD'` | the external context provider; required by (and only by) `m-cmd` |
 | `--mllm-cmd 'CMD'` | chat adapter for the `m-llm` summarizer; defaults to `--agent-cmd`, unused under `--mock` |
 | `--workers N` | eval concurrency (default 4). Output is byte-identical at any N: workers buffer, the main thread writes in task order and is the only writer of the memory |
 | `--max-turns N` `--assert-shape` | turn cap; the CI shape gate |
+
+### Running against a provisioned Postgres schema
+
+The memory is a **file path or a DSN** — the rule the Python tracks have
+followed since 1.8.0 (#200), and since #250 the Rust binary's too. It is what
+lets the one track with no external dataset serve as a validation case for a
+Cloud-provisioned memory:
+
+```bash
+areev provision --db "$PG" --schema mem_aba          # once, by an operator
+cargo run --release -p areev-bench --features postgres --bin selfimprove_aba -- \
+  --workdir /tmp/aba --mock --assert-shape \
+  --db "$PG?schema=mem_aba&provision=never"
+```
+
+What changes and what does not:
+
+- The A/B/A/B arms, the ledger and the artifacts are unchanged — `--workdir`
+  still holds the transcripts and `report.json`, and the report records the
+  memory under `db` (**password redacted**) plus a `db_backend` field.
+- **No `bench.db` is created.** The workdir holds artifacts only.
+- `?provision=never` means the open issues no DDL at all, so the run's role
+  needs no `CREATE`; provisioning is an operator's separate step. Without it
+  the store bootstraps the schema as usual.
+- "Fresh memory" is checked against what the schema HOLDS, not whether a file
+  exists: a schema carrying an earlier run is refused for the same reason a
+  leftover `bench.db` is.
+- The binary must be built `--features postgres`; without it a DSN is refused
+  by name, never treated as a filename.
+- `selfimprove_learn` stays file-only and says so: its method is one fresh
+  **copy** of the captured memory per pass, and a schema cannot be copied.
+
+Gated by `cargo test -p areev-bench --features postgres --test selfimprove_pg`
+(skips with a named reason without `DATABASE_URL`; hard-fails under `CI=true`).
 
 **Two adapters, two protocols.** `--agent-cmd`/`--mllm-cmd` speak the chat +
 tool-call protocol (`openrouter_toolcall.py`); `--llm-cmd`/`--ground-cmd`

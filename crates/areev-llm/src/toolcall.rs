@@ -30,7 +30,7 @@
 //! Wave-2 `TokenChunk` stream events; the trait shape is fixed now so that
 //! work is additive.
 
-use areev_core::format::tool_schema::{render_json, ProviderKind};
+use areev_core::format::tool_schema::{normalize_tool_name, render_json, ProviderKind};
 use areev_core::types::Tool;
 use serde_json::{json, Value};
 
@@ -343,7 +343,12 @@ fn openai_messages(req: &ToolCallRequest<'_>) -> Vec<Value> {
                                     "id": c.id,
                                     "type": "function",
                                     "function": {
-                                        "name": c.name,
+                                        // Same spelling the tools array
+                                        // carries: a transcript replaying a
+                                        // dotted Definition by its canonical
+                                        // name would name a tool this request
+                                        // never offered.
+                                        "name": normalize_tool_name(&c.name),
                                         // Round-trip in the provider's own
                                         // encoding: arguments as a string.
                                         "arguments": c.arguments_raw.clone()
@@ -375,7 +380,9 @@ fn openai_tool_choice(tc: &ToolChoice) -> Value {
         ToolChoice::Auto => json!("auto"),
         ToolChoice::Required => json!("required"),
         ToolChoice::None => json!("none"),
-        ToolChoice::Named(n) => json!({"type": "function", "function": {"name": n}}),
+        ToolChoice::Named(n) => {
+            json!({"type": "function", "function": {"name": normalize_tool_name(n)}})
+        }
     }
 }
 
@@ -500,7 +507,11 @@ fn anthropic_messages(req: &ToolCallRequest<'_>) -> Vec<Value> {
                     blocks.push(json!({
                         "type": "tool_use",
                         "id": c.id,
-                        "name": c.name,
+                        // Normalized for the same reason the tools array is:
+                        // the native API validates a replayed `tool_use.name`
+                        // against the names this request offers, and dots are
+                        // not legal in either place.
+                        "name": normalize_tool_name(&c.name),
                         "input": c.arguments,
                     }));
                 }
@@ -527,7 +538,7 @@ fn anthropic_tool_choice(tc: &ToolChoice) -> Option<Value> {
     match tc {
         ToolChoice::Auto => Some(json!({"type": "auto"})),
         ToolChoice::Required => Some(json!({"type": "any"})),
-        ToolChoice::Named(n) => Some(json!({"type": "tool", "name": n})),
+        ToolChoice::Named(n) => Some(json!({"type": "tool", "name": normalize_tool_name(n)})),
         // The native API has no "none"; omitting tools entirely is the
         // caller's move, so choice None with tools present maps to auto.
         ToolChoice::None => None,
@@ -802,6 +813,58 @@ mod tests {
         let body = format!(r#"{{"error":{{"message":"{long}"}}}}"#);
         let out = error_detail(&body);
         assert_eq!(out.chars().count(), 300 + " — ".chars().count());
+    }
+
+    /// A replayed assistant turn must name its tool the way the `tools` array
+    /// does. The runtime's transcript carries the Definition's CANONICAL name
+    /// (`receipt.prepare`) so the journal stays addressable; the wire carries
+    /// the normalized one, in both places, because a `tool_use` naming a tool
+    /// the same request never offered is a 400 — and the loop's second turn is
+    /// where that would have landed (#251).
+    #[test]
+    fn a_replayed_tool_call_is_named_the_way_the_tools_array_names_it() {
+        let req = ToolCallRequest {
+            system: None,
+            messages: vec![
+                ChatMessage::User("file it".into()),
+                ChatMessage::Assistant {
+                    text: None,
+                    tool_calls: vec![ToolCallOut {
+                        id: "call_0".into(),
+                        name: "receipt.prepare".into(),
+                        arguments: json!({}),
+                        arguments_raw: None,
+                    }],
+                },
+                ChatMessage::ToolResult {
+                    tool_call_id: "call_0".into(),
+                    content: "{}".into(),
+                    is_error: false,
+                },
+            ],
+            tools: &[],
+            tool_choice: ToolChoice::Named("receipt.prepare".into()),
+            max_tokens: 256,
+            temperature: 0.0,
+        };
+
+        let openai = openai_messages(&req);
+        assert_eq!(
+            openai[1]["tool_calls"][0]["function"]["name"],
+            json!("receipt_prepare")
+        );
+        let anthropic = anthropic_messages(&req);
+        assert_eq!(anthropic[1]["content"][0]["name"], json!("receipt_prepare"));
+
+        // Same rule for a forced choice: it names a tool in the array.
+        assert_eq!(
+            openai_tool_choice(&req.tool_choice)["function"]["name"],
+            json!("receipt_prepare")
+        );
+        assert_eq!(
+            anthropic_tool_choice(&req.tool_choice).unwrap()["name"],
+            json!("receipt_prepare")
+        );
     }
 
     /// The floor is claimed for `claude-*` and nothing else: this transport
