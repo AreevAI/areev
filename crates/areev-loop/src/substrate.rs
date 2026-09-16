@@ -188,6 +188,15 @@ pub trait SubstrateRead {
     fn tool_evalset(&self, _tool: &str) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Embed one text through the substrate's installed embedder — the T1
+    /// leg of "is this the same instruction in different words". `Ok(None)`
+    /// when no embedder is installed (the `embeddings` capability is off),
+    /// so the caller falls back to a lexical measure rather than guessing.
+    /// The default reports none; substrates opt in.
+    fn embed(&self, _text: &str) -> Result<Option<Vec<f32>>> {
+        Ok(None)
+    }
 }
 
 /// The full store protocol the engine binds to: reads (via the supertrait)

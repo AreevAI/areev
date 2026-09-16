@@ -232,6 +232,16 @@ pub enum DraftProposal {
         #[serde(default)]
         steps: Vec<String>,
     },
+    /// One lesson replacing a PILE of live lessons on the same entity — the
+    /// answer to a `lesson_pile` finding. `supersedes` must be exactly the
+    /// live lesson hashes that finding listed; the apply supersedes each and
+    /// adds the one line, and a rollback restores every member.
+    Consolidation {
+        #[serde(default)]
+        lesson: String,
+        #[serde(default)]
+        supersedes: Vec<String>,
+    },
     /// A reusable procedure as a PLAN: named steps, each bound to a tool the
     /// evidence shows was called, and edges with conditions in the runtime's
     /// frozen grammar. Applies as a Workflow grain (the structure the runtime

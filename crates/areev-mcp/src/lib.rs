@@ -1136,7 +1136,7 @@ fn status_or_pending(s: &str) -> RecStatus {
 }
 
 fn rec_json(r: &areev_loop::Recommendation) -> Value {
-    json!({
+    let mut v = json!({
         "hash": r.hash,
         "status": r.status.as_str(),
         "severity": r.severity.as_str(),
@@ -1144,7 +1144,13 @@ fn rec_json(r: &areev_loop::Recommendation) -> Value {
         "summary": r.summary.render(),
         "target_ref": r.target_ref,
         "destructive": r.destructive,
-    })
+    });
+    // Live lessons this authored lesson restates (`[{hash, score, method}]`)
+    // — additive, present only when there are any.
+    if !r.near_duplicate_of.is_empty() {
+        v["near_duplicate_of"] = json!(r.near_duplicate_of);
+    }
+    v
 }
 
 fn all_tool_defs() -> Vec<Value> {

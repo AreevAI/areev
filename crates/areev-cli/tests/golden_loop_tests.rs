@@ -916,6 +916,67 @@ fn loop_outcome_cost_bound_end_to_end() {
     assert!(summary.contains("eval-before") && summary.contains("eval-after") && summary.contains("1600"), "{summary}");
 }
 
+/// Keyless T0 near-duplicate: a live lesson on sam, journaled at a pinned
+/// time, and a scripted proposer that restates it in slightly different
+/// words. No embedder → the Jaccard floor flags it; the card reaches the
+/// queue marked, names the existing rule, and stays applicable. The listing
+/// is pinned byte-for-byte (`list-near-duplicate.json`).
+#[test]
+fn loop_near_duplicate_lesson_is_flagged_end_to_end() {
+    let Some(py) = find_python() else {
+        eprintln!("skipping: no python on PATH");
+        return;
+    };
+    let g = import_loop_golden();
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("fake_lesson_llm.py");
+    std::fs::write(&script, FAKE_LESSON_LLM_PY).unwrap();
+    let cmd = format!("{py} {}", script.display());
+    // The rule already in memory, in other words than the proposer's.
+    let path = dir.path().join("lesson.jsonl");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"subject":"sam","relation":"lesson","object":"Confirm sam's current city before answering any residency question.","created_at":{}}}"#,
+            T0 - DAY
+        ),
+    )
+    .unwrap();
+    let (ok, _out, err) = areev(&[
+        "migrate", "--from", "jsonl", "--file", path.to_str().unwrap(), "--db", &g.db, "--ns", "agent",
+    ]);
+    assert!(ok, "seed the live lesson: {err}");
+
+    let res = run_json(&g.db, T0, &["--llm-cmd", &cmd]);
+    assert_eq!(res["stored"], 12, "flag mode: the near-duplicate still reaches the queue: {res}");
+    let rows = list_rows(&g.db, T0, &[]);
+    let row = rows
+        .iter()
+        .find(|r| r["analyzer"] == "loop.llm/1")
+        .unwrap_or_else(|| panic!("no llm row: {rows:?}"));
+    let near = row["near_duplicate_of"].as_array().expect("the listing carries near_duplicate_of");
+    assert_eq!(near.len(), 1, "{row}");
+    assert_eq!(near[0]["method"], "jaccard", "keyless: the T0 floor");
+    assert!(near[0]["score"].as_f64().unwrap() >= 0.6, "{row}");
+    assert!(row["summary"].as_str().unwrap().contains("NEAR-DUPLICATE"), "{row}");
+    let json = loop_ok(&g.db, T0, &["list", "--format", "json", "--status", "pending"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    let llm: Vec<&serde_json::Value> = rows.iter().filter(|r| r["analyzer"] == "loop.llm/1").collect();
+    assert_golden(&loop_golden_dir().join("list-near-duplicate.json"), &serde_json::to_string(&llm).unwrap());
+
+    // Suppress mode: absent from the queue, counted in the funnel.
+    let g2 = import_loop_golden();
+    let (ok, _out, err) = areev(&[
+        "migrate", "--from", "jsonl", "--file", path.to_str().unwrap(), "--db", &g2.db, "--ns", "agent",
+    ]);
+    assert!(ok, "{err}");
+    let policy = write_policy(&dir, r#"{"near_duplicate": "suppress"}"#);
+    let res = run_json(&g2.db, T0, &["--llm-cmd", &cmd, "--policy", &policy]);
+    assert_eq!(res["stored"], 11, "the near-duplicate is dropped before the queue: {res}");
+    assert_eq!(res["llm_funnel"]["dropped_near_duplicate"], 1, "{res}");
+    assert!(list_rows(&g2.db, T0, &[]).iter().all(|r| r["analyzer"] != "loop.llm/1"));
+}
+
 #[test]
 fn loop_llm_findings_never_auto_apply() {
     let Some(py) = find_python() else {

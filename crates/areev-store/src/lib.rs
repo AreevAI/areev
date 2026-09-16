@@ -3792,6 +3792,17 @@ impl Areev {
         self.embedder.as_ref().map(|e| e.dim())
     }
 
+    /// Embed one text through the installed backend — the same vector the
+    /// recall leg would compute for it. `Ok(None)` when no embedder is
+    /// installed, so a caller that wants "similar in meaning" can fall back
+    /// to a lexical measure instead of pretending. Writes nothing.
+    pub fn embed_text(&self, text: &str) -> Result<Option<Vec<f32>>> {
+        match &self.embedder {
+            Some(e) => Ok(Some(e.embed(text)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Embedding provenance declared by the file (model, dim), if any
     /// vectors were ever written.
     pub fn declared_embedding(&self) -> Option<(&str, usize)> {

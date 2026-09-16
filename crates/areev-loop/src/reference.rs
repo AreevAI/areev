@@ -20,6 +20,7 @@ pub struct ReferenceSubstrate {
     grains: Vec<GrainRecord>,
     by_hash: HashMap<String, usize>,
     caps: Capabilities,
+    mock_embedder: bool,
     state: Value,
     next_id: u64,
     clock: i64,
@@ -45,8 +46,19 @@ impl ReferenceSubstrate {
                 code: true,
                 ..Capabilities::default()
             },
+            mock_embedder: false,
             ..Default::default()
         }
+    }
+
+    /// Install a deterministic MOCK embedder: a hashed bag of words over a
+    /// small synonym table, so "record the vendor name" and "write down the
+    /// supplier's name" land close and "record the amount" does not. It
+    /// exists so the T1 near-duplicate leg can be exercised with no model;
+    /// it is not a semantic embedder and must never leave the test kit.
+    pub fn set_mock_embedder(&mut self) {
+        self.mock_embedder = true;
+        self.caps.embeddings = true;
     }
 
     pub fn set_capabilities(&mut self, caps: Capabilities) {
@@ -117,6 +129,13 @@ impl ReferenceSubstrate {
 impl SubstrateRead for ReferenceSubstrate {
     fn capabilities(&self) -> Capabilities {
         self.caps
+    }
+
+    fn embed(&self, text: &str) -> Result<Option<Vec<f32>>> {
+        if !self.mock_embedder {
+            return Ok(None);
+        }
+        Ok(Some(mock_embed(text)))
     }
 
     /// A MINIMAL plan check: every node named once, every edge between known
@@ -266,6 +285,14 @@ impl OmsSubstrate for ReferenceSubstrate {
         self.grains[idx]
             .fields
             .insert("retract_reason".into(), json!(reason));
+        // Retracting a grain that superseded others restores them as heads —
+        // the Areev store's semantics (a rolled-back consolidation puts every
+        // member back), mirrored here so engine tests see the same world.
+        for g in self.grains.iter_mut() {
+            if g.superseded_by.as_deref() == Some(hash) {
+                g.superseded_by = None;
+            }
+        }
         Ok(())
     }
 
@@ -442,6 +469,42 @@ fn parse_type_and_json(s: &str) -> Result<(String, Map<String, Value>)> {
         .ok_or_else(|| Error::CalUnsupported(format!("JSON not an object in {s:?}")))?
         .clone();
     Ok((grain_type, obj))
+}
+
+/// The test kit's embedder: canonicalize tokens through a small synonym table,
+/// then hash each into one of 64 buckets. Deterministic, model-free, and only
+/// as "semantic" as the table — which is the point: it lets a test say "these
+/// two lines mean the same" without a network call.
+fn mock_embed(text: &str) -> Vec<f32> {
+    const SYNONYMS: &[(&str, &str)] = &[
+        ("write", "record"), ("note", "record"), ("log", "record"), ("capture", "record"),
+        ("down", ""), ("supplier", "vendor"), ("seller", "vendor"), ("merchant", "vendor"),
+        ("always", ""), ("every", "each"), ("all", "each"), ("a", ""), ("an", ""), ("the", ""),
+        ("on", ""), ("of", ""), ("s", ""), ("for", ""), ("to", ""), ("and", ""), ("with", ""),
+        ("before", "prior"), ("ahead", "prior"), ("answering", "answer"), ("answers", "answer"),
+        ("confirm", "check"), ("verify", "check"), ("current", "present"), ("latest", "present"),
+        ("city", "location"), ("town", "location"), ("place", "location"),
+        ("invoice", "bill"), ("receipt", "bill"), ("number", "id"), ("identifier", "id"),
+        ("exactly", "verbatim"), ("printed", "shown"),
+    ];
+    let mut v = vec![0f32; 64];
+    for raw in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        let tok = SYNONYMS.iter().find(|(from, _)| *from == raw).map(|(_, to)| *to).unwrap_or(raw);
+        if tok.is_empty() {
+            continue;
+        }
+        // FNV-1a, so the bucket is a pure function of the token.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in tok.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        v[(h % 64) as usize] += 1.0;
+    }
+    v
 }
 
 #[cfg(test)]

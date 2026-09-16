@@ -938,6 +938,320 @@ fn a_lower_is_better_high_water_mark_is_the_minimum() {
     assert_eq!(v.best_before, Some(v.baseline));
 }
 
+// ---------------------------------------------------------------------------
+// Near-duplicates at proposal time, and the lesson pile
+// ---------------------------------------------------------------------------
+
+fn lesson_mock(h1: &str, lesson: &str) -> MockLlm {
+    MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"vendor keeps going missing","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"{lesson}"}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }
+}
+
+fn llm_recs(e: &Engine, sub: &TestSubstrate) -> Vec<Recommendation> {
+    use crate::model::Origin;
+    e.recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| matches!(r.origin, Origin::Llm { .. }))
+        .collect()
+}
+
+/// With an embedder the near-duplicate check compares MEANING: the same
+/// instruction in different words is flagged, a different instruction on the
+/// same entity is not, and identical text still collapses on the dedup key
+/// exactly as before. The reviewer still sees the flagged draft — marked.
+#[test]
+fn a_reworded_lesson_is_flagged_as_a_near_duplicate_by_meaning() {
+    let t = 5_000_000;
+    let mut sub = TestSubstrate::new();
+    sub.inner.set_mock_embedder();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let live = sub.add_fact_at("test", "capture", "lesson", "Record the vendor name on every receipt.", 1_000);
+
+    // Same meaning, different words.
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(lesson_mock(&h1, "Write down the supplier's name on each receipt.")));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1, "flag mode: the draft still reaches the queue");
+    let near = &recs[0].near_duplicate_of;
+    assert_eq!(near.len(), 1, "{near:?}");
+    assert_eq!((near[0].hash.as_str(), near[0].method.as_str()), (live.as_str(), "cosine"));
+    assert!(near[0].score >= crate::engine::NEAR_DUPLICATE_COSINE, "{near:?}");
+    let text = recs[0].summary.render();
+    assert!(text.contains("NEAR-DUPLICATE") && text.contains("cosine"), "the summary says so: {text}");
+    assert!(recs[0].rollbackable, "still applicable — the reviewer's call stays theirs");
+
+    // A different instruction on the same entity is not a duplicate.
+    let mut sub = TestSubstrate::new();
+    sub.inner.set_mock_embedder();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    sub.add_fact_at("test", "capture", "lesson", "Record the vendor name on every receipt.", 1_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_mock(&h1, "Record the amount in cents.")));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    assert!(recs[0].near_duplicate_of.is_empty(), "{:?}", recs[0].near_duplicate_of);
+    assert_eq!(recs[0].summary.template_id, "llm.lesson");
+
+    // Identical text, proposed twice: the second pass collapses on the dedup
+    // key as it always did — a near-duplicate is about MEANING against
+    // memory, the dedup key is about the same proposal twice.
+    let res = e.run(&mut sub.inner, &RunOptions::default(), t + 1).unwrap();
+    assert_eq!(llm_recs(&e, &sub).len(), 1, "one recommendation, not two");
+    assert_eq!(res.llm_funnel.as_ref().map(|f| f.dropped_near_duplicate), Some(0));
+}
+
+/// Without an embedder the floor is token-set Jaccard: a high-overlap
+/// rewording is flagged (method `jaccard`), a different rule is not.
+#[test]
+fn without_an_embedder_the_jaccard_floor_flags_a_high_overlap_rewording() {
+    use crate::substrate::SubstrateRead;
+    let t = 5_000_000;
+    let mut sub = TestSubstrate::new();
+    assert!(!sub.inner.capabilities().embeddings);
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let live = sub.add_fact_at("test", "capture", "lesson", "Record the vendor name on every receipt.", 1_000);
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(lesson_mock(&h1, "Record the vendor name on every receipt line.")));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    let near = &recs[0].near_duplicate_of;
+    assert_eq!((near.len(), near[0].hash.as_str(), near[0].method.as_str()), (1, live.as_str(), "jaccard"), "{near:?}");
+    assert!(near[0].score >= crate::engine::NEAR_DUPLICATE_JACCARD);
+
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    sub.add_fact_at("test", "capture", "lesson", "Record the vendor name on every receipt.", 1_000);
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_mock(&h1, "Record the amount.")));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert!(llm_recs(&e, &sub)[0].near_duplicate_of.is_empty());
+}
+
+/// `suppress` drops the near-duplicate before the queue and counts it in
+/// the funnel under its own name; `flag` (the default) queues it marked.
+#[test]
+fn suppress_mode_drops_a_near_duplicate_before_the_queue_and_counts_it() {
+    let t = 5_000_000;
+    let seed = |sub: &mut TestSubstrate| {
+        let h1 = sub.add_fact("capture", "correction", "vendor missing");
+        sub.add_fact_at("test", "capture", "lesson", "Record the vendor name on every receipt.", 1_000);
+        h1
+    };
+    let mut sub = TestSubstrate::new();
+    let h1 = seed(&mut sub);
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(lesson_mock(&h1, "Record the vendor name on every receipt line.")))
+        .with_policy(Policy::from_json(r#"{"near_duplicate": "suppress"}"#).unwrap());
+    let res = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert!(llm_recs(&e, &sub).is_empty(), "suppressed before the queue");
+    let f = res.llm_funnel.expect("a backend was attached");
+    assert_eq!((f.kept, f.stored, f.dropped_near_duplicate), (1, 0, 1), "{f:?}");
+
+    let mut sub = TestSubstrate::new();
+    let h1 = seed(&mut sub);
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(lesson_mock(&h1, "Record the vendor name on every receipt line.")))
+        .with_policy(Policy::from_json(r#"{"near_duplicate": "flag"}"#).unwrap());
+    let res = e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0].near_duplicate_of.len(), 1);
+    assert_eq!(res.llm_funnel.unwrap().dropped_near_duplicate, 0);
+}
+
+fn consolidation_mock(h1: &str, lesson: &str, supersedes: &[String]) -> MockLlm {
+    let hashes = serde_json::to_string(supersedes).unwrap();
+    MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"the capture rules say four things ten ways","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"consolidation","lesson":"{lesson}","supersedes":{hashes}}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }
+}
+
+fn live_lessons(sub: &TestSubstrate, subject: &str) -> Vec<String> {
+    use crate::substrate::SubstrateRead;
+    sub.inner
+        .grains_of_type("fact", None, crate::substrate::ReadOpts::default())
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.fact_relation() == Some("lesson") && g.fact_subject() == Some(subject))
+        .map(|g| g.hash)
+        .collect()
+}
+
+/// A consolidation applies as one added lesson plus a supersession of every
+/// member; the pile shrinks to one live lesson; `ROLLBACK` restores every
+/// member and retracts the one line; the audit chain carries one transition
+/// per step on the one recommendation.
+#[test]
+fn a_consolidation_supersedes_the_pile_and_rollback_restores_every_member() {
+    use crate::substrate::SubstrateRead;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let members: Vec<String> = (0..3)
+        .map(|i| sub.add_fact_at("test", "capture", "lesson", &format!("Rule {i} about the vendor name."), 1_000 + i))
+        .collect();
+    let e = Engine::with_builtins().with_llm(Box::new(consolidation_mock(
+        &h1,
+        "Record the vendor name exactly as printed on every receipt.",
+        &members,
+    )));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    let rec = &recs[0];
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Consolidate);
+    assert!(rec.rollbackable);
+    assert!(rec.near_duplicate_of.is_empty(), "a consolidation is exempt from the near-duplicate check");
+    let text = rec.summary.render();
+    assert!(text.contains("consolidate 3 lessons into one"), "{text}");
+    match &rec.proposal {
+        crate::recommendation::Proposal::Cal { cal } => {
+            let lines: Vec<&str> = cal.lines().collect();
+            assert_eq!(lines.len(), 4, "one ADD + three SUPERSEDE: {cal}");
+            assert!(lines[0].starts_with("ADD fact ") && lines[0].contains("\"consolidates\""), "{cal}");
+            for (line, m) in lines[1..].iter().zip(&members) {
+                assert!(line.starts_with(&format!("SUPERSEDE {m} WITH fact ")) && line.contains("mg:lesson_consolidated"), "{line}");
+            }
+        }
+        other => panic!("executable CAL expected, got {other:?}"),
+    }
+
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "one rule beats three", t + 1)
+        .unwrap();
+    let applied = e
+        .apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "consolidate", false, t + 2)
+        .unwrap();
+    assert_eq!(applied.created_hashes.len(), 4, "the one line plus three markers: {:?}", applied.created_hashes);
+    let live = live_lessons(&sub, "capture");
+    assert_eq!(live.len(), 1, "the pile is one lesson now: {live:?}");
+    assert!(!members.contains(&live[0]));
+    for m in &members {
+        assert!(!sub.inner.grain(m).unwrap().unwrap().is_live(), "{m} is superseded");
+    }
+
+    e.rollback(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "restore the pile", t + 3)
+        .unwrap();
+    let mut restored = live_lessons(&sub, "capture");
+    restored.sort();
+    let mut expected = members.clone();
+    expected.sort();
+    assert_eq!(restored, expected, "every member is a head again");
+    let statuses = e.recommendations(&sub.inner, None).unwrap();
+    let mine = statuses.iter().find(|r| r.hash == rec.hash).unwrap();
+    assert_eq!(mine.status, RecStatus::RolledBack);
+    // One recommendation, one audit chain, one record per transition:
+    // stored → approved → applied → rolled back.
+    let mut audits: Vec<(i64, String)> = sub
+        .inner
+        .grains_of_type("observation", Some(crate::engine::LOOP_NS), crate::substrate::ReadOpts { live_only: false, since_ms: None })
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.str_field("rec_hash") == Some(rec.hash.as_str()))
+        .map(|g| (g.created_at_ms, g.str_field("to_status").unwrap_or("").to_string()))
+        .collect();
+    audits.sort();
+    let tos: Vec<&str> = audits.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(tos, vec!["pending", "approved", "applied", "rolled_back"], "{audits:?}");
+}
+
+/// A consolidation that names anything but live lessons on its own entity —
+/// a single grain, a lesson elsewhere, a superseded one — stays advisory.
+#[test]
+fn a_consolidation_of_the_wrong_grains_stays_advisory() {
+    let t = 5_000_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let mine = sub.add_fact_at("test", "capture", "lesson", "Rule about the vendor name.", 1_000);
+    let elsewhere = sub.add_fact_at("test", "refund", "lesson", "Rule about refunds.", 1_001);
+    let e = Engine::with_builtins().with_llm(Box::new(consolidation_mock(&h1, "One rule.", &[mine.clone(), elsewhere])));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let recs = llm_recs(&e, &sub);
+    assert_eq!(recs.len(), 1);
+    assert!(!recs[0].rollbackable, "nothing an apply may execute");
+    assert_eq!(recs[0].action_kind, crate::model::ActionKind::Flag);
+    // A pile of one is not a pile.
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let mine = sub.add_fact_at("test", "capture", "lesson", "Rule about the vendor name.", 1_000);
+    let e = Engine::with_builtins().with_llm(Box::new(consolidation_mock(&h1, "One rule.", &[mine])));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert!(!llm_recs(&e, &sub)[0].rollbackable);
+}
+
+/// The gates that hold for every LLM draft hold for a consolidation: the
+/// creating actor cannot approve it, and `write` alone cannot approve or
+/// apply it.
+#[test]
+fn a_consolidation_is_gated_like_every_llm_draft() {
+    let t = 5_000_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let members: Vec<String> = (0..2)
+        .map(|i| sub.add_fact_at("test", "capture", "lesson", &format!("Rule {i}."), 1_000 + i))
+        .collect();
+    let e = Engine::with_builtins().with_llm(Box::new(consolidation_mock(&h1, "One rule.", &members)));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = llm_recs(&e, &sub).remove(0);
+    let creator = format!("engine:{}", rec.analyzer);
+    let blocked = e.review(&mut sub.inner, &rec.hash, Decision::Approve, &creator, ObserverType::System, &ScopeSet::all(), "self", t + 1);
+    assert!(matches!(blocked, Err(Error::SelfApproval(_))), "{blocked:?}");
+    let denied = e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:b", ObserverType::Human, &ScopeSet::of(&[Scope::Write]), "ok", t + 1);
+    assert!(matches!(denied, Err(Error::ScopeDenied(_))), "{denied:?}");
+    let denied = e.apply(&mut sub.inner, &rec.hash, "user:b", ObserverType::Human, &ScopeSet::of(&[Scope::Write]), "ok", false, t + 1);
+    assert!(matches!(denied, Err(Error::ScopeDenied(_))), "{denied:?}");
+}
+
+/// The `lesson_pile` finding, enabled through the config layer, reaches the
+/// queue as an advisory Flag whose evidence is the pile — the finding DISCOVER
+/// answers with a consolidation.
+#[test]
+fn the_lesson_pile_analyzer_flags_through_the_engine_when_enabled() {
+    use crate::config::AnalyzerConfigUpdate;
+    let t = 5_000_000;
+    let mut sub = TestSubstrate::new();
+    for i in 0..9 {
+        sub.add_fact_at("test", "capture", "lesson", &format!("Rule {i}."), 1_000 + i);
+    }
+    let e = Engine::with_builtins();
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    assert!(
+        e.recommendations(&sub.inner, None).unwrap().iter().all(|r| !r.analyzer.starts_with("loop.lesson_pile")),
+        "default-off"
+    );
+    e.set_analyzer_config(
+        &mut sub.inner,
+        "loop.lesson_pile/1",
+        AnalyzerConfigUpdate { enabled: Some(true), ..Default::default() },
+        &ScopeSet::all(),
+    )
+    .unwrap();
+    e.run(&mut sub.inner, &RunOptions::default(), t + 1).unwrap();
+    let pile: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.analyzer.starts_with("loop.lesson_pile"))
+        .collect();
+    assert_eq!(pile.len(), 1);
+    assert_eq!(pile[0].action_kind, crate::model::ActionKind::Flag);
+    assert_eq!(pile[0].evidence.len(), 9);
+    assert_eq!(pile[0].target_ref, "entity:test/capture");
+}
+
 /// An LLM-authored lesson carries no recurrence metric — nothing errors when
 /// a lesson is merely useless — so `Policy::outcome_evalset` gives every
 /// applicable authored proposal the host's evalset as its metric: baseline

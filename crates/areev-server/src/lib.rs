@@ -2315,7 +2315,7 @@ fn status_from_str(s: &str) -> Option<RecStatus> {
 }
 
 fn rec_json(r: &areev_loop::Recommendation) -> Value {
-    json!({
+    let mut v = json!({
         "hash": r.hash,
         "status": r.status.as_str(),
         "severity": r.severity.as_str(),
@@ -2328,7 +2328,14 @@ fn rec_json(r: &areev_loop::Recommendation) -> Value {
         // The Rule E1 pin, when present — the console reads it to know this
         // apply needs a recorded gating run (and which evalset to run).
         "evalset_hash": r.evalset_hash,
-    })
+    });
+    // Live lessons this authored lesson restates — the console shows the
+    // existing rule beside the proposal. Present only when there are any,
+    // so every other row reads exactly as before.
+    if !r.near_duplicate_of.is_empty() {
+        v["near_duplicate_of"] = json!(r.near_duplicate_of);
+    }
+    v
 }
 
 fn urldecode(s: &str) -> String {

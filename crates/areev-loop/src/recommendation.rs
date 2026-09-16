@@ -121,6 +121,20 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         // An LLM-authored lesson shows the reviewer BOTH the finding and the
         // exact line an apply would record — never one without the other.
         "llm.lesson" => "{text} — record lesson: \"{lesson}\"",
+        // The same lesson, flagged as restating a live one: the reviewer sees
+        // that a rule of this meaning already exists before approving a
+        // second copy of it.
+        "llm.lesson_near_duplicate" => {
+            "{text} — record lesson: \"{lesson}\" — NEAR-DUPLICATE of {near_count} live lesson(s) on this entity (best match {near_score} by {near_method}, {near_hash})"
+        }
+        // A consolidation: one lesson replacing a pile. The apply supersedes
+        // every member and adds the one line; rollback restores them all.
+        "llm.consolidation" => {
+            "{text} — consolidate {count} lessons into one: \"{lesson}\""
+        }
+        "lesson.pile" => {
+            "{count} live lessons on \"{subject}\" exceed the budget of {max_active} — every rule competes for the model's attention; consolidate or retire: {members}"
+        }
         // The rest of the LLM proposal vocabulary follows the same rule: the
         // finding AND the exact change an apply would make, never one without
         // the other. A reviewer approving blind is the failure this prevents.
@@ -745,6 +759,16 @@ impl AuditRecord {
 /// index-layer cache) are set by the engine, not serialized into the grain
 /// body — the body is immutable content, the lifecycle lives in the state
 /// index and the audit chain.
+/// One live lesson an authored lesson restates. `method` is `cosine`
+/// (the substrate's embedder, T1) or `jaccard` (normalized token sets, the
+/// T0 floor — weak, and honest about it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NearDuplicate {
+    pub hash: String,
+    pub score: f64,
+    pub method: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recommendation {
     #[serde(skip)]
@@ -782,6 +806,11 @@ pub struct Recommendation {
     /// (superseded evalset ⇒ the pin is stale ⇒ re-gate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evalset_hash: Option<String>,
+    /// Live lessons on the same entity this authored lesson restates in
+    /// other words (`Policy::near_duplicate = flag`). The reviewer's call
+    /// stays theirs — the card shows the existing rule beside the proposal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near_duplicate_of: Vec<NearDuplicate>,
     #[serde(skip)]
     pub status: RecStatus,
 }
@@ -1073,6 +1102,7 @@ mod tests {
             created_at_ms: 0,
             guidance: None,
             evalset_hash: None, // the smuggle attempt
+            near_duplicate_of: Vec::new(),
             status: RecStatus::Pending,
         };
         let spec = rec.to_grain_spec("ns").unwrap();
@@ -1108,6 +1138,7 @@ mod tests {
             created_at_ms: 1000,
             guidance: None,
             evalset_hash: None,
+            near_duplicate_of: Vec::new(),
             status: RecStatus::Pending,
         };
         let spec = rec.to_grain_spec("ns").unwrap();

@@ -15,6 +15,7 @@ pub struct TestSubstrate {
     outcomes: Vec<OutcomeInput>,
     clock: i64,
     tel: TelemetryView,
+    verdicts: std::collections::BTreeMap<String, String>,
 }
 
 impl TestSubstrate {
@@ -25,7 +26,14 @@ impl TestSubstrate {
             outcomes: vec![],
             clock: 0,
             tel: TelemetryView::default(),
+            verdicts: Default::default(),
         }
+    }
+
+    /// Pretend the Verify gate recorded `verdict` for the grain `hash` (what
+    /// the engine hands analyzers as `AnalyzeCtx::verdict_for`).
+    pub fn set_verdict(&mut self, hash: &str, verdict: &str) {
+        self.verdicts.insert(hash.to_string(), verdict.to_string());
     }
 
     fn tick(&mut self) -> i64 {
@@ -345,6 +353,7 @@ impl TestSubstrate {
             None,
             now_ms,
             &self.outcomes,
+            &self.verdicts,
         );
         analyzer.analyze(&ctx).expect("analyze ok")
     }

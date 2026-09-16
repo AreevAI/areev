@@ -62,6 +62,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   harness writes the cost keys; `tau2`, `appworld` and PAST-Bench do not
   carry usage per record and are unchanged.
 
+- **Near-duplicate lessons are marked, and a lesson budget can be stated**
+  (#260). Measured (ad-buy seed 3): ten approved rules stated four distinct
+  facts, each approvable alone, and the agent fell from 238 to 128.
+  `authored_dedup_key` sees the same text; meaning is now measured at ROUTE
+  — an authored lesson is compared with every live lesson on its entity by
+  cosine over the substrate's embedder (new `SubstrateRead::embed`, wired
+  through `Areev::embed_text`) or, keyless, by token-set Jaccard. Policy
+  `near_duplicate: "flag"` (default) queues it carrying
+  `near_duplicate_of: [{hash, score, method}]` with a NEAR-DUPLICATE summary
+  and the existing rule beside it on the console card, the CLI, the server
+  and MCP rows; `"suppress"` drops it before the queue and the funnel counts
+  `dropped_near_duplicate`. A new default-off analyzer, `lesson_pile`, flags
+  an entity over `max_active` (8) live lessons with each member's latest
+  Verify-gate verdict (analyzers see them via `AnalyzeCtx::verdict_for`),
+  and DISCOVER gains a `consolidation` kind answerable only to that finding:
+  one lesson that supersedes every member with a marker (the prompt holds
+  one rule, not N copies), gate-judged and human-applied; `rollback`
+  restores every member — pinned on the real store, and the reference
+  substrate's `retract` now un-supersedes to match. Fifteen analyzers.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

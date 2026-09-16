@@ -477,6 +477,56 @@ fn a_definition_rewrite_records_an_inverse_that_restores_the_previous_body() {
 }
 
 /// A non-definition proposal is untouched: no inverse, nothing to restore.
+/// The store semantics a consolidation's rollback relies on: superseding N
+/// lessons through the loop's SUPERSEDE form and then retracting the
+/// superseding grains restores every member as a head. Pinned on the REAL
+/// store, because the engine's reference substrate mirrors this and a
+/// mismatch would let a rollback report success while the pile stayed gone.
+#[test]
+fn retracting_the_superseding_grains_restores_every_superseded_lesson() {
+    let (_d, mut store) = open_temp();
+    let members: Vec<String> = (0..3)
+        .map(|i| {
+            store
+                .add(&Fact::new("capture", "lesson", &format!("Rule {i}.")).namespace("caller").created_at(NOW + i))
+                .unwrap()
+                .to_hex()
+        })
+        .collect();
+    let mut sub = AreevSubstrate::new(store, None);
+    let live = |sub: &AreevSubstrate| -> Vec<String> {
+        let mut v: Vec<String> = sub
+            .grains_of_type("fact", Some("caller"), ReadOpts::default())
+            .unwrap()
+            .into_iter()
+            .filter(|g| g.fact_relation() == Some("lesson"))
+            .map(|g| g.hash)
+            .collect();
+        v.sort();
+        v
+    };
+    let cal: String = members
+        .iter()
+        .map(|m| {
+            format!(
+                r#"SUPERSEDE {m} WITH fact {{"subject":"capture","relation":"mg:lesson_consolidated","object":"One rule.","namespace":"caller"}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rows = sub.execute_cal(&cal).unwrap();
+    let markers: Vec<String> = rows.iter().filter_map(|r| r["hash"].as_str().map(str::to_string)).collect();
+    assert_eq!(markers.len(), 3);
+    assert!(live(&sub).is_empty(), "every member is superseded");
+
+    for m in &markers {
+        sub.retract(m, "rollback").unwrap();
+    }
+    let mut expected = members.clone();
+    expected.sort();
+    assert_eq!(live(&sub), expected, "every member is a head again");
+}
+
 #[test]
 fn ordinary_proposals_have_no_definition_inverse() {
     let (_d, store) = open_temp();
