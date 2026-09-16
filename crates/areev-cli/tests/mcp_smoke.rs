@@ -83,6 +83,8 @@ fn mcp_round_trip() {
         // remedy.
         rpc(18, "tools/call", serde_json::json!({"name": "areev_nearest", "arguments": {
             "text": "alice prefers tea"}})),
+        rpc(90, "tools/call", serde_json::json!({"name": "areev_run_verify", "arguments": {
+            "plan": "0".repeat(64), "runs": "run-a"}})),
     ];
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -97,14 +99,23 @@ fn mcp_round_trip() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    // 18 requests (the notification gets no response)
-    assert_eq!(lines.len(), 18, "one response per request");
+    // 19 requests (the notification gets no response)
+    assert_eq!(lines.len(), 19, "one response per request");
 
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 26);
+
+    // The plan-change rehearsal rides `areev_run_verify` (no 27th tool): the
+    // schema advertises `plan` + `runs`, and a call with a plan that is not
+    // in the store is a tool failure that names the workflow, not a JSON-RPC
+    // error and not a silent verify of `run_id`.
+    let verify_props = &tools.iter().find(|t| t["name"] == "areev_run_verify").unwrap()["inputSchema"]["properties"];
+    assert!(verify_props.get("plan").is_some() && verify_props.get("runs").is_some(), "{verify_props}");
+    assert_eq!(by_id(90)["result"]["isError"], true, "{}", by_id(90));
+    let text = by_id(90)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("workflow"), "{text}");    assert_eq!(tools.len(), 26);
     for memory_tool in ["areev_search", "areev_nearest"] {
         assert!(
             tools.iter().any(|t| t["name"] == memory_tool),

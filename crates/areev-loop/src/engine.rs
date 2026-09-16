@@ -2933,6 +2933,9 @@ struct ResolvedProposal {
     /// Statements appended after the `fact_fields` ADD when the proposal is
     /// rendered — a consolidation's supersessions of the pile it replaces.
     extra_statements: Vec<String>,
+    /// A plan revision's rehearsal report (`SubstrateRead::plan_replay`),
+    /// carried onto the recommendation so the reviewer sees it.
+    replay: Option<Value>,
 }
 
 /// The Workflow fields a `plan_revision` may touch. Thresholds and limits —
@@ -2974,23 +2977,31 @@ fn plan_get(body: &Value, path: &str) -> Value {
 }
 
 /// Write the value at an allowlisted path. Only creates a missing key in an
-/// object (the `retries.<node>` case); never grows an array.
+/// object (the `retries.<node>` case — including the `retries` map itself,
+/// which a stored plan with no retries omits entirely under omit-defaults
+/// serialization, so a first retry edit on such a plan used to fail to
+/// resolve and stay advisory); never grows an array.
 fn plan_set(body: &mut Value, path: &str, to: Value) -> bool {
     let segs: Vec<&str> = path.split('.').collect();
     let Some((last, parents)) = segs.split_last() else {
         return false;
     };
     let mut cur = body;
-    for seg in parents {
+    for (depth, seg) in parents.iter().enumerate() {
         cur = match cur {
             Value::Array(a) => match seg.parse::<usize>().ok().and_then(move |i| a.get_mut(i)) {
                 Some(v) => v,
                 None => return false,
             },
-            Value::Object(o) => match o.get_mut(*seg) {
-                Some(v) => v,
-                None => return false,
-            },
+            Value::Object(o) => {
+                if depth == 0 && *seg == "retries" && !o.contains_key("retries") {
+                    o.insert("retries".into(), Value::Object(serde_json::Map::new()));
+                }
+                match o.get_mut(*seg) {
+                    Some(v) => v,
+                    None => return false,
+                }
+            }
             _ => return false,
         };
     }
@@ -3098,6 +3109,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.65,
                 fact_fields: None,
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
         // ---- skill: a reusable procedure from a trajectory that succeeded ----
@@ -3129,6 +3141,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.6,
                 fact_fields: None,
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
         // ---- consolidation: one lesson replacing a pile ----
@@ -3199,6 +3212,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.6,
                 fact_fields: Some(fields),
                 extra_statements,
+                replay: None,
             })
         }
         // ---- lesson: the pre-vocabulary shape, unchanged ----
@@ -3223,6 +3237,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.5,
                 fact_fields: Some(fields),
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
         // ---- fact: a durable fact under a model-chosen relation ----
@@ -3247,6 +3262,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.5,
                 fact_fields: Some(fields),
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
         // ---- query_revision: how the agent assembles its own context ----
@@ -3288,6 +3304,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.6,
                 fact_fields: None,
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
         // ---- plan_revision: field-level edits to a Workflow grain ----
@@ -3344,17 +3361,53 @@ fn resolve_proposal<S: OmsSubstrate>(
             // conditions parse, every cycle bounded). An edit that would make
             // the plan unrunnable never reaches a reviewer as applicable.
             sub.validate_plan(&body).ok()?;
+            // The rehearsal: the candidate re-driven through the runtime's
+            // scheduler over the live plan's journaled runs, every effect
+            // answered from the journal (`areev run shadow --plan-file`).
+            // The report rides on the card either way; under a
+            // `plan_replay` policy it is also the gate — a candidate worse
+            // than the incumbent on the same runs, or rehearsable on too
+            // few of them, is stored as advisory with the reason naming the
+            // runs, never offered to apply.
+            let replay = sub.plan_replay(hash, &body).ok().flatten();
+            let refused = match (&policy.plan_replay, &replay) {
+                (Some(gate), Some(report)) => gate.refusal(report),
+                _ => None,
+            };
             let Value::Object(fields) = body else {
                 return None;
             };
+            args.insert("plan".into(), Value::from(hash));
+            args.insert("edits".into(), Value::from(deltas.join("; ")));
+            if let Some(reason) = refused {
+                let mut data = serde_json::Map::new();
+                data.insert("plan".into(), Value::from(hash));
+                data.insert("edits".into(), Value::from(deltas.clone()));
+                data.insert("refused".into(), Value::from(reason.clone()));
+                args.insert("reason".into(), Value::from(reason.clone()));
+                return Some(ResolvedProposal {
+                    action: ActionKind::Flag,
+                    proposal: Proposal::Data { data },
+                    rendered: format!(
+                        "Plan revision ({}) refused by the rehearsal: {reason}",
+                        deltas.join("; ")
+                    ),
+                    summary_key: "llm.plan_revision_refused",
+                    summary_args: args,
+                    rollbackable: false,
+                    evalset_hash: None,
+                    importance: 0.4,
+                    fact_fields: None,
+                    extra_statements: Vec::new(),
+                    replay,
+                });
+            }
             let stmt = cal::supersede(hash, "workflow", &fields);
             // Same rule as the definition rewrite: a statement the substrate
             // will not accept is not something to offer a reviewer as
             // applicable. `validate_plan` checked the GRAPH; this checks the
             // statement that carries it.
             sub.validate_cal(&stmt).ok()?;
-            args.insert("plan".into(), Value::from(hash));
-            args.insert("edits".into(), Value::from(deltas.join("; ")));
             Some(ResolvedProposal {
                 action: ActionKind::Revise,
                 proposal: Proposal::Cal { cal: stmt },
@@ -3366,6 +3419,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.7,
                 fact_fields: None,
                 extra_statements: Vec::new(),
+                replay,
             })
         }
         // ---- code_revision: §7.4, gated by the tool's own evalset ----
@@ -3401,6 +3455,7 @@ fn resolve_proposal<S: OmsSubstrate>(
                 importance: 0.8,
                 fact_fields: None,
                 extra_statements: Vec::new(),
+                replay: None,
             })
         }
     }
@@ -3430,6 +3485,7 @@ fn stamp_llm(
     } else {
         Some(crate::llm::cap(&d.guidance, crate::llm::MAX_GUIDANCE_LEN))
     };
+    let replay = resolved.as_ref().and_then(|r| r.replay.clone());
     let (action, proposal, summary, rollbackable, importance, evalset_hash, content) = match resolved {
         Some(mut r) => {
             // What the proposal would DO, before the verifier's confidence
@@ -3513,6 +3569,7 @@ fn stamp_llm(
         guidance,
         evalset_hash,
         near_duplicate_of: Vec::new(),
+        replay,
         status: RecStatus::Pending,
     }
 }
@@ -4216,6 +4273,7 @@ fn stamp(
         guidance: None,
         evalset_hash: d.evalset_hash,
         near_duplicate_of: Vec::new(),
+        replay: None,
         status: RecStatus::Pending,
     })
 }
@@ -4569,6 +4627,18 @@ mod plan_edit_tests {
         assert_eq!(plan_get(&p, "retries.review"), json!(2));
         assert!(!plan_set(&mut p, "edges.7.cond", json!("x")));
         assert_eq!(p["edges"].as_array().unwrap().len(), 2, "no array growth");
+        // A stored plan with no retries omits the map entirely (omit-defaults
+        // serialization); the first retry edit on it must create the map, or
+        // the revision can never resolve. Found by the golden E2E on the demo
+        // plan, which the reference fixture — it always had a map — hid.
+        let mut q = plan();
+        q.as_object_mut().unwrap().remove("retries");
+        assert!(plan_set(&mut q, "retries.greet", json!(1)));
+        assert_eq!(plan_get(&q, "retries.greet"), json!(1));
+        // Only `retries` is created; any other missing parent still refuses.
+        let mut r = plan();
+        r.as_object_mut().unwrap().remove("edges");
+        assert!(!plan_set(&mut r, "edges.0.cond", json!("x")));
     }
 }
 

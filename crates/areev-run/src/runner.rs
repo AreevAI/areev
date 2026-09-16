@@ -412,7 +412,7 @@ fn seam_messages(input: &Value) -> Vec<areev_llm::ChatMessage> {
 /// The pure §6.11 argument validator over the manifest's strict schemas:
 /// non-strict (or schema-less) tools pass; strict ones run
 /// `validate_instance`, and the violation kind becomes the re-prompt text.
-fn make_validate_args(
+pub(crate) fn make_validate_args(
     schemas: &BTreeMap<String, Value>,
 ) -> impl Fn(&str, &Value) -> std::result::Result<(), String> + '_ {
     move |tool: &str, args: &Value| match schemas.get(tool) {
@@ -422,7 +422,7 @@ fn make_validate_args(
     }
 }
 
-fn builtin_eval(edge: &areev_run_core::PlanEdge, state: &Value) -> bool {
+pub(crate) fn builtin_eval(edge: &areev_run_core::PlanEdge, state: &Value) -> bool {
     edge.cond
         .as_ref()
         .map(|c| areev_run_core::cond::eval(c, state))
@@ -515,25 +515,7 @@ impl Runner {
         &self,
         manifest: &RunManifest,
     ) -> Result<BTreeMap<String, Value>, RunError> {
-        let mut schemas = BTreeMap::new();
-        for p in &manifest.pinned {
-            if p.executor != "host" || p.tool_hash.is_empty() {
-                continue;
-            }
-            let h = Hash::from_hex(&p.tool_hash).map_err(err_run)?;
-            let def = self
-                .facade
-                .with_store(|m| m.get(&h))
-                .map_err(err_run)?
-                .to_tool()
-                .map_err(err_run)?;
-            if def.strict == Some(true) {
-                if let Some(schema) = def.input_schema {
-                    schemas.insert(p.tool_name.clone(), schema);
-                }
-            }
-        }
-        Ok(schemas)
+        crate::shadow::arg_schemas_for(&self.facade, manifest)
     }
 
     /// Start a new run of the Workflow at `plan_hash` and drive it until it

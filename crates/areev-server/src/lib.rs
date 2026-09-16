@@ -1873,6 +1873,59 @@ impl UiServer {
                     Err(e) => run_api_err(&e.to_string()),
                 }
             }
+            // The plan-change rehearsal (`areev run shadow --plan`): a read,
+            // guarded like the other run reads. GET names a stored plan;
+            // POST additionally takes an unstored draft body — what the
+            // Workflows canvas rehearses before Save.
+            ("GET", "/api/run/shadow") => {
+                let Some(runs) = q("runs") else { return run_api_err("runs required (comma-separated)") };
+                let Some(plan) = q("plan") else { return run_api_err("plan required (a Workflow hash)") };
+                let ids: Vec<String> = runs.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let h = match areev_core::error::Hash::from_hex(&plan) {
+                    Ok(h) => h,
+                    Err(e) => return run_api_err(&e.to_string()),
+                };
+                match self.runner("console:read").shadow_plan(&ids, &areev_run::PlanCandidate::Hash(h)) {
+                    Ok(report) => {
+                        let mut v = serde_json::to_value(&report).unwrap_or(Value::Null);
+                        if let Some(o) = v.as_object_mut() {
+                            o.insert("ok".into(), Value::Bool(true));
+                        }
+                        ok_json(v)
+                    }
+                    Err(e) => run_api_err(&e.to_string()),
+                }
+            }
+            ("POST", "/api/run/shadow") => {
+                let v: Value = match serde_json::from_slice(body) {
+                    Ok(v) => v,
+                    Err(e) => return run_api_err(&e.to_string()),
+                };
+                let ids: Vec<String> = match v.get("runs") {
+                    Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                    Some(Value::String(csv)) => csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                    _ => return run_api_err("runs required (array or comma-separated)"),
+                };
+                let candidate = match (v.get("plan").and_then(Value::as_str), v.get("plan_body").and_then(Value::as_object)) {
+                    (Some(_), Some(_)) => return run_api_err("give plan or plan_body, not both"),
+                    (Some(h), None) => match areev_core::error::Hash::from_hex(h) {
+                        Ok(h) => areev_run::PlanCandidate::Hash(h),
+                        Err(e) => return run_api_err(&e.to_string()),
+                    },
+                    (None, Some(body)) => areev_run::PlanCandidate::Body(body.clone()),
+                    (None, None) => return run_api_err("plan (hash) or plan_body (object) required"),
+                };
+                match self.runner("console:read").shadow_plan(&ids, &candidate) {
+                    Ok(report) => {
+                        let mut v = serde_json::to_value(&report).unwrap_or(Value::Null);
+                        if let Some(o) = v.as_object_mut() {
+                            o.insert("ok".into(), Value::Bool(true));
+                        }
+                        ok_json(v)
+                    }
+                    Err(e) => run_api_err(&e.to_string()),
+                }
+            }
             ("POST", "/api/run/respond") => {
                 // [R3] SHARED-TOKEN APPROVALS ARE REFUSED: an approval whose
                 // "identity" is a console-wide secret voids the
@@ -2356,6 +2409,10 @@ fn rec_json(r: &areev_loop::Recommendation) -> Value {
     // so every other row reads exactly as before.
     if !r.near_duplicate_of.is_empty() {
         v["near_duplicate_of"] = json!(r.near_duplicate_of);
+    }
+    // A plan revision's rehearsal report, when the runtime could run one.
+    if let Some(replay) = &r.replay {
+        v["replay"] = replay.clone();
     }
     v
 }
@@ -3240,6 +3297,41 @@ mod run_api_tests {
         let unscoped = page("");
         assert_eq!(unscoped["total"], 61);
         assert_eq!(unscoped["unattributed"], 0);
+    }
+
+    /// `/api/run/shadow` is the plan-change rehearsal as a read: GET names a
+    /// stored plan, POST may carry an unstored draft. Pinned on the parked
+    /// fixture under its own plan — the identity row — and on the refusals.
+    #[test]
+    fn run_shadow_route_rehearses_a_run_under_a_candidate_plan() {
+        let (s, _ask) = parked_server();
+        let (_st, _ct, body) = s.route("GET", "/api/run/inspect?run_id=hitl-1", b"", Some("officer-secret"), None);
+        let inspect: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let plan = inspect["plan_hash"].as_str().expect("the run's plan").to_string();
+
+        let (status, _ct, body) = s.route("GET", &format!("/api/run/shadow?runs=hitl-1&plan={plan}"), b"", Some("officer-secret"), None);
+        assert!(status.starts_with("200"), "{status}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["candidate_plan"], plan.as_str());
+        assert_eq!((v["effect_dispatches"].as_u64(), v["writes"].as_u64()), (Some(0), Some(0)));
+        let row = &v["runs"][0];
+        assert_eq!(row["run_id"], "hitl-1");
+        assert!(row["identity"].is_object(), "the incumbent as candidate is a verify: {row}");
+
+        // A draft body over the same run; and the two refusals.
+        let draft = serde_json::json!({"runs": ["hitl-1"], "plan_body": {"nodes": ["greet"], "edges": []}});
+        let (status, _ct, body) = s.route("POST", "/api/run/shadow", draft.to_string().as_bytes(), Some("officer-secret"), None);
+        assert!(status.starts_with("200"), "{status}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["candidate_is_draft"], true);
+        let (_st, _ct, body) = s.route("POST", "/api/run/shadow", br#"{"runs": ["hitl-1"]}"#, Some("officer-secret"), None);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], false, "{v}");
+        let (_st, _ct, body) = s.route("GET", "/api/run/shadow?runs=hitl-1", b"", Some("officer-secret"), None);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], false, "plan required: {v}");
     }
 
     #[test]

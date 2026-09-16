@@ -143,6 +143,11 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "llm.plan" => "{text} — record plan: \"{name}\" ({nodes} steps, {edges} edges)",
         "llm.query_revision" => "{text} — redefine \"{name}\" as: {body}",
         "llm.plan_revision" => "{text} — revise plan {plan}: {edits}",
+        // The rehearsal refused it: the edit is shown, the reason names the
+        // runs, and nothing is offered to apply.
+        "llm.plan_revision_refused" => {
+            "{text} — plan revision of {plan} ({edits}) NOT applicable: rehearsed against the plan's journaled runs and {reason}"
+        }
         "llm.code_revision" => {
             "{text} — new source for tool \"{tool}\" ({bytes} bytes), pending its evalset gate"
         }
@@ -811,6 +816,14 @@ pub struct Recommendation {
     /// stays theirs — the card shows the existing rule beside the proposal.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub near_duplicate_of: Vec<NearDuplicate>,
+    /// A `plan_revision`'s rehearsal against the journaled runs of the live
+    /// plan (the runtime's shadow report: per-run outcome under incumbent vs
+    /// candidate, effects out of support, spend) — computed at proposal
+    /// time when the substrate can, so the reviewer approves from evidence,
+    /// not prose. Absent when the substrate has no runtime or the plan has
+    /// no journaled runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<Value>,
     #[serde(skip)]
     pub status: RecStatus,
 }
@@ -1103,6 +1116,7 @@ mod tests {
             guidance: None,
             evalset_hash: None, // the smuggle attempt
             near_duplicate_of: Vec::new(),
+            replay: None,
             status: RecStatus::Pending,
         };
         let spec = rec.to_grain_spec("ns").unwrap();
@@ -1139,6 +1153,7 @@ mod tests {
             guidance: None,
             evalset_hash: None,
             near_duplicate_of: Vec::new(),
+            replay: None,
             status: RecStatus::Pending,
         };
         let spec = rec.to_grain_spec("ns").unwrap();

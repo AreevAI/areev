@@ -1036,6 +1036,128 @@ fn loop_replay_identity_reproduces_the_queue_with_zero_writes() {
     assert!(err.contains("unknown field"), "{err}");
 }
 
+/// The loop closes on the rehearsal: with three journaled runs of the demo
+/// plan, a `plan_revision` proposal carries a `replay` block; under
+/// `plan_replay.require_no_worse` a candidate that would stall those runs is
+/// stored as advisory with a reason naming them, while a harmless edit stays
+/// applicable — and `areev loop show` renders the block on both.
+#[test]
+#[cfg(not(windows))]
+fn loop_plan_revision_is_rehearsed_and_a_worse_one_is_refused() {
+    let Some(py) = find_python() else {
+        eprintln!("skipping: no python on PATH");
+        return;
+    };
+    let g = import_loop_golden();
+    let dir = TempDir::new().unwrap();
+    // Three journaled runs of the demo plan, each approved by a second
+    // principal and resumed to completion.
+    let (ok, out, err) = areev(&["run", "--db", &g.db, "--ns", "agent", "demo"]);
+    assert!(ok, "{err}");
+    let wf = out
+        .lines()
+        .find_map(|l| l.strip_prefix("demo plan seeded (workflow "))
+        .and_then(|l| l.strip_suffix(")"))
+        .expect("workflow hash")
+        .to_string();
+    for id in ["demo-1", "demo-2", "demo-3"] {
+        let (ok, out, err) = areev(&[
+            "run", "--db", &g.db, "--ns", "agent", "start", "--workflow", &wf, "--run-id", id,
+            "--input", r#"{"who":"world"}"#, "--tool-cmd", r#"printf '{"greeting":"hello"}'"#,
+        ]);
+        assert!(ok, "start {id}: {err}");
+        let envelope: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        let ask = envelope["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+        let (ok, _out, err) = areev(&[
+            "run", "--db", &g.db, "--ns", "agent", "respond", "--run-id", id, "--ask", &ask,
+            "--result", r#"{"approved":true}"#, "--as", "user:officer",
+        ]);
+        assert!(ok, "respond {id}: {err}");
+        let (ok, out, err) = areev(&["run", "--db", &g.db, "--ns", "agent", "resume", "--run-id", id]);
+        assert!(ok && out.contains("Completed"), "resume {id}: {err}\n{out}");
+    }
+
+    // A proposer that revises the demo plan: a harmless retry count, and an
+    // edge condition no run would satisfy.
+    let script = dir.path().join("fake_plan_llm.py");
+    std::fs::write(&script, format!(r#"
+import sys, json
+d = json.loads(sys.stdin.read())
+op = d.get("op")
+if op == "probe":
+    print(json.dumps({{"model": "golden-fake-1"}}))
+elif op == "discover":
+    ev = sorted(e["hash"] for e in d.get("evidence", []))[:1]
+    which = "{{WHICH}}"
+    if which == "harmless":
+        edits = [{{"path": "retries.greet", "from": None, "to": 1}}]
+    else:
+        edits = [{{"path": "edges.0.cond", "from": None, "to": "who == \"nobody\""}}]
+    print(json.dumps({{"recommendations": [{{
+        "summary": "the demo plan needs a tweak",
+        "target": "grain:{wf}",
+        "evidence": ev,
+        "confidence": 0.9,
+        "proposal": {{"kind": "plan_revision", "edits": edits}},
+    }}]}}))
+elif op == "ground":
+    print(json.dumps({{"results": [{{"id": c["id"], "supported": True, "reason": "ok"}} for c in d.get("claims", [])]}}))
+elif op == "verify":
+    print(json.dumps({{"results": [{{"id": f["id"], "keep": True, "confidence": 0.9, "reason": "ok"}} for f in d.get("findings", [])]}}))
+else:
+    print(json.dumps({{"notes": []}}))
+"#)).unwrap();
+    let policy = write_policy(&dir, r#"{"plan_replay": {"min_runs": 3, "require_no_worse": true}}"#);
+    let with = |which: &str| -> String {
+        let p = dir.path().join(format!("fake_{which}.py"));
+        std::fs::write(&p, std::fs::read_to_string(&script).unwrap().replace("{WHICH}", which)).unwrap();
+        format!("{py} {}", p.display())
+    };
+
+    // Harmless: rehearsed, applicable, the block on the card.
+    run_json(&g.db, T0, &["--llm-cmd", &with("harmless"), "--policy", &policy]);
+    let rows = list_rows(&g.db, T0, &[]);
+    let rec = find_rec(&rows, "loop.llm", "revise plan");
+    let show: serde_json::Value = serde_json::from_str(&loop_ok(&g.db, T0, &["show", &rec])).unwrap();
+    assert_eq!(show["rollbackable"], true, "{show}");
+    assert_eq!(show["replay"]["totals"]["runs"], 3, "rehearsed against all three: {show}");
+    assert_eq!(show["replay"]["no_worse"], true);
+    assert_eq!(show["replay"]["runs"][0]["candidate_outcome"], "completed");
+    assert_eq!(show["replay"]["effect_dispatches"], 0);
+
+    // Worse: every run stalls under the candidate → advisory, the reason
+    // naming the runs, nothing to apply.
+    let g2 = import_loop_golden();
+    let (ok, out, err) = areev(&["run", "--db", &g2.db, "--ns", "agent", "demo"]);
+    assert!(ok, "{err}");
+    assert!(out.contains(&wf), "the demo plan is content-addressed: same hash");
+    for id in ["demo-1", "demo-2", "demo-3"] {
+        let (ok, out, err) = areev(&[
+            "run", "--db", &g2.db, "--ns", "agent", "start", "--workflow", &wf, "--run-id", id,
+            "--input", r#"{"who":"world"}"#, "--tool-cmd", r#"printf '{"greeting":"hello"}'"#,
+        ]);
+        assert!(ok, "start {id}: {err}");
+        let envelope: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        let ask = envelope["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+        let (ok, _out, err) = areev(&[
+            "run", "--db", &g2.db, "--ns", "agent", "respond", "--run-id", id, "--ask", &ask,
+            "--result", r#"{"approved":true}"#, "--as", "user:officer",
+        ]);
+        assert!(ok, "{err}");
+        let (ok, _out, err) = areev(&["run", "--db", &g2.db, "--ns", "agent", "resume", "--run-id", id]);
+        assert!(ok, "{err}");
+    }
+    run_json(&g2.db, T0, &["--llm-cmd", &with("worse"), "--policy", &policy]);
+    let rows = list_rows(&g2.db, T0, &[]);
+    let rec = find_rec(&rows, "loop.llm", "NOT applicable");
+    let show: serde_json::Value = serde_json::from_str(&loop_ok(&g2.db, T0, &["show", &rec])).unwrap();
+    assert_eq!(show["rollbackable"], false, "{show}");
+    let summary = show["summary"].as_str().unwrap();
+    assert!(summary.contains("demo-1") && summary.contains("completed → stalled"), "{summary}");
+    assert_eq!(show["replay"]["totals"]["worse"], 3, "{show}");
+    assert_eq!(show["replay"]["no_worse"], false);
+}
+
 #[test]
 fn loop_llm_findings_never_auto_apply() {
     let Some(py) = find_python() else {

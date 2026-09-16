@@ -460,7 +460,13 @@ MCP / HTTP parity on the full lifecycle incl. rollback + outcomes · precision
 
 1. **Pre-apply replay validation** — answer "will this change make my agent
    worse?" *before* apply by replaying recorded sessions against the proposed
-   change; today Areev Loop verifies claims before and measures after.
+   change. **Shipped 2026-09-16, in two halves:** a `plan_revision` is
+   rehearsed against the plan's journaled runs through the runtime's pure
+   scheduler (`areev run shadow --plan`; the report rides on the card and a
+   `plan_replay` policy refuses a worse candidate), and a loop
+   configuration is scored against the recorded past (`areev loop replay`).
+   Both read only and dispatch nothing; a model's own proposals are not
+   replayed, and say so.
 2. **Substrate adapters beyond Areev** — the engine is substrate-agnostic
    (`OmsSubstrate`); adapters for existing stores/trace logs let today's
    mem0/Letta/LangGraph users run Areev Loop without migrating first

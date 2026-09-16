@@ -2162,6 +2162,33 @@ estimate standing in for a measurement is precisely what this decision refuses
 everywhere else. Same shape as §6.7's budget overshoot, bounded by one dispatch:
 named, not hidden.
 
+### A plan change is rehearsed against the journal before anyone approves it
+
+**Decision (2026-09-16):** the run journal is a replay simulator. `areev run
+shadow --plan <HASH> | --plan-file draft.json` re-drives journaled runs
+through the sans-IO scheduler under a **candidate** plan: a manifest is
+resolved for the candidate the way `fork --plan` does, seeded from the run's
+recorded input, and every requested effect is answered from the journal by
+its exact key. The path holds no executor and no model, so zero dispatches
+and zero writes are properties of the type, not of a flag. The one scope
+rule is stated in every report rather than papered over: replay can only
+answer effects the journal recorded, so a candidate that asks for anything
+else — a renamed or rebound node, a branch the live run never took — is
+`out_of_support` and earns no score (Dream-RSI, arXiv 2609.14858 §3).
+
+The loop reaches it through one substrate seam, `SubstrateRead::plan_replay`
+(the Areev adapter depends on `areev-run` for it; the engine stays free of
+Areev types): a `plan_revision` draft carries the rehearsal as its `replay`
+block, and a `plan_replay` policy refuses to stamp it *applicable* when the
+candidate is worse than the incumbent on the same runs or too many runs are
+out of support — a gate, never an auto-deploy; applying stays a human's
+decision with a BECAUSE. Its sibling, `areev loop replay`, scores a loop
+*configuration* the same way against the recorded review decisions and
+outcomes, through a prefix-only read view that refuses writes by type. The
+two together are the roadmap item `docs/loop-explainer.md` §16 listed first;
+`docs/run.md` "Verify and shadow" and `docs/loop.md` "Replay" are the
+references.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; authenticity is a

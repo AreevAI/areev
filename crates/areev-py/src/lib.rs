@@ -19,6 +19,23 @@ use serde_json::json;
 use areev_loop::{Decision, Engine, ObserverType, RecStatus, RunOptions, ScopeSet};
 
 /// Parse a duration like `6h` / `30m` / `2d` / `3600s` into milliseconds.
+/// The candidate a `run_shadow` rehearses under: a stored plan hash, an
+/// unstored draft body, or neither (the consistency shadow).
+fn plan_candidate(plan: Option<String>, plan_body: Option<String>) -> PyResult<Option<areev_run::PlanCandidate>> {
+    match (plan, plan_body) {
+        (Some(_), Some(_)) => Err(err("give plan or plan_body, not both")),
+        (Some(h), None) => Ok(Some(areev_run::PlanCandidate::Hash(
+            areev_core::error::Hash::from_hex(&h).map_err(|e| err(e.to_string()))?,
+        ))),
+        (None, Some(body)) => {
+            let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| err(format!("plan_body: {e}")))?;
+            let fields = v.as_object().cloned().ok_or_else(|| err("plan_body must be a JSON object"))?;
+            Ok(Some(areev_run::PlanCandidate::Body(fields)))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn parse_duration_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     let split = s.find(|c: char| !c.is_ascii_digit())?;
@@ -1878,10 +1895,30 @@ impl Areev {
 
     /// Shadow evaluation: replay these runs from their journals with ZERO
     /// effect dispatches (the replay path holds no executor). JSON report.
-    fn run_shadow(&self, py: Python<'_>, run_ids: Vec<String>) -> PyResult<String> {
+    /// With `plan` (a Workflow hash) or `plan_body` (an unstored draft, a
+    /// JSON object string) the same runs are instead re-driven under that
+    /// CANDIDATE plan — the plan-change rehearsal: per run, the outcome under
+    /// incumbent vs candidate, effects replayed and out of support, spend.
+    #[pyo3(signature = (run_ids, plan = None, plan_body = None))]
+    fn run_shadow(
+        &self,
+        py: Python<'_>,
+        run_ids: Vec<String>,
+        plan: Option<String>,
+        plan_body: Option<String>,
+    ) -> PyResult<String> {
         let runner = self.runner(None, None);
-        let report = py.detach(|| runner.shadow_eval(&run_ids));
-        serde_json::to_string(&report).map_err(|e| err(e.to_string()))
+        let candidate = plan_candidate(plan, plan_body)?;
+        match candidate {
+            Some(c) => {
+                let report = py.detach(|| runner.shadow_plan(&run_ids, &c)).map_err(err)?;
+                serde_json::to_string(&report).map_err(|e| err(e.to_string()))
+            }
+            None => {
+                let report = py.detach(|| runner.shadow_eval(&run_ids));
+                serde_json::to_string(&report).map_err(|e| err(e.to_string()))
+            }
+        }
     }
 
     /// §5.4 time-travel fork / migration. Returns the seed checkpoint hash.

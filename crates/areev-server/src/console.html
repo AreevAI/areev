@@ -1016,6 +1016,7 @@
         <span id="wfRunHost"></span>
         <span id="wfNsHost"></span>
         <button class="btn sm" id="wfNewBtn">New workflow</button>
+        <button class="btn ghost sm" id="wfRehearse" hidden>Rehearse</button>
         <button class="btn sm" id="wfSave" hidden>Save as new plan</button>
       </div>
 
@@ -1774,6 +1775,7 @@ function wireChrome() {
   $('wfAddNode').onclick = wfAddNode;
   $('wfResetLayout').onclick = () => { WFGraph.resetOverrides(); WFGraph.mount(); };
   $('wfSave').onclick = wfArmSave;
+  $('wfRehearse').onclick = wfRehearse;
 }
 /* Deep links: #memory · #graph · #activity · #suggestions · #settings/agent */
 /* Set by applyHash when the URL names a specific plan (#workflows/<hash>);
@@ -3120,6 +3122,24 @@ function sugCard(r) {
       + Math.round((best.score || 0) * 100) + '% by ' + (best.method || 'text') + '). Applying adds another copy.'));
     const near = evidenceRows(r.near_duplicate_of.map(n => n.hash));
     if (near) card.appendChild(near);
+  }
+  /* A plan revision that was rehearsed against the plan's own journaled runs
+     (every effect answered from the journal, nothing dispatched): what each
+     run would have done under the candidate, beside what it did. A run the
+     candidate could not be scored on says so — no score is invented. */
+  if (r.replay && r.replay.totals) {
+    const t = r.replay.totals;
+    const head = 'Rehearsed against ' + t.runs + ' recorded run' + (t.runs === 1 ? '' : 's') + ': '
+      + t.candidate_completed + ' would complete (now ' + t.incumbent_completed + ')'
+      + (t.worse ? ', ' + t.worse + ' worse' : '') + (t.better ? ', ' + t.better + ' better' : '')
+      + (t.out_of_support ? ', ' + t.out_of_support + ' could not be scored' : '') + '.';
+    card.appendChild(el('span', 'sub', head));
+    const rows = (r.replay.runs || []).slice(0, 6).map(x => ({
+      text: x.run_id + ' · ' + x.incumbent_outcome + ' → ' + x.candidate_outcome
+        + (x.out_of_support && x.out_of_support.length ? ' (needs ' + x.out_of_support.join(', ') + ')' : '')
+    }));
+    const rr = evidenceRows(rows);
+    if (rr) card.appendChild(rr);
   }
 
   const acts = el('div', 'acts');
@@ -4603,6 +4623,9 @@ function renderWorkflowHeader() {
   $('wfNewBtn').disabled = !!WF_NS;
   $('wfNewBtn').title = WF_NS ? 'Switch back to "' + boundNamespace() + '" to create a plan' : '';
   $('wfSave').hidden = !editing;
+  /* Rehearsal needs a stored plan with journaled runs to rehearse against;
+     a brand-new plan has none. */
+  $('wfRehearse').hidden = !editing || !WF_SEL;
   const nsHost = $('wfNsHost'); nsHost.textContent = '';
   nsHost.appendChild(nsCombo('wfNs', WF_NS || boundNamespace(), ns => wfSetNamespace(ns)));
   if (!editing) {
@@ -4919,6 +4942,43 @@ function wfArmSave() {
     await wfSave(why.value.trim());
     conf.disabled = false; cancel.disabled = false;
   };
+}
+/* Rehearse the draft against the last runs of the OPEN plan: the server
+   re-drives each journaled run through the scheduler under the draft with
+   every effect answered from the journal — nothing dispatched, nothing
+   written — and the verdicts land under the canvas. A run the draft cannot
+   be scored on (it needs an effect the journal never recorded) says so; no
+   score is invented. The draft body is exactly what Save would write. */
+async function wfRehearse() {
+  const btn = $('wfRehearse'), prev = btn.textContent;
+  const box = $('wfReasonBox'); box.textContent = '';
+  const idx = await loadRuns();
+  const runs = ((idx && idx.runs) || []).filter(r => r.plan_hash === WF_SEL).slice(0, 5).map(r => r.run_id);
+  if (!runs.length) { toast('No recorded runs of this plan to rehearse against yet'); return; }
+  btn.disabled = true; btn.textContent = 'Rehearsing…';
+  const d = WF_DRAFT;
+  const body = { nodes: d.nodes.slice(), edges: d.edges.map(e => {
+    const o = { src: e.src, dst: e.dst }; if (e.cond) o.cond = e.cond; if (e.max_cycles != null) o.max_cycles = e.max_cycles; return o;
+  }), bindings: {} };
+  for (const [node, hash] of Object.entries(d.bindings)) if (hash && HASH_RE.test(String(hash))) body.bindings[node] = String(hash).replace(/^sha256:/, '');
+  if (d.retries) body.retries = d.retries;
+  const res = await api('/api/run/shadow', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runs, plan_body: body }) });
+  btn.disabled = false; btn.textContent = prev;
+  if (!(res && res.ok)) { toast('Could not rehearse: ' + errText(res)); return; }
+  const t = res.totals;
+  const panel = el('div', 'reason');
+  panel.appendChild(el('span', 'meta', 'Rehearsed against ' + t.runs + ' recorded run' + (t.runs === 1 ? '' : 's')
+    + ' — nothing was executed. ' + t.candidate_completed + ' would complete (now ' + t.incumbent_completed + ')'
+    + (t.worse ? ', ' + t.worse + ' worse' : '') + (t.better ? ', ' + t.better + ' better' : '')
+    + (t.out_of_support ? ', ' + t.out_of_support + ' could not be scored' : '') + '.'));
+  const rows = (res.runs || []).map(x => ({
+    text: x.run_id + ' · ' + x.incumbent_outcome + ' → ' + x.candidate_outcome
+      + (x.out_of_support && x.out_of_support.length ? ' (needs ' + x.out_of_support.join(', ') + ')' : '')
+  }));
+  const rr = evidenceRows(rows);
+  if (rr) panel.appendChild(rr);
+  box.appendChild(panel);
 }
 async function wfSave(reason) {
   const btn = $('wfSave'), prevLabel = btn.textContent;

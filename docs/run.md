@@ -939,15 +939,51 @@ unverified rather than skipped.
 
 `shadow` is the same machinery as a batch pre-flight: the replay path holds
 no executor, so "re-execute these journaled runs with zero side effects" is
-structural, not a promise. What it answers today is **consistency**: each
-named run is re-driven under its **own** manifest and the report says
-whether every checkpoint still matches the journal. It does not take a
-candidate plan, a candidate loop configuration, or a recommendation, and
-nothing in [Areev Loop](loop.md) calls it — the loop verifies a proposal's
-claims before apply and measures its metric after (`docs/loop.md`, "the
-Verify gate"); a pre-apply rehearsal of a change against history is the
-first unbuilt item on the loop's roadmap (`docs/loop-explainer.md` §16),
-and this replay path is the machinery it will build on.
+structural, not a promise. Bare, it answers **consistency**: each named run
+is re-driven under its **own** manifest and the report says whether every
+checkpoint still matches the journal.
+
+```bash
+areev run shadow --runs a,b,c --plan <CANDIDATE_HASH>      # a stored candidate plan
+areev run shadow --runs a,b,c --plan-file draft.json       # an unstored draft (validated first)
+```
+
+With a **candidate plan** it answers the question a reviewer actually has —
+*would the plan change I am about to approve have done better on the runs I
+already paid for?* — from the journal, without dispatching an effect or
+calling a model. For each run: a manifest is resolved for the candidate the
+way `fork --plan` does (V3/V7 re-validation), seeded from the run's recorded
+input; the run is re-driven through the pure scheduler with every requested
+effect answered from the journal by its exact key (node, attempt, effect
+sequence, kind), and `retries`, `max_cycles` and edge conditions taken from
+the candidate; the terminal label is `completed` / `failed` / `stalled` /
+`canceled` / `budget_exhausted` — or **`out_of_support`** when the candidate
+asked for an effect the journal never recorded (a renamed or rebound node, a
+branch the live run never took). Out of support is a report field, never an
+error, and such a run earns no score; a draft that fails V1–V7 surfaces the
+usual `RUN-Ennn`. Spend is the sum over the journaled results the candidate
+actually consumed (tokens and USD; wall time is not re-derivable under a
+different plan and is not reported). The report gives, per run and in
+aggregate, the outcome under incumbent vs candidate, supersteps, effects
+replayed and out of support, spend, a `verdict` of `same` / `better` /
+`worse` / `out_of_support`, `no_worse` (no scored run is worse), and
+`out_of_support_fraction`. When the candidate *is* the incumbent plan the
+rehearsal is also a verify: every checkpoint is byte-compared and the row
+carries `identity.consistent`. `effect_dispatches` and `writes` are stated
+as 0 in the artifact. A canceled run rehearses as canceled (the cancel the
+live driver saw is fed at the same superstep). The precedent is Dream-RSI
+(arXiv 2609.14858 §3): a completed discovery tree is a replay simulator, and
+replay can only answer effects it recorded.
+
+The same rehearsal is reachable from `areev_run_verify` on MCP (pass `plan`
+and `runs`), from `GET /api/run/shadow?runs=…&plan=…` and `POST
+/api/run/shadow` (which also takes an unstored `plan_body`), from
+`run_shadow(run_ids, plan=…, plan_body=…)` / `runShadow(runIds, plan?,
+planBody?)` in the bindings, and from the Workflows canvas (**Rehearse**
+on a draft, against the last runs of the open plan). It is also what
+[Areev Loop](loop.md) attaches to a `plan_revision` proposal as its `replay`
+block, and what a `plan_replay` policy refuses an applicable revision on —
+see the `plan_replay` policy field there.
 
 ## Time travel and migration (`fork`)
 
@@ -1423,7 +1459,7 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/input/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the seven `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
 | Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
@@ -1445,7 +1481,14 @@ both directions with no extra infrastructure:
   recommendations that target it and the runs that executed it;
 - the [Areev Loop](loop.md) `run_outcome` analyzer reads run terminals and
   proposes findings — *"this workflow failed 4 of 6 runs"*, *"this plan has
-  spent $4.10"* — with the run grains cited as evidence.
+  spent $4.10"* — with the run grains cited as evidence;
+- a `plan_revision` the loop drafts is **rehearsed** against the plan's own
+  journaled runs before a reviewer sees it (`areev run shadow --plan-file`
+  under the hood): the recommendation carries a `replay` block — per-run
+  outcome under incumbent vs candidate, effects out of support, spend delta
+  — and a `plan_replay` policy refuses to stamp it applicable when it is
+  worse than the incumbent on the same runs. Applying stays human, with a
+  BECAUSE.
 
 ## Error codes
 

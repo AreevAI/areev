@@ -568,7 +568,7 @@ export declare class Areev {
   /** Journal-consistent replay; writes nothing. JSON report. */
   runVerify(runId: string): Promise<string>
   /** Shadow evaluation over journaled runs — zero effect dispatches. */
-  runShadow(runIds: Array<string>): Promise<string>
+  runShadow(runIds: Array<string>, plan?: string | undefined | null, planBody?: string | undefined | null): Promise<string>
   /**
    * §5.4 time-travel fork / migration: seed a new run from a base run's
    * checkpoint (optionally at a specific superstep, optionally onto a new

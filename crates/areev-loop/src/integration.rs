@@ -2238,6 +2238,122 @@ fn llm_plan_revision_edits_fields_and_refuses_topology_and_staleness() {
     );
 }
 
+/// One legal plan revision, a canned rehearsal report from the substrate,
+/// and an optional `plan_replay` policy — returns the plan-targeted LLM
+/// recommendation the pass stored.
+fn plan_revision_under(report: Option<serde_json::Value>, policy: Option<&str>) -> Recommendation {
+    use crate::model::Origin;
+    let mut sub = TestSubstrate::new();
+    let plan = sub.add_workflow();
+    let h1 = sub.add_fact("acme", "deploy_target", "us-east-1");
+    if let Some(r) = report {
+        sub.inner.set_plan_replay(r);
+    }
+    let discover = format!(
+        r#"{{"recommendations":[{{"summary":"the review cycle is too tight","target":"grain:{plan}","evidence":["{h1}"],"confidence":0.9,
+            "proposal":{{"kind":"plan_revision","edits":[{{"path":"edges.1.max_cycles","from":2,"to":4}}]}}}}]}}"#
+    );
+    let mut e = Engine::with_builtins().with_llm(Box::new(MockLlm {
+        discover,
+        ground: r#"{"results":[{"id":0,"supported":true}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    }));
+    if let Some(p) = policy {
+        e = e.with_policy(Policy::from_json(p).unwrap());
+    }
+    e.run(&mut sub.inner, &RunOptions::default(), 10_000).unwrap();
+    e.recommendations(&sub.inner, None)
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }) && r.target_ref == format!("grain:{plan}"))
+        .expect("the plan revision is stored")
+}
+
+fn replay_report(rows: &[(&str, &str, &str, &str)]) -> serde_json::Value {
+    // (run_id, incumbent, candidate, verdict)
+    let runs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(id, inc, cand, v)| serde_json::json!({"run_id": id, "incumbent_outcome": inc, "candidate_outcome": cand, "verdict": v, "out_of_support": []}))
+        .collect();
+    let oos = rows.iter().filter(|r| r.3 == "out_of_support").count();
+    let worse = rows.iter().filter(|r| r.3 == "worse").count();
+    serde_json::json!({
+        "totals": {"runs": rows.len(), "out_of_support": oos, "worse": worse,
+                   "incumbent_completed": rows.iter().filter(|r| r.1 == "completed").count(),
+                   "candidate_completed": rows.iter().filter(|r| r.2 == "completed").count()},
+        "no_worse": worse == 0 && oos < rows.len(),
+        "out_of_support_fraction": oos as f64 / rows.len().max(1) as f64,
+        "runs": runs, "effect_dispatches": 0, "writes": 0
+    })
+}
+
+/// A plan revision carries its rehearsal: when the substrate can replay the
+/// candidate against the live plan's journaled runs, the report rides on
+/// the recommendation, and without a `plan_replay` policy nothing is
+/// refused — the reviewer approves from evidence, not prose.
+#[test]
+fn a_plan_revision_carries_its_rehearsal_report() {
+    let rec = plan_revision_under(
+        Some(replay_report(&[("r1", "completed", "completed", "same"), ("r2", "failed", "completed", "better")])),
+        None,
+    );
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Revise);
+    assert!(rec.rollbackable);
+    let replay = rec.replay.as_ref().expect("the report rides on the card");
+    assert_eq!(replay["totals"]["runs"], 2);
+    assert_eq!(replay["runs"][1]["verdict"], "better");
+    // No rehearsal possible (no runtime, or no journaled runs): still applicable, no block.
+    let rec = plan_revision_under(None, Some(r#"{"plan_replay": {"min_runs": 3}}"#));
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Revise);
+    assert!(rec.replay.is_none());
+}
+
+/// Under `plan_replay.require_no_worse` a candidate that is worse than the
+/// incumbent on the same runs is stored as advisory — never offered to
+/// apply — with a reason naming the runs; too many out-of-support runs is
+/// refused the same way; and under `min_runs` the gate abstains.
+#[test]
+fn the_plan_replay_gate_refuses_a_worse_or_unscorable_candidate() {
+    let gate = r#"{"plan_replay": {"min_runs": 3, "require_no_worse": true, "max_out_of_support": 0.5}}"#;
+    let worse = replay_report(&[
+        ("r1", "completed", "completed", "same"),
+        ("r2", "completed", "failed", "worse"),
+        ("r3", "completed", "completed", "same"),
+    ]);
+    let rec = plan_revision_under(Some(worse), Some(gate));
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Flag, "{rec:?}");
+    assert!(!rec.rollbackable, "nothing an apply may execute");
+    assert_eq!(rec.summary.template_id, "llm.plan_revision_refused");
+    let text = rec.summary.render();
+    assert!(text.contains("NOT applicable") && text.contains("r2") && text.contains("completed → failed"), "{text}");
+    assert!(rec.replay.is_some(), "the evidence still rides on the card");
+    match &rec.proposal {
+        crate::recommendation::Proposal::Data { data } => {
+            assert!(data["refused"].as_str().unwrap().contains("r2"), "{data:?}");
+            assert_eq!(data["edits"][0], "edges.1.max_cycles: 2 -> 4");
+        }
+        other => panic!("advisory data expected, got {other:?}"),
+    }
+
+    let unscorable = replay_report(&[
+        ("r1", "completed", "out_of_support", "out_of_support"),
+        ("r2", "completed", "out_of_support", "out_of_support"),
+        ("r3", "completed", "out_of_support", "out_of_support"),
+        ("r4", "completed", "completed", "same"),
+    ]);
+    let rec = plan_revision_under(Some(unscorable), Some(gate));
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Flag);
+    let text = rec.summary.render();
+    assert!(text.contains("75%") && text.contains("r1, r2, r3"), "{text}");
+
+    // Two runs are an anecdote: the gate abstains and the revision applies.
+    let thin = replay_report(&[("r1", "completed", "failed", "worse"), ("r2", "completed", "completed", "same")]);
+    let rec = plan_revision_under(Some(thin), Some(gate));
+    assert_eq!(rec.action_kind, crate::model::ActionKind::Revise);
+    assert!(rec.replay.is_some());
+}
+
 #[test]
 fn llm_code_revision_pins_the_tools_declared_evalset() {
     use crate::model::{ActionKind, Origin};
