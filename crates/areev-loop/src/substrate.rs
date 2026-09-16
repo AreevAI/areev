@@ -205,6 +205,19 @@ pub trait SubstrateRead {
     fn address_of(&self, _spec: &GrainSpec) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Rehearse a candidate Workflow body against the journaled runs of the
+    /// live plan at `incumbent_plan_hash` — re-driven through the runtime's
+    /// pure scheduler with every effect answered from the journal, nothing
+    /// dispatched, nothing written (`areev run shadow --plan-file`). The
+    /// report is the runtime's `ShadowPlanReport` as JSON; the engine reads
+    /// `totals.runs`, `no_worse`, `out_of_support_fraction` and the per-run
+    /// rows. `Ok(None)` when the substrate has no runtime or no journaled
+    /// runs of that plan — the proposal is then simply unrehearsed, never
+    /// refused for it. The default reports none.
+    fn plan_replay(&self, _incumbent_plan_hash: &str, _candidate: &Value) -> Result<Option<Value>> {
+        Ok(None)
+    }
 }
 
 /// The full store protocol the engine binds to: reads (via the supertrait)

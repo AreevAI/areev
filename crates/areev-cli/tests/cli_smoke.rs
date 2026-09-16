@@ -1272,6 +1272,7 @@ fn run_demo_end_to_end() {
     // Seed the demo plan and pull the workflow hash out of the output.
     let (ok, out, err) = areev(&["run", "--db", db, "--ns", "ops", "demo"]);
     assert!(ok, "demo seed failed: {err}");
+    let seed_out = out.clone();
     let wf = out
         .lines()
         .find_map(|l| l.strip_prefix("demo plan seeded (workflow "))
@@ -1324,6 +1325,41 @@ fn run_demo_end_to_end() {
     assert!(out.contains("recorded during demo-1"), "{out}");
     // Intents + results (Tool) and checkpoints (State) — the whole journal.
     assert!(out.contains("Tool") && out.contains("State"), "{out}");
+
+    // The plan-change rehearsal, shape pinned: under its own plan the run is
+    // an identity (a verify), replays both effects, is out of support
+    // nowhere, and dispatches/writes nothing.
+    let (ok, out, err) = areev(&["run", "--db", db, "--ns", "ops", "shadow", "--runs", "demo-1", "--plan", &wf]);
+    assert!(ok, "shadow --plan failed: {err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("shadow report is JSON");
+    assert_eq!(v["candidate_plan"], wf.as_str());
+    assert_eq!(v["candidate_is_draft"], false);
+    let r = &v["runs"][0];
+    assert_eq!((r["run_id"].as_str(), r["verdict"].as_str()), (Some("demo-1"), Some("same")), "{v}");
+    assert_eq!((r["incumbent_outcome"].as_str(), r["candidate_outcome"].as_str()), (Some("completed"), Some("completed")));
+    assert_eq!(r["identity"]["consistent"], true, "{r}");
+    assert_eq!(r["effects_replayed"], 2);
+    assert_eq!(r["out_of_support"], serde_json::json!([]));
+    assert_eq!((v["no_worse"].as_bool(), v["effect_dispatches"].as_u64(), v["writes"].as_u64()), (Some(true), Some(0), Some(0)));
+    // A draft that renames the approval step has no journal rows for it.
+    // (The greet definition's hash is what `run demo` printed.)
+    let greet_hash = seed_out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("greet   -> host tool "))
+        .expect("greet hash in demo output")
+        .trim()
+        .to_string();
+    let draft = dir.path().join("draft.json");
+    std::fs::write(&draft, serde_json::json!({"nodes": ["greet", "sign_off"], "edges": [{"src": "greet", "dst": "sign_off"}],
+        "bindings": {"greet": greet_hash}}).to_string()).unwrap();
+    let (ok, out, err) = areev(&["run", "--db", db, "--ns", "ops", "shadow", "--runs", "demo-1", "--plan-file", draft.to_str().unwrap()]);
+    assert!(ok, "shadow --plan-file failed: {err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["candidate_is_draft"], true);
+    assert_eq!(v["runs"][0]["verdict"], "out_of_support", "{v}");
+    assert_eq!(v["out_of_support_fraction"], 1.0);
+    let (ok, _out, _err) = areev(&["run", "--db", db, "--ns", "ops", "shadow", "--runs", "demo-1", "--plan", &wf, "--plan-file", draft.to_str().unwrap()]);
+    assert!(!ok, "plan and plan-file together are refused");
 }
 
 #[test]

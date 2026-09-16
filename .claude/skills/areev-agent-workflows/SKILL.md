@@ -167,6 +167,13 @@ The loop **flags**, a human **decides**, supersession **applies**,
 
 ## Gotchas checklist
 
+- **Rehearse a plan change before approving it.** `areev run shadow --runs
+  a,b,c --plan <HASH>` (or `--plan-file draft.json`) re-drives journaled
+  runs under the candidate with every effect answered from the journal and
+  nothing dispatched; a run that needs an effect the journal never recorded
+  is `out_of_support` — no score, not an error. A loop-drafted
+  `plan_revision` carries the same report as `replay`, and a `plan_replay`
+  policy refuses one that is worse than the incumbent on the same runs.
 - A plan edit = new content address. Sweep: triggers (re-point), docs/
   examples quoting the hash, any `bindings` in OTHER plans that subgraph
   this one.

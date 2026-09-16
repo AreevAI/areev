@@ -146,6 +146,9 @@ macro_rules! impl_substrate {
             fn address_of(&self, spec: &GrainSpec) -> WResult<Option<String>> {
                 address_of(spec)
             }
+            fn plan_replay(&self, incumbent: &str, candidate: &Value) -> WResult<Option<Value>> {
+                plan_replay(self.facade_ref(), incumbent, candidate)
+            }
             fn heads(&self, namespace: Option<&str>) -> WResult<Vec<HeadGroup>> {
                 heads(self.facade_ref(), namespace)
             }
@@ -657,6 +660,36 @@ fn address_of(spec: &GrainSpec) -> WResult<Option<String>> {
     fact.common.created_at = Some(created);
     let (_, hash) = areev_core::format::serialize::serialize_grain(&fact).map_err(we)?;
     Ok(Some(hash.to_hex()))
+}
+
+/// How many journaled runs of the live plan a revision is rehearsed against.
+const PLAN_REPLAY_RUNS: usize = 10;
+
+/// The rehearsal behind `SubstrateRead::plan_replay`: the newest journaled
+/// runs of the incumbent plan (any namespace — each rehearsed in its own),
+/// re-driven under the candidate body through the runtime's shadow. `None`
+/// when the plan has no journaled runs: an unrehearsed revision is not a
+/// refused one. A draft the runtime will not build is reported as the
+/// substrate error it is — the engine had already validated the graph.
+fn plan_replay(f: &AreevFacade, incumbent: &str, candidate: &Value) -> WResult<Option<Value>> {
+    let Some(fields) = candidate.as_object() else {
+        return Err(werr("a candidate plan must be a JSON object"));
+    };
+    let runs = areev_run::shadow::runs_of_plan(f, None, incumbent, PLAN_REPLAY_RUNS)
+        .map_err(|e| WErr::Substrate(e.to_string()))?;
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let report = areev_run::shadow::shadow_plan_scoped(
+        f,
+        "loop:replay",
+        &runs,
+        &areev_run::PlanCandidate::Body(fields.clone()),
+    )
+    .map_err(|e| WErr::Substrate(e.to_string()))?;
+    serde_json::to_value(report)
+        .map(Some)
+        .map_err(|e| WErr::Substrate(format!("encode replay: {e}")))
 }
 
 fn supersede_op(f: &AreevFacade, target_hash: &str, spec: &GrainSpec) -> WResult<String> {

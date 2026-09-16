@@ -105,6 +105,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   analyzer toggle, and the bindings' `loop_replay` / `loopReplay`. No
   auto-adoption.
 
+- **`areev run shadow --plan`: a plan change rehearsed against the journal**
+  (#256). `areev run shadow --runs a,b,c --plan <HASH>` (or `--plan-file
+  draft.json`, validated by `PlanGraph::build` first) resolves a manifest for
+  the candidate the way `fork --plan` does, seeded from each run's recorded
+  input, and re-drives the run through the pure scheduler with every effect
+  answered from the journal by its exact key — `retries`, `max_cycles` and
+  edge conditions from the candidate, zero dispatches and zero writes by
+  construction. Per run and in aggregate: outcome under incumbent vs
+  candidate, supersteps, effects replayed and **out of support** (an effect
+  the journal never recorded — a report field, never an error, and no score
+  for that run), spend consumed, a `same`/`better`/`worse`/`out_of_support`
+  verdict, `no_worse` and `out_of_support_fraction`; when the candidate is
+  the incumbent the rehearsal is also a verify (`identity.consistent`).
+  Same rehearsal on MCP (`areev_run_verify` with `plan` + `runs` — the tool
+  count is unchanged), `GET|POST /api/run/shadow` (POST takes an unstored
+  `plan_body`), the bindings' `run_shadow(run_ids, plan=, plan_body=)` /
+  `runShadow(runIds, plan?, planBody?)`, and the Workflows canvas
+  (**Rehearse** a draft against the last runs of the open plan). The loop
+  closes on it: a `plan_revision` proposal carries the rehearsal as its
+  `replay` block (`areev loop show`, the console card) through a new
+  `SubstrateRead::plan_replay` seam the Areev adapter implements over
+  `areev-run`, and a `plan_replay` policy `{"min_runs": 3,
+  "require_no_worse": true, "max_out_of_support": 0.5}` stores a worse or
+  unscorable revision as advisory with a reason naming the runs — a gate,
+  not an auto-deploy. `ARCHITECTURE.md` §10 records the decision.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

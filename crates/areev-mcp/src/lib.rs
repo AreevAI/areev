@@ -868,10 +868,32 @@ impl McpServer {
                 Ok(json!({"canceled": run_id}).to_string())
             }
             "areev_run_verify" => {
+                // With `plan`, the same tool is the plan-change rehearsal:
+                // the named runs (`runs`, or the one `run_id`) re-driven
+                // under the candidate plan with every effect answered from
+                // the journal — nothing dispatched, nothing written.
+                let runner = self.runner("agent:mcp")?;
+                if let Some(plan) = args.get("plan").and_then(Value::as_str) {
+                    let mut ids: Vec<String> = args
+                        .get("runs")
+                        .and_then(Value::as_str)
+                        .map(|csv| csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                        .unwrap_or_default();
+                    if let Some(one) = args.get("run_id").and_then(Value::as_str) {
+                        ids.push(one.to_string());
+                    }
+                    if ids.is_empty() {
+                        return Err("areev_run_verify with 'plan' needs 'runs' (comma-separated) or 'run_id'".into());
+                    }
+                    let h = Hash::from_hex(plan).map_err(|e| e.to_string())?;
+                    let report = runner
+                        .shadow_plan(&ids, &areev_run::PlanCandidate::Hash(h))
+                        .map_err(|e| e.to_string())?;
+                    return serde_json::to_string(&report).map_err(|e| e.to_string());
+                }
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_verify requires 'run_id'")?;
-                let report = self
-                    .runner("agent:mcp")?
+                let report = runner
                     .verify(run_id)
                     .map_err(|e| e.to_string())?;
                 serde_json::to_string(&report).map_err(|e| e.to_string())
@@ -1330,10 +1352,12 @@ fn all_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "areev_run_verify",
-            "description": "Journal-consistent replay of a run: re-derives every checkpoint from the journaled events and byte-compares against the stored chain, writing nothing. Divergences name the differing fields (RUN-E009).",
+            "description": "Journal-consistent replay of a run: re-derives every checkpoint from the journaled events and byte-compares against the stored chain, writing nothing. Divergences name the differing fields (RUN-E009). With `plan`, a plan-change rehearsal instead: the named runs are re-driven through the scheduler under that candidate plan with every effect answered from the journal — zero dispatches, zero writes — and the report gives, per run, the outcome under incumbent vs candidate, effects replayed and out of support, and spend; a run that needs an effect the journal never recorded is `out_of_support` (a field, not an error).",
             "inputSchema": {"type": "object", "properties": {
-                "run_id": s("the run to verify")
-            }, "required": ["run_id"]}
+                "run_id": s("the run to verify (or one run to rehearse)"),
+                "runs": s("comma-separated run ids to rehearse under `plan`"),
+                "plan": s("a candidate Workflow plan hash — turns verify into the plan-change rehearsal")
+            }}
         }),
         json!({
             "name": "areev_run_list",

@@ -396,6 +396,103 @@ pub enum NearDuplicateMode {
     Suppress,
 }
 
+/// The pre-apply gate on a `plan_revision`: when the substrate can rehearse
+/// the candidate against the journaled runs of the live plan
+/// (`SubstrateRead::plan_replay` — `areev run shadow --plan-file`), refuse
+/// to stamp the revision *applicable* when the rehearsal says it is worse
+/// than the incumbent on the same runs, or when too many runs fall outside
+/// the journal's support. Dream-RSI's monotone selection (arXiv 2609.14858
+/// §3) as a gate rather than an auto-deploy: applying stays human, with a
+/// BECAUSE. Default none — a revision is rehearsed when it can be and the
+/// report rides on the card, but nothing is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanReplayPolicy {
+    /// Fewer rehearsed runs than this and the gate abstains: two runs are an
+    /// anecdote (default 3).
+    #[serde(default = "default_min_runs")]
+    pub min_runs: u32,
+    /// Refuse a candidate that completes fewer of the same runs than the
+    /// incumbent did (default true).
+    #[serde(default = "default_true")]
+    pub require_no_worse: bool,
+    /// Refuse when more than this fraction of the runs could not be scored
+    /// because the candidate asked for effects the journal never recorded
+    /// (default 0.5).
+    #[serde(default = "default_max_out_of_support")]
+    pub max_out_of_support: f64,
+}
+
+fn default_min_runs() -> u32 {
+    3
+}
+fn default_max_out_of_support() -> f64 {
+    0.5
+}
+
+impl PlanReplayPolicy {
+    fn validate(&self) -> Result<()> {
+        if !(self.max_out_of_support.is_finite() && (0.0..=1.0).contains(&self.max_out_of_support)) {
+            return Err(Error::InvalidProposal(
+                "policy: plan_replay.max_out_of_support must be a fraction in 0..=1".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The reason a rehearsal refuses the revision, or `None` to admit it.
+    /// `report` is the runtime's `ShadowPlanReport` as JSON.
+    pub fn refusal(&self, report: &serde_json::Value) -> Option<String> {
+        let runs = report["totals"]["runs"].as_u64().unwrap_or(0);
+        if runs < u64::from(self.min_runs) {
+            return None;
+        }
+        let oos = report["out_of_support_fraction"].as_f64().unwrap_or(0.0);
+        if oos > self.max_out_of_support {
+            let ids: Vec<&str> = report["runs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|r| r["verdict"] == "out_of_support")
+                        .filter_map(|r| r["run_id"].as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Some(format!(
+                "{:.0}% of {runs} rehearsed runs fall outside the journal's support (limit {:.0}%): {}",
+                oos * 100.0,
+                self.max_out_of_support * 100.0,
+                ids.join(", ")
+            ));
+        }
+        if self.require_no_worse && report["no_worse"].as_bool() != Some(true) {
+            let worse: Vec<String> = report["runs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|r| r["verdict"] == "worse")
+                        .filter_map(|r| {
+                            Some(format!(
+                                "{} ({} → {})",
+                                r["run_id"].as_str()?,
+                                r["incumbent_outcome"].as_str().unwrap_or("?"),
+                                r["candidate_outcome"].as_str().unwrap_or("?")
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let scored = runs - report["totals"]["out_of_support"].as_u64().unwrap_or(0);
+            return Some(if worse.is_empty() {
+                format!("no rehearsed run could be scored ({scored} of {runs})")
+            } else {
+                format!("worse than the incumbent on {} of {scored} rehearsed runs: {}", worse.len(), worse.join(", "))
+            });
+        }
+        None
+    }
+}
+
 /// The parsed host policy. Everything default-closed — the two fields whose
 /// closed state is not the zero value (`skills`, `min_evidence`) say so in
 /// their own `Default`.
@@ -462,6 +559,9 @@ pub struct Policy {
     /// the same entity (default `flag`: queue it, marked).
     #[serde(default, skip_serializing_if = "is_default_near_duplicate")]
     pub near_duplicate: NearDuplicateMode,
+    /// The pre-apply rehearsal gate on plan revisions (default none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_replay: Option<PlanReplayPolicy>,
 }
 
 fn is_default_near_duplicate(m: &NearDuplicateMode) -> bool {
@@ -489,6 +589,7 @@ impl Default for Policy {
             plans: PlanAuthoring::default(),
             premise_drift: true,
             near_duplicate: NearDuplicateMode::default(),
+            plan_replay: None,
         }
     }
 }
@@ -503,6 +604,9 @@ impl Policy {
         }
         if let Some(c) = p.outcome_evalset.as_ref().and_then(|e| e.cost.as_ref()) {
             c.validate()?;
+        }
+        if let Some(r) = p.plan_replay.as_ref() {
+            r.validate()?;
         }
         Ok(p)
     }
@@ -628,6 +732,31 @@ mod tests {
         .expect_err("unknown baseline kind");
         let msg = err.to_string();
         assert!(msg.contains("newest_before_apply") && msg.contains("high_water"), "{msg}");
+    }
+
+    #[test]
+    fn plan_replay_gate_reads_the_report_the_way_the_ticket_says() {
+        let p = Policy::from_json(r#"{"plan_replay": {"min_runs": 3, "require_no_worse": true}}"#).unwrap();
+        let g = p.plan_replay.unwrap();
+        assert_eq!((g.min_runs, g.require_no_worse, g.max_out_of_support), (3, true, 0.5));
+        let report = |runs: u64, worse: u64, oos: u64, no_worse: bool| {
+            let rows: Vec<serde_json::Value> = (0..runs)
+                .map(|i| {
+                    let verdict = if i < worse { "worse" } else if i < worse + oos { "out_of_support" } else { "same" };
+                    serde_json::json!({"run_id": format!("r{i}"), "verdict": verdict, "incumbent_outcome": "completed", "candidate_outcome": if verdict == "worse" { "failed" } else { "completed" }})
+                })
+                .collect();
+            serde_json::json!({"totals": {"runs": runs, "out_of_support": oos}, "no_worse": no_worse,
+                               "out_of_support_fraction": oos as f64 / runs.max(1) as f64, "runs": rows})
+        };
+        assert_eq!(g.refusal(&report(2, 2, 0, false)), None, "under min_runs the gate abstains");
+        assert_eq!(g.refusal(&report(3, 0, 0, true)), None);
+        let why = g.refusal(&report(3, 1, 0, false)).expect("worse is refused");
+        assert!(why.contains("r0") && why.contains("completed → failed"), "{why}");
+        let why = g.refusal(&report(4, 0, 3, false)).expect("out of support beyond the limit is refused");
+        assert!(why.contains("75%") && why.contains("r0, r1, r2"), "{why}");
+        assert!(Policy::from_json(r#"{"plan_replay": {"max_out_of_support": 1.5}}"#).is_err());
+        assert!(Policy::from_json(r#"{"plan_replay": {"min_runs": 3, "strict": true}}"#).is_err());
     }
 
     #[test]

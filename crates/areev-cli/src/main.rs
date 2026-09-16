@@ -4462,6 +4462,34 @@ fn run_run(
             if ids.is_empty() {
                 return Err("no runs to shadow (give --runs a,b or record some runs first)".into());
             }
+            // Under a CANDIDATE plan (`--plan HASH` or `--plan-file draft.json`)
+            // the same runs are re-driven through the pure scheduler with
+            // every effect answered from the journal: the rehearsal a plan
+            // revision gets before anyone approves it. Out of support is a
+            // report field, never an error; a draft that fails validation
+            // surfaces its RUN-Ennn.
+            let candidate = match (flag(flags, "plan"), flag(flags, "plan-file")) {
+                (Some(_), Some(_)) => return Err("give --plan or --plan-file, not both".into()),
+                (Some(h), None) => Some(areev_run::PlanCandidate::Hash(
+                    Hash::from_hex(&h).map_err(|e| e.to_string())?,
+                )),
+                (None, Some(path)) => {
+                    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+                    let body: serde_json::Value =
+                        serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+                    let fields = body
+                        .as_object()
+                        .cloned()
+                        .ok_or_else(|| format!("{path}: a plan draft must be a JSON object"))?;
+                    Some(areev_run::PlanCandidate::Body(fields))
+                }
+                (None, None) => None,
+            };
+            if let Some(candidate) = candidate {
+                let report = runner.shadow_plan(&ids, &candidate).map_err(|e| e.to_string())?;
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                return Ok(());
+            }
             let report = runner.shadow_eval(&ids);
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             if !report.all_consistent {
@@ -6244,6 +6272,12 @@ fn run_loop(
             let o = out.as_object_mut().unwrap();
             if !r.near_duplicate_of.is_empty() {
                 o.insert("near_duplicate_of".into(), serde_json::json!(r.near_duplicate_of));
+            }
+            // A plan revision's rehearsal against the plan's journaled runs
+            // (`areev run shadow --plan-file`), when the substrate could run
+            // one — the reviewer approves from evidence, not prose.
+            if let Some(replay) = &r.replay {
+                o.insert("replay".into(), replay.clone());
             }
             if let Ok(serde_json::Value::Object(p)) = serde_json::to_value(&r.proposal) {
                 o.extend(p);

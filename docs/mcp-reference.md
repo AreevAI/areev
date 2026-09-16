@@ -492,7 +492,7 @@ the CLI:
 | `areev_run_respond` | Answer one pending ask by `tool_call_id` (never an index) with `result` / `is_error`. Separation of duties is structural; rejected and late responses are journaled as audit evidence before the error returns. |
 | `areev_run_input` | Queue a steering message (`run_id`, `message`). The next superstep hands it to its nodes under `$inbox` — an in-band channel, so a chat-style plan does not misuse a human-gate ask to receive one. |
 | `areev_run_cancel` | Write the kill-switch marker (`run_id`, optional `because`) — deliberately the lowest-privilege run verb. |
-| `areev_run_verify` | Journal-consistent replay: re-derives every checkpoint and byte-compares against the stored chain, writing nothing; divergences name the differing fields. |
+| `areev_run_verify` | Journal-consistent replay: re-derives every checkpoint and byte-compares against the stored chain, writing nothing; divergences name the differing fields. With `plan` (a candidate Workflow hash) and `runs` (comma-separated) it is the plan-change rehearsal instead: the runs re-driven under the candidate with every effect answered from the journal — zero dispatches, zero writes — reporting per run the outcome under incumbent vs candidate, effects replayed and out of support, and spend; a run that needs an effect the journal never recorded is `out_of_support`, a field, not an error. |
 | `areev_run_list` | Recent run ids, newest first (`limit`, default 20). |
 
 #### `areev_tool_provenance`

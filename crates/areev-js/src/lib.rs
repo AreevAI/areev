@@ -3110,15 +3110,45 @@ impl Areev {
 
     /// Shadow evaluation over journaled runs — zero effect dispatches.
     #[napi(ts_return_type = "Promise<string>")]
-    pub fn run_shadow(&self, run_ids: Vec<String>) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+    pub fn run_shadow(
+        &self,
+        run_ids: Vec<String>,
+        plan: Option<String>,
+        plan_body: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let runner = js_runner(facade, ns, actor, None);
-            let report = runner.shadow_eval(&run_ids);
-            serde_json::to_string(&report).map_err(err)
+            // With `plan` (a Workflow hash) or `planBody` (an unstored draft,
+            // a JSON object string) this is the plan-change rehearsal: the
+            // runs re-driven under the candidate, effects answered from the
+            // journal, nothing dispatched or written.
+            let candidate = match (plan, plan_body) {
+                (Some(_), Some(_)) => return Err(err("give plan or planBody, not both")),
+                (Some(h), None) => Some(areev_run::PlanCandidate::Hash(
+                    areev_core::error::Hash::from_hex(&h).map_err(|e| err(e.to_string()))?,
+                )),
+                (None, Some(body)) => {
+                    let v: serde_json::Value =
+                        serde_json::from_str(&body).map_err(|e| err(format!("planBody: {e}")))?;
+                    let fields = v.as_object().cloned().ok_or_else(|| err("planBody must be a JSON object"))?;
+                    Some(areev_run::PlanCandidate::Body(fields))
+                }
+                (None, None) => None,
+            };
+            match candidate {
+                Some(c) => {
+                    let report = runner.shadow_plan(&run_ids, &c).map_err(err)?;
+                    serde_json::to_string(&report).map_err(err)
+                }
+                None => {
+                    let report = runner.shadow_eval(&run_ids);
+                    serde_json::to_string(&report).map_err(err)
+                }
+            }
         })
     }
 

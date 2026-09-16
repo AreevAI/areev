@@ -21,6 +21,8 @@ pub struct ReferenceSubstrate {
     by_hash: HashMap<String, usize>,
     caps: Capabilities,
     mock_embedder: bool,
+    /// A canned `plan_replay` report, for tests of the loop's replay gate.
+    plan_replay: Option<Value>,
     state: Value,
     next_id: u64,
     clock: i64,
@@ -47,6 +49,7 @@ impl ReferenceSubstrate {
                 ..Capabilities::default()
             },
             mock_embedder: false,
+            plan_replay: None,
             ..Default::default()
         }
     }
@@ -59,6 +62,13 @@ impl ReferenceSubstrate {
     pub fn set_mock_embedder(&mut self) {
         self.mock_embedder = true;
         self.caps.embeddings = true;
+    }
+
+    /// Pretend the runtime rehearsed every plan revision and reported this
+    /// (`SubstrateRead::plan_replay`). The reference substrate has no
+    /// runtime, so a test of the replay gate hands it the report.
+    pub fn set_plan_replay(&mut self, report: Value) {
+        self.plan_replay = Some(report);
     }
 
     pub fn set_capabilities(&mut self, caps: Capabilities) {
@@ -136,6 +146,10 @@ impl SubstrateRead for ReferenceSubstrate {
             return Ok(None);
         }
         Ok(Some(mock_embed(text)))
+    }
+
+    fn plan_replay(&self, _incumbent: &str, _candidate: &Value) -> Result<Option<Value>> {
+        Ok(self.plan_replay.clone())
     }
 
     /// A MINIMAL plan check: every node named once, every edge between known

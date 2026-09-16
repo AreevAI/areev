@@ -272,7 +272,7 @@ are the identity when no backend is set:
   | `lesson` | `entity:<ns>/<subject>` | `ADD` a Fact, `relation = "lesson"` — one imperative line (≤240 chars) |
   | `fact` | `entity:<ns>/<subject>` | `ADD` a Fact under a model-chosen `relation` (an identifier, ≤64 chars) |
   | `query_revision` | `query:<name>` / `template:<name>` | `DEFINE QUERY`/`DEFINE TEMPLATE` — the agent revising how it assembles its own context |
-  | `plan_revision` | `grain:<workflow hash>` | `SUPERSEDE … WITH workflow` from ≤8 field-level edits |
+  | `plan_revision` | `grain:<workflow hash>` | `SUPERSEDE … WITH workflow` from ≤8 field-level edits — **rehearsed first**: when the substrate has journaled runs of the plan, the candidate is re-driven through the runtime's scheduler over them with every effect answered from the journal (`areev run shadow --plan-file`), and the report rides on the recommendation as `replay` (`areev loop show`, the console card); a `plan_replay` policy refuses to stamp it applicable when it is worse than the incumbent on the same runs or too many runs fall outside the journal's support |
   | `code_revision` | `tool:<name>` | §7.4's promotion grain, behind the Rule E1 evalset gate |
   | `skill` | `entity:<ns>/<skill-name>` | `ADD skill` — a reusable procedure (description, `when_to_use`, ordered steps) from a trajectory that succeeded; `SUPERSEDE … WITH skill` when a live skill of that name exists. Offered only under `skills.enabled` |
   | `plan` | `entity:<ns>/<plan-name>` | one batch: `ADD workflow` (steps bound to tools the evidence shows were called, edges with conditions in the runtime's frozen grammar — handed to the substrate's plan validator first) **and** `ADD skill` of the same name (the prose). `SUPERSEDE` both when a live pair of that name exists. Offered only under `plans.enabled` |
@@ -904,6 +904,7 @@ host policy file — `areev loop --policy loop-policy.json` (or
     "min_effect": { "count": 5 },
     "cost": { "field": "tokens", "max_increase_ratio": 1.5 }
   },
+  "plan_replay": { "min_runs": 3, "require_no_worse": true, "max_out_of_support": 0.5 },
   "evidence_attribution": "named",
   "cadence": { "every_events": 10 },
   "skills": { "enabled": true, "min_steps": 2 },
@@ -958,6 +959,19 @@ consolidation does) is not drift. It exists because a lesson that outlives
 its premise is measured harm: on PAST-Bench a rule encoding the old regime's
 flag cost the governed arm 0.32 on the very migration family it was learned
 in.
+
+`plan_replay` (default none) is the pre-apply gate on a `plan_revision`:
+`{"min_runs": 3, "require_no_worse": true, "max_out_of_support": 0.5}`.
+When the substrate could rehearse the candidate against the live plan's
+journaled runs (`docs/run.md`, "Verify and shadow"), the revision is stored
+as advisory — never offered to apply — when it completes fewer of the same
+runs than the incumbent did, or when more than the stated fraction of runs
+could not be scored because the candidate asked for effects the journal
+never recorded; the summary names the runs. Fewer than `min_runs` rehearsed
+runs and the gate abstains (two runs are an anecdote). Dream-RSI's monotone
+selection as a gate rather than an auto-deploy: applying stays human, with a
+BECAUSE. Without the policy the rehearsal still rides on the card; nothing
+is refused.
 
 `near_duplicate` (default `flag`) decides what DISCOVER does with an
 authored lesson that says, in other words, what a live lesson on the same
