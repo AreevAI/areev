@@ -687,6 +687,121 @@ fn loop_llm_reflection_end_to_end() {
     assert!(status.contains("100% approved"), "approval rate missing: {status}");
 }
 
+/// A scripted proposer that authors a LESSON (an applicable proposal), so
+/// the host policy's `outcome_evalset` attaches a metric and the Verify gate
+/// has something to re-measure.
+const FAKE_LESSON_LLM_PY: &str = r#"
+import sys, json
+d = json.loads(sys.stdin.read())
+op = d.get("op")
+if op == "probe":
+    print(json.dumps({"model": "golden-fake-1"}))
+elif op == "discover":
+    ev = sorted(e["hash"] for e in d.get("evidence", []) if "sam" in e.get("text", ""))[:1] \
+         or sorted(e["hash"] for e in d.get("evidence", []))[:1]
+    print(json.dumps({"recommendations": [{
+        "summary": "residency keeps being asked twice",
+        "target": "entity:agent/sam",
+        "evidence": ev,
+        "confidence": 0.9,
+        "proposal": {"kind": "lesson", "lesson": "Confirm sam's current city before answering residency questions."},
+    }]}))
+elif op == "ground":
+    print(json.dumps({"results": [{"id": c["id"], "supported": True, "reason": "premises cited"}
+                                   for c in d.get("claims", [])]}))
+elif op == "verify":
+    print(json.dumps({"results": [{"id": f["id"], "keep": True, "confidence": 0.9,
+                                    "reason": "sound"} for f in d.get("findings", [])]}))
+else:
+    print(json.dumps({"notes": []}))
+"#;
+
+/// Journal `mg:eval_run` summaries at pinned times through the JSONL
+/// importer — the same grain `areev eval run` writes, with `created_at` on
+/// the loop's simulated clock instead of the wall clock.
+fn journal_eval_runs(db: &str, dir: &TempDir, name: &str, runs: &[(&str, u64, i64)]) {
+    let path = dir.path().join(format!("{name}.jsonl"));
+    let mut f = std::fs::File::create(&path).unwrap();
+    for (run_id, passed, at) in runs {
+        let summary = format!(r#"{{"run_id":"{run_id}","passed":{passed},"failed":{}}}"#, 280 - passed);
+        writeln!(
+            f,
+            r#"{{"subject":"evalset:adbuy","relation":"mg:eval_run","object":{},"created_at":{at}}}"#,
+            serde_json::Value::String(summary)
+        )
+        .unwrap();
+    }
+    let (ok, _out, err) = areev(&[
+        "migrate", "--from", "jsonl", "--file", path.to_str().unwrap(), "--db", db, "--ns", "agent:harness",
+    ]);
+    assert!(ok, "journal eval runs: {err}");
+}
+
+/// The Verify gate's receipt names the run it compared against and the peak
+/// before the apply, on every surface. The ad-buy seed-3 sequence (35 → 238
+/// → 128 before the apply, 133 after) under `high_water` proposes the revert
+/// the marginal baseline could not; the JSON carries `baseline_kind`,
+/// `baseline_run_id` and `best_before`, and the text shows `best_before`.
+#[test]
+fn loop_outcome_high_water_baseline_end_to_end() {
+    let Some(py) = find_python() else {
+        eprintln!("skipping: no python on PATH");
+        return;
+    };
+    let g = import_loop_golden();
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("fake_lesson_llm.py");
+    std::fs::write(&script, FAKE_LESSON_LLM_PY).unwrap();
+    let cmd = format!("{py} {}", script.display());
+    let policy = write_policy(
+        &dir,
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "passed", "higher_is_better": true,
+             "baseline": "high_water", "checkpoints": [{"after_runs": 1}]}}"#,
+    );
+    journal_eval_runs(&g.db, &dir, "before", &[
+        ("eval-day-one", 35, T0 - 3 * DAY),
+        ("eval-peak", 238, T0 - 2 * DAY),
+        ("eval-fallen", 128, T0 - DAY),
+    ]);
+
+    let res = run_json(&g.db, T0, &["--llm-cmd", &cmd, "--policy", &policy]);
+    assert_eq!(res["stored"], 12, "11 deterministic + the lesson: {res}");
+    let rows = list_rows(&g.db, T0, &[]);
+    let lesson = find_rec(&rows, "loop.llm", "residency keeps being asked twice");
+    let show: serde_json::Value = serde_json::from_str(&loop_ok(&g.db, T0, &["show", &lesson])).unwrap();
+    assert_eq!(show["metric"]["metric"], "evalset:adbuy:passed", "{show}");
+    assert_eq!(show["metric"]["baseline"], 128.0, "the proposal froze the newest run");
+
+    loop_ok(&g.db, T0, &["approve", &lesson, "--because", "reads fine", "--actor", "user:reviewer"]);
+    loop_ok(&g.db, T0 + HOUR, &["apply", &lesson, "--because", "try it", "--actor", "user:reviewer"]);
+    journal_eval_runs(&g.db, &dir, "after", &[("eval-after", 133, T0 + 2 * HOUR)]);
+    run_json(&g.db, T0 + 3 * HOUR, &["--policy", &policy]);
+
+    let out = loop_ok(&g.db, T0 + 3 * HOUR, &["outcomes", "--format", "json"]);
+    assert_golden(&loop_golden_dir().join("outcomes-high-water.json"), &out);
+    let outcomes: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let o = outcomes.iter().find(|o| o["rec_hash"] == lesson.as_str()).expect("the lesson was measured");
+    assert_eq!(o["verdict"], "regressed");
+    assert_eq!(o["baseline"], 238.0);
+    assert_eq!(o["current"], 133.0);
+    assert_eq!(o["baseline_kind"], "high_water");
+    assert_eq!(o["baseline_run_id"], "eval-peak");
+    assert_eq!(o["best_before"], 238.0);
+
+    let text = loop_ok(&g.db, T0 + 3 * HOUR, &["outcomes"]);
+    assert!(text.contains("best_before 238") && text.contains("baseline=high_water (eval-peak)"), "{text}");
+
+    // The revert the marginal baseline could not have proposed, naming the
+    // run it fell from.
+    let rows = list_rows(&g.db, T0 + 3 * HOUR, &[]);
+    let revert = rows
+        .iter()
+        .find(|r| r["analyzer"].as_str().unwrap_or("").contains("outcome_review"))
+        .unwrap_or_else(|| panic!("no revert proposed: {rows:?}"));
+    let summary = revert["summary"].as_str().unwrap_or("");
+    assert!(summary.contains("eval-peak") && summary.contains("238") && summary.contains("133"), "{summary}");
+}
+
 #[test]
 fn loop_llm_findings_never_auto_apply() {
     let Some(py) = find_python() else {

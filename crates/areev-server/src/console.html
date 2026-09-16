@@ -3274,8 +3274,18 @@ async function renderOutcomes(parent) {
       + (good ? 'var(--ok)' : 'var(--danger)');
     row.appendChild(dot);
     const hz = o.horizon_ms % 86400000 === 0 ? (o.horizon_ms / 86400000) + ' days' : (o.horizon_ms / 3600000) + ' hours';
+    /* The receipt names what it compared against: the run before the apply
+       (the default), or the best run before it (`high_water` policy). The
+       best-before figure is advisory and rides on a `held` too — a marginal
+       verdict cannot see a fall from the peak, so show the peak beside it. */
+    const against = o.baseline_kind === 'high_water' ? ' (its best run before the change'
+      : o.baseline_run_id ? ' (the run before the change'
+      : '';
+    const ref = against ? against + (o.baseline_run_id ? ', ' + o.baseline_run_id : '') + ')' : '';
+    const best = o.best_before != null && o.best_before !== o.baseline
+      ? ' · best before the change: ' + o.best_before : '';
     row.appendChild(el('span', 't', cap(String(o.metric || '').replace(/_/g, ' '))
-      + ' went from ' + o.baseline + ' to ' + o.current + ' after ' + hz));
+      + ' went from ' + o.baseline + ref + ' to ' + o.current + ' after ' + hz + best));
     const v = el('span', 'w', o.verdict); v.style.color = good ? 'var(--ok)' : 'var(--danger)';
     row.appendChild(v);
     host.appendChild(row);

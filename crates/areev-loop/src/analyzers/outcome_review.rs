@@ -69,6 +69,12 @@ impl Analyzer for OutcomeReview {
             args.insert("metric".into(), json!(input.metric));
             args.insert("baseline".into(), json!(round4(input.baseline)));
             args.insert("current".into(), json!(round4(input.current)));
+            if let Some(run) = &input.baseline_run_id {
+                args.insert("baseline_run".into(), json!(run));
+            }
+            if let Some(best) = input.best_before {
+                args.insert("best_before".into(), json!(round4(best)));
+            }
 
             let mut data = Map::new();
             data.insert("revert_of".into(), json!(input.rec_hash));
@@ -79,6 +85,10 @@ impl Analyzer for OutcomeReview {
             // feeds both here as inputs; the summary says which one failed.
             let key = if input.metric == crate::engine::PREMISE_DRIFT_METRIC {
                 "outcome.premise_drift"
+            } else if input.baseline_kind == "high_water" {
+                // Drafted against the peak: the summary names both figures so
+                // the reviewer judges whether this rule owns the whole fall.
+                "outcome.regression_high_water"
             } else {
                 "outcome.regression"
             };
@@ -117,6 +127,9 @@ mod tests {
             current,
             unit: "ratio".into(),
             higher_is_better: false,
+            baseline_kind: "snapshot".into(),
+            baseline_run_id: None,
+            best_before: None,
         }
     }
 
@@ -155,6 +168,25 @@ mod tests {
         let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
         assert_eq!(drafts.len(), 1, "a fall in accuracy must propose a revert");
         assert_eq!(drafts[0].action_kind, ActionKind::Revert);
+    }
+
+    /// A verdict drafted against the high-water mark names the run it fell
+    /// from: a reviewer deciding whether THIS rule owns the whole fall needs
+    /// the peak beside the current value, not a bare pair of numbers.
+    #[test]
+    fn a_high_water_regression_names_the_peak_run() {
+        let mut sub = TestSubstrate::new();
+        sub.set_outcome_inputs(vec![OutcomeInput {
+            baseline_kind: "high_water".into(),
+            baseline_run_id: Some("eval-peak".into()),
+            best_before: Some(238.0),
+            ..rising(238.0, 133.0)
+        }]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1);
+        let text = drafts[0].summary.render();
+        assert!(text.contains("eval-peak") && text.contains("238") && text.contains("133"), "{text}");
+        assert_eq!(drafts[0].summary.args["best_before"], 238.0);
     }
 
     #[test]

@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The Verify gate can compare against the agent's best run, and always
+  shows it** (#258). `outcome_evalset.baseline: "high_water"` makes an
+  evalset verdict's baseline the best run journaled before the apply (max
+  for a higher-is-better field, min otherwise) instead of the newest one, so
+  an agent that fell from its own peak reads `regressed` and the revert is
+  proposed. Measured need: on the ad-buy corpus (seed 3) the agent reached
+  238 of 280, two approved rules took it to 128, and the gate reported
+  `held` — correctly, because day one's 35 was the only run before the
+  apply. Opt-in, not the default: it charges the whole fall from the peak to
+  whichever rule was applied last, which on a noisy evalset proposes reverts
+  of rules that did nothing wrong. Independently of the choice, every
+  outcome record now names the run it compared against (`baseline_kind`,
+  `baseline_run_id`) and, on an evalset metric, carries `best_before` — the
+  peak before the apply — in `areev loop outcomes`, `GET /api/loop/outcomes`,
+  the bindings' `loop_outcomes()` and the console's outcome card, so the
+  lost opportunity is visible on a `held` too. A revert drafted under
+  `high_water` names both figures and the run it fell from.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

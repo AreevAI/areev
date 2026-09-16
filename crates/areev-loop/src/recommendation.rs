@@ -81,6 +81,12 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "outcome.regression" => {
             "Applied recommendation regressed: {metric} moved {baseline} → {current}"
         }
+        // The high-water baseline names both figures — the best run before
+        // the apply and the run that fell from it — because the reviewer has
+        // to judge whether THIS rule caused the whole fall from the peak.
+        "outcome.regression_high_water" => {
+            "Applied recommendation regressed against the best run before the apply ({baseline_run}): {metric} moved {baseline} → {current}"
+        }
         "outcome.premise_drift" => {
             "{current} of the grains this recommendation cited have since been superseded by a different value or retracted — its premise moved; revert it"
         }
@@ -361,6 +367,22 @@ pub struct OutcomeResult {
     pub baseline: f64,
     pub current: f64,
     pub verdict: String,
+    /// Where `baseline` came from, so the receipt names the run it compared
+    /// against: `newest_before_apply` or `high_water` (an evalset run, named
+    /// in `baseline_run_id`), or `snapshot` — the number the proposal froze,
+    /// used when no run was journaled before the apply or the metric is not
+    /// evalset-backed. Empty on a record written before this field existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub baseline_kind: String,
+    /// The evalset run `baseline` was read from, when it was read from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_run_id: Option<String>,
+    /// Advisory, independent of the policy's baseline choice: the best value
+    /// the field attained on any run journaled before the apply. When the
+    /// verdict is `held` against a newer, lower baseline this is the lost
+    /// opportunity the marginal comparison cannot see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_before: Option<f64>,
     /// Which checkpoint this measurement is for (ms after apply). Zero for a
     /// checkpoint counted in runs or grains — see `checkpoint`.
     #[serde(default)]

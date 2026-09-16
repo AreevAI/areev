@@ -6333,7 +6333,10 @@ fn run_loop(
                         None if o.horizon_ms % 86_400_000 == 0 => format!("{}d", o.horizon_ms / 86_400_000),
                         None => format!("{}h", o.horizon_ms / 3_600_000),
                     };
-                    println!(
+                    // The receipt names the run it compared against and,
+                    // for an evalset metric, the best run before the apply —
+                    // the lost opportunity a marginal `held` cannot see.
+                    let mut line = format!(
                         "{}  {:<22}  @{:<4}  baseline {} → current {}  [{}]",
                         short(&o.rec_hash),
                         o.metric,
@@ -6342,6 +6345,13 @@ fn run_loop(
                         o.current,
                         o.verdict
                     );
+                    if let Some(run) = &o.baseline_run_id {
+                        line.push_str(&format!("  baseline={} ({run})", o.baseline_kind));
+                    }
+                    if let Some(best) = o.best_before {
+                        line.push_str(&format!("  best_before {best}"));
+                    }
+                    println!("{line}");
                 }
             }
         }
