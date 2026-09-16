@@ -278,7 +278,9 @@ COMMANDS:
            evalset (--name N --cases FILE); run --evalset HASH executes it
            against --tool-cmd CMD or --model provider:name ([--base-url URL]
            [--key-env VAR] [--llm-max-tokens N] — how a tuned adapter served
-           by vLLM/SGLang/Ollama is graded), journals each case under an
+           by vLLM/SGLang/Ollama is graded; --baseline RUN [--tolerance N]
+           re-accepts against a recorded run within N percentage points,
+           the Verify gate's own regression rule), journals each case under an
            eval- run id, and records the summary `areev loop apply
            --gating-run` loads
   tool     provenance <hash> [--depth N]   one-command code forensics: the
@@ -4741,7 +4743,8 @@ fn run_eval(
         }
         "run" => {
             let usage = "areev eval run --evalset HASH (--tool-cmd CMD | --model provider:name \
-                         [--base-url URL] [--key-env VAR] [--llm-max-tokens N])";
+                         [--base-url URL] [--key-env VAR] [--llm-max-tokens N]) \
+                         [--baseline RUN_ID [--tolerance POINTS]]";
             let evalset_hex = need("evalset", usage)?;
             // Exactly one executor: a host command, or a model behind the
             // ToolCallLlm seam (how a tuned adapter served by vLLM / SGLang /
@@ -4860,11 +4863,18 @@ fn run_eval(
             // --tolerance percentage points (default 0 — any drop fails).
             // The comparison itself is recorded as a Fact, so "we re-ran
             // acceptance after the model swap" is evidence, not a claim.
+            // The arithmetic is the Verify gate's `is_regression` — one
+            // reader of "did it get worse" for both edges, so a swap cannot
+            // be re-accepted on one rule and its lessons judged on another.
             let mut reacceptance = serde_json::Value::Null;
             if let Some(baseline_run) = flag(flags, "baseline") {
-                let tolerance: f64 = flag(flags, "tolerance")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0.0);
+                let tolerance: f64 = match flag(flags, "tolerance") {
+                    None => 0.0,
+                    Some(v) => match v.parse::<f64>() {
+                        Ok(t) if t.is_finite() && t >= 0.0 => t,
+                        _ => return Err("--tolerance must be a number of percentage points ≥ 0".into()),
+                    },
+                };
                 let baseline = json_from_facade_recall(&facade, EVAL_NS, &format!("evalset:{evalset_hex}"))?
                     .into_iter()
                     .filter(|row| row["fields"]["relation"] == "mg:eval_run")
@@ -4884,7 +4894,8 @@ fn run_eval(
                     baseline["failed"].as_u64().unwrap_or(0),
                 );
                 let this_rate = rate(passed, failed);
-                let within = this_rate + 1e-9 >= base_rate - tolerance;
+                let within =
+                    !areev_loop::recommendation::is_regression(base_rate, this_rate, true, tolerance);
                 reacceptance = serde_json::json!({
                     "baseline_run": baseline_run,
                     "baseline_pass_rate": base_rate,

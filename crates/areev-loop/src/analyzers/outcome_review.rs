@@ -61,6 +61,7 @@ impl Analyzer for OutcomeReview {
                 input.baseline,
                 input.current,
                 input.higher_is_better,
+                input.tolerance,
             );
             if !regressed {
                 continue;
@@ -74,6 +75,9 @@ impl Analyzer for OutcomeReview {
             }
             if let Some(best) = input.best_before {
                 args.insert("best_before".into(), json!(round4(best)));
+            }
+            if input.tolerance > 0.0 {
+                args.insert("tolerance".into(), json!(round4(input.tolerance)));
             }
 
             let mut data = Map::new();
@@ -130,6 +134,7 @@ mod tests {
             baseline_kind: "snapshot".into(),
             baseline_run_id: None,
             best_before: None,
+            tolerance: 0.0,
         }
     }
 
@@ -187,6 +192,21 @@ mod tests {
         let text = drafts[0].summary.render();
         assert!(text.contains("eval-peak") && text.contains("238") && text.contains("133"), "{text}");
         assert_eq!(drafts[0].summary.args["best_before"], 238.0);
+    }
+
+    /// The floor the engine judged under travels with the input: a dip inside
+    /// it drafts nothing, one past it drafts the revert and records the floor.
+    #[test]
+    fn the_revert_draft_applies_the_same_floor_as_the_verdict() {
+        let mut sub = TestSubstrate::new();
+        sub.set_outcome_inputs(vec![
+            OutcomeInput { tolerance: 5.0, ..rising(359.0, 355.0) },
+            OutcomeInput { tolerance: 5.0, rec_hash: "ref-2".into(), ..rising(359.0, 353.0) },
+        ]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1, "only the dip past the floor reverts");
+        assert_eq!(drafts[0].evidence, vec!["ref-2".to_string()]);
+        assert_eq!(drafts[0].summary.args["tolerance"], 5.0);
     }
 
     #[test]

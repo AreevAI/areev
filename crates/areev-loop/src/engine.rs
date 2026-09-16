@@ -2011,10 +2011,14 @@ fn measure_outcomes<S: OmsSubstrate>(
         };
         let base = baseline_at_apply(sub, metric, applied.applied_at_ms, baseline_kind_for(policy, metric))?;
         let baseline = base.value;
+        // The floor is resolved ONCE here and travels with the input, so the
+        // recorded verdict and the revert draft cannot disagree on it.
+        let tolerance = tolerance_for(policy, metric, &base);
         let regressed = crate::recommendation::is_regression(
             baseline,
             current,
             metric.higher_is_better,
+            tolerance,
         );
         p.outcomes.entry(rec_hash.clone()).or_default().push(
             crate::recommendation::OutcomeResult {
@@ -2026,6 +2030,7 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline_kind: base.kind.into(),
                 baseline_run_id: base.run_id.clone(),
                 best_before: base.best_before,
+                tolerance,
                 // A time checkpoint speaks through `horizon_ms`, as it always
                 // did; the other units carry themselves.
                 horizon_ms: checkpoint.as_ms().unwrap_or(0),
@@ -2046,10 +2051,29 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline_kind: base.kind.into(),
                 baseline_run_id: base.run_id,
                 best_before: base.best_before,
+                tolerance,
             });
         }
     }
     Ok(out)
+}
+
+/// The policy's minimum effect size in the metric's unit, for the evalset
+/// the policy names; zero for everything else. The `points` form scales a
+/// count field by the baseline run's total — or, with no run before the
+/// apply, by the total the proposal's snapshot recorded.
+fn tolerance_for(
+    policy: &crate::policy::Policy,
+    metric: &crate::recommendation::MetricSnapshot,
+    base: &BaselineRead,
+) -> f64 {
+    match (policy.outcome_evalset.as_ref(), crate::eval::parse_evalset_metric(&metric.metric)) {
+        (Some(e), Some((hash, field))) if e.hash == hash => e
+            .min_effect
+            .map(|m| m.resolve(field, base.total.unwrap_or(metric.n)))
+            .unwrap_or(0.0),
+        _ => 0.0,
+    }
 }
 
 /// Has this checkpoint come due for a recommendation applied at `applied_at_ms`?
@@ -2087,6 +2111,8 @@ pub(crate) struct BaselineRead {
     pub kind: &'static str,
     pub run_id: Option<String>,
     pub best_before: Option<f64>,
+    /// Cases the baseline run graded, when it was a run.
+    pub total: Option<u64>,
 }
 
 /// The host's baseline choice applies to the evalset it names; any other
@@ -2128,17 +2154,17 @@ pub(crate) fn baseline_at_apply<S: SubstrateRead>(
     if let Some((evalset, field)) = crate::eval::parse_evalset_metric(&metric.metric) {
         // Oldest first, the field read through the one reader every consumer
         // uses; a run whose summary lacks the field is not a candidate.
-        let before: Vec<(String, f64)> = crate::eval::eval_runs(sub, evalset, None)?
+        let before: Vec<(String, f64, u64)> = crate::eval::eval_runs(sub, evalset, None)?
             .into_iter()
             .filter(|r| r.recorded_ms < applied_at_ms)
-            .filter_map(|r| crate::eval::run_value(&r, field).map(|v| (r.run_id, v)))
+            .filter_map(|r| crate::eval::run_value(&r, field).map(|v| (r.run_id.clone(), v, r.total())))
             .collect();
-        if let Some((newest_id, newest)) = before.last() {
+        if let Some(newest) = before.last() {
             // The first run to attain the best value is the high-water mark:
             // a later tie did not raise it.
-            let (best_id, best) = before
+            let best = before
                 .iter()
-                .fold(None::<&(String, f64)>, |acc, r| match acc {
+                .fold(None::<&(String, f64, u64)>, |acc, r| match acc {
                     None => Some(r),
                     Some(b) => {
                         let better = if metric.higher_is_better { r.1 > b.1 } else { r.1 < b.1 };
@@ -2146,23 +2172,20 @@ pub(crate) fn baseline_at_apply<S: SubstrateRead>(
                     }
                 })
                 .expect("non-empty");
-            return Ok(match kind {
-                BaselineKind::NewestBeforeApply => BaselineRead {
-                    value: *newest,
-                    kind: kind.as_str(),
-                    run_id: Some(newest_id.clone()),
-                    best_before: Some(*best),
-                },
-                BaselineKind::HighWater => BaselineRead {
-                    value: *best,
-                    kind: kind.as_str(),
-                    run_id: Some(best_id.clone()),
-                    best_before: Some(*best),
-                },
+            let pick = match kind {
+                BaselineKind::NewestBeforeApply => newest,
+                BaselineKind::HighWater => best,
+            };
+            return Ok(BaselineRead {
+                value: pick.1,
+                kind: kind.as_str(),
+                run_id: Some(pick.0.clone()),
+                best_before: Some(best.1),
+                total: Some(pick.2),
             });
         }
     }
-    Ok(BaselineRead { value: metric.baseline, kind: "snapshot", run_id: None, best_before: None })
+    Ok(BaselineRead { value: metric.baseline, kind: "snapshot", run_id: None, best_before: None, total: None })
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
@@ -3554,6 +3577,7 @@ fn detect_premise_drift<S: OmsSubstrate>(
                     baseline_kind: "snapshot".into(),
                     baseline_run_id: None,
                     best_before: None,
+                    tolerance: 0.0,
                     horizon_ms: 0,
                     checkpoint: None,
                     measured_at_ms: now_ms,
@@ -3571,6 +3595,7 @@ fn detect_premise_drift<S: OmsSubstrate>(
             baseline_kind: "snapshot".into(),
             baseline_run_id: None,
             best_before: None,
+            tolerance: 0.0,
         });
     }
     Ok(out)

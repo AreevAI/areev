@@ -26,6 +26,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lost opportunity is visible on a `held` too. A revert drafted under
   `high_water` names both figures and the run it fell from.
 
+- **A minimum effect size for the Verify gate, shared with `eval run
+  --tolerance`** (#262). `outcome_evalset.min_effect: {"count": n}` (in the
+  field's unit) or `{"points": p}` (percentage points; scaled by the
+  baseline run's total for `passed`/`failed`/`total`, read as `p/100` for
+  `error_rate` and host-written ratio fields) is a floor under the verdict:
+  a worsening of at most that much is `held`, and the outcome record carries
+  the `tolerance` it held under so a `held` under a floor is distinguishable
+  from a `held` at zero. Default none — any drop is a regression, exactly as
+  before; measured need: a 359 → 355 dip on 387 trials, within what one
+  adapter read twice can differ by, proposed a revert. It is a floor, not a
+  significance test, and the docs say so. `is_regression` gained the
+  tolerance and stays the one function the recorded verdict, the revert
+  draft and `areev eval run --baseline RUN --tolerance N` all call, so the
+  two readers of "did it get worse" cannot drift; a `--tolerance` that is
+  not a number ≥ 0 is now refused instead of silently read as zero.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

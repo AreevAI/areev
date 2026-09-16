@@ -222,6 +222,23 @@ fn reacceptance_compares_a_rerun_against_a_recorded_baseline() {
         "a 100-point tolerance must accept the same drop: {report}"
     );
     assert_eq!(report["reacceptance"]["tolerance_points"], 100.0);
+
+    // The boundary is the Verify gate's own rule (`is_regression`): a drop of
+    // exactly the tolerance is accepted, a hair past it is not. Pinned here
+    // so the two readers of "did it get worse" cannot drift apart.
+    let (_ok, out, _err) = areev(&[
+        "eval", "run", "--db", &db, "--evalset", &hash,
+        "--tool-cmd", "head -c1", "--baseline", &baseline_run, "--tolerance", "99.9",
+    ]);
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["reacceptance"]["accepted"], false, "99.9 points does not cover a 100-point drop: {report}");
+
+    // A tolerance that is not a number of points is refused, not read as zero.
+    let (ok, _out, err) = areev(&[
+        "eval", "run", "--db", &db, "--evalset", &hash,
+        "--tool-cmd", "cat", "--baseline", &baseline_run, "--tolerance", "wide",
+    ]);
+    assert!(!ok && err.contains("--tolerance"), "{err}");
 }
 
 // ── `--model`: grading through the ToolCallLlm seam (the adapter gate) ────

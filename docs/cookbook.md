@@ -887,6 +887,15 @@ areev eval run --db agent.db --evalset <PIN> \
 areev loop approve <rec> --db agent.db --because "corpus + lineage reviewed"
 areev loop apply   <rec> --db agent.db --because "gated and green" \
   --gating-run <eval-run-id>
+
+# After a model swap, re-accept against the recorded gate run: a pass rate
+# within --tolerance percentage points of the baseline is accepted, and the
+# comparison is journaled as an `mg:reacceptance` Fact. The arithmetic is
+# the Verify gate's own `is_regression` — the same floor a policy sets with
+# `outcome_evalset.min_effect` — so a swap cannot be re-accepted on one rule
+# and its lessons judged on another.
+areev eval run --db agent.db --evalset <PIN> --model openai-compat:<new> \
+  --baseline <eval-run-id> --tolerance 1.0
 ```
 
 The apply writes `(model:<serves_as>, mg:adapter_promotion)` — the host
