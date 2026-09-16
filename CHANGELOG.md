@@ -67,11 +67,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same normalizer, because a transcript naming a tool the request never offered
   is a 400 on the loop's *second* turn. Found by Areev Cloud's first
   model-backed capture pack; it removes the rule that a pack with an abstract
-  node must name its tools without dots. One consequence worth stating: `areev
-  run verify` on an ALREADY-FAILED pre-fix run (one whose journal records the
-  `model called unknown tool(s)` failure) can now diverge, because the
-  scheduler would take the dispatch the journal never contains. Runs that
-  succeeded replay unchanged — the fix touches no journal shape.
+  node must name its tools without dots.
+
+  **What it means for `areev run verify` on older runs.** A run recorded
+  BEFORE this fix whose abstract node called a dotted tool no longer replays.
+  That covers both the runs the bug failed outright *and* — measured, not
+  assumed — the ones that COMPLETED, because a model that obeyed the
+  corrective re-prompt and re-issued the dotted name got its tool run on the
+  second turn. In both, replay now dispatches that tool at an `effect_seq` the
+  old journal spent on a re-prompt. `verify` reports this honestly rather than
+  erroring: the superstep before the divergence is still marked
+  journal-consistent, and the diverging step names the effect (`has no
+  journaled result — not verifiable past this point`). No fix is planned and
+  none is possible without keeping the defect alive behind a per-run epoch —
+  the journal records what a scheduler that no longer exists decided, and a
+  `verify` that returned true for it would be the audit surface lying. No
+  journal shape moved; a run that never called a dotted tool is unaffected.
 
 - **A dead registry row that lied about required fields.** Each grain type
   carried a `required_add_fields` list in `types/registry.rs` that *nothing
